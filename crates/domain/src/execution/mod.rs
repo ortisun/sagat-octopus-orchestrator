@@ -22,12 +22,13 @@ pub use approval::{
     MAX_APPROVAL_POLICY_ENTRIES, MAX_APPROVAL_REASON_CODE_BYTES, MAX_DECISION_KEY_BYTES,
 };
 pub use command::{
-    Expiry, Failure, Heartbeat, InstanceHeartbeat, Progress, Resolution, complete_reconciliation,
-    complete_step, expire_attempt, fail_report_for_storage_quota, fail_step,
-    fail_step_for_storage_quota, finish_child, fire_timer, heartbeat, heartbeat_instance,
-    lease_instance, lease_step, mark_for_review, pause_run, resolve, resolve_review, resume_run,
-    retry_due, retry_review, satisfy_wait, skip_review, start_run, stop_for_storage_quota,
-    stop_run, time_out_wait,
+    AddressedProgress, Expiry, Failure, Heartbeat, InstanceHeartbeat, Progress, Resolution,
+    complete_instance, complete_reconciliation, complete_step, expire_attempt, expire_instance,
+    fail_instance, fail_report_for_storage_quota, fail_step, fail_step_for_storage_quota,
+    finish_child, fire_timer, heartbeat, heartbeat_instance, lease_instance, lease_step,
+    mark_for_review, pause_run, resolve, resolve_review, resume_run, retry_due, retry_due_instance,
+    retry_review, satisfy_wait, skip_review, start_run, stop_for_storage_quota, stop_run,
+    time_out_wait,
 };
 pub use continuation::{
     CancelResolution, ChainError, ChainFinalOutcome, ChainHandoff, ChainPolicy, ChainScope,
@@ -52,9 +53,9 @@ pub use operations::{
     QueryResponse, QuerySnapshot, ResultDisclosure, UpdateEvaluation, UpdateKey, UpdateReceipt,
     UpdateReceiptStatus, UpdateRejection, UpdateRequest, UpdateResolution,
 };
-pub use plan::{Evaluation, Plan, plan};
+pub use plan::{AddressedPlan, Evaluation, Plan, plan, plan_addressed};
 pub use state::{
     CollectionIterationRestore, CollectionPhase, CollectionResult, CollectionState, LoopCheckpoint,
-    LoopPhase, LoopState, RunId, RunState, RunStatus, SagaPhase, SagaState, StepState, StepStatus,
-    WaitingOn,
+    LoopPhase, LoopState, RunChainState, RunId, RunState, RunStatus, SagaPhase, SagaState,
+    StepState, StepStatus, WaitingOn,
 };

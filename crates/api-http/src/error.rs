@@ -8,8 +8,10 @@
 use axum::body::Body;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use sagat_application::approval_progress::ApprovalProgressError;
 use sagat_application::definitions::IrError;
 use sagat_application::error::{AppError, ConflictKind};
+use sagat_domain::execution::ApprovalError;
 use sagat_domain::scripts::ScriptError;
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -330,6 +332,14 @@ impl ApiError {
         self
     }
 
+    /// Attaches a handler-owned structured detail object. Callers must keep it free of request or
+    /// workflow values unless the endpoint explicitly authorizes their disclosure.
+    #[must_use]
+    pub fn with_details(mut self, details: Value) -> Self {
+        self.parts.details = Some(details);
+        self
+    }
+
     /// The error as it will be reported, for transports other than HTTP (the gRPC adapter maps the
     /// same classification onto its own status codes, so both agree on what an error means).
     #[must_use]
@@ -609,6 +619,72 @@ impl From<AppError> for ApiError {
     }
 }
 
+impl From<ApprovalProgressError> for ApiError {
+    fn from(error: ApprovalProgressError) -> Self {
+        match error {
+            ApprovalProgressError::NotFound => Self::not_found(),
+            ApprovalProgressError::Approval(error) => Self::from(error),
+            ApprovalProgressError::Storage(error) => Self::from(AppError::from(error)),
+            ApprovalProgressError::RuntimeUnavailable => Self::unavailable(),
+            ApprovalProgressError::AuditMismatch
+            | ApprovalProgressError::CorruptProjection
+            | ApprovalProgressError::SchedulerFenceLost => {
+                tracing::error!(%error, "workflow approval operation failed internally");
+                Self::from(AppError::Internal)
+            }
+        }
+    }
+}
+
+impl From<ApprovalError> for ApiError {
+    fn from(error: ApprovalError) -> Self {
+        match error {
+            ApprovalError::InvalidDecisionKey => Self::validation(
+                "decisionKey must be 1..128 printable ASCII characters without spaces",
+            )
+            .with_reason("INVALID_DECISION_KEY"),
+            ApprovalError::InvalidReasonCode => {
+                Self::validation("reasonCode must be a 1..64 character machine code")
+                    .with_reason("INVALID_REASON_CODE")
+            }
+            ApprovalError::Forbidden => Self::new(
+                StatusCode::FORBIDDEN,
+                ErrorCode::Forbidden,
+                "the caller is not eligible to decide this approval",
+            )
+            .with_reason("NOT_ELIGIBLE"),
+            ApprovalError::InitiatorCannotDecide => Self::new(
+                StatusCode::FORBIDDEN,
+                ErrorCode::Forbidden,
+                "the initiating identity cannot decide this approval",
+            )
+            .with_reason("INITIATOR_CANNOT_DECIDE"),
+            ApprovalError::IdempotencyKeyReused => Self::new(
+                StatusCode::CONFLICT,
+                ErrorCode::Conflict,
+                "this decision key was already used for different request content",
+            )
+            .with_reason("IDEMPOTENCY_KEY_REUSED"),
+            ApprovalError::AlreadyDecided => Self::new(
+                StatusCode::CONFLICT,
+                ErrorCode::Conflict,
+                "the approval already has a committed outcome",
+            )
+            .with_reason("ALREADY_DECIDED"),
+            ApprovalError::EmptyPolicy
+            | ApprovalError::TooManyPolicyEntries
+            | ApprovalError::DuplicateEligibleSubject
+            | ApprovalError::DuplicateEligibleRole
+            | ApprovalError::IneligiblePolicyRole(_)
+            | ApprovalError::ExpiryNotDue
+            | ApprovalError::InvalidStoredApproval => {
+                tracing::error!(%error, "workflow approval operation failed internally");
+                Self::from(AppError::Internal)
+            }
+        }
+    }
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let mut response = Response::new(Body::empty());
@@ -624,6 +700,9 @@ impl IntoResponse for ApiError {
                 .headers_mut()
                 .insert(header::RETRY_AFTER, HeaderValue::from(seconds));
         }
+        response
+            .headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
         response.extensions_mut().insert(self.parts);
         response
     }

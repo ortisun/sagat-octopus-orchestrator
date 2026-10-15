@@ -512,6 +512,93 @@ paths:
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
+  /runs/{runId}/queries/{operationName}:
+    post:
+      operationId: queryRun
+      summary: Evaluate a declared side-effect-free business query
+      tags: [Runs]
+      x-implemented: '014'
+      description: |
+        Needs `run:read` and `run:query` in the run's current namespace. The named operation must
+        be pinned in the run's immutable workflow version with
+        `disclosure: declared-business-result-v1`. Evaluation observes one committed snapshot and
+        returns only the schema-checked declared result. It does not append a journal event, change
+        state or schedule work. Authorization and audit commit before any value is returned.
+      parameters:
+        - {$ref: '#/components/parameters/RunId'}
+        - name: operationName
+          in: path
+          required: true
+          schema: {type: string, minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DeclaredQueryRequest'}
+      responses:
+        '200':
+          description: The declared result and the exact revisions observed
+          headers:
+            Cache-Control: {schema: {type: string, const: no-store}}
+            X-Trace-Id: {$ref: '#/components/headers/TraceId'}
+            X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DeclaredQueryResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /runs/{runId}/updates/{operationName}:
+    post:
+      operationId: updateRunState
+      summary: Apply a declared business state update
+      tags: [Runs]
+      x-implemented: '014'
+      description: |
+        Needs `run:update` in the run's current namespace. A fresh request is accepted only while
+        the run is RUNNING or WAITING. The immutable declaration validates arguments and computes
+        state and result without I/O, callbacks or external effects. APPLIED commits state, result,
+        receipt, journal, audit and outbox atomically without scheduling work. Business-validator
+        and expected-revision failures commit stable REJECTED receipts without changing state. An
+        exact replay returns the durable receipt only after current authorization; changing any
+        request content under the same `updateKey` returns `409 IDEMPOTENCY_KEY_REUSED`.
+      parameters:
+        - {$ref: '#/components/parameters/RunId'}
+        - name: operationName
+          in: path
+          required: true
+          schema: {type: string, minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DeclaredUpdateRequest'}
+      responses:
+        '200':
+          description: The applied durable receipt and declared result, including exact replay
+          headers:
+            Cache-Control: {schema: {type: string, const: no-store}}
+            X-Trace-Id: {$ref: '#/components/headers/TraceId'}
+            X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DeclaredUpdateResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
   /runs/{runId}/payload-inspections:
     post:
       operationId: inspectRunPayload
@@ -731,6 +818,135 @@ paths:
         '409': {$ref: '#/components/responses/Conflict'}
         '422': {$ref: '#/components/responses/ValidationError'}
         '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/chains/{chainId}:
+    get:
+      operationId: inspectExecutionChain
+      summary: Inspect the immutable lineage and current head of an execution chain
+      tags: [Runs]
+      x-implemented: '014'
+      description: Needs `run:read`. The tenant is taken from authentication and a chain in another tenant is indistinguishable from a missing chain. The response is read from one database snapshot and is never cached.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {name: chainId, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: 'Current chain head and immutable lineage'
+          headers:
+            Cache-Control: {schema: {type: string, const: no-store}}
+            X-Trace-Id: {$ref: '#/components/headers/TraceId'}
+            X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ChainInspection'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/chains/{chainId}/signals/{signalName}:
+    post:
+      operationId: signalExecutionChain
+      summary: Signal a wait on the expected current chain head
+      tags: [Events]
+      x-implemented: '014'
+      description: The command locks the chain before the current run. `expectedRunId` prevents a delayed caller from signalling a replacement head. The signal, journal, projection, payload retention, audit and idempotency record commit together. A signal for which no root wait exists is refused with 409. Scoped waits remain unavailable until addressed signal routing is integrated.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {name: chainId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: signalName, in: path, required: true, schema: {type: string, minLength: 1}}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ChainSignalRequest'}
+      responses:
+        '202':
+          description: 'Signal committed, or the exact durable replay'
+          headers:
+            Cache-Control: {schema: {type: string, const: no-store}}
+            X-Trace-Id: {$ref: '#/components/headers/TraceId'}
+            X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SignalResult'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/chains/{chainId}/cancel:
+    post:
+      operationId: cancelExecutionChain
+      summary: Cancel the expected current chain head and latch chain cancellation
+      tags: [Operations]
+      x-implemented: '014'
+      description: Needs `run:operate`. The chain cancellation latch and current-head cancellation journal, projection, outbox, audit and idempotency record commit atomically. `expectedRunId` makes a command for a replaced head fail with 409 and `details.reason=CHAIN_HEAD_CHANGED`.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {name: chainId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ChainCancelRequest'}
+      responses:
+        '202':
+          description: 'Cancellation committed, or the exact durable replay'
+          headers:
+            Cache-Control: {schema: {type: string, const: no-store}}
+            X-Trace-Id: {$ref: '#/components/headers/TraceId'}
+            X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /approvals/{approvalId}/decisions:
+    post:
+      operationId: decideWorkflowApproval
+      summary: Decide a pending workflow approval
+      tags: [Operations]
+      x-implemented: '014'
+      description: |
+        Needs `approval:decide` and current eligibility under the approval policy. The initiating identity cannot decide when the policy excludes it. The first committed decision wins atomically with the run journal, timer cancellation, outcome route, outbox and audit record. Repeating the same `decisionKey` with the same body returns the original receipt; reusing it for another body is `409 IDEMPOTENCY_KEY_REUSED`. Missing and foreign-tenant approval identifiers both return the same `404` response.
+      parameters:
+        - {$ref: '#/components/parameters/ApprovalId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ApprovalDecisionRequest'}
+      responses:
+        '200':
+          description: 'The durable winning decision receipt, or its exact replay'
+          headers:
+            Cache-Control: {schema: {type: string, const: no-store}}
+            X-Trace-Id: {$ref: '#/components/headers/TraceId'}
+            X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApprovalDecisionReceipt'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
@@ -2987,6 +3203,11 @@ components:
       in: path
       required: true
       schema: {type: string, format: uuid}
+    ApprovalId:
+      name: approvalId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
     ScriptId:
       name: scriptId
       in: path
@@ -3132,7 +3353,8 @@ components:
             another method): an SDK newer than the server tells that from a resource that does not exist, which is
             `NOT_FOUND` without those reasons. Structured workflow capabilities refine existing codes with
             `INVALID_SCOPE`, `INVALID_OPERATION_STATE`, `NOT_ELIGIBLE`, `INITIATOR_CANNOT_DECIDE`,
-            `CHAIN_HEAD_CHANGED`, `RUN_NOT_MUTABLE`, `RUN_CONTINUED` and `UPDATE_REJECTED`;
+            `CHAIN_HEAD_CHANGED`, `RUN_NOT_MUTABLE`, `RUN_CONTINUED`, `INVALID_ARGUMENTS`,
+            `INVALID_UPDATE_KEY`, `REVISION_CONFLICT` and `UPDATE_REJECTED`;
             they do not add a new `Error.code` value.
     Health:
       type: object
@@ -3494,6 +3716,7 @@ components:
         events: {type: array, items: {$ref: '#/components/schemas/GraphEvent'}}
         nodes: {type: array, items: {$ref: '#/components/schemas/RuntimeNode'}}
         edges: {type: array, items: {$ref: '#/components/schemas/RuntimeEdge'}, description: 'Only when `reset` is true.'}
+        chain: {oneOf: [{$ref: '#/components/schemas/RuntimeChain'}, {type: 'null'}]}
     RuntimeNode:
       type: object
       required: [id, type, status]
@@ -3556,6 +3779,83 @@ components:
         projectionLagMs: {type: integer, minimum: 0}
         nodes: {type: array, items: {$ref: '#/components/schemas/RuntimeNode'}}
         edges: {type: array, items: {$ref: '#/components/schemas/RuntimeEdge'}}
+        chain: {oneOf: [{$ref: '#/components/schemas/RuntimeChain'}, {type: 'null'}]}
+    RuntimeChain:
+      type: object
+      additionalProperties: false
+      required: [chainId, segmentIndex, segmentCount, currentRunId]
+      properties:
+        chainId: {type: string, format: uuid, description: 'Stable initial run identifier of the continuation chain.'}
+        segmentIndex: {type: integer, minimum: 0, maximum: 9999}
+        segmentCount: {type: integer, minimum: 1, maximum: 10000}
+        currentRunId: {type: string, format: uuid, description: 'Current head of the continuation chain.'}
+        predecessorRunId: {type: [string, 'null'], format: uuid}
+        successorRunId: {type: [string, 'null'], format: uuid}
+        completionKind: {type: [string, 'null'], enum: [CONTINUED, FINAL, null]}
+        finalOutcome: {type: [string, 'null'], enum: [SUCCEEDED, FAILED, CANCELLED, TIMED_OUT, COMPENSATED, PARTIAL, COMPENSATION_FAILED, null]}
+    DeclaredQueryRequest:
+      type: object
+      additionalProperties: false
+      required: [args]
+      properties:
+        args:
+          description: JSON value checked against the immutable operation argument schema; at most 256 KiB after canonicalization.
+    DeclaredQueryResponse:
+      type: object
+      additionalProperties: false
+      required: [runId, runVersion, stateRevision, result]
+      properties:
+        runId: {type: string, format: uuid}
+        runVersion: {type: integer, format: int64, minimum: 0}
+        stateRevision: {type: integer, format: int64, minimum: 0}
+        result:
+          description: Only the explicitly disclosed result, validated against its closed bounded schema.
+    DeclaredUpdateRequest:
+      type: object
+      additionalProperties: false
+      required: [updateKey, args]
+      properties:
+        updateKey: {type: string, minLength: 1, maxLength: 128, pattern: '^[!-~]+$', description: 'Caller-chosen durable idempotency key. Retries keep this exact key.'}
+        args:
+          description: JSON value checked against the immutable operation argument schema; at most 256 KiB after canonicalization.
+        expectedStateRevision: {type: integer, format: int64, minimum: 0}
+    DeclaredUpdateResponse:
+      type: object
+      additionalProperties: false
+      required: [runId, operation, updateKey, status, result, beforeStateRevision, afterStateRevision, runVersion, replayed]
+      properties:
+        runId: {type: string, format: uuid}
+        operation: {type: string, minLength: 1, maxLength: 128}
+        updateKey: {type: string, minLength: 1, maxLength: 128}
+        status: {type: string, const: APPLIED}
+        result:
+          description: Only the explicitly disclosed result, validated before it is retained and returned.
+        beforeStateRevision: {type: integer, format: int64, minimum: 0}
+        afterStateRevision: {type: integer, format: int64, minimum: 1}
+        runVersion: {type: integer, format: int64, minimum: 1}
+        replayed: {type: boolean}
+    ApprovalDecisionRequest:
+      type: object
+      additionalProperties: false
+      required: [decisionKey, decision]
+      properties:
+        decisionKey: {type: string, minLength: 1, maxLength: 128, pattern: '^[!-~]+$', description: 'Caller-chosen idempotency key for this approval.'}
+        decision: {type: string, enum: [APPROVE, REJECT]}
+        reasonCode: {type: string, minLength: 1, maxLength: 64, pattern: '^[A-Za-z0-9_.:-]+$', description: 'Bounded machine-readable reason; free text is not accepted.'}
+    ApprovalDecisionReceipt:
+      type: object
+      additionalProperties: false
+      required: [receiptId, approvalId, decisionKey, decision, actor, decidedAt, outcomeSequence, replayed]
+      properties:
+        receiptId: {type: string, format: uuid}
+        approvalId: {type: string, format: uuid}
+        decisionKey: {type: string}
+        decision: {type: string, enum: [APPROVE, REJECT]}
+        reasonCode: {type: [string, 'null']}
+        actor: {type: string}
+        decidedAt: {type: string, format: date-time}
+        outcomeSequence: {type: integer, minimum: 1}
+        replayed: {type: boolean}
     CompensationPlans:
       type: object
       required: [sagas]
@@ -3715,6 +4015,43 @@ components:
       required: [deliveredTo]
       properties:
         deliveredTo: {type: array, items: {type: string}, description: 'The waitEvent nodes the signal woke.'}
+    ChainSignalRequest:
+      type: object
+      additionalProperties: false
+      required: [expectedRunId, payload]
+      properties:
+        expectedRunId: {type: string, format: uuid, description: 'The current head observed by the caller.'}
+        payload: {description: 'JSON retained as the output of every matching root wait.'}
+    ChainCancelRequest:
+      type: object
+      additionalProperties: false
+      required: [expectedRunId, reason]
+      properties:
+        expectedRunId: {type: string, format: uuid, description: 'The current head observed by the caller.'}
+        reason: {type: string, minLength: 1, maxLength: 512}
+    ChainSegment:
+      type: object
+      additionalProperties: false
+      required: [index, runId, predecessorRunId, successorRunId]
+      properties:
+        index: {type: integer, minimum: 0, maximum: 65535}
+        runId: {type: string, format: uuid}
+        predecessorRunId: {type: [string, 'null'], format: uuid}
+        successorRunId: {type: [string, 'null'], format: uuid}
+    ChainInspection:
+      type: object
+      additionalProperties: false
+      required: [chainId, currentRunId, revision, cancelRequested, finalOutcome, segments]
+      properties:
+        chainId: {type: string, format: uuid}
+        currentRunId: {type: string, format: uuid}
+        revision: {type: integer, format: int64, minimum: 0}
+        cancelRequested: {type: boolean}
+        finalOutcome: {type: [string, 'null'], enum: [SUCCEEDED, FAILED, CANCELLED, TIMED_OUT, COMPENSATED, PARTIAL, COMPENSATION_FAILED, null]}
+        segments:
+          type: array
+          minItems: 1
+          items: {$ref: '#/components/schemas/ChainSegment'}
     EventPayload: {$ref: '#/components/schemas/JsonObject'}
     IncomingEvent:
       type: object

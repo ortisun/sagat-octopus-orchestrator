@@ -14,8 +14,9 @@ use sagat_application::telemetry::{
     Backlog, CONTEXT_EVENTS, JournalEntry, Pending, RunFacts, RunTelemetry, TelemetryStore,
     ToProject,
 };
-use sagat_domain::execution::RunId;
+use sagat_domain::execution::{ExecutionInstanceId, InstancePath, RunId};
 use sagat_domain::identity::{NamespaceId, TenantId};
+use sagat_domain::workflow::NodeId;
 use sagat_telemetry::{SpanId, TraceId};
 use sqlx::Row;
 use sqlx::postgres::PgRow;
@@ -171,16 +172,25 @@ impl TelemetryStore for PgRunStore {
         let parent_span = col::<Option<String>>(&row, "trace_parent_span")?
             .as_deref()
             .and_then(SpanId::parse);
-        let steps: HashMap<String, Uuid> =
-            sqlx::query("SELECT node, step_id FROM steps WHERE tenant_id = $1 AND run_id = $2")
-                .bind(tenant)
-                .bind(run)
-                .fetch_all(self.pool())
-                .await
-                .map_err(store_error)?
-                .iter()
-                .map(|r| Ok((col::<String>(r, "node")?, col::<Uuid>(r, "step_id")?)))
-                .collect::<Result<_, StoreError>>()?;
+        let steps: HashMap<ExecutionInstanceId, Uuid> = sqlx::query(
+            "SELECT node, step_id, instance_path_nodes, instance_path_indices \
+             FROM steps WHERE tenant_id = $1 AND run_id = $2",
+        )
+        .bind(tenant)
+        .bind(run)
+        .fetch_all(self.pool())
+        .await
+        .map_err(store_error)?
+        .iter()
+        .map(|r| {
+            let node = NodeId::parse_stored(&col::<String>(r, "node")?)
+                .map_err(|_| corrupt("step node"))?;
+            Ok((
+                ExecutionInstanceId::in_path(instance_path(r)?, node),
+                col::<Uuid>(r, "step_id")?,
+            ))
+        })
+        .collect::<Result<_, StoreError>>()?;
 
         let applied = i64::try_from(pending.applied_seq).map_err(|_| corrupt("sequence"))?;
         let new = journal_rows(self, tenant, run, "seq > $3", applied, Some(BATCH_ENTRIES)).await?;
@@ -316,7 +326,8 @@ impl TelemetryStore for PgRunStore {
     }
 }
 
-const JOURNAL_CONTEXT: &str = "SELECT seq, event_type, node, detail, actor, occurred_at FROM run_events \
+const JOURNAL_CONTEXT: &str = "SELECT seq, event_type, node, detail, actor, occurred_at, \
+     instance_path_nodes, instance_path_indices FROM run_events \
      WHERE tenant_id = $1 AND run_id = $2 AND seq <= $3 AND event_type = ANY($4) ORDER BY seq";
 
 async fn journal_rows(
@@ -328,7 +339,8 @@ async fn journal_rows(
     limit: Option<i64>,
 ) -> Result<Vec<JournalEntry>, StoreError> {
     let sql = format!(
-        "SELECT seq, event_type, node, detail, actor, occurred_at FROM run_events \
+        "SELECT seq, event_type, node, detail, actor, occurred_at, \
+         instance_path_nodes, instance_path_indices FROM run_events \
          WHERE tenant_id = $1 AND run_id = $2 AND {condition} ORDER BY seq LIMIT $4"
     );
     sqlx::query(sqlx::AssertSqlSafe(sql))
@@ -359,7 +371,27 @@ fn entry_from_row(row: &PgRow) -> Result<Option<JournalEntry>, StoreError> {
     Ok(Some(JournalEntry {
         seq: seq(col(row, "seq")?)?,
         event,
+        instance_path: instance_path(row)?,
         actor: col(row, "actor")?,
         occurred_at,
     }))
+}
+
+fn instance_path(row: &PgRow) -> Result<InstancePath, StoreError> {
+    let nodes: Option<Vec<String>> = col(row, "instance_path_nodes")?;
+    let indices: Option<Vec<i32>> = col(row, "instance_path_indices")?;
+    let (nodes, indices) = match (nodes, indices) {
+        (None, None) => return Ok(InstancePath::root()),
+        (Some(nodes), Some(indices)) if nodes.len() == indices.len() => (nodes, indices),
+        _ => return Err(corrupt("journal instance path")),
+    };
+    let mut path = InstancePath::root();
+    for (node, index) in nodes.into_iter().zip(indices) {
+        let node = NodeId::parse_stored(&node).map_err(|_| corrupt("scope node"))?;
+        let index = u32::try_from(index).map_err(|_| corrupt("scope index"))?;
+        path = path
+            .child(node, index)
+            .map_err(|_| corrupt("journal instance path"))?;
+    }
+    Ok(path)
 }

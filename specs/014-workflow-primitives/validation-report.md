@@ -410,3 +410,149 @@ Studio authoring or prove scoped/chain graph projection.
 |---|---|
 | `npm test -- --run src/features/runs/RunNodeCard.test.tsx` in `frontend/apps/studio` | Passed: 8/8 |
 | `npm run typecheck`; `npm run lint` in `frontend/apps/studio` | Passed |
+
+## Scoped graph, chain links and telemetry checkpoint (2026-10-15)
+
+The runtime graph now gives repeated instances distinct path-qualified IDs and retains their
+definition node and structured path. A missing or newer node kind is rendered as unsupported.
+Graph changes return a full reset when a scoped transition cannot be represented unambiguously as
+a root-only delta. Chain segment links are read with the graph snapshot and shown in the Studio run
+view. These read-side changes do not enable collection execution or continuation handoff.
+
+The telemetry projector keys attempts by the full execution instance, so two iterations of one
+definition node cannot share an attempt or span identity. Its metrics use bounded labels and do not
+include payload values.
+
+| Check | Result |
+|---|---|
+| `cargo test -p sagat-tests --test integration_workflow_primitives one_definition_node_can_have_distinct_tenant_scoped_instance_paths --locked -q` | Passed: one real-PostgreSQL test; graph retains root and two scoped identities |
+| `cargo test -p sagat-tests --test integration_workflow_primitives chain_head_must_be_a_segment_of_its_own_chain --locked -q` | Passed: one real-PostgreSQL test; graph exposes the committed chain link |
+| `cargo test -p sagat-api-http --lib runtime_graph_projects_scoped_steps_and_resets_ambiguous_deltas --locked -q` | Passed: scoped IDs, paths, edges and safe reset |
+| Studio `npm test -- --run src/model/runGraph.test.ts src/features/runs/RunDetailPage.test.tsx`; `npm run typecheck`; `npm run lint` | Passed: 78/78 focused tests, typecheck and lint |
+| Application telemetry tests and scoped worker PostgreSQL checks reported by the implementing agent | Passed: 18/18 pure telemetry tests and 2/2 focused PostgreSQL scoped-worker tests at that checkpoint |
+
+The chain graph link is visibility evidence only. A complete continuation must additionally prove
+the handoff, command forwarding, parent settlement, quota and retention transactions.
+
+## Scoped worker recovery checkpoint (2026-10-15)
+
+An explicit test-only PostgreSQL store configuration exercises worker protocol 1.5 for scoped
+inline activities. Its real-database tests cover distinct paths, report fencing, restart, due
+retry, lost-lease recovery and journal-failure rollback. Production still negotiates 1.4 and
+withholds scoped tasks. The implementing agent reported 4/4 focused PostgreSQL tests and Clippy
+with `-D warnings` for domain, application, PostgreSQL, scheduler, gRPC and the integration target.
+
+Independent review found release blockers: body-local binding and secret resolution must use the
+full instance path; task input and effect-idempotency context must materialize the captured
+collection item or loop carry; and scoped stale hints need reconciliation. The test-only path is
+not an end-to-end collection/loop execution guarantee. The worker capability remains closed until
+these checks and the broader fault/security matrix pass.
+
+## Collection item-retention correction (2026-10-15)
+
+Collection entry now writes the captured items' canonical bytes under their pinned digests in the
+same PostgreSQL transaction as scope creation. Previously an admission could depend on a separate
+caller preloading each item. An existing digest row with different bytes rejects the entry; the
+append-only payload table prevents later mutation. The changed PostgreSQL test failed with a
+missing row before the fix, then both focused tests passed after it. This does not yet prove full
+collection scheduling, retained-run byte ceilings or garbage-collection safety.
+
+| Check | Result |
+|---|---|
+| `cargo test -p sagat-tests --test integration_workflow_primitives admitted_collection_reopens_with_exact_scope_and_verifies_from_addressed_journal --locked -q` | Passed: item retained without preloading, then admission and restore |
+| `cargo test -p sagat-tests --test integration_workflow_primitives collection_payloads_require_same_tenant_and_matching_content_digests --locked -q` | Passed: digest/content mismatch rejects entry; foreign provenance remains rejected |
+
+## Private chain, approval and declared-operation integration checkpoint (2026-10-15)
+
+The chain store now keeps initial, continued and final segment metadata, parent settlement and a
+chain-first lock for its private inspect/signal/cancel port. The private command path invokes the
+canonical engine inside that transaction; cancellation and handoff cannot both win. The public
+run-command path does not yet take that chain lock for every direct mutation, and scoped waits do
+not yet have complete signal semantics, so chain-target HTTP/SDK commands remain closed.
+
+An HTTP approval-decision endpoint accepts a previously opened durable request with current
+eligibility, a body decision key, typed receipt, denial audit and no-store response. A public
+workflow still cannot create and surface such a request through the scheduler. Query/Update have
+private published-state/start hooks and an HTTP path tested with seeded declarations; public IR
+publication stays closed while five-SDK runtime conformance and fault coverage remain incomplete.
+
+| Check | Result |
+|---|---|
+| `cargo check --workspace --all-targets --locked -q` | Passed at this checkpoint |
+| `cargo test -p sagat-tests --test contract_workflow_primitives --locked -q` | Passed: 23/23 |
+| `cargo test -p sagat-tests --test integration_workflow_primitives --locked -q` | Passed: 79/79 against real PostgreSQL |
+| `cargo test -p sagat-tests --test fault_workflow_primitives --locked -q` | Passed: 15/15 against real PostgreSQL |
+| Focused chain PostgreSQL suite reported by the implementing agent | Passed: 17/17, including cancel versus handoff |
+| Approval-decision HTTP PostgreSQL suite reported by the implementing agent | Passed: 4/4; the prior denial-audit race passed ten consecutive deterministic reruns |
+
+These counts are checkpoint evidence for the private slices, not a full release gate. The
+remaining suites include public workflow round trips, all-five WP-02–14 runtime scenarios,
+old-client/worker upgrades, full crash/security matrix and performance ceilings.
+
+## Bounded declared-operation publication checkpoint (2026-10-15)
+
+The public v1 parser now accepts closed declared state and Query/Update definitions only when the
+workflow uses the basic root nodes already supported by the engine. It parses and compiles the
+initial-state, query, validator, state-reducer and result expressions before publication. The same
+path still rejects `bodies`, top-level `limits`, `chainPolicy`, continuation and structured node
+kinds, so this change does not enable chain rollover, approval, collection or loop combinations.
+The internal typed parser remains available for validating those additive documents without
+publishing them.
+
+Publishing a supported document stores its immutable operation definitions with the workflow
+version, and starting a run creates schema-checked initial state in the run transaction. Public
+run-addressed Query/Update then use current namespace authorization, bounded declarative
+evaluation, no-store responses, tenant-opaque lookup, access audit and atomic state/receipt/
+journal/audit/outbox persistence. The enabled five-language scenario keeps a normal activity
+unserved so the run remains mutable; it does not depend on a chain or structured node.
+
+| Check | Result |
+|---|---|
+| `cargo test -p sagat-infra-ir --test declared_state --test codec --test continuation --locked` | Passed: 56 tests; basic declared state publishes, invalid expressions fail through the public parser, and chain/limits/structured combinations remain closed |
+| `cargo test -p sagat-tests --test contract_workflow_primitives --locked -q` | Passed: 23/23 contracts |
+| `cargo test -p sagat-tests --test integration_workflow_primitives operations:: --locked -- --nocapture` | Passed: 11/11 against real PostgreSQL, including publication/start, snapshot consistency, concurrent revisions, activity race, replay and atomic rollback |
+| `cargo test -p sagat-tests --test integration_workflow_primitives operations_http:: --locked -- --nocapture` | Passed: 5/5 against real HTTP and PostgreSQL, including RBAC, tenant opacity, durable rejection and injected outbox failure rollback/retry |
+| `cargo test -p sagat-tests --test fault_workflow_primitives operations:: --locked -- --nocapture` | Passed: 3/3 against public HTTP and real PostgreSQL; discarded update response replays one receipt, five independent update/signal races retain both transitions, and an undeclared input canary is absent from operation responses, declared state/result payloads and non-payload evidence |
+| `SAGAT_SDK_SCENARIO=state-operations SAGAT_SDK_REUSE=1 cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture` | Passed: one shared runtime scenario in TypeScript, Go, Python, C# and Java; runtime golden SHA-256 `ca177e4c82fc5e195705c36711c13e5289a011173002ace04fd28ace5121eecf`, workflow golden `04d6cfc485f4367c54cc13541e98d09ca4ff33caa52c5a333019b3c468fb4969` |
+| Clippy for `sagat-infra-ir` all targets and the contract/integration/fault targets with `-D warnings` | Passed |
+
+The five-language runtime checks initial query, applied update, identical receipt replay, query
+after update, stale revision, validator rejection and its replay, unauthenticated access and opaque
+foreign-tenant lookup. SDK retry preservation of the same update key is covered in each language's
+client tests. The fault target separately discards a successful response before reading it, then
+retries the exact request and observes the original receipt with one mutation. Its signal race
+starts both public requests together five times and finds one state transition and one wait
+transition each time. The canary case proves that an undeclared input field does not cross the
+declared state/result, audit, journal, outbox or receipt-metadata boundary; it intentionally does
+not claim that persisted run input is absent from the content-addressed payload store. A timer race,
+secret-manager capability canaries, chain-addressed operations and the performance ceiling remain
+open evidence and are not implied by this publication gate.
+
+## Integrated command and recovery checkpoint (2026-10-15)
+
+Direct run commands now acquire a chain lock before the run lock when the run belongs to a chain.
+Cancellation latches the chain in that transaction; a terminal engine transition projects the
+segment, chain and child settlement atomically. Public chain inspect, signal and cancel require an
+expected head, use current authorization and return no-store responses. The HTTP/PostgreSQL tests
+cover tenant opacity, signal and cancel replay, and stale-head rejection. Creation and handoff of
+a chain through a published workflow are not enabled.
+
+The test-only scoped worker path now resolves bindings and secrets by the complete instance path,
+materializes captured collection items or loop carry in task input and idempotency context, and
+renews hints per scoped instance. A scheduler transition can durably enter, admit, checkpoint and
+finish a collection under a real shard fence; its PostgreSQL scenario covers worker completion,
+restart and injected checkpoint rollback. This does not enable structured workflow publication,
+automatic collection ticks or worker protocol 1.5 in production.
+
+| Check | Result |
+|---|---|
+| `cargo check --workspace --all-targets --locked -q` | Passed |
+| `cargo test -p sagat-tests --test integration_workflow_primitives --locked -q` | Passed: 84/84 against real PostgreSQL |
+| `cargo test -p sagat-tests --test contract_workflow_primitives --test fault_workflow_primitives --test contract_developer_experience --locked -q` | Passed: 23/23 primitive contracts, 18/18 fault tests and 8/8 documentation contracts |
+| `cargo clippy -p sagat-domain -p sagat-application -p sagat-infra-ir -p sagat-infra-postgres -p sagat-api-http -p sagat-scheduler -p sagat-telemetry -p sagat-tests --all-targets --locked -- -D warnings` | Passed |
+| `cargo fmt --all -- --check`; `git diff --check` | Passed |
+
+The outstanding release gates include automatic collection admission, scoped compensation and
+reconciliation, scoped scripts and blobs, public approval creation, public continuation handoff,
+and the corresponding five-language runtime scenarios. These passing checkpoint suites do not
+establish those capabilities.

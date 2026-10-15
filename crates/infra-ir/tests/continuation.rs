@@ -72,7 +72,10 @@ fn validates_and_preserves_policy_transfer_and_graph_without_enabling_publicatio
 
     assert!(matches!(
         JsonIrCodec.parse(&bytes),
-        Err(IrError::UnsupportedDeclaration { field: "state", .. })
+        Err(IrError::UnsupportedDeclaration {
+            field: "chainPolicy",
+            ..
+        })
     ));
     assert!(matches!(
         JsonIrCodec.parse_structured(&bytes),
@@ -144,7 +147,10 @@ fn stateful_sdk_golden_reparses_to_the_reviewed_canonical_v1_bytes() {
 
     assert!(matches!(
         JsonIrCodec.parse(document.to_string().as_bytes()),
-        Err(IrError::UnsupportedDeclaration { field: "state", .. })
+        Err(IrError::UnsupportedDeclaration {
+            field: "chainPolicy",
+            ..
+        })
     ));
 }
 

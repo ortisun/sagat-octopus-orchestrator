@@ -246,6 +246,30 @@ async fn one_definition_node_can_have_distinct_tenant_scoped_instance_paths() {
     .expect("instance count");
     assert_eq!(count, 3, "root plus two scoped instances of node a");
 
+    let graph = w
+        .store
+        .graph(w.admin.tenant_id(), run)
+        .await
+        .expect("graph read")
+        .expect("visible graph");
+    let ids: Vec<_> = graph.steps.iter().map(|step| &step.instance).collect();
+    assert_eq!(ids.len(), 3, "graph includes root and both iterations");
+    for index in [0, 1] {
+        let expected = ExecutionInstanceId::in_path(
+            InstancePath::root()
+                .child(NodeId::parse("items").expect("scope"), index)
+                .expect("path"),
+            NodeId::parse("a").expect("node"),
+        );
+        assert!(ids.contains(&&expected), "graph retains iteration {index}");
+    }
+    assert!(
+        ids.contains(&&ExecutionInstanceId::root(
+            NodeId::parse("a").expect("node")
+        )),
+        "graph retains the root separately"
+    );
+
     let duplicate = sqlx::query(
         "INSERT INTO steps \
          SELECT (jsonb_populate_record(NULL::steps, to_jsonb(s) || jsonb_build_object( \

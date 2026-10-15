@@ -45,7 +45,8 @@ pub const CLAIMABLE: &str = "SELECT s.run_id FROM unnest($3::text[]) AS a(activi
          (SELECT st.run_id, st.ready_at FROM steps st \
           JOIN runs r ON r.tenant_id = st.tenant_id AND r.id = st.run_id \
           WHERE st.tenant_id = $1 AND st.namespace_id = $2 AND st.activity = a.activity \
-            AND st.status = 'READY' AND cardinality(st.instance_path_nodes) = 0 \
+            AND st.status = 'READY' \
+            AND ($5 >= 5 OR cardinality(st.instance_path_nodes) = 0) \
             AND st.kind <> 'COMPENSATION' AND NOT r.paused \
             AND (r.stop_reason IS NULL OR st.kind <> 'FORWARD') \
             AND ($5 >= 3 OR (r.input_blob_id IS NULL AND NOT EXISTS ( \
@@ -58,7 +59,8 @@ pub const CLAIMABLE: &str = "SELECT s.run_id FROM unnest($3::text[]) AS a(activi
          (SELECT st.run_id, st.ready_at FROM steps st \
           JOIN runs r ON r.tenant_id = st.tenant_id AND r.id = st.run_id \
           WHERE st.tenant_id = $1 AND st.namespace_id = $2 AND st.activity = a.activity \
-            AND st.status = 'READY' AND cardinality(st.instance_path_nodes) = 0 \
+            AND st.status = 'READY' \
+            AND ($5 >= 5 OR cardinality(st.instance_path_nodes) = 0) \
             AND st.kind = 'COMPENSATION' \
             AND NOT r.paused \
             AND ($5 >= 3 OR (r.input_blob_id IS NULL AND NOT EXISTS ( \
@@ -84,6 +86,10 @@ fn micros(duration: Duration) -> i64 {
 }
 
 impl WorkerStore for PgRunStore {
+    fn supports_scoped_worker_protocol(&self) -> bool {
+        self.scoped_worker_protocol
+    }
+
     async fn bound_patterns(
         &self,
         tenant: TenantId,

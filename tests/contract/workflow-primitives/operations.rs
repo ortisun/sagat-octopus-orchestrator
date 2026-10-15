@@ -70,7 +70,7 @@ fn assert_valid(value: &Value) {
 }
 
 #[test]
-fn explicit_disclosure_is_typed_internally_but_runtime_publication_stays_closed() {
+fn explicit_disclosure_is_typed_and_the_bounded_runtime_slice_is_publishable() {
     let value = document();
     assert_valid(&value);
     assert_eq!(
@@ -79,10 +79,9 @@ fn explicit_disclosure_is_typed_internally_but_runtime_publication_stays_closed(
     );
 
     let bytes = serde_json::to_vec(&value).expect("fixture JSON");
-    assert!(matches!(
-        JsonIrCodec.parse(&bytes),
-        Err(IrError::UnsupportedDeclaration { field: "state", .. })
-    ));
+    JsonIrCodec
+        .parse(&bytes)
+        .expect("bounded declared operations are publishable");
     assert!(matches!(
         JsonIrCodec.parse_structured(&bytes),
         Err(IrError::UnsupportedDeclaration { field: "state", .. })
@@ -93,6 +92,37 @@ fn explicit_disclosure_is_typed_internally_but_runtime_publication_stays_closed(
     assert_eq!(parsed.state().initial().as_str(), "0");
     assert_eq!(parsed.state().queries().count(), 1);
     assert_eq!(parsed.state().updates().count(), 1);
+
+    let mut chain = value.clone();
+    chain["chainPolicy"] = json!({"maxSegments": 2, "timeoutMs": 1_000});
+    assert!(matches!(
+        JsonIrCodec.parse(chain.to_string().as_bytes()),
+        Err(IrError::UnsupportedDeclaration {
+            field: "chainPolicy",
+            ..
+        })
+    ));
+
+    let mut structured = value;
+    structured["entrypoint"] = json!("review");
+    structured["nodes"] = json!([
+        {
+            "id": "review",
+            "type": "approval",
+            "policy": {"roles": ["admin"]},
+            "timeoutMs": 1_000,
+            "onApprove": "approved",
+            "onReject": "rejected",
+            "onExpire": "expired"
+        },
+        {"id": "approved", "type": "end"},
+        {"id": "rejected", "type": "end"},
+        {"id": "expired", "type": "end"}
+    ]);
+    assert!(matches!(
+        JsonIrCodec.parse(structured.to_string().as_bytes()),
+        Err(IrError::Unsupported { kind, .. }) if kind == "approval"
+    ));
 }
 
 #[test]

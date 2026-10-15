@@ -16,7 +16,7 @@ use super::event::{
     ReviewOutcome, RunEvent, StopReason, SwitchSelection,
 };
 use super::instance::ExecutionInstanceId;
-use super::plan::{Evaluation, Plan, after, plan};
+use super::plan::{AddressedPlan, Evaluation, Plan, after, plan, plan_addressed};
 use super::sagas::policies;
 use super::state::{RunId, RunState, SagaPhase, StepState, StepStatus, WaitingOn};
 use crate::saga::{NodeOrigin, OnCompensationFailure, ReconcileVerdict};
@@ -27,6 +27,12 @@ use crate::workflow::{NodeId, NodeKind, Scope, WorkflowDefinition};
 pub struct Progress {
     pub events: Vec<RunEvent>,
     pub pending: Option<Evaluation>,
+}
+
+/// Journal entries produced while advancing one admitted structured path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AddressedProgress {
+    pub events: Vec<AddressedRunEvent>,
 }
 
 /// The outcome of an evaluation, handed back by the adapter that performed it.
@@ -120,6 +126,27 @@ fn apply_then_settle(
 ) -> Result<Progress, ExecutionError> {
     state.apply(&primary)?;
     settle(def, state, now, vec![primary])
+}
+
+fn settle_addressed(
+    def: &WorkflowDefinition,
+    state: &mut RunState,
+    path: &super::instance::InstancePath,
+    mut events: Vec<AddressedRunEvent>,
+) -> Result<AddressedProgress, ExecutionError> {
+    let budget = 8 + def.total_len();
+    for _ in 0..budget {
+        match plan_addressed(def, state, path)? {
+            AddressedPlan::Emit(event) => {
+                state.apply_addressed(&event)?;
+                events.push(event);
+            }
+            AddressedPlan::Idle => return Ok(AddressedProgress { events }),
+        }
+    }
+    Err(ExecutionError::Invariant(
+        "the addressed planner did not settle",
+    ))
 }
 
 /// Looks a step up. A finished run answers "finished" before anything about the step: it is the
@@ -236,10 +263,6 @@ pub fn lease_step(
 }
 
 /// Grants a lease to one scoped logical instance without invoking structured planning.
-///
-/// This reducer entry point is intentionally limited to attempt ownership. Completion and failure
-/// remain unavailable for scoped instances until their routing and durable journal boundaries are
-/// integrated.
 ///
 /// # Errors
 /// Returns a typed instance error when the addressed instance is missing or not ready.
@@ -376,6 +399,39 @@ pub fn complete_step(
             generation: fence.generation,
         },
     )
+}
+
+/// Records success for one leased activity instance and advances its admitted path.
+///
+/// # Errors
+/// Returns a typed stale-fence or scoped-planning error. Root work keeps using
+/// [`complete_step`].
+pub fn complete_instance(
+    def: &WorkflowDefinition,
+    state: &mut RunState,
+    instance: &ExecutionInstanceId,
+    fence: Fence,
+) -> Result<AddressedProgress, ExecutionError> {
+    if instance.path().is_root() {
+        return Err(ExecutionError::Invariant(
+            "root completion used the scoped command",
+        ));
+    }
+    if instance.node().is_reconciliation() {
+        return Err(ExecutionError::NeedsVerdict(instance.node().clone()));
+    }
+    require_instance_lease(state, instance, fence)?;
+    let primary = AddressedRunEvent::in_path(
+        instance.path().clone(),
+        RunEvent::StepCompleted {
+            node: instance.node().clone(),
+            attempt: fence.attempt,
+            generation: fence.generation,
+        },
+    )
+    .map_err(|_| ExecutionError::Invariant("a completion lost its instance path"))?;
+    state.apply_addressed(&primary)?;
+    settle_addressed(def, state, instance.path(), vec![primary])
 }
 
 /// A failed attempt as reported by a worker or inferred by the engine.
@@ -552,6 +608,71 @@ pub fn fail_step(
     end_attempt(def, state, node, failure, now)
 }
 
+/// Records a failed attempt for one admitted activity instance.
+///
+/// Scoped sagas, reconciliation and cancellation retain their dedicated owners and fail closed in
+/// this command. Ordinary retries and terminal `onError` routing remain isolated to the addressed
+/// path.
+pub fn fail_instance(
+    def: &WorkflowDefinition,
+    state: &mut RunState,
+    instance: &ExecutionInstanceId,
+    failure: Failure,
+    now: OffsetDateTime,
+) -> Result<AddressedProgress, ExecutionError> {
+    if instance.path().is_root() {
+        return Err(ExecutionError::Invariant(
+            "root failure used the scoped command",
+        ));
+    }
+    let step = require_instance_lease(state, instance, failure.fence)?;
+    let declared = def
+        .node_for_instance(instance)
+        .ok_or_else(|| ExecutionError::UnknownStep(instance.node().clone()))?;
+    let reconciliation =
+        ExecutionInstanceId::in_path(instance.path().clone(), instance.node().reconciliation());
+    if declared.origin() != &NodeOrigin::Declared
+        || instance.node().is_reconciliation()
+        || step.cancel_requested()
+        || (is_ambiguous(&failure.code)
+            && (declared.effect().high_risk || def.node_for_instance(&reconciliation).is_some()))
+    {
+        return Err(ExecutionError::UnsupportedScopedEvent(
+            "scoped failure policy",
+        ));
+    }
+    let event = if failure.retryable && declared.retry_policy().has_attempts_left(step.attempt()) {
+        RunEvent::StepRetryScheduled {
+            node: instance.node().clone(),
+            attempt: failure.fence.attempt,
+            generation: failure.fence.generation,
+            code: failure.code,
+            not_before: after(
+                now,
+                declared
+                    .retry_policy()
+                    .delay_after(step.attempt(), failure.jitter_sample),
+            )?,
+        }
+    } else {
+        RunEvent::StepFailed {
+            node: instance.node().clone(),
+            code: failure.code,
+            fence: Some(failure.fence),
+        }
+    };
+    let addressed = AddressedRunEvent::in_path(instance.path().clone(), event)
+        .map_err(|_| ExecutionError::Invariant("a failure lost its instance path"))?;
+    state.apply_addressed(&addressed)?;
+    if matches!(addressed.event(), RunEvent::StepRetryScheduled { .. }) {
+        Ok(AddressedProgress {
+            events: vec![addressed],
+        })
+    } else {
+        settle_addressed(def, state, instance.path(), vec![addressed])
+    }
+}
+
 /// Fails a successful worker report whose atomic persistence exceeded the retained-content quota.
 ///
 /// For a forward report, a new stop request is applied before the failed attempt is settled. This
@@ -660,6 +781,37 @@ pub fn expire_attempt(
     end_attempt(def, state, node, failure, now)
 }
 
+/// Ends an expired scoped attempt under its exact fence.
+///
+/// # Errors
+/// Returns the same retry-policy and stale-fence errors as [`fail_instance`].
+pub fn expire_instance(
+    def: &WorkflowDefinition,
+    state: &mut RunState,
+    instance: &ExecutionInstanceId,
+    fence: Fence,
+    cause: Expiry,
+    jitter_sample: f64,
+    now: OffsetDateTime,
+) -> Result<AddressedProgress, ExecutionError> {
+    let code = match cause {
+        Expiry::LeaseExpired => FailureCode::lease_expired(),
+        Expiry::AttemptTimeout => FailureCode::attempt_timeout(),
+    };
+    fail_instance(
+        def,
+        state,
+        instance,
+        Failure {
+            fence,
+            code,
+            retryable: true,
+            jitter_sample,
+        },
+        now,
+    )
+}
+
 /// A step in `RETRY_WAIT` whose backoff has elapsed becomes ready again.
 ///
 /// # Errors
@@ -680,6 +832,39 @@ pub fn retry_due(
         now,
         RunEvent::StepRetryDue { node: node.clone() },
     )
+}
+
+/// Releases one scoped retry whose durable backoff has elapsed.
+///
+/// # Errors
+/// Returns [`ExecutionError::NotYetDue`] before `next_attempt_at`, or a typed scoped transition
+/// error when the candidate is stale.
+pub fn retry_due_instance(
+    def: &WorkflowDefinition,
+    state: &mut RunState,
+    instance: &ExecutionInstanceId,
+    now: OffsetDateTime,
+) -> Result<AddressedProgress, ExecutionError> {
+    if instance.path().is_root() {
+        return Err(ExecutionError::Invariant(
+            "root retry used the scoped command",
+        ));
+    }
+    let step = state
+        .instance(instance)
+        .ok_or_else(|| ExecutionError::UnknownInstance(instance.clone()))?;
+    if step.status() == StepStatus::RetryWait && step.next_attempt_at().is_some_and(|at| at > now) {
+        return Err(ExecutionError::NotYetDue(instance.node().clone()));
+    }
+    let event = AddressedRunEvent::in_path(
+        instance.path().clone(),
+        RunEvent::StepRetryDue {
+            node: instance.node().clone(),
+        },
+    )
+    .map_err(|_| ExecutionError::Invariant("a retry lost its instance path"))?;
+    state.apply_addressed(&event)?;
+    settle_addressed(def, state, instance.path(), vec![event])
 }
 
 /// A timer reached its due time.

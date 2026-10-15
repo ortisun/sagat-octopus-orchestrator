@@ -13,7 +13,8 @@ use std::future::Future;
 use std::time::Duration;
 
 use sagat_domain::execution::{
-    ApprovalDecision, CollectionOutcome, LoopOutcome, RunEvent, RunId, RunStatus,
+    ApprovalDecision, CollectionOutcome, ExecutionInstanceId, InstancePath, LoopOutcome, RunEvent,
+    RunId, RunStatus,
 };
 use sagat_domain::identity::{NamespaceId, TenantId};
 use sagat_telemetry::{
@@ -30,6 +31,8 @@ use crate::error::StoreError;
 pub struct JournalEntry {
     pub seq: u64,
     pub event: RunEvent,
+    /// The structured scope that addresses step events; empty for root and run-level events.
+    pub instance_path: InstancePath,
     /// Who or what caused it: `system:scheduler`, a worker's subject, a person's subject.
     pub actor: String,
     pub occurred_at: OffsetDateTime,
@@ -49,8 +52,8 @@ pub struct RunFacts {
     /// The run that started this one, when it is a child: its span is the parent.
     pub parent_run: Option<RunId>,
     pub created_at: OffsetDateTime,
-    /// The identity of each step (by node), which an attempt's span id is computed from.
-    pub steps: HashMap<String, Uuid>,
+    /// The durable identity of each logical step, which an attempt's span id is computed from.
+    pub steps: HashMap<ExecutionInstanceId, Uuid>,
 }
 
 /// How an attempt ended.
@@ -97,6 +100,7 @@ impl AttemptOutcome {
 /// One attempt of one step, as the journal tells it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Attempt {
+    pub instance: ExecutionInstanceId,
     pub node: String,
     pub attempt: u32,
     pub generation: u64,
@@ -154,18 +158,18 @@ fn seconds_between(from: OffsetDateTime, to: OffsetDateTime) -> f64 {
 #[must_use]
 pub fn attempts(facts: &RunFacts, entries: &[JournalEntry]) -> Vec<Attempt> {
     let mut done: Vec<Attempt> = Vec::new();
-    let mut open: HashMap<String, Attempt> = HashMap::new();
-    let mut ready: HashMap<String, OffsetDateTime> = HashMap::new();
-    let mut close = |open: &mut HashMap<String, Attempt>,
-                     node: &str,
+    let mut open: HashMap<ExecutionInstanceId, Attempt> = HashMap::new();
+    let mut ready: HashMap<ExecutionInstanceId, OffsetDateTime> = HashMap::new();
+    let mut close = |open: &mut HashMap<ExecutionInstanceId, Attempt>,
+                     instance: &ExecutionInstanceId,
                      attempt: u32,
                      seq: u64,
                      at: OffsetDateTime,
                      outcome: AttemptOutcome,
                      code: Option<String>,
                      not_before: Option<OffsetDateTime>| {
-        if open.get(node).is_some_and(|a| a.attempt == attempt)
-            && let Some(mut a) = open.remove(node)
+        if open.get(instance).is_some_and(|a| a.attempt == attempt)
+            && let Some(mut a) = open.remove(instance)
         {
             a.ended_at = Some(at);
             a.ended_seq = Some(seq);
@@ -179,22 +183,31 @@ pub fn attempts(facts: &RunFacts, entries: &[JournalEntry]) -> Vec<Attempt> {
         let at = entry.occurred_at;
         match &entry.event {
             RunEvent::StepReleased { node } | RunEvent::StepRetryDue { node } => {
-                ready.insert(node.as_str().to_owned(), at);
+                ready.insert(
+                    ExecutionInstanceId::in_path(entry.instance_path.clone(), node.clone()),
+                    at,
+                );
             }
             RunEvent::StepLeased {
                 node,
                 attempt,
                 generation,
             } => {
-                let name = node.as_str().to_owned();
-                let step = facts.steps.get(&name).copied().unwrap_or_else(Uuid::nil);
+                let instance =
+                    ExecutionInstanceId::in_path(entry.instance_path.clone(), node.clone());
+                let step = facts
+                    .steps
+                    .get(&instance)
+                    .copied()
+                    .unwrap_or_else(Uuid::nil);
                 open.insert(
-                    name.clone(),
+                    instance.clone(),
                     Attempt {
-                        node: name.clone(),
+                        instance: instance.clone(),
+                        node: node.as_str().to_owned(),
                         attempt: *attempt,
                         generation: *generation,
-                        ready_at: ready.remove(&name),
+                        ready_at: ready.remove(&instance),
                         leased_at: at,
                         ended_at: None,
                         ended_seq: None,
@@ -205,76 +218,98 @@ pub fn attempts(facts: &RunFacts, entries: &[JournalEntry]) -> Vec<Attempt> {
                     },
                 );
             }
-            RunEvent::StepCompleted { node, attempt, .. } => close(
-                &mut open,
-                node.as_str(),
-                *attempt,
-                entry.seq,
-                at,
-                AttemptOutcome::Succeeded,
-                None,
-                None,
-            ),
+            RunEvent::StepCompleted { node, attempt, .. } => {
+                let instance =
+                    ExecutionInstanceId::in_path(entry.instance_path.clone(), node.clone());
+                close(
+                    &mut open,
+                    &instance,
+                    *attempt,
+                    entry.seq,
+                    at,
+                    AttemptOutcome::Succeeded,
+                    None,
+                    None,
+                );
+            }
             RunEvent::StepRetryScheduled {
                 node,
                 attempt,
                 code,
                 not_before,
                 ..
-            } => close(
-                &mut open,
-                node.as_str(),
-                *attempt,
-                entry.seq,
-                at,
-                AttemptOutcome::Retry,
-                Some(code.as_str().to_owned()),
-                Some(*not_before),
-            ),
+            } => {
+                let instance =
+                    ExecutionInstanceId::in_path(entry.instance_path.clone(), node.clone());
+                close(
+                    &mut open,
+                    &instance,
+                    *attempt,
+                    entry.seq,
+                    at,
+                    AttemptOutcome::Retry,
+                    Some(code.as_str().to_owned()),
+                    Some(*not_before),
+                );
+            }
             RunEvent::StepFailed {
                 node,
                 code,
                 fence: Some(fence),
-            } => close(
-                &mut open,
-                node.as_str(),
-                fence.attempt,
-                entry.seq,
-                at,
-                AttemptOutcome::Failed,
-                Some(code.as_str().to_owned()),
-                None,
-            ),
+            } => {
+                let instance =
+                    ExecutionInstanceId::in_path(entry.instance_path.clone(), node.clone());
+                close(
+                    &mut open,
+                    &instance,
+                    fence.attempt,
+                    entry.seq,
+                    at,
+                    AttemptOutcome::Failed,
+                    Some(code.as_str().to_owned()),
+                    None,
+                );
+            }
             RunEvent::StepNeedsReview {
                 node,
                 code,
                 fence: Some(fence),
-            } => close(
-                &mut open,
-                node.as_str(),
-                fence.attempt,
-                entry.seq,
-                at,
-                AttemptOutcome::Review,
-                Some(code.as_str().to_owned()),
-                None,
-            ),
-            RunEvent::ReconciliationRequested { node, fence, cause } => close(
-                &mut open,
-                node.as_str(),
-                fence.attempt,
-                entry.seq,
-                at,
-                AttemptOutcome::UnknownOutcome,
-                Some(cause.as_str().to_owned()),
-                None,
-            ),
+            } => {
+                let instance =
+                    ExecutionInstanceId::in_path(entry.instance_path.clone(), node.clone());
+                close(
+                    &mut open,
+                    &instance,
+                    fence.attempt,
+                    entry.seq,
+                    at,
+                    AttemptOutcome::Review,
+                    Some(code.as_str().to_owned()),
+                    None,
+                );
+            }
+            RunEvent::ReconciliationRequested { node, fence, cause } => {
+                let instance =
+                    ExecutionInstanceId::in_path(entry.instance_path.clone(), node.clone());
+                close(
+                    &mut open,
+                    &instance,
+                    fence.attempt,
+                    entry.seq,
+                    at,
+                    AttemptOutcome::UnknownOutcome,
+                    Some(cause.as_str().to_owned()),
+                    None,
+                );
+            }
             RunEvent::StepCancelled { node } => {
-                let attempt = open.get(node.as_str()).map(|a| a.attempt);
+                let instance =
+                    ExecutionInstanceId::in_path(entry.instance_path.clone(), node.clone());
+                let attempt = open.get(&instance).map(|a| a.attempt);
                 if let Some(attempt) = attempt {
                     close(
                         &mut open,
-                        node.as_str(),
+                        &instance,
                         attempt,
                         entry.seq,
                         at,
@@ -288,7 +323,13 @@ pub fn attempts(facts: &RunFacts, entries: &[JournalEntry]) -> Vec<Attempt> {
         }
     }
     done.extend(open.into_values());
-    done.sort_by_key(|a| (a.leased_at, a.attempt));
+    done.sort_by(|left, right| {
+        (left.leased_at, left.attempt, &left.instance).cmp(&(
+            right.leased_at,
+            right.attempt,
+            &right.instance,
+        ))
+    });
     done
 }
 
@@ -387,6 +428,16 @@ fn base_attributes(facts: &RunFacts) -> Vec<(String, AttrValue)> {
     ]
 }
 
+fn path_attribute(path: &InstancePath) -> Option<String> {
+    (!path.is_root()).then(|| {
+        path.segments()
+            .iter()
+            .map(|segment| format!("{}[{}]", segment.scope_node(), segment.iteration_index()))
+            .collect::<Vec<_>>()
+            .join("/")
+    })
+}
+
 /// The spans and measurements of the entries after `applied_seq`. Entries at or before it are only
 /// context: they are never turned into a span again.
 #[must_use]
@@ -411,6 +462,9 @@ pub fn derive(facts: &RunFacts, entries: &[JournalEntry], applied_seq: u64) -> D
             "sagat.node".to_owned(),
             AttrValue::from(attempt.node.as_str()),
         ));
+        if let Some(path) = path_attribute(attempt.instance.path()) {
+            attributes.push(("sagat.instance.path".to_owned(), AttrValue::from(path)));
+        }
         attributes.push(("sagat.attempt".to_owned(), AttrValue::from(attempt.attempt)));
         attributes.push((
             "sagat.generation".to_owned(),
@@ -968,6 +1022,7 @@ mod switch_tests {
                 node: node("route"),
                 selection: SwitchSelection::Case(node("priority")),
             },
+            instance_path: InstancePath::root(),
             actor: "Bearer secret-marker".to_owned(),
             occurred_at: facts.created_at + time::Duration::milliseconds(2),
         };
@@ -1016,6 +1071,7 @@ mod switch_tests {
                 node: node("route"),
                 selection: SwitchSelection::Default,
             },
+            instance_path: InstancePath::root(),
             actor: "system:engine".to_owned(),
             occurred_at: facts.created_at,
         };
@@ -1045,6 +1101,7 @@ mod switch_tests {
                     entry: ExecutionInstanceId::root(node("work")),
                     item_digest: Digest::new([1; 32]),
                 },
+                instance_path: InstancePath::root(),
                 actor: "Bearer secret-marker".to_owned(),
                 occurred_at: facts.created_at,
             },
@@ -1055,6 +1112,7 @@ mod switch_tests {
                     input_digest: Digest::new([2; 32]),
                     state_digest: None,
                 },
+                instance_path: InstancePath::root(),
                 actor: "Bearer secret-marker".to_owned(),
                 occurred_at: facts.created_at,
             },

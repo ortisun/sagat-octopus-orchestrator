@@ -5,4 +5,7 @@
 #[path = "../../support/mod.rs"]
 mod support;
 
+mod approvals;
+mod loops;
+mod operations;
 mod switch;

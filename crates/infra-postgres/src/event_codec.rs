@@ -65,6 +65,30 @@ pub(crate) fn encode(event: &RunEvent) -> Encoded {
     let attempt = event.attempt().and_then(|a| i32::try_from(a).ok());
     let detail = match event {
         RunEvent::RunStarted { entrypoint } => json!({ "entrypoint": entrypoint.as_str() }),
+        RunEvent::ExecutionChainStarted {
+            max_segments,
+            original_deadline,
+        } => json!({
+            "max_segments": max_segments,
+            "original_deadline_us": micros(*original_deadline),
+        }),
+        RunEvent::ExecutionChainSuccessorLinked {
+            chain_id,
+            predecessor,
+            segment_index,
+            max_segments,
+            original_deadline,
+            input_digest,
+            state_digest,
+        } => json!({
+            "chain_id": chain_id.to_string(),
+            "predecessor": predecessor.to_string(),
+            "segment_index": segment_index,
+            "max_segments": max_segments,
+            "original_deadline_us": micros(*original_deadline),
+            "input_digest": input_digest.to_hex(),
+            "state_digest": state_digest.as_ref().map(Digest::to_hex),
+        }),
         RunEvent::StepRouted { activated, .. } => json!({ "activated": names(activated) }),
         RunEvent::StepLeased {
             attempt,
@@ -116,6 +140,15 @@ pub(crate) fn encode(event: &RunEvent) -> Encoded {
             "before_revision": before_revision,
             "after_revision": after_revision,
             "state_digest": state_digest.to_hex(),
+        }),
+        RunEvent::RunContinued {
+            successor,
+            input_digest,
+            state_digest,
+        } => json!({
+            "successor": successor.to_string(),
+            "input_digest": input_digest.to_hex(),
+            "state_digest": state_digest.as_ref().map(Digest::to_hex),
         }),
         RunEvent::TimerStarted { due_at, .. } => json!({ "due_at_us": micros(*due_at) }),
         RunEvent::WaitStarted {
@@ -400,6 +433,23 @@ pub(crate) fn decode(event_type: &str, node: Option<&str>, detail: &Value) -> Op
     Some(match event_type {
         "run.started" => RunEvent::RunStarted {
             entrypoint: NodeId::parse(text(d, "entrypoint")?).ok()?,
+        },
+        "execution_chain.started" => RunEvent::ExecutionChainStarted {
+            max_segments: u16::try_from(number(d, "max_segments")?).ok()?,
+            original_deadline: time_of(d, "original_deadline_us")?,
+        },
+        "execution_chain.successor_linked" => RunEvent::ExecutionChainSuccessorLinked {
+            chain_id: text(d, "chain_id")?.parse::<RunId>().ok()?,
+            predecessor: text(d, "predecessor")?.parse::<RunId>().ok()?,
+            segment_index: u16::try_from(number(d, "segment_index")?).ok()?,
+            max_segments: u16::try_from(number(d, "max_segments")?).ok()?,
+            original_deadline: time_of(d, "original_deadline_us")?,
+            input_digest: Digest::from_hex(text(d, "input_digest")?)?,
+            state_digest: match d.get("state_digest")? {
+                Value::Null => None,
+                Value::String(value) => Some(Digest::from_hex(value)?),
+                _ => return None,
+            },
         },
         "step.routed" => RunEvent::StepRouted {
             node: node_id()?,
@@ -778,6 +828,15 @@ pub(crate) fn decode(event_type: &str, node: Option<&str>, detail: &Value) -> Op
                 _ => return None,
             },
         },
+        "run.continued" => RunEvent::RunContinued {
+            successor: text(d, "successor")?.parse::<RunId>().ok()?,
+            input_digest: Digest::from_hex(text(d, "input_digest")?)?,
+            state_digest: match d.get("state_digest")? {
+                Value::Null => None,
+                Value::String(value) => Some(Digest::from_hex(value)?),
+                _ => return None,
+            },
+        },
         "run.finished" => RunEvent::RunFinished {
             status: text(d, "status")?.parse::<RunStatus>().ok()?,
         },
@@ -1066,6 +1125,61 @@ mod tests {
                     "before_revision": 8,
                     "after_revision": 10,
                     "state_digest": Digest::new([23; 32]).to_hex(),
+                }),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn execution_chain_events_are_exact_codec_inverses() {
+        let chain = sagat_domain::execution::RunId::generate();
+        let predecessor = sagat_domain::execution::RunId::generate();
+        let successor = sagat_domain::execution::RunId::generate();
+        let deadline = time::OffsetDateTime::UNIX_EPOCH + time::Duration::hours(1);
+        let input = Digest::new([31; 32]);
+        let state = Digest::new([32; 32]);
+        let events = [
+            RunEvent::ExecutionChainStarted {
+                max_segments: 8,
+                original_deadline: deadline,
+            },
+            RunEvent::ExecutionChainSuccessorLinked {
+                chain_id: chain,
+                predecessor,
+                segment_index: 4,
+                max_segments: 8,
+                original_deadline: deadline,
+                input_digest: input,
+                state_digest: Some(state),
+            },
+            RunEvent::RunContinued {
+                successor,
+                input_digest: input,
+                state_digest: Some(state),
+            },
+            RunEvent::RunContinued {
+                successor,
+                input_digest: input,
+                state_digest: None,
+            },
+        ];
+        for event in events {
+            let encoded = encode(&event);
+            assert_eq!(
+                decode(encoded.event_type, encoded.node.as_deref(), &encoded.detail),
+                Some(event)
+            );
+        }
+        assert!(decode("execution_chain.started", None, &json!({})).is_none());
+        assert!(
+            decode(
+                "run.continued",
+                None,
+                &json!({
+                    "successor": successor.to_string(),
+                    "input_digest": "not-a-digest",
+                    "state_digest": null,
                 }),
             )
             .is_none()

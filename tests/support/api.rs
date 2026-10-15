@@ -10,7 +10,8 @@ use reqwest::{Client, Method, RequestBuilder, Response};
 use sagat_api_grpc::{BlobTransfer, GrpcConfig, WorkerGrpc, serve as serve_grpc, worker_service};
 use sagat_api_http::{
     AppState, AuthConfig, ExecState, GovState, HttpJwksFetcher, HttpLimits, RateLimitConfig,
-    ServerConfig, TokenVerifier, auth::install_crypto_provider, router_with_governance,
+    ServerConfig, TokenVerifier, auth::install_crypto_provider,
+    router_with_governance_and_approvals,
 };
 use sagat_application::bindings::BindingService;
 use sagat_application::blobs::{BlobBackend, BlobLimits, BlobService};
@@ -36,9 +37,14 @@ use sagat_domain::identity::{
     Membership, Namespace, NamespaceId, Slug, Subject, Tenant, TenantId, Workspace, WorkspaceId,
 };
 use sagat_infra_blobstore::{BlobStoreConfig, PartSize, build_backend};
-use sagat_infra_ir::{JsonEvaluator, JsonIrCodec, JsonPayloadProjector};
+use sagat_infra_ir::{
+    JsonDeclaredOperationEvaluator, JsonEvaluator, JsonIrCodec, JsonPayloadProjector,
+};
 use sagat_infra_postgres::PgBlobCatalog;
-use sagat_infra_postgres::{PgIdentityStore, PgPool, PgRunStore, PoolConfig, connect};
+use sagat_infra_postgres::{
+    PgApprovalProgressStore, PgDeclaredOperationStore, PgIdentityStore, PgPool, PgRunStore,
+    PoolConfig, connect,
+};
 use serde_json::{Value, json};
 
 use super::oidc::{AUDIENCE, ISSUER, TestIdp};
@@ -52,6 +58,7 @@ pub struct TestApi {
     pub store: PgIdentityStore,
     /// Provisioning handle that always runs as the database owner (the API may not be allowed to).
     pub owner_store: PgIdentityStore,
+    pub execution_store: PgRunStore,
     /// The pool the API itself uses (`db.pool` is the tests' own administrative handle).
     pub api_pool: PgPool,
     /// The run store the API (and the gRPC worker service) use.
@@ -463,7 +470,17 @@ pub async fn start_with(options: Options) -> TestApi {
         )
         .await;
     });
-    let mut app = router_with_governance(exec, governance, options.limits);
+    let mut app = router_with_governance_and_approvals(
+        exec,
+        governance,
+        sagat_application::api_admission::ApiAdmissionService::new(executions.clone(), SystemClock),
+        PgApprovalProgressStore::new(api_pool.clone()),
+        sagat_application::api_admission::ApiAdmissionService::new(executions.clone(), SystemClock),
+        PgDeclaredOperationStore::new(api_pool.clone()),
+        JsonDeclaredOperationEvaluator,
+        SystemClock,
+        options.limits,
+    );
     if let Some(studio) = options.studio {
         app = app.merge(sagat_api_http::studio::studio_router(studio).expect("a Studio build"));
     }
@@ -502,6 +519,7 @@ pub async fn start_with(options: Options) -> TestApi {
         db,
         store,
         owner_store,
+        execution_store: executions.clone(),
         api_pool,
         executions,
         grpc_url: format!("http://{grpc_addr}"),

@@ -10,6 +10,7 @@ mod api_admission;
 mod approval_progress;
 mod bindings;
 mod breaker;
+mod chain_progress;
 mod connectors;
 mod content_usage;
 mod declared_operations;
@@ -38,6 +39,7 @@ mod versioning;
 mod workers;
 
 pub use approval_progress::PgApprovalProgressStore;
+pub use chain_progress::{PgChainProgressStore, initialize_chain_in_transaction};
 pub use declared_operations::PgDeclaredOperationStore;
 pub use definitions::PgDefinitionStore;
 pub use execution::{PgRunStore, PgRunTx};

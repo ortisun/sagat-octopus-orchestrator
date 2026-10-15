@@ -463,6 +463,20 @@ pub fn runtime_graph(graph: &GraphSnapshot) -> Value {
         "projectionLagMs": 0,
         "nodes": runtime_nodes(graph, |_| true),
         "edges": runtime_edges(graph),
+        "chain": graph.chain.as_ref().map(chain_body),
+    })
+}
+
+fn chain_body(chain: &sagat_application::runs::ChainView) -> Value {
+    json!({
+        "chainId": chain.chain_id.to_string(),
+        "segmentIndex": chain.segment_index,
+        "segmentCount": chain.segment_count,
+        "currentRunId": chain.current_run_id.to_string(),
+        "predecessorRunId": chain.predecessor_run_id.map(|run| run.to_string()),
+        "successorRunId": chain.successor_run_id.map(|run| run.to_string()),
+        "completionKind": chain.completion_kind,
+        "finalOutcome": chain.final_outcome,
     })
 }
 
@@ -737,6 +751,7 @@ pub fn graph_changes_body(changes: &GraphChanges) -> Value {
             "attempt": e.attempt,
         })).collect::<Vec<_>>(),
         "nodes": nodes,
+        "chain": graph.chain.as_ref().map(chain_body),
     });
     if reset {
         body["edges"] = Value::Array(runtime_edges(graph));
@@ -945,8 +960,23 @@ mod switch_graph_tests {
                 step(1),
             ],
             sagas: Vec::new(),
+            chain: Some(sagat_application::runs::ChainView {
+                chain_id: run_id,
+                segment_index: 1,
+                segment_count: 2,
+                current_run_id: run_id,
+                predecessor_run_id: Some(RunId::new(uuid::Uuid::from_u128(6))),
+                successor_run_id: None,
+                completion_kind: None,
+                final_outcome: None,
+            }),
         };
         let body = runtime_graph(&graph);
+        assert_eq!(body["chain"]["segmentIndex"], 1);
+        assert_eq!(
+            body["chain"]["predecessorRunId"],
+            uuid::Uuid::from_u128(6).to_string()
+        );
         let nodes = body["nodes"].as_array().unwrap();
         assert!(nodes.iter().any(|node| {
             node["id"] == "items[0]/return" && node["instancePath"][0]["iterationIndex"] == 0
@@ -978,6 +1008,7 @@ mod switch_graph_tests {
         assert_eq!(changes["reset"], true);
         assert_eq!(changes["fromSeq"], 0);
         assert_eq!(changes["nodes"].as_array().unwrap().len(), nodes.len());
+        assert_eq!(changes["chain"], body["chain"]);
     }
 
     #[test]

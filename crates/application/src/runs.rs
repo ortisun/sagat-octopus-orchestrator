@@ -121,6 +121,20 @@ pub struct GraphSnapshot {
     pub definition: Arc<WorkflowDefinition>,
     pub steps: Vec<StepView>,
     pub sagas: Vec<SagaView>,
+    pub chain: Option<ChainView>,
+}
+
+/// The durable chain links visible for this run at the graph snapshot's revision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChainView {
+    pub chain_id: RunId,
+    pub segment_index: u32,
+    pub segment_count: u32,
+    pub current_run_id: RunId,
+    pub predecessor_run_id: Option<RunId>,
+    pub successor_run_id: Option<RunId>,
+    pub completion_kind: Option<String>,
+    pub final_outcome: Option<String>,
 }
 
 /// Most journal events a [`GraphChanges`] carries; a client further behind than this is given the
@@ -407,6 +421,22 @@ where
     #[must_use]
     pub fn input_blobs(&self) -> Option<&crate::blobs::BlobService> {
         self.input_blobs.as_ref().map(|(service, _)| service)
+    }
+
+    /// Builds the chain command facade from the same store, clock and engine semantics.
+    #[must_use]
+    pub fn chain_commands(&self) -> crate::chain_progress::ChainCommandService<S, C, E>
+    where
+        S: Clone + crate::chain_progress::ChainCommandStore,
+        <S as RunStore>::Tx: crate::chain_progress::ChainRunTx,
+        C: Clone,
+        E: Clone,
+    {
+        crate::chain_progress::ChainCommandService::new(
+            self.store.clone(),
+            self.clock.clone(),
+            self.engine.clone(),
+        )
     }
 
     /// Authorizes the namespace of a pre-run upload before its stream is read.
@@ -701,6 +731,14 @@ where
             ),
         };
         let limits = RunLimits::of(&self.store, principal.tenant_id(), namespace.id()).await?;
+        self.cache
+            .initial_declared_state(&version.document, &input)
+            .map_err(|error| {
+                tracing::debug!(%error, version = %version.version.id(), "declared initial state rejected the run input");
+                AppError::NotAllowed(
+                    "the run input does not produce a valid declared initial state",
+                )
+            })?;
         let new = NewRun {
             limits,
             info,
@@ -1043,6 +1081,9 @@ where
             .with_reason(reason.chars().take(512).collect::<String>()),
         );
         effects.idempotency = Some((idempotency, operation.name().to_owned()));
+        if operation == RunOperation::Cancel {
+            tx.latch_chain_cancel().await?;
+        }
         self.engine
             .run(&mut tx, effects, |def, state, now| {
                 let progress = match operation {

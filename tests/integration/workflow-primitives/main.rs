@@ -7,12 +7,17 @@
 mod support;
 
 mod approval_progress;
+mod approvals_http;
+mod chain_progress;
 mod chain_storage;
+mod chains_http;
 mod collection_restore;
 mod identity_storage;
 mod journal_identity;
 mod loop_progress;
 mod operations;
+mod operations_http;
 mod primitive_transactions;
+mod scoped_worker;
 mod security;
 mod switch_storage;

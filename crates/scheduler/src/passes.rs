@@ -14,14 +14,21 @@ use sagat_application::execution::{
 use sagat_application::maintenance::{
     EndedChild, LeaseLoss, MaintenanceStore, PendingChild, RunRef, StepRef, Window,
 };
+use sagat_application::primitives::{
+    CollectionAdmission, CollectionCheckpoint, CollectionEntry, CollectionFinish, CollectionLimits,
+    CollectionScopeId, CollectionStore, CollectionTransition, PrimitiveInputError,
+    PrimitiveStoreError, SchedulerAuthority,
+};
 use sagat_application::quotas::RunLimits;
 use sagat_application::runs::{Lock, NewRun, RunStore};
 use sagat_application::shards::Lease;
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::execution::RunId;
 use sagat_domain::execution::{
-    self, ChildOutcome, ExecutionError, Expiry, FailureCode, Progress, RunStatus, StopReason,
+    self, AddressedProgress, ChildOutcome, ExecutionError, ExecutionInstanceId, Expiry,
+    FailureCode, Progress, RunStatus, StopReason,
 };
+use sagat_domain::identity::Subject;
 use sagat_domain::identity::TenantId;
 use sagat_domain::sharding::{Shard, ShardSet};
 use sagat_domain::workflow::{NodeKind, WorkflowDefinition};
@@ -100,6 +107,38 @@ pub struct Report {
     pub fenced: u32,
 }
 
+/// One durable collection transition committed by an explicitly fenced scheduler invocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CollectionAdvance {
+    Entered,
+    Admitted { index: u32 },
+    Checkpointed { index: u32 },
+    Finished,
+    Waiting,
+    AlreadyFinished,
+}
+
+/// A collection could not advance without weakening its durable invariants.
+#[derive(Debug, thiserror::Error)]
+pub enum CollectionAdvanceError {
+    #[error("the run does not exist")]
+    MissingRun,
+    #[error("the scheduler does not hold the run shard")]
+    FenceUnavailable,
+    #[error("the logical instance is not a collection")]
+    NotCollection,
+    #[error("durable collection progress does not match the run projection")]
+    InvalidProgress,
+    #[error(transparent)]
+    Store(#[from] StoreError),
+    #[error(transparent)]
+    Primitive(#[from] PrimitiveStoreError),
+    #[error(transparent)]
+    Input(#[from] PrimitiveInputError),
+    #[error("collection expression evaluation failed")]
+    Expression,
+}
+
 impl Report {
     /// Whether anything at all changed.
     #[must_use]
@@ -125,7 +164,7 @@ enum Condition<'a> {
     /// The attempt on `node` is still over: its lease expired (or its own deadline passed) *now*, by
     /// the database clock, not merely when the candidate query ran.
     LeaseLost {
-        node: &'a sagat_domain::workflow::NodeId,
+        instance: &'a ExecutionInstanceId,
         cause: LeaseLoss,
     },
 }
@@ -134,10 +173,10 @@ impl Condition<'_> {
     async fn holds<Tx: RunTx>(&self, tx: &mut Tx) -> Result<bool, StoreError> {
         match self {
             Self::Always => Ok(true),
-            Self::LeaseLost { node, cause } => {
+            Self::LeaseLost { instance, cause } => {
                 let now = tx.now();
                 Ok(tx
-                    .lease_deadlines(node)
+                    .lease_deadlines_instance(instance)
                     .await?
                     .is_some_and(|d| match cause {
                         LeaseLoss::Expired => d.expires_at <= now,
@@ -338,6 +377,270 @@ where
         report
     }
 
+    /// Advances one collection by one durable transition under the scheduler's current shard
+    /// lease. Callers repeat this after each commit; worker completions may interleave safely.
+    ///
+    /// # Errors
+    /// Returns an error when ownership, projection data, the definition or an expression cannot be
+    /// proven consistent. This method is intentionally not part of [`Self::tick`] yet.
+    pub async fn advance_collection(
+        &self,
+        tenant: TenantId,
+        run: RunId,
+        owner: &ExecutionInstanceId,
+    ) -> Result<CollectionAdvance, CollectionAdvanceError>
+    where
+        S: CollectionStore,
+    {
+        let view = self.view();
+        let lease = match view.hold_for(run) {
+            Hold::Lease(lease) => lease,
+            Hold::Nothing | Hold::Lost => return Err(CollectionAdvanceError::FenceUnavailable),
+        };
+        let mut tx = self
+            .store
+            .begin(tenant, run, Lock::Wait)
+            .await?
+            .ok_or(CollectionAdvanceError::MissingRun)?;
+        let info = tx.info().clone();
+        let occurred_at = tx.now();
+        let data = tx.data().await?.clone();
+        let (definition, state) = tx.parts();
+        let definition = definition.clone();
+        let state = state.clone();
+        drop(tx);
+
+        let collection_node = definition
+            .node_for_instance(owner)
+            .ok_or(CollectionAdvanceError::NotCollection)?;
+        let NodeKind::ForEach {
+            items,
+            body,
+            result,
+            max_items,
+            max_concurrency,
+        } = collection_node.kind()
+        else {
+            return Err(CollectionAdvanceError::NotCollection);
+        };
+        let body = definition
+            .body(body)
+            .ok_or(CollectionAdvanceError::NotCollection)?;
+        let authority = SchedulerAuthority::new(view.owner, lease);
+        let transition = |expected_run_version| {
+            CollectionTransition::new(
+                tenant,
+                info.namespace_id,
+                run,
+                expected_run_version,
+                owner.clone(),
+                authority.clone(),
+                Subject::engine(),
+                info.trace_id.clone(),
+                occurred_at,
+                None,
+            )
+        };
+
+        let Some(collection) = state.collection(owner) else {
+            let item_values = self
+                .engine
+                .evaluator()
+                .collection_items(items, &data)
+                .map_err(|_| CollectionAdvanceError::Expression)?;
+            let json_items = item_values
+                .iter()
+                .map(|item| serde_json::from_slice::<serde_json::Value>(item))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| CollectionAdvanceError::Expression)?;
+            let snapshot =
+                serde_json::to_vec(&json_items).map_err(|_| CollectionAdvanceError::Expression)?;
+            let snapshot_digest = self
+                .store
+                .retain_collection_payload(tenant, &snapshot)
+                .await?;
+            let limits = CollectionLimits::new(
+                *max_items,
+                *max_concurrency,
+                definition.limits().max_instances(),
+                definition.limits().max_depth(),
+            )?;
+            self.store
+                .enter_collection(&CollectionEntry::new(
+                    transition(state.version()),
+                    CollectionScopeId::generate(),
+                    u32::try_from(item_values.len())
+                        .map_err(|_| CollectionAdvanceError::InvalidProgress)?,
+                    snapshot_digest,
+                    limits,
+                )?)
+                .await?;
+            return Ok(CollectionAdvance::Entered);
+        };
+
+        if collection.phase() == execution::CollectionPhase::Succeeded {
+            return Ok(CollectionAdvance::AlreadyFinished);
+        }
+        if collection.phase() != execution::CollectionPhase::Open {
+            return Err(CollectionAdvanceError::InvalidProgress);
+        }
+        let progress = self
+            .store
+            .collection_progress(tenant, run, owner)
+            .await?
+            .ok_or(CollectionAdvanceError::InvalidProgress)?;
+        if progress.items.len()
+            != usize::try_from(collection.item_count())
+                .map_err(|_| CollectionAdvanceError::InvalidProgress)?
+        {
+            return Err(CollectionAdvanceError::InvalidProgress);
+        }
+
+        for index in 0..collection.next_admission() {
+            let entry = collection
+                .entry_instance(index)
+                .ok_or(CollectionAdvanceError::InvalidProgress)?;
+            let path = entry.path();
+            let pending_return = state.instances().find_map(|(instance, step)| {
+                (instance.path() == path
+                    && step.status() == execution::StepStatus::Pending
+                    && matches!(
+                        definition
+                            .node_for_instance(instance)
+                            .map(|node| node.kind()),
+                        Some(NodeKind::Return { .. })
+                    ))
+                .then_some(instance)
+            });
+            let Some(return_instance) = pending_return else {
+                continue;
+            };
+            let NodeKind::Return {
+                result: return_expression,
+            } = definition
+                .node_for_instance(return_instance)
+                .ok_or(CollectionAdvanceError::InvalidProgress)?
+                .kind()
+            else {
+                return Err(CollectionAdvanceError::InvalidProgress);
+            };
+            let returned = self
+                .engine
+                .evaluator()
+                .collection_return(return_expression, &data, return_instance)
+                .map_err(|_| CollectionAdvanceError::Expression)?;
+            let result_digest = self
+                .store
+                .retain_collection_payload(tenant, &returned)
+                .await?;
+            self.store
+                .checkpoint_collection_iteration(&CollectionCheckpoint::new(
+                    transition(state.version()),
+                    progress.scope_id,
+                    index,
+                    return_instance.clone(),
+                    result_digest,
+                    uuid::Uuid::now_v7(),
+                )?)
+                .await?;
+            return Ok(CollectionAdvance::Checkpointed { index });
+        }
+
+        if collection.next_admission() < collection.item_count()
+            && collection.active_count() < usize::from(collection.max_concurrency())
+        {
+            if body.all_nodes().count() != body.nodes().count() {
+                return Err(CollectionAdvanceError::InvalidProgress);
+            }
+            let index = collection.next_admission();
+            let entry = ExecutionInstanceId::in_path(
+                owner
+                    .path()
+                    .child(owner.node().clone(), index)
+                    .map_err(|_| CollectionAdvanceError::InvalidProgress)?,
+                body.entrypoint().clone(),
+            );
+            let NodeKind::Activity { activity, .. } = body
+                .node(body.entrypoint())
+                .ok_or(CollectionAdvanceError::InvalidProgress)?
+                .kind()
+            else {
+                return Err(CollectionAdvanceError::InvalidProgress);
+            };
+            let reserved_instances = u16::try_from(body.nodes().count().saturating_sub(1))
+                .map_err(|_| CollectionAdvanceError::InvalidProgress)?;
+            let item = progress
+                .items
+                .get(usize::try_from(index).map_err(|_| CollectionAdvanceError::InvalidProgress)?)
+                .ok_or(CollectionAdvanceError::InvalidProgress)?;
+            let item_digest = self.store.retain_collection_payload(tenant, item).await?;
+            self.store
+                .admit_collection_activity(&CollectionAdmission::new(
+                    transition(state.version()),
+                    progress.scope_id,
+                    index,
+                    entry,
+                    activity.clone(),
+                    item_digest,
+                    reserved_instances,
+                    uuid::Uuid::now_v7(),
+                )?)
+                .await?;
+            return Ok(CollectionAdvance::Admitted { index });
+        }
+
+        if collection.next_admission() == collection.item_count() && collection.active_count() == 0
+        {
+            let mut mapped = Vec::with_capacity(progress.results.len());
+            for (index, return_ref) in collection.ordered_results() {
+                let (stored_index, body_result) = progress
+                    .results
+                    .get(mapped.len())
+                    .ok_or(CollectionAdvanceError::InvalidProgress)?;
+                if *stored_index != index {
+                    return Err(CollectionAdvanceError::InvalidProgress);
+                }
+                let value = self
+                    .engine
+                    .evaluator()
+                    .collection_member_result(
+                        result,
+                        &data,
+                        return_ref.return_instance(),
+                        body_result,
+                    )
+                    .map_err(|_| CollectionAdvanceError::Expression)?;
+                mapped.push(
+                    serde_json::from_slice::<serde_json::Value>(&value)
+                        .map_err(|_| CollectionAdvanceError::Expression)?,
+                );
+            }
+            if mapped.len()
+                != usize::try_from(collection.item_count())
+                    .map_err(|_| CollectionAdvanceError::InvalidProgress)?
+            {
+                return Err(CollectionAdvanceError::InvalidProgress);
+            }
+            let aggregate =
+                serde_json::to_vec(&mapped).map_err(|_| CollectionAdvanceError::Expression)?;
+            let result_digest = self
+                .store
+                .retain_collection_payload(tenant, &aggregate)
+                .await?;
+            self.store
+                .finish_collection(&CollectionFinish::new(
+                    transition(state.version()),
+                    progress.scope_id,
+                    result_digest,
+                    uuid::Uuid::now_v7(),
+                ))
+                .await?;
+            return Ok(CollectionAdvance::Finished);
+        }
+
+        Ok(CollectionAdvance::Waiting)
+    }
+
     /// Purges expired idempotency records and worker sessions. Run it rarely.
     pub async fn housekeeping(&self) {
         match self
@@ -524,6 +827,121 @@ where
         outcome
     }
 
+    async fn apply_addressed_if<F>(
+        &self,
+        view: &View,
+        RunRef {
+            tenant_id: tenant,
+            run_id: run,
+        }: RunRef,
+        kind: &'static str,
+        condition: Condition<'_>,
+        effects: Effects,
+        command: F,
+    ) -> Outcome
+    where
+        F: FnOnce(
+            &sagat_domain::workflow::WorkflowDefinition,
+            &mut sagat_domain::execution::RunState,
+            OffsetDateTime,
+        ) -> Result<((), AddressedProgress), ExecutionError>,
+    {
+        let hold = view.hold_for(run);
+        let outcome = async {
+            if matches!(hold, Hold::Lost) {
+                return Ok(Outcome::Fenced);
+            }
+            let Some(mut tx) = self
+                .store
+                .begin(tenant, run, Lock::Wait)
+                .await
+                .map_err(EngineError::Store)?
+            else {
+                return Ok(Outcome::Skipped);
+            };
+            let trace = tx.info().trace_id.clone();
+            let span = tracing::info_span!(
+                "scheduler.action",
+                kind,
+                run_id = %run,
+                tenant_id = %tenant,
+                trace_id = trace.as_deref(),
+                parent_span_id = %sagat_telemetry::run_span_id(run.as_uuid()),
+            );
+            async {
+                if !view
+                    .holds(&mut tx, &hold)
+                    .await
+                    .map_err(EngineError::Store)?
+                {
+                    return Ok(Outcome::Fenced);
+                }
+                if !condition.holds(&mut tx).await.map_err(EngineError::Store)? {
+                    return Ok(Outcome::Skipped);
+                }
+                let version = tx.parts().1.version();
+                match self
+                    .engine
+                    .run_addressed(&mut tx, Vec::new(), effects, command)
+                    .await
+                {
+                    Ok(()) => match tx.commit().await.map_err(EngineError::Store) {
+                        Ok(()) => Ok(Outcome::Done),
+                        Err(error) if content_quota(&error) => {
+                            self.stop_for_storage_quota(
+                                view,
+                                &hold,
+                                RunRef {
+                                    tenant_id: tenant,
+                                    run_id: run,
+                                },
+                                kind,
+                                condition,
+                                version,
+                            )
+                            .await
+                        }
+                        Err(error) => Err(error),
+                    },
+                    Err(EngineError::Execution(error))
+                        if !matches!(error, ExecutionError::Invariant(_)) =>
+                    {
+                        Ok(Outcome::Skipped)
+                    }
+                    Err(error) if content_quota(&error) => {
+                        drop(tx);
+                        self.stop_for_storage_quota(
+                            view,
+                            &hold,
+                            RunRef {
+                                tenant_id: tenant,
+                                run_id: run,
+                            },
+                            kind,
+                            condition,
+                            version,
+                        )
+                        .await
+                    }
+                    Err(other) => Err(other),
+                }
+            }
+            .instrument(span)
+            .await
+        }
+        .await;
+        let outcome = outcome.unwrap_or_else(|error: EngineError| {
+            tracing::error!(%error, %run, kind, "a scheduler action failed");
+            Outcome::Failed
+        });
+        metrics::counter!("scheduler_actions_total", "kind" => kind, "outcome" => outcome.label())
+            .increment(1);
+        if outcome == Outcome::Fenced {
+            metrics::counter!("scheduler_fenced_total", "kind" => kind).increment(1);
+        }
+        outcome
+    }
+
     async fn stop_for_storage_quota(
         &self,
         view: &View,
@@ -587,6 +1005,36 @@ where
         ) -> Result<((), Progress), ExecutionError>,
     {
         self.apply_if(
+            view,
+            RunRef {
+                tenant_id: tenant,
+                run_id: run,
+            },
+            kind,
+            Condition::Always,
+            effects,
+            command,
+        )
+        .await
+    }
+
+    async fn apply_addressed<F>(
+        &self,
+        view: &View,
+        tenant: TenantId,
+        run: RunId,
+        kind: &'static str,
+        effects: Effects,
+        command: F,
+    ) -> Outcome
+    where
+        F: FnOnce(
+            &sagat_domain::workflow::WorkflowDefinition,
+            &mut sagat_domain::execution::RunState,
+            OffsetDateTime,
+        ) -> Result<((), AddressedProgress), ExecutionError>,
+    {
+        self.apply_addressed_if(
             view,
             RunRef {
                 tenant_id: tenant,
@@ -724,6 +1172,7 @@ where
                      tenant_id,
                      run_id,
                      node,
+                     ..
                  }| {
                     self.apply(
                         view,
@@ -761,6 +1210,7 @@ where
                      tenant_id,
                      run_id,
                      node,
+                     ..
                  }| {
                     self.apply(
                         view,
@@ -787,7 +1237,7 @@ where
                 "retries",
                 report,
                 |s: &StepRef| s.tenant_id,
-                |s| (s.run_id, s.node.clone()),
+                |s| (s.run_id, s.instance()),
                 |store, window| async move { store.due_retries(&window).await },
             )
             .await;
@@ -798,17 +1248,42 @@ where
                      tenant_id,
                      run_id,
                      node,
+                     instance_path,
                  }| {
-                    self.apply(
-                        view,
-                        tenant_id,
-                        run_id,
-                        "retry",
-                        self.effects(),
-                        move |def, state, now| {
-                            Ok(((), execution::retry_due(def, state, &node, now)?))
-                        },
-                    )
+                    async move {
+                        let instance = ExecutionInstanceId::in_path(instance_path, node);
+                        if instance.path().is_root() {
+                            self.apply(
+                                view,
+                                tenant_id,
+                                run_id,
+                                "retry",
+                                self.effects(),
+                                move |def, state, now| {
+                                    Ok((
+                                        (),
+                                        execution::retry_due(def, state, instance.node(), now)?,
+                                    ))
+                                },
+                            )
+                            .await
+                        } else {
+                            self.apply_addressed(
+                                view,
+                                tenant_id,
+                                run_id,
+                                "retry",
+                                self.effects(),
+                                move |def, state, now| {
+                                    Ok((
+                                        (),
+                                        execution::retry_due_instance(def, state, &instance, now)?,
+                                    ))
+                                },
+                            )
+                            .await
+                        }
+                    }
                 },
             )
             .await;
@@ -824,7 +1299,7 @@ where
                 "leases",
                 report,
                 |l: &sagat_application::maintenance::LostLease| l.step.tenant_id,
-                |l| (l.step.run_id, l.step.node.clone()),
+                |l| (l.step.run_id, l.step.instance()),
                 |store, window| async move { store.lost_leases(&window).await },
             )
             .await;
@@ -835,29 +1310,64 @@ where
                     LeaseLoss::Expired => Expiry::LeaseExpired,
                     LeaseLoss::TimedOut => Expiry::AttemptTimeout,
                 };
-                let (node, fence) = (lost.step.node.clone(), lost.fence);
-                self.apply_if(
-                    view,
-                    RunRef {
-                        tenant_id: lost.step.tenant_id,
-                        run_id: lost.step.run_id,
-                    },
-                    "lease",
-                    Condition::LeaseLost {
-                        node: &lost.step.node,
-                        cause: lost.cause,
-                    },
-                    self.effects(),
-                    move |def, state, now| {
-                        Ok((
-                            (),
-                            execution::expire_attempt(
-                                def, state, &node, fence, cause, jitter, now,
-                            )?,
-                        ))
-                    },
-                )
-                .await
+                let fence = lost.fence;
+                let instance = lost.step.instance();
+                let command_instance = instance.clone();
+                let run = RunRef {
+                    tenant_id: lost.step.tenant_id,
+                    run_id: lost.step.run_id,
+                };
+                let condition = Condition::LeaseLost {
+                    instance: &instance,
+                    cause: lost.cause,
+                };
+                if instance.path().is_root() {
+                    self.apply_if(
+                        view,
+                        run,
+                        "lease",
+                        condition,
+                        self.effects(),
+                        move |def, state, now| {
+                            Ok((
+                                (),
+                                execution::expire_attempt(
+                                    def,
+                                    state,
+                                    command_instance.node(),
+                                    fence,
+                                    cause,
+                                    jitter,
+                                    now,
+                                )?,
+                            ))
+                        },
+                    )
+                    .await
+                } else {
+                    self.apply_addressed_if(
+                        view,
+                        run,
+                        "lease",
+                        condition,
+                        self.effects(),
+                        move |def, state, now| {
+                            Ok((
+                                (),
+                                execution::expire_instance(
+                                    def,
+                                    state,
+                                    &command_instance,
+                                    fence,
+                                    cause,
+                                    jitter,
+                                    now,
+                                )?,
+                            ))
+                        },
+                    )
+                    .await
+                }
             })
             .await;
         for outcome in outcomes {
@@ -906,7 +1416,7 @@ where
                 "hints",
                 report,
                 |s: &StepRef| s.tenant_id,
-                |s| (s.run_id, s.node.clone()),
+                |s| (s.run_id, s.instance()),
                 |store, window| async move { store.stale_hints(older_than, &window).await },
             )
             .await;
@@ -917,18 +1427,34 @@ where
                      tenant_id,
                      run_id,
                      node,
-                 }| {
+                     instance_path,
+                 }| async move {
                     let mut effects = self.effects();
-                    effects.rehint = vec![node];
-                    self.apply(view, tenant_id, run_id, "rehint", effects, |_, _, _| {
-                        Ok((
-                            (),
-                            Progress {
-                                events: Vec::new(),
-                                pending: None,
-                            },
-                        ))
-                    })
+                    if instance_path.is_root() {
+                        effects.rehint = vec![node];
+                        self.apply(view, tenant_id, run_id, "rehint", effects, |_, _, _| {
+                            Ok((
+                                (),
+                                Progress {
+                                    events: Vec::new(),
+                                    pending: None,
+                                },
+                            ))
+                        })
+                        .await
+                    } else {
+                        effects.rehint_instances =
+                            vec![ExecutionInstanceId::in_path(instance_path, node)];
+                        self.apply_addressed(
+                            view,
+                            tenant_id,
+                            run_id,
+                            "rehint",
+                            effects,
+                            |_, _, _| Ok(((), AddressedProgress { events: Vec::new() })),
+                        )
+                        .await
+                    }
                 },
             )
             .await;

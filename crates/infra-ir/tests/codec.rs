@@ -45,7 +45,7 @@ fn issues_of(doc: &Value) -> Vec<(String, String)> {
 }
 
 #[test]
-fn additive_declarations_remain_unpublishable_until_the_runtime_supports_them() {
+fn unsupported_additive_declarations_remain_unpublishable() {
     let mut document = minimal(json!([{"id": "done", "type": "end"}]), "done");
     document["limits"] = json!({"maxInstances": 100, "maxDepth": 2});
     assert!(matches!(
@@ -58,10 +58,7 @@ fn additive_declarations_remain_unpublishable_until_the_runtime_supports_them() 
 
     document.as_object_mut().expect("document").remove("limits");
     document["state"] = json!({"schema": {"type": "integer"}, "initial": "0"});
-    assert!(matches!(
-        parse(&document),
-        Err(IrError::UnsupportedDeclaration { field: "state", .. })
-    ));
+    parse(&document).expect("basic declared state is supported");
     document.as_object_mut().expect("document").remove("state");
     document["chainPolicy"] = json!({"maxSegments": 2, "timeoutMs": 1_000});
     assert!(matches!(

@@ -27,6 +27,10 @@ pub enum AuditAction {
     /// An immutable version was published (or an identical one was found to exist).
     WorkflowPublished,
     RunStarted,
+    /// A quiescent run segment closed and atomically handed off to its successor.
+    RunContinued,
+    /// A scheduler committed the terminal outcome of a run and its execution chain.
+    RunFinished,
     RunCancelRequested,
     RunPaused,
     RunResumed,
@@ -223,6 +227,8 @@ impl AuditAction {
             Self::WorkflowDraftUpdated => "workflow.draft_updated",
             Self::WorkflowPublished => "workflow.published",
             Self::RunStarted => "run.started",
+            Self::RunContinued => "run.continued",
+            Self::RunFinished => "run.finished",
             Self::RunCancelRequested => "run.cancel_requested",
             Self::RunPaused => "run.paused",
             Self::RunResumed => "run.resumed",

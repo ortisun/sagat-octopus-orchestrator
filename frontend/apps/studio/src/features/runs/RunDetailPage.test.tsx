@@ -77,6 +77,24 @@ describe('the run page: header', () => {
     expect(screen.getByText('unknown')).toBeInTheDocument();
   });
 
+  it('shows predecessor and current head links for a continued run', async () => {
+    const predecessor = '019b5d6e-0000-7000-8000-0000000000c1';
+    const current = '019b5d6e-0000-7000-8000-0000000000c2';
+    await open({ graph: graphOf([node('work', 'SUCCEEDED')], [], { chain: {
+      chainId: predecessor,
+      segmentIndex: 1,
+      segmentCount: 3,
+      currentRunId: current,
+      predecessorRunId: predecessor,
+      successorRunId: null,
+      completionKind: null,
+      finalOutcome: null,
+    } }) });
+    expect(await screen.findByText('Execution chain · segment 2 of 3')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Previous run' })).toHaveAttribute('href', `/runs/${predecessor}`);
+    expect(screen.getByRole('link', { name: 'Current run' })).toHaveAttribute('href', `/runs/${current}`);
+  });
+
   it('shows a finished run as finished, with how long it took, and does not follow it', async () => {
     const { nodes, edges } = sagaRun();
     const { platform } = await open({ run: runOf({ status: 'SUCCEEDED', finishedAt: at(75) }), graph: graphOf(nodes, edges, { status: 'SUCCEEDED' }) });
@@ -749,7 +767,7 @@ describe('the run page: the details of a step', () => {
     const panel = await screen.findByRole('complementary', { name: `Details of ${id}` });
     expect(within(panel).getByRole('heading', { name: id })).toBeInTheDocument();
     expect(within(within(panel).getByRole('group', { name: 'Selected step' })).getByText(id)).toBeInTheDocument();
-    expect(within(panel).getByText(type)).toBeInTheDocument();
+    expect(within(panel).getByText(`Unsupported node (${type.slice(0, 40)}…)`)).toBeInTheDocument();
     expect(within(panel).getByText(failureCode)).toBeInTheDocument();
     expect(within(panel).getByRole('button', { name: related })).toBeInTheDocument();
   });

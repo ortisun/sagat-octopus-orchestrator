@@ -452,7 +452,7 @@ any
 |---|---|---|---|
 | `initial` | [`expression`](#expression) | yes |  |
 | `queries` | object |  |  |
-| `schema` | object | yes |  |
+| `schema` | [`resultSchema`](#resultSchema) | yes |  |
 | `updates` | object |  |  |
 
 ### subject

@@ -3,9 +3,13 @@
 use std::str::FromStr;
 
 use sagat_application::declared_operations::{
+    CompletedOperationResult, DeclaredOperationDocument, DeclaredOperationSnapshot,
     DeclaredOperationStore, DeclaredOperationStoreError, DeclaredQuery, DeclaredUpdate,
+    DeclaredUpdateDecision, EvaluatedOperationWrite, OperationSnapshotPayload,
+    declared_update_request_hash,
 };
 use sagat_application::error::StoreError;
+use sagat_application::operation_evaluation::DeclaredOperationArguments;
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::execution::{
     DeclaredOperationsState, OperationAddress, OperationError, OperationScope, OperationValue,
@@ -13,7 +17,7 @@ use sagat_domain::execution::{
     UpdateReceiptStatus, UpdateRejection, UpdateResolution,
 };
 use sagat_domain::identity::{NamespaceId, Permission, Role, Subject, TenantId};
-use sagat_domain::workflow::{ActivityName, Digest};
+use sagat_domain::workflow::{ActivityName, Digest, NodeId};
 use serde_json::{Value, json};
 use sqlx::postgres::PgRow;
 use sqlx::{PgPool, Postgres, Transaction};
@@ -39,10 +43,13 @@ struct LockedRun {
     status: RunStatus,
     run_version: u64,
     workflow_version_id: uuid::Uuid,
+    input_digest: Digest,
 }
 
 struct StoredState {
     value: OperationValue,
+    content: Vec<u8>,
+    declaration_digest: Digest,
     result_schema_digest: Digest,
     state_revision: u64,
     last_changed_run_version: u64,
@@ -168,7 +175,7 @@ async fn lock_run(
 ) -> Result<LockedRun, DeclaredOperationStoreError> {
     let row = if exclusive {
         sqlx::query(
-            "SELECT namespace_id, status, run_version, workflow_version_id FROM runs \
+            "SELECT namespace_id, status, run_version, workflow_version_id, input_digest FROM runs \
              WHERE tenant_id = $1 AND id = $2 FOR UPDATE",
         )
         .bind(scope.tenant_id().as_uuid())
@@ -178,7 +185,7 @@ async fn lock_run(
         .map_err(store_error)?
     } else {
         sqlx::query(
-            "SELECT namespace_id, status, run_version, workflow_version_id FROM runs \
+            "SELECT namespace_id, status, run_version, workflow_version_id, input_digest FROM runs \
              WHERE tenant_id = $1 AND id = $2 FOR SHARE",
         )
         .bind(scope.tenant_id().as_uuid())
@@ -200,6 +207,7 @@ async fn lock_run(
         status,
         run_version: stored_u64(&row, "run_version")?,
         workflow_version_id: col(&row, "workflow_version_id")?,
+        input_digest: stored_digest(&row, "input_digest")?,
     })
 }
 
@@ -212,7 +220,8 @@ async fn declared_state(
     kind: &str,
 ) -> Result<StoredState, DeclaredOperationStoreError> {
     let definition = sqlx::query(
-        "SELECT state_schema_digest, result_schema_digest FROM declared_operation_definitions \
+        "SELECT declaration_digest, state_schema_digest, result_schema_digest \
+         FROM declared_operation_definitions \
          WHERE tenant_id = $1 AND namespace_id = $2 AND workflow_version_id = $3 \
            AND operation_kind = $4 AND operation_name = $5 \
            AND disclosure = 'declared-business-result-v1'",
@@ -227,10 +236,12 @@ async fn declared_state(
     .map_err(store_error)?
     .ok_or(DeclaredOperationStoreError::DefinitionUnavailable)?;
     let declared_schema = stored_digest(&definition, "state_schema_digest")?;
+    let declaration_digest = stored_digest(&definition, "declaration_digest")?;
     let result_schema_digest = stored_digest(&definition, "result_schema_digest")?;
     let row = sqlx::query(
         "SELECT s.state_digest, s.state_schema_digest, s.state_size_bytes, s.state_revision, \
-                s.last_changed_run_version, octet_length(p.content) AS retained_state_size \
+                s.last_changed_run_version, p.content AS state_content, \
+                octet_length(p.content) AS retained_state_size \
          FROM workflow_operation_states s \
          JOIN payloads p ON p.tenant_id = s.tenant_id AND p.digest = s.state_digest \
          WHERE s.tenant_id = $1 AND s.namespace_id = $2 AND s.run_id = $3",
@@ -291,10 +302,77 @@ async fn declared_state(
     }
     Ok(StoredState {
         value: OperationValue::new(state_digest, state_schema, size_bytes)?,
+        content: col(&row, "state_content")?,
+        declaration_digest,
         result_schema_digest,
         state_revision,
         last_changed_run_version,
     })
+}
+
+async fn operation_snapshot(
+    tx: &mut Transaction<'_, Postgres>,
+    scope: &OperationScope,
+    run: &LockedRun,
+    resolved_run_id: RunId,
+    snapshot: QuerySnapshot,
+    declaration_digest: Digest,
+    state_content: Vec<u8>,
+) -> Result<DeclaredOperationSnapshot, DeclaredOperationStoreError> {
+    let version = sqlx::query(
+        "SELECT digest, document FROM workflow_versions WHERE tenant_id = $1 AND id = $2",
+    )
+    .bind(scope.tenant_id().as_uuid())
+    .bind(run.workflow_version_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(store_error)?
+    .ok_or(DeclaredOperationStoreError::DefinitionUnavailable)?;
+    let definition_digest = Digest::from_hex(&col::<String>(&version, "digest")?)
+        .ok_or_else(|| corrupt("workflow version digest"))?;
+    let definition = DeclaredOperationDocument::restore(
+        definition_digest,
+        col::<Vec<u8>>(&version, "document")?,
+    )?;
+    let input_content: Vec<u8> =
+        sqlx::query_scalar("SELECT content FROM payloads WHERE tenant_id = $1 AND digest = $2")
+            .bind(scope.tenant_id().as_uuid())
+            .bind(run.input_digest.as_bytes().as_slice())
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(store_error)?
+            .ok_or(DeclaredOperationStoreError::DefinitionUnavailable)?;
+    let workflow_input = OperationSnapshotPayload::restore(run.input_digest, input_content)?;
+    let rows = sqlx::query(
+        "SELECT s.node, s.output_digest, p.content \
+         FROM steps s \
+         JOIN payloads p ON p.tenant_id = s.tenant_id AND p.digest = s.output_digest \
+         WHERE s.tenant_id = $1 AND s.run_id = $2 \
+           AND cardinality(s.instance_path_nodes) = 0 AND s.output_digest IS NOT NULL \
+         ORDER BY s.node",
+    )
+    .bind(scope.tenant_id().as_uuid())
+    .bind(resolved_run_id.as_uuid())
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(store_error)?;
+    let mut completed_results = Vec::with_capacity(rows.len());
+    for row in rows {
+        let node = NodeId::parse_stored(&col::<String>(&row, "node")?)
+            .map_err(|_| corrupt("completed result node"))?;
+        let digest = stored_digest(&row, "output_digest")?;
+        let payload = OperationSnapshotPayload::restore(digest, col(&row, "content")?)?;
+        completed_results.push(CompletedOperationResult::new(node, payload));
+    }
+    DeclaredOperationSnapshot::restore(
+        snapshot,
+        declaration_digest,
+        definition,
+        workflow_input,
+        state_content,
+        completed_results,
+    )
+    .map_err(Into::into)
 }
 
 fn address_parts(scope: &OperationScope) -> (&'static str, uuid::Uuid) {
@@ -443,6 +521,34 @@ async fn ensure_retained_value(
     .await
     .map_err(store_error)?;
     if size.and_then(|size| u32::try_from(size).ok()) != Some(value.size_bytes()) {
+        return Err(OperationError::InvalidStoredOperation.into());
+    }
+    Ok(())
+}
+
+async fn retain_evaluated_write(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant_id: TenantId,
+    write: &EvaluatedOperationWrite,
+) -> Result<(), DeclaredOperationStoreError> {
+    sqlx::query(
+        "INSERT INTO payloads (tenant_id, digest, content) VALUES ($1,$2,$3) \
+         ON CONFLICT (tenant_id, digest) DO NOTHING",
+    )
+    .bind(tenant_id.as_uuid())
+    .bind(write.value().digest().as_bytes().as_slice())
+    .bind(write.content())
+    .execute(&mut **tx)
+    .await
+    .map_err(store_error)?;
+    let retained: Option<Vec<u8>> =
+        sqlx::query_scalar("SELECT content FROM payloads WHERE tenant_id = $1 AND digest = $2")
+            .bind(tenant_id.as_uuid())
+            .bind(write.value().digest().as_bytes().as_slice())
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(store_error)?;
+    if retained.as_deref() != Some(write.content()) {
         return Err(OperationError::InvalidStoredOperation.into());
     }
     Ok(())
@@ -610,7 +716,7 @@ impl DeclaredOperationStore for PgDeclaredOperationStore {
         &self,
         query: &DeclaredQuery,
         audit: &AuditRecord,
-    ) -> Result<QuerySnapshot, DeclaredOperationStoreError> {
+    ) -> Result<DeclaredOperationSnapshot, DeclaredOperationStoreError> {
         check_run_address(query.scope(), query.resolved_run_id())?;
         check_audit(
             audit,
@@ -653,21 +759,48 @@ impl DeclaredOperationStore for PgDeclaredOperationStore {
             [],
         )?;
         let snapshot = state.query_snapshot(query.resolved_run_id(), run.run_version);
+        let snapshot = operation_snapshot(
+            &mut tx,
+            query.scope(),
+            &run,
+            query.resolved_run_id(),
+            snapshot,
+            stored.declaration_digest,
+            stored.content,
+        )
+        .await?;
         let audit = operation_audit(audit, query.operation(), None);
         insert_audit(&mut tx, &audit).await?;
         tx.commit().await.map_err(store_error)?;
         Ok(snapshot)
     }
 
-    async fn apply_update<F>(
+    async fn apply_update<V, F>(
         &self,
         update: &DeclaredUpdate,
+        validate_arguments: V,
         evaluate: F,
     ) -> Result<UpdateResolution, DeclaredOperationStoreError>
     where
-        F: FnOnce(&OperationValue) -> Result<UpdateEvaluation, OperationError> + Send,
+        V: FnOnce(
+                &DeclaredOperationSnapshot,
+                &DeclaredOperationArguments,
+            ) -> Result<(), OperationError>
+            + Send,
+        F: FnOnce(&DeclaredOperationSnapshot) -> Result<DeclaredUpdateDecision, OperationError>
+            + Send,
     {
         let request = update.request();
+        if request.request_hash()
+            != declared_update_request_hash(
+                request.operation(),
+                update.arguments(),
+                request.expected_state_revision(),
+                request.resolved_run_id(),
+            )
+        {
+            return Err(OperationError::InvalidStoredOperation.into());
+        }
         check_run_address(request.scope(), request.resolved_run_id())?;
         check_audit(
             update.audit(),
@@ -686,6 +819,13 @@ impl DeclaredOperationStore for PgDeclaredOperationStore {
         )
         .await?;
         let run = lock_run(&mut tx, request.scope(), request.resolved_run_id(), true).await?;
+        let prior = find_receipt(&mut tx, update).await?;
+        if prior.as_ref().is_some_and(|receipt| {
+            receipt.operation() != request.operation()
+                || receipt.request_hash() != request.request_hash()
+        }) {
+            return Err(OperationError::UpdateKeyReused.into());
+        }
         let stored = declared_state(
             &mut tx,
             request.scope(),
@@ -695,16 +835,21 @@ impl DeclaredOperationStore for PgDeclaredOperationStore {
             "UPDATE",
         )
         .await?;
-        let prior = find_receipt(&mut tx, update).await?;
         let mut state = DeclaredOperationsState::restore(
             stored.value.clone(),
             stored.state_revision,
             stored.last_changed_run_version,
-            prior,
+            prior.clone(),
         )?;
-        let resolution =
-            state.resolve_update_advancing(run.status, request, run.run_version, evaluate)?;
-        if resolution.replayed() {
+        if prior.is_some() {
+            let resolution = state.resolve_update_advancing(
+                run.status,
+                request,
+                run.run_version,
+                |_| -> Result<UpdateEvaluation, OperationError> {
+                    Err(OperationError::InvalidStoredOperation)
+                },
+            )?;
             let audit = operation_audit(
                 update.audit(),
                 request.operation(),
@@ -713,6 +858,32 @@ impl DeclaredOperationStore for PgDeclaredOperationStore {
             insert_audit(&mut tx, &audit).await?;
             tx.commit().await.map_err(store_error)?;
             return Ok(resolution);
+        }
+        if !matches!(run.status, RunStatus::Running | RunStatus::Waiting) {
+            return Err(OperationError::RunNotMutable(run.status).into());
+        }
+        let query_snapshot = state.query_snapshot(request.resolved_run_id(), run.run_version);
+        let snapshot = operation_snapshot(
+            &mut tx,
+            request.scope(),
+            &run,
+            request.resolved_run_id(),
+            query_snapshot,
+            stored.declaration_digest,
+            stored.content.clone(),
+        )
+        .await?;
+        validate_arguments(&snapshot, update.arguments())?;
+        let mut decision = None;
+        let resolution =
+            state.resolve_update_advancing(run.status, request, run.run_version, |_| {
+                let evaluated = evaluate(&snapshot)?;
+                let domain = evaluated.domain_evaluation();
+                decision = Some(evaluated);
+                Ok(domain)
+            })?;
+        if resolution.replayed() {
+            return Err(OperationError::InvalidStoredOperation.into());
         }
         match resolution.receipt().status() {
             UpdateReceiptStatus::Rejected => {
@@ -727,6 +898,17 @@ impl DeclaredOperationStore for PgDeclaredOperationStore {
                 Ok(resolution)
             }
             UpdateReceiptStatus::Applied => {
+                if let Some((new_state, result)) =
+                    decision.as_ref().and_then(DeclaredUpdateDecision::writes)
+                {
+                    if resolution.receipt().result() != Some(result.value())
+                        || state.state() != new_state.value()
+                    {
+                        return Err(OperationError::InvalidStoredOperation.into());
+                    }
+                    retain_evaluated_write(&mut tx, request.scope().tenant_id(), new_state).await?;
+                    retain_evaluated_write(&mut tx, request.scope().tenant_id(), result).await?;
+                }
                 if resolution
                     .receipt()
                     .result()
@@ -746,5 +928,59 @@ impl DeclaredOperationStore for PgDeclaredOperationStore {
                 Ok(resolution)
             }
         }
+    }
+
+    async fn update_result(
+        &self,
+        update: &DeclaredUpdate,
+        resolution: &UpdateResolution,
+    ) -> Result<Option<EvaluatedOperationWrite>, DeclaredOperationStoreError> {
+        let request = update.request();
+        check_run_address(request.scope(), request.resolved_run_id())?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        authorize(
+            &mut tx,
+            request.scope().tenant_id(),
+            request.scope().namespace_id(),
+            request.actor(),
+            Permission::RunUpdate,
+        )
+        .await?;
+        let run = lock_run(&mut tx, request.scope(), request.resolved_run_id(), false).await?;
+        let stored = declared_state(
+            &mut tx,
+            request.scope(),
+            &run,
+            request.resolved_run_id(),
+            request.operation(),
+            "UPDATE",
+        )
+        .await?;
+        let receipt = find_receipt(&mut tx, update)
+            .await?
+            .ok_or(OperationError::InvalidStoredOperation)?;
+        if &receipt != resolution.receipt() {
+            return Err(OperationError::InvalidStoredOperation.into());
+        }
+        let result = match receipt.result() {
+            None => None,
+            Some(value) => {
+                if value.schema_digest() != stored.result_schema_digest {
+                    return Err(OperationError::InvalidStoredOperation.into());
+                }
+                let content: Vec<u8> = sqlx::query_scalar(
+                    "SELECT content FROM payloads WHERE tenant_id = $1 AND digest = $2",
+                )
+                .bind(request.scope().tenant_id().as_uuid())
+                .bind(value.digest().as_bytes().as_slice())
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(store_error)?
+                .ok_or(OperationError::InvalidStoredOperation)?;
+                Some(EvaluatedOperationWrite::restore(value.clone(), content)?)
+            }
+        };
+        tx.commit().await.map_err(store_error)?;
+        Ok(result)
     }
 }

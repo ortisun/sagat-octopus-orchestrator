@@ -44,7 +44,7 @@ fn document() -> Value {
 }
 
 #[test]
-fn preserves_typed_state_and_operation_metadata_without_enabling_publication() {
+fn preserves_typed_state_and_operation_metadata_for_publication() {
     let source = document();
     let bytes = serde_json::to_vec(&source).expect("document");
     let parsed = JsonIrCodec
@@ -74,13 +74,58 @@ fn preserves_typed_state_and_operation_metadata_without_enabling_publication() {
     assert_eq!(reparsed.state(), parsed.state());
     assert_eq!(reparsed.parsed().digest, parsed.parsed().digest);
 
-    assert!(matches!(
-        JsonIrCodec.parse(&bytes),
-        Err(IrError::UnsupportedDeclaration { field: "state", .. })
-    ));
+    let publication = JsonIrCodec
+        .parse(&bytes)
+        .expect("basic workflow with declared state is publishable");
+    assert_eq!(publication.canonical, parsed.parsed().canonical);
+    assert_eq!(publication.digest, parsed.parsed().digest);
     assert!(matches!(
         JsonIrCodec.parse_structured(&bytes),
         Err(IrError::UnsupportedDeclaration { field: "state", .. })
+    ));
+}
+
+#[test]
+fn publication_rejects_unreleased_capabilities_combined_with_declared_state() {
+    let mut with_chain = document();
+    with_chain["chainPolicy"] = json!({"maxSegments": 2, "timeoutMs": 1_000});
+    assert!(matches!(
+        JsonIrCodec.parse(with_chain.to_string().as_bytes()),
+        Err(IrError::UnsupportedDeclaration {
+            field: "chainPolicy",
+            ..
+        })
+    ));
+
+    let mut with_limits = document();
+    with_limits["limits"] = json!({"maxInstances": 100, "maxDepth": 2});
+    assert!(matches!(
+        JsonIrCodec.parse(with_limits.to_string().as_bytes()),
+        Err(IrError::UnsupportedDeclaration {
+            field: "limits",
+            ..
+        })
+    ));
+
+    let mut with_structured_node = document();
+    with_structured_node["entrypoint"] = json!("review");
+    with_structured_node["nodes"] = json!([
+        {
+            "id": "review",
+            "type": "approval",
+            "policy": {"roles": ["admin"]},
+            "timeoutMs": 1_000,
+            "onApprove": "approved",
+            "onReject": "rejected",
+            "onExpire": "expired"
+        },
+        {"id": "approved", "type": "end"},
+        {"id": "rejected", "type": "end"},
+        {"id": "expired", "type": "end"}
+    ]);
+    assert!(matches!(
+        JsonIrCodec.parse(with_structured_node.to_string().as_bytes()),
+        Err(IrError::Unsupported { kind, .. }) if kind == "approval"
     ));
 }
 
@@ -102,16 +147,29 @@ fn compiles_expressions_in_their_exact_data_environments() {
     ] {
         let mut invalid = document();
         *invalid.pointer_mut(pointer).expect("expression pointer") = json!(expression);
+        let bytes = invalid.to_string();
         assert!(matches!(
-            JsonIrCodec.parse_declared_state(invalid.to_string().as_bytes()),
+            JsonIrCodec.parse_declared_state(bytes.as_bytes()),
+            Err(IrError::Expression { field: actual, .. }) if actual == field
+        ));
+        assert!(matches!(
+            JsonIrCodec.parse(bytes.as_bytes()),
             Err(IrError::Expression { field: actual, .. }) if actual == field
         ));
     }
 
     let mut invalid = document();
     invalid["state"]["updates"]["balance.credit"]["result"] = json!("network.call(args)");
+    let bytes = invalid.to_string();
     assert!(matches!(
-        JsonIrCodec.parse_declared_state(invalid.to_string().as_bytes()),
+        JsonIrCodec.parse_declared_state(bytes.as_bytes()),
+        Err(IrError::Expression {
+            field: "result",
+            ..
+        })
+    ));
+    assert!(matches!(
+        JsonIrCodec.parse(bytes.as_bytes()),
         Err(IrError::Expression {
             field: "result",
             ..

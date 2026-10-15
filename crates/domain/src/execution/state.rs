@@ -11,6 +11,9 @@ use std::str::FromStr;
 
 use time::OffsetDateTime;
 
+use super::continuation::{
+    ContinuationTransfer, MAX_CHAIN_SEGMENTS, SegmentCompletionKind, SegmentIndex,
+};
 use super::error::ExecutionError;
 use super::event::{
     AddressedRunEvent, ChildOutcome, CollectionDrainReason, CollectionOutcome, CorrelationKey,
@@ -52,6 +55,121 @@ pub enum RunStatus {
     Partial,
     /// A compensation failed for good.
     CompensationFailed,
+}
+
+#[cfg(test)]
+mod continuation_tests {
+    use super::*;
+    use crate::workflow::NodeId;
+
+    fn node(value: &str) -> NodeId {
+        NodeId::parse(value).expect("node")
+    }
+
+    #[test]
+    fn continuation_closes_a_quiescent_segment_and_links_the_successor() {
+        let predecessor = RunId::generate();
+        let successor = RunId::generate();
+        let entry = node("work");
+        let deadline = OffsetDateTime::UNIX_EPOCH + time::Duration::hours(1);
+        let input = Digest::new([1; 32]);
+        let state = Digest::new([2; 32]);
+        let predecessor_events = [
+            RunEvent::RunStarted {
+                entrypoint: entry.clone(),
+            },
+            RunEvent::ExecutionChainStarted {
+                max_segments: 3,
+                original_deadline: deadline,
+            },
+            RunEvent::StepReleased {
+                node: entry.clone(),
+            },
+            RunEvent::StepLeased {
+                node: entry.clone(),
+                attempt: 1,
+                generation: 1,
+            },
+            RunEvent::StepStarted {
+                node: entry.clone(),
+                attempt: 1,
+                generation: 1,
+            },
+            RunEvent::StepCompleted {
+                node: entry.clone(),
+                attempt: 1,
+                generation: 1,
+            },
+            RunEvent::StepRouted {
+                node: entry.clone(),
+                activated: Vec::new(),
+            },
+            RunEvent::RunContinued {
+                successor,
+                input_digest: input,
+                state_digest: Some(state),
+            },
+        ];
+        let old = RunState::replay(predecessor, &predecessor_events).expect("predecessor replay");
+        assert_eq!(old.status(), RunStatus::Succeeded);
+        let old_chain = old.chain().expect("chain");
+        assert_eq!(old_chain.chain_id(), predecessor);
+        assert_eq!(old_chain.successor(), Some(successor));
+        assert_eq!(
+            old_chain.completion_kind(),
+            Some(SegmentCompletionKind::Continued)
+        );
+        assert_eq!(
+            old_chain.transfer(),
+            Some(&ContinuationTransfer::new(input, Some(state)))
+        );
+
+        let successor_events = [
+            RunEvent::RunStarted { entrypoint: entry },
+            RunEvent::ExecutionChainSuccessorLinked {
+                chain_id: predecessor,
+                predecessor,
+                segment_index: 1,
+                max_segments: 3,
+                original_deadline: deadline,
+                input_digest: input,
+                state_digest: Some(state),
+            },
+        ];
+        let new = RunState::replay(successor, &successor_events).expect("successor replay");
+        let new_chain = new.chain().expect("successor chain");
+        assert_eq!(new_chain.chain_id(), predecessor);
+        assert_eq!(new_chain.predecessor(), Some(predecessor));
+        assert_eq!(new_chain.segment_index().get(), 1);
+        assert_eq!(new_chain.original_deadline(), deadline);
+    }
+
+    #[test]
+    fn continuation_refuses_an_active_step() {
+        let run = RunId::generate();
+        let entry = node("work");
+        let mut state = RunState::new(run);
+        state
+            .apply(&RunEvent::RunStarted { entrypoint: entry })
+            .expect("start");
+        state
+            .apply(&RunEvent::ExecutionChainStarted {
+                max_segments: 2,
+                original_deadline: OffsetDateTime::UNIX_EPOCH,
+            })
+            .expect("chain");
+        let before = state.clone();
+        assert!(
+            state
+                .apply(&RunEvent::RunContinued {
+                    successor: RunId::generate(),
+                    input_digest: Digest::new([3; 32]),
+                    state_digest: None,
+                })
+                .is_err()
+        );
+        assert_eq!(state, before);
+    }
 }
 
 impl RunStatus {
@@ -835,6 +953,85 @@ impl StepState {
     }
 }
 
+/// Chain membership and segment completion retained by one run's journal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunChainState {
+    chain_id: RunId,
+    predecessor: Option<RunId>,
+    successor: Option<RunId>,
+    segment_index: SegmentIndex,
+    max_segments: u16,
+    original_deadline: OffsetDateTime,
+    completion_kind: Option<SegmentCompletionKind>,
+    transfer: Option<ContinuationTransfer>,
+}
+
+impl RunChainState {
+    #[allow(clippy::too_many_arguments)]
+    #[must_use]
+    pub const fn restore(
+        chain_id: RunId,
+        predecessor: Option<RunId>,
+        successor: Option<RunId>,
+        segment_index: SegmentIndex,
+        max_segments: u16,
+        original_deadline: OffsetDateTime,
+        completion_kind: Option<SegmentCompletionKind>,
+        transfer: Option<ContinuationTransfer>,
+    ) -> Self {
+        Self {
+            chain_id,
+            predecessor,
+            successor,
+            segment_index,
+            max_segments,
+            original_deadline,
+            completion_kind,
+            transfer,
+        }
+    }
+
+    #[must_use]
+    pub const fn chain_id(&self) -> RunId {
+        self.chain_id
+    }
+
+    #[must_use]
+    pub const fn predecessor(&self) -> Option<RunId> {
+        self.predecessor
+    }
+
+    #[must_use]
+    pub const fn successor(&self) -> Option<RunId> {
+        self.successor
+    }
+
+    #[must_use]
+    pub const fn segment_index(&self) -> SegmentIndex {
+        self.segment_index
+    }
+
+    #[must_use]
+    pub const fn max_segments(&self) -> u16 {
+        self.max_segments
+    }
+
+    #[must_use]
+    pub const fn original_deadline(&self) -> OffsetDateTime {
+        self.original_deadline
+    }
+
+    #[must_use]
+    pub const fn completion_kind(&self) -> Option<SegmentCompletionKind> {
+        self.completion_kind
+    }
+
+    #[must_use]
+    pub const fn transfer(&self) -> Option<&ContinuationTransfer> {
+        self.transfer.as_ref()
+    }
+}
+
 /// The state of a run, rebuilt by folding its journal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunState {
@@ -846,6 +1043,7 @@ pub struct RunState {
     collections: BTreeMap<ExecutionInstanceId, CollectionState>,
     loops: BTreeMap<ExecutionInstanceId, LoopState>,
     sagas: BTreeMap<NodeId, SagaState>,
+    chain: Option<RunChainState>,
     applied: u64,
 }
 
@@ -862,6 +1060,7 @@ impl RunState {
             collections: BTreeMap::new(),
             loops: BTreeMap::new(),
             sagas: BTreeMap::new(),
+            chain: None,
             applied: 0,
         }
     }
@@ -944,6 +1143,7 @@ impl RunState {
             collections: BTreeMap::new(),
             loops: BTreeMap::new(),
             sagas,
+            chain: None,
             applied: version,
         }
     }
@@ -972,6 +1172,16 @@ impl RunState {
     #[must_use]
     pub const fn is_paused(&self) -> bool {
         self.paused
+    }
+
+    #[must_use]
+    pub const fn chain(&self) -> Option<&RunChainState> {
+        self.chain.as_ref()
+    }
+
+    /// Restores journal-derived chain membership without advancing the journal sequence.
+    pub fn restore_chain(&mut self, chain: RunChainState) {
+        self.chain = Some(chain);
     }
 
     /// Why the run is winding down, if it is.
@@ -2279,6 +2489,65 @@ impl RunState {
                 }
                 self.activate(std::slice::from_ref(entrypoint))?;
             }
+            RunEvent::ExecutionChainStarted {
+                max_segments,
+                original_deadline,
+            } => {
+                if self.applied == 0
+                    || self.steps.is_empty()
+                    || self.chain.is_some()
+                    || !(1..=MAX_CHAIN_SEGMENTS).contains(max_segments)
+                {
+                    return Err(ExecutionError::Invariant(
+                        "an initial execution chain is recorded once after run start",
+                    ));
+                }
+                self.chain = Some(RunChainState {
+                    chain_id: self.run_id,
+                    predecessor: None,
+                    successor: None,
+                    segment_index: SegmentIndex::new(0)
+                        .map_err(|_| ExecutionError::Invariant("invalid initial chain segment"))?,
+                    max_segments: *max_segments,
+                    original_deadline: *original_deadline,
+                    completion_kind: None,
+                    transfer: None,
+                });
+            }
+            RunEvent::ExecutionChainSuccessorLinked {
+                chain_id,
+                predecessor,
+                segment_index,
+                max_segments,
+                original_deadline,
+                input_digest,
+                state_digest,
+            } => {
+                let index = SegmentIndex::new(*segment_index)
+                    .map_err(|_| ExecutionError::Invariant("invalid successor chain segment"))?;
+                if self.applied != 1
+                    || self.chain.is_some()
+                    || *chain_id == self.run_id
+                    || *predecessor == self.run_id
+                    || *segment_index == 0
+                    || *segment_index >= *max_segments
+                    || !(1..=MAX_CHAIN_SEGMENTS).contains(max_segments)
+                {
+                    return Err(ExecutionError::Invariant(
+                        "a successor joins one bounded chain after run start",
+                    ));
+                }
+                self.chain = Some(RunChainState {
+                    chain_id: *chain_id,
+                    predecessor: Some(*predecessor),
+                    successor: None,
+                    segment_index: index,
+                    max_segments: *max_segments,
+                    original_deadline: *original_deadline,
+                    completion_kind: None,
+                    transfer: Some(ContinuationTransfer::new(*input_digest, *state_digest)),
+                });
+            }
             RunEvent::StepRouted { node, activated } => {
                 let step = self.step_mut(node, name, &[Succeeded, Failed, Skipped])?;
                 if step.routed {
@@ -2861,6 +3130,37 @@ impl RunState {
                     ));
                 }
             }
+            RunEvent::RunContinued {
+                successor,
+                input_digest,
+                state_digest,
+            } => {
+                if self.stop.is_some()
+                    || self.paused
+                    || !self
+                        .steps
+                        .values()
+                        .all(|step| step.status == Succeeded && step.routed)
+                {
+                    return Err(ExecutionError::Invariant(
+                        "a run continues only after every obligation is quiescent",
+                    ));
+                }
+                let chain = self.chain.as_mut().ok_or(ExecutionError::Invariant(
+                    "a run must belong to a chain before it continues",
+                ))?;
+                if chain.completion_kind.is_some()
+                    || *successor == self.run_id
+                    || chain.segment_index.get() + 1 >= chain.max_segments
+                {
+                    return Err(ExecutionError::Invariant(
+                        "a chain segment can continue exactly once within its bound",
+                    ));
+                }
+                chain.successor = Some(*successor);
+                chain.completion_kind = Some(SegmentCompletionKind::Continued);
+                chain.transfer = Some(ContinuationTransfer::new(*input_digest, *state_digest));
+            }
             RunEvent::RunPaused => {
                 if self.paused {
                     return Err(ExecutionError::AlreadyPaused);
@@ -2885,7 +3185,12 @@ impl RunState {
                 // its steps to be leased, and nobody is going to resume a run that is ending.
                 self.paused = false;
             }
-            RunEvent::RunFinished { status } => self.check_finish(*status)?,
+            RunEvent::RunFinished { status } => {
+                self.check_finish(*status)?;
+                if let Some(chain) = self.chain.as_mut() {
+                    chain.completion_kind = Some(SegmentCompletionKind::Final);
+                }
+            }
         }
         self.applied += 1;
         self.refresh_status(event);
@@ -3099,9 +3404,16 @@ impl RunState {
     }
 
     fn refresh_status(&mut self, event: &RunEvent) {
-        if let RunEvent::RunFinished { status } = event {
-            self.status = *status;
-            return;
+        match event {
+            RunEvent::RunFinished { status } => {
+                self.status = *status;
+                return;
+            }
+            RunEvent::RunContinued { .. } => {
+                self.status = RunStatus::Succeeded;
+                return;
+            }
+            _ => {}
         }
         let active = |s: &StepState| {
             matches!(

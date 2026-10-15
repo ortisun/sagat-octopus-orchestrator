@@ -12,23 +12,26 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
 
+use sagat_application::chain_progress::{ChainRunTx, LockedChainHead};
 use sagat_application::definitions::{
     Applied, DefinitionStore, Idempotency, VersionRecord, WorkflowRecord,
 };
 use sagat_application::error::StoreError;
 use sagat_application::execution::{
     BreakerPolicy, DefinitionCache, Effects, LeaseDeadlines, ParentLink, RunData, RunInfo,
-    RunRecord, RunTx, compensation_id, instance_step_id,
+    RunRecord, RunTx, ScopeInput, compensation_id, instance_step_id,
 };
 use sagat_application::runs::{
-    GraphSnapshot, JournalEntry, Lock, NewRun, RunFilter, RunStore, SagaView, StepView,
+    ChainView, GraphSnapshot, JournalEntry, Lock, NewRun, RunFilter, RunStore, SagaView, StepView,
 };
 use sagat_domain::audit::AuditRecord;
 use sagat_domain::definition::{Workflow, WorkflowId, WorkflowVersion, WorkflowVersionId};
 use sagat_domain::execution::{
-    AddressedRunEvent, CollectionIterationRestore, CollectionPhase, CorrelationKey,
-    ExecutionInstanceId, FailureCode, InstancePath, RunEvent, RunId, RunState, RunStatus,
-    SagaPhase, SagaState, StepState, StepStatus, StopReason, SwitchSelection, WaitingOn,
+    AddressedRunEvent, ChainFinalOutcome, ChainScope, CollectionIterationRestore, CollectionPhase,
+    ContinuationTransfer, CorrelationKey, ExecutionInstanceId, FailureCode, InstancePath,
+    RunChainState, RunEvent, RunId, RunState, RunStatus, SagaPhase, SagaState,
+    SegmentCompletionKind, SegmentIndex, StepState, StepStatus, StopReason, SwitchSelection,
+    WaitingOn,
 };
 use sagat_domain::identity::{Namespace, NamespaceId, Principal, Slug, TenantId};
 use sagat_domain::saga::{NodeOrigin, SagaOutcome};
@@ -54,6 +57,7 @@ pub struct PgRunStore {
     identity: PgIdentityStore,
     pub(crate) definitions: PgDefinitionStore,
     breaker: BreakerPolicy,
+    pub(crate) scoped_worker_protocol: bool,
 }
 
 impl PgRunStore {
@@ -65,6 +69,7 @@ impl PgRunStore {
             pool,
             cache,
             breaker: BreakerPolicy::default(),
+            scoped_worker_protocol: false,
         }
     }
 
@@ -73,6 +78,18 @@ impl PgRunStore {
     pub const fn with_breaker(mut self, policy: BreakerPolicy) -> Self {
         self.breaker = policy;
         self
+    }
+
+    /// Enables the scoped worker storage path for an explicitly gated runtime or test harness.
+    #[must_use]
+    pub const fn with_scoped_worker_protocol(mut self) -> Self {
+        self.scoped_worker_protocol = true;
+        self
+    }
+
+    /// Waits until denial audits accepted by this store have reached PostgreSQL.
+    pub async fn flush_denial_writes(&self) {
+        self.identity.flush_denial_writes().await;
     }
 
     /// Whether the execution plane can work: the server answers and every table it reads or writes
@@ -138,6 +155,147 @@ impl PgRunStore {
             })
     }
 
+    pub(crate) async fn begin_in_transaction(
+        &self,
+        mut tx: Transaction<'static, Postgres>,
+        tenant: TenantId,
+        run: RunId,
+        lock: Lock,
+        chain_lock: Option<LockedChainHead>,
+    ) -> Result<Option<PgRunTx>, StoreError> {
+        let row = match lock {
+            Lock::Wait => sqlx::query(RUN_FOR_UPDATE)
+                .bind(tenant.as_uuid())
+                .bind(run.as_uuid()),
+            Lock::SkipLocked => sqlx::query(RUN_FOR_UPDATE_SKIP_LOCKED)
+                .bind(tenant.as_uuid())
+                .bind(run.as_uuid()),
+        }
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let record = run_record(&row)?;
+        let paused: bool = col(&row, "paused")?;
+        let stop_code: Option<String> = col(&row, "stop_code")?;
+        let now: OffsetDateTime = col(&row, "db_now")?;
+        let input_digest: Vec<u8> = col(&row, "input_digest")?;
+        let step_rows = sqlx::query(
+            "SELECT node, instance_path_nodes, instance_path_indices, status, attempt, generation, cancel_requested, routed, condition, switch_case_id, \
+                    timed_out, failure_code, next_attempt_at, waiting_kind, due_at, correlation_key, \
+                    child_run_id \
+             FROM steps WHERE tenant_id = $1 AND run_id = $2",
+        )
+        .bind(tenant.as_uuid())
+        .bind(run.as_uuid())
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        let mut steps = BTreeMap::new();
+        let mut stored = BTreeSet::new();
+        for row in &step_rows {
+            let node: String = col(row, "node")?;
+            let node = NodeId::parse_stored(&node).map_err(|_| corrupt("step node"))?;
+            let path = step_instance_path(row)?;
+            let instance = ExecutionInstanceId::in_path(path, node);
+            stored.insert(instance.clone());
+            steps.insert(instance, step_state(row)?);
+        }
+        let sagas = load_sagas(&mut tx, tenant, run).await?;
+        let stop = match record.stop_reason {
+            None => None,
+            Some(reason) => Some((
+                reason,
+                stop_code
+                    .map(|code| FailureCode::parse(&code))
+                    .transpose()
+                    .map_err(|_| corrupt("stop code"))?,
+            )),
+        };
+        let mut state = RunState::restore_instances(
+            run,
+            record.status,
+            stop,
+            paused,
+            steps,
+            sagas,
+            record.version,
+        );
+        load_collections(&mut tx, tenant, run, &mut state).await?;
+        load_chain(&mut tx, tenant, run, &mut state).await?;
+        let definition = self
+            .definition(&mut tx, tenant, record.info.version_id)
+            .await?;
+        Ok(Some(PgRunTx {
+            tx,
+            info: record.info,
+            now,
+            def: definition,
+            persisted: state.version(),
+            state,
+            data: None,
+            input_digest,
+            stored,
+            breaker: self.breaker,
+            script_retention: BTreeMap::new(),
+            signals: Vec::new(),
+            chain_lock,
+        }))
+    }
+
+    async fn lock_chain_for_run(
+        &self,
+        tx: &mut Transaction<'static, Postgres>,
+        tenant: TenantId,
+        run: RunId,
+        lock: Lock,
+    ) -> Result<RunChainLock, StoreError> {
+        let chain_id: Option<Uuid> = sqlx::query_scalar(
+            "SELECT chain_id FROM chain_segments WHERE tenant_id=$1 AND run_id=$2",
+        )
+        .bind(tenant.as_uuid())
+        .bind(run.as_uuid())
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(store_error)?;
+        let Some(chain_id) = chain_id else {
+            return Ok(RunChainLock::NotMember);
+        };
+        let query = match lock {
+            Lock::Wait => {
+                "SELECT namespace_id,current_run_id,revision,cancel_requested,final_outcome \
+                           FROM execution_chains WHERE tenant_id=$1 AND chain_id=$2 FOR UPDATE"
+            }
+            Lock::SkipLocked => {
+                "SELECT namespace_id,current_run_id,revision,cancel_requested,final_outcome \
+                                 FROM execution_chains WHERE tenant_id=$1 AND chain_id=$2 \
+                                 FOR UPDATE SKIP LOCKED"
+            }
+        };
+        let row = sqlx::query(query)
+            .bind(tenant.as_uuid())
+            .bind(chain_id)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(store_error)?;
+        let Some(row) = row else {
+            return match lock {
+                Lock::Wait => Err(corrupt("chain membership without chain")),
+                Lock::SkipLocked => Ok(RunChainLock::Contended),
+            };
+        };
+        Ok(RunChainLock::Locked(LockedChainHead::restore(
+            ChainScope::new(tenant, NamespaceId::new(col(&row, "namespace_id")?)),
+            RunId::new(chain_id),
+            RunId::new(col(&row, "current_run_id")?),
+            u64::try_from(col::<i64>(&row, "revision")?).map_err(|_| corrupt("chain revision"))?,
+            col(&row, "cancel_requested")?,
+            restore_chain_outcome(col::<Option<String>>(&row, "final_outcome")?.as_deref())?,
+        )))
+    }
+
     /// Verifies that the stored projections equal a replay of the stored journal. Used by tests and
     /// by operators investigating a suspected inconsistency; never needed on the hot path.
     ///
@@ -190,6 +348,27 @@ impl PgRunStore {
     }
 }
 
+enum RunChainLock {
+    NotMember,
+    Locked(LockedChainHead),
+    Contended,
+}
+
+fn restore_chain_outcome(value: Option<&str>) -> Result<Option<ChainFinalOutcome>, StoreError> {
+    value
+        .map(|value| match value {
+            "SUCCEEDED" => Ok(ChainFinalOutcome::Succeeded),
+            "FAILED" => Ok(ChainFinalOutcome::Failed),
+            "CANCELLED" => Ok(ChainFinalOutcome::Cancelled),
+            "TIMED_OUT" => Ok(ChainFinalOutcome::TimedOut),
+            "COMPENSATED" => Ok(ChainFinalOutcome::Compensated),
+            "PARTIAL" => Ok(ChainFinalOutcome::Partial),
+            "COMPENSATION_FAILED" => Ok(ChainFinalOutcome::CompensationFailed),
+            _ => Err(corrupt("chain final outcome")),
+        })
+        .transpose()
+}
+
 impl RunStore for PgRunStore {
     type Tx = PgRunTx;
 
@@ -219,6 +398,47 @@ impl RunStore for PgRunStore {
             if let Some(existing) = replay(&mut tx, tenant, &new.idempotency, &hash).await? {
                 return Ok(Applied::Replayed(existing));
             }
+            let version_row = sqlx::query(
+                "SELECT workflow_id, document FROM workflow_versions \
+                 WHERE tenant_id = $1 AND id = $2",
+            )
+            .bind(tenant.as_uuid())
+            .bind(new.info.version_id.as_uuid())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(store_error)?
+            .ok_or(StoreError::MissingReference)?;
+            let stored_workflow: Uuid = col(&version_row, "workflow_id")?;
+            if stored_workflow != new.info.workflow_id.as_uuid() {
+                return Err(StoreError::MissingReference);
+            }
+            let version_document: Vec<u8> = col(&version_row, "document")?;
+            let declared_state = self
+                .cache
+                .declared_state_publication(&version_document)
+                .map_err(|error| {
+                    tracing::error!(%error, version = %new.info.version_id, "stored declared state no longer validates");
+                    StoreError::Internal {
+                        detail: "stored declared state no longer validates".to_owned(),
+                    }
+                })?;
+            let initial_state = self
+                .cache
+                .initial_declared_state(&version_document, &new.input)
+                .map_err(|error| {
+                    tracing::warn!(%error, version = %new.info.version_id, "declared initial state evaluation failed");
+                    StoreError::Internal {
+                        detail: "declared initial state evaluation failed".to_owned(),
+                    }
+                })?;
+            crate::definitions::verify_declared_operations(
+                &mut tx,
+                tenant,
+                new.info.namespace_id,
+                new.info.version_id,
+                declared_state.as_ref(),
+            )
+            .await?;
             sqlx::query(
                 "INSERT INTO payloads (tenant_id, digest, content) VALUES ($1, $2, $3) \
                  ON CONFLICT DO NOTHING",
@@ -229,6 +449,32 @@ impl RunStore for PgRunStore {
             .execute(&mut *tx)
             .await
             .map_err(store_error)?;
+            if let Some(initial_state) = &initial_state {
+                sqlx::query(
+                    "INSERT INTO payloads (tenant_id, digest, content) VALUES ($1, $2, $3) \
+                     ON CONFLICT (tenant_id, digest) DO NOTHING",
+                )
+                .bind(tenant.as_uuid())
+                .bind(initial_state.value().digest().as_bytes().as_slice())
+                .bind(initial_state.content())
+                .execute(&mut *tx)
+                .await
+                .map_err(store_error)?;
+                let retained: Option<Vec<u8>> = sqlx::query_scalar(
+                    "SELECT content FROM payloads WHERE tenant_id = $1 AND digest = $2",
+                )
+                .bind(tenant.as_uuid())
+                .bind(initial_state.value().digest().as_bytes().as_slice())
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(store_error)?;
+                if retained.as_deref() != Some(initial_state.content()) {
+                    return Err(StoreError::Internal {
+                        detail: "retained declared initial state does not match its digest"
+                            .to_owned(),
+                    });
+                }
+            }
             let now: OffsetDateTime = sqlx::query_scalar("SELECT clock_timestamp()")
                 .fetch_one(&mut *tx)
                 .await
@@ -306,6 +552,27 @@ impl RunStore for PgRunStore {
             .execute(&mut *tx)
             .await
             .map_err(store_error)?;
+            if let Some(initial_state) = &initial_state {
+                sqlx::query(
+                    "INSERT INTO workflow_operation_states \
+                     (tenant_id, namespace_id, run_id, state_digest, state_schema_digest, \
+                      state_size_bytes, state_revision, last_changed_run_version, updated_at) \
+                     VALUES ($1,$2,$3,$4,$5,$6,0,0,$7)",
+                )
+                .bind(tenant.as_uuid())
+                .bind(info.namespace_id.as_uuid())
+                .bind(info.run_id.as_uuid())
+                .bind(initial_state.value().digest().as_bytes().as_slice())
+                .bind(initial_state.value().schema_digest().as_bytes().as_slice())
+                .bind(
+                    i32::try_from(initial_state.value().size_bytes())
+                        .map_err(|_| corrupt("declared initial state size"))?,
+                )
+                .bind(now)
+                .execute(&mut *tx)
+                .await
+                .map_err(store_error)?;
+            }
             if let Some(sagat_application::blobs::RunInputBinding::Uploaded(descriptor)) =
                 &new.input_blob
                 && let Err(error) = crate::blobs::commit_input(&mut tx, info, descriptor).await
@@ -341,13 +608,16 @@ impl RunStore for PgRunStore {
                         run_id: Some(new.info.run_id),
                         input: new.input.clone(),
                         input_blob,
+                        state: None,
                         outputs: BTreeMap::new(),
+                        scope_inputs: BTreeMap::new(),
                     }),
                     input_digest,
                     stored: BTreeSet::new(),
                     breaker: self.breaker,
                     script_retention: BTreeMap::new(),
                     signals: Vec::new(),
+                    chain_lock: None,
                 }));
             }
         }
@@ -363,84 +633,13 @@ impl RunStore for PgRunStore {
         lock: Lock,
     ) -> Result<Option<PgRunTx>, StoreError> {
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
-        let row = match lock {
-            Lock::Wait => sqlx::query(RUN_FOR_UPDATE)
-                .bind(tenant.as_uuid())
-                .bind(run.as_uuid()),
-            Lock::SkipLocked => sqlx::query(RUN_FOR_UPDATE_SKIP_LOCKED)
-                .bind(tenant.as_uuid())
-                .bind(run.as_uuid()),
-        }
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(store_error)?;
-        let Some(row) = row else {
-            return Ok(None);
+        let chain_lock = match self.lock_chain_for_run(&mut tx, tenant, run, lock).await? {
+            RunChainLock::NotMember => None,
+            RunChainLock::Locked(chain) => Some(chain),
+            RunChainLock::Contended => return Ok(None),
         };
-        let record = run_record(&row)?;
-        let paused: bool = col(&row, "paused")?;
-        let stop_code: Option<String> = col(&row, "stop_code")?;
-        let now: OffsetDateTime = col(&row, "db_now")?;
-        let input_digest: Vec<u8> = col(&row, "input_digest")?;
-        let step_rows = sqlx::query(
-            "SELECT node, instance_path_nodes, instance_path_indices, status, attempt, generation, cancel_requested, routed, condition, switch_case_id, \
-                    timed_out, failure_code, next_attempt_at, waiting_kind, due_at, correlation_key, \
-                    child_run_id \
-             FROM steps WHERE tenant_id = $1 AND run_id = $2",
-        )
-        .bind(tenant.as_uuid())
-        .bind(run.as_uuid())
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(store_error)?;
-        let mut steps = BTreeMap::new();
-        let mut stored = BTreeSet::new();
-        for row in &step_rows {
-            let node: String = col(row, "node")?;
-            let node = NodeId::parse_stored(&node).map_err(|_| corrupt("step node"))?;
-            let path = step_instance_path(row)?;
-            let instance = ExecutionInstanceId::in_path(path, node);
-            stored.insert(instance.clone());
-            steps.insert(instance, step_state(row)?);
-        }
-        let sagas = load_sagas(&mut tx, tenant, run).await?;
-        let stop = match record.stop_reason {
-            None => None,
-            Some(reason) => Some((
-                reason,
-                stop_code
-                    .map(|c| FailureCode::parse(&c))
-                    .transpose()
-                    .map_err(|_| corrupt("stop code"))?,
-            )),
-        };
-        let mut state = RunState::restore_instances(
-            run,
-            record.status,
-            stop,
-            paused,
-            steps,
-            sagas,
-            record.version,
-        );
-        load_collections(&mut tx, tenant, run, &mut state).await?;
-        let def = self
-            .definition(&mut tx, tenant, record.info.version_id)
-            .await?;
-        Ok(Some(PgRunTx {
-            tx,
-            info: record.info,
-            now,
-            def,
-            persisted: state.version(),
-            state,
-            data: None,
-            input_digest,
-            stored,
-            breaker: self.breaker,
-            script_retention: BTreeMap::new(),
-            signals: Vec::new(),
-        }))
+        self.begin_in_transaction(tx, tenant, run, lock, chain_lock)
+            .await
     }
 
     async fn get(&self, tenant: TenantId, run: RunId) -> Result<Option<RunRecord>, StoreError> {
@@ -662,7 +861,39 @@ impl RunStore for PgRunStore {
         .fetch_all(&mut *tx)
         .await
         .map_err(store_error)?;
+        let chain_row = sqlx::query(
+            "SELECT s.chain_id, s.segment_index, s.predecessor_run_id, s.successor_run_id, \
+                    s.completion_kind, c.current_run_id, c.segment_count, c.final_outcome \
+             FROM chain_segments s JOIN execution_chains c \
+               ON c.tenant_id = s.tenant_id AND c.namespace_id = s.namespace_id \
+              AND c.chain_id = s.chain_id \
+             WHERE s.tenant_id = $1 AND s.namespace_id = $2 AND s.run_id = $3",
+        )
+        .bind(tenant.as_uuid())
+        .bind(record.info.namespace_id.as_uuid())
+        .bind(run.as_uuid())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_error)?;
         tx.commit().await.map_err(store_error)?;
+        let chain = chain_row
+            .as_ref()
+            .map(|row| {
+                Ok(ChainView {
+                    chain_id: RunId::new(col::<Uuid>(row, "chain_id")?),
+                    segment_index: u32::try_from(col::<i32>(row, "segment_index")?)
+                        .map_err(|_| corrupt("chain segment index"))?,
+                    segment_count: u32::try_from(col::<i32>(row, "segment_count")?)
+                        .map_err(|_| corrupt("chain segment count"))?,
+                    current_run_id: RunId::new(col::<Uuid>(row, "current_run_id")?),
+                    predecessor_run_id: col::<Option<Uuid>>(row, "predecessor_run_id")?
+                        .map(RunId::new),
+                    successor_run_id: col::<Option<Uuid>>(row, "successor_run_id")?.map(RunId::new),
+                    completion_kind: col(row, "completion_kind")?,
+                    final_outcome: col(row, "final_outcome")?,
+                })
+            })
+            .transpose()?;
         let sagas = saga_rows
             .iter()
             .map(|row| {
@@ -728,6 +959,7 @@ impl RunStore for PgRunStore {
             definition,
             steps,
             sagas,
+            chain,
         }))
     }
 
@@ -1276,6 +1508,78 @@ async fn load_collections(
     Ok(())
 }
 
+async fn load_chain(
+    tx: &mut Transaction<'static, Postgres>,
+    tenant: TenantId,
+    run: RunId,
+    state: &mut RunState,
+) -> Result<(), StoreError> {
+    let row = sqlx::query(
+        "SELECT ec.chain_id,ec.max_segments,ec.original_deadline_at,cs.segment_index, \
+                cs.predecessor_run_id,cs.successor_run_id,cs.completion_kind, \
+                CASE WHEN cs.completion_kind='CONTINUED' THEN cs.transfer_input_digest \
+                     ELSE incoming.transfer_input_digest END AS transfer_input_digest, \
+                CASE WHEN cs.completion_kind='CONTINUED' THEN cs.transfer_state_digest \
+                     ELSE incoming.transfer_state_digest END AS transfer_state_digest \
+         FROM chain_segments cs \
+         JOIN execution_chains ec ON ec.tenant_id=cs.tenant_id AND ec.chain_id=cs.chain_id \
+         LEFT JOIN chain_segments incoming ON incoming.tenant_id=cs.tenant_id \
+              AND incoming.chain_id=cs.chain_id AND incoming.successor_run_id=cs.run_id \
+         WHERE cs.tenant_id=$1 AND cs.run_id=$2",
+    )
+    .bind(tenant.as_uuid())
+    .bind(run.as_uuid())
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(store_error)?;
+    let Some(row) = row else {
+        return Ok(());
+    };
+    let max_segments = u16::try_from(col::<i32>(&row, "max_segments")?)
+        .map_err(|_| corrupt("chain segment limit"))?;
+    let segment_index = u16::try_from(col::<i32>(&row, "segment_index")?)
+        .map_err(|_| corrupt("chain segment index"))?;
+    if max_segments == 0 || segment_index >= max_segments {
+        return Err(corrupt("chain segment bounds"));
+    }
+    let segment_index =
+        SegmentIndex::new(segment_index).map_err(|_| corrupt("chain segment index"))?;
+    let predecessor = col::<Option<Uuid>>(&row, "predecessor_run_id")?.map(RunId::new);
+    let successor = col::<Option<Uuid>>(&row, "successor_run_id")?.map(RunId::new);
+    let input = col::<Option<Vec<u8>>>(&row, "transfer_input_digest")?
+        .map(|value| stored_digest(value, "chain transfer input"))
+        .transpose()?;
+    let transfer = input.map(|input| {
+        col::<Option<Vec<u8>>>(&row, "transfer_state_digest")
+            .and_then(|state| {
+                state
+                    .map(|value| stored_digest(value, "chain transfer state"))
+                    .transpose()
+            })
+            .map(|state| ContinuationTransfer::new(input, state))
+    });
+    let transfer = transfer.transpose()?;
+    let completion = match col::<Option<String>>(&row, "completion_kind")?.as_deref() {
+        None if successor.is_none() => None,
+        Some("FINAL") if successor.is_none() => Some(SegmentCompletionKind::Final),
+        Some("CONTINUED") if successor.is_some() && transfer.is_some() => {
+            Some(SegmentCompletionKind::Continued)
+        }
+        _ => return Err(corrupt("chain segment completion")),
+    };
+    state.restore_chain(RunChainState::restore(
+        RunId::new(col(&row, "chain_id")?),
+        predecessor,
+        successor,
+        segment_index,
+        max_segments,
+        col(&row, "original_deadline_at")?,
+        completion,
+        transfer,
+    ));
+    Ok(())
+}
+
 /// The sagas of a run, rebuilt from their rows.
 async fn load_sagas(
     tx: &mut Transaction<'static, Postgres>,
@@ -1376,6 +1680,7 @@ pub struct PgRunTx {
     script_retention: BTreeMap<NodeId, ScriptRetentionPins>,
     /// Counted when (and only when) the transaction commits.
     signals: Vec<Signal>,
+    chain_lock: Option<LockedChainHead>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -1472,12 +1777,92 @@ impl RunTx for PgRunTx {
                     col::<Vec<u8>>(row, "content")?,
                 );
             }
+            let state = sqlx::query_scalar(
+                "SELECT p.content FROM workflow_operation_states s JOIN payloads p \
+                 ON p.tenant_id=s.tenant_id AND p.digest=s.state_digest \
+                 WHERE s.tenant_id=$1 AND s.run_id=$2",
+            )
+            .bind(tenant)
+            .bind(self.info.run_id.as_uuid())
+            .fetch_optional(&mut *self.tx)
+            .await
+            .map_err(store_error)?;
+            let collection_inputs = sqlx::query(
+                "SELECT i.entry_path_nodes, i.entry_path_indices, i.iteration_index, p.content \
+                 FROM collection_iterations i JOIN payloads p \
+                   ON p.tenant_id=i.tenant_id AND p.digest=i.item_digest \
+                 WHERE i.tenant_id=$1 AND i.run_id=$2 AND i.lifecycle='ADMITTED'",
+            )
+            .bind(tenant)
+            .bind(self.info.run_id.as_uuid())
+            .fetch_all(&mut *self.tx)
+            .await
+            .map_err(store_error)?;
+            let loop_inputs = sqlx::query(
+                "SELECT i.entry_path_nodes, i.entry_path_indices, i.iteration_index, p.content \
+                 FROM loop_iterations i JOIN loop_scopes s \
+                   ON s.tenant_id=i.tenant_id AND s.run_id=i.run_id \
+                  AND s.owner_instance_id=i.owner_instance_id \
+                 JOIN payloads p ON p.tenant_id=s.tenant_id AND p.digest=s.current_carry_digest \
+                 WHERE i.tenant_id=$1 AND i.run_id=$2 AND i.lifecycle='ADMITTED' \
+                   AND s.lifecycle='RUNNING' AND s.active_iteration=i.iteration_index",
+            )
+            .bind(tenant)
+            .bind(self.info.run_id.as_uuid())
+            .fetch_all(&mut *self.tx)
+            .await
+            .map_err(store_error)?;
+            let mut scope_inputs = BTreeMap::new();
+            for row in collection_inputs {
+                let path = instance_path(
+                    col(&row, "entry_path_nodes")?,
+                    col(&row, "entry_path_indices")?,
+                    "collection input path",
+                )?;
+                let index = u32::try_from(col::<i32>(&row, "iteration_index")?)
+                    .map_err(|_| corrupt("collection iteration index"))?;
+                if scope_inputs
+                    .insert(
+                        path,
+                        ScopeInput::Collection {
+                            index,
+                            item: col(&row, "content")?,
+                        },
+                    )
+                    .is_some()
+                {
+                    return Err(corrupt("duplicate scoped input path"));
+                }
+            }
+            for row in loop_inputs {
+                let path = instance_path(
+                    col(&row, "entry_path_nodes")?,
+                    col(&row, "entry_path_indices")?,
+                    "loop input path",
+                )?;
+                let iteration = u32::try_from(col::<i32>(&row, "iteration_index")?)
+                    .map_err(|_| corrupt("loop iteration index"))?;
+                if scope_inputs
+                    .insert(
+                        path,
+                        ScopeInput::Loop {
+                            iteration,
+                            carry: col(&row, "content")?,
+                        },
+                    )
+                    .is_some()
+                {
+                    return Err(corrupt("duplicate scoped input path"));
+                }
+            }
             self.data = Some(RunData {
                 run_id: Some(self.info.run_id),
                 input: col(&input_row, "content")?,
                 input_blob: col::<Option<Uuid>>(&input_row, "input_blob_id")?
                     .map(sagat_domain::blobs::BlobId::new),
+                state,
                 outputs,
+                scope_inputs,
             });
         }
         self.data.as_ref().ok_or_else(|| StoreError::Internal {
@@ -1490,6 +1875,19 @@ impl RunTx for PgRunTx {
         if let Some(data) = &mut self.data {
             for (node, bytes) in outputs {
                 data.insert_root_output(node.clone(), bytes.clone());
+            }
+        }
+        Ok(())
+    }
+
+    async fn stage_instance_outputs(
+        &mut self,
+        outputs: &[(ExecutionInstanceId, Vec<u8>)],
+    ) -> Result<(), StoreError> {
+        self.data().await?;
+        if let Some(data) = &mut self.data {
+            for (instance, bytes) in outputs {
+                data.insert_output(instance.clone(), bytes.clone());
             }
         }
         Ok(())
@@ -1509,6 +1907,27 @@ impl RunTx for PgRunTx {
         .map_err(store_error)
     }
 
+    async fn lease_expiry_instance(
+        &mut self,
+        instance: &ExecutionInstanceId,
+    ) -> Result<Option<OffsetDateTime>, StoreError> {
+        let (nodes, indices) = stored_path_parts(instance.path());
+        sqlx::query_scalar(
+            "SELECT lease_expires_at FROM steps WHERE tenant_id = $1 AND run_id = $2 AND node = $3 \
+             AND instance_path_nodes = $4 AND instance_path_indices = $5 \
+             AND status IN ('LEASED', 'RUNNING')",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.run_id.as_uuid())
+        .bind(instance.node().as_str())
+        .bind(nodes)
+        .bind(indices)
+        .fetch_optional(&mut *self.tx)
+        .await
+        .map(Option::flatten)
+        .map_err(store_error)
+    }
+
     async fn lease_deadlines(
         &mut self,
         node: &NodeId,
@@ -1520,6 +1939,34 @@ impl RunTx for PgRunTx {
         .bind(self.info.tenant_id.as_uuid())
         .bind(self.info.run_id.as_uuid())
         .bind(node.as_str())
+        .fetch_optional(&mut *self.tx)
+        .await
+        .map_err(store_error)?;
+        row.map(|row| {
+            Ok(LeaseDeadlines {
+                expires_at: col(&row, "lease_expires_at")?,
+                attempt_deadline_at: col(&row, "attempt_deadline_at")?,
+            })
+        })
+        .transpose()
+    }
+
+    async fn lease_deadlines_instance(
+        &mut self,
+        instance: &ExecutionInstanceId,
+    ) -> Result<Option<LeaseDeadlines>, StoreError> {
+        let (nodes, indices) = stored_path_parts(instance.path());
+        let row = sqlx::query(
+            "SELECT lease_expires_at, attempt_deadline_at FROM steps \
+             WHERE tenant_id = $1 AND run_id = $2 AND node = $3 \
+               AND instance_path_nodes = $4 AND instance_path_indices = $5 \
+               AND status IN ('LEASED', 'RUNNING')",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.run_id.as_uuid())
+        .bind(instance.node().as_str())
+        .bind(nodes)
+        .bind(indices)
         .fetch_optional(&mut *self.tx)
         .await
         .map_err(store_error)?;
@@ -1673,6 +2120,29 @@ impl RunTx for PgRunTx {
         .map_err(store_error)
     }
 
+    async fn lease_unexpired_instance(
+        &mut self,
+        instance: &ExecutionInstanceId,
+        token_hash: &[u8],
+    ) -> Result<bool, StoreError> {
+        let (nodes, indices) = stored_path_parts(instance.path());
+        sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM steps WHERE tenant_id = $1 AND run_id = $2 AND node = $3 \
+                            AND instance_path_nodes = $4 AND instance_path_indices = $5 \
+                            AND status IN ('LEASED', 'RUNNING') AND lease_token_hash = $6 \
+                            AND lease_expires_at > clock_timestamp())",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.run_id.as_uuid())
+        .bind(instance.node().as_str())
+        .bind(nodes)
+        .bind(indices)
+        .bind(token_hash)
+        .fetch_one(&mut *self.tx)
+        .await
+        .map_err(store_error)
+    }
+
     async fn compensation_admitted(&mut self, activity: &ActivityName) -> Result<bool, StoreError> {
         crate::breaker::admit(
             &mut self.tx,
@@ -1772,6 +2242,19 @@ impl RunTx for PgRunTx {
         }
     }
 
+    async fn script_execution_admitted_instance(
+        &mut self,
+        instance: &ExecutionInstanceId,
+        activity: &ActivityName,
+    ) -> Result<bool, StoreError> {
+        if instance.path().is_root() {
+            return self
+                .script_execution_admitted(instance.node(), activity)
+                .await;
+        }
+        Ok(sagat_domain::scripts::digest_of_activity(activity.as_str()).is_none())
+    }
+
     async fn lease_matches(
         &mut self,
         node: &NodeId,
@@ -1790,6 +2273,28 @@ impl RunTx for PgRunTx {
         .map_err(store_error)
     }
 
+    async fn lease_matches_instance(
+        &mut self,
+        instance: &ExecutionInstanceId,
+        token_hash: &[u8],
+    ) -> Result<bool, StoreError> {
+        let (nodes, indices) = stored_path_parts(instance.path());
+        sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM steps WHERE tenant_id = $1 AND run_id = $2 AND node = $3 \
+                            AND instance_path_nodes = $4 AND instance_path_indices = $5 \
+                            AND status IN ('LEASED', 'RUNNING') AND lease_token_hash = $6)",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.run_id.as_uuid())
+        .bind(instance.node().as_str())
+        .bind(nodes)
+        .bind(indices)
+        .bind(token_hash)
+        .fetch_one(&mut *self.tx)
+        .await
+        .map_err(store_error)
+    }
+
     async fn replay(&mut self, idempotency: &Idempotency) -> Result<Option<String>, StoreError> {
         replay(
             &mut self.tx,
@@ -1800,7 +2305,16 @@ impl RunTx for PgRunTx {
         .await
     }
 
+    async fn latch_chain_cancel(&mut self) -> Result<(), StoreError> {
+        self.latch_chain_cancel_inner().await
+    }
+
     async fn persist(&mut self, events: &[RunEvent], effects: Effects) -> Result<(), StoreError> {
+        if !effects.rehint_instances.is_empty() {
+            return Err(StoreError::Internal {
+                detail: "a scoped rehint used root persistence".into(),
+            });
+        }
         let version = self.state.version();
         let written = u64::try_from(events.len()).map_err(|_| corrupt("event count"))?;
         if version != self.persisted + written {
@@ -1979,7 +2493,12 @@ impl RunTx for PgRunTx {
             .map_err(store_error)?;
         }
         if let Some(renewal) = &effects.renewal {
-            touched.insert(renewal.node.clone());
+            if !renewal.instance.path().is_root() {
+                return Err(StoreError::Internal {
+                    detail: "a scoped renewal used the root persistence path".into(),
+                });
+            }
+            touched.insert(renewal.instance.node().clone());
         }
         for node in &effects.rehint {
             if self
@@ -2045,6 +2564,10 @@ impl RunTx for PgRunTx {
         }
         self.persisted = version;
 
+        if written > 0 && self.state.status().is_terminal() && self.chain_lock.is_some() {
+            self.project_terminal_chain_inner().await?;
+        }
+
         // 5. Audit and idempotency commit with everything above.
         if let Some(audit) = &effects.audit {
             insert_audit(&mut self.tx, audit).await?;
@@ -2076,6 +2599,7 @@ impl RunTx for PgRunTx {
             && outputs
                 .iter()
                 .all(|(instance, _)| instance.path().is_root())
+            && effects.rehint_instances.is_empty()
         {
             let root_events = events
                 .iter()
@@ -2131,7 +2655,124 @@ impl RunTx for PgRunTx {
     }
 }
 
+impl ChainRunTx for PgRunTx {
+    fn locked_chain(&self) -> Result<&LockedChainHead, StoreError> {
+        self.chain_lock
+            .as_ref()
+            .ok_or_else(|| StoreError::Internal {
+                detail: "run transaction is not bound to a locked chain".to_owned(),
+            })
+    }
+}
+
 impl PgRunTx {
+    async fn latch_chain_cancel_inner(&mut self) -> Result<(), StoreError> {
+        let Some(chain) = self.chain_lock else {
+            return Ok(());
+        };
+        let revision = i64::try_from(chain.revision()).map_err(|_| corrupt("chain revision"))?;
+        let next: Option<i64> = sqlx::query_scalar(
+            "UPDATE execution_chains SET cancel_requested=true,revision=revision+1, \
+                    updated_at=clock_timestamp() \
+             WHERE tenant_id=$1 AND namespace_id=$2 AND chain_id=$3 AND current_run_id=$4 \
+               AND revision=$5 AND cancel_requested=false AND final_outcome IS NULL \
+             RETURNING revision",
+        )
+        .bind(chain.scope().tenant_id().as_uuid())
+        .bind(chain.scope().namespace_id().as_uuid())
+        .bind(chain.chain_id().as_uuid())
+        .bind(chain.head().as_uuid())
+        .bind(revision)
+        .fetch_optional(&mut *self.tx)
+        .await
+        .map_err(store_error)?;
+        let next = next.ok_or_else(|| corrupt("locked chain cancellation latch"))?;
+        self.chain_lock = Some(LockedChainHead::restore(
+            chain.scope(),
+            chain.chain_id(),
+            chain.head(),
+            u64::try_from(next).map_err(|_| corrupt("chain revision"))?,
+            true,
+            chain.final_outcome(),
+        ));
+        Ok(())
+    }
+
+    async fn project_terminal_chain_inner(&mut self) -> Result<(), StoreError> {
+        let status = self.state.status();
+        if !status.is_terminal() {
+            return Ok(());
+        }
+        let chain = self.chain_lock.ok_or_else(|| StoreError::Internal {
+            detail: "terminal chain projection is missing its chain lock".to_owned(),
+        })?;
+        let revision = i64::try_from(chain.revision()).map_err(|_| corrupt("chain revision"))?;
+        let completed = sqlx::query(
+            "UPDATE chain_segments SET completion_kind='FINAL',completed_at=$5 \
+             WHERE tenant_id=$1 AND namespace_id=$2 AND chain_id=$3 AND run_id=$4 \
+               AND completion_kind IS NULL",
+        )
+        .bind(chain.scope().tenant_id().as_uuid())
+        .bind(chain.scope().namespace_id().as_uuid())
+        .bind(chain.chain_id().as_uuid())
+        .bind(chain.head().as_uuid())
+        .bind(self.now)
+        .execute(&mut *self.tx)
+        .await
+        .map_err(store_error)?
+        .rows_affected();
+        let final_outcome = sqlx::query(
+            "UPDATE execution_chains SET final_outcome=$5,revision=revision+1,updated_at=$6 \
+             WHERE tenant_id=$1 AND namespace_id=$2 AND chain_id=$3 AND current_run_id=$4 \
+               AND revision=$7 AND final_outcome IS NULL",
+        )
+        .bind(chain.scope().tenant_id().as_uuid())
+        .bind(chain.scope().namespace_id().as_uuid())
+        .bind(chain.chain_id().as_uuid())
+        .bind(chain.head().as_uuid())
+        .bind(status.as_str())
+        .bind(self.now)
+        .bind(revision)
+        .execute(&mut *self.tx)
+        .await
+        .map_err(store_error)?
+        .rows_affected();
+        if completed != 1 || final_outcome != 1 {
+            return Err(corrupt("locked chain terminal projection"));
+        }
+        sqlx::query(
+            "UPDATE child_chain_links SET final_outcome=$4,updated_at=$5 \
+             WHERE tenant_id=$1 AND namespace_id=$2 AND child_chain_id=$3 \
+               AND final_outcome IS NULL AND settled=false",
+        )
+        .bind(chain.scope().tenant_id().as_uuid())
+        .bind(chain.scope().namespace_id().as_uuid())
+        .bind(chain.chain_id().as_uuid())
+        .bind(status.as_str())
+        .bind(self.now)
+        .execute(&mut *self.tx)
+        .await
+        .map_err(store_error)?;
+        sqlx::query(
+            "INSERT INTO event_outbox (id,tenant_id,aggregate_id,event_type,payload) \
+             VALUES ($1,$2,$3,'chain.finished',$4)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(chain.scope().tenant_id().as_uuid())
+        .bind(chain.chain_id().as_uuid())
+        .bind(serde_json::json!({
+            "tenantId": chain.scope().tenant_id().to_string(),
+            "namespaceId": chain.scope().namespace_id().to_string(),
+            "chainId": chain.chain_id().to_string(),
+            "headRunId": chain.head().to_string(),
+            "status": status.as_str(),
+            "traceId": self.info.trace_id.clone(),
+        }))
+        .execute(&mut *self.tx)
+        .await
+        .map_err(store_error)?;
+        Ok(())
+    }
     async fn persist_scoped_addressed(
         &mut self,
         events: &[AddressedRunEvent],
@@ -2143,8 +2784,6 @@ impl PgRunTx {
                 .iter()
                 .any(|(instance, _)| instance.path().is_root())
             || !effects.outputs.is_empty()
-            || effects.lease.is_some()
-            || effects.renewal.is_some()
             || !effects.rehint.is_empty()
             || !effects.children.is_empty()
             || !effects.blobs.is_empty()
@@ -2153,10 +2792,34 @@ impl PgRunTx {
                 detail: "a scoped addressed write contains root-only effects".into(),
             });
         }
+        if effects
+            .rehint_instances
+            .iter()
+            .any(|instance| instance.path().is_root())
+        {
+            return Err(StoreError::Internal {
+                detail: "a root rehint used addressed storage".into(),
+            });
+        }
+        if effects
+            .lease
+            .as_ref()
+            .is_some_and(|grant| grant.instance.path().is_root())
+            || effects
+                .renewal
+                .as_ref()
+                .is_some_and(|renewal| renewal.instance.path().is_root())
+        {
+            return Err(StoreError::Internal {
+                detail: "a root lease effect used addressed storage".into(),
+            });
+        }
         for addressed in events {
             if !matches!(
                 addressed.event(),
-                RunEvent::StepCompleted { .. }
+                RunEvent::StepLeased { .. }
+                    | RunEvent::StepStarted { .. }
+                    | RunEvent::StepCompleted { .. }
                     | RunEvent::StepFailed { .. }
                     | RunEvent::StepRouted { .. }
                     | RunEvent::StepRetryScheduled { .. }
@@ -2211,6 +2874,7 @@ impl PgRunTx {
         }
         let mut touched = BTreeSet::new();
         let mut hinted = BTreeSet::new();
+        let mut rehinted = BTreeSet::new();
         for (offset, addressed) in events.iter().enumerate() {
             let instance = addressed.instance().ok_or_else(|| StoreError::Internal {
                 detail: "a scoped event has no logical instance".into(),
@@ -2255,6 +2919,24 @@ impl PgRunTx {
             }
         }
 
+        if let Some(grant) = &effects.lease {
+            touched.insert(grant.instance.clone());
+        }
+        if let Some(renewal) = &effects.renewal {
+            touched.insert(renewal.instance.clone());
+        }
+        for instance in &effects.rehint_instances {
+            if self
+                .state
+                .instance(instance)
+                .is_some_and(|step| step.status() == StepStatus::Ready)
+            {
+                touched.insert(instance.clone());
+                hinted.insert(instance.clone());
+                rehinted.insert(instance.clone());
+            }
+        }
+
         if !events.is_empty() {
             let head = i64::try_from(version).map_err(|_| corrupt("sequence"))?;
             sqlx::query(
@@ -2277,7 +2959,9 @@ impl PgRunTx {
             self.upsert_scoped_instance(
                 instance,
                 hinted.contains(instance),
+                rehinted.contains(instance),
                 output_digest.get(instance),
+                &effects,
             )
             .await?;
         }
@@ -2728,11 +3412,14 @@ impl PgRunTx {
         &mut self,
         instance: &ExecutionInstanceId,
         hinted: bool,
+        rehinted: bool,
         output: Option<&Vec<u8>>,
+        effects: &Effects,
     ) -> Result<(), StoreError> {
         let step = self
             .state
             .instance(instance)
+            .cloned()
             .ok_or_else(|| corrupt("scoped step projection"))?;
         if step.waiting_on().is_some()
             || step.condition().is_some()
@@ -2745,6 +3432,16 @@ impl PgRunTx {
         let status = step.status().as_str();
         let attempt = i32::try_from(step.attempt()).map_err(|_| corrupt("attempt"))?;
         let generation = i64::try_from(step.generation()).map_err(|_| corrupt("generation"))?;
+        let grant = effects
+            .lease
+            .as_ref()
+            .filter(|grant| &grant.instance == instance);
+        let renewal = effects
+            .renewal
+            .as_ref()
+            .filter(|renewal| &renewal.instance == instance);
+        let leased = matches!(step.status(), StepStatus::Leased | StepStatus::Running);
+        let fresh_grant = grant.filter(|_| leased);
         let (path_nodes, path_indices) = stored_path_parts(instance.path());
         let step_uuid = instance_step_id(self.info.version_id, self.info.run_id, instance);
         if !self.stored.contains(instance) {
@@ -2757,13 +3454,18 @@ impl PgRunTx {
                 self.def
                     .node_for_instance(instance)
                     .and_then(|node| match node.kind() {
-                        NodeKind::Activity { activity, .. } => Some(activity.as_str()),
+                        NodeKind::Activity { activity, .. } => Some(activity.as_str().to_owned()),
                         _ => None,
                     });
             if step.status() == StepStatus::Ready && activity.is_none() {
                 return Err(StoreError::Internal {
                     detail: "a scoped ready step has no declared activity".into(),
                 });
+            }
+            match self.def.node_for_instance(instance).map(Node::kind) {
+                Some(NodeKind::Return { .. }) => {}
+                Some(_) => self.consume_scoped_reservation(instance).await?,
+                None => {}
             }
             sqlx::query(
                 "INSERT INTO steps \
@@ -2788,7 +3490,7 @@ impl PgRunTx {
             .bind(step.timed_out())
             .bind(step.failure().map(FailureCode::as_str))
             .bind(step.next_attempt_at())
-            .bind(activity)
+            .bind(activity.as_deref())
             .bind(self.now)
             .bind(hinted)
             .bind(output.cloned())
@@ -2809,14 +3511,23 @@ impl PgRunTx {
                                     THEN COALESCE(CASE WHEN status = 'READY' THEN ready_at END, $14) \
                                     ELSE ready_at END, \
                     last_hinted_at = CASE WHEN $15 THEN $14 ELSE last_hinted_at END, \
-                    hint_count = CASE WHEN $15 THEN 0 ELSE hint_count END, \
+                    hint_count = CASE WHEN $24 THEN hint_count + 1 WHEN $15 THEN 0 ELSE hint_count END, \
                     lease_token_hash = CASE WHEN $6 IN ('LEASED', 'RUNNING') \
-                                            THEN lease_token_hash END, \
-                    lease_expires_at = CASE WHEN $6 IN ('LEASED', 'RUNNING') \
-                                            THEN lease_expires_at END, \
-                    attempt_deadline_at = CASE WHEN $6 IN ('LEASED', 'RUNNING') \
-                                               THEN attempt_deadline_at END, \
-                    leased_by = CASE WHEN $6 IN ('LEASED', 'RUNNING') THEN leased_by END, \
+                                            THEN COALESCE($19, lease_token_hash) END, \
+                    lease_expires_at = CASE WHEN $6 NOT IN ('LEASED', 'RUNNING') THEN NULL \
+                                            WHEN $19::bytea IS NOT NULL \
+                                                 THEN $14 + $20 * interval '1 microsecond' \
+                                            WHEN $23::bigint IS NOT NULL THEN LEAST( \
+                                                 $14 + $23 * interval '1 microsecond', \
+                                                 COALESCE(attempt_deadline_at, 'infinity')) \
+                                            ELSE lease_expires_at END, \
+                    attempt_deadline_at = CASE WHEN $6 NOT IN ('LEASED', 'RUNNING') THEN NULL \
+                                               WHEN $19::bytea IS NOT NULL \
+                                                    THEN CASE WHEN $21::bigint IS NOT NULL \
+                                                              THEN $14 + $21 * interval '1 microsecond' END \
+                                               ELSE attempt_deadline_at END, \
+                    leased_by = CASE WHEN $6 NOT IN ('LEASED', 'RUNNING') THEN NULL \
+                                     WHEN $19::bytea IS NOT NULL THEN $22 ELSE leased_by END, \
                     output_digest = COALESCE($16, output_digest), updated_at = $14 \
              WHERE tenant_id = $1 AND run_id = $2 AND node = $3 AND step_id = $4 \
                AND namespace_id = $5 AND instance_path_nodes = $17 AND instance_path_indices = $18",
@@ -2839,12 +3550,76 @@ impl PgRunTx {
         .bind(output.cloned())
         .bind(path_nodes)
         .bind(path_indices)
+        .bind(fresh_grant.map(|grant| grant.token_hash.clone()))
+        .bind(fresh_grant.map_or(0, |grant| micros(grant.ttl)))
+        .bind(
+            fresh_grant
+                .and_then(|grant| grant.attempt_timeout)
+                .map(micros),
+        )
+        .bind(fresh_grant.map(|grant| grant.worker_id.clone()))
+        .bind(renewal.map(|renewal| micros(renewal.ttl)))
+        .bind(rehinted)
         .execute(&mut *self.tx)
         .await
         .map_err(store_error)?
         .rows_affected();
         if updated != 1 {
             return Err(corrupt("scoped step identity"));
+        }
+        Ok(())
+    }
+
+    async fn consume_scoped_reservation(
+        &mut self,
+        instance: &ExecutionInstanceId,
+    ) -> Result<(), StoreError> {
+        let (path_nodes, path_indices) = stored_path_parts(instance.path());
+        let collection = sqlx::query(
+            "UPDATE collection_iterations SET remaining_reservations=remaining_reservations-1, \
+                    updated_at=$5 \
+             WHERE tenant_id=$1 AND run_id=$2 AND entry_path_nodes=$3 AND entry_path_indices=$4 \
+               AND lifecycle='ADMITTED' AND remaining_reservations>0",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.run_id.as_uuid())
+        .bind(&path_nodes)
+        .bind(&path_indices)
+        .bind(self.now)
+        .execute(&mut *self.tx)
+        .await
+        .map_err(store_error)?
+        .rows_affected();
+        let loop_iteration = sqlx::query(
+            "UPDATE loop_iterations SET remaining_reservations=remaining_reservations-1, \
+                    updated_at=$5 \
+             WHERE tenant_id=$1 AND run_id=$2 AND entry_path_nodes=$3 AND entry_path_indices=$4 \
+               AND lifecycle='ADMITTED' AND remaining_reservations>0",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.run_id.as_uuid())
+        .bind(path_nodes)
+        .bind(path_indices)
+        .bind(self.now)
+        .execute(&mut *self.tx)
+        .await
+        .map_err(store_error)?
+        .rows_affected();
+        if collection + loop_iteration != 1 {
+            return Err(corrupt("scoped instance reservation"));
+        }
+        let usage = sqlx::query(
+            "UPDATE run_instance_usage SET admitted_instances=admitted_instances+1, \
+                    reserved_instances=reserved_instances-1 \
+             WHERE tenant_id=$1 AND run_id=$2 AND reserved_instances>0",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.run_id.as_uuid())
+        .execute(&mut *self.tx)
+        .await
+        .map_err(store_error)?;
+        if usage.rows_affected() != 1 {
+            return Err(corrupt("scoped instance usage"));
         }
         Ok(())
     }
@@ -2915,8 +3690,14 @@ impl PgRunTx {
             _ => spawn.map(|c| c.child.as_uuid()),
         };
         let child_input = spawn.map(|c| c.input.clone());
-        let grant = effects.lease.as_ref().filter(|g| &g.node == node);
-        let renewal = effects.renewal.as_ref().filter(|r| &r.node == node);
+        let grant = effects
+            .lease
+            .as_ref()
+            .filter(|grant| grant.instance.path().is_root() && grant.instance.node() == node);
+        let renewal = effects
+            .renewal
+            .as_ref()
+            .filter(|renewal| renewal.instance.path().is_root() && renewal.instance.node() == node);
         let leased = matches!(step.status(), StepStatus::Leased | StepStatus::Running);
         let fresh_grant = grant.filter(|_| leased);
         let instance = ExecutionInstanceId::root(node.clone());
@@ -3157,6 +3938,7 @@ impl DefinitionStore for PgRunStore {
         version_id: WorkflowVersionId,
         digest: Digest,
         document: &[u8],
+        declared_state: Option<&sagat_application::declared_operations::PublishedDeclaredState>,
         release_notes: Option<&str>,
         plans: &[sagat_domain::saga::SagaPlan],
         triggers: &[sagat_application::dispatch::TriggerRegistration],
@@ -3173,6 +3955,7 @@ impl DefinitionStore for PgRunStore {
                 version_id,
                 digest,
                 document,
+                declared_state,
                 release_notes,
                 plans,
                 triggers,

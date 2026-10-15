@@ -5,6 +5,7 @@ export interface RunModel {
   runId: string;
   status: string;
   projectionSeq: number;
+  chain: RuntimeGraph['chain'];
   nodes: ReadonlyMap<string, RuntimeNode>;
   edges: readonly RuntimeEdge[];
   /** The last events seen in changes, newest last (bounded). */
@@ -18,6 +19,7 @@ export function modelFromGraph(graph: RuntimeGraph): RunModel {
     runId: graph.runId,
     status: graph.status ?? 'RUNNING',
     projectionSeq: graph.projectionSeq,
+    chain: graph.chain ?? null,
     nodes: new Map(graph.nodes.map((n) => [n.id, n])),
     edges: graph.edges,
     recent: [],
@@ -39,6 +41,7 @@ export function applyChanges(model: RunModel | undefined, changes: GraphChanges)
         runId: changes.runId,
         status: changes.status,
         projectionSeq: changes.projectionSeq,
+        chain: changes.chain ?? null,
         nodes: new Map(changes.nodes.map((n) => [n.id, n])),
         edges: changes.edges ?? [],
         recent: [],
@@ -51,7 +54,7 @@ export function applyChanges(model: RunModel | undefined, changes: GraphChanges)
   const nodes = new Map(model.nodes);
   for (const node of changes.nodes) nodes.set(node.id, node);
   const recent = [...model.recent, ...changes.events].slice(-RECENT);
-  return { kind: 'applied', model: { ...model, status: changes.status, projectionSeq: changes.projectionSeq, nodes, recent } };
+  return { kind: 'applied', model: { ...model, status: changes.status, projectionSeq: changes.projectionSeq, chain: changes.chain === undefined ? model.chain : changes.chain, nodes, recent } };
 }
 
 const FINISHED = new Set(['SUCCEEDED', 'FAILED', 'CANCELLED', 'SKIPPED']);

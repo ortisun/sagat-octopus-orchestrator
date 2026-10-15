@@ -82,11 +82,13 @@ without fallthrough and replay preserves the recorded case.
 - [x] T014-028 [US05] Add all-five switch builders in `sdks/{typescript,go,python,dotnet,java}/`, run WP-07 golden parity and persist/restart/fault evidence in `tests/fault/workflow-primitives/switch.rs`; document typed predicate failure and telemetry. Refs: FR-014-009,016–017, SC-014-002–003.
   _Evidence: the enabled `switch-builders` scenario and manually reviewed goldens pass in all five SDKs for first match, default, predicate error and non-selected nodes; 3 real-PostgreSQL fault tests pass for lost response/duplicate replay, restart with an undelivered hint and transactional rollback/retry. Typed `EXPRESSION_ERROR`, trace span and bounded metric evidence is recorded in the switch validation report._
 
-## Phase 8 — US06: declared Query/Update (P2, pending)
+## Phase 8 — US06: declared Query/Update (P2, run-addressed slice enabled)
 
 **Independent test**: Query reports one committed revision; concurrent expected-state-revision updates
 produce one apply/one rejection; lost-response replay returns the original receipt with one mutation.
-**Release gate**: ADR-0031 accepts the disclosure policy; US06 remains disabled until implementation, security/audit/result-bound tests and all-five conformance pass.
+**Release gate**: ADR-0031 accepts the disclosure policy. The run-addressed slice passed its
+publication, security/audit/result-bound, transaction-fault and all-five runtime conformance gates.
+Chain addressing and the remaining fault matrix stay disabled and keep their tasks open.
 
 - [ ] T014-029 [P] [US06] Write failing state/operation schemas and malicious-handler fixtures in `tests/contract/workflow-primitives/operations.rs`; enforce “At most 32 queries and 32 updates”, names 1..128, bounded state/closed result schemas, explicit `disclosure: declared-business-result-v1`, no I/O/callback/wait and “expected state revision is an optional nonnegative integer”. Refs: FR-014-010–011,015, NFR-014-002.
 - [ ] T014-030 [US06] Model schema-checked initial state, snapshot query, atomic validator/reducer/result and APPLIED/REJECTED receipts in `crates/domain/src/execution/operations.rs` and `crates/application/src/primitives.rs`; preserve “State revision starts at 0 and increments exactly once per successful Update”; an Update creates no task, timer or subscription. Refs: FR-014-010–011,014.

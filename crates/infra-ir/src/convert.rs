@@ -557,6 +557,24 @@ pub(crate) fn definition(document: &Value) -> Result<WorkflowDefinition, IrError
         .map_err(IrError::Invalid)
 }
 
+pub(crate) fn published_declared_state_definition(
+    document: &Value,
+) -> Result<WorkflowDefinition, IrError> {
+    for field in ["bodies", "limits", "chainPolicy"] {
+        if document.get(field).is_some() {
+            return Err(IrError::UnsupportedDeclaration {
+                field,
+                reason: "this workflow capability is not enabled by the runtime",
+            });
+        }
+    }
+    let (name, entrypoint) = identity(document)?;
+    let nodes = root_nodes(document, false)?;
+    WorkflowDefinition::new(name, entrypoint, nodes)
+        .and_then(|definition| definition.with_triggers(triggers(document)?))
+        .map_err(IrError::Invalid)
+}
+
 pub(crate) fn structured_definition(document: &Value) -> Result<WorkflowDefinition, IrError> {
     for field in ["state", "chainPolicy"] {
         if document.get(field).is_some() {

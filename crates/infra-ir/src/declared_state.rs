@@ -3,6 +3,9 @@
 use std::collections::BTreeMap;
 
 use jsonschema::Validator;
+use sagat_application::declared_operations::{
+    DeclaredOperationKind, PublishedDeclaredState, PublishedOperationDefinition,
+};
 use sagat_application::definitions::{IrError, IrIssue, ParsedDefinition};
 use sagat_domain::execution::ResultDisclosure;
 use sagat_domain::workflow::{ActivityName, Digest, Expression};
@@ -38,6 +41,7 @@ impl DeclaredSchema {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeclaredQueryDefinition {
     name: ActivityName,
+    digest: Digest,
     args_schema: DeclaredSchema,
     result_schema: DeclaredSchema,
     expression: Expression,
@@ -48,6 +52,11 @@ impl DeclaredQueryDefinition {
     #[must_use]
     pub const fn name(&self) -> &ActivityName {
         &self.name
+    }
+
+    #[must_use]
+    pub const fn digest(&self) -> Digest {
+        self.digest
     }
 
     #[must_use]
@@ -75,6 +84,7 @@ impl DeclaredQueryDefinition {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeclaredUpdateDefinition {
     name: ActivityName,
+    digest: Digest,
     args_schema: DeclaredSchema,
     validator: Option<Expression>,
     state: Expression,
@@ -87,6 +97,11 @@ impl DeclaredUpdateDefinition {
     #[must_use]
     pub const fn name(&self) -> &ActivityName {
         &self.name
+    }
+
+    #[must_use]
+    pub const fn digest(&self) -> Digest {
+        self.digest
     }
 
     #[must_use]
@@ -156,6 +171,42 @@ impl DeclaredStateDefinition {
     #[must_use]
     pub fn update(&self, name: &ActivityName) -> Option<&DeclaredUpdateDefinition> {
         self.updates.get(name)
+    }
+
+    /// Converts the validated declarations into their representation-independent publication
+    /// metadata.
+    ///
+    /// # Errors
+    /// Returns an invalid-definition error if validated declarations ever contain duplicate
+    /// identities.
+    pub fn publication(&self) -> Result<PublishedDeclaredState, IrError> {
+        let operations = self
+            .queries()
+            .map(|operation| {
+                PublishedOperationDefinition::new(
+                    DeclaredOperationKind::Query,
+                    operation.name().clone(),
+                    operation.digest(),
+                    operation.result_schema().digest(),
+                    operation.disclosure(),
+                )
+            })
+            .chain(self.updates().map(|operation| {
+                PublishedOperationDefinition::new(
+                    DeclaredOperationKind::Update,
+                    operation.name().clone(),
+                    operation.digest(),
+                    operation.result_schema().digest(),
+                    operation.disclosure(),
+                )
+            }))
+            .collect();
+        PublishedDeclaredState::new(self.schema.digest(), operations).map_err(|error| {
+            issue(
+                "/state",
+                format!("invalid declared operation identities: {error}"),
+            )
+        })
     }
 }
 
@@ -340,6 +391,7 @@ fn queries(
         let name = operation_name(raw_name, &path)?;
         let definition = DeclaredQueryDefinition {
             name: name.clone(),
+            digest: canonical::digest_of(&canonical::canonical_json(value)),
             args_schema: schema(
                 operation
                     .get("argsSchema")
@@ -401,6 +453,7 @@ fn updates(
             .transpose()?;
         let definition = DeclaredUpdateDefinition {
             name: name.clone(),
+            digest: canonical::digest_of(&canonical::canonical_json(value)),
             args_schema: schema(
                 operation
                     .get("argsSchema")

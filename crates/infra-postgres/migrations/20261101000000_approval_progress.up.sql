@@ -92,6 +92,9 @@ CREATE TABLE approval_requests (
 CREATE INDEX approval_requests_run_idx
     ON approval_requests (tenant_id, run_id, opened_sequence);
 
+CREATE INDEX approval_requests_request_id_idx
+    ON approval_requests (request_id);
+
 CREATE TABLE approval_decision_receipts (
     tenant_id        uuid        NOT NULL,
     namespace_id     uuid        NOT NULL,

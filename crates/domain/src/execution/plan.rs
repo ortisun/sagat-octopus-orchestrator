@@ -9,7 +9,8 @@
 use time::OffsetDateTime;
 
 use super::error::ExecutionError;
-use super::event::{JoinOutcome, RunEvent, StopReason, SwitchSelection};
+use super::event::{AddressedRunEvent, JoinOutcome, RunEvent, StopReason, SwitchSelection};
+use super::instance::InstancePath;
 use super::sagas;
 use super::state::{RunState, SagaPhase, StepState, StepStatus, WaitingOn};
 use crate::saga::{NodeOrigin, SagaOutcome};
@@ -52,6 +53,92 @@ pub enum Plan {
     Evaluate(Evaluation),
     /// Nothing more can happen without an external event (a worker, a timer, a signal).
     Idle,
+}
+
+/// One deterministic planning decision within an already admitted execution path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AddressedPlan {
+    Emit(AddressedRunEvent),
+    Idle,
+}
+
+/// Advances activity routing within one admitted structured path.
+///
+/// Structured control nodes keep their own transactional owners. This planner releases activities
+/// and routes their recorded success or failure while leaving a pending structured node idle for
+/// its dedicated transition.
+pub fn plan_addressed(
+    def: &WorkflowDefinition,
+    state: &RunState,
+    path: &InstancePath,
+) -> Result<AddressedPlan, ExecutionError> {
+    if path.is_root() {
+        return Err(ExecutionError::Invariant(
+            "addressed planning requires a scoped path",
+        ));
+    }
+    for (instance, step) in state
+        .instances()
+        .filter(|(instance, _)| instance.path() == path)
+    {
+        if !matches!(
+            step.status(),
+            StepStatus::Succeeded | StepStatus::Failed | StepStatus::Skipped
+        ) || step.routed()
+        {
+            continue;
+        }
+        let declared = def
+            .node_for_instance(instance)
+            .ok_or_else(|| ExecutionError::UnknownStep(instance.node().clone()))?;
+        let activated = if declared.origin() != &NodeOrigin::Declared {
+            Vec::new()
+        } else if step.status() == StepStatus::Failed {
+            declared.on_error().cloned().into_iter().collect()
+        } else {
+            declared.next().cloned().into_iter().collect()
+        };
+        return addressed(
+            path,
+            RunEvent::StepRouted {
+                node: instance.node().clone(),
+                activated,
+            },
+        );
+    }
+    for (instance, step) in state
+        .instances()
+        .filter(|(instance, _)| instance.path() == path)
+    {
+        if step.status() == StepStatus::Pending {
+            let declared = def
+                .node_for_instance(instance)
+                .ok_or_else(|| ExecutionError::UnknownStep(instance.node().clone()))?;
+            return match declared.kind() {
+                NodeKind::Activity { .. } => addressed(
+                    path,
+                    RunEvent::StepReleased {
+                        node: instance.node().clone(),
+                    },
+                ),
+                NodeKind::ForEach { .. }
+                | NodeKind::Approval { .. }
+                | NodeKind::While { .. }
+                | NodeKind::RepeatUntil { .. }
+                | NodeKind::Return { .. } => Ok(AddressedPlan::Idle),
+                _ => Err(ExecutionError::UnsupportedScopedEvent(
+                    "scoped non-activity planning",
+                )),
+            };
+        }
+    }
+    Ok(AddressedPlan::Idle)
+}
+
+fn addressed(path: &InstancePath, event: RunEvent) -> Result<AddressedPlan, ExecutionError> {
+    AddressedRunEvent::in_path(path.clone(), event)
+        .map(AddressedPlan::Emit)
+        .map_err(|_| ExecutionError::Invariant("an addressed plan lost its instance path"))
 }
 
 pub(super) fn after(

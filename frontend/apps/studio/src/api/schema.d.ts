@@ -575,6 +575,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/approvals/{approvalId}/decisions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Decide a pending workflow approval
+         * @description Needs `approval:decide` and current eligibility under the approval policy. The initiating identity cannot decide when the policy excludes it. The first committed decision wins atomically with the run journal, timer cancellation, outcome route, outbox and audit record. Repeating the same `decisionKey` with the same body returns the original receipt; reusing it for another body is `409 IDEMPOTENCY_KEY_REUSED`. Missing and foreign-tenant approval identifiers both return the same `404` response.
+         */
+        post: operations["decideWorkflowApproval"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/quotas": {
         parameters: {
             query?: never;
@@ -2569,6 +2589,7 @@ export interface components {
             nodes: components["schemas"]["RuntimeNode"][];
             /** @description Only when `reset` is true. */
             edges?: components["schemas"]["RuntimeEdge"][];
+            chain?: components["schemas"]["RuntimeChain"] | null;
         };
         RuntimeNode: {
             /** @description Root node id or a scoped execution id such as items[2]/charge. Stable across retries. */
@@ -2649,6 +2670,52 @@ export interface components {
             projectionLagMs?: number;
             nodes: components["schemas"]["RuntimeNode"][];
             edges: components["schemas"]["RuntimeEdge"][];
+            chain?: components["schemas"]["RuntimeChain"] | null;
+        };
+        RuntimeChain: {
+            /**
+             * Format: uuid
+             * @description Stable initial run identifier of the continuation chain.
+             */
+            chainId: string;
+            segmentIndex: number;
+            segmentCount: number;
+            /**
+             * Format: uuid
+             * @description Current head of the continuation chain.
+             */
+            currentRunId: string;
+            /** Format: uuid */
+            predecessorRunId?: string | null;
+            /** Format: uuid */
+            successorRunId?: string | null;
+            /** @enum {string|null} */
+            completionKind?: "CONTINUED" | "FINAL" | null;
+            /** @enum {string|null} */
+            finalOutcome?: "SUCCEEDED" | "FAILED" | "CANCELLED" | "TIMED_OUT" | "COMPENSATED" | "PARTIAL" | "COMPENSATION_FAILED" | null;
+        };
+        ApprovalDecisionRequest: {
+            /** @description Caller-chosen idempotency key for this approval. */
+            decisionKey: string;
+            /** @enum {string} */
+            decision: "APPROVE" | "REJECT";
+            /** @description Bounded machine-readable reason; free text is not accepted. */
+            reasonCode?: string;
+        };
+        ApprovalDecisionReceipt: {
+            /** Format: uuid */
+            receiptId: string;
+            /** Format: uuid */
+            approvalId: string;
+            decisionKey: string;
+            /** @enum {string} */
+            decision: "APPROVE" | "REJECT";
+            reasonCode?: string | null;
+            actor: string;
+            /** Format: date-time */
+            decidedAt: string;
+            outcomeSequence: number;
+            replayed: boolean;
         };
         CompensationPlans: {
             sagas: {
@@ -4056,6 +4123,7 @@ export interface components {
         VersionNumber: number;
         RequestId: string;
         RunId: string;
+        ApprovalId: string;
         ScriptId: string;
         TestRunId: string;
         JobId: string;
@@ -5193,6 +5261,44 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SignalResult"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    decideWorkflowApproval: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                approvalId: components["parameters"]["ApprovalId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApprovalDecisionRequest"];
+            };
+        };
+        responses: {
+            /** @description The durable winning decision receipt, or its exact replay */
+            200: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApprovalDecisionReceipt"];
                 };
             };
             400: components["responses"]["BadRequest"];

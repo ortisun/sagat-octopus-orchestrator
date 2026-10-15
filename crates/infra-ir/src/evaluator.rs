@@ -8,9 +8,9 @@ use std::collections::BTreeSet;
 
 use sagat_application::dispatch::EventView;
 use sagat_application::execution::{
-    ExpressionEvaluator, ExpressionFailure, ReconcileAnswer, RunData,
+    ExpressionEvaluator, ExpressionFailure, ReconcileAnswer, RunData, ScopeInput,
 };
-use sagat_domain::execution::CorrelationKey;
+use sagat_domain::execution::{CorrelationKey, ExecutionInstanceId, InstancePath};
 use sagat_domain::workflow::{Expression, NodeId};
 use sagat_infra_expr::{Compiled, Env, Template};
 use serde_json::{Map, Value, json};
@@ -31,7 +31,7 @@ fn parse(bytes: &[u8]) -> Result<Value, ExpressionFailure> {
 fn environment(
     needed: &BTreeSet<String>,
     data: &RunData,
-    node: Option<&NodeId>,
+    instance: Option<&ExecutionInstanceId>,
 ) -> Result<Env, ExpressionFailure> {
     let mut env = Env::new();
     if needed.contains("input") {
@@ -39,7 +39,8 @@ fn environment(
     }
     if needed.contains("steps") {
         let mut steps = Map::new();
-        for (id, bytes) in data.root_outputs() {
+        let path = instance.map_or_else(InstancePath::root, |value| value.path().clone());
+        for (id, bytes) in data.outputs_in(&path) {
             steps.insert(id.as_str().to_owned(), json!({ "output": parse(bytes)? }));
         }
         env = env.with("steps", Value::Object(steps));
@@ -48,9 +49,89 @@ fn environment(
         env = env.with("run", json!({ "id": data.run_id.map(|r| r.to_string()) }));
     }
     if needed.contains("node") {
-        env = env.with("node", json!({ "id": node.map(NodeId::as_str) }));
+        env = env.with(
+            "node",
+            json!({ "id": instance.map(ExecutionInstanceId::node).map(NodeId::as_str) }),
+        );
+    }
+    if needed.contains("state") {
+        env = env.with(
+            "state",
+            data.state
+                .as_deref()
+                .map(parse)
+                .transpose()?
+                .unwrap_or(Value::Null),
+        );
+    }
+    if needed
+        .iter()
+        .any(|name| matches!(name.as_str(), "item" | "index" | "iteration" | "carry"))
+    {
+        let instance = instance.ok_or_else(|| failure("an iteration context is required"))?;
+        let scope = data
+            .scope_input(instance.path())
+            .ok_or_else(|| failure("the admitted iteration input is unavailable"))?;
+        match scope {
+            ScopeInput::Collection { index, item } => {
+                if needed.contains("item") {
+                    env = env.with("item", parse(item)?);
+                }
+                if needed.contains("index") {
+                    env = env.with("index", json!(index));
+                }
+            }
+            ScopeInput::Loop { iteration, carry } => {
+                if needed.contains("iteration") {
+                    env = env.with("iteration", json!(iteration));
+                }
+                if needed.contains("carry") {
+                    env = env.with("carry", parse(carry)?);
+                }
+            }
+        }
     }
     Ok(env)
+}
+
+fn scoped_task_input(
+    data: &RunData,
+    instance: &ExecutionInstanceId,
+) -> Result<Vec<u8>, ExpressionFailure> {
+    let input = parse(&data.input)?;
+    let state = data
+        .state
+        .as_deref()
+        .map(parse)
+        .transpose()?
+        .unwrap_or(Value::Null);
+    let mut steps = Map::new();
+    for (id, bytes) in data.outputs_in(instance.path()) {
+        steps.insert(id.as_str().to_owned(), json!({ "output": parse(bytes)? }));
+    }
+    let mut document = Map::new();
+    document.insert("input".to_owned(), input);
+    document.insert("node".to_owned(), json!(instance.node().as_str()));
+    document.insert(
+        "run".to_owned(),
+        json!({ "id": data.run_id.map(|run| run.to_string()) }),
+    );
+    document.insert("state".to_owned(), state);
+    document.insert("steps".to_owned(), Value::Object(steps));
+    match data
+        .scope_input(instance.path())
+        .ok_or_else(|| failure("the admitted iteration input is unavailable"))?
+    {
+        ScopeInput::Collection { index, item } => {
+            document.insert("index".to_owned(), json!(index));
+            document.insert("item".to_owned(), parse(item)?);
+        }
+        ScopeInput::Loop { iteration, carry } => {
+            document.insert("carry".to_owned(), parse(carry)?);
+            document.insert("iteration".to_owned(), json!(iteration));
+        }
+    }
+    serde_json::to_vec(&Value::Object(document)).map_err(failure)
 }
 
 impl ExpressionEvaluator for JsonEvaluator {
@@ -82,7 +163,19 @@ impl ExpressionEvaluator for JsonEvaluator {
         node: &NodeId,
     ) -> Result<String, ExpressionFailure> {
         let template = Template::compile(template.as_str()).map_err(failure)?;
-        let env = environment(&template.variables(), data, Some(node))?;
+        let instance = ExecutionInstanceId::root(node.clone());
+        let env = environment(&template.variables(), data, Some(&instance))?;
+        template.render(&env).map_err(failure)
+    }
+
+    fn idempotency_key_instance(
+        &self,
+        template: &Expression,
+        data: &RunData,
+        instance: &ExecutionInstanceId,
+    ) -> Result<String, ExpressionFailure> {
+        let template = Template::compile(template.as_str()).map_err(failure)?;
+        let env = environment(&template.variables(), data, Some(instance))?;
         template.render(&env).map_err(failure)
     }
 
@@ -118,6 +211,64 @@ impl ExpressionEvaluator for JsonEvaluator {
             "steps": steps,
         });
         serde_json::to_vec(&document).unwrap_or_default()
+    }
+
+    fn task_input_instance(
+        &self,
+        data: &RunData,
+        instance: &ExecutionInstanceId,
+    ) -> Result<Vec<u8>, ExpressionFailure> {
+        if instance.path().is_root() {
+            return Ok(self.task_input(data, instance.node()));
+        }
+        scoped_task_input(data, instance)
+    }
+
+    fn collection_items(
+        &self,
+        expression: &Expression,
+        data: &RunData,
+    ) -> Result<Vec<Vec<u8>>, ExpressionFailure> {
+        let compiled = Compiled::compile(expression.as_str()).map_err(failure)?;
+        let value = compiled
+            .eval(&environment(&compiled.variables(), data, None)?)
+            .map_err(failure)?;
+        let Value::Array(items) = value else {
+            return Err(failure("a collection items expression must yield an array"));
+        };
+        items
+            .into_iter()
+            .map(|item| serde_json::to_vec(&item).map_err(failure))
+            .collect()
+    }
+
+    fn collection_return(
+        &self,
+        expression: &Expression,
+        data: &RunData,
+        instance: &ExecutionInstanceId,
+    ) -> Result<Vec<u8>, ExpressionFailure> {
+        let compiled = Compiled::compile(expression.as_str()).map_err(failure)?;
+        let value = compiled
+            .eval(&environment(&compiled.variables(), data, Some(instance))?)
+            .map_err(failure)?;
+        serde_json::to_vec(&value).map_err(failure)
+    }
+
+    fn collection_member_result(
+        &self,
+        expression: &Expression,
+        data: &RunData,
+        instance: &ExecutionInstanceId,
+        body_result: &[u8],
+    ) -> Result<Vec<u8>, ExpressionFailure> {
+        let compiled = Compiled::compile(expression.as_str()).map_err(failure)?;
+        let mut env = environment(&compiled.variables(), data, Some(instance))?;
+        if compiled.variables().contains("bodyResult") {
+            env = env.with("bodyResult", parse(body_result)?);
+        }
+        let value = compiled.eval(&env).map_err(failure)?;
+        serde_json::to_vec(&value).map_err(failure)
     }
 
     fn event_document(&self, event: &EventView<'_>) -> Vec<u8> {

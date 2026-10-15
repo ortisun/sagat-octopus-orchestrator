@@ -170,8 +170,10 @@ and race two updates with the same expected state revision; assert one mutation 
 response.
 
 **Release gate**: ADR-0031 accepts explicit declared-result disclosure separately from ADR-0028
-structural inspection. US06 remains disabled until its authorization, audit, bounded result,
-receipt/replay and all-five conformance tests pass; policy acceptance is not release evidence.
+structural inspection. The bounded run-addressed slice is enabled after authorization, audit,
+bounded result, receipt/replay, transaction-fault and all-five conformance tests passed. A state
+document combined with continuation or another structured primitive, and chain-addressed
+Query/Update, remain disabled until their separate transactional and conformance evidence passes.
 
 **Acceptance Scenarios**:
 

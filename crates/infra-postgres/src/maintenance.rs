@@ -16,7 +16,7 @@ use sagat_application::maintenance::{
     EndedChild, LeaseLoss, LostLease, MaintenanceStore, OutboxDue, OutboxMessage, OutboxStore,
     PendingChild, RunRef, StepRef, Window,
 };
-use sagat_domain::execution::{Fence, RunId};
+use sagat_domain::execution::{Fence, InstancePath, RunId};
 use sagat_domain::identity::TenantId;
 use sagat_domain::workflow::NodeId;
 use sqlx::postgres::PgRow;
@@ -42,7 +42,26 @@ fn step_ref(row: &PgRow) -> Result<StepRef, StoreError> {
         tenant_id: TenantId::new(col::<Uuid>(row, "tenant_id")?),
         run_id: RunId::new(col::<Uuid>(row, "run_id")?),
         node: NodeId::parse_stored(&node).map_err(|_| corrupt("step node"))?,
+        instance_path: InstancePath::root(),
     })
+}
+
+fn addressed_step_ref(row: &PgRow) -> Result<StepRef, StoreError> {
+    let mut step = step_ref(row)?;
+    let nodes: Vec<String> = col(row, "instance_path_nodes")?;
+    let indices: Vec<i32> = col(row, "instance_path_indices")?;
+    if nodes.len() != indices.len() {
+        return Err(corrupt("step instance path"));
+    }
+    for (node, index) in nodes.into_iter().zip(indices) {
+        let node = NodeId::parse_stored(&node).map_err(|_| corrupt("scope node"))?;
+        let index = u32::try_from(index).map_err(|_| corrupt("scope index"))?;
+        step.instance_path = step
+            .instance_path
+            .child(node, index)
+            .map_err(|_| corrupt("step instance path"))?;
+    }
+    Ok(step)
 }
 
 /// The messages of the rows a claim returned, in the order they were written.
@@ -133,11 +152,13 @@ impl MaintenanceStore for PgRunStore {
     async fn due_retries(&self, window: &Window) -> Result<Vec<StepRef>, StoreError> {
         let (limit, shards, exclude) = window_params(window);
         sqlx::query(
-            "SELECT t.tenant_id, t.run_id, t.node FROM unnest($2::smallint[]) AS sh(s) \
+            "SELECT t.tenant_id, t.run_id, t.node, t.instance_path_nodes, \
+                    t.instance_path_indices FROM unnest($2::smallint[]) AS sh(s) \
              CROSS JOIN LATERAL ( \
-                 SELECT tenant_id, run_id, node, next_attempt_at FROM steps \
+                 SELECT tenant_id, run_id, node, instance_path_nodes, instance_path_indices, \
+                        next_attempt_at FROM steps \
                  WHERE run_shard(run_id) = sh.s AND status = 'RETRY_WAIT' \
-                   AND cardinality(instance_path_nodes) = 0 \
+                   AND ($4 OR cardinality(instance_path_nodes) = 0) \
                    AND next_attempt_at <= now() AND tenant_id <> ALL($3::uuid[]) \
                  ORDER BY next_attempt_at LIMIT $1) t \
              ORDER BY t.next_attempt_at LIMIT $1",
@@ -145,11 +166,12 @@ impl MaintenanceStore for PgRunStore {
         .bind(limit)
         .bind(shards)
         .bind(exclude)
+        .bind(self.scoped_worker_protocol)
         .fetch_all(self.pool())
         .await
         .map_err(store_error)?
         .iter()
-        .map(step_ref)
+        .map(addressed_step_ref)
         .collect()
     }
 
@@ -157,24 +179,28 @@ impl MaintenanceStore for PgRunStore {
         let (limit, shards, exclude) = window_params(window);
         // Two index scans (one per partial index) rather than one query with OR.
         let rows = sqlx::query(
-            "(SELECT t.tenant_id, t.run_id, t.node, t.attempt, t.generation, t.cause \
+            "(SELECT t.tenant_id, t.run_id, t.node, t.instance_path_nodes, \
+                    t.instance_path_indices, t.attempt, t.generation, t.cause \
                 FROM unnest($2::smallint[]) AS sh(s) \
                 CROSS JOIN LATERAL ( \
-                    SELECT tenant_id, run_id, node, attempt, generation, 'TIMED_OUT' AS cause, \
+                    SELECT tenant_id, run_id, node, instance_path_nodes, instance_path_indices, \
+                           attempt, generation, 'TIMED_OUT' AS cause, \
                            attempt_deadline_at AS at FROM steps \
                     WHERE run_shard(run_id) = sh.s AND status IN ('LEASED', 'RUNNING') \
-                      AND cardinality(instance_path_nodes) = 0 \
+                      AND ($4 OR cardinality(instance_path_nodes) = 0) \
                       AND attempt_deadline_at <= now() AND tenant_id <> ALL($3::uuid[]) \
                     ORDER BY attempt_deadline_at LIMIT $1) t \
               ORDER BY t.at LIMIT $1) \
              UNION ALL \
-             (SELECT t.tenant_id, t.run_id, t.node, t.attempt, t.generation, t.cause \
+             (SELECT t.tenant_id, t.run_id, t.node, t.instance_path_nodes, \
+                     t.instance_path_indices, t.attempt, t.generation, t.cause \
                 FROM unnest($2::smallint[]) AS sh(s) \
                 CROSS JOIN LATERAL ( \
-                    SELECT tenant_id, run_id, node, attempt, generation, 'EXPIRED' AS cause, \
+                    SELECT tenant_id, run_id, node, instance_path_nodes, instance_path_indices, \
+                           attempt, generation, 'EXPIRED' AS cause, \
                            lease_expires_at AS at FROM steps \
                     WHERE run_shard(run_id) = sh.s AND status IN ('LEASED', 'RUNNING') \
-                      AND cardinality(instance_path_nodes) = 0 \
+                      AND ($4 OR cardinality(instance_path_nodes) = 0) \
                       AND lease_expires_at <= now() AND tenant_id <> ALL($3::uuid[]) \
                     ORDER BY lease_expires_at LIMIT $1) t \
               ORDER BY t.at LIMIT $1)",
@@ -182,12 +208,13 @@ impl MaintenanceStore for PgRunStore {
         .bind(limit)
         .bind(shards)
         .bind(exclude)
+        .bind(self.scoped_worker_protocol)
         .fetch_all(self.pool())
         .await
         .map_err(store_error)?;
         let mut out: Vec<LostLease> = Vec::with_capacity(rows.len());
         for row in &rows {
-            let step = step_ref(row)?;
+            let step = addressed_step_ref(row)?;
             let attempt: i32 = col(row, "attempt")?;
             let generation: i64 = col(row, "generation")?;
             let fence = Fence {
@@ -242,11 +269,16 @@ impl MaintenanceStore for PgRunStore {
     ) -> Result<Vec<StepRef>, StoreError> {
         let (limit, shards, exclude) = window_params(window);
         sqlx::query(
-            "SELECT t.tenant_id, t.run_id, t.node FROM unnest($2::smallint[]) AS sh(s) \
+            "SELECT t.tenant_id, t.run_id, t.node, t.instance_path_nodes, \
+                    t.instance_path_indices \
+             FROM unnest($2::smallint[]) AS sh(s) \
              CROSS JOIN LATERAL ( \
-                 SELECT tenant_id, run_id, node, last_hinted_at FROM steps \
+                 SELECT tenant_id, run_id, node, instance_path_nodes, instance_path_indices, \
+                        last_hinted_at \
+                 FROM steps \
                  WHERE run_shard(run_id) = sh.s AND status = 'READY' \
-                   AND cardinality(instance_path_nodes) = 0 AND hint_count < 5 \
+                   AND ($5 OR cardinality(instance_path_nodes) = 0) \
+                   AND hint_count < 5 \
                    AND last_hinted_at <= now() - $4 * interval '1 microsecond' \
                    AND tenant_id <> ALL($3::uuid[]) \
                  ORDER BY last_hinted_at LIMIT $1) t \
@@ -256,11 +288,12 @@ impl MaintenanceStore for PgRunStore {
         .bind(shards)
         .bind(exclude)
         .bind(micros(older_than))
+        .bind(self.scoped_worker_protocol)
         .fetch_all(self.pool())
         .await
         .map_err(store_error)?
         .iter()
-        .map(step_ref)
+        .map(addressed_step_ref)
         .collect()
     }
 

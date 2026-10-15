@@ -454,6 +454,21 @@ pub enum RunEvent {
     RunStarted {
         entrypoint: NodeId,
     },
+    /// Captures the immutable continuation policy beside the initial run start.
+    ExecutionChainStarted {
+        max_segments: u16,
+        original_deadline: OffsetDateTime,
+    },
+    /// Links a freshly started successor to the immutable execution chain it joined.
+    ExecutionChainSuccessorLinked {
+        chain_id: RunId,
+        predecessor: RunId,
+        segment_index: u16,
+        max_segments: u16,
+        original_deadline: OffsetDateTime,
+        input_digest: Digest,
+        state_digest: Option<Digest>,
+    },
     /// The successors of a finished step were chosen and now exist as pending steps.
     StepRouted {
         node: NodeId,
@@ -735,6 +750,12 @@ pub enum RunEvent {
         after_revision: u64,
         state_digest: Digest,
     },
+    /// Closes this segment while transferring explicit input and optional state to its successor.
+    RunContinued {
+        successor: RunId,
+        input_digest: Digest,
+        state_digest: Option<Digest>,
+    },
     RunPaused,
     RunResumed,
     RunStopRequested {
@@ -848,6 +869,8 @@ impl RunEvent {
     pub const fn name(&self) -> &'static str {
         match self {
             Self::RunStarted { .. } => "run.started",
+            Self::ExecutionChainStarted { .. } => "execution_chain.started",
+            Self::ExecutionChainSuccessorLinked { .. } => "execution_chain.successor_linked",
             Self::StepRouted { .. } => "step.routed",
             Self::StepReleased { .. } => "step.released",
             Self::StepLeased { .. } => "step.leased",
@@ -900,6 +923,7 @@ impl RunEvent {
             Self::StepSkipped { .. } => "step.skipped",
             Self::StepResolved { .. } => "step.resolved",
             Self::StateUpdated { .. } => "state.updated",
+            Self::RunContinued { .. } => "run.continued",
             Self::RunPaused => "run.paused",
             Self::RunResumed => "run.resumed",
             Self::RunStopRequested { .. } => "run.stop_requested",
@@ -963,7 +987,10 @@ impl RunEvent {
             | Self::StepSkipped { node }
             | Self::StepResolved { node, .. } => Some(node),
             Self::RunStarted { .. }
+            | Self::ExecutionChainStarted { .. }
+            | Self::ExecutionChainSuccessorLinked { .. }
             | Self::StateUpdated { .. }
+            | Self::RunContinued { .. }
             | Self::RunPaused
             | Self::RunResumed
             | Self::RunStopRequested { .. }

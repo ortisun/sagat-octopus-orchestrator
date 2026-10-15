@@ -1183,6 +1183,40 @@ mod identity_tests {
         assert!(parsed.path().is_root());
         assert_eq!(parsed.node(), &node);
     }
+
+    #[test]
+    fn a_scoped_lease_carries_the_exact_instance_identity() {
+        let run_id = sagat_domain::execution::RunId::new(uuid::Uuid::from_u128(1));
+        let node = NodeId::parse("charge").expect("node");
+        let scope = NodeId::parse("lines").expect("scope");
+        let instance =
+            ExecutionInstanceId::in_path(InstancePath::root().child(scope, 7).expect("path"), node);
+        let task = ClaimedTask {
+            run_id,
+            instance: instance.clone(),
+            step_id: uuid::Uuid::from_u128(2),
+            fence: sagat_domain::execution::Fence {
+                attempt: 3,
+                generation: 4,
+            },
+            lease_token: sagat_application::entropy::Token::from_bytes([1; 32]).expect("token"),
+            expires_at: OffsetDateTime::UNIX_EPOCH,
+            activity: sagat_domain::workflow::ActivityName::parse("payments.charge")
+                .expect("activity"),
+            input: b"{}".to_vec(),
+            input_blob: None,
+            idempotency_key: "scoped-charge".into(),
+            trace_id: None,
+            kind: sagat_application::worker::TaskKind::Forward,
+            target: None,
+        };
+
+        let encoded = lease(&task);
+        assert_eq!(encoded.instance, Some(instance_identity(&instance)));
+        assert_eq!(encoded.step_id, task.step_id.to_string());
+        assert_eq!(encoded.attempt, 3);
+        assert_eq!(encoded.generation, 4);
+    }
 }
 
 fn lease(task: &ClaimedTask) -> pb::TaskLease {

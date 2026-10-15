@@ -1,10 +1,10 @@
 # Accepted contract design for feature 014
 
-**Status: architecture accepted by ADR-0030/0031/0032; canonical contracts/runtime pending.** Current
-examples use `sagat-octopus-orchestrator.io/v1` and the deployed canonical contracts in
+**Status: architecture accepted by ADR-0030/0031/0032; bounded run Query/Update is enabled and the
+remaining primitive runtime is incomplete.** Current examples use
+`sagat-octopus-orchestrator.io/v1` and the deployed canonical contracts in
 `specs/001-platform-foundation/contracts/`. The design below is normative for implementation;
-T014-006 adds machine-verifiable contracts and runtime mapping. Acceptance does not make the
-operations available or prove their release tests.
+availability still depends on each capability's runtime and release evidence.
 
 ## 1. Additive IR and capability validation
 
@@ -16,6 +16,11 @@ scoped task identity independently of the IR version. Publication checks support
 capabilities; an unavailable kind returns `VALIDATION_FAILED` with reason `UNSUPPORTED_NODE` before
 storing a runnable version. Immutable runs pin the exact workflow version, and required capabilities
 come from that definition plus explicit stored identity/chain data, not from a second `apiVersion`.
+
+The public parser accepts a closed `state` declaration with the already enabled basic root-node
+set. This is the publication boundary for run-addressed Query/Update. A document that combines
+`state` with `bodies`, top-level `limits`, `chainPolicy`, `continueAsNew`, approval, collection,
+loop or body-return forms remains rejected until that combined runtime has its own evidence.
 
 The document adds a `bodies` map, optional `state` declarations, `chainPolicy` and optional
 `limits: {maxInstances,maxDepth}`. Omitted limit fields default to 100000 and 8 respectively;
@@ -82,8 +87,10 @@ durable behavior implicitly. No generated pseudo-API is added to current example
 
 All paths are relative to the existing `/v1` REST base. New operations use existing authentication,
 namespace resolution, canonical error envelope and request/trace headers. They never accept tenant
-or actor identity from the request body. The path design is additive; OpenAPI details remain an
-unchecked implementation task, not a substitute contract served today.
+or actor identity from the request body. The implemented run Query/Update, approval decision and
+chain inspect/signal/cancel shapes are mirrored in the canonical OpenAPI. Public chain creation,
+handoff, chain Query/Update and paged segment operations remain gated until their transactional
+resolution and conformance evidence are complete.
 
 | Method/path | Body/query | Success result / authorization |
 | --- | --- | --- |
@@ -91,12 +98,12 @@ unchecked implementation task, not a substitute contract served today.
 | `POST /approvals/{approvalId}/decisions` | `decisionKey`, `decision: APPROVE|REJECT`, optional `reasonCode` | 200 durable decision receipt; requires `approval:decide` plus current policy eligibility. |
 | `POST /runs/{runId}/queries/{name}` | schema-checked `args` | 200 `{runId,result,runVersion,stateRevision}`; requires `run:read` + `run:query` for the named operation. |
 | `POST /runs/{runId}/updates/{name}` | `updateKey`, `args`, optional `expectedStateRevision` | 200 APPLIED receipt/result; 422 durable business rejection or 409 durable revision conflict; requires `run:update` for the named operation. |
-| `GET /chains/{chainId}` | none | 200 chain head, status, revision, predecessor/final links; requires `run:read` on the chain's namespace. |
-| `GET /chains/{chainId}/runs` | bounded cursor/page size | 200 ordered segment metadata, no implicit payloads; requires `run:read`. |
-| `POST /chains/{chainId}/queries/{name}` | `args`, optional `expectedRunId` | Query one current-head snapshot; returns actual run id, run version and state revision; expected-head mismatch is 409. |
-| `POST /chains/{chainId}/updates/{name}` | `updateKey`, `args`, optional `expectedRunId`, `expectedStateRevision` | Apply to current head in same lock/transaction as resolution, or 409 expected-head conflict; receipt deduplicates across rollover. |
-| `POST /chains/{chainId}/signals` | existing signal fields plus required `signalKey`, optional `expectedRunId` | Existing signal rules on the resolved head: accepted only if it is waiting for the signal, otherwise 409 `STATE_CONFLICT`; result names the resolved run id; the chain-scoped key prevents delivery to another segment. |
-| `POST /chains/{chainId}/cancel` | `cancelKey`, optional `expectedRunId` | Durable cancellation acceptance/result; latch chain cancellation, stop handoff, cancel current run under existing drain/child policies. |
+| `GET /namespaces/{namespaceId}/chains/{chainId}` | none | 200 current head, revision, final outcome and ordered segment links; requires `run:read`. |
+| `POST /namespaces/{namespaceId}/chains/{chainId}/signals/{signalName}` | required `expectedRunId`, `payload`; `Idempotency-Key` header | 202 with the root waits woken; requires `run:signal`; a missing matching wait or changed head is 409. Scoped waits remain gated. |
+| `POST /namespaces/{namespaceId}/chains/{chainId}/cancel` | required `expectedRunId`, `reason`; `Idempotency-Key` header | 202 durable cancellation or exact replay; requires `run:operate`; latches chain cancellation and cancels the current head atomically. |
+| `GET /chains/{chainId}/runs` | bounded cursor/page size | Planned ordered segment page with no implicit payloads. |
+| `POST /chains/{chainId}/queries/{name}` | `args`, optional `expectedRunId` | Planned current-head Query. |
+| `POST /chains/{chainId}/updates/{name}` | `updateKey`, `args`, optional `expectedRunId`, `expectedStateRevision` | Planned current-head Update. |
 
 **Permissions (accepted by ADR-0030/0031/0032)**: new permissions follow the existing
 `resource:action` form. `approval:read` goes to `admin`, `developer`, `operator` and `viewer`;
@@ -163,10 +170,11 @@ not caller timestamps. The server supplies all outcome timestamps.
 `waitForChainCompletion` is a planned language-idiomatic addition; existing `waitForCompletion`
 behavior (where provided) and polling helpers remain segment waits. Documentation must not label
 an old run's SUCCEEDED as final chain success. No automatic redirect on a 409 or hidden retry with a
-new key. An optional `expectedRunId` enables a caller to reject rollover instead of accepting head
-resolution. Without it, a chain-target caller explicitly chooses whichever head wins serialization.
+new key. Signal and cancel require `expectedRunId`, so a delayed caller never applies its command
+to a replacement head. Planned chain Query/Update may make that precondition optional only if their
+final contracts preserve one serialized head decision.
 
-Chain signal/cancel keys use the same 1..128 permitted ASCII constraint as update keys, scoped by
+Chain signal/cancel use a mandatory 8..160 printable ASCII `Idempotency-Key`, scoped by
 `(tenant,namespace,chainId,operationKind,key)` and canonical content hash. Shared chain/run locking
 serializes continuation with commands. If a command commits first, the handoff sees its state,
 consumed-signal transition or cancellation latch. If handoff commits first, a chain command targets the new
@@ -252,6 +260,9 @@ Scoped graph nodes use a stable `scopeNode[index]/localNode` id and carry `nodeI
 `instancePath`; only persisted scoped instances appear. Until the journal change feed identifies
 the complete path for each touched instance, a change after scoped work appears as a full `reset`
 snapshot, so clients never apply a local node update to the wrong iteration.
+When chain metadata has been initialized, graph and changes responses include `chainId`,
+`segmentIndex`, `segmentCount`, `currentRunId`, predecessor/successor run IDs, completion kind and
+final outcome in `chain`. A run without retained chain metadata reports `chain: null`.
 
 Durable audit covers opening/deciding/expiring approval, decision denial, query access, update
 application/rejection, continuation, cancel/manual decisions and quota/policy changes. Workflow

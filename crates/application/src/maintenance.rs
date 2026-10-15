@@ -10,7 +10,7 @@
 use std::future::Future;
 use std::time::Duration;
 
-use sagat_domain::execution::{Fence, RunId, RunStatus};
+use sagat_domain::execution::{ExecutionInstanceId, Fence, InstancePath, RunId, RunStatus};
 use sagat_domain::identity::TenantId;
 use sagat_domain::sharding::ShardSet;
 use sagat_domain::workflow::NodeId;
@@ -47,6 +47,14 @@ pub struct StepRef {
     pub tenant_id: TenantId,
     pub run_id: RunId,
     pub node: NodeId,
+    pub instance_path: InstancePath,
+}
+
+impl StepRef {
+    #[must_use]
+    pub fn instance(&self) -> ExecutionInstanceId {
+        ExecutionInstanceId::in_path(self.instance_path.clone(), self.node.clone())
+    }
 }
 
 /// A run found by a maintenance query.

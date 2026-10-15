@@ -8,12 +8,13 @@
 use sagat_application::error::StoreError;
 use sagat_application::execution::{DefinitionCache, instance_step_id};
 use sagat_application::primitives::{
-    CollectionAdmission, CollectionCheckpoint, CollectionEntry, CollectionFinish, CollectionStore,
-    CollectionTransition, PrimitiveStoreError, PrimitiveWrite,
+    CollectionAdmission, CollectionCheckpoint, CollectionEntry, CollectionFinish,
+    CollectionProgress, CollectionScopeId, CollectionStore, CollectionTransition,
+    PrimitiveStoreError, PrimitiveWrite,
 };
 use sagat_domain::definition::WorkflowVersionId;
 use sagat_domain::execution::ExecutionInstanceId;
-use sagat_domain::identity::NamespaceId;
+use sagat_domain::identity::{NamespaceId, TenantId};
 use sagat_domain::sharding::Shard;
 use sagat_domain::workflow::{NodeKind, WorkflowDefinition};
 use serde_json::{Value, json};
@@ -21,6 +22,7 @@ use sha2::{Digest as _, Sha256};
 use sqlx::{PgConnection, PgPool, Row};
 use uuid::Uuid;
 
+use crate::execution::PgRunStore;
 use crate::identity::{insert_audit, store_error};
 use crate::pool::BeginSafely;
 
@@ -338,6 +340,134 @@ async fn tenant_active_limit(
 
 #[allow(clippy::too_many_lines)]
 impl CollectionStore for PgCollectionStore {
+    async fn retain_collection_payload(
+        &self,
+        tenant_id: TenantId,
+        content: &[u8],
+    ) -> Result<sagat_domain::workflow::Digest, PrimitiveStoreError> {
+        let digest = sagat_domain::workflow::Digest::new(Sha256::digest(content).into());
+        sqlx::query(
+            "INSERT INTO payloads (tenant_id,digest,content) VALUES ($1,$2,$3) \
+             ON CONFLICT (tenant_id,digest) DO NOTHING",
+        )
+        .bind(tenant_id.as_uuid())
+        .bind(digest.as_bytes().as_slice())
+        .bind(content)
+        .execute(&self.pool)
+        .await
+        .map_err(store_error)?;
+        let retained: Vec<u8> =
+            sqlx::query_scalar("SELECT content FROM payloads WHERE tenant_id=$1 AND digest=$2")
+                .bind(tenant_id.as_uuid())
+                .bind(digest.as_bytes().as_slice())
+                .fetch_one(&self.pool)
+                .await
+                .map_err(store_error)?;
+        if retained != content {
+            return Err(PrimitiveStoreError::DuplicateMismatch);
+        }
+        Ok(digest)
+    }
+
+    async fn collection_progress(
+        &self,
+        tenant_id: TenantId,
+        run_id: sagat_domain::execution::RunId,
+        owner: &ExecutionInstanceId,
+    ) -> Result<Option<CollectionProgress>, PrimitiveStoreError> {
+        let (owner_nodes, owner_indices) = path_parts(owner);
+        let Some(scope) = sqlx::query(
+            "SELECT s.scope_id,s.snapshot_digest,p.content FROM iteration_scopes s JOIN payloads p \
+               ON p.tenant_id=s.tenant_id AND p.digest=s.snapshot_digest \
+             WHERE s.tenant_id=$1 AND s.run_id=$2 AND s.owner_path_nodes=$3 \
+               AND s.owner_path_indices=$4 AND s.owner_node=$5",
+        )
+        .bind(tenant_id.as_uuid())
+        .bind(run_id.as_uuid())
+        .bind(owner_nodes)
+        .bind(owner_indices)
+        .bind(owner.node().as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(store_error)?
+        else {
+            return Ok(None);
+        };
+        let scope_id = CollectionScopeId::new(scope.get("scope_id"));
+        let snapshot: Vec<u8> = scope.get("content");
+        let snapshot_digest: Vec<u8> = scope.get("snapshot_digest");
+        if Sha256::digest(&snapshot).to_vec() != snapshot_digest {
+            return Err(invalid_storage("collection snapshot payload"));
+        }
+        let item_rows = sqlx::query(
+            "SELECT i.iteration_index,i.item_digest,p.content \
+             FROM collection_scope_items i JOIN payloads p \
+               ON p.tenant_id=i.tenant_id AND p.digest=i.item_digest \
+             WHERE i.tenant_id=$1 AND i.run_id=$2 AND i.scope_id=$3 \
+             ORDER BY i.iteration_index",
+        )
+        .bind(tenant_id.as_uuid())
+        .bind(run_id.as_uuid())
+        .bind(scope_id.as_uuid())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_error)?;
+        let mut items = Vec::with_capacity(item_rows.len());
+        for (position, row) in item_rows.into_iter().enumerate() {
+            let index = usize::try_from(row.get::<i32, _>("iteration_index"))
+                .map_err(|_| invalid_storage("collection item index"))?;
+            let content: Vec<u8> = row.get("content");
+            let digest: Vec<u8> = row.get("item_digest");
+            if index != position || Sha256::digest(&content).to_vec() != digest {
+                return Err(invalid_storage("collection item payload"));
+            }
+            items.push(content);
+        }
+        let result_rows = sqlx::query(
+            "SELECT c.iteration_index,c.result_digest,p.content \
+             FROM iteration_checkpoints c JOIN payloads p \
+               ON p.tenant_id=c.tenant_id AND p.digest=c.result_digest \
+             WHERE c.tenant_id=$1 AND c.run_id=$2 AND c.scope_id=$3 \
+             ORDER BY c.iteration_index",
+        )
+        .bind(tenant_id.as_uuid())
+        .bind(run_id.as_uuid())
+        .bind(scope_id.as_uuid())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_error)?;
+        let mut results = Vec::with_capacity(result_rows.len());
+        for row in result_rows {
+            let content: Vec<u8> = row.get("content");
+            let digest: Vec<u8> = row.get("result_digest");
+            if Sha256::digest(&content).to_vec() != digest {
+                return Err(invalid_storage("collection result payload"));
+            }
+            results.push((
+                u32::try_from(row.get::<i32, _>("iteration_index"))
+                    .map_err(|_| invalid_storage("collection result index"))?,
+                content,
+            ));
+        }
+        let snapshot_items = serde_json::from_slice::<Vec<Value>>(&snapshot)
+            .map_err(|_| invalid_storage("collection snapshot payload"))?
+            .into_iter()
+            .map(|item| {
+                serde_json::to_vec(&item)
+                    .map_err(|_| invalid_storage("collection snapshot payload"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if snapshot_items != items {
+            return Err(invalid_storage("collection membership projection"));
+        }
+        Ok(Some(CollectionProgress {
+            scope_id,
+            snapshot,
+            items,
+            results,
+        }))
+    }
+
     async fn enter_collection(
         &self,
         entry: &CollectionEntry,
@@ -1438,5 +1568,64 @@ impl CollectionStore for PgCollectionStore {
             applied: true,
             run_version: routed_sequence,
         })
+    }
+}
+
+impl CollectionStore for PgRunStore {
+    async fn retain_collection_payload(
+        &self,
+        tenant_id: TenantId,
+        content: &[u8],
+    ) -> Result<sagat_domain::workflow::Digest, PrimitiveStoreError> {
+        PgCollectionStore::with_definition_cache(self.pool.clone(), self.cache.clone())
+            .retain_collection_payload(tenant_id, content)
+            .await
+    }
+
+    async fn collection_progress(
+        &self,
+        tenant_id: TenantId,
+        run_id: sagat_domain::execution::RunId,
+        owner: &ExecutionInstanceId,
+    ) -> Result<Option<CollectionProgress>, PrimitiveStoreError> {
+        PgCollectionStore::with_definition_cache(self.pool.clone(), self.cache.clone())
+            .collection_progress(tenant_id, run_id, owner)
+            .await
+    }
+
+    async fn enter_collection(
+        &self,
+        entry: &CollectionEntry,
+    ) -> Result<PrimitiveWrite, PrimitiveStoreError> {
+        PgCollectionStore::with_definition_cache(self.pool.clone(), self.cache.clone())
+            .enter_collection(entry)
+            .await
+    }
+
+    async fn admit_collection_activity(
+        &self,
+        admission: &CollectionAdmission,
+    ) -> Result<PrimitiveWrite, PrimitiveStoreError> {
+        PgCollectionStore::with_definition_cache(self.pool.clone(), self.cache.clone())
+            .admit_collection_activity(admission)
+            .await
+    }
+
+    async fn checkpoint_collection_iteration(
+        &self,
+        checkpoint: &CollectionCheckpoint,
+    ) -> Result<PrimitiveWrite, PrimitiveStoreError> {
+        PgCollectionStore::with_definition_cache(self.pool.clone(), self.cache.clone())
+            .checkpoint_collection_iteration(checkpoint)
+            .await
+    }
+
+    async fn finish_collection(
+        &self,
+        finish: &CollectionFinish,
+    ) -> Result<PrimitiveWrite, PrimitiveStoreError> {
+        PgCollectionStore::with_definition_cache(self.pool.clone(), self.cache.clone())
+            .finish_collection(finish)
+            .await
     }
 }

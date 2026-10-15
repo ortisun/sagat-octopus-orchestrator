@@ -20,6 +20,7 @@ use sagat_domain::execution::{
 use sagat_domain::identity::{Principal, Role, Subject, TenantId};
 use sagat_domain::sharding::Shard;
 use sagat_domain::workflow::{Digest, NodeId};
+use sagat_telemetry::{WorkflowPrimitiveMetric, WorkflowPrimitiveOutcome};
 use serde_json::json;
 use sqlx::postgres::PgRow;
 use sqlx::{PgPool, Postgres, Transaction};
@@ -57,6 +58,19 @@ struct ApprovalCommitContext<'a> {
 struct StoredApproval {
     request: ApprovalRequest,
     routes: ApprovalRoutes,
+    opened_at: time::OffsetDateTime,
+}
+
+fn record_approval_wait(
+    opened_at: time::OffsetDateTime,
+    settled_at: time::OffsetDateTime,
+    outcome: WorkflowPrimitiveOutcome,
+) {
+    metrics::histogram!(
+        WorkflowPrimitiveMetric::ApprovalWait.as_str(),
+        "outcome" => outcome.as_str()
+    )
+    .record((settled_at - opened_at).as_seconds_f64().max(0.0));
 }
 
 fn stored_u64(row: &PgRow, field: &str) -> Result<u64, StoreError> {
@@ -353,7 +367,11 @@ async fn load_request(
             .map_err(|_| ApprovalProgressError::CorruptProjection)?,
     );
     verify_projection(tx, &request, &routes).await?;
-    Ok(StoredApproval { request, routes })
+    Ok(StoredApproval {
+        request,
+        routes,
+        opened_at: col(&row, "created_at")?,
+    })
 }
 
 async fn journal_event(
@@ -1016,6 +1034,11 @@ impl ApprovalProgressStore for PgApprovalProgressStore {
         .await?;
         insert_audit(&mut tx, attempt.audit()).await?;
         tx.commit().await.map_err(store_error)?;
+        let outcome = match receipt.decision() {
+            ApprovalDecision::Approve => WorkflowPrimitiveOutcome::Approved,
+            ApprovalDecision::Reject => WorkflowPrimitiveOutcome::Rejected,
+        };
+        record_approval_wait(stored.opened_at, attempt.occurred_at(), outcome);
         Ok(resolution)
     }
 
@@ -1113,6 +1136,11 @@ impl ApprovalProgressStore for PgApprovalProgressStore {
         .await?;
         insert_audit(&mut tx, attempt.audit()).await?;
         tx.commit().await.map_err(store_error)?;
+        record_approval_wait(
+            stored.opened_at,
+            attempt.occurred_at(),
+            WorkflowPrimitiveOutcome::Expired,
+        );
         Ok(transition)
     }
 

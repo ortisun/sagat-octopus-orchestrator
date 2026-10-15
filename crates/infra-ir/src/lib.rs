@@ -14,6 +14,7 @@ pub mod cron;
 mod declared_state;
 mod diff;
 mod evaluator;
+mod operation_evaluator;
 mod schema;
 
 pub use continuation::{ChainPolicyDefinition, ContinueAsNewDefinition, ParsedContinuation};
@@ -22,8 +23,12 @@ pub use declared_state::{
     MAX_DECLARED_SCHEMA_BYTES, MAX_DECLARED_SCHEMA_DEPTH, ParsedDeclaredState,
 };
 pub use evaluator::JsonEvaluator;
+pub use operation_evaluator::{
+    EvaluatedOperationValue, JsonDeclaredOperationEvaluator, QueryEvaluation, UpdateEvaluationPlan,
+};
 
 use sagat_application::definitions::{IrCodec, IrError, MAX_IR_BYTES, ParsedDefinition};
+use sagat_application::operation_evaluation::OperationEvaluationError;
 use sagat_domain::workflow::{NodeKind, WorkflowDefinition};
 use sagat_infra_expr::{Compiled, Template};
 use serde_json::Value;
@@ -46,10 +51,11 @@ impl JsonIrCodec {
         parse_document(document, convert::structured_definition)
     }
 
-    /// Validates and preserves an additive-v1 state declaration without enabling publication.
+    /// Validates and preserves an additive-v1 state declaration for internal operation evaluation.
     ///
     /// The returned artifact retains the canonical workflow bytes and typed state/operation
-    /// metadata. The production [`IrCodec::parse`] path remains the publication capability gate.
+    /// metadata. It accepts the full typed subset even when publication keeps another primitive
+    /// closed.
     ///
     /// # Errors
     /// Returns bounded syntax, schema, graph or expression errors. A chain policy remains outside
@@ -92,7 +98,45 @@ impl IrCodec for JsonIrCodec {
     }
 
     fn parse(&self, document: &[u8]) -> Result<ParsedDefinition, IrError> {
-        parse_document(document, convert::definition)
+        let value = validated_document(document)?;
+        if value.get("state").is_some() {
+            declared_state::parse(&value)?;
+            converted_document(&value, convert::published_declared_state_definition)
+        } else {
+            converted_document(&value, convert::definition)
+        }
+    }
+
+    fn declared_state_publication(
+        &self,
+        document: &[u8],
+    ) -> Result<Option<sagat_application::declared_operations::PublishedDeclaredState>, IrError>
+    {
+        let value = validated_document(document)?;
+        value
+            .get("state")
+            .map(|_| declared_state::parse(&value)?.publication())
+            .transpose()
+    }
+
+    fn initial_declared_state(
+        &self,
+        document: &[u8],
+        input: &[u8],
+    ) -> Result<
+        Option<sagat_application::declared_operations::EvaluatedOperationWrite>,
+        OperationEvaluationError,
+    > {
+        let value: Value = serde_json::from_slice(document)
+            .map_err(|_| OperationEvaluationError::DeclarationMismatch)?;
+        if value.get("state").is_none() {
+            return Ok(None);
+        }
+        let state = declared_state::parse(&value)
+            .map_err(|_| OperationEvaluationError::DeclarationMismatch)?;
+        JsonDeclaredOperationEvaluator
+            .initial_state(&state, input)
+            .map(Some)
     }
 }
 

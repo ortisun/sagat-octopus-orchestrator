@@ -1,6 +1,7 @@
 //! Database invariants for chain metadata before continuation handoff is enabled.
 
 use crate::support::engine::{chain, world};
+use sagat_application::runs::RunStore;
 
 #[tokio::test]
 async fn chain_head_must_be_a_segment_of_its_own_chain() {
@@ -42,6 +43,20 @@ async fn chain_head_must_be_a_segment_of_its_own_chain() {
     .await
     .expect("initial segment");
     tx.commit().await.expect("valid chain commits");
+
+    let graph = w
+        .store
+        .graph(w.admin.tenant_id(), head)
+        .await
+        .expect("chain graph read")
+        .expect("visible run graph");
+    let link = graph.chain.expect("committed chain link");
+    assert_eq!(link.chain_id, head);
+    assert_eq!(link.current_run_id, head);
+    assert_eq!(link.segment_index, 0);
+    assert_eq!(link.segment_count, 1);
+    assert_eq!(link.predecessor_run_id, None);
+    assert_eq!(link.successor_run_id, None);
 
     let invalid = sqlx::query(
         "UPDATE execution_chains SET current_run_id=$1 WHERE tenant_id=$2 AND chain_id=$3",

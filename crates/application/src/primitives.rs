@@ -76,6 +76,15 @@ impl CollectionScopeId {
     }
 }
 
+/// Immutable captured values and committed results needed to resume collection scheduling.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CollectionProgress {
+    pub scope_id: CollectionScopeId,
+    pub snapshot: Vec<u8>,
+    pub items: Vec<Vec<u8>>,
+    pub results: Vec<(u32, Vec<u8>)>,
+}
+
 /// Effective definition and tenant limits pinned when a collection enters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CollectionLimits {
@@ -434,6 +443,19 @@ pub enum PrimitiveStoreError {
 /// requires the current scheduler fence. A matching replay returns `applied = false` without
 /// reacquiring capacity, charging, releasing or notifying again.
 pub trait CollectionStore: Send + Sync {
+    fn retain_collection_payload(
+        &self,
+        tenant_id: TenantId,
+        content: &[u8],
+    ) -> impl Future<Output = Result<Digest, PrimitiveStoreError>> + Send;
+
+    fn collection_progress(
+        &self,
+        tenant_id: TenantId,
+        run_id: RunId,
+        owner: &ExecutionInstanceId,
+    ) -> impl Future<Output = Result<Option<CollectionProgress>, PrimitiveStoreError>> + Send;
+
     fn enter_collection(
         &self,
         entry: &CollectionEntry,

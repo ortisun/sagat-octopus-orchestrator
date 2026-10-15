@@ -17,7 +17,7 @@ use sagat_domain::execution::{
     self, ExecutionInstanceId, FailureCode, Fence, Progress, RunEvent, RunId, RunStatus, StepStatus,
 };
 use sagat_domain::identity::{NamespaceId, Permission, Principal, Slug, TenantId};
-use sagat_domain::workflow::{ActivityName, NodeId, NodeKind};
+use sagat_domain::workflow::{ActivityName, NodeKind};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -292,10 +292,7 @@ pub struct TaskTarget {
 
 impl ClaimedTask {
     /// The legacy identifier a worker echoes back: `run/node/generation`.
-    ///
-    /// Scoped claims remain disabled while the server advertises protocol 1.4. Enabling them must
-    /// replace this root-only identifier with the negotiated 1.5 representation before a lease is
-    /// serialized.
+    /// Protocol 1.5 carries the complete logical identity in the separate `instance` field.
     #[must_use]
     pub fn task_id(&self) -> String {
         format!(
@@ -829,18 +826,27 @@ where
         if tx.required_worker_protocol_minor().await? > session.accepted_protocol_minor {
             return Ok(Vec::new());
         }
-        let mut ready: Vec<(NodeId, ActivityName, Option<Duration>)> = {
+        let mut ready: Vec<(ExecutionInstanceId, ActivityName, Option<Duration>)> = {
             let (def, state) = tx.parts();
             state
-                .steps()
-                .filter(|(_, step)| step.status() == StepStatus::Ready)
-                .filter_map(|(node, _)| {
-                    let n = def.node(node)?;
+                .instances()
+                .filter(|(instance, step)| {
+                    step.status() == StepStatus::Ready
+                        && (instance.path().is_root()
+                            || session.accepted_protocol_minor >= SCOPED_PROTOCOL_MINOR)
+                })
+                .filter_map(|(instance, _)| {
+                    let n = def.node_for_instance(instance)?;
+                    if !instance.path().is_root()
+                        && n.origin() != &sagat_domain::saga::NodeOrigin::Declared
+                    {
+                        return None;
+                    }
                     match n.kind() {
                         NodeKind::Activity { activity, .. }
                             if session.activities.iter().any(|a| a == activity.as_str()) =>
                         {
-                            Some((node.clone(), activity.clone(), n.timeout()))
+                            Some((instance.clone(), activity.clone(), n.timeout()))
                         }
                         _ => None,
                     }
@@ -850,16 +856,16 @@ where
         // A run transaction retains every activity quota (and compensation breaker) lock until
         // commit. Node-id order can invert the same activities across workflows and deadlock.
         ready.sort_by(
-            |(left_node, left_activity, _), (right_node, right_activity, _)| {
+            |(left_instance, left_activity, _), (right_instance, right_activity, _)| {
                 left_activity
                     .as_str()
                     .cmp(right_activity.as_str())
-                    .then_with(|| left_node.cmp(right_node))
+                    .then_with(|| left_instance.cmp(right_instance))
             },
         );
         let mut leased = Vec::new();
         let mut run_bytes = 0usize;
-        for (node, activity, timeout) in ready {
+        for (instance, activity, timeout) in ready {
             // Every task carries the run's data; the response is bounded by what it carries.
             // `remaining` bounds what is *leased*, not what is looked at: a step the circuit
             // breaker holds back must not use up the place of one that can run.
@@ -868,10 +874,17 @@ where
             }
             // Measure the actual serialized context before granting any lease. Raw output sizes
             // do not bound it: JSON number normalization can expand a compact stored document.
-            let input = self.engine.evaluator().task_input(tx.data().await?, &node);
+            let input = self
+                .engine
+                .evaluator()
+                .task_input_instance(tx.data().await?, &instance)
+                .map_err(|error| {
+                    tracing::error!(%error, instance = ?instance, "failed to materialize task input");
+                    AppError::Internal
+                })?;
             if input.len() > MAX_TASK_INPUT_BYTES {
                 match self
-                    .reject_large_input(&mut tx, session, &node, trace_id)
+                    .reject_large_input(&mut tx, session, &instance, trace_id)
                     .await
                 {
                     Ok(()) | Err(AppError::StateConflict(_)) => break,
@@ -896,13 +909,16 @@ where
             }
             // A provider whose compensations keep failing is left alone until its breaker allows
             // one probe; the step stays ready and loses nothing by waiting.
-            if node.is_compensation() && !tx.compensation_admitted(&activity).await? {
+            if instance.node().is_compensation() && !tx.compensation_admitted(&activity).await? {
                 continue;
             }
             // Retention is part of admitting the effect, not of its eventual report. A forward
             // lease also freezes any script compensation/reconciliation it may obligate. The
             // store holds the policy fence and journals the pins with the lease atomically.
-            if !tx.script_execution_admitted(&node, &activity).await? {
+            if !tx
+                .script_execution_admitted_instance(&instance, &activity)
+                .await?
+            {
                 metrics::counter!(
                     "quota_exceeded_total",
                     "limit" => QuotaResource::ScriptRetentionDays.limit_name()
@@ -911,7 +927,9 @@ where
                 continue;
             }
             match self
-                .lease_one(&mut tx, session, &node, activity, timeout, input, trace_id)
+                .lease_one(
+                    &mut tx, session, &instance, activity, timeout, input, trace_id,
+                )
                 .await
             {
                 Ok(task) => {
@@ -936,33 +954,58 @@ where
         &self,
         tx: &mut Tx,
         session: &SessionRecord,
-        node: &NodeId,
+        instance: &ExecutionInstanceId,
         trace_id: Option<&str>,
     ) -> Result<(), AppError> {
         let effects = Effects::by(
             Actor::Worker(session.id.to_string()),
             trace_id.map(str::to_owned),
         );
-        self.engine
-            .run(tx, effects, |def, state, now| {
-                let (fence, leased) = execution::lease_step(state, node)?;
-                let mut progress = execution::fail_step(
-                    def,
-                    state,
-                    node,
-                    execution::Failure {
-                        fence,
-                        code: FailureCode::run_data_limit(),
-                        retryable: false,
-                        jitter_sample: 0.0,
-                    },
-                    now,
-                )?;
-                progress.events.insert(0, leased);
-                Ok(((), progress))
-            })
-            .await
-            .map_err(engine_error)?;
+        if instance.path().is_root() {
+            let node = instance.node();
+            self.engine
+                .run(tx, effects, |def, state, now| {
+                    let (fence, leased) = execution::lease_step(state, node)?;
+                    let mut progress = execution::fail_step(
+                        def,
+                        state,
+                        node,
+                        execution::Failure {
+                            fence,
+                            code: FailureCode::run_data_limit(),
+                            retryable: false,
+                            jitter_sample: 0.0,
+                        },
+                        now,
+                    )?;
+                    progress.events.insert(0, leased);
+                    Ok(((), progress))
+                })
+                .await
+                .map_err(engine_error)?;
+        } else {
+            let instance = instance.clone();
+            self.engine
+                .run_addressed(tx, Vec::new(), effects, move |def, state, now| {
+                    let (fence, leased) = execution::lease_instance(state, &instance)?;
+                    let mut progress = execution::fail_instance(
+                        def,
+                        state,
+                        &instance,
+                        execution::Failure {
+                            fence,
+                            code: FailureCode::run_data_limit(),
+                            retryable: false,
+                            jitter_sample: 0.0,
+                        },
+                        now,
+                    )?;
+                    progress.events.insert(0, leased);
+                    Ok(((), progress))
+                })
+                .await
+                .map_err(engine_error)?;
+        }
         metrics::counter!("worker_task_input_rejected_total", "reason" => "run_data_limit")
             .increment(1);
         Ok(())
@@ -973,7 +1016,7 @@ where
         &self,
         tx: &mut Tx,
         session: &SessionRecord,
-        node: &NodeId,
+        instance: &ExecutionInstanceId,
         activity: ActivityName,
         timeout: Option<Duration>,
         input: Vec<u8>,
@@ -985,69 +1028,99 @@ where
             trace_id.map(str::to_owned),
         );
         effects.lease = Some(LeaseGrant {
-            node: node.clone(),
+            instance: instance.clone(),
             token_hash: token.hash(),
             worker_id: session.id.to_string(),
             ttl: self.settings.lease_ttl,
             attempt_timeout: timeout,
         });
-        let fence = self
-            .engine
-            .run(tx, effects, |_, state, _| {
-                let (fence, event) = execution::lease_step(state, node)?;
-                Ok((
-                    fence,
-                    Progress {
-                        events: vec![event],
-                        pending: None,
-                    },
-                ))
-            })
-            .await
-            .map_err(engine_error)?;
+        let fence = if instance.path().is_root() {
+            let node = instance.node();
+            self.engine
+                .run(tx, effects, |_, state, _| {
+                    let (fence, event) = execution::lease_step(state, node)?;
+                    Ok((
+                        fence,
+                        Progress {
+                            events: vec![event],
+                            pending: None,
+                        },
+                    ))
+                })
+                .await
+                .map_err(engine_error)?
+        } else {
+            let instance = instance.clone();
+            self.engine
+                .run_addressed(tx, Vec::new(), effects, move |_, state, _| {
+                    let (fence, event) = execution::lease_instance(state, &instance)?;
+                    Ok((
+                        fence,
+                        sagat_domain::execution::AddressedProgress {
+                            events: vec![event],
+                        },
+                    ))
+                })
+                .await
+                .map_err(engine_error)?
+        };
         let info = tx.info().clone();
         // The real expiry: a renewal never outlives the attempt deadline, so ask the row.
         let expires_at = tx
-            .lease_expiry(node)
+            .lease_expiry_instance(instance)
             .await?
             .unwrap_or_else(|| tx.now() + self.settings.lease_ttl);
         let run_id = info.run_id;
         let version = info.version_id;
         // The forward step a compensation or a reconciliation belongs to, and that step's template.
-        let (forward, kind, template) = {
+        let (forward, kind, template, templated_instance) = {
             let (def, _) = tx.parts();
-            let origin = def.node(node).map(|n| n.origin().clone());
+            let origin = def.node_for_instance(instance).map(|n| n.origin().clone());
             let forward = origin.as_ref().and_then(|o| o.forward().cloned());
             let kind = match origin {
                 Some(sagat_domain::saga::NodeOrigin::Compensation(_)) => TaskKind::Compensation,
                 Some(sagat_domain::saga::NodeOrigin::Reconciliation(_)) => TaskKind::Reconciliation,
                 _ => TaskKind::Forward,
             };
-            let templated = forward.as_ref().unwrap_or(node);
-            let template = match def.node(templated).map(sagat_domain::workflow::Node::kind) {
+            let templated_instance = ExecutionInstanceId::in_path(
+                instance.path().clone(),
+                forward.as_ref().unwrap_or(instance.node()).clone(),
+            );
+            let template = match def
+                .node_for_instance(&templated_instance)
+                .map(sagat_domain::workflow::Node::kind)
+            {
                 Some(NodeKind::Activity {
                     idempotency_template,
                     ..
                 }) => idempotency_template.clone(),
                 _ => None,
             };
-            (forward, kind, template)
+            (forward, kind, template, templated_instance)
         };
         // Borrowed, not cloned: a run's data can be megabytes and a poll leases many steps of it.
         let data = tx.data().await?;
         let input_blob = data.input_blob;
         // The key of the forward step: what identifies the effect at the provider.
-        let forward_node = forward.as_ref().unwrap_or(node);
+        let forward_node = forward.as_ref().unwrap_or(instance.node());
         let forward_key = match template {
-            Some(template) => self
-                .engine
-                .evaluator()
-                .idempotency_key(&template, data, forward_node)
-                .unwrap_or_else(|failure| {
+            Some(template) => match self.engine.evaluator().idempotency_key_instance(
+                &template,
+                data,
+                &templated_instance,
+            ) {
+                Ok(key) => key,
+                Err(failure) if instance.path().is_root() => {
                     tracing::warn!(error = %failure, node = %forward_node, "idempotency template failed; using the default key");
                     format!("{run_id}:{forward_node}")
-                }),
-            None => format!("{run_id}:{forward_node}"),
+                }
+                Err(failure) => {
+                    tracing::error!(error = %failure, instance = ?instance, "scoped idempotency context is unavailable");
+                    return Err(AppError::Internal);
+                }
+            },
+            None if instance.path().is_root() => format!("{run_id}:{forward_node}"),
+            None => format!("{run_id}:{}", instance_step_id(version, run_id, instance)),
         };
         let (idempotency_key, target) = match (kind, forward) {
             (TaskKind::Compensation, Some(forward)) => (
@@ -1066,11 +1139,10 @@ where
             ),
             _ => (forward_key, None),
         };
-        let instance = ExecutionInstanceId::root(node.clone());
         Ok(ClaimedTask {
             run_id,
-            step_id: instance_step_id(version, run_id, &instance),
-            instance,
+            step_id: instance_step_id(version, run_id, instance),
+            instance: instance.clone(),
             fence,
             lease_token: token,
             expires_at,
@@ -1099,39 +1171,52 @@ where
         self.ensure_bound(principal, &mut tx, task).await?;
         let mut effects = Effects::by(Actor::Worker(principal.subject().as_str().to_owned()), None);
         effects.renewal = Some(LeaseRenewal {
-            node: task.instance.node().clone(),
+            instance: task.instance.clone(),
             ttl: self.settings.lease_ttl,
         });
-        let node = task.instance.node().clone();
+        let instance = task.instance.clone();
         let fence = task.fence;
-        let cancel_requested = self
-            .engine
-            .run(&mut tx, effects, move |_, state, _| {
-                // A worker of protocol 1.0 does not say which attempt it is (`attempt` 0). The lease token,
-                // verified above, and the generation name the lease it holds; the attempt is the step's own.
-                let fence = if fence.attempt == 0 {
-                    Fence {
-                        attempt: state
-                            .step(&node)
-                            .map_or(0, sagat_domain::execution::StepState::attempt),
-                        ..fence
-                    }
-                } else {
-                    fence
-                };
-                let beat = execution::heartbeat(state, &node, fence)?;
-                Ok((
-                    beat.cancel_requested,
-                    Progress {
-                        events: beat.event.into_iter().collect(),
-                        pending: None,
-                    },
-                ))
-            })
-            .await
-            .map_err(engine_error)?;
+        let cancel_requested = if instance.path().is_root() {
+            let node = instance.node().clone();
+            self.engine
+                .run(&mut tx, effects, move |_, state, _| {
+                    let fence = if fence.attempt == 0 {
+                        Fence {
+                            attempt: state
+                                .step(&node)
+                                .map_or(0, sagat_domain::execution::StepState::attempt),
+                            ..fence
+                        }
+                    } else {
+                        fence
+                    };
+                    let beat = execution::heartbeat(state, &node, fence)?;
+                    Ok((
+                        beat.cancel_requested,
+                        Progress {
+                            events: beat.event.into_iter().collect(),
+                            pending: None,
+                        },
+                    ))
+                })
+                .await
+                .map_err(engine_error)?
+        } else {
+            self.engine
+                .run_addressed(&mut tx, Vec::new(), effects, move |_, state, _| {
+                    let beat = execution::heartbeat_instance(state, &instance, fence)?;
+                    Ok((
+                        beat.cancel_requested,
+                        sagat_domain::execution::AddressedProgress {
+                            events: beat.event.into_iter().collect(),
+                        },
+                    ))
+                })
+                .await
+                .map_err(engine_error)?
+        };
         let lease_expires_at = tx
-            .lease_expiry(task.instance.node())
+            .lease_expiry_instance(task.instance)
             .await?
             .unwrap_or_else(|| tx.now());
         tx.commit().await?;
@@ -1266,7 +1351,7 @@ where
         self.verify(&mut tx, task).await?;
         self.ensure_bound(principal, &mut tx, task).await?;
         if !tx
-            .lease_unexpired(task.instance.node(), &Token::hash_of(task.lease_token))
+            .lease_unexpired_instance(task.instance, &Token::hash_of(task.lease_token))
             .await?
         {
             return Err(AppError::StaleAttempt);
@@ -1343,6 +1428,72 @@ where
         }
     }
 
+    async fn apply_scoped_or_root_failure(
+        &self,
+        tx: &mut S::Tx,
+        task: &TaskRef<'_>,
+        effects: Effects,
+        failure: execution::Failure,
+    ) -> Result<(), AppError> {
+        if task.instance.path().is_root() {
+            let node = task.instance.node().clone();
+            self.engine
+                .run(tx, effects, move |def, state, now| {
+                    Ok(((), execution::fail_step(def, state, &node, failure, now)?))
+                })
+                .await
+                .map_err(engine_error)
+        } else {
+            let instance = task.instance.clone();
+            self.engine
+                .run_addressed(tx, Vec::new(), effects, move |def, state, now| {
+                    Ok((
+                        (),
+                        execution::fail_instance(def, state, &instance, failure, now)?,
+                    ))
+                })
+                .await
+                .map_err(engine_error)
+        }
+    }
+
+    async fn apply_scoped_or_root_completion(
+        &self,
+        tx: &mut S::Tx,
+        task: &TaskRef<'_>,
+        mut effects: Effects,
+        output: Option<Vec<u8>>,
+    ) -> Result<(), AppError> {
+        if task.instance.path().is_root() {
+            if let Some(output) = output {
+                effects.outputs = vec![(task.instance.node().clone(), output)];
+            }
+            let node = task.instance.node().clone();
+            let fence = task.fence;
+            self.engine
+                .run(tx, effects, move |def, state, now| {
+                    Ok(((), execution::complete_step(def, state, &node, fence, now)?))
+                })
+                .await
+                .map_err(engine_error)
+        } else {
+            let outputs = output
+                .map(|output| vec![(task.instance.clone(), output)])
+                .unwrap_or_default();
+            let instance = task.instance.clone();
+            let fence = task.fence;
+            self.engine
+                .run_addressed(tx, outputs, effects, move |def, state, _| {
+                    Ok((
+                        (),
+                        execution::complete_instance(def, state, &instance, fence)?,
+                    ))
+                })
+                .await
+                .map_err(engine_error)
+        }
+    }
+
     async fn complete_inner(
         &self,
         principal: &Principal,
@@ -1371,6 +1522,11 @@ where
         self.verify(&mut tx, task).await?;
         self.ensure_bound(principal, &mut tx, task).await?;
         if blob.is_some() {
+            if !task.instance.path().is_root() {
+                return Err(AppError::NotAllowed(
+                    "blob output for a scoped task is not enabled",
+                ));
+            }
             if task.instance.node().is_reconciliation() || task.instance.node().is_compensation() {
                 return Err(AppError::NotAllowed(
                     "blob output requires a forward activity",
@@ -1382,7 +1538,7 @@ where
                 ));
             }
             if !tx
-                .lease_unexpired(task.instance.node(), &Token::hash_of(task.lease_token))
+                .lease_unexpired_instance(task.instance, &Token::hash_of(task.lease_token))
                 .await?
             {
                 return Err(AppError::StaleAttempt);
@@ -1395,22 +1551,20 @@ where
             // A detection, counted when found: should the commit below fail the retry finds it again.
             metrics::counter!("secret_output_detected_total").increment(1);
             effects.audit = Some(self.leak_audit(principal, &tx, task, &name, "output"));
-            let node = task.instance.node().clone();
-            let fence = task.fence;
             let fallback_audit = effects.audit.clone();
             let completed = self
-                .engine
-                .run(&mut tx, effects, move |def, state, now| {
-                    let failure = execution::Failure {
-                        fence,
+                .apply_scoped_or_root_failure(
+                    &mut tx,
+                    task,
+                    effects,
+                    execution::Failure {
+                        fence: task.fence,
                         code: FailureCode::secret_in_output(),
                         retryable: false,
                         jitter_sample: 0.0,
-                    };
-                    Ok(((), execution::fail_step(def, state, &node, failure, now)?))
-                })
-                .await
-                .map_err(engine_error);
+                    },
+                )
+                .await;
             let result = match completed {
                 Ok(()) => self.finish(tx, task, idempotency.clone()).await,
                 Err(error) => {
@@ -1461,21 +1615,19 @@ where
         // a completion that would exceed it fails the step (a retry would only exceed it again).
         let retained: usize = tx.data().await?.outputs.values().map(Vec::len).sum();
         if retained + output.len() > MAX_RUN_OUTPUT_BYTES {
-            let node = task.instance.node().clone();
-            let fence = task.fence;
             let completed = self
-                .engine
-                .run(&mut tx, effects, move |def, state, now| {
-                    let failure = execution::Failure {
-                        fence,
+                .apply_scoped_or_root_failure(
+                    &mut tx,
+                    task,
+                    effects,
+                    execution::Failure {
+                        fence: task.fence,
                         code: FailureCode::run_data_limit(),
                         retryable: false,
                         jitter_sample: 0.0,
-                    };
-                    Ok(((), execution::fail_step(def, state, &node, failure, now)?))
-                })
-                .await
-                .map_err(engine_error);
+                    },
+                )
+                .await;
             let result = match completed {
                 Ok(()) => self.finish(tx, task, idempotency.clone()).await,
                 Err(error) => {
@@ -1487,18 +1639,10 @@ where
                 .recover_success_storage_quota(principal, task, idempotency, None, result)
                 .await;
         }
-        effects.outputs = vec![(task.instance.node().clone(), output.to_vec())];
         effects.blobs = blob.into_iter().collect();
-        let node = task.instance.node().clone();
-        let fence = task.fence;
         let completed = self
-            .engine
-            .run(&mut tx, effects, move |def, state, now| {
-                let progress = execution::complete_step(def, state, &node, fence, now)?;
-                Ok(((), progress))
-            })
-            .await
-            .map_err(engine_error);
+            .apply_scoped_or_root_completion(&mut tx, task, effects, Some(output.to_vec()))
+            .await;
         let result = match completed {
             Ok(()) => self.finish(tx, task, idempotency.clone()).await,
             Err(error) => {
@@ -1547,18 +1691,33 @@ where
         }
         self.verify(&mut tx, task).await?;
         self.ensure_bound(principal, &mut tx, task).await?;
-        let node = task.instance.node().clone();
-        let fence = task.fence;
         let mut effects = Effects::by(Actor::Worker(principal.subject().as_str().to_owned()), None);
         effects.audit = audit;
-        self.engine
-            .run(&mut tx, effects, move |def, state, now| {
-                let progress =
-                    execution::fail_step_for_storage_quota(def, state, &node, fence, now)?;
-                Ok(((), progress))
-            })
-            .await
-            .map_err(engine_error)?;
+        if task.instance.path().is_root() {
+            let node = task.instance.node().clone();
+            let fence = task.fence;
+            self.engine
+                .run(&mut tx, effects, move |def, state, now| {
+                    let progress =
+                        execution::fail_step_for_storage_quota(def, state, &node, fence, now)?;
+                    Ok(((), progress))
+                })
+                .await
+                .map_err(engine_error)?;
+        } else {
+            self.apply_scoped_or_root_failure(
+                &mut tx,
+                task,
+                effects,
+                execution::Failure {
+                    fence: task.fence,
+                    code: FailureCode::storage_quota_exceeded(),
+                    retryable: false,
+                    jitter_sample: 0.0,
+                },
+            )
+            .await?;
+        }
         self.finish(tx, task, idempotency).await
     }
 
@@ -1673,30 +1832,22 @@ where
             code = FailureCode::secret_in_output();
             retryable = false;
         }
-        let node = task.instance.node().clone();
-        let fence = task.fence;
         let jitter = self.entropy.unit();
         let fallback_code = code.clone();
         let fallback_audit = effects.audit.clone();
         let completed = self
-            .engine
-            .run(&mut tx, effects, move |def, state, now| {
-                let progress = execution::fail_step(
-                    def,
-                    state,
-                    &node,
-                    execution::Failure {
-                        fence,
-                        code,
-                        retryable,
-                        jitter_sample: jitter,
-                    },
-                    now,
-                )?;
-                Ok(((), progress))
-            })
-            .await
-            .map_err(engine_error);
+            .apply_scoped_or_root_failure(
+                &mut tx,
+                task,
+                effects,
+                execution::Failure {
+                    fence: task.fence,
+                    code,
+                    retryable,
+                    jitter_sample: jitter,
+                },
+            )
+            .await;
         let result = match completed {
             Ok(()) => self.finish(tx, task, idempotency.clone()).await,
             Err(error) => {
@@ -1750,18 +1901,34 @@ where
         }
         self.verify(&mut tx, task).await?;
         self.ensure_bound(principal, &mut tx, task).await?;
-        let node = task.instance.node().clone();
-        let fence = task.fence;
         let mut effects = Effects::by(Actor::Worker(principal.subject().as_str().to_owned()), None);
         effects.audit = audit;
-        self.engine
-            .run(&mut tx, effects, move |def, state, now| {
-                let progress =
-                    execution::fail_report_for_storage_quota(def, state, &node, fence, code, now)?;
-                Ok(((), progress))
-            })
-            .await
-            .map_err(engine_error)?;
+        if task.instance.path().is_root() {
+            let node = task.instance.node().clone();
+            let fence = task.fence;
+            self.engine
+                .run(&mut tx, effects, move |def, state, now| {
+                    let progress = execution::fail_report_for_storage_quota(
+                        def, state, &node, fence, code, now,
+                    )?;
+                    Ok(((), progress))
+                })
+                .await
+                .map_err(engine_error)?;
+        } else {
+            self.apply_scoped_or_root_failure(
+                &mut tx,
+                task,
+                effects,
+                execution::Failure {
+                    fence: task.fence,
+                    code: FailureCode::storage_quota_exceeded(),
+                    retryable: false,
+                    jitter_sample: 0.0,
+                },
+            )
+            .await?;
+        }
         self.finish(tx, task, idempotency).await
     }
 
@@ -1846,7 +2013,7 @@ where
     /// The secrets the step declares, from its definition.
     fn declared_secrets<Tx: RunTx>(tx: &mut Tx, task: &TaskRef<'_>) -> Vec<SecretName> {
         let (def, _) = tx.parts();
-        def.node(task.instance.node())
+        def.node_for_instance(task.instance)
             .map(|node| node.secrets().to_vec())
             .unwrap_or_default()
     }
@@ -1883,7 +2050,7 @@ where
         // The capability ends when the lease does, not when the scheduler gets round to reclaiming
         // the attempt: a worker that stopped renewing no longer gets to read secrets.
         if !tx
-            .lease_unexpired(task.instance.node(), &Token::hash_of(task.lease_token))
+            .lease_unexpired_instance(task.instance, &Token::hash_of(task.lease_token))
             .await?
         {
             return Err(AppError::StaleAttempt);
@@ -2053,7 +2220,7 @@ where
         let activity = {
             let (def, _) = tx.parts();
             match def
-                .node(task.instance.node())
+                .node_for_instance(task.instance)
                 .map(sagat_domain::workflow::Node::kind)
             {
                 Some(NodeKind::Activity { activity, .. }) => activity.to_string(),
@@ -2083,7 +2250,7 @@ where
             }
         }
         if tx
-            .lease_matches(task.instance.node(), &Token::hash_of(task.lease_token))
+            .lease_matches_instance(task.instance, &Token::hash_of(task.lease_token))
             .await?
         {
             Ok(())
@@ -2164,7 +2331,9 @@ fn engine_error(error: EngineError) -> AppError {
         EngineError::Store(store) => store.into(),
         EngineError::Execution(
             sagat_domain::execution::ExecutionError::StaleAttempt { .. }
+            | sagat_domain::execution::ExecutionError::StaleInstanceAttempt { .. }
             | sagat_domain::execution::ExecutionError::IllegalTransition { .. }
+            | sagat_domain::execution::ExecutionError::IllegalInstanceTransition { .. }
             | sagat_domain::execution::ExecutionError::RunFinished(_),
         ) => AppError::StaleAttempt,
         EngineError::Execution(other) => execution_error(&other),

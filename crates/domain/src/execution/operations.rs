@@ -763,6 +763,8 @@ pub enum OperationError {
     UnsupportedDisclosure,
     #[error("update key must be 1..128 printable ASCII characters without spaces")]
     InvalidUpdateKey,
+    #[error("operation arguments do not match the declared schema")]
+    InvalidArguments,
     #[error("operation state or result exceeds 256 KiB")]
     ValueTooLarge,
     #[error("an update cannot change the pinned state schema")]
