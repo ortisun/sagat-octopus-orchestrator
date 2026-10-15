@@ -394,3 +394,50 @@ async fn locked_run_restores_every_scoped_instance_of_the_same_node() {
         "graph projection retains each logical instance"
     );
 }
+
+#[tokio::test]
+async fn old_worker_candidate_query_does_not_offer_scoped_ready_steps() {
+    let w = world().await;
+    let (workflow, _) = w.publish(chain("scoped-claim-gate")).await;
+    let run = w.start(workflow, &json!({})).await;
+    let tenant = w.admin.tenant_id().as_uuid();
+
+    sqlx::query(
+        "INSERT INTO steps \
+         SELECT (jsonb_populate_record(NULL::steps, to_jsonb(s) || jsonb_build_object( \
+             'step_id', $3::text, \
+             'instance_path_nodes', jsonb_build_array('items'), \
+             'instance_path_indices', jsonb_build_array(0) \
+         ))).* \
+         FROM steps s \
+         WHERE s.tenant_id = $1 AND s.run_id = $2 AND s.node = 'a' \
+           AND cardinality(s.instance_path_nodes) = 0",
+    )
+    .bind(tenant)
+    .bind(run.as_uuid())
+    .bind(Uuid::now_v7())
+    .execute(&w.db.pool)
+    .await
+    .expect("scoped ready fixture");
+    sqlx::query(
+        "UPDATE steps SET status = 'SUCCEEDED', routed = true \
+         WHERE tenant_id = $1 AND run_id = $2 AND node = 'a' \
+           AND cardinality(instance_path_nodes) = 0",
+    )
+    .bind(tenant)
+    .bind(run.as_uuid())
+    .execute(&w.db.pool)
+    .await
+    .expect("leave scoped work as the only ready step");
+
+    let candidates: Vec<Uuid> = sqlx::query_scalar(sagat_infra_postgres::CLAIMABLE_SQL)
+        .bind(tenant)
+        .bind(w.namespace.id().as_uuid())
+        .bind(vec!["act.a".to_owned()])
+        .bind(8_i64)
+        .bind(4_i32)
+        .fetch_all(&w.db.pool)
+        .await
+        .expect("root-only candidates");
+    assert!(candidates.is_empty());
+}

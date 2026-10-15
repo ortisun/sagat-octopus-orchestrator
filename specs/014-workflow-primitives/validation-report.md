@@ -227,3 +227,7 @@ An earlier `cargo test -p sagat-tests --no-run --locked` reached test linking an
 passed afterward. A complete workspace test run remains a release gate. Planner admission, full
 scope/journal projection, tenant-wide quota, worker 1.5, scoped fault tests and publication support
 are still pending; no collection runtime guarantee is claimed by this checkpoint.
+
+The candidate query was subsequently restricted to root instance paths. A real-PostgreSQL test
+placed a scoped READY step beside a non-ready root step and confirmed that a protocol-1.4 worker
+receives no candidate run (`old_worker_candidate_query_does_not_offer_scoped_ready_steps`, passed).
