@@ -3,7 +3,7 @@
 **Feature Branch**: `feature/workflow-primitives`
 **Created**: 2026-10-14
 **Revised**: 2026-10-14, after validation against accepted ADRs and canonical contracts ([analysis](./analysis.md))
-**Status**: Architecture accepted in ADR-0030/0031/0032; runtime implementation pending
+**Status**: Architecture accepted in ADR-0030/0031/0032; runtime implementation partial
 **Input**: Specify additional workflow primitives with Spec Kit and improve practical workflow examples in TypeScript, Go, Python, C# and Java.
 
 ## Context and delivery boundary
@@ -13,7 +13,10 @@ condition is met, request a person's decision, inspect/change a workflow's busin
 continue a long-lived process without an ever-growing individual run.
 
 The accepted implementation scope includes US01–US07. US01 supplies practical examples of
-**existing** behavior; US02–US07 remain pending runtime implementation and release evidence.
+**existing** behavior. Bounded switch, run-addressed declared Query/Update and root approval have
+public runtime evidence; collections, loops and continuation have private durable slices but
+remain closed for general publication. The remaining acceptance and release evidence is tracked
+in [the validation report](./validation-report.md).
 [ADR-0030](../../docs/adr/ADR-0030-structured-instances-and-continuation-chains.md) accepts the
 execution design and [ADR-0031](../../docs/adr/ADR-0031-declared-operation-result-disclosure.md)
 accepts the declared-result disclosure policy. [ADR-0032](../../docs/adr/ADR-0032-additive-workflow-ir.md)

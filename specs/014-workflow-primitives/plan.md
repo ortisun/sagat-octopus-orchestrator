@@ -8,8 +8,9 @@
 
 Deliver current-API order examples for all five SDKs (US01), then implement bounded dynamic
 collections, sequential loops, native approval, switch, declarative Query/Update and run-chain
-continuation (US02–US07) through accepted dependency-ordered slices. US01 has runtime evidence;
-the primitive implementation/release tasks remain pending until their named tests pass.
+continuation (US02–US07) through accepted dependency-ordered slices. US01, bounded switch,
+run-addressed Query/Update and root approval have public runtime evidence. Other primitive
+implementation and release tasks remain open until their named tests pass.
 The design retains an acyclic immutable IR, adds durable scoped instance identities and reuses the
 pure reducer, PostgreSQL transaction boundary, leases, quotas and outbox.
 
