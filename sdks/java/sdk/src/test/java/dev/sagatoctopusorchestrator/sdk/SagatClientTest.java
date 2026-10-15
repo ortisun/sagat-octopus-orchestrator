@@ -541,6 +541,56 @@ class SagatClientTest {
     }
 
     @Test
+    void anApprovalDecisionUsesItsBodyKeyAndReturnsATypedReceipt() {
+        String approvalId = "0190aaaa-0000-7000-8000-000000000099";
+        server.prepare((req, reply) -> reply.send(200,
+                "{\"receiptId\":\"0190aaaa-0000-7000-8000-000000000100\",\"approvalId\":\"" + approvalId
+                        + "\",\"decisionKey\":\"review-1\",\"decision\":\"APPROVE\",\"reasonCode\":\"POLICY_OK\","
+                        + "\"actor\":\"alice\",\"decidedAt\":\"2026-10-15T10:00:00Z\",\"outcomeSequence\":7,"
+                        + "\"replayed\":false,\"futureField\":\"kept\"}"));
+        ApprovalDecisionReceipt receipt = client().decideApproval(
+                approvalId,
+                ApprovalDecision.APPROVE,
+                ApprovalDecisionOptions.create("review-1").reasonCode("POLICY_OK").traceparent(TRACE));
+        FakeRestServer.Seen request = server.seen.get(0);
+        assertEquals("/v1/approvals/" + approvalId + "/decisions", request.path());
+        assertEquals("{\"decisionKey\":\"review-1\",\"decision\":\"APPROVE\",\"reasonCode\":\"POLICY_OK\"}", request.rawBody());
+        assertEquals(null, request.header("idempotency-key"));
+        assertEquals(Instant.parse("2026-10-15T10:00:00Z"), receipt.decidedAt());
+        assertEquals(7L, receipt.outcomeSequence());
+        assertEquals("kept", receipt.raw().path("futureField").textValue());
+    }
+
+    @Test
+    void anApprovalDecisionSurfacesAuthorizationAndIdempotencyFailures() {
+        String approvalId = "0190aaaa-0000-7000-8000-000000000099";
+        Object[][] failures = {{403, ErrorCode.FORBIDDEN, "NOT_ELIGIBLE"}, {409, ErrorCode.CONFLICT, "IDEMPOTENCY_KEY_REUSED"}};
+        for (Object[] failure : failures) {
+            int status = (Integer) failure[0];
+            ErrorCode code = (ErrorCode) failure[1];
+            String reason = (String) failure[2];
+            server.prepare((req, reply) -> reply.send(status,
+                    "{\"code\":\"" + code + "\",\"message\":\"refused\",\"retryable\":false,\"details\":{\"reason\":\"" + reason + "\"}}"));
+            SagatException error = assertThrows(SagatException.class, () -> client().decideApproval(
+                    approvalId, ApprovalDecision.REJECT, ApprovalDecisionOptions.create("review-1")));
+            assertEquals(code, error.code());
+            assertEquals(status, error.httpStatus().getAsInt());
+            assertEquals(reason, error.reason().orElseThrow());
+        }
+    }
+
+    @Test
+    void malformedApprovalDecisionInputIsRejectedBeforeAnythingIsSent() {
+        server.prepare((req, reply) -> reply.send(500, ""));
+        SagatClient c = client();
+        assertThrows(SagatException.class, () -> c.decideApproval(
+                "../other", ApprovalDecision.APPROVE, ApprovalDecisionOptions.create("review-1")));
+        assertThrows(SagatException.class, () -> c.decideApproval(
+                "0190aaaa-0000-7000-8000-000000000099", ApprovalDecision.APPROVE, ApprovalDecisionOptions.create("bad key")));
+        assertEquals(0, server.seen.size());
+    }
+
+    @Test
     void waitingForCompletionPollsUntilTheRunIsTerminal() {
         AtomicInteger polls = new AtomicInteger();
         server.prepare((req, reply) -> reply.send(200, run("status", polls.incrementAndGet() < 3 ? "\"RUNNING\"" : "\"SUCCEEDED\"")));

@@ -247,6 +247,68 @@ func TestAnEventWithoutAnIDGetsOnePerCallKeptAcrossRetriesSoARepetitionIsADuplic
 	}
 }
 
+func TestAnApprovalDecisionUsesItsBodyKeyAndReturnsATypedReceipt(t *testing.T) {
+	f := newFake(t)
+	approvalID := "0190aaaa-0000-7000-8000-000000000099"
+	f.answer(func(_ seen, w http.ResponseWriter) {
+		reply(w, 200, map[string]any{
+			"receiptId": "0190aaaa-0000-7000-8000-000000000100", "approvalId": approvalID,
+			"decisionKey": "review-1", "decision": "APPROVE", "reasonCode": "POLICY_OK", "actor": "alice",
+			"decidedAt": "2026-10-15T10:00:00Z", "outcomeSequence": 7, "replayed": false, "futureField": "kept",
+		})
+	})
+	receipt, err := newClient(t, f).DecideApproval(context.Background(), approvalID, client.ApprovalDecisionRequest{
+		DecisionKey: "review-1", Decision: client.ApprovalApprove, ReasonCode: "POLICY_OK",
+	}, client.WithTraceparent("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := f.requests()[0]
+	if request.url != "/v1/approvals/"+approvalID+"/decisions" || request.headers.Get("Idempotency-Key") != "" {
+		t.Errorf("%s headers=%v", request.url, request.headers)
+	}
+	if body := request.json(t); body["decisionKey"] != "review-1" || body["decision"] != "APPROVE" || body["reasonCode"] != "POLICY_OK" {
+		t.Errorf("%v", body)
+	}
+	if receipt.OutcomeSequence != 7 || receipt.DecidedAt.UTC().Format(time.RFC3339) != "2026-10-15T10:00:00Z" || string(receipt.Raw["futureField"]) != `"kept"` {
+		t.Errorf("%+v", receipt)
+	}
+}
+
+func TestAnApprovalDecisionSurfacesAuthorizationAndIdempotencyFailuresAndRejectsMalformedInputLocally(t *testing.T) {
+	f := newFake(t)
+	approvalID := "0190aaaa-0000-7000-8000-000000000099"
+	c := newClient(t, f)
+	for _, failure := range []struct {
+		status int
+		code   sagat.Code
+		reason string
+	}{{403, sagat.CodeForbidden, "NOT_ELIGIBLE"}, {409, sagat.CodeConflict, "IDEMPOTENCY_KEY_REUSED"}} {
+		f.answer(func(_ seen, w http.ResponseWriter) {
+			reply(w, failure.status, map[string]any{"code": string(failure.code), "message": "refused", "retryable": false, "details": map[string]any{"reason": failure.reason}})
+		})
+		_, err := c.DecideApproval(context.Background(), approvalID, client.ApprovalDecisionRequest{DecisionKey: "review-1", Decision: client.ApprovalReject})
+		if se := asSagat(t, err); se.Code != failure.code || se.HTTPStatus != failure.status || se.Reason != failure.reason {
+			t.Errorf("%+v", se)
+		}
+	}
+	f.answer(func(_ seen, w http.ResponseWriter) { reply(w, 500, nil) })
+	for _, request := range []struct {
+		id   string
+		body client.ApprovalDecisionRequest
+	}{
+		{"../other", client.ApprovalDecisionRequest{DecisionKey: "review-1", Decision: client.ApprovalApprove}},
+		{approvalID, client.ApprovalDecisionRequest{DecisionKey: "bad key", Decision: client.ApprovalApprove}},
+	} {
+		if _, err := c.DecideApproval(context.Background(), request.id, request.body); !sagat.IsCode(err, sagat.CodeValidationFailed) {
+			t.Errorf("%v", err)
+		}
+	}
+	if len(f.requests()) != 0 {
+		t.Errorf("malformed decisions sent %d requests", len(f.requests()))
+	}
+}
+
 func TestGetIsRetriedOnUnavailabilityAndOnRateLimitingHonouringRetryAfterAndGivesUpAfterTheAttempts(t *testing.T) {
 	f := newFake(t)
 	attempts := 0

@@ -336,6 +336,23 @@ func playStep(ctx context.Context, step object, op string, c *client.Client, con
 			return nil, err
 		}
 		return object{"accepted": result.Accepted, "runStatus": orNull(string(result.RunStatus))}, nil
+	case "decideApproval":
+		request := client.ApprovalDecisionRequest{
+			DecisionKey: asString(step["decisionKey"]), Decision: client.ApprovalDecision(asString(step["decision"])), ReasonCode: asString(step["reasonCode"]),
+		}
+		opts := []client.CallOption{}
+		if value := asString(step["traceparent"]); value != "" {
+			opts = append(opts, client.WithTraceparent(value))
+		}
+		receipt, err := c.DecideApproval(ctx, asString(step["approvalId"]), request, opts...)
+		if err != nil {
+			return nil, err
+		}
+		return object{
+			"receiptId": receipt.ReceiptID, "approvalId": receipt.ApprovalID, "decisionKey": receipt.DecisionKey,
+			"decision": string(receipt.Decision), "reasonCode": orNull(receipt.ReasonCode), "actor": receipt.Actor,
+			"decidedAt": iso(receipt.DecidedAt), "outcomeSequence": receipt.OutcomeSequence, "replayed": receipt.Replayed,
+		}, nil
 	case "signal":
 		id, err := runOf(step)
 		if err != nil {

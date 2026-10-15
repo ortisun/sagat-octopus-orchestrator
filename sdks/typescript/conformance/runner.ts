@@ -394,6 +394,17 @@ async function run(scenario: Obj, config: Obj): Promise<Obj> {
           result = { accepted: r.accepted, runStatus: r.runStatus };
           break;
         }
+        case 'decideApproval': {
+          const r = await client.decideApproval(step['approvalId'], step['decision'], {
+            decisionKey: step['decisionKey'], reasonCode: step['reasonCode'], traceparent: step['traceparent'],
+          });
+          result = {
+            receiptId: r.receiptId, approvalId: r.approvalId, decisionKey: r.decisionKey, decision: r.decision,
+            reasonCode: r.reasonCode, actor: r.actor, decidedAt: r.decidedAt.toISOString(),
+            outcomeSequence: r.outcomeSequence, replayed: r.replayed,
+          };
+          break;
+        }
         case 'signal': result = { ...(await client.signal(runOf(step), step['name'], step['payload'] ?? {})) }; break;
         case 'publishEvent': {
           const r = await client.publishEvent({ type: step['type'], data: step['data'] ?? {}, eventId: step['eventId'], correlationKey: step['correlationKey'] });

@@ -82,6 +82,15 @@ rm tests/contract/sdk-conformance/scenarios/scoped-identity.json
 Enable the fixture permanently only when worker activity context and logs expose typed instance identity, graph inspection exposes each logical
 instance, scoped work is withheld from older workers, and a reviewed cross-language runtime golden exists.
 
+`approval-decisions.json.pending` exercises the public approval decision call implemented by all five
+SDKs: authentication, tenant isolation, a successful durable receipt, exact replay and conflicting reuse
+of the body decision key. It remains pending because the scheduler does not yet create a native approval
+request or expose its identifier to the runtime scenario. The SDK unit suites cover request shape,
+typed receipt parsing, authorization/conflict envelopes and local validation meanwhile. Enable this
+fixture only after the runtime creates the request through the public workflow path and the harness
+can resolve `{{approvalId:start:review}}` from that public state; do not seed a private store to make
+the scenario pass.
+
 ## What each SDK ships
 
 `sdks/<language>/conformance/` with two executables (shell scripts, `chmod +x`):
@@ -219,6 +228,7 @@ stop the scenario.
 | `list` | `status?`, `limit?`, `all?` | `list` / `listAll` | `{items: [runId…]}` in the order the server gave (newest first), also across pages |
 | `cancel` | `run`, `reason`, `expectedRunVersion?` | `cancel` | `{accepted, runStatus}` |
 | `operate` | `run`, `action`, `reason`, … | `operate` | `{accepted, runStatus}` |
+| `decideApproval` | `approvalId`, `decisionKey`, `decision`, `reasonCode?`, `traceparent?`, `token?` | `decideApproval` | the normalized durable receipt |
 | `signal` | `run`, `name`, `payload` | `signal` | `{deliveredTo}` |
 | `publishEvent` | `type`, `data`, `eventId?`, `correlationKey?` | `publishEvent` | `{eventId, status}` |
 | `waitForCompletion` | `run`, `timeoutMs` | `waitForCompletion` | the Run |

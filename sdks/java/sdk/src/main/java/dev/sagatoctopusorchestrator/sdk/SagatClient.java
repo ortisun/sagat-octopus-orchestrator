@@ -41,6 +41,8 @@ import java.util.stream.StreamSupport;
 public final class SagatClient implements AutoCloseable {
     private static final Pattern UUID_TEXT = Pattern.compile("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", Pattern.CASE_INSENSITIVE);
     private static final Pattern KEY = Pattern.compile("^[\\x21-\\x7e]{8,160}$");
+    private static final Pattern APPROVAL_DECISION_KEY = Pattern.compile("^[\\x21-\\x7e]{1,128}$");
+    private static final Pattern APPROVAL_REASON_CODE = Pattern.compile("^[A-Za-z0-9_.:-]{1,64}$");
     private static final long NAME_CACHE_MILLIS = 60_000;
 
     private final ClientConfig config;
@@ -441,6 +443,55 @@ public final class SagatClient implements AutoCloseable {
 
     public CompletableFuture<OperationResult> cancelAsync(String runId, String reason, OperateOptions options) {
         return async(() -> cancel(runId, reason, options));
+    }
+
+    /** Records an eligible actor's durable decision for an approval request. */
+    public ApprovalDecisionReceipt decideApproval(String approvalId, ApprovalDecision decision, ApprovalDecisionOptions options) {
+        if (approvalId == null || !UUID_TEXT.matcher(approvalId).matches()) {
+            throw SagatException.invalid("an approval id is a UUID");
+        }
+        if (decision == null) {
+            throw SagatException.invalid("an approval decision is APPROVE or REJECT");
+        }
+        if (options == null || options.decisionKey() == null || !APPROVAL_DECISION_KEY.matcher(options.decisionKey()).matches()) {
+            throw SagatException.invalid("an approval decision key is 1 to 128 printable ASCII characters");
+        }
+        if (options.reasonCode() != null && !APPROVAL_REASON_CODE.matcher(options.reasonCode()).matches()) {
+            throw SagatException.invalid("an approval reason code is 1 to 64 letters, digits, dots, underscores, colons or hyphens");
+        }
+        ObjectNode body = JsonNodeFactory.instance.objectNode();
+        body.put("decisionKey", options.decisionKey());
+        body.put("decision", decision.name());
+        if (options.reasonCode() != null) {
+            body.put("reasonCode", options.reasonCode());
+        }
+        RestClient.Response response = http.request(new RestClient.Request(
+                "POST", "/approvals/" + approvalId.toLowerCase(Locale.ROOT) + "/decisions", null, body, null,
+                trace(options.traceparent()), true));
+        JsonNode raw = object(response.body(), "an approval decision receipt");
+        ApprovalDecision received;
+        try {
+            received = ApprovalDecision.valueOf(str(raw, "decision"));
+        } catch (IllegalArgumentException error) {
+            throw SagatException.of(ErrorCode.PROTOCOL, "decision is invalid in the answer");
+        }
+        Instant decidedAt = optInstant(raw, "decidedAt");
+        if (decidedAt == null) {
+            throw SagatException.of(ErrorCode.PROTOCOL, "decidedAt is missing from the answer");
+        }
+        JsonNode sequence = raw.path("outcomeSequence");
+        if (!sequence.isIntegralNumber() || sequence.longValue() < 1) {
+            throw SagatException.of(ErrorCode.PROTOCOL, "outcomeSequence is invalid in the answer");
+        }
+        return new ApprovalDecisionReceipt(
+                str(raw, "receiptId"), str(raw, "approvalId"), str(raw, "decisionKey"), received,
+                optStr(raw, "reasonCode"), str(raw, "actor"), decidedAt, sequence.longValue(),
+                raw.path("replayed").isBoolean() && raw.path("replayed").booleanValue(), raw);
+    }
+
+    public CompletableFuture<ApprovalDecisionReceipt> decideApprovalAsync(
+            String approvalId, ApprovalDecision decision, ApprovalDecisionOptions options) {
+        return async(() -> decideApproval(approvalId, decision, options));
     }
 
     /** Sends a signal to the steps of a run that wait for it; a signal nobody waits for is a {@code CONFLICT}. */

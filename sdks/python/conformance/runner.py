@@ -563,6 +563,25 @@ async def run(scenario: Obj, config: Obj) -> Obj:
                         error_code=step.get("errorCode"),
                     )
                     result = {"accepted": operated.accepted, "runStatus": operated.run_status}
+                elif op == "decideApproval":
+                    receipt = await client.decide_approval(
+                        step["approvalId"],
+                        step["decision"],
+                        decision_key=step["decisionKey"],
+                        reason_code=step.get("reasonCode"),
+                        traceparent=step.get("traceparent"),
+                    )
+                    result = {
+                        "receiptId": receipt.receipt_id,
+                        "approvalId": receipt.approval_id,
+                        "decisionKey": receipt.decision_key,
+                        "decision": receipt.decision,
+                        "reasonCode": receipt.reason_code,
+                        "actor": receipt.actor,
+                        "decidedAt": receipt.decided_at.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+                        "outcomeSequence": receipt.outcome_sequence,
+                        "replayed": receipt.replayed,
+                    }
                 elif op == "signal":
                     signalled = await client.signal(run_of(step), step["name"], step.get("payload") or {})
                     result = {"deliveredTo": list(signalled.delivered_to)}

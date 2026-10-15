@@ -9,6 +9,9 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import dev.sagatoctopusorchestrator.sdk.CallOptions;
+import dev.sagatoctopusorchestrator.sdk.ApprovalDecision;
+import dev.sagatoctopusorchestrator.sdk.ApprovalDecisionOptions;
+import dev.sagatoctopusorchestrator.sdk.ApprovalDecisionReceipt;
 import dev.sagatoctopusorchestrator.sdk.ClientConfig;
 import dev.sagatoctopusorchestrator.sdk.EventAccepted;
 import dev.sagatoctopusorchestrator.sdk.EventInput;
@@ -730,6 +733,29 @@ public final class Runner {
                 }
                 return operation(client.operate(
                         runOf(step, results), OperateAction.valueOf(step.get("action").asText()), step.get("reason").asText(), options));
+            }
+            case "decideApproval": {
+                ApprovalDecisionOptions options = ApprovalDecisionOptions.create(step.get("decisionKey").asText());
+                if (step.has("reasonCode")) {
+                    options.reasonCode(step.get("reasonCode").asText());
+                }
+                if (step.has("traceparent")) {
+                    options.traceparent(step.get("traceparent").asText());
+                }
+                ApprovalDecisionReceipt receipt = client.decideApproval(
+                        step.get("approvalId").asText(), ApprovalDecision.valueOf(step.get("decision").asText()), options);
+                ObjectNode result = F.objectNode();
+                result.put("receiptId", receipt.receiptId());
+                result.put("approvalId", receipt.approvalId());
+                result.put("decisionKey", receipt.decisionKey());
+                result.put("decision", receipt.decision().name());
+                if (receipt.reasonCode() == null) result.putNull("reasonCode"); else result.put("reasonCode", receipt.reasonCode());
+                result.put("actor", receipt.actor());
+                result.put("decidedAt", java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")
+                        .withZone(java.time.ZoneOffset.UTC).format(receipt.decidedAt()));
+                result.put("outcomeSequence", receipt.outcomeSequence());
+                result.put("replayed", receipt.replayed());
+                return result;
             }
             case "signal": {
                 SignalResult signalled = client.signal(

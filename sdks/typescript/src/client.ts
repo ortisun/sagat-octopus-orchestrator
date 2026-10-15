@@ -81,6 +81,28 @@ export interface OperationResult {
   raw: Record<string, unknown>;
 }
 
+export type ApprovalDecision = 'APPROVE' | 'REJECT';
+
+export interface ApprovalDecisionOptions {
+  /** Unique key for this decision. Reuse it only when retrying the same decision. */
+  decisionKey: string;
+  reasonCode?: string;
+  traceparent?: string;
+}
+
+export interface ApprovalDecisionReceipt {
+  receiptId: string;
+  approvalId: string;
+  decisionKey: string;
+  decision: ApprovalDecision;
+  reasonCode: string | null;
+  actor: string;
+  decidedAt: Date;
+  outcomeSequence: number;
+  replayed: boolean;
+  raw: Record<string, unknown>;
+}
+
 export interface SignalResult {
   deliveredTo: string[];
 }
@@ -126,6 +148,8 @@ function segmentOf(value: string, what: string): string {
   return value;
 }
 const KEY = /^[\x21-\x7e]{8,160}$/;
+const APPROVAL_DECISION_KEY = /^[\x21-\x7e]{1,128}$/;
+const REASON_CODE = /^[A-Za-z0-9_.:-]{1,64}$/;
 
 function object(value: unknown, what: string): Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
@@ -385,6 +409,47 @@ export class SagatClient {
   /** Cancels a run (the server's reason has 8 to 2000 characters). */
   cancel(runId: string, reason: string, options: CallOptions & { expectedRunVersion?: number } = {}): Promise<OperationResult> {
     return this.operate(runId, 'CANCEL', reason, options);
+  }
+
+  /** Records an eligible actor's durable decision for an approval request. */
+  async decideApproval(
+    approvalId: string,
+    decision: ApprovalDecision,
+    options: ApprovalDecisionOptions,
+  ): Promise<ApprovalDecisionReceipt> {
+    if (!UUID.test(approvalId)) throw invalid('an approval id is a UUID');
+    if (decision !== 'APPROVE' && decision !== 'REJECT') throw invalid('an approval decision is APPROVE or REJECT');
+    if (!options || typeof options.decisionKey !== 'string' || !APPROVAL_DECISION_KEY.test(options.decisionKey)) {
+      throw invalid('an approval decision key is 1 to 128 printable ASCII characters');
+    }
+    if (options.reasonCode !== undefined && (typeof options.reasonCode !== 'string' || !REASON_CODE.test(options.reasonCode))) {
+      throw invalid('an approval reason code is 1 to 64 letters, digits, dots, underscores, colons or hyphens');
+    }
+    const body: Record<string, unknown> = { decisionKey: options.decisionKey, decision };
+    if (options.reasonCode !== undefined) body['reasonCode'] = options.reasonCode;
+    const response = await this.#http.request({
+      method: 'POST',
+      path: `/approvals/${encodeURIComponent(approvalId.toLowerCase())}/decisions`,
+      body,
+      traceparent: this.trace(options.traceparent),
+      safeToRepeat: true,
+    });
+    const raw = object(response.body, 'an approval decision receipt');
+    const decidedAt = optDate(raw, 'decidedAt');
+    if (!decidedAt) throw new SagatError({ code: 'PROTOCOL', message: 'decidedAt is missing from the answer' });
+    const receiptDecision = str(raw, 'decision');
+    if (receiptDecision !== 'APPROVE' && receiptDecision !== 'REJECT') {
+      throw new SagatError({ code: 'PROTOCOL', message: 'decision is invalid in the answer' });
+    }
+    const outcomeSequence = raw['outcomeSequence'];
+    if (!Number.isSafeInteger(outcomeSequence) || (outcomeSequence as number) < 1) {
+      throw new SagatError({ code: 'PROTOCOL', message: 'outcomeSequence is invalid in the answer' });
+    }
+    return {
+      receiptId: str(raw, 'receiptId'), approvalId: str(raw, 'approvalId'), decisionKey: str(raw, 'decisionKey'),
+      decision: receiptDecision, reasonCode: optStr(raw, 'reasonCode'), actor: str(raw, 'actor'), decidedAt,
+      outcomeSequence: outcomeSequence as number, replayed: raw['replayed'] === true, raw,
+    };
   }
 
   /** Sends a signal to the steps of a run that wait for it; a signal nobody waits for is a `CONFLICT`. */

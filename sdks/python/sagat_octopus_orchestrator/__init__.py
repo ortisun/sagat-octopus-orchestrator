@@ -8,6 +8,8 @@ of the workflow IR (``workflow``, ``flow``). Every failure is one ``SagatError``
 from ._json import canonical_json, format_instant, parse_instant
 from .client import (
     TERMINAL_STATUSES,
+    ApprovalDecision,
+    ApprovalDecisionReceipt,
     EventAccepted,
     JournalEvent,
     JournalPage,
@@ -78,6 +80,8 @@ __all__ = [
     "ActivityContext",
     "ActivityFailure",
     "ActivityHandler",
+    "ApprovalDecision",
+    "ApprovalDecisionReceipt",
     "ApprovalPolicy",
     "BlobDescriptor",
     "BlobOutput",

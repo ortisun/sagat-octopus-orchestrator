@@ -520,6 +520,71 @@ func (c *Client) Cancel(ctx context.Context, runID, reason string, opts ...CallO
 	return c.Operate(ctx, runID, ActionCancel, reason, opts...)
 }
 
+var approvalDecisionKeyPattern = regexp.MustCompile(`^[\x21-\x7e]{1,128}$`)
+var approvalReasonCodePattern = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,64}$`)
+
+// DecideApproval records an eligible actor's durable decision. The body DecisionKey makes retries
+// safe; WithTraceparent is the only call option this method reads.
+func (c *Client) DecideApproval(ctx context.Context, approvalID string, decision ApprovalDecisionRequest, opts ...CallOption) (*ApprovalDecisionReceipt, error) {
+	if !uuidPattern.MatchString(approvalID) {
+		return nil, sagat.Invalid("an approval id is a UUID")
+	}
+	if decision.Decision != ApprovalApprove && decision.Decision != ApprovalReject {
+		return nil, sagat.Invalid("an approval decision is APPROVE or REJECT")
+	}
+	if !approvalDecisionKeyPattern.MatchString(decision.DecisionKey) {
+		return nil, sagat.Invalid("an approval decision key is 1 to 128 visible ASCII characters")
+	}
+	if decision.ReasonCode != "" && !approvalReasonCodePattern.MatchString(decision.ReasonCode) {
+		return nil, sagat.Invalid("an approval reason code is 1 to 64 letters, digits, dots, underscores, colons or hyphens")
+	}
+	o := callOptionsOf(opts)
+	traceparent, err := c.trace(ctx, o.traceparent)
+	if err != nil {
+		return nil, err
+	}
+	body := map[string]any{"decisionKey": decision.DecisionKey, "decision": string(decision.Decision)}
+	if decision.ReasonCode != "" {
+		body["reasonCode"] = decision.ReasonCode
+	}
+	resp, err := c.do(ctx, request{method: "POST", path: "/approvals/" + lower(approvalID) + "/decisions", body: body, hasBody: true, traceparent: traceparent, repeatable: true})
+	if err != nil {
+		return nil, err
+	}
+	raw, err := object(resp.body, "an approval decision receipt")
+	if err != nil {
+		return nil, err
+	}
+	receipt := &ApprovalDecisionReceipt{Raw: raw}
+	if receipt.ReceiptID, err = requiredString(raw, "receiptId"); err != nil {
+		return nil, err
+	}
+	if receipt.ApprovalID, err = requiredString(raw, "approvalId"); err != nil {
+		return nil, err
+	}
+	if receipt.DecisionKey, err = requiredString(raw, "decisionKey"); err != nil {
+		return nil, err
+	}
+	value, err := requiredString(raw, "decision")
+	if err != nil || (value != string(ApprovalApprove) && value != string(ApprovalReject)) {
+		return nil, protocolError("decision is invalid in the answer")
+	}
+	receipt.Decision = ApprovalDecision(value)
+	receipt.ReasonCode, _ = jsonx.String(raw, "reasonCode")
+	if receipt.Actor, err = requiredString(raw, "actor"); err != nil {
+		return nil, err
+	}
+	if receipt.DecidedAt, _ = jsonx.Time(raw, "decidedAt"); receipt.DecidedAt.IsZero() {
+		return nil, protocolError("decidedAt is missing from the answer")
+	}
+	var hasOutcomeSequence bool
+	if receipt.OutcomeSequence, hasOutcomeSequence = jsonx.Int(raw, "outcomeSequence"); !hasOutcomeSequence || receipt.OutcomeSequence < 1 {
+		return nil, protocolError("outcomeSequence is invalid in the answer")
+	}
+	receipt.Replayed, _ = jsonx.Bool(raw, "replayed")
+	return receipt, nil
+}
+
 // Signal sends a signal to the steps of a run that wait for it; a signal nobody waits for is a
 // CONFLICT. payload is encoded as a JSON object; nil is an empty object.
 func (c *Client) Signal(ctx context.Context, runID, name string, payload any, opts ...CallOption) (*SignalResult, error) {

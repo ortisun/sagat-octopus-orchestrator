@@ -1,6 +1,6 @@
 export { SagatClient, TERMINAL_STATUSES, toRun } from './client.js';
 export type {
-  CallOptions, EventAccepted, JournalEvent, ListOptions, OperationResult, PublishEventInput, Run, RunPage,
+  ApprovalDecision, ApprovalDecisionOptions, ApprovalDecisionReceipt, CallOptions, EventAccepted, JournalEvent, ListOptions, OperationResult, PublishEventInput, Run, RunPage,
   RunStatus, SignalResult, StartOptions, WaitOptions,
 } from './client.js';
 export { PROTOCOL_VERSION, SDK_VERSION, safeLogger, silentLogger, warnIfNotSecure } from './config.js';

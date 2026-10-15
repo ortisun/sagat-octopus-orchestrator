@@ -126,6 +126,60 @@ async def test_an_event_without_an_id_gets_one_per_call_kept_across_retries_so_a
     assert re.fullmatch(r"[0-9a-f-]{36}", ids[0])
 
 
+async def test_an_approval_decision_uses_its_body_key_and_returns_a_typed_receipt(
+    http: FakeHttpServer, make_client: MakeClient
+) -> None:
+    approval_id = "0190aaaa-0000-7000-8000-000000000099"
+    http.serve(
+        lambda _seen: reply(
+            200,
+            {
+                "receiptId": "0190aaaa-0000-7000-8000-000000000100",
+                "approvalId": approval_id,
+                "decisionKey": "review-1",
+                "decision": "APPROVE",
+                "reasonCode": "POLICY_OK",
+                "actor": "alice",
+                "decidedAt": "2026-10-15T10:00:00Z",
+                "outcomeSequence": 7,
+                "replayed": False,
+                "futureField": "kept",
+            },
+        )
+    )
+    receipt = await make_client().decide_approval(
+        approval_id, "APPROVE", decision_key="review-1", reason_code="POLICY_OK", traceparent=TRACE
+    )
+    [request] = http.seen
+    assert request.url == f"/v1/approvals/{approval_id}/decisions"
+    assert request.body == {"decisionKey": "review-1", "decision": "APPROVE", "reasonCode": "POLICY_OK"}
+    assert "idempotency-key" not in request.headers
+    assert receipt.decided_at == datetime(2026, 10, 15, 10, 0, tzinfo=timezone.utc)
+    assert receipt.outcome_sequence == 7 and receipt.raw["futureField"] == "kept"
+
+
+async def test_an_approval_decision_surfaces_authorization_and_idempotency_failures_and_rejects_bad_input(
+    http: FakeHttpServer, make_client: MakeClient
+) -> None:
+    approval_id = "0190aaaa-0000-7000-8000-000000000099"
+    client = make_client()
+
+    def denied(status: int, code: str, reason: str) -> Callable[[Seen], Any]:
+        return lambda _seen: reply(status, refusal(code, details={"reason": reason}))
+
+    for status, code, reason in ((403, "FORBIDDEN", "NOT_ELIGIBLE"), (409, "CONFLICT", "IDEMPOTENCY_KEY_REUSED")):
+        http.serve(denied(status, code, reason))
+        with pytest.raises(SagatError) as caught:
+            await client.decide_approval(approval_id, "REJECT", decision_key="review-1")
+        assert (caught.value.status, caught.value.code, caught.value.reason) == (status, code, reason)
+    http.serve(lambda _seen: reply(500))
+    with pytest.raises(SagatError):
+        await client.decide_approval("../other", "APPROVE", decision_key="review-1")
+    with pytest.raises(SagatError):
+        await client.decide_approval(approval_id, "APPROVE", decision_key="bad key")
+    assert not http.seen
+
+
 async def test_get_is_retried_on_unavailability_and_on_rate_limiting_honouring_retry_after_and_gives_up_after_the_attempts(
     http: FakeHttpServer, make_client: MakeClient
 ) -> None:

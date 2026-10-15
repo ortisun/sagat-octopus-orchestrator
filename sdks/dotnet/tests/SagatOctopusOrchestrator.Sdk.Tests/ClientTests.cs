@@ -445,6 +445,60 @@ public sealed class ClientTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task AnApprovalDecisionUsesItsBodyKeyAndReturnsATypedReceipt()
+    {
+        const string approvalId = "0190aaaa-0000-7000-8000-000000000099";
+        server.Handler = _ => Reply(200, new JsonObject
+        {
+            ["receiptId"] = "0190aaaa-0000-7000-8000-000000000100",
+            ["approvalId"] = approvalId,
+            ["decisionKey"] = "review-1",
+            ["decision"] = "APPROVE",
+            ["reasonCode"] = "POLICY_OK",
+            ["actor"] = "alice",
+            ["decidedAt"] = "2026-10-15T10:00:00Z",
+            ["outcomeSequence"] = 7,
+            ["replayed"] = false,
+            ["futureField"] = "kept",
+        });
+        var receipt = await NewClient().DecideApprovalAsync(
+            approvalId,
+            ApprovalDecision.Approve,
+            new ApprovalDecisionOptions { DecisionKey = "review-1", ReasonCode = "POLICY_OK", Traceparent = Trace });
+        var request = Assert.Single(server.Requests);
+        Assert.Equal($"/v1/approvals/{approvalId}/decisions", request.PathAndQuery);
+        Assert.Equal("""{"decisionKey":"review-1","decision":"APPROVE","reasonCode":"POLICY_OK"}""", request.BodyText);
+        Assert.Empty(request.Header("idempotency-key"));
+        Assert.Equal(new DateTimeOffset(2026, 10, 15, 10, 0, 0, TimeSpan.Zero), receipt.DecidedAt);
+        Assert.Equal(7, receipt.OutcomeSequence);
+        Assert.Equal("kept", receipt.Raw.GetProperty("futureField").GetString());
+    }
+
+    [Theory]
+    [InlineData(403, SagatErrorCode.Forbidden, "NOT_ELIGIBLE")]
+    [InlineData(409, SagatErrorCode.Conflict, "IDEMPOTENCY_KEY_REUSED")]
+    public async Task AnApprovalDecisionSurfacesAuthorizationAndIdempotencyFailures(int status, SagatErrorCode code, string reason)
+    {
+        server.Handler = _ => Reply(status, Envelope(code.ToString().ToUpperInvariant(), "refused", false, reason));
+        var error = await Assert.ThrowsAsync<SagatException>(() => NewClient().DecideApprovalAsync(
+            "0190aaaa-0000-7000-8000-000000000099",
+            ApprovalDecision.Reject,
+            new ApprovalDecisionOptions { DecisionKey = "review-1" }));
+        Assert.Equal((status, code, reason), (error.HttpStatus, error.Code, error.Reason));
+    }
+
+    [Fact]
+    public async Task MalformedApprovalDecisionInputIsRejectedBeforeAnythingIsSent()
+    {
+        var client = NewClient();
+        await Assert.ThrowsAsync<SagatException>(() => client.DecideApprovalAsync(
+            "../other", ApprovalDecision.Approve, new ApprovalDecisionOptions { DecisionKey = "review-1" }));
+        await Assert.ThrowsAsync<SagatException>(() => client.DecideApprovalAsync(
+            "0190aaaa-0000-7000-8000-000000000099", ApprovalDecision.Approve, new ApprovalDecisionOptions { DecisionKey = "bad key" }));
+        Assert.Empty(server.Requests);
+    }
+
+    [Fact]
     public async Task OperationsOtherThanCancelNameTheirActionAndCarryTheirArguments()
     {
         server.Handler = _ => Reply(202, new JsonObject { ["operationId"] = "op-2", ["accepted"] = true });

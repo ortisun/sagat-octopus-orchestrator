@@ -8,7 +8,7 @@ SDK uses its own conventions (`startRun` / `StartRun` / `start_run` / `StartAsyn
 
 An SDK is three things in one package and **nothing else**:
 
-1. a **client** (REST): start, read, list, cancel and signal runs, publish events;
+1. a **client** (REST): start, read, list, cancel and signal runs, decide approvals, publish events;
 2. a **worker host** (gRPC, `worker.proto`): register activities, take leases, heartbeat, complete or
    fail, with cancellation and the saga/reconciliation task kinds;
 3. **workflow builders**: typed, side-effect-free constructors of the workflow IR
@@ -99,6 +99,7 @@ All calls are `<apiUrl><path>` with `Authorization: Bearer <token>`, `Accept: ap
 | `list(options)` | `GET /runs?workflowId=&status=&limit=&cursor=` | `200` `{items, nextCursor}`; `listAll` pages for the caller |
 | `cancel(runId, reason, options)` | `POST /runs/{runId}/operations` with `{action: "CANCEL", reason, expectedRunVersion?}`, `Idempotency-Key` | `202` OperationResult |
 | `signal(runId, name, payload, options)` | `POST /runs/{runId}/signals/{name}` with the payload object, `Idempotency-Key` | `202` `{deliveredTo}` |
+| `decideApproval(approvalId, decision, options)` | `POST /approvals/{approvalId}/decisions` with `{decisionKey, decision: APPROVE \| REJECT, reasonCode?}` | `200` ApprovalDecisionReceipt |
 | `publishEvent(event)` | `POST /events` with `{eventId, type, data, subject?, occurredAt?, correlationKey?, dedupeTtlSeconds?}` | `202` `{eventId, source, status: ACCEPTED \| DUPLICATE}` |
 | `waitForCompletion(runId, options)` | polls `get` every `pollInterval` (default 500 ms, ±20 % jitter) until the status is terminal or `timeout` | the final Run |
 
@@ -113,6 +114,10 @@ Rules:
   separate calls with no key are two runs.
 - `publishEvent`'s `eventId` works the same way: the caller's, or generated per call and kept across
   retries, so an event is admitted once per window and a retry is answered `DUPLICATE`.
+- An approval decision key is 1 to 128 visible ASCII characters and lives in the request body. The SDK
+  requires it, sends no `Idempotency-Key` header, and may safely retry the exact same body. A replay
+  returns the original receipt with `replayed: true`; changing the body under the same key is a
+  `CONFLICT` with reason `IDEMPOTENCY_KEY_REUSED`. The receipt is typed and retains the raw JSON.
 - `start` with a `deadline` sends an RFC 3339 instant in UTC (`...Z`); the SDK **MUST NOT** send a local
   offset it computed. A `deadline` option as a duration is converted by the SDK from the clock at the
   call, once, before the first attempt.
@@ -154,6 +159,7 @@ jitter (`min(maxDelay, initialDelay * 2^n)` scaled by a random factor in `[0.5, 
 |---|---|
 | `GET` (REST) | `TRANSPORT`, `UNAVAILABLE`, `RATE_LIMITED`, `INTERNAL` with `retryable` true |
 | `POST` that carries an idempotency key or event id | the same; **never** after any other answer |
+| approval decision with its body `decisionKey` | the same, with the exact same body |
 | `uploadRunInput` | never: its one-pass body is not replayable |
 | worker `PollTasks`, `Heartbeat` | `UNAVAILABLE`, `RESOURCE_EXHAUSTED`, transport failures |
 | worker `CompleteStep`, `FailStep` | the same, with the **same** idempotency key and body; at most 5 times |

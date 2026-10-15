@@ -88,6 +88,35 @@ type OperationResult struct {
 	Raw        map[string]json.RawMessage
 }
 
+// ApprovalDecision is the outcome an eligible actor records for an approval request.
+type ApprovalDecision string
+
+const (
+	ApprovalApprove ApprovalDecision = "APPROVE"
+	ApprovalReject  ApprovalDecision = "REJECT"
+)
+
+// ApprovalDecisionRequest identifies one safely retryable decision.
+type ApprovalDecisionRequest struct {
+	DecisionKey string
+	Decision    ApprovalDecision
+	ReasonCode  string
+}
+
+// ApprovalDecisionReceipt proves which decision the server durably accepted.
+type ApprovalDecisionReceipt struct {
+	ReceiptID       string
+	ApprovalID      string
+	DecisionKey     string
+	Decision        ApprovalDecision
+	ReasonCode      string
+	Actor           string
+	DecidedAt       time.Time
+	OutcomeSequence int64
+	Replayed        bool
+	Raw             map[string]json.RawMessage
+}
+
 // SignalResult lists the steps a signal was delivered to.
 type SignalResult struct {
 	DeliveredTo []string

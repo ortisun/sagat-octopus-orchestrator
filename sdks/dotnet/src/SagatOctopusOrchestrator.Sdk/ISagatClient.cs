@@ -36,6 +36,9 @@ public interface ISagatClient
     /// <summary>Cancels a run (the server's reason has 8 to 2000 characters).</summary>
     Task<OperationResult> CancelAsync(string runId, string reason, OperateOptions? options = null, CancellationToken cancellationToken = default);
 
+    /// <summary>Records an eligible actor's durable decision for an approval request.</summary>
+    Task<ApprovalDecisionReceipt> DecideApprovalAsync(string approvalId, ApprovalDecision decision, ApprovalDecisionOptions options, CancellationToken cancellationToken = default);
+
     /// <summary>Sends a signal to the steps of a run that wait for it; a signal nobody waits for is a <see cref="SagatErrorCode.Conflict"/>.</summary>
     Task<SignalResult> SignalAsync<TPayload>(string runId, string name, TPayload payload, RequestOptions? options = null, CancellationToken cancellationToken = default);
 

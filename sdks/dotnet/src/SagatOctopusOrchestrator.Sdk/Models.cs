@@ -152,6 +152,42 @@ public enum StepOutcome
 /// <summary>What the server answers to an operation.</summary>
 public sealed record OperationResult(string OperationId, bool Accepted, string? RunStatus, long? RunVersion, JsonElement Raw);
 
+/// <summary>A decision an eligible actor records for an approval request.</summary>
+public enum ApprovalDecision
+{
+    /// <summary>Approve the request.</summary>
+    Approve,
+
+    /// <summary>Reject the request.</summary>
+    Reject,
+}
+
+/// <summary>Options that identify one safely retryable approval decision.</summary>
+public sealed record ApprovalDecisionOptions
+{
+    /// <summary>One to 128 printable ASCII characters, reused only for the same decision.</summary>
+    public required string DecisionKey { get; init; }
+
+    /// <summary>An optional machine-readable reason code.</summary>
+    public string? ReasonCode { get; init; }
+
+    /// <summary>An explicit W3C <c>traceparent</c>.</summary>
+    public string? Traceparent { get; init; }
+}
+
+/// <summary>The durable receipt for an approval decision.</summary>
+public sealed record ApprovalDecisionReceipt(
+    string ReceiptId,
+    string ApprovalId,
+    string DecisionKey,
+    ApprovalDecision Decision,
+    string? ReasonCode,
+    string Actor,
+    DateTimeOffset DecidedAt,
+    long OutcomeSequence,
+    bool Replayed,
+    JsonElement Raw);
+
 /// <summary>What the server answers to a signal: the steps that were waiting for it.</summary>
 public sealed record SignalResult(IReadOnlyList<string> DeliveredTo);
 

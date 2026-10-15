@@ -89,6 +89,40 @@ test('a call without a key gets a fresh one per call and keeps it across its ret
   assert.notEqual(seen[0]?.headers['idempotency-key'], key, 'another call, another key');
 });
 
+test('an approval decision uses its body key, returns a typed receipt and preserves server fields', async () => {
+  const approvalId = '0190aaaa-0000-7000-8000-000000000099';
+  prepare((_req, res) => reply(res, 200, {
+    receiptId: '0190aaaa-0000-7000-8000-000000000100', approvalId, decisionKey: 'review-1',
+    decision: 'APPROVE', reasonCode: 'POLICY_OK', actor: 'alice', decidedAt: '2026-10-15T10:00:00Z',
+    outcomeSequence: 7, replayed: false, futureField: 'kept',
+  }));
+  const receipt = await client().decideApproval(approvalId, 'APPROVE', {
+    decisionKey: 'review-1', reasonCode: 'POLICY_OK',
+    traceparent: '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01',
+  });
+  assert.equal(seen[0]?.url, `/v1/approvals/${approvalId}/decisions`);
+  assert.deepEqual(seen[0]?.body, { decisionKey: 'review-1', decision: 'APPROVE', reasonCode: 'POLICY_OK' });
+  assert.equal(seen[0]?.headers['idempotency-key'], undefined);
+  assert.equal(receipt.decidedAt.toISOString(), '2026-10-15T10:00:00.000Z');
+  assert.equal(receipt.outcomeSequence, 7);
+  assert.equal(receipt.raw['futureField'], 'kept');
+});
+
+test('an approval decision surfaces authorization and idempotency failures and rejects malformed input locally', async () => {
+  const approvalId = '0190aaaa-0000-7000-8000-000000000099';
+  prepare((_req, res) => reply(res, 403, { code: 'FORBIDDEN', message: 'not eligible', retryable: false, details: { reason: 'NOT_ELIGIBLE' } }));
+  await assert.rejects(client().decideApproval(approvalId, 'REJECT', { decisionKey: 'review-1' }), (error: unknown) =>
+    error instanceof SagatError && error.status === 403 && error.reason === 'NOT_ELIGIBLE');
+  prepare((_req, res) => reply(res, 409, { code: 'CONFLICT', message: 'key reused', retryable: false, details: { reason: 'IDEMPOTENCY_KEY_REUSED' } }));
+  await assert.rejects(client().decideApproval(approvalId, 'APPROVE', { decisionKey: 'review-1' }), (error: unknown) =>
+    error instanceof SagatError && error.status === 409 && error.reason === 'IDEMPOTENCY_KEY_REUSED');
+  const sent = seen.length;
+  await assert.rejects(client().decideApproval('../other' as string, 'APPROVE', { decisionKey: 'review-1' }), /approval id/);
+  await assert.rejects(client().decideApproval(approvalId, 'APPROVE', { decisionKey: 'bad key' }), /decision key/);
+  await assert.rejects(client().decideApproval(approvalId, 'APPROVE', { decisionKey: undefined as unknown as string }), /decision key/);
+  assert.equal(seen.length, sent);
+});
+
 test('an event without an id gets one per call, kept across retries, so a repetition is a duplicate and not a second event', async () => {
   let attempts = 0;
   prepare((_req, res) => (++attempts < 2 ? reply(res, 503, 'upstream down') : reply(res, 202, { eventId: 'e', source: 'api', status: 'ACCEPTED' })));

@@ -12,7 +12,7 @@ from collections.abc import AsyncIterable, AsyncIterator, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from types import TracebackType
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from urllib.parse import quote
 
 from ._http import HttpRequest, HttpTransport
@@ -45,9 +45,12 @@ TERMINAL_STATUSES: frozenset[str] = frozenset(
 OperateAction = Literal[
     "PAUSE", "RESUME", "CANCEL", "RETRY_STEP", "RETRY_COMPENSATION", "SKIP_COMPENSATION", "RESOLVE_STEP"
 ]
+ApprovalDecision = Literal["APPROVE", "REJECT"]
 
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE)
 _KEY = re.compile(r"[\x21-\x7e]{8,160}")
+_APPROVAL_DECISION_KEY = re.compile(r"[\x21-\x7e]{1,128}")
+_APPROVAL_REASON_CODE = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
 _NAME_TTL = 60.0
 
 
@@ -98,6 +101,20 @@ class OperationResult:
     accepted: bool
     run_status: str | None
     run_version: int | None
+    raw: Mapping[str, Any] = field(default_factory=dict, repr=False, compare=False)
+
+
+@dataclass(frozen=True)
+class ApprovalDecisionReceipt:
+    receipt_id: str
+    approval_id: str
+    decision_key: str
+    decision: ApprovalDecision
+    reason_code: str | None
+    actor: str
+    decided_at: datetime
+    outcome_sequence: int
+    replayed: bool
     raw: Mapping[str, Any] = field(default_factory=dict, repr=False, compare=False)
 
 
@@ -550,6 +567,60 @@ class SagatClient:
         raw = _object(response.body, "a signal result")
         delivered = raw.get("deliveredTo")
         return SignalResult(tuple(str(item) for item in delivered) if isinstance(delivered, list) else ())
+
+    async def decide_approval(
+        self,
+        approval_id: str,
+        decision: ApprovalDecision,
+        *,
+        decision_key: str,
+        reason_code: str | None = None,
+        traceparent: str | None = None,
+    ) -> ApprovalDecisionReceipt:
+        """Records an eligible actor's durable approval decision."""
+        if not isinstance(approval_id, str) or not _UUID.fullmatch(approval_id):
+            raise invalid("an approval id is a UUID")
+        if decision not in ("APPROVE", "REJECT"):
+            raise invalid("an approval decision is APPROVE or REJECT")
+        if not isinstance(decision_key, str) or not _APPROVAL_DECISION_KEY.fullmatch(decision_key):
+            raise invalid("an approval decision key is 1 to 128 printable ASCII characters")
+        if reason_code is not None and (
+            not isinstance(reason_code, str) or not _APPROVAL_REASON_CODE.fullmatch(reason_code)
+        ):
+            raise invalid("an approval reason code is 1 to 64 letters, digits, dots, underscores, colons or hyphens")
+        body: dict[str, Any] = {"decisionKey": decision_key, "decision": decision}
+        if reason_code is not None:
+            body["reasonCode"] = reason_code
+        response = await self._http.request(
+            HttpRequest(
+                "POST",
+                f"/approvals/{quote(approval_id.lower(), safe='')}/decisions",
+                body=body,
+                traceparent=self._trace(traceparent),
+            )
+        )
+        raw = _object(response.body, "an approval decision receipt")
+        decided_at = parse_instant(raw.get("decidedAt"))
+        if decided_at is None:
+            raise SagatError("PROTOCOL", "decidedAt is missing from the answer")
+        received_decision = _str(raw, "decision")
+        if received_decision not in ("APPROVE", "REJECT"):
+            raise SagatError("PROTOCOL", "decision is invalid in the answer")
+        outcome_sequence = raw.get("outcomeSequence")
+        if not isinstance(outcome_sequence, int) or isinstance(outcome_sequence, bool) or outcome_sequence < 1:
+            raise SagatError("PROTOCOL", "outcomeSequence is invalid in the answer")
+        return ApprovalDecisionReceipt(
+            receipt_id=_str(raw, "receiptId"),
+            approval_id=_str(raw, "approvalId"),
+            decision_key=_str(raw, "decisionKey"),
+            decision=cast(ApprovalDecision, received_decision),
+            reason_code=_opt_str(raw, "reasonCode"),
+            actor=_str(raw, "actor"),
+            decided_at=decided_at,
+            outcome_sequence=outcome_sequence,
+            replayed=raw.get("replayed") is True,
+            raw=raw,
+        )
 
     async def publish_event(
         self,

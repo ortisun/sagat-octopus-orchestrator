@@ -101,6 +101,7 @@ class SyncSagatClient:
     list = _blocking(SagatClient.list)
     operate = _blocking(SagatClient.operate)
     cancel = _blocking(SagatClient.cancel)
+    decide_approval = _blocking(SagatClient.decide_approval)
     signal = _blocking(SagatClient.signal)
     publish_event = _blocking(SagatClient.publish_event)
     events = _blocking(SagatClient.events)

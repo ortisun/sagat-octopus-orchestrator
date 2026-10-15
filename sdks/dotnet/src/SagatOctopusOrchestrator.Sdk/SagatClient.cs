@@ -51,6 +51,12 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
     [GeneratedRegex("^[\\x21-\\x7e]{8,160}\\z", RegexOptions.CultureInvariant)]
     private static partial Regex KeyPattern();
 
+    [GeneratedRegex("^[\\x21-\\x7e]{1,128}\\z", RegexOptions.CultureInvariant)]
+    private static partial Regex ApprovalDecisionKeyPattern();
+
+    [GeneratedRegex("^[A-Za-z0-9_.:-]{1,64}\\z", RegexOptions.CultureInvariant)]
+    private static partial Regex ApprovalReasonCodePattern();
+
     /// <inheritdoc/>
     public async Task<string> ResolveWorkflowAsync(string workflow, CancellationToken cancellationToken = default)
     {
@@ -260,6 +266,68 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
     /// <inheritdoc/>
     public Task<OperationResult> CancelAsync(string runId, string reason, OperateOptions? options = null, CancellationToken cancellationToken = default) =>
         OperateAsync(runId, RunAction.Cancel, reason, options, cancellationToken);
+
+    /// <inheritdoc/>
+    public async Task<ApprovalDecisionReceipt> DecideApprovalAsync(
+        string approvalId,
+        ApprovalDecision decision,
+        ApprovalDecisionOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        if (approvalId is null || !UuidPattern().IsMatch(approvalId))
+        {
+            throw SagatException.Invalid("an approval id is a UUID");
+        }
+
+        if (decision is not (ApprovalDecision.Approve or ApprovalDecision.Reject))
+        {
+            throw SagatException.Invalid("an approval decision is APPROVE or REJECT");
+        }
+
+        if (string.IsNullOrEmpty(options.DecisionKey) || !ApprovalDecisionKeyPattern().IsMatch(options.DecisionKey))
+        {
+            throw SagatException.Invalid("an approval decision key is 1 to 128 printable ASCII characters");
+        }
+
+        if (options.ReasonCode is not null && !ApprovalReasonCodePattern().IsMatch(options.ReasonCode))
+        {
+            throw SagatException.Invalid("an approval reason code is 1 to 64 letters, digits, dots, underscores, colons or hyphens");
+        }
+
+        var body = Wire.Write(writer =>
+        {
+            writer.WriteStartObject();
+            writer.WriteString("decisionKey", options.DecisionKey);
+            writer.WriteString("decision", decision == ApprovalDecision.Approve ? "APPROVE" : "REJECT");
+            if (options.ReasonCode is not null)
+            {
+                writer.WriteString("reasonCode", options.ReasonCode);
+            }
+
+            writer.WriteEndObject();
+        });
+        var answer = await transport.SendAsync(
+            new HttpCall("decide approval", HttpMethod.Post, "/approvals/" + approvalId.ToLowerInvariant() + "/decisions", "/approvals/{approvalId}/decisions", [], body, null, TraceOf(options.Traceparent), SafeToRepeat: true),
+            cancellationToken).ConfigureAwait(false);
+        var raw = Object(answer.Body, "an approval decision receipt");
+        var receivedDecision = Str(raw, "decision") switch
+        {
+            "APPROVE" => ApprovalDecision.Approve,
+            "REJECT" => ApprovalDecision.Reject,
+            _ => throw new SagatException(SagatErrorCode.Protocol, "decision is invalid in the answer"),
+        };
+        var decidedAt = OptDate(raw, "decidedAt") ?? throw new SagatException(SagatErrorCode.Protocol, "decidedAt is missing from the answer");
+        if (!raw.TryGetProperty("outcomeSequence", out var sequence) || !sequence.TryGetInt64(out var outcomeSequence) || outcomeSequence < 1)
+        {
+            throw new SagatException(SagatErrorCode.Protocol, "outcomeSequence is invalid in the answer");
+        }
+
+        return new ApprovalDecisionReceipt(
+            Str(raw, "receiptId"), Str(raw, "approvalId"), Str(raw, "decisionKey"), receivedDecision,
+            OptStr(raw, "reasonCode"), Str(raw, "actor"), decidedAt, outcomeSequence,
+            raw.TryGetProperty("replayed", out var replayed) && replayed.ValueKind == JsonValueKind.True, raw);
+    }
 
     /// <inheritdoc/>
     public async Task<SignalResult> SignalAsync<TPayload>(string runId, string name, TPayload payload, RequestOptions? options = null, CancellationToken cancellationToken = default)

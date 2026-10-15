@@ -342,6 +342,32 @@ internal sealed class RunMode : IAsyncDisposable
                     return new JsonObject { ["accepted"] = operated.Accepted, ["runStatus"] = operated.RunStatus };
                 }
 
+            case "decideApproval":
+                {
+                    var receipt = await client.DecideApprovalAsync(
+                        (string)step["approvalId"]!,
+                        (string)step["decision"]! == "APPROVE" ? ApprovalDecision.Approve : ApprovalDecision.Reject,
+                        new ApprovalDecisionOptions
+                        {
+                            DecisionKey = (string)step["decisionKey"]!,
+                            ReasonCode = (string?)step["reasonCode"],
+                            Traceparent = (string?)step["traceparent"],
+                        },
+                        cancellationToken).ConfigureAwait(false);
+                    return new JsonObject
+                    {
+                        ["receiptId"] = receipt.ReceiptId,
+                        ["approvalId"] = receipt.ApprovalId,
+                        ["decisionKey"] = receipt.DecisionKey,
+                        ["decision"] = receipt.Decision == ApprovalDecision.Approve ? "APPROVE" : "REJECT",
+                        ["reasonCode"] = receipt.ReasonCode,
+                        ["actor"] = receipt.Actor,
+                        ["decidedAt"] = receipt.DecidedAt.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", System.Globalization.CultureInfo.InvariantCulture),
+                        ["outcomeSequence"] = receipt.OutcomeSequence,
+                        ["replayed"] = receipt.Replayed,
+                    };
+                }
+
             case "signal":
                 {
                     var signalled = await client.SignalAsync(RunOf(step), (string)step["name"]!, step["payload"]?.DeepClone() ?? new JsonObject(), null, cancellationToken).ConfigureAwait(false);
