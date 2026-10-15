@@ -8,6 +8,10 @@ The worker adapter advertises minor 1.4; scoped 1.5 execution is enabled only in
 harness. Keep these gates closed until each primitive's fault, security, compatibility and
 recovery evidence is complete.
 
+The scheduler does discover and advance collections already created through its internal durable
+port. This is exercised with real PostgreSQL, restart and quota tests. The public parser still
+refuses collection documents, and scoped work is never offered by the production 1.4 adapter.
+
 ## Check the running system
 
 Run the contract and PostgreSQL suites from the repository root with the pinned toolchain:

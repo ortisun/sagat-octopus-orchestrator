@@ -599,3 +599,24 @@ routing are proven end to end.
 | `cargo test -p sagat-tests --test contract_developer_experience --locked` after regenerating `docs/reference/api.md` | Passed: 8/8 documentation contracts |
 | `cargo clippy -p sagat-application -p sagat-infra-postgres -p sagat-api-http -p sagat-tests --test integration_workflow_primitives --locked -- -D warnings` | Passed |
 | Focused `rustfmt --check`; `git diff --check` | Passed |
+
+## Automatic collection tick checkpoint (2026-10-15)
+
+The scheduler now discovers open collection scopes for runs in `RUNNING` or `WAITING`, selects
+them through its existing fair shard pass and advances one durable transition per candidate.
+Admission rechecks tenant quota and the owner fence under lock. Captured items and results retain
+their digests; restart and lost broker hints resume from PostgreSQL. Finishing a collection with
+an `Activity` successor releases that successor with its journal and outbox in the same
+transaction. Other successor kinds are still withheld from publication until their normal engine
+path is integrated. Structured workflow publication and production worker 1.5 remain closed.
+
+| Check | Result |
+|---|---|
+| `cargo test -p sagat-tests --test integration_workflow_primitives --locked -q` | Passed: 86/86 against real PostgreSQL, including automatic admission, quota contention, restart, rollback and lost-hint recovery |
+| Scoped worker PostgreSQL filter | Passed: 7/7 |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | Passed, as reported by the implementing agent |
+| `git diff --check` | Passed |
+
+Collection failure/cancellation drain, nested scopes, compensation/reconciliation reservations,
+scoped scripts and blobs, all successor kinds, and five-language runtime execution are still
+release gates. The passing internal tick does not authorize publishing a collection workflow.

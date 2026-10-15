@@ -84,8 +84,9 @@ or continuation node is still rejected at publication.
 
 The PostgreSQL integration target now verifies atomic collection checkpoint/finish,
 addressed journal restoration, declared-operation receipts, loop delay checkpoints and chain
-membership constraints. Its scheduler collection path is explicit and test-only; it does not
-route a published collection or loop automatically through a worker. To
+membership constraints. Scheduler ticks now discover open collection scopes and advance their
+admission/checkpoint under a real fence, but no published workflow can create those scopes yet;
+production scoped workers also remain disabled. To
 inspect a delayed loop checkpoint after a restart, run:
 
 ```sh
