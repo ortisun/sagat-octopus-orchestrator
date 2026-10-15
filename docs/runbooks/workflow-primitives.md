@@ -2,10 +2,11 @@
 
 The public workflow document remains additive `sagat-octopus-orchestrator.io/v1`. Bounded
 `switch`, run-addressed declared Query/Update and a bounded root human approval are available
-with the existing basic root nodes. Collection, loop and continuation documents still fail
-publication. Their builder fixtures and private integration tests do not authorize publishing
-those nodes. Approval documents cannot combine approval with parallel execution, declared state
-or another structured primitive yet.
+with the existing basic root nodes. The public continuation subset accepts an activity followed
+by `continueAsNew`, or an activity and condition that select `continueAsNew` or `end`. Collection
+and loop documents still fail publication; their builder fixtures and private integration tests
+do not authorize publishing those nodes. Approval documents cannot combine approval with parallel
+execution, declared state or another structured primitive yet.
 The worker adapter advertises minor 1.4; scoped 1.5 execution is enabled only in the test
 harness. Keep these gates closed until each primitive's fault, security, compatibility and
 recovery evidence is complete.
@@ -87,8 +88,10 @@ For chain commands, use `GET /namespaces/{namespaceId}/chains/{chainId}` to insp
 head. `POST` to the chain's `signals/{signalName}` or `cancel` path requires `expectedRunId` in
 the body and `Idempotency-Key` in the header. `CHAIN_HEAD_CHANGED` means the caller should
 inspect again before choosing a new command. Replaying the same key and body returns the same
-receipt; a different body is a conflict. These endpoints can operate on an existing retained
-chain, but a published workflow cannot yet create or hand off a chain. Exact-run commands remain
+receipt; a different body is a conflict. A published workflow in the restricted continuation
+subset creates the chain on start and hands off under a scheduler fence. At the segment limit,
+the run fails with `CHAIN_LIMIT` and the chain records `FINAL` once. Declared state transfer,
+body-local continuation, triggers and broader graphs remain disabled. Exact-run commands remain
 bound to their segment and do not forward silently.
 
 ## Rollback and compatibility
