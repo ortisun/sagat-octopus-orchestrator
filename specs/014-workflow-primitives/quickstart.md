@@ -69,9 +69,23 @@ SAGAT_SDK_SCENARIO=approval-builders cargo test -p sagat-tests --test sdk_confor
 SAGAT_SDK_SCENARIO=continuation-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
 ```
 
-The private PostgreSQL integration target now verifies atomic collection checkpoint/finish,
+Run-addressed declared Query/Update is available for workflows made from the existing basic
+root nodes. The shared runtime scenario publishes one such workflow, starts a run, applies and
+replays an update, queries the resulting revision, and checks rejection and tenant opacity in all
+five SDKs:
+
+```sh
+SAGAT_SDK_SCENARIO=state-operations cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
+```
+
+See [`workflow-primitives.md`](../../docs/runbooks/workflow-primitives.md) for the current API
+paths, idempotency and recovery checks. A declaration combined with a collection, loop, approval
+or continuation node is still rejected at publication.
+
+The PostgreSQL integration target now verifies atomic collection checkpoint/finish,
 addressed journal restoration, declared-operation receipts, loop delay checkpoints and chain
-membership constraints. It does not route a published collection or loop through a worker. To
+membership constraints. Its scheduler collection path is explicit and test-only; it does not
+route a published collection or loop automatically through a worker. To
 inspect a delayed loop checkpoint after a restart, run:
 
 ```sh
