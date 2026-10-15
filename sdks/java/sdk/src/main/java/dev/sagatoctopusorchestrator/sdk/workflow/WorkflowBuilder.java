@@ -32,6 +32,7 @@ public final class WorkflowBuilder {
     private final Flow body = new Flow();
     private final Map<String, String> labels = new LinkedHashMap<>();
     private final List<Trigger> triggers = new ArrayList<>();
+    private final Map<String, Flow> bodies = new LinkedHashMap<>();
     private String description;
     private JsonNode inputSchema;
     private JsonNode outputSchema;
@@ -71,6 +72,20 @@ public final class WorkflowBuilder {
 
     public WorkflowBuilder outputSchema(Object schema) {
         this.outputSchema = objectOrThrow(schema, "outputSchema");
+        return this;
+    }
+
+    /** Registers a closed body by name. The body is read when {@link #build()} runs. */
+    public WorkflowBuilder body(String name, Flow definition) {
+        if (name == null || name.isEmpty()) {
+            throw SagatException.invalid("a body needs a name");
+        }
+        if (definition == null) {
+            throw SagatException.invalid("body \"" + name + "\" is empty");
+        }
+        if (bodies.putIfAbsent(name, definition) != null) {
+            throw SagatException.invalid("the body \"" + name + "\" is defined twice");
+        }
         return this;
     }
 
@@ -135,6 +150,16 @@ public final class WorkflowBuilder {
         return this;
     }
 
+    public WorkflowBuilder forEach(String id, String items, String bodyName, String result, CollectionOptions options) {
+        body.forEach(id, items, bodyName, result, options);
+        return this;
+    }
+
+    public WorkflowBuilder map(String id, String items, String bodyName, String result, CollectionOptions options) {
+        body.map(id, items, bodyName, result, options);
+        return this;
+    }
+
     public WorkflowBuilder parallel(String id, Flow.Join join, List<Flow> branches) {
         body.parallel(id, join, branches);
         return this;
@@ -166,28 +191,25 @@ public final class WorkflowBuilder {
             throw SagatException.invalid("a workflow needs at least one node");
         }
         List<ObjectNode> nodes = body.flatten();
-        Set<String> ids = new HashSet<>();
-        for (ObjectNode node : nodes) {
-            String id = node.path("id").textValue();
-            if (!ids.add(id)) {
-                throw SagatException.invalid("the node id \"" + id + "\" is used twice");
-            }
+        if (nodes.stream().anyMatch(node -> "return".equals(node.path("type").textValue()))) {
+            throw SagatException.invalid("return is only valid in a named body");
         }
-        for (ObjectNode node : nodes) {
-            String id = node.path("id").textValue();
-            for (String field : new String[] {"next", "onError", "onTimeout", "ifTrue", "ifFalse", "begin"}) {
-                reference(ids, id, field, node.get(field));
+        Map<String, List<ObjectNode>> bodyNodes = new LinkedHashMap<>();
+        for (Map.Entry<String, Flow> entry : bodies.entrySet()) {
+            List<ObjectNode> nested = entry.getValue().flatten();
+            if (nested.isEmpty()) {
+                throw SagatException.invalid("body \"" + entry.getKey() + "\" is empty");
             }
-            JsonNode branches = node.get("branches");
-            if (branches != null && branches.isArray()) {
-                branches.forEach(branch -> reference(ids, id, "branches", branch));
+            if (nested.stream().anyMatch(node -> "end".equals(node.path("type").textValue()))) {
+                throw SagatException.invalid("body \"" + entry.getKey() + "\" cannot hold an end node");
             }
-            JsonNode cases = node.get("cases");
-            if (cases != null && cases.isArray()) {
-                cases.forEach(item -> reference(ids, id, "cases", item.get("target")));
+            if (nested.stream().filter(node -> "return".equals(node.path("type").textValue())).count() != 1) {
+                throw SagatException.invalid("body \"" + entry.getKey() + "\" needs exactly one return node");
             }
-            reference(ids, id, "default", node.get("default"));
+            bodyNodes.put(entry.getKey(), nested);
         }
+        validateScope(nodes);
+        bodyNodes.values().forEach(this::validateScope);
         ObjectNode metadata = F.objectNode();
         metadata.put("name", name);
         if (description != null) {
@@ -214,7 +236,50 @@ public final class WorkflowBuilder {
         if (outputSchema != null) {
             document.set("outputSchema", outputSchema.deepCopy());
         }
+        if (!bodyNodes.isEmpty()) {
+            ObjectNode bodyObject = document.putObject("bodies");
+            bodyNodes.forEach((bodyName, nested) -> {
+                ObjectNode bodyDocument = bodyObject.putObject(bodyName);
+                bodyDocument.put("entrypoint", nested.get(0).path("id").textValue());
+                ArrayNode nestedArray = bodyDocument.putArray("nodes");
+                nested.forEach(nestedArray::add);
+            });
+        }
         return document;
+    }
+
+    private void validateScope(List<ObjectNode> nodes) {
+        Set<String> localIds = new HashSet<>();
+        for (ObjectNode node : nodes) {
+            String id = node.path("id").textValue();
+            if (!localIds.add(id)) {
+                throw SagatException.invalid("the node id \"" + id + "\" is used twice");
+            }
+        }
+        for (ObjectNode node : nodes) {
+            String id = node.path("id").textValue();
+            for (String field : new String[] {"next", "onError", "onTimeout", "ifTrue", "ifFalse", "begin"}) {
+                reference(localIds, id, field, node.get(field));
+            }
+            JsonNode branches = node.get("branches");
+            if (branches != null && branches.isArray()) {
+                branches.forEach(branch -> reference(localIds, id, "branches", branch));
+            }
+            JsonNode cases = node.get("cases");
+            if (cases != null && cases.isArray()) {
+                cases.forEach(item -> reference(localIds, id, "cases", item.get("target")));
+            }
+            reference(localIds, id, "default", node.get("default"));
+            if ("forEach".equals(node.path("type").textValue())) {
+                String bodyName = node.path("body").textValue();
+                if (!bodies.containsKey(bodyName)) {
+                    throw SagatException.invalid("forEach " + id + " points at \"" + bodyName + "\", which is not a body");
+                }
+                if (!node.has("next")) {
+                    throw SagatException.invalid("forEach " + id + " needs a next node");
+                }
+            }
+        }
     }
 
     private static void reference(Set<String> ids, String from, String field, JsonNode target) {

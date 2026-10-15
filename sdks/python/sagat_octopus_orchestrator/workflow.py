@@ -240,6 +240,55 @@ class Flow:
         self._push({"id": node_id, "type": "switch", "cases": copied, "default": default_target})
         return self
 
+    def for_each(
+        self: _F,
+        node_id: str,
+        items: str,
+        body: str,
+        result: str,
+        *,
+        max_items: int,
+        max_concurrency: int,
+    ) -> _F:
+        """Invokes a named body once for every item captured from ``items``."""
+        if not items or not body or not result:
+            raise invalid(f"forEach {node_id} needs items, body and result expressions")
+        if isinstance(max_items, bool) or not isinstance(max_items, int) or not 1 <= max_items <= 10_000:
+            raise invalid(f"forEach {node_id} maxItems must be between 1 and 10000")
+        if (
+            isinstance(max_concurrency, bool)
+            or not isinstance(max_concurrency, int)
+            or not 1 <= max_concurrency <= 256
+        ):
+            raise invalid(f"forEach {node_id} maxConcurrency must be between 1 and 256")
+        self._push(
+            {
+                "id": node_id,
+                "type": "forEach",
+                "items": items,
+                "body": body,
+                "result": result,
+                "maxItems": max_items,
+                "maxConcurrency": max_concurrency,
+            }
+        )
+        return self
+
+    def map(
+        self: _F,
+        node_id: str,
+        items: str,
+        body: str,
+        result: str,
+        *,
+        max_items: int,
+        max_concurrency: int,
+    ) -> _F:
+        """Value-returning collection authoring; emits the same durable ``forEach`` node."""
+        return self.for_each(
+            node_id, items, body, result, max_items=max_items, max_concurrency=max_concurrency
+        )
+
     def parallel(self: _F, node_id: str, join: Literal["all", "any"], branches: Sequence[Flow]) -> _F:
         """Runs branches at once; ``all`` waits for every one, ``any`` for the first."""
         if len(branches) < 2:
@@ -287,12 +336,22 @@ class Flow:
         for index, node in enumerate(self._nodes):
             linked = dict(node)
             # A decision names both of its branches and an end ends: neither has a next node.
-            if index + 1 < len(self._nodes) and linked["type"] not in ("condition", "switch", "end"):
+            if index + 1 < len(self._nodes) and linked["type"] not in ("condition", "switch", "end", "return"):
                 linked["next"] = self._nodes[index + 1]["id"]
             out.append(linked)
         for inner in self._embedded:
             out.extend(inner._flatten())
         return out
+
+
+class Body(Flow):
+    """A closed, named collection or loop body with one explicit return boundary."""
+
+    def return_value(self, node_id: str, result: str) -> Body:
+        if not result:
+            raise invalid(f"return {node_id} needs a result expression")
+        self._push({"id": node_id, "type": "return", "result": result})
+        return self
 
 
 class WorkflowBuilder(Flow):
@@ -308,6 +367,7 @@ class WorkflowBuilder(Flow):
         self._triggers: list[dict[str, Any]] = []
         self._input_schema: dict[str, Any] | None = None
         self._output_schema: dict[str, Any] | None = None
+        self._bodies: dict[str, Body] = {}
 
     def description(self, text: str) -> WorkflowBuilder:
         self._description = text
@@ -352,29 +412,58 @@ class WorkflowBuilder(Flow):
         self._output_schema = dict(schema)
         return self
 
+    def body(self, name: str, definition: Body) -> WorkflowBuilder:
+        """Registers a closed body by name. The body is read when ``build()`` runs."""
+        if not name:
+            raise invalid("a body needs a name")
+        if name in self._bodies:
+            raise invalid(f"the body {name!r} is defined twice")
+        self._bodies[name] = definition
+        return self
+
     def build(self) -> dict[str, Any]:
         """The document. Raises ``VALIDATION_FAILED`` for what the server would refuse and the builder can see."""
         if not self._nodes:
             raise invalid("a workflow needs at least one node")
         nodes = self._flatten()
-        ids: set[str] = set()
-        for node in nodes:
-            if node["id"] in ids:
-                raise invalid(f"the node id {node['id']!r} is used twice")
-            ids.add(node["id"])
+        bodies: dict[str, list[Node]] = {}
+        for name, definition in self._bodies.items():
+            nested = definition._flatten()
+            if not nested:
+                raise invalid(f"body {name!r} is empty")
+            if any(node["type"] == "end" for node in nested):
+                raise invalid(f"body {name!r} cannot hold an end node")
+            if sum(node["type"] == "return" for node in nested) != 1:
+                raise invalid(f"body {name!r} needs exactly one return node")
+            bodies[name] = nested
+        def validate_scope(scope: list[Node]) -> None:
+            local_ids: set[str] = set()
+            for node in scope:
+                if node["id"] in local_ids:
+                    raise invalid(f"the node id {node['id']!r} is used twice")
+                local_ids.add(node["id"])
 
-        def reference(source: str, field: str, target: Any) -> None:
-            if isinstance(target, str) and target not in ids:
-                raise invalid(f"{source}.{field} points at {target!r}, which is not a node")
+            def reference(source: str, field: str, target: Any) -> None:
+                if isinstance(target, str) and target not in local_ids:
+                    raise invalid(f"{source}.{field} points at {target!r}, which is not a node")
 
-        for node in nodes:
-            for field in ("next", "onError", "onTimeout", "ifTrue", "ifFalse", "begin"):
-                reference(node["id"], field, node.get(field))
-            for branch in node.get("branches", ()):
-                reference(node["id"], "branches", branch)
-            for item in node.get("cases", ()):
-                reference(node["id"], "cases", item.get("target"))
-            reference(node["id"], "default", node.get("default"))
+            for node in scope:
+                for field in ("next", "onError", "onTimeout", "ifTrue", "ifFalse", "begin"):
+                    reference(node["id"], field, node.get(field))
+                for branch in node.get("branches", ()):
+                    reference(node["id"], "branches", branch)
+                for item in node.get("cases", ()):
+                    reference(node["id"], "cases", item.get("target"))
+                reference(node["id"], "default", node.get("default"))
+                if node["type"] == "forEach":
+                    if node["body"] not in self._bodies:
+                        raise invalid(f"forEach {node['id']} points at {node['body']!r}, which is not a body")
+                    if "next" not in node:
+                        raise invalid(f"forEach {node['id']} needs a next node")
+
+        validate_scope(nodes)
+        for nested in bodies.values():
+            validate_scope(nested)
         metadata: dict[str, Any] = {"name": self._name}
         if self._description is not None:
             metadata["description"] = self._description
@@ -393,6 +482,10 @@ class WorkflowBuilder(Flow):
             document["inputSchema"] = self._input_schema
         if self._output_schema is not None:
             document["outputSchema"] = self._output_schema
+        if bodies:
+            document["bodies"] = {
+                name: {"entrypoint": nested[0]["id"], "nodes": nested} for name, nested in bodies.items()
+            }
         return document
 
     def to_json(self) -> str:
@@ -408,3 +501,8 @@ def workflow(name: str) -> WorkflowBuilder:
 def flow() -> Flow:
     """A flow for a parallel branch or a saga body."""
     return Flow()
+
+
+def body() -> Body:
+    """A closed body for a runtime-sized collection or loop."""
+    return Body()

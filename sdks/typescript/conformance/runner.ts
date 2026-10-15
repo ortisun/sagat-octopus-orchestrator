@@ -4,8 +4,8 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import {
-  ActivityFailure, BlobOutput, SDK_VERSION, SagatClient, SagatError, WorkerHost, flow, reconcile, workflow,
-  type ActivityContext, type Flow, type Run, type WorkflowBuilder,
+  ActivityFailure, BlobOutput, SDK_VERSION, SagatClient, SagatError, WorkerHost, body, flow, reconcile, workflow,
+  type ActivityContext, type Body, type Flow, type Run, type WorkflowBuilder,
 } from '../src/index.js';
 import { FaultPlan, type Fault } from './faults.js';
 
@@ -35,6 +35,9 @@ function apply(target: Flow, ops: Obj[]): void {
       case 'invokeChild': target.invokeChild(op['id'], op['workflow'], op['options']); break;
       case 'condition': target.condition(op['id'], op['expression'], op['ifTrue'], op['ifFalse']); break;
       case 'switch': target.switch(op['id'], op['cases'], op['default']); break;
+      case 'forEach': target.forEach(op['id'], op['items'], op['body'], op['result'], { maxItems: op['maxItems'], maxConcurrency: op['maxConcurrency'] }); break;
+      case 'map': target.map(op['id'], op['items'], op['body'], op['result'], { maxItems: op['maxItems'], maxConcurrency: op['maxConcurrency'] }); break;
+      case 'return': (target as Body).returnValue(op['id'], op['result']); break;
       case 'parallel': {
         const branches = (op['branches'] as Obj[][]).map((ops) => {
           const branch = flow();
@@ -63,6 +66,11 @@ function builderOf(definition: Obj): WorkflowBuilder {
   for (const trigger of definition['triggers'] ?? []) builder.trigger(trigger);
   if (definition['inputSchema']) builder.inputSchema(definition['inputSchema']);
   if (definition['outputSchema']) builder.outputSchema(definition['outputSchema']);
+  for (const [name, bodyDefinition] of Object.entries<Obj>(definition['bodies'] ?? {})) {
+    const nested = body();
+    apply(nested, bodyDefinition['program']);
+    builder.body(name, nested);
+  }
   apply(builder, definition['program']);
   return builder;
 }

@@ -32,6 +32,7 @@ import dev.sagatoctopusorchestrator.sdk.WaitOptions;
 import dev.sagatoctopusorchestrator.sdk.worker.WorkerConfig;
 import dev.sagatoctopusorchestrator.sdk.worker.WorkerHost;
 import dev.sagatoctopusorchestrator.sdk.workflow.ChildOptions;
+import dev.sagatoctopusorchestrator.sdk.workflow.CollectionOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.Flow;
 import dev.sagatoctopusorchestrator.sdk.workflow.RetryOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.SagaOptions;
@@ -222,6 +223,19 @@ public final class Runner {
                     }
                     target.switchCase(id, cases, op.path("default").asText(null));
                 }
+                case "forEach" -> target.forEach(
+                        id,
+                        op.path("items").asText(null),
+                        op.path("body").asText(null),
+                        op.path("result").asText(null),
+                        CollectionOptions.of(op.path("maxItems").asInt(), op.path("maxConcurrency").asInt()));
+                case "map" -> target.map(
+                        id,
+                        op.path("items").asText(null),
+                        op.path("body").asText(null),
+                        op.path("result").asText(null),
+                        CollectionOptions.of(op.path("maxItems").asInt(), op.path("maxConcurrency").asInt()));
+                case "return" -> target.returnValue(id, op.path("result").asText(null));
                 case "parallel" -> {
                     List<Flow> branches = new ArrayList<>();
                     for (JsonNode branchOps : op.path("branches")) {
@@ -270,6 +284,11 @@ public final class Runner {
         if (definition.has("outputSchema")) {
             builder.outputSchema(definition.get("outputSchema"));
         }
+        definition.path("bodies").properties().forEach(e -> {
+            Flow nested = Flow.body();
+            apply(nested, e.getValue().path("program"));
+            builder.body(e.getKey(), nested);
+        });
         Flow program = Flow.create();
         apply(program, definition.path("program"));
         builder.append(program);

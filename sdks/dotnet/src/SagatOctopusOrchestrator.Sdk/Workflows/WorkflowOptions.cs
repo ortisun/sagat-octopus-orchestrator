@@ -154,6 +154,16 @@ public sealed record SagaOptions
     public SagaCancelPolicy? CancelPolicy { get; init; }
 }
 
+/// <summary>Required bounds of a runtime-sized collection.</summary>
+public sealed record CollectionOptions
+{
+    /// <summary>Largest captured collection, from 1 through 10,000.</summary>
+    public required int MaxItems { get; init; }
+
+    /// <summary>Largest number of admitted iterations, from 1 through 256.</summary>
+    public required int MaxConcurrency { get; init; }
+}
+
 /// <summary>The kind of a workflow trigger.</summary>
 public enum TriggerKind
 {

@@ -54,6 +54,11 @@ public final class Flow {
         return new Flow();
     }
 
+    /** A closed body for a runtime-sized collection or loop. */
+    public static Flow body() {
+        return new Flow();
+    }
+
     Flow() {}
 
     private static SagatException duplicate(String id) {
@@ -361,6 +366,33 @@ public final class Flow {
         return push(node);
     }
 
+    /** Invokes a named body once for every item captured from {@code items}. */
+    public Flow forEach(String id, String items, String body, String result, CollectionOptions options) {
+        if (items == null || items.isEmpty() || body == null || body.isEmpty() || result == null || result.isEmpty()) {
+            throw SagatException.invalid("forEach " + id + " needs items, body and result expressions");
+        }
+        if (options == null || options.maxItems() < 1 || options.maxItems() > 10_000) {
+            throw SagatException.invalid("forEach " + id + " maxItems must be between 1 and 10000");
+        }
+        if (options.maxConcurrency() < 1 || options.maxConcurrency() > 256) {
+            throw SagatException.invalid("forEach " + id + " maxConcurrency must be between 1 and 256");
+        }
+        ObjectNode node = F.objectNode();
+        node.put("id", id);
+        node.put("type", "forEach");
+        node.put("items", items);
+        node.put("body", body);
+        node.put("result", result);
+        node.put("maxItems", options.maxItems());
+        node.put("maxConcurrency", options.maxConcurrency());
+        return push(node);
+    }
+
+    /** Value-returning collection authoring; emits the same durable {@code forEach} node. */
+    public Flow map(String id, String items, String body, String result, CollectionOptions options) {
+        return forEach(id, items, body, result, options);
+    }
+
     /** Runs branches at once; {@code ALL} waits for every one, {@code ANY} for the first. At least two, none empty. */
     public Flow parallel(String id, Join join, List<Flow> branches) {
         if (branches.size() < 2) {
@@ -445,6 +477,18 @@ public final class Flow {
         return push(node);
     }
 
+    /** Returns a value from a named body; it is not a workflow terminal. */
+    public Flow returnValue(String id, String result) {
+        if (result == null || result.isEmpty()) {
+            throw SagatException.invalid("return " + id + " needs a result expression");
+        }
+        ObjectNode node = F.objectNode();
+        node.put("id", id);
+        node.put("type", "return");
+        node.put("result", result);
+        return push(node);
+    }
+
     /** Every node of the flow and of the flows inside it, in order, with {@code next} set. */
     List<ObjectNode> flatten() {
         List<ObjectNode> out = new ArrayList<>();
@@ -452,7 +496,7 @@ public final class Flow {
             ObjectNode linked = nodes.get(i).deepCopy();
             String type = linked.path("type").textValue();
             // A decision names both of its branches and an end ends: neither has a next node.
-            boolean terminal = "condition".equals(type) || "switch".equals(type) || "end".equals(type);
+            boolean terminal = "condition".equals(type) || "switch".equals(type) || "end".equals(type) || "return".equals(type);
             if (i + 1 < nodes.size() && !terminal && !linked.has("next")) {
                 linked.put("next", nodes.get(i + 1).path("id").textValue());
             }

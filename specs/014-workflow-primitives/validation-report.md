@@ -178,3 +178,23 @@ admission, storage writes, journal replay from an empty run and worker 1.5 remai
 | `cargo test -p sagat-domain --locked -q` | Passed: full domain suite, including 6 scoped reducer tests |
 | `cargo test -p sagat-tests --test contract_workflow_primitives --locked` | Passed: 14 contract tests |
 | `cargo clippy -p sagat-infra-ir -p sagat-domain --all-targets --locked -- -D warnings` | Passed in focused package runs |
+
+## Five-SDK collection authoring checkpoint (2026-10-15)
+
+The five public builders now emit `forEach`, its `map` alias, named bodies and `return` in the
+same additive v1 document. IDs are local to each body. The shared `collection-builders` fixture
+uses `buildOnly: true`: it verifies builder documents, canonical text and validation errors, and
+does not publish or execute these workflows. Its golden was reviewed manually.
+
+| Check | Result |
+|---|---|
+| `SAGAT_SDK_SCENARIO=collection-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored` | Passed: 1 shared fixture across TypeScript, Go, Python, C# and Java |
+| Go full SDK suite | Passed |
+| Python full SDK suite | Passed: 244 tests |
+| Java full SDK suite | Passed |
+| .NET full SDK suite | 429/430 passed; an existing stream timing test passed when rerun alone |
+| TypeScript full SDK suite | 112/113 passed; an existing worker cancellation timing test passed when rerun alone; the new workflow tests passed |
+
+The full Rust workspace test invocation was interrupted during compilation to free Cargo's build
+lock for the five-SDK conformance run. The focused Rust domain, IR, contract, PostgreSQL and fault
+targets above passed. A clean full-workspace run is still a release gate.

@@ -1,0 +1,63 @@
+{
+  "canonical": {
+    "for-each": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"bodies\":{\"line\":{\"entrypoint\":\"price\",\"nodes\":[{\"activity\":\"line.price\",\"id\":\"price\",\"next\":\"return-price\",\"type\":\"activity\"},{\"id\":\"return-price\",\"result\":\"steps.price.output\",\"type\":\"return\"}]},\"tax\":{\"entrypoint\":\"price\",\"nodes\":[{\"activity\":\"tax.price\",\"id\":\"price\",\"next\":\"return-price\",\"type\":\"activity\"},{\"id\":\"return-price\",\"result\":\"steps.price.output\",\"type\":\"return\"}]}},\"entrypoint\":\"lines\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"collection-for-each\"},\"nodes\":[{\"body\":\"line\",\"id\":\"lines\",\"items\":\"input.lines\",\"maxConcurrency\":3,\"maxItems\":17,\"next\":\"taxes\",\"result\":\"bodyResult\",\"type\":\"forEach\"},{\"body\":\"tax\",\"id\":\"taxes\",\"items\":\"input.lines\",\"maxConcurrency\":3,\"maxItems\":17,\"next\":\"done\",\"result\":\"bodyResult\",\"type\":\"forEach\"},{\"id\":\"done\",\"outputExpr\":\"steps.taxes.output\",\"type\":\"end\"}]}",
+    "map": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"bodies\":{\"line\":{\"entrypoint\":\"price\",\"nodes\":[{\"activity\":\"line.price\",\"id\":\"price\",\"next\":\"return-price\",\"type\":\"activity\"},{\"id\":\"return-price\",\"result\":\"steps.price.output\",\"type\":\"return\"}]}},\"entrypoint\":\"prices\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"collection-map\"},\"nodes\":[{\"body\":\"line\",\"id\":\"prices\",\"items\":\"input.lines\",\"maxConcurrency\":256,\"maxItems\":10000,\"next\":\"done\",\"result\":\"bodyResult.amount\",\"type\":\"forEach\"},{\"id\":\"done\",\"outputExpr\":\"steps.prices.output\",\"type\":\"end\"}]}"
+  },
+  "errors": {
+    "body-end": { "code": "VALIDATION_FAILED", "mentions": true, "raised": true },
+    "collection-terminal": { "code": "VALIDATION_FAILED", "mentions": true, "raised": true },
+    "max-concurrency": { "code": "VALIDATION_FAILED", "mentions": true, "raised": true },
+    "max-items": { "code": "VALIDATION_FAILED", "mentions": true, "raised": true },
+    "missing-return": { "code": "VALIDATION_FAILED", "mentions": true, "raised": true },
+    "multiple-returns": { "code": "VALIDATION_FAILED", "mentions": true, "raised": true },
+    "unknown-body": { "code": "VALIDATION_FAILED", "mentions": true, "raised": true }
+  },
+  "workflows": {
+    "for-each": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "bodies": {
+        "line": {
+          "entrypoint": "price",
+          "nodes": [
+            { "activity": "line.price", "id": "price", "next": "return-price", "type": "activity" },
+            { "id": "return-price", "result": "steps.price.output", "type": "return" }
+          ]
+        },
+        "tax": {
+          "entrypoint": "price",
+          "nodes": [
+            { "activity": "tax.price", "id": "price", "next": "return-price", "type": "activity" },
+            { "id": "return-price", "result": "steps.price.output", "type": "return" }
+          ]
+        }
+      },
+      "entrypoint": "lines",
+      "kind": "Workflow",
+      "metadata": { "name": "collection-for-each" },
+      "nodes": [
+        { "body": "line", "id": "lines", "items": "input.lines", "maxConcurrency": 3, "maxItems": 17, "next": "taxes", "result": "bodyResult", "type": "forEach" },
+        { "body": "tax", "id": "taxes", "items": "input.lines", "maxConcurrency": 3, "maxItems": 17, "next": "done", "result": "bodyResult", "type": "forEach" },
+        { "id": "done", "outputExpr": "steps.taxes.output", "type": "end" }
+      ]
+    },
+    "map": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "bodies": {
+        "line": {
+          "entrypoint": "price",
+          "nodes": [
+            { "activity": "line.price", "id": "price", "next": "return-price", "type": "activity" },
+            { "id": "return-price", "result": "steps.price.output", "type": "return" }
+          ]
+        }
+      },
+      "entrypoint": "prices",
+      "kind": "Workflow",
+      "metadata": { "name": "collection-map" },
+      "nodes": [
+        { "body": "line", "id": "prices", "items": "input.lines", "maxConcurrency": 256, "maxItems": 10000, "next": "done", "result": "bodyResult.amount", "type": "forEach" },
+        { "id": "done", "outputExpr": "steps.prices.output", "type": "end" }
+      ]
+    }
+  }
+}

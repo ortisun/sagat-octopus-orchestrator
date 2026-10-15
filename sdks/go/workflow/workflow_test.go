@@ -184,6 +184,44 @@ func TestASwitchKeepsCaseOrderCopiesItsCasesAndHasNoImplicitNext(t *testing.T) {
 	}
 }
 
+func TestCollectionsUseNamedBodiesAndMapWritesTheSameForEachNode(t *testing.T) {
+	line := workflow.Flow().Step("price", "line.price").Return("return", "steps.price.output")
+	tax := workflow.Flow().Step("price", "tax.price").Return("return", "steps.price.output")
+	doc, err := workflow.New("collection-flow").
+		Body("line", line).
+		Body("tax", tax).
+		ForEach("notify-lines", "input.lines", "line", "bodyResult", 17, 3).
+		Map("prices", "input.lines", "tax", "bodyResult.amount", 17, 2).
+		End("done", workflow.OutputExpr("steps.prices.output")).
+		Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []any{
+		map[string]any{"id": "notify-lines", "type": "forEach", "items": "input.lines", "body": "line", "result": "bodyResult", "maxItems": 17, "maxConcurrency": 3, "next": "prices"},
+		map[string]any{"id": "prices", "type": "forEach", "items": "input.lines", "body": "tax", "result": "bodyResult.amount", "maxItems": 17, "maxConcurrency": 2, "next": "done"},
+		map[string]any{"id": "done", "type": "end", "outputExpr": "steps.prices.output"},
+	}
+	if !reflect.DeepEqual(want, doc["nodes"]) {
+		t.Fatalf("nodes differ:\nwant %#v\ngot  %#v", want, doc["nodes"])
+	}
+	bodies := doc["bodies"].(map[string]any)
+	wantBody := map[string]any{"entrypoint": "price", "nodes": []any{
+		map[string]any{"id": "price", "type": "activity", "activity": "line.price", "next": "return"},
+		map[string]any{"id": "return", "type": "return", "result": "steps.price.output"},
+	}}
+	if !reflect.DeepEqual(wantBody, bodies["line"]) {
+		t.Fatalf("body differs:\nwant %#v\ngot  %#v", wantBody, bodies["line"])
+	}
+	wantTax := map[string]any{"entrypoint": "price", "nodes": []any{
+		map[string]any{"id": "price", "type": "activity", "activity": "tax.price", "next": "return"},
+		map[string]any{"id": "return", "type": "return", "result": "steps.price.output"},
+	}}
+	if !reflect.DeepEqual(wantTax, bodies["tax"]) {
+		t.Fatalf("body differs:\nwant %#v\ngot  %#v", wantTax, bodies["tax"])
+	}
+}
+
 func TestTriggersLabelsAndSchemasGoWhereTheDocumentKeepsThem(t *testing.T) {
 	d, err := workflow.New("with-meta").
 		Label("team", "payments").

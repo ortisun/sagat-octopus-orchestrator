@@ -30,6 +30,7 @@ from sagat_octopus_orchestrator import (
     ActivityFailure,
     BlobDescriptor,
     BlobOutput,
+    Body,
     ClientConfig,
     Flow,
     RetryPolicy,
@@ -40,6 +41,7 @@ from sagat_octopus_orchestrator import (
     Verdict,
     WorkerConfig,
     WorkerHost,
+    body,
     flow,
     format_instant,
     trace_id_of,
@@ -96,6 +98,28 @@ def apply(target: Flow, ops: list[Obj]) -> None:
                 [SwitchCase(id=item["id"], when=item["when"], target=item["target"]) for item in op["cases"]],
                 op["default"],
             )
+        elif kind == "forEach":
+            target.for_each(
+                op["id"],
+                op["items"],
+                op["body"],
+                op["result"],
+                max_items=op["maxItems"],
+                max_concurrency=op["maxConcurrency"],
+            )
+        elif kind == "map":
+            target.map(
+                op["id"],
+                op["items"],
+                op["body"],
+                op["result"],
+                max_items=op["maxItems"],
+                max_concurrency=op["maxConcurrency"],
+            )
+        elif kind == "return":
+            if not isinstance(target, Body):
+                raise ValueError("return is only valid in a named body")
+            target.return_value(op["id"], op["result"])
         elif kind == "parallel":
             branches = []
             for branch_ops in op["branches"]:
@@ -126,6 +150,10 @@ def builder_of(definition: Obj) -> Any:
         builder.input_schema(definition["inputSchema"])
     if definition.get("outputSchema") is not None:
         builder.output_schema(definition["outputSchema"])
+    for name, body_definition in (definition.get("bodies") or {}).items():
+        nested = body()
+        apply(nested, body_definition["program"])
+        builder.body(name, nested)
     apply(builder, definition["program"])
     return builder
 

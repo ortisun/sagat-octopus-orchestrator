@@ -50,7 +50,7 @@ from .worker import (
     WorkerTransport,
     run_blocking,
 )
-from .workflow import Flow, RetryOptions, SwitchCase, WorkflowBuilder, flow, workflow
+from .workflow import Body, Flow, RetryOptions, SwitchCase, WorkflowBuilder, body, flow, workflow
 
 __version__ = SDK_VERSION
 
@@ -66,6 +66,7 @@ __all__ = [
     "ActivityHandler",
     "BlobDescriptor",
     "BlobOutput",
+    "Body",
     "CancelReason",
     "CancellationToken",
     "ClientConfig",
@@ -99,6 +100,7 @@ __all__ = [
     "WorkerTransport",
     "WorkflowBuilder",
     "backoff_delay",
+    "body",
     "canonical_json",
     "check_traceparent",
     "code_of_http_status",

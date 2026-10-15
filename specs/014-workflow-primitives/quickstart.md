@@ -58,6 +58,14 @@ With `amount: 100`, both predicates are true and the `priority` case wins. With 
 default route wins. A missing `amount` fails evaluation; no later case or default is tried. The
 switch integration target exercises these outcomes against PostgreSQL and checks journal/replay.
 
+The five SDKs can also construct the additive v1 `forEach`/`map` documents with named bodies and
+`return`. Their shared fixture checks authoring only; the server still refuses collection
+publication. Run the builder parity check with:
+
+```sh
+SAGAT_SDK_SCENARIO=collection-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
+```
+
 The other proposed node names and endpoints in `contracts/README.md` remain unavailable until their
 runtime, fault and security gates pass. These targets are registered, but their presence does not
 mean every primitive is implemented:

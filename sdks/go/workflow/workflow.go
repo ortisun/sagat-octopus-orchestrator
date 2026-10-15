@@ -44,6 +44,7 @@ type Builder struct {
 	triggers    []Trigger
 	input       map[string]any
 	output      map[string]any
+	bodies      map[string]*Builder
 
 	nodes    []node
 	embedded []*Builder
@@ -57,7 +58,7 @@ type Builder struct {
 // New starts a workflow definition. The name is lower case letters, digits and dashes, 3 to 64,
 // starting with a letter.
 func New(name string) *Builder {
-	b := &Builder{name: name, labels: map[string]string{}, ids: map[string]struct{}{}}
+	b := &Builder{name: name, labels: map[string]string{}, bodies: map[string]*Builder{}, ids: map[string]struct{}{}}
 	if !namePattern.MatchString(name) {
 		b.fail(sagat.Invalid("a workflow name is lower case letters, digits and dashes, 3 to 64: %q", name))
 	}
@@ -248,6 +249,28 @@ func (b *Builder) Switch(id string, cases []SwitchCase, defaultTarget string) *B
 	return b.push(node{"id": id, "type": "switch", "cases": copied, "default": defaultTarget})
 }
 
+// ForEach invokes a named body once for every item captured from items.
+func (b *Builder) ForEach(id, items, body, result string, maxItems, maxConcurrency int) *Builder {
+	if b.err != nil {
+		return b
+	}
+	if items == "" || body == "" || result == "" {
+		return b.fail(sagat.Invalid("forEach %s needs items, body and result expressions", id))
+	}
+	if maxItems < 1 || maxItems > 10000 {
+		return b.fail(sagat.Invalid("forEach %s maxItems must be between 1 and 10000", id))
+	}
+	if maxConcurrency < 1 || maxConcurrency > 256 {
+		return b.fail(sagat.Invalid("forEach %s maxConcurrency must be between 1 and 256", id))
+	}
+	return b.push(node{"id": id, "type": "forEach", "items": items, "body": body, "result": result, "maxItems": maxItems, "maxConcurrency": maxConcurrency})
+}
+
+// Map is value-returning collection authoring; it emits the same durable forEach node.
+func (b *Builder) Map(id, items, body, result string, maxItems, maxConcurrency int) *Builder {
+	return b.ForEach(id, items, body, result, maxItems, maxConcurrency)
+}
+
 // Parallel adds branches that run at once: JoinAll waits for every one, JoinAny for the first. There
 // are at least two, none empty.
 func (b *Builder) Parallel(id string, join Join, branches ...*Builder) *Builder {
@@ -321,6 +344,35 @@ func (b *Builder) End(id string, opts ...EndOption) *Builder {
 	return b.push(n)
 }
 
+// Return closes a named body with its result. It is not a workflow terminal.
+func (b *Builder) Return(id, result string) *Builder {
+	if result == "" {
+		return b.fail(sagat.Invalid("return %s needs a result expression", id))
+	}
+	return b.push(node{"id": id, "type": "return", "result": result})
+}
+
+// Body registers a closed body by name. The body is read when Build runs.
+func (b *Builder) Body(name string, body *Builder) *Builder {
+	if b.err != nil {
+		return b
+	}
+	if name == "" {
+		return b.fail(sagat.Invalid("a body needs a name"))
+	}
+	if body == nil {
+		return b.fail(sagat.Invalid("body %q is empty", name))
+	}
+	if b.bodies == nil {
+		b.bodies = map[string]*Builder{}
+	}
+	if _, exists := b.bodies[name]; exists {
+		return b.fail(sagat.Invalid("the body %q is defined twice", name))
+	}
+	b.bodies[name] = body
+	return b
+}
+
 // ---- the document
 
 // flatten returns every node of the flow and of the flows inside it, in order, with next set: node i
@@ -333,7 +385,7 @@ func (b *Builder) flatten() []node {
 		for key, value := range n {
 			linked[key] = value
 		}
-		if i+1 < len(b.nodes) && linked["type"] != "condition" && linked["type"] != "switch" && linked["type"] != "end" {
+		if i+1 < len(b.nodes) && linked["type"] != "condition" && linked["type"] != "switch" && linked["type"] != "end" && linked["type"] != "return" {
 			if _, set := linked["next"]; !set {
 				linked["next"] = b.nodes[i+1]["id"]
 			}
@@ -361,44 +413,92 @@ func (b *Builder) Build() (map[string]any, error) {
 		return nil, sagat.Invalid("a workflow needs at least one node")
 	}
 	nodes := b.flatten()
-	ids := make(map[string]struct{}, len(nodes))
 	for _, n := range nodes {
-		id := n["id"].(string)
-		if _, seen := ids[id]; seen {
-			return nil, sagat.Invalid("the node id %q is used twice", id)
+		if n["type"] == "return" {
+			return nil, sagat.Invalid("return is only valid in a named body")
 		}
-		ids[id] = struct{}{}
 	}
-	reference := func(from, field string, target any) error {
-		if name, ok := target.(string); ok {
-			if _, found := ids[name]; !found {
-				return sagat.Invalid("%s.%s points at %q, which is not a node", from, field, name)
+	bodyNodes := make(map[string][]node, len(b.bodies))
+	for name, body := range b.bodies {
+		if body.err != nil {
+			return nil, body.err
+		}
+		nested := body.flatten()
+		if len(nested) == 0 {
+			return nil, sagat.Invalid("body %q is empty", name)
+		}
+		returns := 0
+		for _, n := range nested {
+			if n["type"] == "end" {
+				return nil, sagat.Invalid("body %q cannot hold an end node", name)
+			}
+			if n["type"] == "return" {
+				returns++
+			}
+		}
+		if returns != 1 {
+			return nil, sagat.Invalid("body %q needs exactly one return node", name)
+		}
+		bodyNodes[name] = nested
+	}
+	validateScope := func(scope []node) error {
+		local := make(map[string]struct{}, len(scope))
+		for _, n := range scope {
+			id := n["id"].(string)
+			if _, seen := local[id]; seen {
+				return sagat.Invalid("the node id %q is used twice", id)
+			}
+			local[id] = struct{}{}
+		}
+		reference := func(from, field string, target any) error {
+			if name, ok := target.(string); ok {
+				if _, found := local[name]; !found {
+					return sagat.Invalid("%s.%s points at %q, which is not a node", from, field, name)
+				}
+			}
+			return nil
+		}
+		for _, n := range scope {
+			id := n["id"].(string)
+			for _, field := range []string{"next", "onError", "onTimeout", "ifTrue", "ifFalse", "begin"} {
+				if err := reference(id, field, n[field]); err != nil {
+					return err
+				}
+			}
+			if branches, ok := n["branches"].([]any); ok {
+				for _, branch := range branches {
+					if err := reference(id, "branches", branch); err != nil {
+						return err
+					}
+				}
+			}
+			if cases, ok := n["cases"].([]any); ok {
+				for _, item := range cases {
+					if err := reference(id, "cases", item.(map[string]any)["target"]); err != nil {
+						return err
+					}
+				}
+			}
+			if err := reference(id, "default", n["default"]); err != nil {
+				return err
+			}
+			if n["type"] == "forEach" {
+				name, _ := n["body"].(string)
+				if _, found := b.bodies[name]; !found {
+					return sagat.Invalid("forEach %s points at %q, which is not a body", id, name)
+				}
+				if _, found := n["next"].(string); !found {
+					return sagat.Invalid("forEach %s needs a next node", id)
+				}
 			}
 		}
 		return nil
 	}
-	for _, n := range nodes {
-		id := n["id"].(string)
-		for _, field := range []string{"next", "onError", "onTimeout", "ifTrue", "ifFalse", "begin"} {
-			if err := reference(id, field, n[field]); err != nil {
-				return nil, err
-			}
-		}
-		if branches, ok := n["branches"].([]any); ok {
-			for _, branch := range branches {
-				if err := reference(id, "branches", branch); err != nil {
-					return nil, err
-				}
-			}
-		}
-		if cases, ok := n["cases"].([]any); ok {
-			for _, item := range cases {
-				if err := reference(id, "cases", item.(map[string]any)["target"]); err != nil {
-					return nil, err
-				}
-			}
-		}
-		if err := reference(id, "default", n["default"]); err != nil {
+	if err := validateScope(nodes); err != nil {
+		return nil, err
+	}
+	for _, nested := range bodyNodes {
+		if err := validateScope(nested); err != nil {
 			return nil, err
 		}
 	}
@@ -437,6 +537,17 @@ func (b *Builder) Build() (map[string]any, error) {
 	if b.output != nil {
 		document["outputSchema"] = b.output
 	}
+	if len(bodyNodes) > 0 {
+		bodies := make(map[string]any, len(bodyNodes))
+		for name, nested := range bodyNodes {
+			list := make([]any, len(nested))
+			for i, n := range nested {
+				list[i] = n
+			}
+			bodies[name] = map[string]any{"entrypoint": nested[0]["id"], "nodes": list}
+		}
+		document["bodies"] = bodies
+	}
 	// What cannot be written as JSON (a NaN in a schema, say) is refused here, not by the server.
 	if _, err := jsonx.Encode(document); err != nil {
 		return nil, err
@@ -458,6 +569,14 @@ func (b *Builder) joinedErr() error {
 			}
 		}
 		if err := inner.joinedErr(); err != nil {
+			return err
+		}
+	}
+	for _, body := range b.bodies {
+		if body.err != nil {
+			return body.err
+		}
+		if err := body.joinedErr(); err != nil {
 			return err
 		}
 	}

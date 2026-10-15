@@ -50,6 +50,11 @@ export interface SwitchCase {
   readonly target: string;
 }
 
+export interface CollectionOptions {
+  readonly maxItems: number;
+  readonly maxConcurrency: number;
+}
+
 export interface SagaOptions {
   onCompensationFailure?: 'manual_review' | 'fail';
   cancelPolicy?: 'compensate_completed' | 'abort_no_compensation' | 'wait_in_flight_then_compensate';
@@ -145,6 +150,26 @@ export class Flow {
     return this.push({ id, type: 'switch', cases: copied, default: defaultTarget });
   }
 
+  /** Invokes a named body once for every item captured from `items`. */
+  forEach(id: string, items: string, body: string, result: string, options: CollectionOptions): this {
+    if (!items || !body || !result) throw invalid(`forEach ${id} needs items, body and result expressions`);
+    if (!Number.isInteger(options.maxItems) || options.maxItems < 1 || options.maxItems > 10_000) {
+      throw invalid(`forEach ${id} maxItems must be between 1 and 10000`);
+    }
+    if (!Number.isInteger(options.maxConcurrency) || options.maxConcurrency < 1 || options.maxConcurrency > 256) {
+      throw invalid(`forEach ${id} maxConcurrency must be between 1 and 256`);
+    }
+    return this.push({
+      id, type: 'forEach', items, body, result,
+      maxItems: options.maxItems, maxConcurrency: options.maxConcurrency,
+    });
+  }
+
+  /** Value-returning collection authoring; it emits the same durable `forEach` node. */
+  map(id: string, items: string, body: string, result: string, options: CollectionOptions): this {
+    return this.forEach(id, items, body, result, options);
+  }
+
   /** Parallel: runs branches at once; `all` waits for every one, `any` for the first. */
   parallel(id: string, join: 'all' | 'any', branches: Flow[]): this {
     if (branches.length < 2) throw invalid(`parallel ${id} needs at least two branches`);
@@ -187,12 +212,20 @@ export class Flow {
       const linked: Node = { ...node };
       const next = this.nodes[i + 1];
       // A decision names both of its branches and an end ends: neither has a next node.
-      const branches = linked['type'] === 'condition' || linked['type'] === 'switch' || linked['type'] === 'end';
+      const branches = linked['type'] === 'condition' || linked['type'] === 'switch' || linked['type'] === 'end' || linked['type'] === 'return';
       if (next && !branches && linked['next'] === undefined) linked['next'] = next['id'] as string;
       out.push(linked);
     });
     for (const inner of this.embedded) out.push(...inner.flatten());
     return out;
+  }
+}
+
+/** A closed, named collection or loop body with one explicit return boundary. */
+export class Body extends Flow {
+  returnValue(id: string, result: string): this {
+    if (!result) throw invalid(`return ${id} needs a result expression`);
+    return this.push({ id, type: 'return', result });
   }
 }
 
@@ -203,6 +236,7 @@ export class WorkflowBuilder extends Flow {
   private readonly triggerList: Trigger[] = [];
   private input: Record<string, Json> | undefined;
   private output: Record<string, Json> | undefined;
+  private readonly namedBodies = new Map<string, Body>();
 
   constructor(private readonly name: string) {
     super();
@@ -234,31 +268,62 @@ export class WorkflowBuilder extends Flow {
     return this;
   }
 
+  /** Registers a closed body by name. The body is read when `build()` runs. */
+  body(name: string, definition: Body): this {
+    if (!name) throw invalid('a body needs a name');
+    if (this.namedBodies.has(name)) throw invalid(`the body ${JSON.stringify(name)} is defined twice`);
+    this.namedBodies.set(name, definition);
+    return this;
+  }
+
   /** The document. Raises `VALIDATION_FAILED` for what the server would refuse and the builder can see. */
   build(): Record<string, Json> {
     if (this.nodes.length === 0) throw invalid('a workflow needs at least one node');
     const nodes = this.flatten();
-    const ids = new Set<string>();
-    for (const node of nodes) {
-      const id = node['id'] as string;
-      if (ids.has(id)) throw invalid(`the node id ${JSON.stringify(id)} is used twice`);
-      ids.add(id);
+    const bodyNodes = new Map<string, Node[]>();
+    for (const [name, definition] of this.namedBodies) {
+      const nested = definition.flatten();
+      if (nested.length === 0) throw invalid(`body ${JSON.stringify(name)} is empty`);
+      if (nested.some((node) => node['type'] === 'end')) throw invalid(`body ${JSON.stringify(name)} cannot hold an end node`);
+      if (nested.filter((node) => node['type'] === 'return').length !== 1) {
+        throw invalid(`body ${JSON.stringify(name)} needs exactly one return node`);
+      }
+      bodyNodes.set(name, nested);
     }
-    const reference = (from: string, field: string, target: Json | undefined): void => {
-      if (typeof target === 'string' && !ids.has(target)) {
-        throw invalid(`${from}.${field} points at ${JSON.stringify(target)}, which is not a node`);
+    const validateScope = (scope: Node[]): void => {
+      const localIds = new Set<string>();
+      for (const node of scope) {
+        const id = node['id'] as string;
+        if (localIds.has(id)) throw invalid(`the node id ${JSON.stringify(id)} is used twice`);
+        localIds.add(id);
+      }
+      const reference = (from: string, field: string, target: Json | undefined): void => {
+        if (typeof target === 'string' && !localIds.has(target)) {
+          throw invalid(`${from}.${field} points at ${JSON.stringify(target)}, which is not a node`);
+        }
+      };
+      for (const node of scope) {
+        const id = node['id'] as string;
+        for (const field of ['next', 'onError', 'onTimeout', 'ifTrue', 'ifFalse', 'begin']) reference(id, field, node[field]);
+        if (Array.isArray(node['branches'])) node['branches'].forEach((branch) => reference(id, 'branches', branch));
+        if (Array.isArray(node['cases'])) {
+          node['cases'].forEach((item) => {
+            if (item !== null && typeof item === 'object' && !Array.isArray(item)) reference(id, 'cases', item['target']);
+          });
+        }
+        reference(id, 'default', node['default']);
+        if (node['type'] === 'forEach') {
+          const bodyName = node['body'];
+          if (typeof bodyName !== 'string' || !this.namedBodies.has(bodyName)) {
+            throw invalid(`forEach ${id} points at ${JSON.stringify(bodyName)}, which is not a body`);
+          }
+          if (typeof node['next'] !== 'string') throw invalid(`forEach ${id} needs a next node`);
+        }
       }
     };
-    for (const node of nodes) {
-      const id = node['id'] as string;
-      for (const field of ['next', 'onError', 'onTimeout', 'ifTrue', 'ifFalse', 'begin']) reference(id, field, node[field]);
-      if (Array.isArray(node['branches'])) node['branches'].forEach((branch) => reference(id, 'branches', branch));
-      if (Array.isArray(node['cases'])) {
-        node['cases'].forEach((item) => {
-          if (item !== null && typeof item === 'object' && !Array.isArray(item)) reference(id, 'cases', item['target']);
-        });
-      }
-      reference(id, 'default', node['default']);
+    validateScope(nodes);
+    for (const scope of bodyNodes.values()) {
+      validateScope(scope);
     }
     const metadata: Record<string, Json> = { name: this.name };
     if (this.descriptionText !== undefined) metadata['description'] = this.descriptionText;
@@ -273,6 +338,12 @@ export class WorkflowBuilder extends Flow {
     if (this.triggerList.length > 0) document['triggers'] = this.triggerList.map((t) => clean(t));
     if (this.input) document['inputSchema'] = this.input;
     if (this.output) document['outputSchema'] = this.output;
+    if (bodyNodes.size > 0) {
+      document['bodies'] = Object.fromEntries([...bodyNodes].map(([name, body]) => [name, {
+        entrypoint: body[0]!['id'],
+        nodes: body as Json[],
+      }])) as Json;
+    }
     return document;
   }
 
@@ -290,6 +361,11 @@ export function workflow(name: string): WorkflowBuilder {
 /** A flow for a parallel branch or a saga body. */
 export function flow(): Flow {
   return new Flow();
+}
+
+/** A closed body for a runtime-sized collection or loop. */
+export function body(): Body {
+  return new Body();
 }
 
 export { SagatError };

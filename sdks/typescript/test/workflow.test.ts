@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
-import { SagatError, canonicalJson, flow, workflow } from '../src/index.js';
+import { SagatError, body, canonicalJson, flow, workflow } from '../src/index.js';
 
 test('a chain of steps is linked in order and starts at the first', () => {
   const doc = workflow('order-flow')
@@ -109,6 +109,40 @@ test('a switch keeps case order, copies its cases and has no implicit next', () 
     .switch('second', [{ id: 'same', when: 'false', target: 'done' }], 'done')
     .end('done')
     .build());
+});
+
+test('collections use named bodies and map writes the same forEach node', () => {
+  const line = body().step('price', 'line.price').returnValue('return', 'steps.price.output');
+  const tax = body().step('price', 'tax.price').returnValue('return', 'steps.price.output');
+  const document = workflow('collection-flow')
+    .body('line', line)
+    .body('tax', tax)
+    .forEach('notify-lines', 'input.lines', 'line', 'bodyResult', { maxItems: 17, maxConcurrency: 3 })
+    .map('prices', 'input.lines', 'tax', 'bodyResult.amount', { maxItems: 17, maxConcurrency: 2 })
+    .end('done', { outputExpr: 'steps.prices.output' })
+    .build();
+
+  assert.deepEqual(document['nodes'], [
+    { id: 'notify-lines', type: 'forEach', items: 'input.lines', body: 'line', result: 'bodyResult', maxItems: 17, maxConcurrency: 3, next: 'prices' },
+    { id: 'prices', type: 'forEach', items: 'input.lines', body: 'tax', result: 'bodyResult.amount', maxItems: 17, maxConcurrency: 2, next: 'done' },
+    { id: 'done', type: 'end', outputExpr: 'steps.prices.output' },
+  ]);
+  assert.deepEqual(document['bodies'], {
+    line: {
+      entrypoint: 'price',
+      nodes: [
+        { id: 'price', type: 'activity', activity: 'line.price', next: 'return' },
+        { id: 'return', type: 'return', result: 'steps.price.output' },
+      ],
+    },
+    tax: {
+      entrypoint: 'price',
+      nodes: [
+        { id: 'price', type: 'activity', activity: 'tax.price', next: 'return' },
+        { id: 'return', type: 'return', result: 'steps.price.output' },
+      ],
+    },
+  });
 });
 
 test('triggers, labels and schemas go where the document keeps them', () => {

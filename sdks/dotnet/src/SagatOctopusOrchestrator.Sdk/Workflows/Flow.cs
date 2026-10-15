@@ -187,6 +187,41 @@ public abstract partial class FlowBase<TSelf>
         return Push(new JsonObject { ["id"] = id, ["type"] = "switch", ["cases"] = copied, ["default"] = defaultTarget });
     }
 
+    /// <summary>Invokes a named body once for every item captured from <paramref name="items"/>.</summary>
+    public TSelf ForEach(string id, string items, string body, string result, CollectionOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        if (string.IsNullOrEmpty(items) || string.IsNullOrEmpty(body) || string.IsNullOrEmpty(result))
+        {
+            throw Invalid($"forEach {id} needs items, body and result expressions");
+        }
+
+        if (options.MaxItems is < 1 or > 10_000)
+        {
+            throw Invalid($"forEach {id} maxItems must be between 1 and 10000");
+        }
+
+        if (options.MaxConcurrency is < 1 or > 256)
+        {
+            throw Invalid($"forEach {id} maxConcurrency must be between 1 and 256");
+        }
+
+        return Push(new JsonObject
+        {
+            ["id"] = id,
+            ["type"] = "forEach",
+            ["items"] = items,
+            ["body"] = body,
+            ["result"] = result,
+            ["maxItems"] = options.MaxItems,
+            ["maxConcurrency"] = options.MaxConcurrency,
+        });
+    }
+
+    /// <summary>Value-returning collection authoring; emits the same durable <c>forEach</c> node.</summary>
+    public TSelf Map(string id, string items, string body, string result, CollectionOptions options) =>
+        ForEach(id, items, body, result, options);
+
     /// <summary>Parallel: runs branches at once; <see cref="JoinMode.All"/> waits for every one, <see cref="JoinMode.Any"/> for the first.</summary>
     public TSelf Parallel(string id, JoinMode join, params Flow[] branches) => Parallel(id, join, (IEnumerable<Flow>)branches);
 
@@ -279,7 +314,7 @@ public abstract partial class FlowBase<TSelf>
         {
             var linked = (JsonObject)nodes[i].DeepClone();
             var type = (string?)linked["type"];
-            if (i + 1 < nodes.Count && type is not ("condition" or "switch" or "end") && !linked.ContainsKey("next"))
+            if (i + 1 < nodes.Count && type is not ("condition" or "switch" or "end" or "return") && !linked.ContainsKey("next"))
             {
                 linked["next"] = (string)nodes[i + 1]["id"]!;
             }
@@ -304,7 +339,7 @@ public abstract partial class FlowBase<TSelf>
 
     internal static SagatException Invalid(string message) => SagatException.Invalid(message);
 
-    private TSelf Push(JsonObject node)
+    protected TSelf Push(JsonObject node)
     {
         var id = (string?)node["id"];
         if (string.IsNullOrEmpty(id))
@@ -425,6 +460,25 @@ public sealed class Flow : FlowBase<Flow>
     }
 }
 
+/// <summary>A closed, named collection or loop body with one explicit return boundary.</summary>
+public sealed class Body : FlowBase<Body>
+{
+    internal Body()
+    {
+    }
+
+    /// <summary>Returns a value from this body; it is not a workflow terminal.</summary>
+    public Body Return(string id, string result)
+    {
+        if (string.IsNullOrEmpty(result))
+        {
+            throw Invalid($"return {id} needs a result expression");
+        }
+
+        return Push(new JsonObject { ["id"] = id, ["type"] = "return", ["result"] = result });
+    }
+}
+
 /// <summary>Builds the workflow IR (<c>workflow.schema.json</c>) without any side effect (SPEC section 7).</summary>
 public sealed partial class WorkflowBuilder : FlowBase<WorkflowBuilder>
 {
@@ -434,6 +488,7 @@ public sealed partial class WorkflowBuilder : FlowBase<WorkflowBuilder>
     private string? descriptionText;
     private JsonObject? input;
     private JsonObject? output;
+    private readonly SortedDictionary<string, Body> bodies = new(StringComparer.Ordinal);
 
     internal WorkflowBuilder(string name)
     {
@@ -484,6 +539,23 @@ public sealed partial class WorkflowBuilder : FlowBase<WorkflowBuilder>
         return this;
     }
 
+    /// <summary>Registers a closed body by name. The body is read when <see cref="Build"/> runs.</summary>
+    public WorkflowBuilder Body(string name, Body definition)
+    {
+        ArgumentNullException.ThrowIfNull(definition);
+        if (string.IsNullOrEmpty(name))
+        {
+            throw Invalid("a body needs a name");
+        }
+
+        if (!bodies.TryAdd(name, definition))
+        {
+            throw Invalid($"the body {Wire.Quote(name)} is defined twice");
+        }
+
+        return this;
+    }
+
     /// <summary>The document. Raises <see cref="SagatErrorCode.ValidationFailed"/> for what the server would refuse and the builder can see.</summary>
     public JsonObject Build()
     {
@@ -493,49 +565,91 @@ public sealed partial class WorkflowBuilder : FlowBase<WorkflowBuilder>
         }
 
         var all = Flatten();
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var node in all)
+        var bodyNodes = new SortedDictionary<string, List<JsonObject>>(StringComparer.Ordinal);
+        foreach (var (bodyName, definition) in bodies)
         {
-            var id = (string)node["id"]!;
-            if (!seen.Add(id))
+            var nested = definition.Flatten();
+            if (nested.Count == 0)
             {
-                throw Invalid($"the node id {Wire.Quote(id)} is used twice");
+                throw Invalid($"body {Wire.Quote(bodyName)} is empty");
             }
+
+            if (nested.Any(node => (string?)node["type"] == "end"))
+            {
+                throw Invalid($"body {Wire.Quote(bodyName)} cannot hold an end node");
+            }
+
+            if (nested.Count(node => (string?)node["type"] == "return") != 1)
+            {
+                throw Invalid($"body {Wire.Quote(bodyName)} needs exactly one return node");
+            }
+
+            bodyNodes[bodyName] = nested;
         }
-
-        void Reference(string from, string field, JsonNode? target)
+        void ValidateScope(List<JsonObject> scope)
         {
-            if (target is JsonValue value && value.TryGetValue<string>(out var text) && !seen.Contains(text))
+            var local = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var node in scope)
             {
-                throw Invalid($"{from}.{field} points at {Wire.Quote(text)}, which is not a node");
-            }
-        }
-
-        foreach (var node in all)
-        {
-            var id = (string)node["id"]!;
-            foreach (var field in new[] { "next", "onError", "onTimeout", "ifTrue", "ifFalse", "begin" })
-            {
-                Reference(id, field, node[field]);
-            }
-
-            if (node["branches"] is JsonArray branches)
-            {
-                foreach (var branch in branches)
+                var id = (string)node["id"]!;
+                if (!local.Add(id))
                 {
-                    Reference(id, "branches", branch);
+                    throw Invalid($"the node id {Wire.Quote(id)} is used twice");
+                }
+            }
+            void Reference(string from, string field, JsonNode? target)
+            {
+                if (target is JsonValue value && value.TryGetValue<string>(out var text) && !local.Contains(text))
+                {
+                    throw Invalid($"{from}.{field} points at {Wire.Quote(text)}, which is not a node");
                 }
             }
 
-            if (node["cases"] is JsonArray cases)
+            foreach (var node in scope)
             {
-                foreach (var item in cases)
+                var id = (string)node["id"]!;
+                foreach (var field in new[] { "next", "onError", "onTimeout", "ifTrue", "ifFalse", "begin" })
                 {
-                    Reference(id, "cases", item?["target"]);
+                    Reference(id, field, node[field]);
+                }
+
+                if (node["branches"] is JsonArray branches)
+                {
+                    foreach (var branch in branches)
+                    {
+                        Reference(id, "branches", branch);
+                    }
+                }
+
+                if (node["cases"] is JsonArray cases)
+                {
+                    foreach (var item in cases)
+                    {
+                        Reference(id, "cases", item?["target"]);
+                    }
+                }
+
+                Reference(id, "default", node["default"]);
+                if ((string?)node["type"] == "forEach")
+                {
+                    var bodyName = (string?)node["body"];
+                    if (bodyName is null || !bodies.ContainsKey(bodyName))
+                    {
+                        throw Invalid($"forEach {id} points at {Wire.Quote(bodyName)}, which is not a body");
+                    }
+
+                    if (node["next"] is not JsonValue)
+                    {
+                        throw Invalid($"forEach {id} needs a next node");
+                    }
                 }
             }
+        }
 
-            Reference(id, "default", node["default"]);
+        ValidateScope(all);
+        foreach (var nested in bodyNodes.Values)
+        {
+            ValidateScope(nested);
         }
 
         var metadata = new JsonObject { ["name"] = name };
@@ -576,6 +690,21 @@ public sealed partial class WorkflowBuilder : FlowBase<WorkflowBuilder>
         if (output is not null)
         {
             document["outputSchema"] = output.DeepClone();
+        }
+
+        if (bodyNodes.Count > 0)
+        {
+            var bodyObject = new JsonObject();
+            foreach (var (bodyName, nested) in bodyNodes)
+            {
+                bodyObject[bodyName] = new JsonObject
+                {
+                    ["entrypoint"] = (string)nested[0]["id"]!,
+                    ["nodes"] = new JsonArray([.. nested.Select(node => (JsonNode?)node)]),
+                };
+            }
+
+            document["bodies"] = bodyObject;
         }
 
         return document;
@@ -624,4 +753,7 @@ public static class Workflow
 
     /// <summary>A flow for a parallel branch or a saga body.</summary>
     public static Flow Flow() => new();
+
+    /// <summary>A closed body for a runtime-sized collection or loop.</summary>
+    public static Body Body() => new();
 }

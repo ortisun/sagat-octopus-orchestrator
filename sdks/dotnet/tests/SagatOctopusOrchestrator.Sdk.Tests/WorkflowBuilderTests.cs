@@ -158,6 +158,27 @@ public class WorkflowBuilderTests
     }
 
     [Fact]
+    public void CollectionsUseNamedBodiesAndMapWritesTheSameForEachNode()
+    {
+        var line = Workflow.Body().Step("price", "line.price").Return("return", "steps.price.output");
+        var tax = Workflow.Body().Step("price", "tax.price").Return("return", "steps.price.output");
+        var document = Workflow.Create("collection-flow")
+            .Body("line", line)
+            .Body("tax", tax)
+            .ForEach("notify-lines", "input.lines", "line", "bodyResult", new CollectionOptions { MaxItems = 17, MaxConcurrency = 3 })
+            .Map("prices", "input.lines", "tax", "bodyResult.amount", new CollectionOptions { MaxItems = 17, MaxConcurrency = 2 })
+            .End("done", "steps.prices.output")
+            .Build();
+
+        Assert.Equal(
+            """[{"body":"line","id":"notify-lines","items":"input.lines","maxConcurrency":3,"maxItems":17,"next":"prices","result":"bodyResult","type":"forEach"},{"body":"tax","id":"prices","items":"input.lines","maxConcurrency":2,"maxItems":17,"next":"done","result":"bodyResult.amount","type":"forEach"},{"id":"done","outputExpr":"steps.prices.output","type":"end"}]""",
+            Canon(document["nodes"]));
+        Assert.Equal(
+            """{"line":{"entrypoint":"price","nodes":[{"activity":"line.price","id":"price","next":"return","type":"activity"},{"id":"return","result":"steps.price.output","type":"return"}]},"tax":{"entrypoint":"price","nodes":[{"activity":"tax.price","id":"price","next":"return","type":"activity"},{"id":"return","result":"steps.price.output","type":"return"}]}}""",
+            Canon(document["bodies"]));
+    }
+
+    [Fact]
     public void ALookbackOfZeroIsWrittenAndAnAbsentOneIsNot()
     {
         var zero = Workflow.Create("zero-look").WaitForEvent("w", new WaitForEventOptions { EventType = "e", CorrelationExpr = "x", Timeout = TimeSpan.FromSeconds(1), Lookback = TimeSpan.Zero }).Build();

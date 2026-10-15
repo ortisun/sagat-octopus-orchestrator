@@ -168,6 +168,12 @@ func apply(b *workflow.Builder, ops []any) {
 				cases = append(cases, workflow.SwitchCase{ID: asString(caseObject["id"]), When: asString(caseObject["when"]), Target: asString(caseObject["target"])})
 			}
 			b.Switch(id, cases, asString(op["default"]))
+		case "forEach":
+			b.ForEach(id, asString(op["items"]), asString(op["body"]), asString(op["result"]), asInt(op["maxItems"]), asInt(op["maxConcurrency"]))
+		case "map":
+			b.Map(id, asString(op["items"]), asString(op["body"]), asString(op["result"]), asInt(op["maxItems"]), asInt(op["maxConcurrency"]))
+		case "return":
+			b.Return(id, asString(op["result"]))
 		case "parallel":
 			var branches []*workflow.Builder
 			for _, branch := range asList(op["branches"]) {
@@ -247,6 +253,12 @@ func builderOf(definition object) *workflow.Builder {
 	}
 	if schema := asObject(definition["outputSchema"]); schema != nil {
 		b.OutputSchema(schema)
+	}
+	for _, name := range sortedKeys(asObject(definition["bodies"])) {
+		bodyDefinition := asObject(asObject(definition["bodies"])[name])
+		body := workflow.Flow()
+		apply(body, asList(bodyDefinition["program"]))
+		b.Body(name, body)
 	}
 	apply(b, asList(definition["program"]))
 	return b

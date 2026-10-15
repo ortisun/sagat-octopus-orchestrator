@@ -26,8 +26,15 @@ activity to execute, leaves every non-selected node `NOT_STARTED`, and records `
 a `switch.evaluated` event for the invalid predicate. The two golden files were written after inspecting
 the builder documents and equal normalized runtime outputs from all five SDKs; they were not auto-blessed.
 
+`collection-builders.json` checks additive v1 collection authoring in the five SDKs. Its
+`buildOnly: true` marker makes the harness compare the reviewed workflow golden, canonical text
+and validation errors without publishing or executing a collection. The fixture includes two
+named bodies that reuse local node IDs and covers `forEach`, its `map` alias and bounded options.
+It does not count as collection runtime conformance.
+
 ```text
 SAGAT_SDK_SCENARIO=switch-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=collection-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 ```
 
 ## Pending scenarios
@@ -46,9 +53,8 @@ SAGAT_SDK_SCENARIO=scoped-identity cargo test -p sagat-tests --test sdk_conforma
 rm tests/contract/sdk-conformance/scenarios/scoped-identity.json
 ```
 
-Enable the fixture permanently only when the public builders support named bodies, `forEach` and `return`,
-worker activity context and logs expose typed instance identity, graph inspection exposes each logical
-instance, scoped work is withheld from older workers, and a reviewed cross-language golden exists.
+Enable the fixture permanently only when worker activity context and logs expose typed instance identity, graph inspection exposes each logical
+instance, scoped work is withheld from older workers, and a reviewed cross-language runtime golden exists.
 
 ## What each SDK ships
 
@@ -71,6 +77,8 @@ JSON) and equal to `expected/<scenario>.workflows.json`. Then, **for each langua
 own** (booted with the scenario's `server` settings, so no run, lease, event or quota of one language is
 there for the next to meet): publish the IR with the REST API, run `run` with a `config.json`, normalize
 the result. A scenario is `ok` when all five are equal to each other and to `expected/<scenario>.json`.
+For `buildOnly: true`, the harness stops after the common workflow golden and error comparison; no
+server run or runtime golden is implied.
 
 **config.json** (written by the harness for every run):
 
@@ -124,6 +132,8 @@ the server without an SDK API: `expireLease {run, node}`, `elapseRetryDelay {run
 | `invokeChild` | `id`, `workflow`, `options?` | `invokeChild` |
 | `condition` | `id`, `expression`, `ifTrue`, `ifFalse` | `condition` |
 | `switch` | `id`, ordered `cases` (`id`, `when`, `target`), `default` | `switch` (`switchCase` in Java) |
+| `forEach`, `map` | `id`, `items`, `body`, `result`, `maxItems`, `maxConcurrency` | collection builder |
+| `return` | `id`, `result` inside a named body | body return builder |
 | `parallel` | `id`, `join`, `branches` (array of op arrays) | `parallel` |
 | `saga` | `id`, `options?`, `body` (op array) | `saga` |
 | `end` | `id`, `options?` | `end` |

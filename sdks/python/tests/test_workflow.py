@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from sagat_octopus_orchestrator import RetryOptions, SagatError, SwitchCase, flow, workflow
+from sagat_octopus_orchestrator import RetryOptions, SagatError, SwitchCase, body, flow, workflow
 
 
 def nodes_of(document: dict[str, Any]) -> list[dict[str, Any]]:
@@ -189,6 +189,43 @@ def test_a_switch_keeps_case_order_copies_its_cases_and_has_no_implicit_next() -
     workflow("local-case-ids").switch("first", [SwitchCase(id="same", when="true", target="done")], "done").switch(
         "second", [SwitchCase(id="same", when="false", target="done")], "done"
     ).end("done").build()
+
+
+def test_collections_use_named_bodies_and_map_writes_the_same_for_each_node() -> None:
+    line = body().step("price", "line.price").return_value("return", "steps.price.output")
+    tax = body().step("price", "tax.price").return_value("return", "steps.price.output")
+    document = (
+        workflow("collection-flow")
+        .body("line", line)
+        .body("tax", tax)
+        .for_each(
+            "notify-lines", "input.lines", "line", "bodyResult", max_items=17, max_concurrency=3
+        )
+        .map("prices", "input.lines", "tax", "bodyResult.amount", max_items=17, max_concurrency=2)
+        .end("done", output_expr="steps.prices.output")
+        .build()
+    )
+    assert document["nodes"] == [
+        {"id": "notify-lines", "type": "forEach", "items": "input.lines", "body": "line", "result": "bodyResult", "maxItems": 17, "maxConcurrency": 3, "next": "prices"},
+        {"id": "prices", "type": "forEach", "items": "input.lines", "body": "tax", "result": "bodyResult.amount", "maxItems": 17, "maxConcurrency": 2, "next": "done"},
+        {"id": "done", "type": "end", "outputExpr": "steps.prices.output"},
+    ]
+    assert document["bodies"] == {
+        "line": {
+            "entrypoint": "price",
+            "nodes": [
+                {"id": "price", "type": "activity", "activity": "line.price", "next": "return"},
+                {"id": "return", "type": "return", "result": "steps.price.output"},
+            ],
+        },
+        "tax": {
+            "entrypoint": "price",
+            "nodes": [
+                {"id": "price", "type": "activity", "activity": "tax.price", "next": "return"},
+                {"id": "return", "type": "return", "result": "steps.price.output"},
+            ],
+        },
+    }
 
 
 def test_triggers_labels_and_schemas_go_where_the_document_keeps_them() -> None:

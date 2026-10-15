@@ -17,5 +17,5 @@ export type {
 } from './worker/activity.js';
 export { WorkerHost } from './worker/host.js';
 export type { WorkerConfig, WorkerEvent, WorkerTransport } from './worker/host.js';
-export { Flow, WorkflowBuilder, flow, workflow } from './workflow.js';
-export type { ChildOptions, RetryOptions, SagaOptions, StepOptions, SwitchCase, Trigger, WaitOptions as WaitForEventOptions } from './workflow.js';
+export { Body, Flow, WorkflowBuilder, body, flow, workflow } from './workflow.js';
+export type { ChildOptions, CollectionOptions, RetryOptions, SagaOptions, StepOptions, SwitchCase, Trigger, WaitOptions as WaitForEventOptions } from './workflow.js';

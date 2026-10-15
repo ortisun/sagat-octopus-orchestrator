@@ -867,6 +867,15 @@ async fn play(
         }
     }
 
+    // Builder-only scenarios pin additive authoring contracts before the server capability is enabled.
+    // They are never published or executed, so passing one does not claim runtime support.
+    if scenario["buildOnly"].as_bool() == Some(true) {
+        return Outcome {
+            failures,
+            played: Vec::new(),
+        };
+    }
+
     // 2. Play it, language by language, each on a platform of its own: the runs, the leases, the events
     //    and the quotas of one language are not there for the next to meet.
     let expected_path = suite().join("expected").join(format!("{name}.json"));

@@ -75,6 +75,13 @@ internal static class BuildMode
             builder.OutputSchema(output);
         }
 
+        foreach (var (name, bodyDefinition) in definition["bodies"]?.AsObject() ?? [])
+        {
+            var nested = Workflow.Body();
+            Apply(nested, bodyDefinition!["program"]!.AsArray());
+            builder.Body(name, nested);
+        }
+
         Apply(builder, definition["program"]!.AsArray());
         return builder;
     }
@@ -132,6 +139,25 @@ internal static class BuildMode
                             (string)item["target"]!)),
                         (string)op["default"]!);
                     break;
+                case "forEach":
+                    target.ForEach(id, (string)op["items"]!, (string)op["body"]!, (string)op["result"]!, new CollectionOptions
+                    {
+                        MaxItems = (int)op["maxItems"]!,
+                        MaxConcurrency = (int)op["maxConcurrency"]!,
+                    });
+                    break;
+                case "map":
+                    target.Map(id, (string)op["items"]!, (string)op["body"]!, (string)op["result"]!, new CollectionOptions
+                    {
+                        MaxItems = (int)op["maxItems"]!,
+                        MaxConcurrency = (int)op["maxConcurrency"]!,
+                    });
+                    break;
+                case "return" when target is Body bodyTarget:
+                    bodyTarget.Return(id, (string)op["result"]!);
+                    break;
+                case "return":
+                    throw new InvalidOperationException("return is only valid in a named body");
                 case "parallel":
                     target.Parallel(
                         id,

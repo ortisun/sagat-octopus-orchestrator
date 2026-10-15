@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import dev.sagatoctopusorchestrator.sdk.ErrorCode;
 import dev.sagatoctopusorchestrator.sdk.Json;
 import dev.sagatoctopusorchestrator.sdk.SagatException;
@@ -148,6 +149,26 @@ class WorkflowBuilderTest {
                 .switchCase("second", List.of(new SwitchCase("same", "false", "done")), "done")
                 .end("done")
                 .build();
+    }
+
+    @Test
+    void collectionsUseNamedBodiesAndMapWritesTheSameForEachNode() throws Exception {
+        Flow line = Flow.body().step("price", "line.price").returnValue("return", "steps.price.output");
+        Flow tax = Flow.body().step("price", "tax.price").returnValue("return", "steps.price.output");
+        ObjectNode document = WorkflowBuilder.named("collection-flow")
+                .body("line", line)
+                .body("tax", tax)
+                .forEach("notify-lines", "input.lines", "line", "bodyResult", CollectionOptions.of(17, 3))
+                .map("prices", "input.lines", "tax", "bodyResult.amount", CollectionOptions.of(17, 2))
+                .end("done", "steps.prices.output")
+                .build();
+
+        assertEquals(
+                "[{\"body\":\"line\",\"id\":\"notify-lines\",\"items\":\"input.lines\",\"maxConcurrency\":3,\"maxItems\":17,\"next\":\"prices\",\"result\":\"bodyResult\",\"type\":\"forEach\"},{\"body\":\"tax\",\"id\":\"prices\",\"items\":\"input.lines\",\"maxConcurrency\":2,\"maxItems\":17,\"next\":\"done\",\"result\":\"bodyResult.amount\",\"type\":\"forEach\"},{\"id\":\"done\",\"outputExpr\":\"steps.prices.output\",\"type\":\"end\"}]",
+                Json.canonical(document.get("nodes")));
+        assertEquals(
+                "{\"line\":{\"entrypoint\":\"price\",\"nodes\":[{\"activity\":\"line.price\",\"id\":\"price\",\"next\":\"return\",\"type\":\"activity\"},{\"id\":\"return\",\"result\":\"steps.price.output\",\"type\":\"return\"}]},\"tax\":{\"entrypoint\":\"price\",\"nodes\":[{\"activity\":\"tax.price\",\"id\":\"price\",\"next\":\"return\",\"type\":\"activity\"},{\"id\":\"return\",\"result\":\"steps.price.output\",\"type\":\"return\"}]}}",
+                Json.canonical(document.get("bodies")));
     }
 
     @Test
