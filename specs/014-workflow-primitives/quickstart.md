@@ -84,8 +84,9 @@ The `approval-decisions` scenario also publishes and starts a root approval work
 the pending request and checks authorized approve/reject, replay, conflicting keys and tenant
 opacity in all five SDKs. See
 [`workflow-primitives.md`](../../docs/runbooks/workflow-primitives.md) for the current API paths,
-idempotency and recovery checks. A declared state document combined with a collection, loop,
-approval or continuation node is still rejected at publication.
+idempotency and recovery checks. Approval combined with parallel execution is rejected until
+concurrent-run expiry semantics are verified. A declared state document combined with a
+collection, loop, approval or continuation node is still rejected at publication.
 
 The PostgreSQL integration target now verifies atomic collection checkpoint/finish,
 addressed journal restoration, declared-operation receipts, loop delay checkpoints and chain

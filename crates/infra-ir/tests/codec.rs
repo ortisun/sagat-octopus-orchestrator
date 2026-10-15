@@ -125,11 +125,21 @@ fn native_approval_is_publishable_without_enabling_other_structured_capabilities
         Some(NodeKind::Approval { .. })
     ));
 
-    let mut combined = document;
+    let mut combined = document.clone();
     combined["state"] = json!({"schema": {"type": "integer"}, "initial": "0"});
     assert!(matches!(
         parse(&combined),
         Err(IrError::Unsupported { kind, .. }) if kind == "approval"
+    ));
+
+    let mut parallel = document.clone();
+    parallel["nodes"]
+        .as_array_mut()
+        .expect("nodes")
+        .push(json!({"id": "fork", "type": "parallel", "branches": ["approved", "rejected"], "join": "all", "next": "expired"}));
+    assert!(matches!(
+        parse(&parallel),
+        Err(IrError::Unsupported { kind, .. }) if kind == "parallel"
     ));
 }
 

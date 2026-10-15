@@ -560,6 +560,17 @@ pub(crate) fn definition(document: &Value) -> Result<WorkflowDefinition, IrError
     let has_approval = nodes
         .iter()
         .any(|node| matches!(node.kind(), NodeKind::Approval { .. }));
+    if has_approval
+        && let Some(parallel) = nodes
+            .iter()
+            .find(|node| matches!(node.kind(), NodeKind::Parallel { .. }))
+    {
+        return Err(IrError::Unsupported {
+            node: parallel.id().as_str().into(),
+            kind: "parallel".into(),
+            reason: "approval and parallel execution are not enabled together",
+        });
+    }
     let definition = if has_approval {
         WorkflowDefinition::new_structured(
             name,

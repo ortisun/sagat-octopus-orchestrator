@@ -4,8 +4,8 @@ The public workflow document remains additive `sagat-octopus-orchestrator.io/v1`
 `switch`, run-addressed declared Query/Update and a bounded root human approval are available
 with the existing basic root nodes. Collection, loop and continuation documents still fail
 publication. Their builder fixtures and private integration tests do not authorize publishing
-those nodes. Approval documents cannot combine approval with declared state or another structured
-primitive yet.
+those nodes. Approval documents cannot combine approval with parallel execution, declared state
+or another structured primitive yet.
 The worker adapter advertises minor 1.4; scoped 1.5 execution is enabled only in the test
 harness. Keep these gates closed until each primitive's fault, security, compatibility and
 recovery evidence is complete.
