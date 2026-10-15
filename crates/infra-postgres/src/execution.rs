@@ -391,19 +391,7 @@ impl RunStore for PgRunStore {
         for row in &step_rows {
             let node: String = col(row, "node")?;
             let node = NodeId::parse_stored(&node).map_err(|_| corrupt("step node"))?;
-            let path_nodes: Vec<String> = col(row, "instance_path_nodes")?;
-            let path_indices: Vec<i32> = col(row, "instance_path_indices")?;
-            if path_nodes.len() != path_indices.len() {
-                return Err(corrupt("step instance path"));
-            }
-            let mut path = InstancePath::root();
-            for (scope, index) in path_nodes.into_iter().zip(path_indices) {
-                let scope = NodeId::parse_stored(&scope).map_err(|_| corrupt("step scope"))?;
-                let index = u32::try_from(index).map_err(|_| corrupt("step iteration index"))?;
-                path = path
-                    .child(scope, index)
-                    .map_err(|_| corrupt("step instance path"))?;
-            }
+            let path = step_instance_path(row)?;
             if path.is_root() {
                 stored.insert(node.clone());
             }
@@ -626,9 +614,10 @@ impl RunStore for PgRunStore {
         };
         let record = run_record(&row)?;
         let step_rows = sqlx::query(
-            "SELECT node, status, attempt, generation, cancel_requested, failure_code, \
+            "SELECT node, instance_path_nodes, instance_path_indices, status, attempt, generation, cancel_requested, failure_code, \
                     next_attempt_at, due_at, waiting_kind, child_run_id, switch_case_id \
-             FROM steps WHERE tenant_id = $1 AND run_id = $2 ORDER BY node",
+             FROM steps WHERE tenant_id = $1 AND run_id = $2 \
+             ORDER BY instance_path_nodes, instance_path_indices, node",
         )
         .bind(tenant.as_uuid())
         .bind(run.as_uuid())
@@ -670,8 +659,10 @@ impl RunStore for PgRunStore {
                 let attempt: i32 = col(row, "attempt")?;
                 let generation: i64 = col(row, "generation")?;
                 let waiting: Option<String> = col(row, "waiting_kind")?;
+                let node = NodeId::parse_stored(&node).map_err(|_| corrupt("step node"))?;
                 Ok(StepView {
-                    node: NodeId::parse_stored(&node).map_err(|_| corrupt("step node"))?,
+                    instance: ExecutionInstanceId::in_path(step_instance_path(row)?, node.clone()),
+                    node,
                     status: status.parse().map_err(|_| corrupt("step status"))?,
                     attempt: u32::try_from(attempt).map_err(|_| corrupt("attempt"))?,
                     generation: u64::try_from(generation).map_err(|_| corrupt("generation"))?,
@@ -862,6 +853,23 @@ fn run_record(row: &PgRow) -> Result<RunRecord, StoreError> {
         updated_at: col(row, "updated_at")?,
         finished_at: col(row, "finished_at")?,
     })
+}
+
+fn step_instance_path(row: &PgRow) -> Result<InstancePath, StoreError> {
+    let path_nodes: Vec<String> = col(row, "instance_path_nodes")?;
+    let path_indices: Vec<i32> = col(row, "instance_path_indices")?;
+    if path_nodes.len() != path_indices.len() {
+        return Err(corrupt("step instance path"));
+    }
+    let mut path = InstancePath::root();
+    for (scope, index) in path_nodes.into_iter().zip(path_indices) {
+        let scope = NodeId::parse_stored(&scope).map_err(|_| corrupt("step scope"))?;
+        let index = u32::try_from(index).map_err(|_| corrupt("step iteration index"))?;
+        path = path
+            .child(scope, index)
+            .map_err(|_| corrupt("step instance path"))?;
+    }
+    Ok(path)
 }
 
 fn step_state(row: &PgRow) -> Result<StepState, StoreError> {

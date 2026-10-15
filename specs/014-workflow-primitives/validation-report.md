@@ -158,3 +158,8 @@ release gates.
 | `cargo test -p sagat-tests --test contract_workflow_primitives --test integration_workflow_primitives --test fault_workflow_primitives --locked -q` | Passed: 14 contract, 10 real-PostgreSQL integration and 3 fault tests |
 | `cargo clippy -p sagat-domain -p sagat-infra-postgres -p sagat-tests --all-targets --locked -- -D warnings` | Passed |
 | `cargo fmt --all` | Passed |
+
+The application graph snapshot was then extended to retain each step's full instance identity.
+The HTTP graph continues to render root nodes only, so a scoped projection cannot overwrite a
+root node with the same local name. The complete scoped graph topology remains pending. The
+real-PostgreSQL integration target passed all 10 tests after this read-side change.

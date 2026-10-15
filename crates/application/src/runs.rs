@@ -83,6 +83,8 @@ pub struct JournalEntry {
 /// One step as the runtime graph shows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StepView {
+    /// Full logical identity of the projected execution; `node` remains the local definition name.
+    pub instance: sagat_domain::execution::ExecutionInstanceId,
     pub node: NodeId,
     pub status: StepStatus,
     pub attempt: u32,

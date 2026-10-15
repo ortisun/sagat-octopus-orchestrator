@@ -468,8 +468,12 @@ pub fn runtime_graph(graph: &GraphSnapshot) -> Value {
 
 /// The nodes of the runtime graph that `wanted` accepts (by the node and the state of its step).
 fn runtime_nodes(graph: &GraphSnapshot, wanted: impl Fn(&NodeView<'_>) -> bool) -> Vec<Value> {
-    let steps: std::collections::BTreeMap<_, _> =
-        graph.steps.iter().map(|s| (s.node.as_str(), s)).collect();
+    let steps: std::collections::BTreeMap<_, _> = graph
+        .steps
+        .iter()
+        .filter(|step| step.instance.path().is_root())
+        .map(|step| (step.node.as_str(), step))
+        .collect();
     let sagas: std::collections::BTreeMap<_, _> =
         graph.sagas.iter().map(|s| (s.node.as_str(), s)).collect();
     let mut nodes = Vec::new();

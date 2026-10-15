@@ -53,6 +53,9 @@ the bounded typed path and retains root and scoped rows independently. Definitio
 each path owner through its declared collection body, checks the member index against that owner's
 limit and resolves the final local node in that body. These are read-side foundations; writes and
 worker task addressing remain root-only until their transaction and protocol gates pass.
+The application graph snapshot also retains the full identity of each projected step; the current
+HTTP graph renderer still presents only the legacy root graph and needs scoped node IDs and edges
+before it can claim complete dynamic topology.
 
 **IterationScope**: owner instance, kind (`COLLECTION`, `WHILE`, `REPEAT_UNTIL`), lifecycle,
 captured input/state reference, cardinality, admitted cursor, completed count, next iteration index,

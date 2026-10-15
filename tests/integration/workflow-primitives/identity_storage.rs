@@ -374,4 +374,23 @@ async fn locked_run_restores_every_scoped_instance_of_the_same_node() {
             "scoped instance {index} is retained"
         );
     }
+    drop(tx);
+
+    let graph = w
+        .store
+        .graph(w.admin.tenant_id(), run)
+        .await
+        .expect("projected graph")
+        .expect("run exists");
+    assert_eq!(graph.steps.len(), 3);
+    assert_eq!(
+        graph
+            .steps
+            .iter()
+            .map(|step| step.instance.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        3,
+        "graph projection retains each logical instance"
+    );
 }
