@@ -23,6 +23,7 @@ Studio labels and project documentation are in English.
 - [Access ports](#access-ports)
 - [Configure the platform](#configure-the-platform)
 - [Run your first workflow](#run-your-first-workflow)
+- [SDK use cases](#sdk-use-cases)
 - [Configure integrations](#configure-integrations)
 - [Write and run scripts](#write-and-run-scripts)
 - [Develop without application containers](#develop-without-application-containers)
@@ -229,6 +230,20 @@ independent applications. After token expiry, renew it and restart this CLI work
 Next, try the [payment saga](docs/quickstarts/saga.md) to observe compensation, then replace the mock
 worker with a [TypeScript](docs/quickstarts/typescript.md), [Go](docs/quickstarts/go.md),
 [Python](docs/quickstarts/python.md), [C#](docs/quickstarts/dotnet.md) or [Java](docs/quickstarts/java.md) worker.
+
+## SDK use cases
+
+After the first workflow, run [order processing](examples/order-processing/README.md) in
+**TypeScript, Python, Go, C# or Java**. Every language demonstrates conditional routing (including
+business rejection), static parallel fulfillment, a durable reminder and an injected permanent
+notification failure. The guide includes publication, worker permissions, expected output and
+troubleshooting. Browse the [example matrix](examples/sdk-parity.md) for greeting and payment
+saga examples as well.
+
+The [workflow primitive specification](specs/014-workflow-primitives/spec.md) proposes bounded
+iteration and dynamic fan-out, loops, native approval, switch, Query/Update and Continue-As-New.
+It records acceptance criteria and implementation tasks; these additions are **not implemented**
+in version 0.1.0. The runnable examples use the current API.
 
 ## Configure integrations
 

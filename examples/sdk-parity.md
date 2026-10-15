@@ -1,51 +1,29 @@
-# SDK exercises — proposed contracts, illustrative pseudocode
+# Executable SDK examples and parity
 
-> The API is aspirational and subject to the final proto; the examples are not executable binaries in this package.
+These are working programs against the SDKs in this checkout, not sketches of a future API.
+Start with the [quickstart](../docs/quickstarts/README.md), then choose a use case.
 
-## TypeScript
+| Use case | TypeScript | Python | Go | C# | Java |
+|---|---|---|---|---|---|
+| Compose and deliver a greeting | [Run](hello-world/typescript/README.md) | [Run](hello-world/python/README.md) | [Run](hello-world/go/README.md) | [Run](hello-world/dotnet/README.md) | [Run](hello-world/java/README.md) |
+| Route accepted/rejected orders | [Run](order-processing/typescript/README.md) | [Run](order-processing/python/README.md) | [Run](order-processing/go/README.md) | [Run](order-processing/dotnet/README.md) | [Run](order-processing/java/README.md) |
+| Parallel fulfillment | [Run](order-processing/typescript/README.md) | [Run](order-processing/python/README.md) | [Run](order-processing/go/README.md) | [Run](order-processing/dotnet/README.md) | [Run](order-processing/java/README.md) |
+| Durable reminder and permanent failure | [Run](order-processing/typescript/README.md) | [Run](order-processing/python/README.md) | [Run](order-processing/go/README.md) | [Run](order-processing/dotnet/README.md) | [Run](order-processing/java/README.md) |
+| Payment compensation and reconciliation | [Run](payment-saga/typescript/README.md) | — | — | — | — |
 
-```typescript
-const run = await client.runs.start('corporate-payment', input, {
-  idempotencyKey: paymentId, namespace: 'prod'
-});
-await client.runs.signal(run.runId, 'payment-confirmed', { paymentId });
+The [order-processing guide](order-processing/README.md) explains publication, capability binding,
+inputs, expected outcomes and troubleshooting. One canonical set of workflow documents is shared
+by every language. Workers implement activities; the server controls conditions, timers, joins,
+retries and durable state. The examples simulate business providers and do not claim exactly-once
+external effects.
+
+The common executable check is:
+
+```sh
+cargo test -p sagat-tests --test e2e_developer_experience --locked -- --ignored us03:: order_processing:: saga::
 ```
 
-## Go
-
-```go
-run, err := client.StartRun(ctx, "corporate-payment", input,
-    sagatoctopusorchestrator.StartOptions{Namespace: "prod", IdempotencyKey: paymentID})
-```
-
-## Python
-
-```python
-run = await client.start_run("corporate-payment", input_data,
-                             namespace="prod", idempotency_key=payment_id)
-```
-
-## C#/.NET
-
-```csharp
-builder.Services.AddSagatOctopusOrchestrator(options => options.Endpoint = new Uri("https://api.example"));
-var run = await client.StartAsync("corporate-payment", payment,
-    new StartOptions("prod", payment.Id), cancellationToken);
-```
-
-## Java
-
-```java
-var run = client.startRun("corporate-payment", input,
-    StartOptions.builder().namespace("prod").idempotencyKey(paymentId).build());
-```
-
-## Conformance scenarios shared by all SDKs
-
-1. Start with the same idempotency key + same input → same run.
-2. Same key + different input → CONFLICT.
-3. Worker with stale generation → STALE_ATTEMPT.
-4. Cancel / deadline / trace propagation.
-5. Ambiguous side effect → reconcile callback required per policy.
-6. Protocol compatibility minor and major rejection.
-7. Decimal, UTC timestamp, null, missing field and arrays in a cross-language payload.
+It requires Docker and Node, Python, Go, .NET and Java toolchains. The SDK protocol conformance
+suite is separate in [`tests/contract/sdk-conformance`](../tests/contract/sdk-conformance/).
+The [feature 014 specification](../specs/014-workflow-primitives/spec.md) proposes additional
+primitives; those contracts are not available in the released SDKs or demonstrated as runnable here.

@@ -368,3 +368,15 @@ observability-fixture failure; the corrected affected target passed 26/26 at two
 parallelism. Namespace-dialog fixture isolation passed all six focused and 1,105 Studio tests.
 Full-workspace Clippy, integrated 0.4.0 builds, readiness probes and four real Chromium journeys pass.
 Neither the initial failed runs nor the external publication/human-acceptance gates are marked green.
+
+## 014 — Workflow primitives and expanded SDK examples (2026-10-14)
+
+[Specification](../specs/014-workflow-primitives/spec.md),
+[implementation tasks](../specs/014-workflow-primitives/tasks.md), and
+[local validation evidence](../specs/014-workflow-primitives/validation-report.md).
+
+| Requirement / criterion | Status | Evidence / remaining work |
+|---|---|---|
+| FR-014-001, FR-014-002, SC-014-001 — practical examples and parity | Implemented and locally verified | `examples/order-processing/`: three workflows in all five SDK languages. `e2e_developer_experience` filter `order_processing::` passed 25 workflow runs and 10 configuration checks on a real disposable platform. The common CI example job includes this filter. |
+| FR-014-003–017 — structured iteration, loops, approval, switch, Query/Update, continuation and cross-cutting rules | Specified; **not implemented** | Feature 014 records semantics, proposed contracts, data model, dependency order and acceptance/fault scenarios, checked against the accepted ADRs and canonical contracts on 2026-10-14 ([analysis](../specs/014-workflow-primitives/analysis.md)). Pending decisions: value disclosure for Query/Update (refines ADR-0028, blocks US06), iteration compensation (refines ADR-0005) and permission grants. Runtime tasks remain unchecked; canonical released contracts are unchanged. |
+| SC-014-002–006 and NFR-014-001–004 — future primitive runtime guarantees | **Not verified for new primitives** | Require the implementation, common five-SDK conformance, crash/race/tenant/compatibility suites and measured resource tests identified in feature 014. Current example success is not evidence for these guarantees. |
