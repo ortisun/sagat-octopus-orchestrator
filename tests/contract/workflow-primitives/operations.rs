@@ -70,7 +70,7 @@ fn assert_valid(value: &Value) {
 }
 
 #[test]
-fn explicit_disclosure_is_valid_additive_v1_but_runtime_publication_stays_closed() {
+fn explicit_disclosure_is_typed_internally_but_runtime_publication_stays_closed() {
     let value = document();
     assert_valid(&value);
     assert_eq!(
@@ -87,6 +87,12 @@ fn explicit_disclosure_is_valid_additive_v1_but_runtime_publication_stays_closed
         JsonIrCodec.parse_structured(&bytes),
         Err(IrError::UnsupportedDeclaration { field: "state", .. })
     ));
+    let parsed = JsonIrCodec
+        .parse_declared_state(&bytes)
+        .expect("internal declared-state parser");
+    assert_eq!(parsed.state().initial().as_str(), "0");
+    assert_eq!(parsed.state().queries().count(), 1);
+    assert_eq!(parsed.state().updates().count(), 1);
 }
 
 #[test]

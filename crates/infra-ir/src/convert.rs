@@ -566,6 +566,20 @@ pub(crate) fn structured_definition(document: &Value) -> Result<WorkflowDefiniti
             });
         }
     }
+    structured_definition_inner(document)
+}
+
+pub(crate) fn declared_state_definition(document: &Value) -> Result<WorkflowDefinition, IrError> {
+    if document.get("chainPolicy").is_some() {
+        return Err(IrError::UnsupportedDeclaration {
+            field: "chainPolicy",
+            reason: "this workflow capability has no validated domain mapping",
+        });
+    }
+    structured_definition_inner(document)
+}
+
+fn structured_definition_inner(document: &Value) -> Result<WorkflowDefinition, IrError> {
     let (name, entrypoint) = identity(document)?;
     let root = root_nodes(document, true)?;
     let mut bodies = Vec::new();

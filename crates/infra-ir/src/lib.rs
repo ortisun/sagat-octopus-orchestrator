@@ -8,12 +8,19 @@
 mod payload_projection;
 pub use payload_projection::JsonPayloadProjector;
 mod canonical;
+mod continuation;
 mod convert;
 pub mod cron;
+mod declared_state;
 mod diff;
 mod evaluator;
 mod schema;
 
+pub use continuation::{ChainPolicyDefinition, ContinueAsNewDefinition, ParsedContinuation};
+pub use declared_state::{
+    DeclaredQueryDefinition, DeclaredSchema, DeclaredStateDefinition, DeclaredUpdateDefinition,
+    MAX_DECLARED_SCHEMA_BYTES, MAX_DECLARED_SCHEMA_DEPTH, ParsedDeclaredState,
+};
 pub use evaluator::JsonEvaluator;
 
 use sagat_application::definitions::{IrCodec, IrError, MAX_IR_BYTES, ParsedDefinition};
@@ -37,6 +44,31 @@ impl JsonIrCodec {
     /// plus an unsupported-capability error for structured kinds without a domain mapping.
     pub fn parse_structured(&self, document: &[u8]) -> Result<ParsedDefinition, IrError> {
         parse_document(document, convert::structured_definition)
+    }
+
+    /// Validates and preserves an additive-v1 state declaration without enabling publication.
+    ///
+    /// The returned artifact retains the canonical workflow bytes and typed state/operation
+    /// metadata. The production [`IrCodec::parse`] path remains the publication capability gate.
+    ///
+    /// # Errors
+    /// Returns bounded syntax, schema, graph or expression errors. A chain policy remains outside
+    /// this capability slice.
+    pub fn parse_declared_state(&self, document: &[u8]) -> Result<ParsedDeclaredState, IrError> {
+        let value = validated_document(document)?;
+        let state = declared_state::parse(&value)?;
+        let parsed = converted_document(&value, convert::declared_state_definition)?;
+        Ok(ParsedDeclaredState::new(parsed, state))
+    }
+
+    /// Validates and preserves additive-v1 continuation declarations without enabling them.
+    ///
+    /// # Errors
+    /// Returns bounded syntax, schema, graph or expression errors. The production
+    /// [`IrCodec::parse`] path remains fail-closed for `chainPolicy` and `continueAsNew`.
+    pub fn parse_continuation(&self, document: &[u8]) -> Result<ParsedContinuation, IrError> {
+        let value = validated_document(document)?;
+        continuation::parse(&value)
     }
 }
 
@@ -68,6 +100,11 @@ fn parse_document(
     document: &[u8],
     convert: fn(&Value) -> Result<WorkflowDefinition, IrError>,
 ) -> Result<ParsedDefinition, IrError> {
+    let value = validated_document(document)?;
+    converted_document(&value, convert)
+}
+
+fn validated_document(document: &[u8]) -> Result<Value, IrError> {
     if document.len() > MAX_IR_BYTES {
         return Err(IrError::TooLarge);
     }
@@ -77,9 +114,16 @@ fn parse_document(
     if !issues.is_empty() {
         return Err(IrError::Schema(issues));
     }
-    let definition = convert(&value)?;
+    Ok(value)
+}
+
+fn converted_document(
+    value: &Value,
+    convert: fn(&Value) -> Result<WorkflowDefinition, IrError>,
+) -> Result<ParsedDefinition, IrError> {
+    let definition = convert(value)?;
     check_expressions(&definition)?;
-    let canonical = canonical::canonical_json(&value);
+    let canonical = canonical::canonical_json(value);
     let digest = canonical::digest_of(&canonical);
     let warnings = definition.warnings();
     Ok(ParsedDefinition {
