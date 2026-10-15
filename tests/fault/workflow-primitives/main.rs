@@ -6,6 +6,7 @@
 mod support;
 
 mod approvals;
+mod chains;
 mod loops;
 mod operations;
 mod switch;
