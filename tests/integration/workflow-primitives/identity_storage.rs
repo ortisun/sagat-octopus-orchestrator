@@ -2,6 +2,7 @@
 
 use sagat_application::execution::RunTx;
 use sagat_application::execution::instance_step_id;
+use sagat_application::maintenance::{MaintenanceStore, Window};
 use sagat_application::runs::{Lock, RunStore};
 use sagat_domain::definition::WorkflowVersionId;
 use sagat_domain::execution::{ExecutionInstanceId, InstancePath, RunId};
@@ -393,6 +394,21 @@ async fn locked_run_restores_every_scoped_instance_of_the_same_node() {
         3,
         "graph projection retains each logical instance"
     );
+
+    let session = w.session(&["act.a"]).await;
+    let claimed = w.poll(&session, 1).await;
+    assert_eq!(claimed.len(), 1, "the root task remains claimable");
+    assert!(claimed[0].instance.path().is_root());
+    let scoped_statuses: Vec<String> = sqlx::query_scalar(
+        "SELECT status FROM steps WHERE tenant_id = $1 AND run_id = $2 AND node = 'a' \
+         AND cardinality(instance_path_nodes) > 0 ORDER BY instance_path_indices",
+    )
+    .bind(tenant)
+    .bind(run.as_uuid())
+    .fetch_all(&w.db.pool)
+    .await
+    .expect("scoped statuses after root claim");
+    assert_eq!(scoped_statuses, ["READY", "READY"]);
 }
 
 #[tokio::test]
@@ -440,4 +456,11 @@ async fn old_worker_candidate_query_does_not_offer_scoped_ready_steps() {
         .await
         .expect("root-only candidates");
     assert!(candidates.is_empty());
+
+    let stale = w
+        .store
+        .stale_hints(std::time::Duration::ZERO, &Window::everything(10))
+        .await
+        .expect("root-only rehint candidates");
+    assert!(stale.iter().all(|candidate| candidate.run_id != run));
 }

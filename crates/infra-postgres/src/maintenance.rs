@@ -91,6 +91,7 @@ impl MaintenanceStore for PgRunStore {
              CROSS JOIN LATERAL ( \
                  SELECT tenant_id, run_id, node, due_at FROM steps \
                  WHERE run_shard(run_id) = sh.s AND status = 'WAITING' AND waiting_kind = 'TIMER' \
+                   AND cardinality(instance_path_nodes) = 0 \
                    AND due_at <= now() AND tenant_id <> ALL($3::uuid[]) \
                  ORDER BY due_at LIMIT $1) t \
              ORDER BY t.due_at LIMIT $1",
@@ -113,6 +114,7 @@ impl MaintenanceStore for PgRunStore {
              CROSS JOIN LATERAL ( \
                  SELECT tenant_id, run_id, node, due_at FROM steps \
                  WHERE run_shard(run_id) = sh.s AND status = 'WAITING' AND waiting_kind = 'EVENT' \
+                   AND cardinality(instance_path_nodes) = 0 \
                    AND due_at <= now() AND tenant_id <> ALL($3::uuid[]) \
                  ORDER BY due_at LIMIT $1) t \
              ORDER BY t.due_at LIMIT $1",
@@ -135,6 +137,7 @@ impl MaintenanceStore for PgRunStore {
              CROSS JOIN LATERAL ( \
                  SELECT tenant_id, run_id, node, next_attempt_at FROM steps \
                  WHERE run_shard(run_id) = sh.s AND status = 'RETRY_WAIT' \
+                   AND cardinality(instance_path_nodes) = 0 \
                    AND next_attempt_at <= now() AND tenant_id <> ALL($3::uuid[]) \
                  ORDER BY next_attempt_at LIMIT $1) t \
              ORDER BY t.next_attempt_at LIMIT $1",
@@ -160,6 +163,7 @@ impl MaintenanceStore for PgRunStore {
                     SELECT tenant_id, run_id, node, attempt, generation, 'TIMED_OUT' AS cause, \
                            attempt_deadline_at AS at FROM steps \
                     WHERE run_shard(run_id) = sh.s AND status IN ('LEASED', 'RUNNING') \
+                      AND cardinality(instance_path_nodes) = 0 \
                       AND attempt_deadline_at <= now() AND tenant_id <> ALL($3::uuid[]) \
                     ORDER BY attempt_deadline_at LIMIT $1) t \
               ORDER BY t.at LIMIT $1) \
@@ -170,6 +174,7 @@ impl MaintenanceStore for PgRunStore {
                     SELECT tenant_id, run_id, node, attempt, generation, 'EXPIRED' AS cause, \
                            lease_expires_at AS at FROM steps \
                     WHERE run_shard(run_id) = sh.s AND status IN ('LEASED', 'RUNNING') \
+                      AND cardinality(instance_path_nodes) = 0 \
                       AND lease_expires_at <= now() AND tenant_id <> ALL($3::uuid[]) \
                     ORDER BY lease_expires_at LIMIT $1) t \
               ORDER BY t.at LIMIT $1)",
@@ -240,7 +245,8 @@ impl MaintenanceStore for PgRunStore {
             "SELECT t.tenant_id, t.run_id, t.node FROM unnest($2::smallint[]) AS sh(s) \
              CROSS JOIN LATERAL ( \
                  SELECT tenant_id, run_id, node, last_hinted_at FROM steps \
-                 WHERE run_shard(run_id) = sh.s AND status = 'READY' AND hint_count < 5 \
+                 WHERE run_shard(run_id) = sh.s AND status = 'READY' \
+                   AND cardinality(instance_path_nodes) = 0 AND hint_count < 5 \
                    AND last_hinted_at <= now() - $4 * interval '1 microsecond' \
                    AND tenant_id <> ALL($3::uuid[]) \
                  ORDER BY last_hinted_at LIMIT $1) t \
@@ -267,6 +273,7 @@ impl MaintenanceStore for PgRunStore {
              CROSS JOIN LATERAL ( \
                  SELECT tenant_id, run_id, node, child_run_id, child_input, updated_at FROM steps \
                  WHERE run_shard(run_id) = sh.s AND status = 'WAITING' AND waiting_kind = 'CHILD' \
+                   AND cardinality(instance_path_nodes) = 0 \
                    AND child_started = false AND child_input IS NOT NULL \
                    AND tenant_id <> ALL($3::uuid[]) \
                  ORDER BY updated_at LIMIT $1) t \
