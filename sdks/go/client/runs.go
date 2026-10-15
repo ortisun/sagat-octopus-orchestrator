@@ -536,6 +536,102 @@ var approvalReasonCodePattern = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,64}$`)
 var declaredOperationNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$`)
 var updateKeyPattern = regexp.MustCompile(`^[\x21-\x7e]{1,128}$`)
 
+// ListApprovals reads one bounded page in immutable opening order.
+func (c *Client) ListApprovals(ctx context.Context, runID string, options ApprovalListOptions, opts ...CallOption) (*ApprovalPage, error) {
+	path, err := runPath(runID)
+	if err != nil {
+		return nil, err
+	}
+	o := callOptionsOf(opts)
+	traceparent, err := c.trace(ctx, o.traceparent)
+	if err != nil {
+		return nil, err
+	}
+	query := url.Values{}
+	if options.Cursor != "" {
+		query.Set("cursor", options.Cursor)
+	}
+	if options.Limit > 0 {
+		query.Set("limit", strconv.Itoa(options.Limit))
+	}
+	resp, err := c.do(ctx, request{method: "GET", path: path + "/approvals", query: query, repeatable: true, traceparent: traceparent})
+	if err != nil {
+		return nil, err
+	}
+	raw, err := object(resp.body, "an approval page")
+	if err != nil {
+		return nil, err
+	}
+	var values []map[string]json.RawMessage
+	if encoded, ok := raw["items"]; !ok || json.Unmarshal(encoded, &values) != nil || len(values) > 200 {
+		return nil, protocolError("items is invalid in the answer")
+	}
+	page := &ApprovalPage{Items: make([]ApprovalListItem, 0, len(values)), Raw: raw}
+	page.NextCursor, _ = jsonx.String(raw, "nextCursor")
+	for _, value := range values {
+		item := ApprovalListItem{Raw: value}
+		if item.ApprovalID, err = requiredString(value, "approvalId"); err != nil {
+			return nil, err
+		}
+		if item.RunID, err = requiredString(value, "runId"); err != nil {
+			return nil, err
+		}
+		if item.NodeID, err = requiredString(value, "nodeId"); err != nil {
+			return nil, err
+		}
+		status, statusErr := requiredString(value, "status")
+		if statusErr != nil || !validApprovalStatus(ApprovalStatus(status)) {
+			return nil, protocolError("status is invalid in the answer")
+		}
+		item.Status = ApprovalStatus(status)
+		if item.Deadline, _ = jsonx.Time(value, "deadline"); item.Deadline.IsZero() {
+			return nil, protocolError("deadline is missing from the answer")
+		}
+		item.SettledAt, _ = jsonx.Time(value, "settledAt")
+		var scopes []map[string]json.RawMessage
+		if encoded, ok := value["instancePath"]; !ok || json.Unmarshal(encoded, &scopes) != nil || len(scopes) > 8 {
+			return nil, protocolError("instancePath is invalid in the answer")
+		}
+		item.InstancePath = make([]ApprovalScope, 0, len(scopes))
+		for _, scope := range scopes {
+			node, nodeErr := requiredString(scope, "scopeNodeId")
+			index, indexErr := requiredRevision(scope, "iterationIndex", 0)
+			if nodeErr != nil || indexErr != nil || index > 9_999 {
+				return nil, protocolError("approval scope is invalid in the answer")
+			}
+			item.InstancePath = append(item.InstancePath, ApprovalScope{ScopeNodeID: node, IterationIndex: int(index)})
+		}
+		page.Items = append(page.Items, item)
+	}
+	return page, nil
+}
+
+// ListAllApprovals yields every approval page until the opaque cursor ends.
+func (c *Client) ListAllApprovals(ctx context.Context, runID string, options ApprovalListOptions, opts ...CallOption) iter.Seq2[*ApprovalListItem, error] {
+	return func(yield func(*ApprovalListItem, error) bool) {
+		for {
+			page, err := c.ListApprovals(ctx, runID, options, opts...)
+			if err != nil {
+				yield(nil, err)
+				return
+			}
+			for index := range page.Items {
+				if !yield(&page.Items[index], nil) {
+					return
+				}
+			}
+			if page.NextCursor == "" {
+				return
+			}
+			options.Cursor = page.NextCursor
+		}
+	}
+}
+
+func validApprovalStatus(status ApprovalStatus) bool {
+	return status == ApprovalPending || status == ApprovalApproved || status == ApprovalRejected || status == ApprovalExpired || status == ApprovalCancelled
+}
+
 // DecideApproval records an eligible actor's durable decision. The body DecisionKey makes retries
 // safe; WithTraceparent is the only call option this method reads.
 func (c *Client) DecideApproval(ctx context.Context, approvalID string, decision ApprovalDecisionRequest, opts ...CallOption) (*ApprovalDecisionReceipt, error) {

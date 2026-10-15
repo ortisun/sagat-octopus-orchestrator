@@ -188,6 +188,41 @@ public sealed record ApprovalDecisionReceipt(
     bool Replayed,
     JsonElement Raw);
 
+/// <summary>The lifecycle state of a native approval request.</summary>
+public enum ApprovalStatus
+{
+    Pending,
+    Approved,
+    Rejected,
+    Expired,
+    Cancelled,
+}
+
+/// <summary>One bounded collection or loop scope in an approval instance identity.</summary>
+public sealed record ApprovalScope(string ScopeNodeId, int IterationIndex);
+
+/// <summary>One approval request visible on a run, without eligibility or actor disclosure.</summary>
+public sealed record ApprovalListItem(
+    string ApprovalId,
+    string RunId,
+    string NodeId,
+    IReadOnlyList<ApprovalScope> InstancePath,
+    ApprovalStatus Status,
+    DateTimeOffset Deadline,
+    DateTimeOffset? SettledAt,
+    JsonElement Raw);
+
+/// <summary>One bounded approval page in immutable opening order.</summary>
+public sealed record ApprovalPage(IReadOnlyList<ApprovalListItem> Items, string? NextCursor);
+
+/// <summary>Options for one approval page.</summary>
+public sealed record ApprovalListOptions
+{
+    public string? Cursor { get; init; }
+    public int? Limit { get; init; }
+    public string? Traceparent { get; init; }
+}
+
 /// <summary>The result of a declared query and the committed revisions it observed.</summary>
 public sealed record QueryResult(string RunId, long RunVersion, long StateRevision, JsonElement Result, JsonElement Raw);
 

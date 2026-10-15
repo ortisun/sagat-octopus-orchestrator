@@ -15,7 +15,7 @@ from concurrent.futures import Future
 from types import TracebackType
 from typing import Concatenate, ParamSpec, TypeVar
 
-from .client import Run, SagatClient
+from .client import ApprovalListItem, Run, SagatClient
 from .config import ClientConfig
 from .errors import SagatError
 
@@ -102,6 +102,7 @@ class SyncSagatClient:
     operate = _blocking(SagatClient.operate)
     cancel = _blocking(SagatClient.cancel)
     decide_approval = _blocking(SagatClient.decide_approval)
+    list_approvals = _blocking(SagatClient.list_approvals)
     query = _blocking(SagatClient.query)
     update = _blocking(SagatClient.update)
     inspect_chain = _blocking(SagatClient.inspect_chain)
@@ -119,6 +120,18 @@ class SyncSagatClient:
         cursor: str | None = None
         while True:
             page = self.list(workflow_id=workflow_id, status=status, limit=limit, cursor=cursor)
+            yield from page.items
+            cursor = page.next_cursor
+            if not cursor:
+                return
+
+    def list_all_approvals(
+        self, run_id: str, *, limit: int | None = None, traceparent: str | None = None
+    ) -> Iterator[ApprovalListItem]:
+        """Every approval request for a run in immutable opening order."""
+        cursor: str | None = None
+        while True:
+            page = self.list_approvals(run_id, cursor=cursor, limit=limit, traceparent=traceparent)
             yield from page.items
             cursor = page.next_cursor
             if not cursor:

@@ -46,7 +46,7 @@ and post-test shapes, the maximum iteration and duration bounds, optional durabl
 named body references and the required successor. It does not count as loop runtime conformance.
 
 `approval-builders.json` checks additive v1 native approval authoring in the five SDKs. It remains
-build-only while approval persistence, authorization and first-commit runtime behavior are disabled.
+build-only so the authoring contract is reviewed independently of runtime behavior.
 The reviewed fixture covers subject and built-in role policies, the default initiator exclusion,
 bounded deadlines, all three routes and local validation failures. It does not count as approval
 runtime conformance.
@@ -75,6 +75,7 @@ SAGAT_SDK_SCENARIO=approval-builders cargo test -p sagat-tests --test sdk_confor
 SAGAT_SDK_SCENARIO=continuation-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=state-operation-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=state-operations cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=approval-decisions cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 ```
 
 ## Pending scenarios
@@ -96,14 +97,12 @@ rm tests/contract/sdk-conformance/scenarios/scoped-identity.json
 Enable the fixture permanently only when worker activity context and logs expose typed instance identity, graph inspection exposes each logical
 instance, scoped work is withheld from older workers, and a reviewed cross-language runtime golden exists.
 
-`approval-decisions.json.pending` exercises the public approval decision call implemented by all five
-SDKs: authentication, tenant isolation, a successful durable receipt, exact replay and conflicting reuse
-of the body decision key. It remains pending because the scheduler does not yet create a native approval
-request or expose its identifier to the runtime scenario. The SDK unit suites cover request shape,
-typed receipt parsing, authorization/conflict envelopes and local validation meanwhile. Enable this
-fixture only after the runtime creates the request through the public workflow path and the harness
-can resolve `{{approvalId:start:review}}` from that public state; do not seed a private store to make
-the scenario pass.
+`approval-decisions.json` publishes and starts native approval workflows, discovers each request through
+the public run approval page, and calls the public decision route from all five SDKs. It covers
+authentication, opaque tenant isolation, approve and reject routing, exact replay and conflicting reuse
+of the body decision key. No private store is seeded; the scheduler creates every request through the
+published workflow path. The SDK unit suites separately cover multi-page cursor traversal and strict
+response parsing.
 
 `chain-commands.json.pending` exercises the typed chain inspection, root-signal and cancellation calls
 implemented by all five SDKs, including expected-head fencing, exact command replay and tenant opacity.
@@ -246,9 +245,10 @@ stop the scenario.
 | `startWithBlob` | `workflow` (key), `inputBlobBytes`, `idempotencyKey?`, `correlationId?`, `traceparent?`, `deadlineInMs?` | `uploadRunInput` then `startWithBlob` | the Run; a successful upload response is refused unless the one-pass source reached EOF |
 | `get` | `run`, `token?` | `get` | the Run |
 | `list` | `status?`, `limit?`, `all?` | `list` / `listAll` | `{items: [runId…]}` in the order the server gave (newest first), also across pages |
+| `listApprovals` | `run`, `cursor?`, `limit?`, `waitForItem?`, `traceparent?`, `token?` | `listApprovals` | the typed page in immutable opening order |
 | `cancel` | `run`, `reason`, `expectedRunVersion?` | `cancel` | `{accepted, runStatus}` |
 | `operate` | `run`, `action`, `reason`, … | `operate` | `{accepted, runStatus}` |
-| `decideApproval` | `approvalId`, `decisionKey`, `decision`, `reasonCode?`, `traceparent?`, `token?` | `decideApproval` | the normalized durable receipt |
+| `decideApproval` | `approvalId` or `approval` (a list step), `decisionKey`, `decision`, `reasonCode?`, `traceparent?`, `token?` | `decideApproval` | the normalized durable receipt |
 | `query` | `run`, `name`, `args`, `traceparent?`, `token?` | `query` | `{runVersion, stateRevision, result}` |
 | `update` | `run`, `name`, `args`, `updateKey`, `expectedStateRevision?`, `traceparent?`, `token?` | `update` | the normalized durable receipt |
 | `inspectChain` | `namespaceId`, `chainId`, `traceparent?`, `token?` | `inspectChain` | current head and ordered segments |

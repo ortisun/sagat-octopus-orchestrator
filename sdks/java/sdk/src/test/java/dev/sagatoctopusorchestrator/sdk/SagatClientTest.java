@@ -562,6 +562,27 @@ class SagatClientTest {
     }
 
     @Test
+    void approvalPagesAreTypedAndListAllFollowsTheOpaqueCursor() {
+        List<String> ids = List.of("0190aaaa-0000-7000-8000-000000000099", "0190aaaa-0000-7000-8000-000000000100");
+        server.prepare((req, reply) -> {
+            boolean second = req.uri().contains("cursor=next");
+            int index = second ? 1 : 0;
+            reply.send(200, "{\"items\":[{\"approvalId\":\"" + ids.get(index) + "\",\"runId\":\"" + RUN
+                    + "\",\"nodeId\":\"review\",\"instancePath\":[{\"scopeNodeId\":\"items\",\"iterationIndex\":3}],"
+                    + "\"status\":\"" + (second ? "APPROVED" : "PENDING") + "\",\"deadline\":\"2026-10-16T10:00:00Z\","
+                    + "\"settledAt\":" + (second ? "\"2026-10-15T10:00:00Z\"" : "null") + "}],\"nextCursor\":"
+                    + (second ? "null" : "\"next\"") + "}");
+        });
+        SagatClient c = client();
+        ApprovalPage page = c.listApprovals(RUN, ApprovalListOptions.create().cursor("from").limit(1).traceparent(TRACE));
+        assertEquals(ApprovalStatus.PENDING, page.items().get(0).status());
+        assertEquals(3, page.items().get(0).instancePath().get(0).iterationIndex());
+        try (var items = c.listAllApprovals(RUN, ApprovalListOptions.create().limit(1))) {
+            assertEquals(ids, items.map(ApprovalListItem::approvalId).toList());
+        }
+    }
+
+    @Test
     void anApprovalDecisionSurfacesAuthorizationAndIdempotencyFailures() {
         String approvalId = "0190aaaa-0000-7000-8000-000000000099";
         Object[][] failures = {{403, ErrorCode.FORBIDDEN, "NOT_ELIGIBLE"}, {409, ErrorCode.CONFLICT, "IDEMPOTENCY_KEY_REUSED"}};

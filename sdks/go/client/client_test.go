@@ -276,6 +276,49 @@ func TestAnApprovalDecisionUsesItsBodyKeyAndReturnsATypedReceipt(t *testing.T) {
 	}
 }
 
+func TestApprovalPagesAreTypedAndListAllFollowsOpaqueCursor(t *testing.T) {
+	f := newFake(t)
+	ids := []string{"0190aaaa-0000-7000-8000-000000000099", "0190aaaa-0000-7000-8000-000000000100"}
+	for call := 0; call < 3; call++ {
+		f.answer(func(request seen, w http.ResponseWriter) {
+			second := strings.Contains(request.url, "cursor=next")
+			index := 0
+			if second {
+				index = 1
+			}
+			status := "PENDING"
+			var settled any
+			var cursor any = "next"
+			if second {
+				status, settled, cursor = "APPROVED", "2026-10-15T10:00:00Z", nil
+			}
+			reply(w, 200, map[string]any{"items": []any{map[string]any{
+				"approvalId": ids[index], "runId": runUUID, "nodeId": "review",
+				"instancePath": []any{map[string]any{"scopeNodeId": "items", "iterationIndex": 3}},
+				"status":       status, "deadline": "2026-10-16T10:00:00Z", "settledAt": settled,
+			}}, "nextCursor": cursor})
+		})
+	}
+	c := newClient(t, f)
+	page, err := c.ListApprovals(context.Background(), runUUID, client.ApprovalListOptions{Cursor: "from", Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Items[0].Status != client.ApprovalPending || page.Items[0].InstancePath[0].IterationIndex != 3 {
+		t.Fatalf("%+v", page.Items[0])
+	}
+	var got []string
+	for item, err := range c.ListAllApprovals(context.Background(), runUUID, client.ApprovalListOptions{Limit: 1}) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, item.ApprovalID)
+	}
+	if !reflect.DeepEqual(got, ids) {
+		t.Fatalf("got %v", got)
+	}
+}
+
 func TestAnApprovalDecisionSurfacesAuthorizationAndIdempotencyFailuresAndRejectsMalformedInputLocally(t *testing.T) {
 	f := newFake(t)
 	approvalID := "0190aaaa-0000-7000-8000-000000000099"

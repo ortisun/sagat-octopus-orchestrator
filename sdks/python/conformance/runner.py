@@ -516,6 +516,18 @@ async def run(scenario: Obj, config: Obj) -> Obj:
             raise ValueError(f"step {step['run']} has no run")
         return found
 
+    def approval_of(step: Obj) -> str:
+        direct = step.get("approvalId")
+        if isinstance(direct, str):
+            return direct
+        items = results.get(str(step.get("approval")), {}).get("items")
+        if not isinstance(items, list) or not items or not isinstance(items[0], dict):
+            raise ValueError(f"step {step.get('approval')} has no approval")
+        approval_id = items[0].get("approvalId")
+        if not isinstance(approval_id, str):
+            raise ValueError(f"step {step.get('approval')} has no approval")
+        return approval_id
+
     try:
         for key, (definition, _) in hosts.items():
             if definition.get("autostart") is not False:
@@ -575,6 +587,43 @@ async def run(scenario: Obj, config: Obj) -> Obj:
                         ids.extend(item.run_id for item in page.items)
                     # In the order the server gave (newest first): the SDK keeps it, also across pages.
                     result = {"items": ids}
+                elif op == "listApprovals":
+                    approval_page = await client.list_approvals(
+                        run_of(step),
+                        cursor=step.get("cursor"),
+                        limit=step.get("limit"),
+                        traceparent=step.get("traceparent"),
+                    )
+                    for _ in range(100):
+                        if not step.get("waitForItem") or approval_page.items:
+                            break
+                        await asyncio.sleep(0.05)
+                        approval_page = await client.list_approvals(
+                            run_of(step),
+                            cursor=step.get("cursor"),
+                            limit=step.get("limit"),
+                            traceparent=step.get("traceparent"),
+                        )
+                    result = {
+                        "items": [
+                            {
+                                "approvalId": item.approval_id,
+                                "runId": item.run_id,
+                                "nodeId": item.node_id,
+                                "instancePath": [
+                                    {"scopeNodeId": scope.scope_node_id, "iterationIndex": scope.iteration_index}
+                                    for scope in item.instance_path
+                                ],
+                                "status": item.status,
+                                "deadline": item.deadline.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+                                "settledAt": item.settled_at.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+                                if item.settled_at
+                                else None,
+                            }
+                            for item in approval_page.items
+                        ],
+                        "nextCursor": approval_page.next_cursor,
+                    }
                 elif op == "cancel":
                     cancelled = await client.cancel(
                         run_of(step), step["reason"], expected_run_version=step.get("expectedRunVersion")
@@ -592,7 +641,7 @@ async def run(scenario: Obj, config: Obj) -> Obj:
                     result = {"accepted": operated.accepted, "runStatus": operated.run_status}
                 elif op == "decideApproval":
                     receipt = await client.decide_approval(
-                        step["approvalId"],
+                        approval_of(step),
                         step["decision"],
                         decision_key=step["decisionKey"],
                         reason_code=step.get("reasonCode"),

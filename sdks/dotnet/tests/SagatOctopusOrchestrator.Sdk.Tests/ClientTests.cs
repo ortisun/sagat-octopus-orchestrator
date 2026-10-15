@@ -474,6 +474,45 @@ public sealed class ClientTests : IAsyncLifetime
         Assert.Equal("kept", receipt.Raw.GetProperty("futureField").GetString());
     }
 
+    [Fact]
+    public async Task ApprovalPagesAreTypedAndAllPagesFollowTheOpaqueCursor()
+    {
+        var ids = new[] { "0190aaaa-0000-7000-8000-000000000099", "0190aaaa-0000-7000-8000-000000000100" };
+        server.Handler = request =>
+        {
+            var second = request.PathAndQuery.Contains("cursor=next", StringComparison.Ordinal);
+            var index = second ? 1 : 0;
+            return Reply(200, new JsonObject
+            {
+                ["items"] = new JsonArray
+                {
+                    new JsonObject
+                    {
+                        ["approvalId"] = ids[index],
+                        ["runId"] = Ids.Run,
+                        ["nodeId"] = "review",
+                        ["instancePath"] = new JsonArray { new JsonObject { ["scopeNodeId"] = "items", ["iterationIndex"] = 3 } },
+                        ["status"] = second ? "APPROVED" : "PENDING",
+                        ["deadline"] = "2026-10-16T10:00:00Z",
+                        ["settledAt"] = second ? "2026-10-15T10:00:00Z" : null,
+                    },
+                },
+                ["nextCursor"] = second ? null : "next",
+            });
+        };
+        var client = NewClient();
+        var page = await client.ListApprovalsAsync(Ids.Run, new ApprovalListOptions { Cursor = "from", Limit = 1, Traceparent = Trace });
+        Assert.Equal(ApprovalStatus.Pending, page.Items[0].Status);
+        Assert.Equal(3, page.Items[0].InstancePath[0].IterationIndex);
+        var items = new List<ApprovalListItem>();
+        await foreach (var item in client.ListAllApprovalsAsync(Ids.Run, new ApprovalListOptions { Limit = 1 }))
+        {
+            items.Add(item);
+        }
+
+        Assert.Equal(ids, items.Select(item => item.ApprovalId));
+    }
+
     [Theory]
     [InlineData(403, SagatErrorCode.Forbidden, "NOT_ELIGIBLE")]
     [InlineData(409, SagatErrorCode.Conflict, "IDEMPOTENCY_KEY_REUSED")]

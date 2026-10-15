@@ -39,6 +39,12 @@ public interface ISagatClient
     /// <summary>Records an eligible actor's durable decision for an approval request.</summary>
     Task<ApprovalDecisionReceipt> DecideApprovalAsync(string approvalId, ApprovalDecision decision, ApprovalDecisionOptions options, CancellationToken cancellationToken = default);
 
+    /// <summary>Reads one bounded page of approval requests in immutable opening order.</summary>
+    Task<ApprovalPage> ListApprovalsAsync(string runId, ApprovalListOptions? options = null, CancellationToken cancellationToken = default);
+
+    /// <summary>Streams every approval request for a run, following opaque cursors.</summary>
+    IAsyncEnumerable<ApprovalListItem> ListAllApprovalsAsync(string runId, ApprovalListOptions? options = null, CancellationToken cancellationToken = default);
+
     /// <summary>Evaluates a declared side-effect-free query over one committed state snapshot.</summary>
     Task<QueryResult> QueryAsync<TArgs>(string runId, string name, TArgs args, RequestOptions? options = null, CancellationToken cancellationToken = default);
 

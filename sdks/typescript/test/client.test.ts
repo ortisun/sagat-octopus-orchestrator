@@ -123,6 +123,23 @@ test('an approval decision surfaces authorization and idempotency failures and r
   assert.equal(seen.length, sent);
 });
 
+test('approval pages are typed and listAllApprovals follows the opaque cursor', async () => {
+  const runId = '0190aaaa-0000-7000-8000-000000000020';
+  const approvalId = '0190aaaa-0000-7000-8000-000000000021';
+  prepare((request, res) => reply(res, 200, request.url.includes('cursor=next')
+    ? { items: [{ approvalId, runId, nodeId: 'review', instancePath: [], status: 'APPROVED', deadline: '2026-10-16T12:00:00Z', settledAt: '2026-10-15T12:00:00Z' }], nextCursor: null }
+    : { items: [{ approvalId, runId, nodeId: 'review', instancePath: [{ scopeNodeId: 'orders', iterationIndex: 2 }], status: 'PENDING', deadline: '2026-10-16T12:00:00Z', settledAt: null }], nextCursor: 'next' }));
+  const sdk = client();
+  const page = await sdk.listApprovals(runId, { limit: 1, cursor: 'from' });
+  const all = [];
+  for await (const item of sdk.listAllApprovals(runId, { limit: 1 })) all.push(item);
+  assert.equal(page.items[0]?.instancePath[0]?.iterationIndex, 2);
+  assert.equal(page.items[0]?.deadline.toISOString(), '2026-10-16T12:00:00.000Z');
+  assert.deepEqual(all.map((item) => item.status), ['PENDING', 'APPROVED']);
+  assert.ok(seen[0]?.url.includes('limit=1') && seen[0]?.url.includes('cursor=from'));
+  assert.ok(seen[2]?.url.includes('cursor=next'));
+});
+
 test('declared query and update calls preserve typed revisions, result and update key', async () => {
   const runId = '0190aaaa-0000-7000-8000-000000000001';
   prepare((req, res) => {

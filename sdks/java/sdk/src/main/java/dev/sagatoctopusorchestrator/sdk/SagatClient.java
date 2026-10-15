@@ -447,6 +447,92 @@ public final class SagatClient implements AutoCloseable {
         return async(() -> cancel(runId, reason, options));
     }
 
+    /** Reads one bounded page of approval requests in immutable opening order. */
+    public ApprovalPage listApprovals(String runId, ApprovalListOptions options) {
+        ApprovalListOptions opts = options == null ? ApprovalListOptions.create() : options;
+        Map<String, String> query = new LinkedHashMap<>();
+        query.put("cursor", opts.cursor());
+        query.put("limit", opts.limit() == null ? null : Integer.toString(opts.limit()));
+        JsonNode raw = object(http.request(new RestClient.Request(
+                "GET", "/runs/" + runId(runId) + "/approvals", query, null, null,
+                trace(opts.traceparent()), true)).body(), "an approval page");
+        JsonNode values = raw.path("items");
+        if (!values.isArray() || values.size() > 200) {
+            throw SagatException.of(ErrorCode.PROTOCOL, "items is invalid in the answer");
+        }
+        List<ApprovalListItem> items = new ArrayList<>(values.size());
+        for (JsonNode value : values) {
+            JsonNode item = object(value, "an approval");
+            ApprovalStatus status;
+            try {
+                status = ApprovalStatus.valueOf(str(item, "status"));
+            } catch (IllegalArgumentException error) {
+                throw SagatException.of(ErrorCode.PROTOCOL, "status is invalid in the answer");
+            }
+            Instant deadline = optInstant(item, "deadline");
+            if (deadline == null) {
+                throw SagatException.of(ErrorCode.PROTOCOL, "deadline is missing from the answer");
+            }
+            JsonNode path = item.path("instancePath");
+            if (!path.isArray() || path.size() > 8) {
+                throw SagatException.of(ErrorCode.PROTOCOL, "instancePath is invalid in the answer");
+            }
+            List<ApprovalScope> scopes = new ArrayList<>(path.size());
+            for (JsonNode valueScope : path) {
+                JsonNode scope = object(valueScope, "an approval scope");
+                JsonNode indexValue = scope.path("iterationIndex");
+                if (!indexValue.isIntegralNumber() || !indexValue.canConvertToInt()
+                        || indexValue.intValue() < 0 || indexValue.intValue() > 9_999) {
+                    throw SagatException.of(ErrorCode.PROTOCOL, "iterationIndex is invalid in the answer");
+                }
+                scopes.add(new ApprovalScope(str(scope, "scopeNodeId"), indexValue.intValue()));
+            }
+            items.add(new ApprovalListItem(str(item, "approvalId"), str(item, "runId"), str(item, "nodeId"),
+                    List.copyOf(scopes), status, deadline, optInstant(item, "settledAt"), item));
+        }
+        return new ApprovalPage(List.copyOf(items), optStr(raw, "nextCursor"));
+    }
+
+    public CompletableFuture<ApprovalPage> listApprovalsAsync(String runId, ApprovalListOptions options) {
+        return async(() -> listApprovals(runId, options));
+    }
+
+    /** Every approval request for a run, following opaque cursors lazily. */
+    public Stream<ApprovalListItem> listAllApprovals(String runId, ApprovalListOptions options) {
+        ApprovalListOptions first = options == null ? ApprovalListOptions.create() : options;
+        Iterator<ApprovalListItem> iterator = new Iterator<>() {
+            private Iterator<ApprovalListItem> page = List.<ApprovalListItem>of().iterator();
+            private String cursor;
+            private boolean started;
+            private boolean done;
+
+            private void fill() {
+                while (!page.hasNext() && !done) {
+                    ApprovalPage result = listApprovals(runId, ApprovalListOptions.create()
+                            .limit(first.limit()).traceparent(first.traceparent()).cursor(started ? cursor : first.cursor()));
+                    started = true;
+                    cursor = result.nextCursor();
+                    page = result.items().iterator();
+                    if (cursor == null || cursor.isEmpty()) done = true;
+                }
+            }
+            @Override public boolean hasNext() { fill(); return page.hasNext(); }
+            @Override public ApprovalListItem next() {
+                if (!hasNext()) throw new NoSuchElementException();
+                return page.next();
+            }
+        };
+        return StreamSupport.stream(java.util.Spliterators.spliteratorUnknownSize(iterator, java.util.Spliterator.ORDERED), false);
+    }
+
+    public CompletableFuture<List<ApprovalListItem>> listAllApprovalsAsync(String runId, ApprovalListOptions options) {
+        return async(() -> {
+            try (Stream<ApprovalListItem> items = listAllApprovals(runId, options)) {
+                return items.toList();
+            }
+        });
+    }
+
     /** Records an eligible actor's durable decision for an approval request. */
     public ApprovalDecisionReceipt decideApproval(String approvalId, ApprovalDecision decision, ApprovalDecisionOptions options) {
         if (approvalId == null || !UUID_TEXT.matcher(approvalId).matches()) {

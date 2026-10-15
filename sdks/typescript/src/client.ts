@@ -103,6 +103,35 @@ export interface ApprovalDecisionReceipt {
   raw: Record<string, unknown>;
 }
 
+export type ApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'EXPIRED' | 'CANCELLED';
+
+export interface ApprovalScope {
+  scopeNodeId: string;
+  iterationIndex: number;
+}
+
+export interface ApprovalListItem {
+  approvalId: string;
+  runId: string;
+  nodeId: string;
+  instancePath: ApprovalScope[];
+  status: ApprovalStatus;
+  deadline: Date;
+  settledAt: Date | null;
+  raw: Record<string, unknown>;
+}
+
+export interface ApprovalPage {
+  items: ApprovalListItem[];
+  nextCursor: string | null;
+  raw: Record<string, unknown>;
+}
+
+export interface ApprovalListOptions extends QueryOptions {
+  cursor?: string;
+  limit?: number;
+}
+
 export interface QueryOptions {
   traceparent?: string;
 }
@@ -487,6 +516,48 @@ export class SagatClient {
   /** Cancels a run (the server's reason has 8 to 2000 characters). */
   cancel(runId: string, reason: string, options: CallOptions & { expectedRunVersion?: number } = {}): Promise<OperationResult> {
     return this.operate(runId, 'CANCEL', reason, options);
+  }
+
+  /** Lists the approval requests of one run in immutable opening order. */
+  async listApprovals(runId: string, options: ApprovalListOptions = {}): Promise<ApprovalPage> {
+    const response = await this.#http.request({
+      method: 'GET', path: `/runs/${encodeURIComponent(runIdOf(runId))}/approvals`,
+      query: { cursor: options.cursor, limit: options.limit }, traceparent: this.trace(options.traceparent), safeToRepeat: true,
+    });
+    const raw = object(response.body, 'an approval page');
+    const values = raw['items'];
+    if (!Array.isArray(values) || values.length > 200) throw new SagatError({ code: 'PROTOCOL', message: 'items is invalid in the answer' });
+    const statuses = new Set<string>(['PENDING', 'APPROVED', 'REJECTED', 'EXPIRED', 'CANCELLED']);
+    const items = values.map((value): ApprovalListItem => {
+      const item = object(value, 'an approval list item');
+      const status = str(item, 'status');
+      const deadline = optDate(item, 'deadline');
+      if (!statuses.has(status)) throw new SagatError({ code: 'PROTOCOL', message: 'status is invalid in the answer' });
+      if (!deadline) throw new SagatError({ code: 'PROTOCOL', message: 'deadline is missing from the answer' });
+      const path = item['instancePath'];
+      if (!Array.isArray(path) || path.length > 8) throw new SagatError({ code: 'PROTOCOL', message: 'instancePath is invalid in the answer' });
+      return {
+        approvalId: str(item, 'approvalId'), runId: str(item, 'runId'), nodeId: str(item, 'nodeId'),
+        instancePath: path.map((segment) => {
+          const scope = object(segment, 'an approval scope');
+          const iterationIndex = revision(scope, 'iterationIndex');
+          if (iterationIndex > 9_999) throw new SagatError({ code: 'PROTOCOL', message: 'iterationIndex is invalid in the answer' });
+          return { scopeNodeId: str(scope, 'scopeNodeId'), iterationIndex };
+        }),
+        status: status as ApprovalStatus, deadline, settledAt: optDate(item, 'settledAt'), raw: item,
+      };
+    });
+    return { items, nextCursor: optStr(raw, 'nextCursor'), raw };
+  }
+
+  /** Streams every approval request by following the server's opaque cursor. */
+  async *listAllApprovals(runId: string, options: Omit<ApprovalListOptions, 'cursor'> = {}): AsyncGenerator<ApprovalListItem> {
+    let cursor: string | undefined;
+    do {
+      const page = await this.listApprovals(runId, { ...options, cursor });
+      yield* page.items;
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor);
   }
 
   /** Records an eligible actor's durable decision for an approval request. */

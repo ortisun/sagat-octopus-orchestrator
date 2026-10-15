@@ -168,6 +168,23 @@ internal sealed class RunMode : IAsyncDisposable
             : throw new InvalidOperationException($"step {key} has no run");
     }
 
+    private string ApprovalOf(JsonObject step)
+    {
+        if (step["approvalId"] is JsonValue direct && direct.TryGetValue<string>(out var approvalId))
+        {
+            return approvalId;
+        }
+
+        var key = (string)step["approval"]!;
+        return results.TryGetValue(key, out var result)
+            && result["items"] is JsonArray { Count: > 0 } items
+            && items[0] is JsonObject item
+            && item["approvalId"] is JsonValue id
+            && id.TryGetValue<string>(out var text)
+            ? text
+            : throw new InvalidOperationException($"step {key} has no approval");
+    }
+
     internal async Task<JsonObject> PlayAsync(CancellationToken cancellationToken)
     {
         foreach (var (key, definition) in scenario["workers"]?.AsObject() ?? [])
@@ -320,6 +337,40 @@ internal sealed class RunMode : IAsyncDisposable
                     return new JsonObject { ["items"] = ids };
                 }
 
+            case "listApprovals":
+                {
+                    var page = await client.ListApprovalsAsync(
+                        RunOf(step),
+                        new ApprovalListOptions { Cursor = (string?)step["cursor"], Limit = (int?)step["limit"], Traceparent = (string?)step["traceparent"] },
+                        cancellationToken).ConfigureAwait(false);
+                    for (var attempt = 0; (bool?)step["waitForItem"] == true && page.Items.Count == 0 && attempt < 100; attempt++)
+                    {
+                        await Task.Delay(50, cancellationToken).ConfigureAwait(false);
+                        page = await client.ListApprovalsAsync(
+                            RunOf(step),
+                            new ApprovalListOptions { Cursor = (string?)step["cursor"], Limit = (int?)step["limit"], Traceparent = (string?)step["traceparent"] },
+                            cancellationToken).ConfigureAwait(false);
+                    }
+                    return new JsonObject
+                    {
+                        ["items"] = new JsonArray([.. page.Items.Select(item => (JsonNode?)new JsonObject
+                        {
+                            ["approvalId"] = item.ApprovalId,
+                            ["runId"] = item.RunId,
+                            ["nodeId"] = item.NodeId,
+                            ["instancePath"] = new JsonArray([.. item.InstancePath.Select(scope => (JsonNode?)new JsonObject
+                            {
+                                ["scopeNodeId"] = scope.ScopeNodeId,
+                                ["iterationIndex"] = scope.IterationIndex,
+                            })]),
+                            ["status"] = item.Status.ToString().ToUpperInvariant(),
+                            ["deadline"] = item.Deadline.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", System.Globalization.CultureInfo.InvariantCulture),
+                            ["settledAt"] = item.SettledAt?.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", System.Globalization.CultureInfo.InvariantCulture),
+                        })]),
+                        ["nextCursor"] = page.NextCursor,
+                    };
+                }
+
             case "cancel":
                 {
                     var cancelled = await client.CancelAsync(RunOf(step), (string)step["reason"]!, new OperateOptions { ExpectedRunVersion = (long?)step["expectedRunVersion"] }, cancellationToken).ConfigureAwait(false);
@@ -345,7 +396,7 @@ internal sealed class RunMode : IAsyncDisposable
             case "decideApproval":
                 {
                     var receipt = await client.DecideApprovalAsync(
-                        (string)step["approvalId"]!,
+                        ApprovalOf(step),
                         (string)step["decision"]! == "APPROVE" ? ApprovalDecision.Approve : ApprovalDecision.Reject,
                         new ApprovalDecisionOptions
                         {

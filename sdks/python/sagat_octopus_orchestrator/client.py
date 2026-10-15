@@ -46,6 +46,7 @@ OperateAction = Literal[
     "PAUSE", "RESUME", "CANCEL", "RETRY_STEP", "RETRY_COMPENSATION", "SKIP_COMPENSATION", "RESOLVE_STEP"
 ]
 ApprovalDecision = Literal["APPROVE", "REJECT"]
+ApprovalStatus = Literal["PENDING", "APPROVED", "REJECTED", "EXPIRED", "CANCELLED"]
 
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE)
 _KEY = re.compile(r"[\x21-\x7e]{8,160}")
@@ -119,6 +120,30 @@ class ApprovalDecisionReceipt:
     outcome_sequence: int
     replayed: bool
     raw: Mapping[str, Any] = field(default_factory=dict, repr=False, compare=False)
+
+
+@dataclass(frozen=True)
+class ApprovalScope:
+    scope_node_id: str
+    iteration_index: int
+
+
+@dataclass(frozen=True)
+class ApprovalListItem:
+    approval_id: str
+    run_id: str
+    node_id: str
+    instance_path: tuple[ApprovalScope, ...]
+    status: ApprovalStatus
+    deadline: datetime
+    settled_at: datetime | None
+    raw: Mapping[str, Any] = field(default_factory=dict, repr=False, compare=False)
+
+
+@dataclass(frozen=True)
+class ApprovalPage:
+    items: tuple[ApprovalListItem, ...]
+    next_cursor: str | None
 
 
 @dataclass(frozen=True)
@@ -795,6 +820,74 @@ class SagatClient:
             replayed=raw.get("replayed") is True,
             raw=raw,
         )
+
+    async def list_approvals(
+        self,
+        run_id: str,
+        *,
+        cursor: str | None = None,
+        limit: int | None = None,
+        traceparent: str | None = None,
+    ) -> ApprovalPage:
+        """One bounded page of approval requests in immutable opening order."""
+        response = await self._http.request(
+            HttpRequest(
+                "GET",
+                f"/runs/{quote(_run_id(run_id), safe='')}/approvals",
+                query={"cursor": cursor, "limit": limit},
+                traceparent=self._trace(traceparent),
+            )
+        )
+        raw = _object(response.body, "an approval page")
+        values = raw.get("items")
+        if not isinstance(values, list) or len(values) > 200:
+            raise SagatError("PROTOCOL", "items is invalid in the answer")
+        items: list[ApprovalListItem] = []
+        for value in values:
+            item = _object(value, "an approval")
+            status = _str(item, "status")
+            if status not in ("PENDING", "APPROVED", "REJECTED", "EXPIRED", "CANCELLED"):
+                raise SagatError("PROTOCOL", "status is invalid in the answer")
+            deadline = parse_instant(item.get("deadline"))
+            if deadline is None:
+                raise SagatError("PROTOCOL", "deadline is missing from the answer")
+            settled_at = parse_instant(item.get("settledAt"))
+            path = item.get("instancePath")
+            if not isinstance(path, list) or len(path) > 8:
+                raise SagatError("PROTOCOL", "instancePath is invalid in the answer")
+            scopes: list[ApprovalScope] = []
+            for value in path:
+                scope = _object(value, "an approval scope")
+                index = _revision(scope, "iterationIndex", 0)
+                if index > 9_999:
+                    raise SagatError("PROTOCOL", "iterationIndex is invalid in the answer")
+                scopes.append(ApprovalScope(_str(scope, "scopeNodeId"), index))
+            items.append(
+                ApprovalListItem(
+                    approval_id=_str(item, "approvalId"),
+                    run_id=_str(item, "runId"),
+                    node_id=_str(item, "nodeId"),
+                    instance_path=tuple(scopes),
+                    status=cast(ApprovalStatus, status),
+                    deadline=deadline,
+                    settled_at=settled_at,
+                    raw=item,
+                )
+            )
+        return ApprovalPage(tuple(items), _opt_str(raw, "nextCursor"))
+
+    async def list_all_approvals(
+        self, run_id: str, *, limit: int | None = None, traceparent: str | None = None
+    ) -> AsyncIterator[ApprovalListItem]:
+        """Every approval request for a run, page after page, in immutable opening order."""
+        cursor: str | None = None
+        while True:
+            page = await self.list_approvals(run_id, cursor=cursor, limit=limit, traceparent=traceparent)
+            for item in page.items:
+                yield item
+            cursor = page.next_cursor
+            if not cursor:
+                return
 
     async def query(
         self,

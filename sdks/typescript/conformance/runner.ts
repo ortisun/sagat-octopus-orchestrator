@@ -336,6 +336,13 @@ async function run(scenario: Obj, config: Obj): Promise<Obj> {
     if (typeof id !== 'string') throw new Error(`step ${String(step['run'])} has no run`);
     return id;
   };
+  const approvalOf = (step: Obj): string => {
+    if (typeof step['approvalId'] === 'string') return step['approvalId'];
+    const items = results.get(step['approval'])?.['items'];
+    const id = Array.isArray(items) ? (items[0] as Obj | undefined)?.['approvalId'] : undefined;
+    if (typeof id !== 'string') throw new Error(`step ${String(step['approval'])} has no approval`);
+    return id;
+  };
 
   for (const [key, entry] of Object.entries(hosts)) {
     if (entry.def['autostart'] !== false) await startWorker(key);
@@ -384,6 +391,18 @@ async function run(scenario: Obj, config: Obj): Promise<Obj> {
           result = { items: ids };
           break;
         }
+        case 'listApprovals': {
+          let page = await client.listApprovals(runOf(step), { cursor: step['cursor'], limit: step['limit'], traceparent: step['traceparent'] });
+          for (let attempt = 0; step['waitForItem'] && page.items.length === 0 && attempt < 100; attempt++) {
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            page = await client.listApprovals(runOf(step), { cursor: step['cursor'], limit: step['limit'], traceparent: step['traceparent'] });
+          }
+          result = { items: page.items.map((item) => ({
+            approvalId: item.approvalId, runId: item.runId, nodeId: item.nodeId, instancePath: item.instancePath,
+            status: item.status, deadline: item.deadline.toISOString(), settledAt: item.settledAt?.toISOString() ?? null,
+          })), nextCursor: page.nextCursor };
+          break;
+        }
         case 'cancel': {
           const r = await client.cancel(runOf(step), step['reason'], { expectedRunVersion: step['expectedRunVersion'] });
           result = { accepted: r.accepted, runStatus: r.runStatus };
@@ -395,7 +414,7 @@ async function run(scenario: Obj, config: Obj): Promise<Obj> {
           break;
         }
         case 'decideApproval': {
-          const r = await client.decideApproval(step['approvalId'], step['decision'], {
+          const r = await client.decideApproval(approvalOf(step), step['decision'], {
             decisionKey: step['decisionKey'], reasonCode: step['reasonCode'], traceparent: step['traceparent'],
           });
           result = {

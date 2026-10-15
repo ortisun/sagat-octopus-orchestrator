@@ -274,6 +274,93 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
         OperateAsync(runId, RunAction.Cancel, reason, options, cancellationToken);
 
     /// <inheritdoc/>
+    public async Task<ApprovalPage> ListApprovalsAsync(
+        string runId,
+        ApprovalListOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        options ??= new ApprovalListOptions();
+        var query = new List<KeyValuePair<string, string>>();
+        if (options.Cursor is not null)
+        {
+            query.Add(new("cursor", options.Cursor));
+        }
+
+        if (options.Limit is { } limit)
+        {
+            query.Add(new("limit", limit.ToString(CultureInfo.InvariantCulture)));
+        }
+
+        var answer = await transport.SendAsync(
+            new HttpCall("list approvals", HttpMethod.Get, RunPath(runId) + "/approvals", "/runs/{runId}/approvals", query, null, null, TraceOf(options.Traceparent), SafeToRepeat: true),
+            cancellationToken).ConfigureAwait(false);
+        var raw = Object(answer.Body, "an approval page");
+        if (!raw.TryGetProperty("items", out var values) || values.ValueKind != JsonValueKind.Array || values.GetArrayLength() > 200)
+        {
+            throw new SagatException(SagatErrorCode.Protocol, "items is invalid in the answer");
+        }
+
+        var items = new List<ApprovalListItem>(values.GetArrayLength());
+        foreach (var value in values.EnumerateArray())
+        {
+            var item = Object(value, "an approval");
+            var status = Str(item, "status") switch
+            {
+                "PENDING" => ApprovalStatus.Pending,
+                "APPROVED" => ApprovalStatus.Approved,
+                "REJECTED" => ApprovalStatus.Rejected,
+                "EXPIRED" => ApprovalStatus.Expired,
+                "CANCELLED" => ApprovalStatus.Cancelled,
+                _ => throw new SagatException(SagatErrorCode.Protocol, "status is invalid in the answer"),
+            };
+            var deadline = OptDate(item, "deadline") ?? throw new SagatException(SagatErrorCode.Protocol, "deadline is missing from the answer");
+            if (!item.TryGetProperty("instancePath", out var path) || path.ValueKind != JsonValueKind.Array || path.GetArrayLength() > 8)
+            {
+                throw new SagatException(SagatErrorCode.Protocol, "instancePath is invalid in the answer");
+            }
+
+            var scopes = new List<ApprovalScope>(path.GetArrayLength());
+            foreach (var valueScope in path.EnumerateArray())
+            {
+                var scope = Object(valueScope, "an approval scope");
+                if (!scope.TryGetProperty("iterationIndex", out var indexValue) || !indexValue.TryGetInt32(out var index) || index is < 0 or > 9_999)
+                {
+                    throw new SagatException(SagatErrorCode.Protocol, "iterationIndex is invalid in the answer");
+                }
+
+                scopes.Add(new ApprovalScope(Str(scope, "scopeNodeId"), index));
+            }
+
+            items.Add(new ApprovalListItem(
+                Str(item, "approvalId"), Str(item, "runId"), Str(item, "nodeId"), scopes,
+                status, deadline, OptDate(item, "settledAt"), item));
+        }
+
+        return new ApprovalPage(items, OptStr(raw, "nextCursor"));
+    }
+
+    /// <inheritdoc/>
+    public async IAsyncEnumerable<ApprovalListItem> ListAllApprovalsAsync(
+        string runId,
+        ApprovalListOptions? options = null,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        options ??= new ApprovalListOptions();
+        string? cursor = null;
+        do
+        {
+            var page = await ListApprovalsAsync(runId, options with { Cursor = cursor }, cancellationToken).ConfigureAwait(false);
+            foreach (var item in page.Items)
+            {
+                yield return item;
+            }
+
+            cursor = page.NextCursor;
+        }
+        while (cursor is not null);
+    }
+
+    /// <inheritdoc/>
     public async Task<ApprovalDecisionReceipt> DecideApprovalAsync(
         string approvalId,
         ApprovalDecision decision,

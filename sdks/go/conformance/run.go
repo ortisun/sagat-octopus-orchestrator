@@ -140,6 +140,16 @@ func run(scenario, config object) (object, error) {
 		}
 		return id, nil
 	}
+	approvalOf := func(step object) (string, error) {
+		if id := asString(step["approvalId"]); id != "" {
+			return id, nil
+		}
+		items := asList(results[asString(step["approval"])]["items"])
+		if len(items) == 0 || asString(asObject(items[0])["approvalId"]) == "" {
+			return "", fmt.Errorf("step %s has no approval", asString(step["approval"]))
+		}
+		return asString(asObject(items[0])["approvalId"]), nil
+	}
 
 	for _, key := range sortedHostKeys(hosts) {
 		entry := hosts[key]
@@ -164,7 +174,7 @@ func run(scenario, config object) (object, error) {
 			return nil, fmt.Errorf("step %s: unknown token %q", id, tokenName)
 		}
 		observation := object{"id": id, "op": op}
-		result, err := playStep(ctx, step, op, c, config, unique, p, hosts, startWorker, stopWorker, runOf)
+		result, err := playStep(ctx, step, op, c, config, unique, p, hosts, startWorker, stopWorker, runOf, approvalOf)
 		if err != nil {
 			var unexpected *runnerError
 			if errors.As(err, &unexpected) {
@@ -213,7 +223,7 @@ func broken(format string, args ...any) error { return &runnerError{fmt.Sprintf(
 
 func playStep(ctx context.Context, step object, op string, c *client.Client, config object, unique string, p *plan,
 	hosts map[string]*hostEntry, startWorker func(string) (object, error), stopWorker func(*hostEntry, time.Duration),
-	runOf func(object) (string, error)) (object, error) {
+	runOf func(object) (string, error), approvalOf func(object) (string, error)) (object, error) {
 	workflowOf := func(key string) (name, id string) {
 		w := asObject(asObject(config["workflows"])[key])
 		return asString(w["name"]), asString(w["workflowId"])
@@ -307,6 +317,36 @@ func playStep(ctx context.Context, step object, op string, c *client.Client, con
 		}
 		// In the order the server gave (newest first): the SDK keeps it, also across pages.
 		return object{"items": ids}, nil
+	case "listApprovals":
+		id, err := runOf(step)
+		if err != nil {
+			return nil, broken("%v", err)
+		}
+		page, err := c.ListApprovals(ctx, id, client.ApprovalListOptions{Cursor: asString(step["cursor"]), Limit: asInt(step["limit"])})
+		if err != nil {
+			return nil, err
+		}
+		for attempt := 0; step["waitForItem"] == true && len(page.Items) == 0 && attempt < 100; attempt++ {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(50 * time.Millisecond):
+			}
+			page, err = c.ListApprovals(ctx, id, client.ApprovalListOptions{Cursor: asString(step["cursor"]), Limit: asInt(step["limit"])})
+			if err != nil {
+				return nil, err
+			}
+		}
+		items := make([]any, 0, len(page.Items))
+		for _, item := range page.Items {
+			path := make([]any, 0, len(item.InstancePath))
+			for _, scope := range item.InstancePath {
+				path = append(path, object{"scopeNodeId": scope.ScopeNodeID, "iterationIndex": scope.IterationIndex})
+			}
+			items = append(items, object{"approvalId": item.ApprovalID, "runId": item.RunID, "nodeId": item.NodeID,
+				"instancePath": path, "status": string(item.Status), "deadline": iso(item.Deadline), "settledAt": iso(item.SettledAt)})
+		}
+		return object{"items": items, "nextCursor": orNull(page.NextCursor)}, nil
 	case "cancel", "operate":
 		id, err := runOf(step)
 		if err != nil {
@@ -337,6 +377,10 @@ func playStep(ctx context.Context, step object, op string, c *client.Client, con
 		}
 		return object{"accepted": result.Accepted, "runStatus": orNull(string(result.RunStatus))}, nil
 	case "decideApproval":
+		approvalID, err := approvalOf(step)
+		if err != nil {
+			return nil, broken("%v", err)
+		}
 		request := client.ApprovalDecisionRequest{
 			DecisionKey: asString(step["decisionKey"]), Decision: client.ApprovalDecision(asString(step["decision"])), ReasonCode: asString(step["reasonCode"]),
 		}
@@ -344,7 +388,7 @@ func playStep(ctx context.Context, step object, op string, c *client.Client, con
 		if value := asString(step["traceparent"]); value != "" {
 			opts = append(opts, client.WithTraceparent(value))
 		}
-		receipt, err := c.DecideApproval(ctx, asString(step["approvalId"]), request, opts...)
+		receipt, err := c.DecideApproval(ctx, approvalID, request, opts...)
 		if err != nil {
 			return nil, err
 		}

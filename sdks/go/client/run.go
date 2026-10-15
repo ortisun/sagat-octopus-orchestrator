@@ -117,6 +117,48 @@ type ApprovalDecisionReceipt struct {
 	Raw             map[string]json.RawMessage
 }
 
+// ApprovalStatus is the durable state of one approval request.
+type ApprovalStatus string
+
+const (
+	ApprovalPending   ApprovalStatus = "PENDING"
+	ApprovalApproved  ApprovalStatus = "APPROVED"
+	ApprovalRejected  ApprovalStatus = "REJECTED"
+	ApprovalExpired   ApprovalStatus = "EXPIRED"
+	ApprovalCancelled ApprovalStatus = "CANCELLED"
+)
+
+// ApprovalScope is one ordered collection or loop segment owning an approval.
+type ApprovalScope struct {
+	ScopeNodeID    string
+	IterationIndex int
+}
+
+// ApprovalListItem is the deliberately redacted public view of an approval request.
+type ApprovalListItem struct {
+	ApprovalID   string
+	RunID        string
+	NodeID       string
+	InstancePath []ApprovalScope
+	Status       ApprovalStatus
+	Deadline     time.Time
+	SettledAt    time.Time
+	Raw          map[string]json.RawMessage
+}
+
+// ApprovalPage is one bounded page ordered by opening journal sequence.
+type ApprovalPage struct {
+	Items      []ApprovalListItem
+	NextCursor string
+	Raw        map[string]json.RawMessage
+}
+
+// ApprovalListOptions pages approval requests. Limit zero uses the server default.
+type ApprovalListOptions struct {
+	Cursor string
+	Limit  int
+}
+
 // QueryResult is the declared result and exact committed revisions observed by a query.
 type QueryResult struct {
 	RunID         string

@@ -1,0 +1,353 @@
+{
+  "faultsApplied": [],
+  "observations": [
+    {
+      "id": "approve-run",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "error": {
+        "code": "UNAUTHENTICATED",
+        "message": "<text>",
+        "reason": null,
+        "remediation": "The token was refused: check its issuer, audience, tenant claim and expiry, and that the token provider returns a fresh one.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 401,
+        "traceId": "<trace:2>"
+      },
+      "id": "unauthenticated-list",
+      "ok": false,
+      "op": "listApprovals"
+    },
+    {
+      "error": {
+        "code": "NOT_FOUND",
+        "message": "<text>",
+        "reason": null,
+        "remediation": "The resource does not exist in this tenant and namespace: check the id and the namespace.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 404,
+        "traceId": "<trace:3>"
+      },
+      "id": "other-tenant-list",
+      "ok": false,
+      "op": "listApprovals"
+    },
+    {
+      "id": "approve-opened",
+      "ok": true,
+      "op": "listApprovals",
+      "result": {
+        "items": [
+          {
+            "approvalId": "<uuid:4>",
+            "deadline": "<time>",
+            "instancePath": [],
+            "nodeId": "review",
+            "runId": "<uuid:1>",
+            "settledAt": null,
+            "status": "PENDING"
+          }
+        ],
+        "nextCursor": null
+      }
+    },
+    {
+      "error": {
+        "code": "UNAUTHENTICATED",
+        "message": "<text>",
+        "reason": null,
+        "remediation": "The token was refused: check its issuer, audience, tenant claim and expiry, and that the token provider returns a fresh one.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 401,
+        "traceId": "<trace:4>"
+      },
+      "id": "unauthenticated-decision",
+      "ok": false,
+      "op": "decideApproval"
+    },
+    {
+      "error": {
+        "code": "NOT_FOUND",
+        "message": "<text>",
+        "reason": null,
+        "remediation": "The resource does not exist in this tenant and namespace: check the id and the namespace.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 404,
+        "traceId": "<trace:5>"
+      },
+      "id": "other-tenant-decision",
+      "ok": false,
+      "op": "decideApproval"
+    },
+    {
+      "id": "approve",
+      "ok": true,
+      "op": "decideApproval",
+      "result": {
+        "actor": "alice",
+        "approvalId": "<uuid:4>",
+        "decidedAt": "<time>",
+        "decision": "APPROVE",
+        "decisionKey": "decision-approve-{{unique}}",
+        "outcomeSequence": 3,
+        "reasonCode": "POLICY_OK",
+        "receiptId": "<uuid:5>",
+        "replayed": false
+      }
+    },
+    {
+      "id": "approve-replay",
+      "ok": true,
+      "op": "decideApproval",
+      "result": {
+        "actor": "alice",
+        "approvalId": "<uuid:4>",
+        "decidedAt": "<time>",
+        "decision": "APPROVE",
+        "decisionKey": "decision-approve-{{unique}}",
+        "outcomeSequence": 3,
+        "reasonCode": "POLICY_OK",
+        "receiptId": "<uuid:5>",
+        "replayed": true
+      }
+    },
+    {
+      "error": {
+        "code": "CONFLICT",
+        "message": "<text>",
+        "reason": "IDEMPOTENCY_KEY_REUSED",
+        "remediation": "The request conflicts with the current state: read the resource again and decide; do not repeat it unchanged.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 409,
+        "traceId": "<trace:6>"
+      },
+      "id": "key-conflict",
+      "ok": false,
+      "op": "decideApproval"
+    },
+    {
+      "id": "approve-settled",
+      "ok": true,
+      "op": "listApprovals",
+      "result": {
+        "items": [
+          {
+            "approvalId": "<uuid:4>",
+            "deadline": "<time>",
+            "instancePath": [],
+            "nodeId": "review",
+            "runId": "<uuid:1>",
+            "settledAt": "<time>",
+            "status": "APPROVED"
+          }
+        ],
+        "nextCursor": null
+      }
+    },
+    {
+      "id": "reject-run",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:6>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:7>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "reject-opened",
+      "ok": true,
+      "op": "listApprovals",
+      "result": {
+        "items": [
+          {
+            "approvalId": "<uuid:7>",
+            "deadline": "<time>",
+            "instancePath": [],
+            "nodeId": "review",
+            "runId": "<uuid:6>",
+            "settledAt": null,
+            "status": "PENDING"
+          }
+        ],
+        "nextCursor": null
+      }
+    },
+    {
+      "id": "reject",
+      "ok": true,
+      "op": "decideApproval",
+      "result": {
+        "actor": "alice",
+        "approvalId": "<uuid:7>",
+        "decidedAt": "<time>",
+        "decision": "REJECT",
+        "decisionKey": "decision-reject-{{unique}}",
+        "outcomeSequence": 3,
+        "reasonCode": "POLICY_BLOCKED",
+        "receiptId": "<uuid:8>",
+        "replayed": false
+      }
+    },
+    {
+      "id": "reject-settled",
+      "ok": true,
+      "op": "listApprovals",
+      "result": {
+        "items": [
+          {
+            "approvalId": "<uuid:7>",
+            "deadline": "<time>",
+            "instancePath": [],
+            "nodeId": "review",
+            "runId": "<uuid:6>",
+            "settledAt": "<time>",
+            "status": "REJECTED"
+          }
+        ],
+        "nextCursor": null
+      }
+    }
+  ],
+  "serverState": [
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "approved",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "expired",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "rejected",
+          "kind": "FORWARD",
+          "status": "PENDING",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "review",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "approval",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:6>",
+      "status": "RUNNING"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "approved",
+          "kind": "FORWARD",
+          "status": "PENDING",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "expired",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "rejected",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "review",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "approval",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:1>",
+      "status": "RUNNING"
+    }
+  ],
+  "workerLog": {}
+}

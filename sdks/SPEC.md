@@ -97,6 +97,7 @@ All calls are `<apiUrl><path>` with `Authorization: Bearer <token>`, `Accept: ap
 | `startWithBlob(workflowId, descriptor, options)` | `POST /runs` with `{workflowId, versionId?, inputBlobRef: descriptor.id, correlationId?, deadline?}`, header `Idempotency-Key` | `202` Run |
 | `get(runId)` | `GET /runs/{runId}` | `200` Run |
 | `list(options)` | `GET /runs?workflowId=&status=&limit=&cursor=` | `200` `{items, nextCursor}`; `listAll` pages for the caller |
+| `listApprovals(runId, options)` | `GET /runs/{runId}/approvals?limit=&cursor=` | `200` ApprovalPage; `listAllApprovals` follows opaque cursors |
 | `cancel(runId, reason, options)` | `POST /runs/{runId}/operations` with `{action: "CANCEL", reason, expectedRunVersion?}`, `Idempotency-Key` | `202` OperationResult |
 | `signal(runId, name, payload, options)` | `POST /runs/{runId}/signals/{name}` with the payload object, `Idempotency-Key` | `202` `{deliveredTo}` |
 | `decideApproval(approvalId, decision, options)` | `POST /approvals/{approvalId}/decisions` with `{decisionKey, decision: APPROVE \| REJECT, reasonCode?}` | `200` ApprovalDecisionReceipt |
@@ -123,6 +124,9 @@ Rules:
   requires it, sends no `Idempotency-Key` header, and may safely retry the exact same body. A replay
   returns the original receipt with `replayed: true`; changing the body under the same key is a
   `CONFLICT` with reason `IDEMPOTENCY_KEY_REUSED`. The receipt is typed and retains the raw JSON.
+- Approval pages preserve immutable opening order and expose only the request identity, run/node instance,
+  closed status, deadline and settlement time returned by the server. They do not infer eligibility,
+  policy or actor data. A page is bounded to 200 entries and `listAllApprovals` treats `nextCursor` as opaque.
 - A declared operation name is 1 to 128 characters and matches `[A-Za-z0-9][A-Za-z0-9_.:-]*`.
   An update key is 1 to 128 visible ASCII characters. It lives in the body, is required, and is
   preserved with the exact arguments and expected revision across retries. Query and update results

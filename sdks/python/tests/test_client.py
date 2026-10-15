@@ -158,6 +158,45 @@ async def test_an_approval_decision_uses_its_body_key_and_returns_a_typed_receip
     assert receipt.outcome_sequence == 7 and receipt.raw["futureField"] == "kept"
 
 
+async def test_approval_pages_are_typed_and_all_pages_follow_the_opaque_cursor(
+    http: FakeHttpServer, make_client: MakeClient
+) -> None:
+    approval_ids = ["0190aaaa-0000-7000-8000-000000000099", "0190aaaa-0000-7000-8000-000000000100"]
+
+    def serve(seen: Seen) -> Any:
+        second = "cursor=next" in seen.url
+        approval_id = approval_ids[1 if second else 0]
+        return reply(
+            200,
+            {
+                "items": [
+                    {
+                        "approvalId": approval_id,
+                        "runId": RUN,
+                        "nodeId": "review",
+                        "instancePath": [{"scopeNodeId": "items", "iterationIndex": 3}],
+                        "status": "APPROVED" if second else "PENDING",
+                        "deadline": "2026-10-16T10:00:00Z",
+                        "settledAt": "2026-10-15T10:00:00Z" if second else None,
+                    }
+                ],
+                "nextCursor": None if second else "next",
+            },
+        )
+
+    http.serve(serve)
+    client = make_client()
+    page = await client.list_approvals(RUN, cursor="from", limit=1, traceparent=TRACE)
+    assert page.items[0].status == "PENDING"
+    assert page.items[0].instance_path[0].iteration_index == 3
+    assert page.items[0].deadline == datetime(2026, 10, 16, 10, 0, tzinfo=timezone.utc)
+    assert http.seen[0].url == f"/v1/runs/{RUN}/approvals?cursor=from&limit=1"
+    http.seen.clear()
+    items = [item async for item in client.list_all_approvals(RUN, limit=1)]
+    assert [item.approval_id for item in items] == approval_ids
+    assert http.seen[1].url == f"/v1/runs/{RUN}/approvals?cursor=next&limit=1"
+
+
 async def test_an_approval_decision_surfaces_authorization_and_idempotency_failures_and_rejects_bad_input(
     http: FakeHttpServer, make_client: MakeClient
 ) -> None:

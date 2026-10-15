@@ -12,6 +12,9 @@ import dev.sagatoctopusorchestrator.sdk.CallOptions;
 import dev.sagatoctopusorchestrator.sdk.ApprovalDecision;
 import dev.sagatoctopusorchestrator.sdk.ApprovalDecisionOptions;
 import dev.sagatoctopusorchestrator.sdk.ApprovalDecisionReceipt;
+import dev.sagatoctopusorchestrator.sdk.ApprovalListItem;
+import dev.sagatoctopusorchestrator.sdk.ApprovalListOptions;
+import dev.sagatoctopusorchestrator.sdk.ApprovalPage;
 import dev.sagatoctopusorchestrator.sdk.ClientConfig;
 import dev.sagatoctopusorchestrator.sdk.EventAccepted;
 import dev.sagatoctopusorchestrator.sdk.EventInput;
@@ -638,6 +641,16 @@ public final class Runner {
         return id.textValue();
     }
 
+    private static String approvalOf(JsonNode step, Map<String, JsonNode> results) {
+        if (step.has("approvalId")) return step.get("approvalId").asText();
+        JsonNode source = results.get(step.get("approval").asText());
+        JsonNode items = source == null ? null : source.path("items");
+        if (items == null || !items.isArray() || items.isEmpty() || !items.get(0).path("approvalId").isTextual()) {
+            throw new IllegalArgumentException("step " + step.get("approval").asText() + " has no approval");
+        }
+        return items.get(0).get("approvalId").asText();
+    }
+
     private static void pause(long millis) throws InterruptedException {
         Thread.sleep(millis);
     }
@@ -713,6 +726,48 @@ public final class Runner {
                 result.set("items", ids);
                 return result;
             }
+            case "listApprovals": {
+                ApprovalListOptions options = ApprovalListOptions.create();
+                if (step.has("cursor")) options.cursor(step.get("cursor").asText());
+                if (step.has("limit")) options.limit(step.get("limit").asInt());
+                if (step.has("traceparent")) options.traceparent(step.get("traceparent").asText());
+                ApprovalPage page = client.listApprovals(runOf(step, results), options);
+                for (int attempt = 0; step.path("waitForItem").asBoolean(false) && page.items().isEmpty() && attempt < 100; attempt++) {
+                    try {
+                        Thread.sleep(50);
+                    } catch (InterruptedException error) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException("interrupted while waiting for an approval");
+                    }
+                    page = client.listApprovals(runOf(step, results), options);
+                }
+                ArrayNode items = F.arrayNode();
+                for (ApprovalListItem item : page.items()) {
+                    ObjectNode value = F.objectNode();
+                    value.put("approvalId", item.approvalId());
+                    value.put("runId", item.runId());
+                    value.put("nodeId", item.nodeId());
+                    ArrayNode path = F.arrayNode();
+                    item.instancePath().forEach(scope -> {
+                        ObjectNode segment = F.objectNode();
+                        segment.put("scopeNodeId", scope.scopeNodeId());
+                        segment.put("iterationIndex", scope.iterationIndex());
+                        path.add(segment);
+                    });
+                    value.set("instancePath", path);
+                    value.put("status", item.status().name());
+                    value.put("deadline", java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")
+                            .withZone(java.time.ZoneOffset.UTC).format(item.deadline()));
+                    if (item.settledAt() == null) value.putNull("settledAt"); else value.put("settledAt",
+                            java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")
+                                    .withZone(java.time.ZoneOffset.UTC).format(item.settledAt()));
+                    items.add(value);
+                }
+                ObjectNode result = F.objectNode();
+                result.set("items", items);
+                if (page.nextCursor() == null) result.putNull("nextCursor"); else result.put("nextCursor", page.nextCursor());
+                return result;
+            }
             case "cancel": {
                 OperateOptions options = OperateOptions.create();
                 if (step.has("expectedRunVersion")) {
@@ -743,7 +798,7 @@ public final class Runner {
                     options.traceparent(step.get("traceparent").asText());
                 }
                 ApprovalDecisionReceipt receipt = client.decideApproval(
-                        step.get("approvalId").asText(), ApprovalDecision.valueOf(step.get("decision").asText()), options);
+                        approvalOf(step, results), ApprovalDecision.valueOf(step.get("decision").asText()), options);
                 ObjectNode result = F.objectNode();
                 result.put("receiptId", receipt.receiptId());
                 result.put("approvalId", receipt.approvalId());
