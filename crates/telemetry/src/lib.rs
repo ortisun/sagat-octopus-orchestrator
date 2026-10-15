@@ -18,11 +18,17 @@ mod trace;
 
 pub use json_log::{LogLayer, Style};
 pub use logging::{LogFormat, Telemetry, TelemetryConfig, init, init_logging};
-pub use metrics::{Metrics, WorkflowPrimitiveKind, WorkflowPrimitiveOutcome};
+pub use metrics::{
+    Metrics, WorkflowPrimitiveKind, WorkflowPrimitiveMetric, WorkflowPrimitiveOutcome,
+    WorkflowPrimitiveRejectionCode,
+};
 pub use otlp::{
     AttrValue, ExportError, GaugeData, LogData, OtlpClient, OtlpConfig, OtlpConfigError, OtlpLayer,
     SpanData, SpanEvent, SpanKind, SpanLink, SpanSink, SpanStatus, start,
 };
 pub use redact::{MAX_VALUE_CHARS, REDACTED, is_sensitive_name, scrub};
-pub use span::{SpanId, attempt_span_id, event_span_id, keeps, run_span_id, traceparent};
+pub use span::{
+    SpanId, WorkflowPrimitiveSpan, WorkflowPrimitiveSpanField, attempt_span_id, event_span_id,
+    keeps, run_span_id, traceparent,
+};
 pub use trace::{TraceContext, TraceId};
