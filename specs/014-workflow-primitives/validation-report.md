@@ -194,6 +194,7 @@ does not publish or execute these workflows. Its golden was reviewed manually.
 | Java full SDK suite | Passed |
 | .NET full SDK suite | 429/430 passed; an existing stream timing test passed when rerun alone |
 | TypeScript full SDK suite | 112/113 passed; an existing worker cancellation timing test passed when rerun alone; the new workflow tests passed |
+| `cargo test -p sagat-tests --test contract_workflow_primitives five_sdk_collection_golden_is_a_valid_structured_v1_definition --locked -q` | Passed: both five-SDK golden documents parse as structured v1, match server canonical bytes and remain rejected by production publication |
 
 The full Rust workspace test invocation was interrupted during compilation to free Cargo's build
 lock for the five-SDK conformance run. The focused Rust domain, IR, contract, PostgreSQL and fault

@@ -9,6 +9,7 @@ use serde_json::Value;
 
 mod identity_limits;
 mod revision;
+mod sdk_collection_ir;
 mod worker_protocol;
 
 fn repository_root() -> PathBuf {
