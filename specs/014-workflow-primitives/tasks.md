@@ -109,8 +109,9 @@ produce one apply/one rejection; lost-response replay returns the original recei
 publication, security/audit/result-bound, transaction-fault and all-five runtime conformance gates.
 Chain Query/Update have a focused HTTP/transaction slice, including head CAS and receipt replay
 across rollover. A direct public continuation now transfers the declared snapshot atomically; the
-public Query after handoff, public chain Update and the remaining fault matrix stay open. The
-initial-head public chain Query passes all-five SDK conformance.
+public Query-after-handoff HTTP/SDK, public chain Update and the remaining fault matrix stay open.
+The successor Query snapshot/evaluator path has public PostgreSQL evidence; initial-head chain
+Query passes all-five SDK conformance.
 
 - [ ] T014-029 [P] [US06] Write failing state/operation schemas and malicious-handler fixtures in `tests/contract/workflow-primitives/operations.rs`; enforce “At most 32 queries and 32 updates”, names 1..128, bounded state/closed result schemas, explicit `disclosure: declared-business-result-v1`, no I/O/callback/wait and “expected state revision is an optional nonnegative integer”. Refs: FR-014-010–011,015, NFR-014-002.
 - [ ] T014-030 [US06] Model schema-checked initial state, snapshot query, atomic validator/reducer/result and APPLIED/REJECTED receipts in `crates/domain/src/execution/operations.rs` and `crates/application/src/primitives.rs`; preserve “State revision starts at 0 and increments exactly once per successful Update”; an Update creates no task, timer or subscription. Refs: FR-014-010–011,014.
@@ -123,7 +124,8 @@ initial-head public chain Query passes all-five SDK conformance.
 The published input-only continuation path and chain inspect/signal/cancel are covered by focused
 PostgreSQL, fault and five-SDK checks. The direct stateful continuation now has public PostgreSQL
 handoff evidence. Chain Query/Update have seeded-state transaction/HTTP checks, and initial-head
-public chain Query passes all-five SDK conformance. Query after handoff, public chain Update,
+public chain Query passes all-five SDK conformance. Query after handoff has a public PostgreSQL
+snapshot/evaluator test; its HTTP/SDK path, public chain Update,
 child continuation and the rest of the shared matrix remain open.
 
 **Independent test**: Three segments have one current head and unique successors; crash around each

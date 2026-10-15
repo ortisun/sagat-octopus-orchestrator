@@ -111,8 +111,9 @@ the reviewed server shapes; signal has only its negative no-matching-wait path t
 fixture is not runtime proof.
 
 The chain Query REST route resolves declared state on an existing chain. The five-SDK `chain-query`
-scenario exercises this on a public initial head; Query after public handoff and chain Update
-runtime parity still need coverage.
+scenario exercises this on a public initial head. A PostgreSQL handoff test resolves and evaluates
+Query on the successor; HTTP/SDK Query after handoff and chain Update runtime parity still need
+coverage.
 For a chain with declared state, the request shape is:
 
 ```sh

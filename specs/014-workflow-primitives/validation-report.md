@@ -1053,8 +1053,9 @@ transaction PostgreSQL verifies the selected state digest, exact bytes, size and
 against the locked predecessor snapshot, then copies its digest, schema, size and revision to the
 successor before advancing the chain head. The public PostgreSQL test publishes the document,
 starts it, completes a worker task, advances it with the fenced scheduler, checks the successor's
-declared state and resolves a chain Query snapshot to that successor. Its successor input contains
-a different account value, so the observed state is specifically the transferred snapshot.
+declared state, resolves a chain Query snapshot to that successor and evaluates the declared query
+to `19`. Its successor input contains a different account value, so the observed state is
+specifically the transferred snapshot.
 
 The first shared `chain-query` attempt published successfully but returned
 `OPERATION_EVALUATION_FAILED`: operation evaluation reparsed the pinned definition through a
@@ -1081,4 +1082,4 @@ validation for this increment is recorded below.
 | `cargo test -p sagat-tests --test contract_workflow_primitives --locked` | Passed: 26/26 after updating a stale rejection assertion |
 | `cargo clippy --workspace --all-targets --locked -- -D warnings`; `python3 scripts/check-architecture.py`; `git diff --check` | Passed |
 | `cargo fmt --all -- --check`; `cargo test -p sagat-tests --test contract_developer_experience --locked` | Passed after regenerating the schema-derived workflow reference; 8/8 documentation contract tests |
-| Focused public stateful handoff after the operation-reader change | Passed: 1/1 with real PostgreSQL and fenced scheduler |
+| Focused public stateful handoff after the operation-reader change | Passed: 1/1 with real PostgreSQL, fenced scheduler and Query evaluation against the successor snapshot |

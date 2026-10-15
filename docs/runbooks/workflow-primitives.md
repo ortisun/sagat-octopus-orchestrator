@@ -143,8 +143,8 @@ It appends no workflow event and schedules no task. Operation arguments and resu
 to 256 KiB each, retained run data to 4 MiB and task context to 8 MiB. The immutable declaration's
 closed argument/result schemas and disclosure mode still apply; Query cannot read secrets or make
 network calls. The shared `chain-query` scenario publishes a direct stateful continuation and
-reads its initial head through all five SDKs. Focused Query race tests seed chains directly;
-public Query after a handoff still needs a combined end-to-end test.
+reads its initial head through all five SDKs. A public PostgreSQL handoff test resolves and
+evaluates Query on the successor; HTTP/SDK Query after a handoff still needs combined coverage.
 
 A declared Update may address the chain with
 `POST /namespaces/{namespaceId}/chains/{chainId}/updates/{operationName}`. Keep one stable

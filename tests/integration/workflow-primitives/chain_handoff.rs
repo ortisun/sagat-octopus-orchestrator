@@ -7,10 +7,13 @@ use sagat_application::chain_progress::{
     ChainHandoffCommand, ChainInitialization, ChainProgressError, ChainProgressStore,
     EvaluatedChainHandoffCommand,
 };
-use sagat_application::declared_operations::{DeclaredOperationStore, DeclaredQuery};
+use sagat_application::declared_operations::{
+    DeclaredOperationEvaluator, DeclaredOperationStore, DeclaredQuery,
+};
 use sagat_application::definitions::{IrCodec, IrError, ParsedDefinition};
 use sagat_application::entropy::SystemEntropy;
 use sagat_application::execution::{DefinitionCache, Engine, instance_step_id};
+use sagat_application::operation_evaluation::DeclaredOperationArguments;
 use sagat_application::primitives::SchedulerAuthority;
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::definition::WorkflowVersionId;
@@ -20,7 +23,7 @@ use sagat_domain::execution::{
 };
 use sagat_domain::sharding::Shard;
 use sagat_domain::workflow::{ActivityName, Digest};
-use sagat_infra_ir::{JsonEvaluator, JsonIrCodec};
+use sagat_infra_ir::{JsonDeclaredOperationEvaluator, JsonEvaluator, JsonIrCodec};
 use sagat_infra_postgres::{
     PgChainProgressStore, PgDeclaredOperationStore, PgRunStore, initialize_chain_in_transaction,
 };
@@ -270,6 +273,16 @@ async fn public_stateful_handoff_preserves_the_declared_snapshot() {
         .await
         .expect("query committed successor");
     assert_eq!(snapshot.run_id().as_uuid(), successor);
+    let result = DeclaredOperationEvaluator::query(
+        &JsonDeclaredOperationEvaluator,
+        &snapshot,
+        &ActivityName::parse("amount.read").expect("query name"),
+        &DeclaredOperationArguments::parse(br#"{}"#).expect("query arguments"),
+    )
+    .expect("evaluate successor query");
+    assert_eq!(result.response().run_id().as_uuid(), successor);
+    assert_eq!(result.response().state_revision(), 0);
+    assert_eq!(result.result().content(), b"19");
 }
 
 #[tokio::test]

@@ -184,8 +184,9 @@ bounded result, receipt/replay, transaction-fault and all-five conformance tests
 chain-addressed Query/Update routes have chain-before-run locking, authorization, audit, head-CAS,
 handoff-race and stable-receipt evidence from seeded chain fixtures. A direct
 activity-to-continuation workflow can now publish and transfer its exact declared snapshot; the
-combined public Query after handoff and Update scenarios remain open. Initial-head chain Query
-passes all-five runtime conformance. Other combinations of
+combined public Query-after-handoff HTTP/SDK and Update scenarios remain open. The public
+handoff test evaluates a successor Query snapshot; initial-head chain Query passes all-five
+runtime conformance. Other combinations of
 state with structured primitives remain disabled until separate evidence passes.
 
 **Acceptance Scenarios**:

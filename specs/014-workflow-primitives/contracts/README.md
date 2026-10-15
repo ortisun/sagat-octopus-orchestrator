@@ -104,7 +104,8 @@ decision and chain inspect/signal/cancel shapes are mirrored in the canonical Op
 workflow shapes above create chains and hand off through the scheduler. The direct stateful shape
 also preserves the declared state digest, schema, size and revision in the successor transaction.
 Chain Query/Update have seeded PostgreSQL/HTTP evidence, and initial-head chain Query runs on all
-five SDKs. Query after handoff and public chain Update runtime parity remain pending. Paged segment
+five SDKs. A public handoff test evaluates the successor Query snapshot; HTTP/SDK Query after
+handoff and public chain Update runtime parity remain pending. Paged segment
 operations and wider continuation graphs remain gated.
 
 | Method/path | Body/query | Success result / authorization |
