@@ -74,6 +74,8 @@ const EDGE_WORDS: Record<RuntimeEdge['kind'], string> = {
   error: 'On error',
   true: 'If true',
   false: 'If false',
+  case: 'Case',
+  default: 'Default',
   branch: 'Branch',
   timeout: 'On timeout',
   begin: 'First step',

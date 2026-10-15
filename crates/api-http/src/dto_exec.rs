@@ -4,7 +4,7 @@ use sagat_application::definitions::{StoredPlan, VersionRecord, WorkflowRecord};
 use sagat_application::execution::RunRecord;
 use sagat_application::runs::{GraphChanges, GraphSnapshot, JournalEntry};
 use sagat_domain::definition::WorkflowVersion;
-use sagat_domain::execution::SwitchSelection;
+use sagat_domain::execution::{ExecutionInstanceId, InstancePath, SwitchSelection};
 use sagat_domain::workflow::{Node, NodeKind};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -518,7 +518,66 @@ fn runtime_nodes(graph: &GraphSnapshot, wanted: impl Fn(&NodeView<'_>) -> bool) 
             "switchSelection": switch_selection,
         }));
     }
+    for step in graph
+        .steps
+        .iter()
+        .filter(|step| !step.instance.path().is_root())
+    {
+        let id = instance_graph_id(&step.instance);
+        if !wanted(&NodeView { id: &id }) {
+            continue;
+        }
+        let node = graph.definition.node_for_instance(&step.instance);
+        nodes.push(json!({
+            "id": id,
+            "nodeId": step.node.as_str(),
+            "instancePath": step.instance.path().segments().iter().map(|segment| json!({
+                "scopeNodeId": segment.scope_node().as_str(),
+                "iterationIndex": segment.iteration_index(),
+            })).collect::<Vec<_>>(),
+            "type": node.map_or("unsupported", |node| node.kind().label()),
+            "kind": if step.node.is_compensation() {
+                "COMPENSATION"
+            } else if step.node.is_reconciliation() {
+                "RECONCILIATION"
+            } else {
+                "FORWARD"
+            },
+            "forward": node.and_then(|node| node.origin().forward()).map(|id| id.as_str()),
+            "saga": null,
+            "status": step.status.as_str(),
+            "attempt": step.attempt,
+            "generation": step.generation,
+            "cancelRequested": step.cancel_requested,
+            "failureCode": step.failure_code,
+            "nextAttemptAt": step.next_attempt_at.map(rfc3339),
+            "dueAt": step.due_at.map(rfc3339),
+            "waitingOn": step.waiting_on,
+            "childRunId": step.child_run.map(|run| run.to_string()),
+            "switchSelection": node.map_or(Value::Null, |node| switch_selection_body(node.kind(), step.switch_selection.as_ref())),
+        }));
+    }
     nodes
+}
+
+fn instance_graph_id(instance: &ExecutionInstanceId) -> String {
+    let mut id = instance_path_prefix(instance.path());
+    id.push_str(instance.node().as_str());
+    id
+}
+
+fn instance_path_prefix(path: &InstancePath) -> String {
+    let mut id = String::new();
+    for segment in path.segments() {
+        use std::fmt::Write;
+        let _ = write!(
+            id,
+            "{}[{}]/",
+            segment.scope_node().as_str(),
+            segment.iteration_index()
+        );
+    }
+    id
 }
 
 fn switch_selection_body(kind: &NodeKind, selection: Option<&SwitchSelection>) -> Value {
@@ -571,6 +630,67 @@ fn runtime_edges(graph: &GraphSnapshot) -> Vec<Value> {
             }));
         }
     }
+    let present: std::collections::BTreeSet<_> = graph
+        .steps
+        .iter()
+        .map(|step| instance_graph_id(&step.instance))
+        .collect();
+    let paths: std::collections::BTreeSet<_> = graph
+        .steps
+        .iter()
+        .map(|step| step.instance.path().clone())
+        .filter(|path| !path.is_root())
+        .collect();
+    for path in paths {
+        let mut parent = InstancePath::root();
+        for segment in &path.segments()[..path.depth() - 1] {
+            if let Ok(next) = parent.child(segment.scope_node().clone(), segment.iteration_index())
+            {
+                parent = next;
+            }
+        }
+        let Some(owner) = path.segments().last() else {
+            continue;
+        };
+        let owner_instance = ExecutionInstanceId::in_path(parent, owner.scope_node().clone());
+        let Some(owner_node) = graph.definition.node_for_instance(&owner_instance) else {
+            continue;
+        };
+        let body_name = match owner_node.kind() {
+            NodeKind::ForEach { body, .. }
+            | NodeKind::While { body, .. }
+            | NodeKind::RepeatUntil { body, .. } => body,
+            _ => continue,
+        };
+        let Some(body) = graph.definition.body(body_name) else {
+            continue;
+        };
+        let prefix = instance_path_prefix(&path);
+        let entry = format!("{}{}", prefix, body.entrypoint().as_str());
+        let owner_id = instance_graph_id(&owner_instance);
+        if present.contains(&owner_id) && present.contains(&entry) {
+            edges.push(json!({ "from": owner_id, "to": entry, "kind": "begin" }));
+        }
+        for node in body.all_nodes() {
+            let mut local = Vec::new();
+            edges_of(node, &mut local);
+            for mut edge in local {
+                let (Some(from), Some(to)) = (
+                    edge.get("from").and_then(Value::as_str),
+                    edge.get("to").and_then(Value::as_str),
+                ) else {
+                    continue;
+                };
+                let from = format!("{prefix}{from}");
+                let to = format!("{prefix}{to}");
+                if present.contains(&from) && present.contains(&to) {
+                    edge["from"] = json!(from);
+                    edge["to"] = json!(to);
+                    edges.push(edge);
+                }
+            }
+        }
+    }
     edges
 }
 
@@ -583,13 +703,19 @@ fn runtime_edges(graph: &GraphSnapshot) -> Vec<Value> {
 /// change the run, whose `status` is always current. `reset` brings the whole graph.
 pub fn graph_changes_body(changes: &GraphChanges) -> Value {
     let graph = &changes.graph;
+    let reset = changes.reset
+        || (!changes.events.is_empty()
+            && graph
+                .steps
+                .iter()
+                .any(|step| !step.instance.path().is_root()));
     let touched: std::collections::BTreeSet<&str> = changes
         .events
         .iter()
         .flat_map(|e| e.touched.iter().flatten().map(String::as_str))
         .collect();
     let any = !changes.events.is_empty();
-    let nodes = if changes.reset {
+    let nodes = if reset {
         runtime_nodes(graph, |_| true)
     } else if any {
         runtime_nodes(graph, |n| touched.contains(n.id))
@@ -600,9 +726,9 @@ pub fn graph_changes_body(changes: &GraphChanges) -> Value {
         "runId": graph.run.info.run_id.to_string(),
         "status": graph.run.status.as_str(),
         // A reset is relative to nothing: the client replaces what it has.
-        "fromSeq": if changes.reset { 0 } else { changes.since },
+        "fromSeq": if reset { 0 } else { changes.since },
         "projectionSeq": graph.run.version,
-        "reset": changes.reset,
+        "reset": reset,
         "events": changes.events.iter().map(|e| json!({
             "seq": e.seq,
             "eventType": e.event_type,
@@ -612,7 +738,7 @@ pub fn graph_changes_body(changes: &GraphChanges) -> Value {
         })).collect::<Vec<_>>(),
         "nodes": nodes,
     });
-    if changes.reset {
+    if reset {
         body["edges"] = Value::Array(runtime_edges(graph));
     }
     body
@@ -693,10 +819,165 @@ pub fn compensation_plans_body(plans: &[StoredPlan]) -> Value {
 mod switch_graph_tests {
     #![allow(clippy::expect_used, clippy::unwrap_used)]
     use super::*;
-    use sagat_domain::workflow::{Expression, NodeId, SwitchCase};
+    use sagat_application::runs::StepView;
+    use sagat_domain::definition::{WorkflowId, WorkflowVersionId};
+    use sagat_domain::execution::{InstancePath, RunId, RunStatus, StepStatus};
+    use sagat_domain::identity::{NamespaceId, Slug, TenantId};
+    use sagat_domain::workflow::{
+        BodyDefinition, Expression, NodeId, SwitchCase, WorkflowDefinition, WorkflowLimits,
+    };
 
     fn id(value: &str) -> NodeId {
         NodeId::parse(value).expect("valid node id")
+    }
+
+    #[test]
+    fn scoped_graph_ids_distinguish_equal_local_names_and_iterations() {
+        let root = ExecutionInstanceId::root(id("charge"));
+        let first = InstancePath::root().child(id("items"), 0).unwrap();
+        let second = InstancePath::root().child(id("items"), 1).unwrap();
+        let nested = first.child(id("retry"), 2).unwrap();
+        assert_eq!(instance_graph_id(&root), "charge");
+        assert_eq!(
+            instance_graph_id(&ExecutionInstanceId::in_path(first, id("charge"))),
+            "items[0]/charge"
+        );
+        assert_eq!(
+            instance_graph_id(&ExecutionInstanceId::in_path(second, id("charge"))),
+            "items[1]/charge"
+        );
+        assert_eq!(
+            instance_graph_id(&ExecutionInstanceId::in_path(nested, id("charge"))),
+            "items[0]/retry[2]/charge"
+        );
+    }
+
+    #[test]
+    fn runtime_graph_projects_scoped_steps_and_resets_ambiguous_deltas() {
+        let definition = WorkflowDefinition::new_structured(
+            Slug::parse("items-flow").unwrap(),
+            id("items"),
+            vec![
+                Node::new(
+                    id("items"),
+                    NodeKind::ForEach {
+                        items: Expression::parse("input.items").unwrap(),
+                        body: id("line"),
+                        result: Expression::parse("bodyResult").unwrap(),
+                        max_items: 2,
+                        max_concurrency: 2,
+                    },
+                )
+                .with_next(id("done")),
+                Node::new(id("done"), NodeKind::End { output: None }),
+            ],
+            vec![
+                BodyDefinition::new(
+                    id("line"),
+                    id("return"),
+                    vec![Node::new(
+                        id("return"),
+                        NodeKind::Return {
+                            result: Expression::parse("item").unwrap(),
+                        },
+                    )],
+                )
+                .unwrap(),
+            ],
+            WorkflowLimits::default(),
+        )
+        .unwrap();
+        let run_id = RunId::new(uuid::Uuid::from_u128(1));
+        let now = OffsetDateTime::UNIX_EPOCH;
+        let step = |index| StepView {
+            instance: ExecutionInstanceId::in_path(
+                InstancePath::root().child(id("items"), index).unwrap(),
+                id("return"),
+            ),
+            node: id("return"),
+            status: StepStatus::Succeeded,
+            attempt: 0,
+            generation: 0,
+            cancel_requested: false,
+            failure_code: None,
+            next_attempt_at: None,
+            due_at: None,
+            waiting_on: None,
+            child_run: None,
+            switch_selection: None,
+        };
+        let graph = GraphSnapshot {
+            run: RunRecord {
+                info: sagat_application::execution::RunInfo {
+                    run_id,
+                    tenant_id: TenantId::new(uuid::Uuid::from_u128(2)),
+                    namespace_id: NamespaceId::new(uuid::Uuid::from_u128(3)),
+                    workflow_id: WorkflowId::new(uuid::Uuid::from_u128(4)),
+                    version_id: WorkflowVersionId::new(uuid::Uuid::from_u128(5)),
+                    started_by: "test".into(),
+                    correlation_id: None,
+                    trace_id: None,
+                    rerun_of: None,
+                    parent_span: None,
+                    deadline_at: None,
+                    created_at: now,
+                    parent: None,
+                    depth: 0,
+                    root: run_id,
+                },
+                status: RunStatus::Running,
+                version: 3,
+                stop_reason: None,
+                paused: false,
+                updated_at: now,
+                finished_at: None,
+            },
+            definition: std::sync::Arc::new(definition),
+            steps: vec![
+                StepView {
+                    instance: ExecutionInstanceId::root(id("items")),
+                    node: id("items"),
+                    status: StepStatus::Waiting,
+                    waiting_on: Some("branches"),
+                    ..step(0)
+                },
+                step(0),
+                step(1),
+            ],
+            sagas: Vec::new(),
+        };
+        let body = runtime_graph(&graph);
+        let nodes = body["nodes"].as_array().unwrap();
+        assert!(nodes.iter().any(|node| {
+            node["id"] == "items[0]/return" && node["instancePath"][0]["iterationIndex"] == 0
+        }));
+        assert!(nodes.iter().any(|node| {
+            node["id"] == "items[1]/return" && node["instancePath"][0]["iterationIndex"] == 1
+        }));
+        assert!(body["edges"].as_array().unwrap().iter().any(|edge| {
+            edge["from"] == "items" && edge["to"] == "items[0]/return" && edge["kind"] == "begin"
+        }));
+        let changes = graph_changes_body(&GraphChanges {
+            graph,
+            since: 2,
+            reset: false,
+            events: vec![JournalEntry {
+                seq: 3,
+                event_type: "step.completed".into(),
+                node: Some("return".into()),
+                attempt: Some(0),
+                actor: "worker:test".into(),
+                trace_id: None,
+                occurred_at: now,
+                payload_ref: None,
+                cause: None,
+                span_id: None,
+                touched: Some(vec!["return".into()]),
+            }],
+        });
+        assert_eq!(changes["reset"], true);
+        assert_eq!(changes["fromSeq"], 0);
+        assert_eq!(changes["nodes"].as_array().unwrap().len(), nodes.len());
     }
 
     #[test]

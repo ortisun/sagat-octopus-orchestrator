@@ -3498,7 +3498,17 @@ components:
       type: object
       required: [id, type, status]
       properties:
-        id: {type: string}
+        id: {type: string, description: 'Root node id or a scoped execution id such as items[2]/charge. Stable across retries.'}
+        nodeId: {type: string, description: 'Local definition node id for a scoped instance; absent for an unscoped root node.'}
+        instancePath:
+          type: array
+          description: 'Ordered scope ancestry for a scoped instance; absent for an unscoped root node.'
+          items:
+            type: object
+            required: [scopeNodeId, iterationIndex]
+            properties:
+              scopeNodeId: {type: string}
+              iterationIndex: {type: integer, minimum: 0, maximum: 9999}
         type: {type: string}
         status: {type: string, enum: [NOT_STARTED, PENDING, READY, LEASED, RUNNING, WAITING, RETRY_WAIT, SUCCEEDED, FAILED, CANCELLED, SKIPPED]}
         attempt: {type: integer}

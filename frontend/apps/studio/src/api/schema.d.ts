@@ -2186,7 +2186,7 @@ export interface components {
             requestId?: string;
             /** @description What can be done about it, in a sentence from a closed table: the same for every error of a `code`, refined by `details.reason` when that changes what to do. It never carries a payload, a secret or another tenant's data. Absent from the errors of a platform older than feature 008. */
             remediation?: string;
-            /** @description Extra, safe context. `reason` is a stable machine-readable refinement of `code` (for example `IDEMPOTENCY_KEY_REUSED`, `STATE_CONFLICT`). A call the server does not have is `NOT_FOUND` with the reason `ROUTE_NOT_FOUND` (an unknown path) or `BAD_REQUEST` with `METHOD_NOT_ALLOWED` (a known path, another method): an SDK newer than the server tells that from a resource that does not exist, which is `NOT_FOUND` without those reasons. */
+            /** @description Extra, safe context. `reason` is a stable machine-readable refinement of `code` (for example `IDEMPOTENCY_KEY_REUSED`, `STATE_CONFLICT`). A call the server does not have is `NOT_FOUND` with the reason `ROUTE_NOT_FOUND` (an unknown path) or `BAD_REQUEST` with `METHOD_NOT_ALLOWED` (a known path, another method): an SDK newer than the server tells that from a resource that does not exist, which is `NOT_FOUND` without those reasons. Structured workflow capabilities refine existing codes with `INVALID_SCOPE`, `INVALID_OPERATION_STATE`, `NOT_ELIGIBLE`, `INITIATOR_CANNOT_DECIDE`, `CHAIN_HEAD_CHANGED`, `RUN_NOT_MUTABLE`, `RUN_CONTINUED` and `UPDATE_REJECTED`; they do not add a new `Error.code` value. */
             details?: {
                 [key: string]: unknown;
             };
@@ -2571,7 +2571,15 @@ export interface components {
             edges?: components["schemas"]["RuntimeEdge"][];
         };
         RuntimeNode: {
+            /** @description Root node id or a scoped execution id such as items[2]/charge. Stable across retries. */
             id: string;
+            /** @description Local definition node id for a scoped instance; absent for an unscoped root node. */
+            nodeId?: string;
+            /** @description Ordered scope ancestry for a scoped instance; absent for an unscoped root node. */
+            instancePath?: {
+                scopeNodeId: string;
+                iterationIndex: number;
+            }[];
             type: string;
             /** @enum {string} */
             status: "NOT_STARTED" | "PENDING" | "READY" | "LEASED" | "RUNNING" | "WAITING" | "RETRY_WAIT" | "SUCCEEDED" | "FAILED" | "CANCELLED" | "SKIPPED";
@@ -2593,6 +2601,15 @@ export interface components {
              * @description The child run a `child` node reserved.
              */
             childRunId?: string | null;
+            /** @description The persisted route chosen for a switch node; null until evaluation. An unknown case indicates inconsistent historical data. */
+            switchSelection?: {
+                /** @enum {string} */
+                kind: "CASE" | "DEFAULT" | "UNKNOWN";
+                /** @description The selected case identifier for CASE, or the unknown identifier for UNKNOWN. */
+                caseId?: string;
+                /** @description The target in the pinned workflow definition, or null for UNKNOWN. */
+                target: string | null;
+            } | null;
             /**
              * @description Forward work, the compensation `<id>~c` of a node, or the lookup `<id>~r` that finds out whether it happened.
              * @enum {string}
@@ -2616,10 +2633,12 @@ export interface components {
             from: string;
             to: string;
             /**
-             * @description `begin`: the first step of the body of a saga. `compensation`: the compensation at `to` waits for the one at `from`. `reconcile`: `to` finds out whether `from` happened.
+             * @description `case` and `default`: switch routes. `begin`: the first step of the body of a saga. `compensation`: the compensation at `to` waits for the one at `from`. `reconcile`: `to` finds out whether `from` happened.
              * @enum {string}
              */
-            kind: "next" | "error" | "true" | "false" | "branch" | "timeout" | "begin" | "compensation" | "reconcile";
+            kind: "next" | "error" | "true" | "false" | "case" | "default" | "branch" | "timeout" | "begin" | "compensation" | "reconcile";
+            /** @description The local switch case identifier when kind is case. */
+            caseId?: string;
         };
         RuntimeGraph: {
             /** Format: uuid */
