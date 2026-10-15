@@ -179,6 +179,33 @@ public class WorkflowBuilderTests
     }
 
     [Fact]
+    public void WhileAndRepeatUntilWriteBoundedPreTestAndPostTestLoopNodes()
+    {
+        var iteration = Workflow.Body().Step("increment", "counter.increment").Return("return", "steps.increment.output");
+        var document = Workflow.Create("loop-flow")
+            .Body("iteration", iteration)
+            .While("pre", "carry < 3", "iteration", "input.start", "bodyResult", new LoopOptions
+            {
+                MaxIterations = 3,
+                Timeout = TimeSpan.FromMinutes(1),
+                Delay = TimeSpan.FromMilliseconds(250),
+                OnError = "failed",
+            })
+            .RepeatUntil("post", "carry >= 5", "iteration", "steps.pre.output", "bodyResult", new LoopOptions
+            {
+                MaxIterations = 5,
+                Timeout = TimeSpan.FromMinutes(2),
+            })
+            .End("done")
+            .End("failed")
+            .Build();
+
+        Assert.Equal(
+            """[{"body":"iteration","carry":"bodyResult","condition":"carry < 3","delayMs":250,"id":"pre","initial":"input.start","maxIterations":3,"next":"post","onError":"failed","timeoutMs":60000,"type":"while"},{"body":"iteration","carry":"bodyResult","condition":"carry >= 5","id":"post","initial":"steps.pre.output","maxIterations":5,"next":"done","timeoutMs":120000,"type":"repeatUntil"},{"id":"done","type":"end"},{"id":"failed","type":"end"}]""",
+            Canon(document["nodes"]));
+    }
+
+    [Fact]
     public void ALookbackOfZeroIsWrittenAndAnAbsentOneIsNot()
     {
         var zero = Workflow.Create("zero-look").WaitForEvent("w", new WaitForEventOptions { EventType = "e", CorrelationExpr = "x", Timeout = TimeSpan.FromSeconds(1), Lookback = TimeSpan.Zero }).Build();

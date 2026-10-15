@@ -160,6 +160,16 @@ public final class WorkflowBuilder {
         return this;
     }
 
+    public WorkflowBuilder whileLoop(String id, String condition, String bodyName, String initial, String carry, LoopOptions options) {
+        body.whileLoop(id, condition, bodyName, initial, carry, options);
+        return this;
+    }
+
+    public WorkflowBuilder repeatUntil(String id, String condition, String bodyName, String initial, String carry, LoopOptions options) {
+        body.repeatUntil(id, condition, bodyName, initial, carry, options);
+        return this;
+    }
+
     public WorkflowBuilder parallel(String id, Flow.Join join, List<Flow> branches) {
         body.parallel(id, join, branches);
         return this;
@@ -270,13 +280,14 @@ public final class WorkflowBuilder {
                 cases.forEach(item -> reference(localIds, id, "cases", item.get("target")));
             }
             reference(localIds, id, "default", node.get("default"));
-            if ("forEach".equals(node.path("type").textValue())) {
+            String kind = node.path("type").textValue();
+            if ("forEach".equals(kind) || "while".equals(kind) || "repeatUntil".equals(kind)) {
                 String bodyName = node.path("body").textValue();
                 if (!bodies.containsKey(bodyName)) {
-                    throw SagatException.invalid("forEach " + id + " points at \"" + bodyName + "\", which is not a body");
+                    throw SagatException.invalid(kind + " " + id + " points at \"" + bodyName + "\", which is not a body");
                 }
                 if (!node.has("next")) {
-                    throw SagatException.invalid("forEach " + id + " needs a next node");
+                    throw SagatException.invalid(kind + " " + id + " needs a next node");
                 }
             }
         }

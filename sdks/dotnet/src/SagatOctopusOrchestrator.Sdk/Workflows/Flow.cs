@@ -222,6 +222,59 @@ public abstract partial class FlowBase<TSelf>
     public TSelf Map(string id, string items, string body, string result, CollectionOptions options) =>
         ForEach(id, items, body, result, options);
 
+    /// <summary>Runs a named body sequentially while a pre-test condition is true.</summary>
+    public TSelf While(string id, string condition, string body, string initial, string carry, LoopOptions options) =>
+        Loop("while", id, condition, body, initial, carry, options);
+
+    /// <summary>Runs a named body once, then repeats it until a post-test condition is true.</summary>
+    public TSelf RepeatUntil(string id, string condition, string body, string initial, string carry, LoopOptions options) =>
+        Loop("repeatUntil", id, condition, body, initial, carry, options);
+
+    private TSelf Loop(string kind, string id, string condition, string body, string initial, string carry, LoopOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        if (string.IsNullOrEmpty(condition) || string.IsNullOrEmpty(body) || string.IsNullOrEmpty(initial) || string.IsNullOrEmpty(carry))
+        {
+            throw Invalid($"{kind} {id} needs condition, body, initial and carry expressions");
+        }
+
+        if (options.MaxIterations is < 1 or > 10_000)
+        {
+            throw Invalid($"{kind} {id} maxIterations must be between 1 and 10000");
+        }
+
+        var timeout = Millis(options.Timeout, $"{kind} {id} timeoutMs");
+        if (timeout > 31_622_400_000)
+        {
+            throw Invalid($"{kind} {id} timeoutMs must be between 1 and 31622400000");
+        }
+
+        var node = new JsonObject
+        {
+            ["id"] = id,
+            ["type"] = kind,
+            ["condition"] = condition,
+            ["body"] = body,
+            ["initial"] = initial,
+            ["carry"] = carry,
+            ["maxIterations"] = options.MaxIterations,
+            ["timeoutMs"] = timeout,
+        };
+        if (options.Delay is { } delay)
+        {
+            var delayMs = Millis(delay, $"{kind} {id} delayMs");
+            if (delayMs > 31_622_400_000)
+            {
+                throw Invalid($"{kind} {id} delayMs must be between 1 and 31622400000");
+            }
+
+            node["delayMs"] = delayMs;
+        }
+
+        Set(node, "onError", options.OnError);
+        return Push(node);
+    }
+
     /// <summary>Parallel: runs branches at once; <see cref="JoinMode.All"/> waits for every one, <see cref="JoinMode.Any"/> for the first.</summary>
     public TSelf Parallel(string id, JoinMode join, params Flow[] branches) => Parallel(id, join, (IEnumerable<Flow>)branches);
 
@@ -630,17 +683,18 @@ public sealed partial class WorkflowBuilder : FlowBase<WorkflowBuilder>
                 }
 
                 Reference(id, "default", node["default"]);
-                if ((string?)node["type"] == "forEach")
+                var kind = (string?)node["type"];
+                if (kind is "forEach" or "while" or "repeatUntil")
                 {
                     var bodyName = (string?)node["body"];
                     if (bodyName is null || !bodies.ContainsKey(bodyName))
                     {
-                        throw Invalid($"forEach {id} points at {Wire.Quote(bodyName)}, which is not a body");
+                        throw Invalid($"{kind} {id} points at {Wire.Quote(bodyName)}, which is not a body");
                     }
 
                     if (node["next"] is not JsonValue)
                     {
-                        throw Invalid($"forEach {id} needs a next node");
+                        throw Invalid($"{kind} {id} needs a next node");
                     }
                 }
             }

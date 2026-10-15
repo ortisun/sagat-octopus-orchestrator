@@ -145,6 +145,21 @@ func Lookback(d time.Duration) WaitOption {
 	return func(m map[string]any) { m["lookbackMs"] = millis(d) }
 }
 
+// ---- sequential loops
+
+// LoopOption sets an optional member of While or RepeatUntil.
+type LoopOption func(map[string]any)
+
+// LoopDelay waits on a durable timer between iterations that are still needed.
+func LoopDelay(d time.Duration) LoopOption {
+	return func(m map[string]any) { m["delayMs"] = millis(d) }
+}
+
+// LoopOnError names the node the flow follows when a loop fails.
+func LoopOnError(node string) LoopOption {
+	return func(m map[string]any) { m["onError"] = node }
+}
+
 // ---- child
 
 // CancelPolicy is what happens to a child run when its parent is cancelled.

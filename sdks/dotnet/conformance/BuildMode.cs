@@ -153,6 +153,12 @@ internal static class BuildMode
                         MaxConcurrency = (int)op["maxConcurrency"]!,
                     });
                     break;
+                case "while":
+                    target.While(id, (string)op["condition"]!, (string)op["body"]!, (string)op["initial"]!, (string)op["carry"]!, LoopOptionsOf(op));
+                    break;
+                case "repeatUntil":
+                    target.RepeatUntil(id, (string)op["condition"]!, (string)op["body"]!, (string)op["initial"]!, (string)op["carry"]!, LoopOptionsOf(op));
+                    break;
                 case "return" when target is Body bodyTarget:
                     bodyTarget.Return(id, (string)op["result"]!);
                     break;
@@ -201,6 +207,14 @@ internal static class BuildMode
     }
 
     private static TimeSpan Ms(JsonNode? value) => TimeSpan.FromMilliseconds((long)value!);
+
+    private static LoopOptions LoopOptionsOf(JsonObject op) => new()
+    {
+        MaxIterations = (int)op["maxIterations"]!,
+        Timeout = Ms(op["timeoutMs"]),
+        Delay = op["delayMs"] is { } delay ? Ms(delay) : null,
+        OnError = (string?)op["onError"],
+    };
 
     private static StepOptions StepOptionsOf(JsonObject? options) => options is null
         ? new StepOptions()

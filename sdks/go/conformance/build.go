@@ -172,6 +172,19 @@ func apply(b *workflow.Builder, ops []any) {
 			b.ForEach(id, asString(op["items"]), asString(op["body"]), asString(op["result"]), asInt(op["maxItems"]), asInt(op["maxConcurrency"]))
 		case "map":
 			b.Map(id, asString(op["items"]), asString(op["body"]), asString(op["result"]), asInt(op["maxItems"]), asInt(op["maxConcurrency"]))
+		case "while", "repeatUntil":
+			var opts []workflow.LoopOption
+			if op["delayMs"] != nil {
+				opts = append(opts, workflow.LoopDelay(asMillis(op["delayMs"])))
+			}
+			if op["onError"] != nil {
+				opts = append(opts, workflow.LoopOnError(asString(op["onError"])))
+			}
+			if asString(op["op"]) == "while" {
+				b.While(id, asString(op["condition"]), asString(op["body"]), asString(op["initial"]), asString(op["carry"]), asInt(op["maxIterations"]), asMillis(op["timeoutMs"]), opts...)
+			} else {
+				b.RepeatUntil(id, asString(op["condition"]), asString(op["body"]), asString(op["initial"]), asString(op["carry"]), asInt(op["maxIterations"]), asMillis(op["timeoutMs"]), opts...)
+			}
 		case "return":
 			b.Return(id, asString(op["result"]))
 		case "parallel":

@@ -116,6 +116,18 @@ def apply(target: Flow, ops: list[Obj]) -> None:
                 max_items=op["maxItems"],
                 max_concurrency=op["maxConcurrency"],
             )
+        elif kind == "while":
+            target.while_loop(
+                op["id"], op["condition"], op["body"], op["initial"], op["carry"],
+                max_iterations=op["maxIterations"], timeout_ms=op["timeoutMs"],
+                delay_ms=op.get("delayMs"), on_error=op.get("onError"),
+            )
+        elif kind == "repeatUntil":
+            target.repeat_until(
+                op["id"], op["condition"], op["body"], op["initial"], op["carry"],
+                max_iterations=op["maxIterations"], timeout_ms=op["timeoutMs"],
+                delay_ms=op.get("delayMs"), on_error=op.get("onError"),
+            )
         elif kind == "return":
             if not isinstance(target, Body):
                 raise ValueError("return is only valid in a named body")

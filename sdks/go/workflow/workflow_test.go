@@ -222,6 +222,30 @@ func TestCollectionsUseNamedBodiesAndMapWritesTheSameForEachNode(t *testing.T) {
 	}
 }
 
+func TestWhileAndRepeatUntilWriteBoundedPreTestAndPostTestLoopNodes(t *testing.T) {
+	iteration := workflow.Flow().Step("increment", "counter.increment").Return("return", "steps.increment.output")
+	document, err := workflow.New("loop-flow").
+		Body("iteration", iteration).
+		While("pre", "carry < 3", "iteration", "input.start", "bodyResult", 3, time.Minute,
+			workflow.LoopDelay(250*time.Millisecond), workflow.LoopOnError("failed")).
+		RepeatUntil("post", "carry >= 5", "iteration", "steps.pre.output", "bodyResult", 5, 2*time.Minute).
+		End("done").
+		End("failed").
+		Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []any{
+		map[string]any{"id": "pre", "type": "while", "condition": "carry < 3", "body": "iteration", "initial": "input.start", "carry": "bodyResult", "maxIterations": 3, "timeoutMs": int64(60_000), "delayMs": int64(250), "onError": "failed", "next": "post"},
+		map[string]any{"id": "post", "type": "repeatUntil", "condition": "carry >= 5", "body": "iteration", "initial": "steps.pre.output", "carry": "bodyResult", "maxIterations": 5, "timeoutMs": int64(120_000), "next": "done"},
+		map[string]any{"id": "done", "type": "end"},
+		map[string]any{"id": "failed", "type": "end"},
+	}
+	if !reflect.DeepEqual(want, document["nodes"]) {
+		t.Fatalf("nodes differ:\nwant %#v\ngot  %#v", want, document["nodes"])
+	}
+}
+
 func TestTriggersLabelsAndSchemasGoWhereTheDocumentKeepsThem(t *testing.T) {
 	d, err := workflow.New("with-meta").
 		Label("team", "payments").

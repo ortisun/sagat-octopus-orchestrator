@@ -289,6 +289,85 @@ class Flow:
             node_id, items, body, result, max_items=max_items, max_concurrency=max_concurrency
         )
 
+    def while_loop(
+        self: _F,
+        node_id: str,
+        condition: str,
+        body: str,
+        initial: str,
+        carry: str,
+        *,
+        max_iterations: int,
+        timeout_ms: int,
+        delay_ms: int | None = None,
+        on_error: str | None = None,
+    ) -> _F:
+        """Runs a named body sequentially while a pre-test condition is true."""
+        return self._loop(
+            "while", node_id, condition, body, initial, carry,
+            max_iterations=max_iterations, timeout_ms=timeout_ms, delay_ms=delay_ms, on_error=on_error,
+        )
+
+    def repeat_until(
+        self: _F,
+        node_id: str,
+        condition: str,
+        body: str,
+        initial: str,
+        carry: str,
+        *,
+        max_iterations: int,
+        timeout_ms: int,
+        delay_ms: int | None = None,
+        on_error: str | None = None,
+    ) -> _F:
+        """Runs a named body once, then repeats it until a post-test condition is true."""
+        return self._loop(
+            "repeatUntil", node_id, condition, body, initial, carry,
+            max_iterations=max_iterations, timeout_ms=timeout_ms, delay_ms=delay_ms, on_error=on_error,
+        )
+
+    def _loop(
+        self: _F,
+        kind: Literal["while", "repeatUntil"],
+        node_id: str,
+        condition: str,
+        body: str,
+        initial: str,
+        carry: str,
+        *,
+        max_iterations: int,
+        timeout_ms: int,
+        delay_ms: int | None,
+        on_error: str | None,
+    ) -> _F:
+        if not condition or not body or not initial or not carry:
+            raise invalid(f"{kind} {node_id} needs condition, body, initial and carry expressions")
+        if isinstance(max_iterations, bool) or not isinstance(max_iterations, int) or not 1 <= max_iterations <= 10_000:
+            raise invalid(f"{kind} {node_id} maxIterations must be between 1 and 10000")
+        if isinstance(timeout_ms, bool) or not isinstance(timeout_ms, int) or not 1 <= timeout_ms <= 31_622_400_000:
+            raise invalid(f"{kind} {node_id} timeoutMs must be between 1 and 31622400000")
+        if delay_ms is not None and (
+            isinstance(delay_ms, bool) or not isinstance(delay_ms, int) or not 1 <= delay_ms <= 31_622_400_000
+        ):
+            raise invalid(f"{kind} {node_id} delayMs must be between 1 and 31622400000")
+        node: Node = {
+            "id": node_id,
+            "type": kind,
+            "condition": condition,
+            "body": body,
+            "initial": initial,
+            "carry": carry,
+            "maxIterations": max_iterations,
+            "timeoutMs": timeout_ms,
+        }
+        if delay_ms is not None:
+            node["delayMs"] = delay_ms
+        if on_error is not None:
+            node["onError"] = on_error
+        self._push(node)
+        return self
+
     def parallel(self: _F, node_id: str, join: Literal["all", "any"], branches: Sequence[Flow]) -> _F:
         """Runs branches at once; ``all`` waits for every one, ``any`` for the first."""
         if len(branches) < 2:
@@ -455,11 +534,12 @@ class WorkflowBuilder(Flow):
                 for item in node.get("cases", ()):
                     reference(node["id"], "cases", item.get("target"))
                 reference(node["id"], "default", node.get("default"))
-                if node["type"] == "forEach":
+                if node["type"] in ("forEach", "while", "repeatUntil"):
+                    kind = node["type"]
                     if node["body"] not in self._bodies:
-                        raise invalid(f"forEach {node['id']} points at {node['body']!r}, which is not a body")
+                        raise invalid(f"{kind} {node['id']} points at {node['body']!r}, which is not a body")
                     if "next" not in node:
-                        raise invalid(f"forEach {node['id']} needs a next node")
+                        raise invalid(f"{kind} {node['id']} needs a next node")
 
         validate_scope(nodes)
         for nested in bodies.values():

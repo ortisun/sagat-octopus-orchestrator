@@ -145,6 +145,28 @@ test('collections use named bodies and map writes the same forEach node', () => 
   });
 });
 
+test('while and repeatUntil write bounded pre-test and post-test loop nodes', () => {
+  const iteration = body().step('increment', 'counter.increment').returnValue('return', 'steps.increment.output');
+  const document = workflow('loop-flow')
+    .body('iteration', iteration)
+    .while('pre', 'carry < 3', 'iteration', 'input.start', 'bodyResult', {
+      maxIterations: 3, timeoutMs: 60_000, delayMs: 250, onError: 'failed',
+    })
+    .repeatUntil('post', 'carry >= 5', 'iteration', 'steps.pre.output', 'bodyResult', {
+      maxIterations: 5, timeoutMs: 120_000,
+    })
+    .end('done')
+    .end('failed')
+    .build();
+
+  assert.deepEqual(document['nodes'], [
+    { id: 'pre', type: 'while', condition: 'carry < 3', body: 'iteration', initial: 'input.start', carry: 'bodyResult', maxIterations: 3, timeoutMs: 60_000, delayMs: 250, onError: 'failed', next: 'post' },
+    { id: 'post', type: 'repeatUntil', condition: 'carry >= 5', body: 'iteration', initial: 'steps.pre.output', carry: 'bodyResult', maxIterations: 5, timeoutMs: 120_000, next: 'done' },
+    { id: 'done', type: 'end' },
+    { id: 'failed', type: 'end' },
+  ]);
+});
+
 test('triggers, labels and schemas go where the document keeps them', () => {
   const doc = workflow('with-meta')
     .label('team', 'payments')

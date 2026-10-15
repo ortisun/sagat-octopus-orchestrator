@@ -172,6 +172,24 @@ class WorkflowBuilderTest {
     }
 
     @Test
+    void whileAndRepeatUntilWriteBoundedPreTestAndPostTestLoopNodes() {
+        Flow iteration = Flow.body().step("increment", "counter.increment").returnValue("return", "steps.increment.output");
+        ObjectNode document = workflow("loop-flow")
+                .body("iteration", iteration)
+                .whileLoop("pre", "carry < 3", "iteration", "input.start", "bodyResult",
+                        LoopOptions.of(3, Duration.ofMinutes(1)).withDelay(Duration.ofMillis(250)).withOnError("failed"))
+                .repeatUntil("post", "carry >= 5", "iteration", "steps.pre.output", "bodyResult",
+                        LoopOptions.of(5, Duration.ofMinutes(2)))
+                .end("done")
+                .end("failed")
+                .build();
+
+        assertEquals(
+                "[{\"body\":\"iteration\",\"carry\":\"bodyResult\",\"condition\":\"carry < 3\",\"delayMs\":250,\"id\":\"pre\",\"initial\":\"input.start\",\"maxIterations\":3,\"next\":\"post\",\"onError\":\"failed\",\"timeoutMs\":60000,\"type\":\"while\"},{\"body\":\"iteration\",\"carry\":\"bodyResult\",\"condition\":\"carry >= 5\",\"id\":\"post\",\"initial\":\"steps.pre.output\",\"maxIterations\":5,\"next\":\"done\",\"timeoutMs\":120000,\"type\":\"repeatUntil\"},{\"id\":\"done\",\"type\":\"end\"},{\"id\":\"failed\",\"type\":\"end\"}]",
+                Json.canonical(document.get("nodes")));
+    }
+
+    @Test
     void theNodeBeforeAnEndLinksToItAndTheEndNeverLinksOn() {
         JsonNode doc = workflow("ending-flow").step("a", "act.a").end("done").step("b", "act.b").build();
         assertEquals("done", doc.get("nodes").get(0).get("next").textValue());

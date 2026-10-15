@@ -231,3 +231,22 @@ are still pending; no collection runtime guarantee is claimed by this checkpoint
 The candidate query was subsequently restricted to root instance paths. A real-PostgreSQL test
 placed a scoped READY step beside a non-ready root step and confirmed that a protocol-1.4 worker
 receives no candidate run (`old_worker_candidate_query_does_not_offer_scoped_ready_steps`, passed).
+
+## Five-SDK loop authoring checkpoint (2026-10-15)
+
+All five SDKs now build additive v1 `while` and `repeatUntil` documents with named bodies,
+pre/post-test conditions, initial and carry expressions, required iteration and timeout limits,
+optional delay and error route, and a required successor. The shared `loop-builders` scenario is
+build-only; neither publication nor execution of these nodes is enabled.
+
+| Check | Result |
+|---|---|
+| `SAGAT_SDK_SCENARIO=loop-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture` | Passed: one shared scenario across TypeScript, Go, Python, C# and Java; the canonical document and validation errors match the reviewed golden |
+| TypeScript SDK tests | 114 passed (supporting agent) |
+| Go SDK `go test ./...` and `go vet ./...` | Passed (supporting agent) |
+| Python SDK tests, strict mypy and Ruff | 245 tests passed; type and lint checks passed (supporting agent) |
+| .NET SDK tests and format verification | 431 tests passed; format passed (supporting agent) |
+| Java SDK tests | Passed (supporting agent) |
+
+The structured server parser still rejects loops until their workflow definition mapping and
+runtime are complete. These builder results are authoring evidence only.

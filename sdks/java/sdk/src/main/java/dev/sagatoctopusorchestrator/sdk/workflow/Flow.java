@@ -393,6 +393,52 @@ public final class Flow {
         return forEach(id, items, body, result, options);
     }
 
+    /** Runs a named body sequentially while a pre-test condition is true. */
+    public Flow whileLoop(String id, String condition, String body, String initial, String carry, LoopOptions options) {
+        return loop("while", id, condition, body, initial, carry, options);
+    }
+
+    /** Runs a named body once, then repeats it until a post-test condition is true. */
+    public Flow repeatUntil(String id, String condition, String body, String initial, String carry, LoopOptions options) {
+        return loop("repeatUntil", id, condition, body, initial, carry, options);
+    }
+
+    private Flow loop(String kind, String id, String condition, String body, String initial, String carry, LoopOptions options) {
+        if (condition == null || condition.isEmpty() || body == null || body.isEmpty()
+                || initial == null || initial.isEmpty() || carry == null || carry.isEmpty()) {
+            throw SagatException.invalid(kind + " " + id + " needs condition, body, initial and carry expressions");
+        }
+        if (options == null || options.maxIterations() < 1 || options.maxIterations() > 10_000) {
+            throw SagatException.invalid(kind + " " + id + " maxIterations must be between 1 and 10000");
+        }
+        long timeoutMs = loopMillis(options.timeout(), kind + " " + id + " timeoutMs");
+        ObjectNode node = F.objectNode();
+        node.put("id", id);
+        node.put("type", kind);
+        node.put("condition", condition);
+        node.put("body", body);
+        node.put("initial", initial);
+        node.put("carry", carry);
+        node.put("maxIterations", options.maxIterations());
+        node.put("timeoutMs", timeoutMs);
+        if (options.delay() != null) {
+            node.put("delayMs", loopMillis(options.delay(), kind + " " + id + " delayMs"));
+        }
+        if (options.onError() != null) {
+            node.put("onError", options.onError());
+        }
+        return push(node);
+    }
+
+    private static long loopMillis(Duration duration, String subject) {
+        if (duration == null || duration.isNegative() || duration.isZero()
+                || duration.getNano() % 1_000_000 != 0
+                || duration.compareTo(Duration.ofMillis(31_622_400_000L)) > 0) {
+            throw SagatException.invalid(subject + " must be between 1 and 31622400000");
+        }
+        return duration.toMillis();
+    }
+
     /** Runs branches at once; {@code ALL} waits for every one, {@code ANY} for the first. At least two, none empty. */
     public Flow parallel(String id, Join join, List<Flow> branches) {
         if (branches.size() < 2) {

@@ -164,6 +164,22 @@ public sealed record CollectionOptions
     public required int MaxConcurrency { get; init; }
 }
 
+/// <summary>Required bounds and optional routing of a sequential workflow loop.</summary>
+public sealed record LoopOptions
+{
+    /// <summary>Largest number of body executions, from 1 through 10,000.</summary>
+    public required int MaxIterations { get; init; }
+
+    /// <summary>Total time available to the loop, from 1 through 31,622,400,000 milliseconds.</summary>
+    public required TimeSpan Timeout { get; init; }
+
+    /// <summary>Optional durable delay between iterations that are still needed.</summary>
+    public TimeSpan? Delay { get; init; }
+
+    /// <summary>The node to follow when the loop fails.</summary>
+    public string? OnError { get; init; }
+}
+
 /// <summary>The kind of a workflow trigger.</summary>
 public enum TriggerKind
 {

@@ -32,9 +32,15 @@ and validation errors without publishing or executing a collection. The fixture 
 named bodies that reuse local node IDs and covers `forEach`, its `map` alias and bounded options.
 It does not count as collection runtime conformance.
 
+`loop-builders.json` checks additive v1 `while` and `repeatUntil` authoring in the five SDKs.
+It is build-only while durable loop execution remains disabled. The reviewed fixture covers pre-test
+and post-test shapes, the maximum iteration and duration bounds, optional durable delay/error routing,
+named body references and the required successor. It does not count as loop runtime conformance.
+
 ```text
 SAGAT_SDK_SCENARIO=switch-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=collection-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=loop-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 ```
 
 ## Pending scenarios
@@ -133,6 +139,7 @@ the server without an SDK API: `expireLease {run, node}`, `elapseRetryDelay {run
 | `condition` | `id`, `expression`, `ifTrue`, `ifFalse` | `condition` |
 | `switch` | `id`, ordered `cases` (`id`, `when`, `target`), `default` | `switch` (`switchCase` in Java) |
 | `forEach`, `map` | `id`, `items`, `body`, `result`, `maxItems`, `maxConcurrency` | collection builder |
+| `while`, `repeatUntil` | `id`, `condition`, `body`, `initial`, `carry`, `maxIterations`, `timeoutMs`, `delayMs?`, `onError?` | sequential loop builder |
 | `return` | `id`, `result` inside a named body | body return builder |
 | `parallel` | `id`, `join`, `branches` (array of op arrays) | `parallel` |
 | `saga` | `id`, `options?`, `body` (op array) | `saga` |

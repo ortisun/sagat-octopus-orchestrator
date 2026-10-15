@@ -55,6 +55,13 @@ export interface CollectionOptions {
   readonly maxConcurrency: number;
 }
 
+export interface LoopOptions {
+  readonly maxIterations: number;
+  readonly timeoutMs: number;
+  readonly delayMs?: number;
+  readonly onError?: string;
+}
+
 export interface SagaOptions {
   onCompensationFailure?: 'manual_review' | 'fail';
   cancelPolicy?: 'compensate_completed' | 'abort_no_compensation' | 'wait_in_flight_then_compensate';
@@ -168,6 +175,37 @@ export class Flow {
   /** Value-returning collection authoring; it emits the same durable `forEach` node. */
   map(id: string, items: string, body: string, result: string, options: CollectionOptions): this {
     return this.forEach(id, items, body, result, options);
+  }
+
+  /** Runs a named body sequentially while a pre-test condition is true. */
+  while(id: string, condition: string, body: string, initial: string, carry: string, options: LoopOptions): this {
+    return this.loop('while', id, condition, body, initial, carry, options);
+  }
+
+  /** Runs a named body once, then repeats it until a post-test condition is true. */
+  repeatUntil(id: string, condition: string, body: string, initial: string, carry: string, options: LoopOptions): this {
+    return this.loop('repeatUntil', id, condition, body, initial, carry, options);
+  }
+
+  private loop(type: 'while' | 'repeatUntil', id: string, condition: string, body: string, initial: string, carry: string, options: LoopOptions): this {
+    if (!condition || !body || !initial || !carry) {
+      throw invalid(`${type} ${id} needs condition, body, initial and carry expressions`);
+    }
+    if (!Number.isInteger(options.maxIterations) || options.maxIterations < 1 || options.maxIterations > 10_000) {
+      throw invalid(`${type} ${id} maxIterations must be between 1 and 10000`);
+    }
+    if (!Number.isInteger(options.timeoutMs) || options.timeoutMs < 1 || options.timeoutMs > 31_622_400_000) {
+      throw invalid(`${type} ${id} timeoutMs must be between 1 and 31622400000`);
+    }
+    if (options.delayMs !== undefined && (!Number.isInteger(options.delayMs) || options.delayMs < 1 || options.delayMs > 31_622_400_000)) {
+      throw invalid(`${type} ${id} delayMs must be between 1 and 31622400000`);
+    }
+    return this.push({
+      id, type, condition, body, initial, carry,
+      maxIterations: options.maxIterations,
+      timeoutMs: options.timeoutMs,
+      ...clean({ delayMs: options.delayMs, onError: options.onError }),
+    });
   }
 
   /** Parallel: runs branches at once; `all` waits for every one, `any` for the first. */
@@ -312,12 +350,13 @@ export class WorkflowBuilder extends Flow {
           });
         }
         reference(id, 'default', node['default']);
-        if (node['type'] === 'forEach') {
+        if (node['type'] === 'forEach' || node['type'] === 'while' || node['type'] === 'repeatUntil') {
+          const type = node['type'] as string;
           const bodyName = node['body'];
           if (typeof bodyName !== 'string' || !this.namedBodies.has(bodyName)) {
-            throw invalid(`forEach ${id} points at ${JSON.stringify(bodyName)}, which is not a body`);
+            throw invalid(`${type} ${id} points at ${JSON.stringify(bodyName)}, which is not a body`);
           }
-          if (typeof node['next'] !== 'string') throw invalid(`forEach ${id} needs a next node`);
+          if (typeof node['next'] !== 'string') throw invalid(`${type} ${id} needs a next node`);
         }
       }
     };

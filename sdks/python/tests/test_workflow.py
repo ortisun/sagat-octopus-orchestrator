@@ -228,6 +228,44 @@ def test_collections_use_named_bodies_and_map_writes_the_same_for_each_node() ->
     }
 
 
+def test_while_and_repeat_until_write_bounded_pre_test_and_post_test_loop_nodes() -> None:
+    iteration = body().step("increment", "counter.increment").return_value("return", "steps.increment.output")
+    document = (
+        workflow("loop-flow")
+        .body("iteration", iteration)
+        .while_loop(
+            "pre",
+            "carry < 3",
+            "iteration",
+            "input.start",
+            "bodyResult",
+            max_iterations=3,
+            timeout_ms=60_000,
+            delay_ms=250,
+            on_error="failed",
+        )
+        .repeat_until(
+            "post",
+            "carry >= 5",
+            "iteration",
+            "steps.pre.output",
+            "bodyResult",
+            max_iterations=5,
+            timeout_ms=120_000,
+        )
+        .end("done")
+        .end("failed")
+        .build()
+    )
+
+    assert document["nodes"] == [
+        {"id": "pre", "type": "while", "condition": "carry < 3", "body": "iteration", "initial": "input.start", "carry": "bodyResult", "maxIterations": 3, "timeoutMs": 60_000, "delayMs": 250, "onError": "failed", "next": "post"},
+        {"id": "post", "type": "repeatUntil", "condition": "carry >= 5", "body": "iteration", "initial": "steps.pre.output", "carry": "bodyResult", "maxIterations": 5, "timeoutMs": 120_000, "next": "done"},
+        {"id": "done", "type": "end"},
+        {"id": "failed", "type": "end"},
+    ]
+
+
 def test_triggers_labels_and_schemas_go_where_the_document_keeps_them() -> None:
     doc = (
         workflow("with-meta")

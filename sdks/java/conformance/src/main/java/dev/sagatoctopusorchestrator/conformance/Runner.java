@@ -34,6 +34,7 @@ import dev.sagatoctopusorchestrator.sdk.worker.WorkerHost;
 import dev.sagatoctopusorchestrator.sdk.workflow.ChildOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.CollectionOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.Flow;
+import dev.sagatoctopusorchestrator.sdk.workflow.LoopOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.RetryOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.SagaOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.StepOptions;
@@ -235,6 +236,12 @@ public final class Runner {
                         op.path("body").asText(null),
                         op.path("result").asText(null),
                         CollectionOptions.of(op.path("maxItems").asInt(), op.path("maxConcurrency").asInt()));
+                case "while" -> target.whileLoop(
+                        id, op.path("condition").asText(null), op.path("body").asText(null),
+                        op.path("initial").asText(null), op.path("carry").asText(null), loopOptions(op));
+                case "repeatUntil" -> target.repeatUntil(
+                        id, op.path("condition").asText(null), op.path("body").asText(null),
+                        op.path("initial").asText(null), op.path("carry").asText(null), loopOptions(op));
                 case "return" -> target.returnValue(id, op.path("result").asText(null));
                 case "parallel" -> {
                     List<Flow> branches = new ArrayList<>();
@@ -267,6 +274,18 @@ public final class Runner {
                 default -> throw new IllegalArgumentException("unknown builder op " + op.path("op").asText());
             }
         }
+    }
+
+    private static LoopOptions loopOptions(JsonNode op) {
+        LoopOptions options = LoopOptions.of(
+                op.path("maxIterations").intValue(), Duration.ofMillis(op.path("timeoutMs").longValue()));
+        if (op.has("delayMs")) {
+            options = options.withDelay(Duration.ofMillis(op.path("delayMs").longValue()));
+        }
+        if (op.has("onError")) {
+            options = options.withOnError(op.path("onError").textValue());
+        }
+        return options;
     }
 
     private static WorkflowBuilder builderOf(JsonNode definition) {

@@ -271,6 +271,46 @@ func (b *Builder) Map(id, items, body, result string, maxItems, maxConcurrency i
 	return b.ForEach(id, items, body, result, maxItems, maxConcurrency)
 }
 
+// While invokes a named body sequentially while a pre-test condition is true.
+func (b *Builder) While(id, condition, body, initial, carry string, maxIterations int, timeout time.Duration, opts ...LoopOption) *Builder {
+	return b.loop("while", id, condition, body, initial, carry, maxIterations, timeout, opts...)
+}
+
+// RepeatUntil invokes a named body once, then repeats it until a post-test condition is true.
+func (b *Builder) RepeatUntil(id, condition, body, initial, carry string, maxIterations int, timeout time.Duration, opts ...LoopOption) *Builder {
+	return b.loop("repeatUntil", id, condition, body, initial, carry, maxIterations, timeout, opts...)
+}
+
+func (b *Builder) loop(kind, id, condition, body, initial, carry string, maxIterations int, timeout time.Duration, opts ...LoopOption) *Builder {
+	if b.err != nil {
+		return b
+	}
+	if condition == "" || body == "" || initial == "" || carry == "" {
+		return b.fail(sagat.Invalid("%s %s needs condition, body, initial and carry expressions", kind, id))
+	}
+	if maxIterations < 1 || maxIterations > 10000 {
+		return b.fail(sagat.Invalid("%s %s maxIterations must be between 1 and 10000", kind, id))
+	}
+	timeoutMs := millis(timeout)
+	if timeoutMs < 1 || timeoutMs > 31622400000 {
+		return b.fail(sagat.Invalid("%s %s timeoutMs must be between 1 and 31622400000", kind, id))
+	}
+	n := node{
+		"id": id, "type": kind, "condition": condition, "body": body, "initial": initial,
+		"carry": carry, "maxIterations": maxIterations, "timeoutMs": timeoutMs,
+	}
+	for _, opt := range opts {
+		opt(n)
+	}
+	if delay, present := n["delayMs"]; present {
+		delayMs, valid := delay.(int64)
+		if !valid || delayMs < 1 || delayMs > 31622400000 {
+			return b.fail(sagat.Invalid("%s %s delayMs must be between 1 and 31622400000", kind, id))
+		}
+	}
+	return b.push(n)
+}
+
 // Parallel adds branches that run at once: JoinAll waits for every one, JoinAny for the first. There
 // are at least two, none empty.
 func (b *Builder) Parallel(id string, join Join, branches ...*Builder) *Builder {
@@ -482,13 +522,14 @@ func (b *Builder) Build() (map[string]any, error) {
 			if err := reference(id, "default", n["default"]); err != nil {
 				return err
 			}
-			if n["type"] == "forEach" {
+			kind, _ := n["type"].(string)
+			if kind == "forEach" || kind == "while" || kind == "repeatUntil" {
 				name, _ := n["body"].(string)
 				if _, found := b.bodies[name]; !found {
-					return sagat.Invalid("forEach %s points at %q, which is not a body", id, name)
+					return sagat.Invalid("%s %s points at %q, which is not a body", kind, id, name)
 				}
 				if _, found := n["next"].(string); !found {
-					return sagat.Invalid("forEach %s needs a next node", id)
+					return sagat.Invalid("%s %s needs a next node", kind, id)
 				}
 			}
 		}
