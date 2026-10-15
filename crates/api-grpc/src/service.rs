@@ -686,7 +686,11 @@ where
                 message.generation,
                 &message.lease_token,
             )?;
-            attach_instance(&mut attempt, message.instance.as_ref())?;
+            attach_instance(
+                &mut attempt,
+                message.instance.as_ref(),
+                self.workers.supports_scoped_worker_protocol(),
+            )?;
             let resolved = self
                 .workers
                 .resolve_secrets(
@@ -728,7 +732,11 @@ where
                 message.generation,
                 &message.lease_token,
             )?;
-            attach_instance(&mut attempt, message.instance.as_ref())?;
+            attach_instance(
+                &mut attempt,
+                message.instance.as_ref(),
+                self.workers.supports_scoped_worker_protocol(),
+            )?;
             let ack = self
                 .workers
                 .heartbeat(&auth.session.principal, &attempt.task_ref())
@@ -757,7 +765,11 @@ where
                 message.generation,
                 &message.lease_token,
             )?;
-            attach_instance(&mut attempt, message.instance.as_ref())?;
+            attach_instance(
+                &mut attempt,
+                message.instance.as_ref(),
+                self.workers.supports_scoped_worker_protocol(),
+            )?;
             let key = idempotency_key(&message.idempotency_key)?;
             if !message.output_blob_ref.is_empty() {
                 if !message.output_json.is_empty() {
@@ -856,7 +868,11 @@ where
                 header.generation,
                 &header.lease_token,
             )?;
-            attach_instance(&mut attempt, header.instance.as_ref())?;
+            attach_instance(
+                &mut attempt,
+                header.instance.as_ref(),
+                self.workers.supports_scoped_worker_protocol(),
+            )?;
             let principal = &auth.session.principal;
             let scope = self
                 .workers
@@ -911,7 +927,11 @@ where
                 message.generation,
                 &message.lease_token,
             )?;
-            attach_instance(&mut attempt, message.instance.as_ref())?;
+            attach_instance(
+                &mut attempt,
+                message.instance.as_ref(),
+                self.workers.supports_scoped_worker_protocol(),
+            )?;
             let id = message
                 .blob_id
                 .parse::<BlobId>()
@@ -964,7 +984,11 @@ where
                 message.generation,
                 &message.lease_token,
             )?;
-            attach_instance(&mut attempt, message.instance.as_ref())?;
+            attach_instance(
+                &mut attempt,
+                message.instance.as_ref(),
+                self.workers.supports_scoped_worker_protocol(),
+            )?;
             let key = idempotency_key(&message.idempotency_key)?;
             if message.error_code.len() > 128 || message.safe_message.len() > 2048 {
                 return Err(invalid("error_code or safe_message is too long"));
@@ -1064,8 +1088,11 @@ fn parse_instance_identity(
     Ok(ExecutionInstanceId::in_path(path, expected_node.clone()))
 }
 
-fn require_root_identity(identity: &ExecutionInstanceId) -> Result<(), Status> {
-    if identity.path().is_root() {
+fn require_supported_identity(
+    identity: &ExecutionInstanceId,
+    supports_scoped_identity: bool,
+) -> Result<(), Status> {
+    if identity.path().is_root() || supports_scoped_identity {
         Ok(())
     } else {
         Err(Status::unimplemented(
@@ -1077,9 +1104,10 @@ fn require_root_identity(identity: &ExecutionInstanceId) -> Result<(), Status> {
 fn attach_instance(
     attempt: &mut Attempt,
     identity: Option<&pb::ExecutionInstanceIdentity>,
+    supports_scoped_identity: bool,
 ) -> Result<(), Status> {
     let parsed = parse_instance_identity(identity, attempt.instance.node())?;
-    require_root_identity(&parsed)?;
+    require_supported_identity(&parsed, supports_scoped_identity)?;
     attempt.instance = parsed;
     Ok(())
 }
@@ -1109,8 +1137,10 @@ mod identity_tests {
             definition_node_id: node.to_string(),
         };
         let parsed = parse_instance_identity(Some(&scoped), &node).expect("valid scoped identity");
-        let error = require_root_identity(&parsed).expect_err("scoped execution remains disabled");
+        let error = require_supported_identity(&parsed, false)
+            .expect_err("scoped execution remains disabled");
         assert_eq!(error.code(), Code::Unimplemented);
+        assert!(require_supported_identity(&parsed, true).is_ok());
     }
 
     #[test]

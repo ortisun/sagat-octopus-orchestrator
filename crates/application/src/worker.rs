@@ -40,9 +40,12 @@ use sagat_domain::secrets::{SecretCipher, SecretName, SecretValue, associated_da
 
 /// The newest minor version of worker protocol 1 this server speaks. Every minor version adds fields
 /// and calls and removes none, so a worker of any minor version of protocol 1 can be served
-/// (`negotiate_protocol`). 1.1 added the step identity to `Heartbeat`, 1.2 `task_kind` and
-/// `ResolveSecrets`; 1.3 adds streaming blob upload/download; 1.4 adds bounded task streams.
+/// (`negotiate_protocol`). This is the newest minor enabled for stores that do not yet implement
+/// scoped execution identity.
 pub const PROTOCOL_MINOR: u32 = 4;
+/// Scoped execution identity is allocated to worker protocol 1.5. A store must explicitly declare
+/// that its claim and report transactions address scoped instances before this minor is negotiated.
+pub const SCOPED_PROTOCOL_MINOR: u32 = 5;
 /// Streaming blob references first became safe to hand to workers in protocol 1.3.
 pub const BLOB_PROTOCOL_MINOR: u32 = 3;
 /// Server-streaming task receive first became available in protocol 1.4.
@@ -57,10 +60,10 @@ pub const UNSUPPORTED_PROTOCOL: &str = "unsupported protocol version";
 /// `None` for another major version and for anything that is not a version.
 #[must_use]
 pub fn negotiate_protocol(offered: &str) -> Option<String> {
-    negotiate_protocol_details(offered).map(|(version, _)| version)
+    negotiate_protocol_details(offered, PROTOCOL_MINOR).map(|(version, _)| version)
 }
 
-fn negotiate_protocol_details(offered: &str) -> Option<(String, u32)> {
+fn negotiate_protocol_details(offered: &str, server_minor: u32) -> Option<(String, u32)> {
     let minor = match offered.split_once('.') {
         None if offered == "1" => 0,
         Some(("1", minor))
@@ -73,7 +76,7 @@ fn negotiate_protocol_details(offered: &str) -> Option<(String, u32)> {
         }
         _ => return None,
     };
-    let agreed = minor.min(PROTOCOL_MINOR);
+    let agreed = minor.min(server_minor);
     let version = if agreed == 0 {
         "1".to_owned()
     } else {
@@ -172,6 +175,12 @@ pub struct NewSession {
 
 /// Storage port for workers. Implemented by `sagat-infra-postgres`.
 pub trait WorkerStore: QuotaLookup + Send + Sync {
+    /// Whether this adapter can claim and mutate a scoped execution instance transactionally.
+    /// The default keeps scoped work unavailable until an adapter proves the full storage path.
+    fn supports_scoped_worker_protocol(&self) -> bool {
+        false
+    }
+
     /// The activity patterns `subject` is bound to in `namespace` (canonical text, see
     /// `sagat_domain::binding`). Empty when the identity has no binding there.
     fn bound_patterns(
@@ -306,8 +315,11 @@ fn root_task_id(run_id: RunId, instance: &ExecutionInstanceId, generation: u64) 
         .then(|| format!("{run_id}/{}/{generation}", instance.node()))
 }
 
-fn require_root_task(instance: &ExecutionInstanceId) -> Result<(), AppError> {
-    if instance.path().is_root() {
+fn require_supported_task(
+    instance: &ExecutionInstanceId,
+    supports_scoped_identity: bool,
+) -> Result<(), AppError> {
+    if instance.path().is_root() || supports_scoped_identity {
         Ok(())
     } else {
         Err(AppError::StaleAttempt)
@@ -448,6 +460,12 @@ where
         &self.settings
     }
 
+    /// Whether the storage adapter has enabled the scoped worker protocol.
+    #[must_use]
+    pub fn supports_scoped_worker_protocol(&self) -> bool {
+        self.store.supports_scoped_worker_protocol()
+    }
+
     /// Opens a session for a worker identity.
     ///
     /// # Errors
@@ -461,8 +479,13 @@ where
         capabilities: &Capabilities,
     ) -> Result<Registered, AppError> {
         principal.authorize(Permission::WorkerExecute)?;
+        let server_minor = if self.store.supports_scoped_worker_protocol() {
+            SCOPED_PROTOCOL_MINOR
+        } else {
+            PROTOCOL_MINOR
+        };
         let Some((accepted_protocol_version, accepted_protocol_minor)) =
-            negotiate_protocol_details(&capabilities.protocol_version)
+            negotiate_protocol_details(&capabilities.protocol_version, server_minor)
         else {
             return Err(AppError::NotAllowed(UNSUPPORTED_PROTOCOL));
         };
@@ -1772,7 +1795,7 @@ where
         task: &TaskRef<'_>,
         lock: Lock,
     ) -> Result<S::Tx, AppError> {
-        require_root_task(task.instance)?;
+        require_supported_task(task.instance, self.store.supports_scoped_worker_protocol())?;
         if let Some(tx) = self
             .store
             .begin(principal.tenant_id(), task.run_id, lock)
@@ -2225,8 +2248,9 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        PROTOCOL_MINOR, TaskRef, blob_report_identity, json_escaped, negotiate_protocol,
-        report_scope, require_root_task, root_task_id,
+        PROTOCOL_MINOR, SCOPED_PROTOCOL_MINOR, TaskRef, blob_report_identity, json_escaped,
+        negotiate_protocol, negotiate_protocol_details, report_scope, require_supported_task,
+        root_task_id,
     };
 
     #[test]
@@ -2257,9 +2281,17 @@ mod tests {
     }
 
     #[test]
-    fn scoped_identity_is_not_negotiated_before_the_server_can_claim_it() {
+    fn scoped_identity_negotiation_is_gated_by_storage_support() {
         assert_eq!(PROTOCOL_MINOR, 4);
         assert_eq!(negotiate_protocol("1.5").as_deref(), Some("1.4"));
+        assert_eq!(
+            negotiate_protocol_details("1.5", SCOPED_PROTOCOL_MINOR),
+            Some(("1.5".to_owned(), SCOPED_PROTOCOL_MINOR))
+        );
+        assert_eq!(
+            negotiate_protocol_details("1.999", SCOPED_PROTOCOL_MINOR),
+            Some(("1.5".to_owned(), SCOPED_PROTOCOL_MINOR))
+        );
     }
 
     #[test]
@@ -2276,11 +2308,12 @@ mod tests {
 
         assert_eq!(root_task_id(run, &root, 3), Some(format!("{run}/charge/3")));
         assert_eq!(root_task_id(run, &scoped, 3), None);
-        assert!(require_root_task(&root).is_ok());
+        assert!(require_supported_task(&root, false).is_ok());
         assert!(matches!(
-            require_root_task(&scoped),
+            require_supported_task(&scoped, false),
             Err(super::AppError::StaleAttempt)
         ));
+        assert!(require_supported_task(&scoped, true).is_ok());
     }
 
     #[test]
