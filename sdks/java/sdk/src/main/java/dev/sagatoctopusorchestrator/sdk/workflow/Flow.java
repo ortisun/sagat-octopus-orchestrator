@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import dev.sagatoctopusorchestrator.sdk.SagatException;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -15,8 +16,8 @@ import java.util.regex.Pattern;
 
 /**
  * A chain of nodes: the body of a workflow, of a parallel branch or of a saga. Nodes are linked in the order they
- * are added (SPEC section 7): node <em>i</em> gets {@code next = id of node i+1}, except a {@code condition} (it
- * names its two branches) and an {@code end} (it ends); the last node of a flow has no {@code next}.
+ * are added: node <em>i</em> gets {@code next = id of node i+1}, except a branching node and an
+ * {@code end}; the last node of a flow has no {@code next}.
  *
  * <p>A flow joined into another ({@link #parallel(String, Join, List)}, {@link #saga(String, SagaOptions, Flow)}) is joined
  * <em>by reference</em> and read when {@code build()} is called: a step added to it afterwards is part of the document.
@@ -430,6 +431,71 @@ public final class Flow {
         return push(node);
     }
 
+    /** Waits for one authorized approval decision or for its deadline. */
+    public Flow approval(String id, ApprovalOptions options) {
+        if (options == null || options.policy() == null) {
+            throw SagatException.invalid("approval " + id + " policy needs between 1 and 32 subjects and roles");
+        }
+        List<String> subjects = options.policy().subjects() == null ? List.of() : options.policy().subjects();
+        List<ApprovalRole> roles = options.policy().roles() == null ? List.of() : options.policy().roles();
+        int principals = subjects.size() + roles.size();
+        if (principals < 1 || principals > 32) {
+            throw SagatException.invalid("approval " + id + " policy needs between 1 and 32 subjects and roles");
+        }
+        if (new HashSet<>(subjects).size() != subjects.size()) {
+            throw SagatException.invalid("approval " + id + " policy has a duplicate subject");
+        }
+        if (new HashSet<>(roles).size() != roles.size()) {
+            throw SagatException.invalid("approval " + id + " policy has a duplicate role");
+        }
+        for (String subject : subjects) {
+            if (subject == null || subject.isBlank()
+                    || subject.getBytes(StandardCharsets.UTF_8).length > 255
+                    || subject.chars().anyMatch(Character::isISOControl)
+                    || subject.regionMatches(true, 0, "system:", 0, 7)) {
+                throw SagatException.invalid("approval " + id + " policy has an invalid subject");
+            }
+        }
+        if (roles.stream().anyMatch(role -> role == null)) {
+            throw SagatException.invalid("approval " + id + " policy has an unsupported role");
+        }
+        long timeoutMs = loopMillis(options.timeout(), "approval " + id + " timeoutMs");
+        if (options.onApprove() == null || options.onApprove().isEmpty()) {
+            throw SagatException.invalid("approval " + id + " needs onApprove");
+        }
+        if (options.onReject() == null || options.onReject().isEmpty()) {
+            throw SagatException.invalid("approval " + id + " needs onReject");
+        }
+        if (options.onExpire() == null || options.onExpire().isEmpty()) {
+            throw SagatException.invalid("approval " + id + " needs onExpire");
+        }
+        ObjectNode policy = F.objectNode();
+        if (options.policy().subjects() != null) {
+            ArrayNode values = policy.putArray("subjects");
+            subjects.forEach(values::add);
+        }
+        if (options.policy().roles() != null) {
+            ArrayNode values = policy.putArray("roles");
+            roles.forEach(role -> values.add(switch (role) {
+                case ADMIN -> "admin";
+                case DEVELOPER -> "developer";
+                case OPERATOR -> "operator";
+            }));
+        }
+        if (options.policy().excludeInitiator() != null) {
+            policy.put("excludeInitiator", options.policy().excludeInitiator());
+        }
+        ObjectNode node = F.objectNode();
+        node.put("id", id);
+        node.put("type", "approval");
+        node.set("policy", policy);
+        node.put("timeoutMs", timeoutMs);
+        node.put("onApprove", options.onApprove());
+        node.put("onReject", options.onReject());
+        node.put("onExpire", options.onExpire());
+        return push(node);
+    }
+
     private static long loopMillis(Duration duration, String subject) {
         if (duration == null || duration.isNegative() || duration.isZero()
                 || duration.getNano() % 1_000_000 != 0
@@ -541,8 +607,9 @@ public final class Flow {
         for (int i = 0; i < nodes.size(); i++) {
             ObjectNode linked = nodes.get(i).deepCopy();
             String type = linked.path("type").textValue();
-            // A decision names both of its branches and an end ends: neither has a next node.
-            boolean terminal = "condition".equals(type) || "switch".equals(type) || "end".equals(type) || "return".equals(type);
+            // A branching node names its routes and an end ends: neither has a next node.
+            boolean terminal = "condition".equals(type) || "switch".equals(type) || "approval".equals(type)
+                    || "end".equals(type) || "return".equals(type);
             if (i + 1 < nodes.size() && !terminal && !linked.has("next")) {
                 linked.put("next", nodes.get(i + 1).path("id").textValue());
             }

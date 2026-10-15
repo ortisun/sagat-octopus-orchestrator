@@ -39,6 +39,7 @@ function apply(target: Flow, ops: Obj[]): void {
       case 'map': target.map(op['id'], op['items'], op['body'], op['result'], { maxItems: op['maxItems'], maxConcurrency: op['maxConcurrency'] }); break;
       case 'while': target.while(op['id'], op['condition'], op['body'], op['initial'], op['carry'], { maxIterations: op['maxIterations'], timeoutMs: op['timeoutMs'], delayMs: op['delayMs'], onError: op['onError'] }); break;
       case 'repeatUntil': target.repeatUntil(op['id'], op['condition'], op['body'], op['initial'], op['carry'], { maxIterations: op['maxIterations'], timeoutMs: op['timeoutMs'], delayMs: op['delayMs'], onError: op['onError'] }); break;
+      case 'approval': target.approval(op['id'], { policy: op['policy'], timeoutMs: op['timeoutMs'], onApprove: op['onApprove'], onReject: op['onReject'], onExpire: op['onExpire'] }); break;
       case 'return': (target as Body).returnValue(op['id'], op['result']); break;
       case 'parallel': {
         const branches = (op['branches'] as Obj[][]).map((ops) => {

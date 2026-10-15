@@ -170,6 +170,11 @@ public final class WorkflowBuilder {
         return this;
     }
 
+    public WorkflowBuilder approval(String id, ApprovalOptions options) {
+        body.approval(id, options);
+        return this;
+    }
+
     public WorkflowBuilder parallel(String id, Flow.Join join, List<Flow> branches) {
         body.parallel(id, join, branches);
         return this;
@@ -268,7 +273,7 @@ public final class WorkflowBuilder {
         }
         for (ObjectNode node : nodes) {
             String id = node.path("id").textValue();
-            for (String field : new String[] {"next", "onError", "onTimeout", "ifTrue", "ifFalse", "begin"}) {
+            for (String field : new String[] {"next", "onError", "onTimeout", "ifTrue", "ifFalse", "begin", "onApprove", "onReject", "onExpire"}) {
                 reference(localIds, id, field, node.get(field));
             }
             JsonNode branches = node.get("branches");

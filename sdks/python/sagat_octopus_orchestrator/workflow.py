@@ -52,6 +52,15 @@ class SwitchCase:
     target: str
 
 
+@dataclass(frozen=True)
+class ApprovalPolicy:
+    """Subjects and built-in roles eligible to decide an approval."""
+
+    subjects: Sequence[str] | None = None
+    roles: Sequence[Literal["admin", "developer", "operator"]] | None = None
+    exclude_initiator: bool | None = None
+
+
 RetrySpec = RetryOptions | Mapping[str, Any]
 """A ``RetryOptions``, or a mapping already in the IR's own keys (for a field a newer schema adds)."""
 
@@ -368,6 +377,63 @@ class Flow:
         self._push(node)
         return self
 
+    def approval(
+        self: _F,
+        node_id: str,
+        policy: ApprovalPolicy,
+        *,
+        timeout_ms: int,
+        on_approve: str,
+        on_reject: str,
+        on_expire: str,
+    ) -> _F:
+        """Waits for one authorized approval decision or for its deadline."""
+        subjects = list(policy.subjects or ())
+        roles = list(policy.roles or ())
+        if not 1 <= len(subjects) + len(roles) <= 32:
+            raise invalid(f"approval {node_id} policy needs between 1 and 32 subjects and roles")
+        if len(set(subjects)) != len(subjects):
+            raise invalid(f"approval {node_id} policy has a duplicate subject")
+        if len(set(roles)) != len(roles):
+            raise invalid(f"approval {node_id} policy has a duplicate role")
+        for subject in subjects:
+            if (
+                not subject.strip()
+                or len(subject.encode("utf-8")) > 255
+                or any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in subject)
+                or subject[:7].lower() == "system:"
+            ):
+                raise invalid(f"approval {node_id} policy has an invalid subject")
+        if any(role not in ("admin", "developer", "operator") for role in roles):
+            raise invalid(f"approval {node_id} policy has an unsupported role")
+        if isinstance(timeout_ms, bool) or not isinstance(timeout_ms, int) or not 1 <= timeout_ms <= 31_622_400_000:
+            raise invalid(f"approval {node_id} timeoutMs must be between 1 and 31622400000")
+        if not on_approve:
+            raise invalid(f"approval {node_id} needs onApprove")
+        if not on_reject:
+            raise invalid(f"approval {node_id} needs onReject")
+        if not on_expire:
+            raise invalid(f"approval {node_id} needs onExpire")
+        policy_node: Node = {}
+        if policy.subjects is not None:
+            policy_node["subjects"] = subjects
+        if policy.roles is not None:
+            policy_node["roles"] = roles
+        if policy.exclude_initiator is not None:
+            policy_node["excludeInitiator"] = policy.exclude_initiator
+        self._push(
+            {
+                "id": node_id,
+                "type": "approval",
+                "policy": policy_node,
+                "timeoutMs": timeout_ms,
+                "onApprove": on_approve,
+                "onReject": on_reject,
+                "onExpire": on_expire,
+            }
+        )
+        return self
+
     def parallel(self: _F, node_id: str, join: Literal["all", "any"], branches: Sequence[Flow]) -> _F:
         """Runs branches at once; ``all`` waits for every one, ``any`` for the first."""
         if len(branches) < 2:
@@ -414,8 +480,9 @@ class Flow:
         out: list[Node] = []
         for index, node in enumerate(self._nodes):
             linked = dict(node)
-            # A decision names both of its branches and an end ends: neither has a next node.
-            if index + 1 < len(self._nodes) and linked["type"] not in ("condition", "switch", "end", "return"):
+            # Branching nodes name their routes and an end ends: neither has a next node.
+            branching = ("condition", "switch", "approval", "end", "return")
+            if index + 1 < len(self._nodes) and linked["type"] not in branching:
                 linked["next"] = self._nodes[index + 1]["id"]
             out.append(linked)
         for inner in self._embedded:
@@ -527,7 +594,10 @@ class WorkflowBuilder(Flow):
                     raise invalid(f"{source}.{field} points at {target!r}, which is not a node")
 
             for node in scope:
-                for field in ("next", "onError", "onTimeout", "ifTrue", "ifFalse", "begin"):
+                for field in (
+                    "next", "onError", "onTimeout", "ifTrue", "ifFalse", "begin",
+                    "onApprove", "onReject", "onExpire",
+                ):
                     reference(node["id"], field, node.get(field))
                 for branch in node.get("branches", ()):
                     reference(node["id"], "branches", branch)

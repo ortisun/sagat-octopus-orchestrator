@@ -185,6 +185,28 @@ func apply(b *workflow.Builder, ops []any) {
 			} else {
 				b.RepeatUntil(id, asString(op["condition"]), asString(op["body"]), asString(op["initial"]), asString(op["carry"]), asInt(op["maxIterations"]), asMillis(op["timeoutMs"]), opts...)
 			}
+		case "approval":
+			policyObject := asObject(op["policy"])
+			policy := workflow.ApprovalPolicy{}
+			if value, present := policyObject["subjects"]; present {
+				items := asList(value)
+				policy.Subjects = make([]string, 0, len(items))
+				for _, subject := range items {
+					policy.Subjects = append(policy.Subjects, asString(subject))
+				}
+			}
+			if value, present := policyObject["roles"]; present {
+				items := asList(value)
+				policy.Roles = make([]workflow.ApprovalRole, 0, len(items))
+				for _, role := range items {
+					policy.Roles = append(policy.Roles, workflow.ApprovalRole(asString(role)))
+				}
+			}
+			if value, present := policyObject["excludeInitiator"]; present {
+				exclude := asBool(value)
+				policy.ExcludeInitiator = &exclude
+			}
+			b.Approval(id, policy, asMillis(op["timeoutMs"]), asString(op["onApprove"]), asString(op["onReject"]), asString(op["onExpire"]))
 		case "return":
 			b.Return(id, asString(op["result"]))
 		case "parallel":

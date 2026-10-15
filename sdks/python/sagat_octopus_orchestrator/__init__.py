@@ -50,7 +50,7 @@ from .worker import (
     WorkerTransport,
     run_blocking,
 )
-from .workflow import Body, Flow, RetryOptions, SwitchCase, WorkflowBuilder, body, flow, workflow
+from .workflow import ApprovalPolicy, Body, Flow, RetryOptions, SwitchCase, WorkflowBuilder, body, flow, workflow
 
 __version__ = SDK_VERSION
 
@@ -64,6 +64,7 @@ __all__ = [
     "ActivityContext",
     "ActivityFailure",
     "ActivityHandler",
+    "ApprovalPolicy",
     "BlobDescriptor",
     "BlobOutput",
     "Body",

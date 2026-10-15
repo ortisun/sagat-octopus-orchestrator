@@ -37,10 +37,17 @@ It is build-only while durable loop execution remains disabled. The reviewed fix
 and post-test shapes, the maximum iteration and duration bounds, optional durable delay/error routing,
 named body references and the required successor. It does not count as loop runtime conformance.
 
+`approval-builders.json` checks additive v1 native approval authoring in the five SDKs. It remains
+build-only while approval persistence, authorization and first-commit runtime behavior are disabled.
+The reviewed fixture covers subject and built-in role policies, the default initiator exclusion,
+bounded deadlines, all three routes and local validation failures. It does not count as approval
+runtime conformance.
+
 ```text
 SAGAT_SDK_SCENARIO=switch-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=collection-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=loop-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=approval-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 ```
 
 ## Pending scenarios

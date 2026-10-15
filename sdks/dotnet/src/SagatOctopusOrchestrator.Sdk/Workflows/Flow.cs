@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using SagatOctopusOrchestrator.Sdk.Internal;
@@ -275,6 +276,91 @@ public abstract partial class FlowBase<TSelf>
         return Push(node);
     }
 
+    /// <summary>Waits for one authorized approval decision or for its deadline.</summary>
+    public TSelf Approval(string id, ApprovalOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(options.Policy);
+        var subjects = options.Policy.Subjects?.ToArray() ?? [];
+        var roles = options.Policy.Roles?.ToArray() ?? [];
+        if (subjects.Length + roles.Length is < 1 or > 32)
+        {
+            throw Invalid($"approval {id} policy needs between 1 and 32 subjects and roles");
+        }
+
+        if (subjects.Distinct(StringComparer.Ordinal).Count() != subjects.Length)
+        {
+            throw Invalid($"approval {id} policy has a duplicate subject");
+        }
+
+        if (roles.Distinct().Count() != roles.Length)
+        {
+            throw Invalid($"approval {id} policy has a duplicate role");
+        }
+
+        if (subjects.Any(subject => string.IsNullOrWhiteSpace(subject)
+                || Encoding.UTF8.GetByteCount(subject) > 255
+                || subject.Any(char.IsControl)
+                || subject.StartsWith("system:", StringComparison.OrdinalIgnoreCase)))
+        {
+            throw Invalid($"approval {id} policy has an invalid subject");
+        }
+
+        if (roles.Any(role => !Enum.IsDefined(role)))
+        {
+            throw Invalid($"approval {id} policy has an unsupported role");
+        }
+
+        var timeoutMs = WholeMillis(options.Timeout, $"approval {id} timeoutMs");
+        if (timeoutMs is < 1 or > 31_622_400_000)
+        {
+            throw Invalid($"approval {id} timeoutMs must be between 1 and 31622400000");
+        }
+
+        if (string.IsNullOrEmpty(options.OnApprove))
+        {
+            throw Invalid($"approval {id} needs onApprove");
+        }
+
+        if (string.IsNullOrEmpty(options.OnReject))
+        {
+            throw Invalid($"approval {id} needs onReject");
+        }
+
+        if (string.IsNullOrEmpty(options.OnExpire))
+        {
+            throw Invalid($"approval {id} needs onExpire");
+        }
+
+        var policy = new JsonObject();
+        if (options.Policy.Subjects is not null)
+        {
+            policy["subjects"] = new JsonArray([.. subjects.Select(subject => (JsonNode?)JsonValue.Create(subject))]);
+        }
+
+        if (options.Policy.Roles is not null)
+        {
+            policy["roles"] = new JsonArray([.. roles.Select(role => (JsonNode?)JsonValue.Create(role switch
+            {
+                ApprovalRole.Admin => "admin",
+                ApprovalRole.Developer => "developer",
+                _ => "operator",
+            }))]);
+        }
+
+        Set(policy, "excludeInitiator", options.Policy.ExcludeInitiator);
+        return Push(new JsonObject
+        {
+            ["id"] = id,
+            ["type"] = "approval",
+            ["policy"] = policy,
+            ["timeoutMs"] = timeoutMs,
+            ["onApprove"] = options.OnApprove,
+            ["onReject"] = options.OnReject,
+            ["onExpire"] = options.OnExpire,
+        });
+    }
+
     /// <summary>Parallel: runs branches at once; <see cref="JoinMode.All"/> waits for every one, <see cref="JoinMode.Any"/> for the first.</summary>
     public TSelf Parallel(string id, JoinMode join, params Flow[] branches) => Parallel(id, join, (IEnumerable<Flow>)branches);
 
@@ -357,8 +443,8 @@ public abstract partial class FlowBase<TSelf>
     }
 
     /// <summary>
-    /// Every node of the flow and of the flows inside it, in order, linked: node i gets <c>next</c> = node i+1, except a condition
-    /// (it names its two branches) and an end (it ends); the last node of a flow has none.
+    /// Every node of the flow and of the flows inside it, in order, linked: node i gets <c>next</c> = node i+1, except a
+    /// branching node and an end; the last node of a flow has none.
     /// </summary>
     internal List<JsonObject> Flatten()
     {
@@ -367,7 +453,7 @@ public abstract partial class FlowBase<TSelf>
         {
             var linked = (JsonObject)nodes[i].DeepClone();
             var type = (string?)linked["type"];
-            if (i + 1 < nodes.Count && type is not ("condition" or "switch" or "end" or "return") && !linked.ContainsKey("next"))
+            if (i + 1 < nodes.Count && type is not ("condition" or "switch" or "approval" or "end" or "return") && !linked.ContainsKey("next"))
             {
                 linked["next"] = (string)nodes[i + 1]["id"]!;
             }
@@ -661,7 +747,7 @@ public sealed partial class WorkflowBuilder : FlowBase<WorkflowBuilder>
             foreach (var node in scope)
             {
                 var id = (string)node["id"]!;
-                foreach (var field in new[] { "next", "onError", "onTimeout", "ifTrue", "ifFalse", "begin" })
+                foreach (var field in new[] { "next", "onError", "onTimeout", "ifTrue", "ifFalse", "begin", "onApprove", "onReject", "onExpire" })
                 {
                     Reference(id, field, node[field]);
                 }

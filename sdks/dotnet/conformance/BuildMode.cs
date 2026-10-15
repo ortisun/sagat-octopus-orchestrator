@@ -159,6 +159,28 @@ internal static class BuildMode
                 case "repeatUntil":
                     target.RepeatUntil(id, (string)op["condition"]!, (string)op["body"]!, (string)op["initial"]!, (string)op["carry"]!, LoopOptionsOf(op));
                     break;
+                case "approval":
+                    var policy = op["policy"]!.AsObject();
+                    target.Approval(id, new ApprovalOptions
+                    {
+                        Policy = new ApprovalPolicy
+                        {
+                            Subjects = policy["subjects"] is JsonArray subjects ? [.. subjects.Select(subject => (string)subject!)] : null,
+                            Roles = policy["roles"] is JsonArray roles ? [.. roles.Select(role => (string)role! switch
+                            {
+                                "admin" => ApprovalRole.Admin,
+                                "developer" => ApprovalRole.Developer,
+                                "operator" => ApprovalRole.Operator,
+                                _ => (ApprovalRole)(-1),
+                            })] : null,
+                            ExcludeInitiator = (bool?)policy["excludeInitiator"],
+                        },
+                        Timeout = Ms(op["timeoutMs"]),
+                        OnApprove = (string)op["onApprove"]!,
+                        OnReject = (string)op["onReject"]!,
+                        OnExpire = (string)op["onExpire"]!,
+                    });
+                    break;
                 case "return" when target is Body bodyTarget:
                     bodyTarget.Return(id, (string)op["result"]!);
                     break;

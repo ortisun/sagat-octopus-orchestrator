@@ -19,7 +19,9 @@ package workflow
 
 import (
 	"regexp"
+	"strings"
 	"time"
+	"unicode"
 
 	sagat "github.com/ortisun/sagat-octopus-orchestrator/sdks/go"
 	"github.com/ortisun/sagat-octopus-orchestrator/sdks/go/internal/jsonx"
@@ -32,6 +34,22 @@ type SwitchCase struct {
 	ID     string
 	When   string
 	Target string
+}
+
+// ApprovalRole is a built-in namespace role that may decide an approval.
+type ApprovalRole string
+
+const (
+	ApprovalAdmin     ApprovalRole = "admin"
+	ApprovalDeveloper ApprovalRole = "developer"
+	ApprovalOperator  ApprovalRole = "operator"
+)
+
+// ApprovalPolicy pins the subjects and built-in roles eligible to decide an approval.
+type ApprovalPolicy struct {
+	Subjects         []string
+	Roles            []ApprovalRole
+	ExcludeInitiator *bool
 }
 
 var namePattern = regexp.MustCompile(`^[a-z][a-z0-9-]{2,63}$`)
@@ -281,6 +299,69 @@ func (b *Builder) RepeatUntil(id, condition, body, initial, carry string, maxIte
 	return b.loop("repeatUntil", id, condition, body, initial, carry, maxIterations, timeout, opts...)
 }
 
+// Approval waits for one authorized decision or for its deadline.
+func (b *Builder) Approval(id string, policy ApprovalPolicy, timeout time.Duration, onApprove, onReject, onExpire string) *Builder {
+	if b.err != nil {
+		return b
+	}
+	principals := len(policy.Subjects) + len(policy.Roles)
+	if principals < 1 || principals > 32 {
+		return b.fail(sagat.Invalid("approval %s policy needs between 1 and 32 subjects and roles", id))
+	}
+	subjects := make([]any, 0, len(policy.Subjects))
+	seenSubjects := make(map[string]struct{}, len(policy.Subjects))
+	for _, subject := range policy.Subjects {
+		if _, duplicate := seenSubjects[subject]; duplicate {
+			return b.fail(sagat.Invalid("approval %s policy has a duplicate subject", id))
+		}
+		if strings.TrimSpace(subject) == "" || len(subject) > 255 ||
+			strings.HasPrefix(strings.ToLower(subject), "system:") || strings.IndexFunc(subject, unicode.IsControl) >= 0 {
+			return b.fail(sagat.Invalid("approval %s policy has an invalid subject", id))
+		}
+		seenSubjects[subject] = struct{}{}
+		subjects = append(subjects, subject)
+	}
+	roles := make([]any, 0, len(policy.Roles))
+	seenRoles := make(map[ApprovalRole]struct{}, len(policy.Roles))
+	for _, role := range policy.Roles {
+		if _, duplicate := seenRoles[role]; duplicate {
+			return b.fail(sagat.Invalid("approval %s policy has a duplicate role", id))
+		}
+		if role != ApprovalAdmin && role != ApprovalDeveloper && role != ApprovalOperator {
+			return b.fail(sagat.Invalid("approval %s policy has an unsupported role", id))
+		}
+		seenRoles[role] = struct{}{}
+		roles = append(roles, string(role))
+	}
+	timeoutMs := millis(timeout)
+	if timeoutMs < 1 || timeoutMs > 31622400000 {
+		return b.fail(sagat.Invalid("approval %s timeoutMs must be between 1 and 31622400000", id))
+	}
+	if onApprove == "" {
+		return b.fail(sagat.Invalid("approval %s needs onApprove", id))
+	}
+	if onReject == "" {
+		return b.fail(sagat.Invalid("approval %s needs onReject", id))
+	}
+	if onExpire == "" {
+		return b.fail(sagat.Invalid("approval %s needs onExpire", id))
+	}
+	policyNode := map[string]any{}
+	if policy.Subjects != nil {
+		policyNode["subjects"] = subjects
+	}
+	if policy.Roles != nil {
+		policyNode["roles"] = roles
+	}
+	if policy.ExcludeInitiator != nil {
+		policyNode["excludeInitiator"] = *policy.ExcludeInitiator
+	}
+	return b.push(node{
+		"id": id, "type": "approval", "policy": policyNode, "timeoutMs": timeoutMs,
+		"onApprove": onApprove, "onReject": onReject, "onExpire": onExpire,
+	})
+}
+
 func (b *Builder) loop(kind, id, condition, body, initial, carry string, maxIterations int, timeout time.Duration, opts ...LoopOption) *Builder {
 	if b.err != nil {
 		return b
@@ -416,7 +497,7 @@ func (b *Builder) Body(name string, body *Builder) *Builder {
 // ---- the document
 
 // flatten returns every node of the flow and of the flows inside it, in order, with next set: node i
-// gets next = id of node i+1, except a condition or switch (it names its branches) and an end (it ends);
+// gets next = id of node i+1, except a branching node and an end (it ends);
 // the last node of a flow has none.
 func (b *Builder) flatten() []node {
 	out := make([]node, 0, len(b.nodes))
@@ -425,7 +506,7 @@ func (b *Builder) flatten() []node {
 		for key, value := range n {
 			linked[key] = value
 		}
-		if i+1 < len(b.nodes) && linked["type"] != "condition" && linked["type"] != "switch" && linked["type"] != "end" && linked["type"] != "return" {
+		if i+1 < len(b.nodes) && linked["type"] != "condition" && linked["type"] != "switch" && linked["type"] != "approval" && linked["type"] != "end" && linked["type"] != "return" {
 			if _, set := linked["next"]; !set {
 				linked["next"] = b.nodes[i+1]["id"]
 			}
@@ -500,7 +581,7 @@ func (b *Builder) Build() (map[string]any, error) {
 		}
 		for _, n := range scope {
 			id := n["id"].(string)
-			for _, field := range []string{"next", "onError", "onTimeout", "ifTrue", "ifFalse", "begin"} {
+			for _, field := range []string{"next", "onError", "onTimeout", "ifTrue", "ifFalse", "begin", "onApprove", "onReject", "onExpire"} {
 				if err := reference(id, field, n[field]); err != nil {
 					return err
 				}

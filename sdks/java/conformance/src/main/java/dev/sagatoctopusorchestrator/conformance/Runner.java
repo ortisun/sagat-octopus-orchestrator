@@ -32,6 +32,9 @@ import dev.sagatoctopusorchestrator.sdk.WaitOptions;
 import dev.sagatoctopusorchestrator.sdk.worker.WorkerConfig;
 import dev.sagatoctopusorchestrator.sdk.worker.WorkerHost;
 import dev.sagatoctopusorchestrator.sdk.workflow.ChildOptions;
+import dev.sagatoctopusorchestrator.sdk.workflow.ApprovalOptions;
+import dev.sagatoctopusorchestrator.sdk.workflow.ApprovalPolicy;
+import dev.sagatoctopusorchestrator.sdk.workflow.ApprovalRole;
 import dev.sagatoctopusorchestrator.sdk.workflow.CollectionOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.Flow;
 import dev.sagatoctopusorchestrator.sdk.workflow.LoopOptions;
@@ -242,6 +245,37 @@ public final class Runner {
                 case "repeatUntil" -> target.repeatUntil(
                         id, op.path("condition").asText(null), op.path("body").asText(null),
                         op.path("initial").asText(null), op.path("carry").asText(null), loopOptions(op));
+                case "approval" -> {
+                    JsonNode policy = op.path("policy");
+                    List<String> subjects = null;
+                    if (policy.has("subjects")) {
+                        subjects = new ArrayList<>();
+                        for (JsonNode subject : policy.path("subjects")) {
+                            subjects.add(subject.textValue());
+                        }
+                    }
+                    List<ApprovalRole> roles = null;
+                    if (policy.has("roles")) {
+                        roles = new ArrayList<>();
+                        for (JsonNode role : policy.path("roles")) {
+                            roles.add(switch (role.asText()) {
+                                case "admin" -> ApprovalRole.ADMIN;
+                                case "developer" -> ApprovalRole.DEVELOPER;
+                                case "operator" -> ApprovalRole.OPERATOR;
+                                default -> null;
+                            });
+                        }
+                    }
+                    Boolean exclude = policy.has("excludeInitiator")
+                            ? policy.path("excludeInitiator").booleanValue()
+                            : null;
+                    target.approval(id, new ApprovalOptions(
+                            new ApprovalPolicy(subjects, roles, exclude),
+                            Duration.ofMillis(op.path("timeoutMs").longValue()),
+                            op.path("onApprove").asText(null),
+                            op.path("onReject").asText(null),
+                            op.path("onExpire").asText(null)));
+                }
                 case "return" -> target.returnValue(id, op.path("result").asText(null));
                 case "parallel" -> {
                     List<Flow> branches = new ArrayList<>();

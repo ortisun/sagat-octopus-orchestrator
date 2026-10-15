@@ -28,6 +28,7 @@ from sagat_octopus_orchestrator import (
     SDK_VERSION,
     ActivityContext,
     ActivityFailure,
+    ApprovalPolicy,
     BlobDescriptor,
     BlobOutput,
     Body,
@@ -127,6 +128,20 @@ def apply(target: Flow, ops: list[Obj]) -> None:
                 op["id"], op["condition"], op["body"], op["initial"], op["carry"],
                 max_iterations=op["maxIterations"], timeout_ms=op["timeoutMs"],
                 delay_ms=op.get("delayMs"), on_error=op.get("onError"),
+            )
+        elif kind == "approval":
+            policy = op["policy"]
+            target.approval(
+                op["id"],
+                ApprovalPolicy(
+                    subjects=policy.get("subjects"),
+                    roles=policy.get("roles"),
+                    exclude_initiator=policy.get("excludeInitiator"),
+                ),
+                timeout_ms=op["timeoutMs"],
+                on_approve=op["onApprove"],
+                on_reject=op["onReject"],
+                on_expire=op["onExpire"],
             )
         elif kind == "return":
             if not isinstance(target, Body):

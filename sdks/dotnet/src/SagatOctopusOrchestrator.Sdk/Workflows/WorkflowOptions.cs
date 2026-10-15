@@ -180,6 +180,51 @@ public sealed record LoopOptions
     public string? OnError { get; init; }
 }
 
+/// <summary>A built-in namespace role that may decide an approval.</summary>
+public enum ApprovalRole
+{
+    /// <summary>Namespace administrator.</summary>
+    Admin,
+
+    /// <summary>Workflow developer.</summary>
+    Developer,
+
+    /// <summary>Workflow operator.</summary>
+    Operator,
+}
+
+/// <summary>Subjects and built-in roles eligible to decide an approval.</summary>
+public sealed record ApprovalPolicy
+{
+    /// <summary>Eligible subject identifiers.</summary>
+    public IReadOnlyList<string>? Subjects { get; init; }
+
+    /// <summary>Eligible built-in namespace roles.</summary>
+    public IReadOnlyList<ApprovalRole>? Roles { get; init; }
+
+    /// <summary>Whether the subject that started the run is excluded. Omission uses the server default of true.</summary>
+    public bool? ExcludeInitiator { get; init; }
+}
+
+/// <summary>Policy, deadline and routes of a native approval.</summary>
+public sealed record ApprovalOptions
+{
+    /// <summary>The eligibility policy pinned when the request opens.</summary>
+    public required ApprovalPolicy Policy { get; init; }
+
+    /// <summary>Time available for a decision.</summary>
+    public required TimeSpan Timeout { get; init; }
+
+    /// <summary>The node selected by an approval.</summary>
+    public required string OnApprove { get; init; }
+
+    /// <summary>The node selected by a rejection.</summary>
+    public required string OnReject { get; init; }
+
+    /// <summary>The node selected when the deadline wins.</summary>
+    public required string OnExpire { get; init; }
+}
+
 /// <summary>The kind of a workflow trigger.</summary>
 public enum TriggerKind
 {

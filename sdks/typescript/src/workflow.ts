@@ -62,6 +62,22 @@ export interface LoopOptions {
   readonly onError?: string;
 }
 
+export type ApprovalRole = 'admin' | 'developer' | 'operator';
+
+export interface ApprovalPolicy {
+  readonly subjects?: readonly string[];
+  readonly roles?: readonly ApprovalRole[];
+  readonly excludeInitiator?: boolean;
+}
+
+export interface ApprovalOptions {
+  readonly policy: ApprovalPolicy;
+  readonly timeoutMs: number;
+  readonly onApprove: string;
+  readonly onReject: string;
+  readonly onExpire: string;
+}
+
 export interface SagaOptions {
   onCompensationFailure?: 'manual_review' | 'fail';
   cancelPolicy?: 'compensate_completed' | 'abort_no_compensation' | 'wait_in_flight_then_compensate';
@@ -208,6 +224,47 @@ export class Flow {
     });
   }
 
+  /** Waits for one authorized approval decision or for its deadline. */
+  approval(id: string, options: ApprovalOptions): this {
+    const subjects = [...(options.policy.subjects ?? [])];
+    const roles = [...(options.policy.roles ?? [])];
+    if (subjects.length + roles.length < 1 || subjects.length + roles.length > 32) {
+      throw invalid(`approval ${id} policy needs between 1 and 32 subjects and roles`);
+    }
+    if (new Set(subjects).size !== subjects.length) throw invalid(`approval ${id} policy has a duplicate subject`);
+    if (new Set(roles).size !== roles.length) throw invalid(`approval ${id} policy has a duplicate role`);
+    for (const subject of subjects) {
+      if (!subject.trim() || Buffer.byteLength(subject, 'utf8') > 255 || /[\u0000-\u001f\u007f-\u009f]/u.test(subject)
+          || subject.slice(0, 7).toLowerCase() === 'system:') {
+        throw invalid(`approval ${id} policy has an invalid subject`);
+      }
+    }
+    for (const role of roles) {
+      if (role !== 'admin' && role !== 'developer' && role !== 'operator') {
+        throw invalid(`approval ${id} policy has an unsupported role`);
+      }
+    }
+    if (!Number.isInteger(options.timeoutMs) || options.timeoutMs < 1 || options.timeoutMs > 31_622_400_000) {
+      throw invalid(`approval ${id} timeoutMs must be between 1 and 31622400000`);
+    }
+    if (!options.onApprove) throw invalid(`approval ${id} needs onApprove`);
+    if (!options.onReject) throw invalid(`approval ${id} needs onReject`);
+    if (!options.onExpire) throw invalid(`approval ${id} needs onExpire`);
+    const policy: Record<string, Json> = {};
+    if (options.policy.subjects !== undefined) policy['subjects'] = subjects;
+    if (options.policy.roles !== undefined) policy['roles'] = roles;
+    if (options.policy.excludeInitiator !== undefined) policy['excludeInitiator'] = options.policy.excludeInitiator;
+    return this.push({
+      id,
+      type: 'approval',
+      policy,
+      timeoutMs: options.timeoutMs,
+      onApprove: options.onApprove,
+      onReject: options.onReject,
+      onExpire: options.onExpire,
+    });
+  }
+
   /** Parallel: runs branches at once; `all` waits for every one, `any` for the first. */
   parallel(id: string, join: 'all' | 'any', branches: Flow[]): this {
     if (branches.length < 2) throw invalid(`parallel ${id} needs at least two branches`);
@@ -249,8 +306,9 @@ export class Flow {
     this.nodes.forEach((node, i) => {
       const linked: Node = { ...node };
       const next = this.nodes[i + 1];
-      // A decision names both of its branches and an end ends: neither has a next node.
-      const branches = linked['type'] === 'condition' || linked['type'] === 'switch' || linked['type'] === 'end' || linked['type'] === 'return';
+      // A branching node names its routes and an end ends: neither has a next node.
+      const branches = linked['type'] === 'condition' || linked['type'] === 'switch' || linked['type'] === 'approval'
+        || linked['type'] === 'end' || linked['type'] === 'return';
       if (next && !branches && linked['next'] === undefined) linked['next'] = next['id'] as string;
       out.push(linked);
     });
@@ -342,7 +400,9 @@ export class WorkflowBuilder extends Flow {
       };
       for (const node of scope) {
         const id = node['id'] as string;
-        for (const field of ['next', 'onError', 'onTimeout', 'ifTrue', 'ifFalse', 'begin']) reference(id, field, node[field]);
+        for (const field of ['next', 'onError', 'onTimeout', 'ifTrue', 'ifFalse', 'begin', 'onApprove', 'onReject', 'onExpire']) {
+          reference(id, field, node[field]);
+        }
         if (Array.isArray(node['branches'])) node['branches'].forEach((branch) => reference(id, 'branches', branch));
         if (Array.isArray(node['cases'])) {
           node['cases'].forEach((item) => {
