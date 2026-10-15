@@ -12,11 +12,13 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::time::Duration;
 
-use sagat_domain::execution::{RunEvent, RunId, RunStatus};
+use sagat_domain::execution::{
+    ApprovalDecision, CollectionOutcome, LoopOutcome, RunEvent, RunId, RunStatus,
+};
 use sagat_domain::identity::{NamespaceId, TenantId};
 use sagat_telemetry::{
     AttrValue, SpanData, SpanEvent, SpanId, SpanKind, SpanStatus, TraceId, WorkflowPrimitiveKind,
-    WorkflowPrimitiveOutcome, attempt_span_id, event_span_id, run_span_id,
+    WorkflowPrimitiveOutcome, WorkflowPrimitiveSpan, attempt_span_id, event_span_id, run_span_id,
 };
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -520,6 +522,119 @@ pub fn derive(facts: &RunFacts, entries: &[JournalEntry], applied_seq: u64) -> D
         });
     }
 
+    for entry in entries {
+        if entry.seq <= applied_seq {
+            continue;
+        }
+        let (kind, outcome, span, node, index) = match &entry.event {
+            RunEvent::CollectionIterationAdmitted { node, index, .. } => (
+                WorkflowPrimitiveKind::Collection,
+                WorkflowPrimitiveOutcome::Admitted,
+                WorkflowPrimitiveSpan::ScopeAdmit,
+                Some(node),
+                Some(*index),
+            ),
+            RunEvent::CollectionIterationCheckpointed { node, index, .. } => (
+                WorkflowPrimitiveKind::Collection,
+                WorkflowPrimitiveOutcome::Committed,
+                WorkflowPrimitiveSpan::IterationCommit,
+                Some(node),
+                Some(*index),
+            ),
+            RunEvent::CollectionFinished { node, outcome, .. } => (
+                WorkflowPrimitiveKind::Collection,
+                match outcome {
+                    CollectionOutcome::Succeeded => WorkflowPrimitiveOutcome::Succeeded,
+                    CollectionOutcome::Failed(_) => WorkflowPrimitiveOutcome::Failed,
+                    CollectionOutcome::Cancelled => WorkflowPrimitiveOutcome::Cancelled,
+                },
+                WorkflowPrimitiveSpan::IterationCommit,
+                Some(node),
+                None,
+            ),
+            RunEvent::LoopIterationAdmitted { node, index, .. } => (
+                WorkflowPrimitiveKind::Loop,
+                WorkflowPrimitiveOutcome::Admitted,
+                WorkflowPrimitiveSpan::ScopeAdmit,
+                Some(node),
+                Some(*index),
+            ),
+            RunEvent::LoopIterationCheckpointed { node, index, .. } => (
+                WorkflowPrimitiveKind::Loop,
+                WorkflowPrimitiveOutcome::Committed,
+                WorkflowPrimitiveSpan::IterationCommit,
+                Some(node),
+                Some(*index),
+            ),
+            RunEvent::LoopFinished { node, outcome } => (
+                WorkflowPrimitiveKind::Loop,
+                match outcome {
+                    LoopOutcome::Failed(_) => WorkflowPrimitiveOutcome::Failed,
+                    LoopOutcome::Cancelled => WorkflowPrimitiveOutcome::Cancelled,
+                },
+                WorkflowPrimitiveSpan::IterationCommit,
+                Some(node),
+                None,
+            ),
+            RunEvent::ApprovalDecided { node, decision, .. } => (
+                WorkflowPrimitiveKind::Approval,
+                match decision {
+                    ApprovalDecision::Approve => WorkflowPrimitiveOutcome::Approved,
+                    ApprovalDecision::Reject => WorkflowPrimitiveOutcome::Rejected,
+                },
+                WorkflowPrimitiveSpan::ApprovalDecide,
+                Some(node),
+                None,
+            ),
+            RunEvent::ApprovalExpired { node, .. } => (
+                WorkflowPrimitiveKind::Approval,
+                WorkflowPrimitiveOutcome::Expired,
+                WorkflowPrimitiveSpan::ApprovalDecide,
+                Some(node),
+                None,
+            ),
+            RunEvent::RunContinued { .. } => (
+                WorkflowPrimitiveKind::Continuation,
+                WorkflowPrimitiveOutcome::Continued,
+                WorkflowPrimitiveSpan::Continue,
+                None,
+                None,
+            ),
+            _ => continue,
+        };
+        let mut attributes = base_attributes(facts);
+        attributes.push((
+            "sagat.primitive.kind".to_owned(),
+            AttrValue::from(kind.as_str()),
+        ));
+        attributes.push((
+            "sagat.outcome".to_owned(),
+            AttrValue::from(outcome.as_str()),
+        ));
+        if let Some(node) = node {
+            attributes.push(("sagat.node".to_owned(), AttrValue::from(node.as_str())));
+        }
+        if let Some(index) = index {
+            attributes.push(("sagat.iteration.index".to_owned(), AttrValue::from(index)));
+        }
+        let at = nanos(entry.occurred_at);
+        out.spans.push(SpanData {
+            trace_id: facts.trace_id,
+            span_id: event_span_id(run_uuid, entry.seq),
+            parent: Some(run_span),
+            name: span.as_str().to_owned(),
+            kind: SpanKind::Internal,
+            start_unix_nano: at,
+            end_unix_nano: at,
+            attributes,
+            events: Vec::new(),
+            links: Vec::new(),
+            status: SpanStatus::Ok,
+        });
+        out.observations
+            .push(Observation::PrimitiveTransition { kind, outcome });
+    }
+
     // Timers and waits: where the time of a run goes when no worker holds it.
     let mut timers: HashMap<String, (u64, OffsetDateTime)> = HashMap::new();
     let mut waits: HashMap<String, (u64, OffsetDateTime)> = HashMap::new();
@@ -814,8 +929,8 @@ pub trait TelemetryStore: Send + Sync {
 #[cfg(test)]
 mod switch_tests {
     use super::*;
-    use sagat_domain::execution::SwitchSelection;
-    use sagat_domain::workflow::NodeId;
+    use sagat_domain::execution::{ExecutionInstanceId, SwitchSelection};
+    use sagat_domain::workflow::{Digest, NodeId};
     use sagat_telemetry::{WorkflowPrimitiveKind, WorkflowPrimitiveOutcome};
 
     fn node(value: &str) -> NodeId {
@@ -916,5 +1031,61 @@ mod switch_tests {
             }]
         );
         assert_eq!(derive(&facts, &[entry], 3), Derived::default());
+    }
+
+    #[test]
+    fn collection_admission_and_continuation_have_stable_redacted_spans() {
+        let facts = facts();
+        let entries = [
+            JournalEntry {
+                seq: 2,
+                event: RunEvent::CollectionIterationAdmitted {
+                    node: node("items"),
+                    index: 1,
+                    entry: ExecutionInstanceId::root(node("work")),
+                    item_digest: Digest::new([1; 32]),
+                },
+                actor: "Bearer secret-marker".to_owned(),
+                occurred_at: facts.created_at,
+            },
+            JournalEntry {
+                seq: 3,
+                event: RunEvent::RunContinued {
+                    successor: RunId::generate(),
+                    input_digest: Digest::new([2; 32]),
+                    state_digest: None,
+                },
+                actor: "Bearer secret-marker".to_owned(),
+                occurred_at: facts.created_at,
+            },
+        ];
+        let first = derive(&facts, &entries, 0);
+        assert_eq!(first, derive(&facts, &entries, 0));
+        assert_eq!(first.spans.len(), 2);
+        assert_eq!(first.spans[0].name, "workflow.scope.admit");
+        assert_eq!(first.spans[1].name, "workflow.continue");
+        assert_eq!(
+            first.spans[0].span_id,
+            event_span_id(facts.run_id.as_uuid(), 2)
+        );
+        assert_eq!(
+            first.spans[1].span_id,
+            event_span_id(facts.run_id.as_uuid(), 3)
+        );
+        assert_eq!(
+            first.observations,
+            [
+                Observation::PrimitiveTransition {
+                    kind: WorkflowPrimitiveKind::Collection,
+                    outcome: WorkflowPrimitiveOutcome::Admitted,
+                },
+                Observation::PrimitiveTransition {
+                    kind: WorkflowPrimitiveKind::Continuation,
+                    outcome: WorkflowPrimitiveOutcome::Continued,
+                },
+            ]
+        );
+        assert!(!format!("{first:?}").contains("secret-marker"));
+        assert_eq!(derive(&facts, &entries, 3), Derived::default());
     }
 }
