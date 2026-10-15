@@ -12,9 +12,10 @@ use time::OffsetDateTime;
 
 use super::error::ExecutionError;
 use super::event::{
-    ChildOutcome, CorrelationKey, FailureCode, Fence, ReconcileResult, ReviewOutcome, RunEvent,
-    StopReason, SwitchSelection,
+    AddressedRunEvent, ChildOutcome, CorrelationKey, FailureCode, Fence, ReconcileResult,
+    ReviewOutcome, RunEvent, StopReason, SwitchSelection,
 };
+use super::instance::ExecutionInstanceId;
 use super::plan::{Evaluation, Plan, after, plan};
 use super::sagas::policies;
 use super::state::{RunId, RunState, SagaPhase, StepState, StepStatus, WaitingOn};
@@ -61,6 +62,13 @@ pub struct Heartbeat {
     pub cancel_requested: bool,
     /// The first heartbeat of an attempt is journaled as `step.started`.
     pub event: Option<RunEvent>,
+}
+
+/// The heartbeat result for one explicitly addressed logical instance.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstanceHeartbeat {
+    pub cancel_requested: bool,
+    pub event: Option<AddressedRunEvent>,
 }
 
 /// Why an attempt ended without the worker reporting.
@@ -145,6 +153,39 @@ fn require_lease<'a>(
     Ok(step)
 }
 
+fn require_instance<'a>(
+    state: &'a RunState,
+    instance: &ExecutionInstanceId,
+) -> Result<&'a StepState, ExecutionError> {
+    if state.is_finished() {
+        return Err(ExecutionError::RunFinished(state.status()));
+    }
+    state
+        .instance(instance)
+        .ok_or_else(|| ExecutionError::UnknownInstance(instance.clone()))
+}
+
+fn require_instance_lease<'a>(
+    state: &'a RunState,
+    instance: &ExecutionInstanceId,
+    fence: Fence,
+) -> Result<&'a StepState, ExecutionError> {
+    let step = require_instance(state, instance)?;
+    if !step.status().is_leased() {
+        return Err(ExecutionError::IllegalInstanceTransition {
+            instance: instance.clone(),
+            status: step.status(),
+            event: "lease check",
+        });
+    }
+    if step.attempt() != fence.attempt || step.generation() != fence.generation {
+        return Err(ExecutionError::StaleInstanceAttempt {
+            instance: instance.clone(),
+        });
+    }
+    Ok(step)
+}
+
 /// Creates the state of a new run and schedules its entrypoint.
 ///
 /// # Errors
@@ -194,6 +235,53 @@ pub fn lease_step(
     Ok((fence, event))
 }
 
+/// Grants a lease to one scoped logical instance without invoking structured planning.
+///
+/// This reducer entry point is intentionally limited to attempt ownership. Completion and failure
+/// remain unavailable for scoped instances until their routing and durable journal boundaries are
+/// integrated.
+///
+/// # Errors
+/// Returns a typed instance error when the addressed instance is missing or not ready.
+pub fn lease_instance(
+    state: &mut RunState,
+    instance: &ExecutionInstanceId,
+) -> Result<(Fence, AddressedRunEvent), ExecutionError> {
+    if instance.path().is_root() {
+        let (fence, event) = lease_step(state, instance.node())?;
+        return Ok((fence, AddressedRunEvent::root(event)));
+    }
+    if state.is_finished()
+        || state.is_paused()
+        || (state.stop_reason().is_some() && !instance.node().is_derived())
+    {
+        return Err(ExecutionError::RunNotRunnable(state.status()));
+    }
+    let step = require_instance(state, instance)?;
+    if step.status() != StepStatus::Ready {
+        return Err(ExecutionError::IllegalInstanceTransition {
+            instance: instance.clone(),
+            status: step.status(),
+            event: "step.leased",
+        });
+    }
+    let fence = Fence {
+        attempt: step.attempt() + 1,
+        generation: step.generation() + 1,
+    };
+    let event = AddressedRunEvent::in_path(
+        instance.path().clone(),
+        RunEvent::StepLeased {
+            node: instance.node().clone(),
+            attempt: fence.attempt,
+            generation: fence.generation,
+        },
+    )
+    .map_err(|_| ExecutionError::Invariant("a step event lost its instance address"))?;
+    state.apply_addressed(&event)?;
+    Ok((fence, event))
+}
+
 /// Records a heartbeat. The first one of an attempt marks the step as started.
 ///
 /// # Errors
@@ -218,6 +306,45 @@ pub fn heartbeat(
         None
     };
     Ok(Heartbeat {
+        cancel_requested,
+        event,
+    })
+}
+
+/// Records a heartbeat for one scoped logical instance.
+///
+/// # Errors
+/// Returns a typed instance error for a stale fence or illegal state.
+pub fn heartbeat_instance(
+    state: &mut RunState,
+    instance: &ExecutionInstanceId,
+    fence: Fence,
+) -> Result<InstanceHeartbeat, ExecutionError> {
+    if instance.path().is_root() {
+        let heartbeat = heartbeat(state, instance.node(), fence)?;
+        return Ok(InstanceHeartbeat {
+            cancel_requested: heartbeat.cancel_requested,
+            event: heartbeat.event.map(AddressedRunEvent::root),
+        });
+    }
+    let step = require_instance_lease(state, instance, fence)?;
+    let cancel_requested = step.cancel_requested();
+    let event = if step.status() == StepStatus::Leased {
+        let started = AddressedRunEvent::in_path(
+            instance.path().clone(),
+            RunEvent::StepStarted {
+                node: instance.node().clone(),
+                attempt: fence.attempt,
+                generation: fence.generation,
+            },
+        )
+        .map_err(|_| ExecutionError::Invariant("a step event lost its instance address"))?;
+        state.apply_addressed(&started)?;
+        Some(started)
+    } else {
+        None
+    };
+    Ok(InstanceHeartbeat {
         cancel_requested,
         event,
     })

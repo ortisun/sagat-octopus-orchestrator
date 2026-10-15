@@ -5,6 +5,7 @@ use std::fmt;
 use time::OffsetDateTime;
 
 use super::error::ExecutionError;
+use super::instance::{ExecutionInstanceId, InstancePath};
 use super::state::{RunId, RunStatus};
 use crate::identity::clip;
 use crate::saga::{ReconcileVerdict, SagaOutcome};
@@ -568,6 +569,79 @@ pub enum RunEvent {
     RunFinished {
         status: RunStatus,
     },
+}
+
+/// A journal event together with the scope path that addresses its logical execution instance.
+///
+/// Existing journals use [`Self::root`]. A scoped address is only valid for a step event; run-level
+/// events remain properties of the run and therefore always use the empty path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AddressedRunEvent {
+    path: InstancePath,
+    event: RunEvent,
+}
+
+/// Why a journal event cannot use the requested scope path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum EventAddressError {
+    #[error("a run-level event must use the root path")]
+    RunEventInScope,
+}
+
+impl AddressedRunEvent {
+    #[must_use]
+    pub fn root(event: RunEvent) -> Self {
+        Self {
+            path: InstancePath::root(),
+            event,
+        }
+    }
+
+    /// Addresses a step event in one scope path.
+    ///
+    /// # Errors
+    /// Returns [`EventAddressError::RunEventInScope`] when a run-level event is assigned to a
+    /// non-root path.
+    pub fn in_path(path: InstancePath, event: RunEvent) -> Result<Self, EventAddressError> {
+        if !path.is_root() && event.node().is_none() {
+            return Err(EventAddressError::RunEventInScope);
+        }
+        Ok(Self { path, event })
+    }
+
+    #[must_use]
+    pub const fn path(&self) -> &InstancePath {
+        &self.path
+    }
+
+    #[must_use]
+    pub const fn event(&self) -> &RunEvent {
+        &self.event
+    }
+
+    #[must_use]
+    pub fn into_event(self) -> RunEvent {
+        self.event
+    }
+
+    #[must_use]
+    pub fn instance(&self) -> Option<ExecutionInstanceId> {
+        self.event
+            .node()
+            .cloned()
+            .map(|node| ExecutionInstanceId::in_path(self.path.clone(), node))
+    }
+
+    /// Every instance created or changed by the event. Child activations inherit the addressed
+    /// path; opening a new dynamic iteration remains the responsibility of its scope event.
+    #[must_use]
+    pub fn changed_instances(&self) -> Vec<ExecutionInstanceId> {
+        self.event
+            .changed_nodes()
+            .into_iter()
+            .map(|node| ExecutionInstanceId::in_path(self.path.clone(), node))
+            .collect()
+    }
 }
 
 impl RunEvent {

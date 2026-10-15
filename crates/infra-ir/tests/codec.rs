@@ -98,6 +98,175 @@ fn additive_declarations_remain_unpublishable_until_the_runtime_supports_them() 
 }
 
 #[test]
+fn structured_collection_can_be_validated_and_canonicalized_without_enabling_publication() {
+    let mut document = minimal(
+        json!([
+            {"id": "lines", "type": "forEach", "items": "input.items", "body": "line",
+             "result": "bodyResult", "maxItems": 17, "maxConcurrency": 3, "next": "done"},
+            {"id": "done", "type": "end", "outputExpr": "steps.lines.output"}
+        ]),
+        "lines",
+    );
+    document["limits"] = json!({"maxInstances": 200, "maxDepth": 2});
+    document["bodies"] = json!({"line": {"entrypoint": "work", "nodes": [
+        {"id": "work", "type": "activity", "activity": "line.process", "next": "return"},
+        {"id": "return", "type": "return", "result": "steps.work.output"}
+    ]}});
+
+    let parsed = JsonIrCodec
+        .parse_structured(document.to_string().as_bytes())
+        .expect("structured validation succeeds");
+    assert!(parsed.definition.is_structured());
+    assert_eq!(parsed.definition.limits().max_instances(), 200);
+    assert_eq!(parsed.definition.limits().max_depth(), 2);
+    let lines = parsed
+        .definition
+        .node(&NodeId::parse("lines").expect("node id"))
+        .expect("collection node");
+    assert!(matches!(
+        lines.kind(),
+        NodeKind::ForEach {
+            max_items: 17,
+            max_concurrency: 3,
+            ..
+        }
+    ));
+    let body = parsed
+        .definition
+        .body(&NodeId::parse("line").expect("body id"))
+        .expect("named body");
+    assert_eq!(body.entrypoint().as_str(), "work");
+    assert!(matches!(
+        body.node(&NodeId::parse("return").expect("return id"))
+            .expect("return node")
+            .kind(),
+        NodeKind::Return { .. }
+    ));
+
+    let canonical: Value = serde_json::from_slice(&parsed.canonical).expect("canonical JSON");
+    assert_eq!(canonical["apiVersion"], "sagat-octopus-orchestrator.io/v1");
+    let reparsed = JsonIrCodec
+        .parse_structured(&parsed.canonical)
+        .expect("canonical structured document reparses");
+    assert_eq!(reparsed.canonical, parsed.canonical);
+    assert_eq!(reparsed.digest, parsed.digest);
+
+    assert!(matches!(
+        JsonIrCodec.parse(document.to_string().as_bytes()),
+        Err(IrError::UnsupportedDeclaration {
+            field: "bodies",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn structured_validation_compiles_collection_and_body_expressions() {
+    let mut document = minimal(
+        json!([
+            {"id": "lines", "type": "forEach", "items": "input.items[", "body": "line",
+             "result": "bodyResult", "maxItems": 17, "maxConcurrency": 3, "next": "done"},
+            {"id": "done", "type": "end"}
+        ]),
+        "lines",
+    );
+    document["bodies"] = json!({"line": {"entrypoint": "return", "nodes": [
+        {"id": "return", "type": "return", "result": "input.item"}
+    ]}});
+
+    assert!(matches!(
+        JsonIrCodec.parse_structured(document.to_string().as_bytes()),
+        Err(IrError::Expression { field: "items", .. })
+    ));
+
+    document["nodes"][0]["items"] = json!("input.items");
+    document["bodies"]["line"]["nodes"][0]["result"] = json!("input.item[");
+    assert!(matches!(
+        JsonIrCodec.parse_structured(document.to_string().as_bytes()),
+        Err(IrError::Expression {
+            node,
+            field: "result",
+            ..
+        }) if node == "return"
+    ));
+}
+
+#[test]
+fn structured_validation_enforces_closed_bodies_and_capability_boundaries() {
+    let mut document = minimal(
+        json!([
+            {"id": "lines", "type": "forEach", "items": "input.items", "body": "line",
+             "result": "bodyResult", "maxItems": 17, "maxConcurrency": 3, "next": "done"},
+            {"id": "done", "type": "end"}
+        ]),
+        "lines",
+    );
+    document["bodies"] = json!({"line": {"entrypoint": "work", "nodes": [
+        {"id": "work", "type": "activity", "activity": "line.process", "next": "done"},
+        {"id": "return", "type": "return", "result": "steps.work.output"}
+    ]}});
+
+    assert!(matches!(
+        JsonIrCodec.parse_structured(document.to_string().as_bytes()),
+        Err(IrError::Invalid(WorkflowError::UnknownTarget { .. }))
+    ));
+
+    document["bodies"]["line"]["nodes"] = json!([
+        {"id": "nested", "type": "forEach", "items": "input.items", "body": "line",
+         "result": "bodyResult", "maxItems": 2, "maxConcurrency": 1, "next": "return"},
+        {"id": "return", "type": "return", "result": "steps.nested.output"}
+    ]);
+    document["bodies"]["line"]["entrypoint"] = json!("nested");
+    assert!(matches!(
+        JsonIrCodec.parse_structured(document.to_string().as_bytes()),
+        Err(IrError::Invalid(WorkflowError::RecursiveBody(body))) if body.as_str() == "line"
+    ));
+
+    document["nodes"][0] = json!({
+        "id": "lines", "type": "while", "condition": "true", "body": "line",
+        "initial": "0", "carry": "carry + 1", "maxIterations": 2,
+        "timeoutMs": 1_000, "next": "done"
+    });
+    assert!(matches!(
+        JsonIrCodec.parse_structured(document.to_string().as_bytes()),
+        Err(IrError::Unsupported { kind, .. }) if kind == "while"
+    ));
+}
+
+#[test]
+fn structured_schema_errors_identify_the_offending_fields() {
+    let mut document = minimal(
+        json!([
+            {"id": "lines", "type": "forEach", "items": "input.items", "body": "line",
+             "result": "bodyResult", "maxItems": 17, "next": "done"},
+            {"id": "done", "type": "end"}
+        ]),
+        "lines",
+    );
+    document["bodies"] = json!({"line": {"entrypoint": "work", "nodes": [
+        {"id": "work", "type": "activity", "next": "return"},
+        {"id": "return", "type": "return", "result": "steps.work.output"}
+    ]}});
+
+    let issues = match JsonIrCodec.parse_structured(document.to_string().as_bytes()) {
+        Err(IrError::Schema(issues)) => issues,
+        other => panic!("expected schema errors, got {other:?}"),
+    };
+    assert!(
+        issues
+            .iter()
+            .any(|issue| { issue.path == "/nodes/0" && issue.message.contains("maxConcurrency") }),
+        "{issues:?}"
+    );
+    assert!(
+        issues.iter().any(|issue| {
+            issue.path == "/bodies/line/nodes/0" && issue.message.contains("activity")
+        }),
+        "{issues:?}"
+    );
+}
+
+#[test]
 fn switch_cases_keep_declaration_order_and_reject_an_undefined_target() {
     let mut document = minimal(
         json!([

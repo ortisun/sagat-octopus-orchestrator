@@ -163,3 +163,18 @@ The application graph snapshot was then extended to retain each step's full inst
 The HTTP graph continues to render root nodes only, so a scoped projection cannot overwrite a
 root node with the same local name. The complete scoped graph topology remains pending. The
 real-PostgreSQL integration target passed all 10 tests after this read-side change.
+
+## Structured validation and scoped reducer checkpoint (2026-10-15)
+
+The explicit structured IR parser now checks additive v1 collection bodies and limits, compiles
+expressions in all graphs and preserves canonical bytes on reparse. The production publication
+parser still refuses these forms. A separate reducer address carries the typed scope path for
+release, lease and start on already restored instances, with independent fences. Completion,
+admission, storage writes, journal replay from an empty run and worker 1.5 remain disabled.
+
+| Check | Result |
+|---|---|
+| `cargo test -p sagat-infra-ir --locked` | Passed: 74 tests across unit, cache, codec, diff and projection targets |
+| `cargo test -p sagat-domain --locked -q` | Passed: full domain suite, including 6 scoped reducer tests |
+| `cargo test -p sagat-tests --test contract_workflow_primitives --locked` | Passed: 14 contract tests |
+| `cargo clippy -p sagat-infra-ir -p sagat-domain --all-targets --locked -- -D warnings` | Passed in focused package runs |

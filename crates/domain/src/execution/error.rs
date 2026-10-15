@@ -1,5 +1,6 @@
 //! Typed errors of the execution model. None of them carries payload data.
 
+use super::instance::ExecutionInstanceId;
 use super::state::{RunStatus, StepStatus};
 use crate::workflow::NodeId;
 
@@ -10,6 +11,8 @@ pub enum ExecutionError {
     RunFinished(RunStatus),
     #[error("the run has no step '{0}'")]
     UnknownStep(NodeId),
+    #[error("the run has no execution instance '{0:?}'")]
+    UnknownInstance(ExecutionInstanceId),
     /// The step is not in a status from which this event is legal.
     #[error("step '{node}' is {status}, which does not allow '{event}'")]
     IllegalTransition {
@@ -17,9 +20,17 @@ pub enum ExecutionError {
         status: StepStatus,
         event: &'static str,
     },
+    #[error("execution instance '{instance:?}' is {status}, which does not allow '{event}'")]
+    IllegalInstanceTransition {
+        instance: ExecutionInstanceId,
+        status: StepStatus,
+        event: &'static str,
+    },
     /// The attempt or generation is not the one that holds the lease: the caller is stale.
     #[error("step '{node}': the attempt/generation is stale")]
     StaleAttempt { node: NodeId },
+    #[error("execution instance '{instance:?}': the attempt/generation is stale")]
+    StaleInstanceAttempt { instance: ExecutionInstanceId },
     #[error("step '{0}' has already been scheduled")]
     AlreadyScheduled(NodeId),
     /// A timer, wait deadline or retry delay has not elapsed yet.
@@ -47,4 +58,7 @@ pub enum ExecutionError {
     /// A structured node has a valid definition but its execution capability is not enabled.
     #[error("structured node '{0}' is not executable by this runtime")]
     UnsupportedStructuredNode(NodeId),
+    /// A scoped transition is valid journal vocabulary but its reducer path is not enabled yet.
+    #[error("scoped event '{0}' is not executable by this runtime")]
+    UnsupportedScopedEvent(&'static str),
 }

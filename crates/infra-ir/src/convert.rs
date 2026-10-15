@@ -13,8 +13,9 @@ use sagat_domain::scripts::{Digest, Language, activity_of};
 use sagat_domain::secrets::{MAX_SECRETS_PER_ACTIVITY, SecretName};
 use sagat_domain::triggers::{CronSpec, Trigger, TriggerKind};
 use sagat_domain::workflow::{
-    ActivityName, BackoffStrategy, CancelPolicy, EventType, Expression, JoinPolicy, Node, NodeId,
-    NodeKind, RetryPolicy, SwitchCase, WorkflowDefinition, WorkflowError,
+    ActivityName, BackoffStrategy, BodyDefinition, CancelPolicy, EventType, Expression, JoinPolicy,
+    Node, NodeId, NodeKind, RetryPolicy, SwitchCase, WorkflowDefinition, WorkflowError,
+    WorkflowLimits,
 };
 use serde_json::{Map, Value};
 
@@ -79,6 +80,31 @@ fn unsupported(kind: &str) -> Option<&'static str> {
         }
         _ => return None,
     })
+}
+
+fn unsupported_structured(kind: &str) -> Option<&'static str> {
+    Some(match kind {
+        "foreach" => "legacy collection placeholder has no executable definition",
+        "humanApproval" => "legacy approval placeholder has no executable definition",
+        "while" | "repeatUntil" | "approval" | "continueAsNew" => {
+            "this workflow capability has no validated domain mapping"
+        }
+        _ => return None,
+    })
+}
+
+fn integer_u32(node: &Map<String, Value>, field: &str, at: &str) -> Result<u32, IrError> {
+    node.get(field)
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| issue(format!("{at}/{field}"), "expected a positive integer"))
+}
+
+fn integer_u16(node: &Map<String, Value>, field: &str, at: &str) -> Result<u16, IrError> {
+    node.get(field)
+        .and_then(Value::as_u64)
+        .and_then(|value| u16::try_from(value).ok())
+        .ok_or_else(|| issue(format!("{at}/{field}"), "expected a positive integer"))
 }
 
 fn retry(node: &Map<String, Value>, at: &str) -> Result<RetryPolicy, IrError> {
@@ -358,6 +384,16 @@ fn kind_of(node: &Map<String, Value>, kind: &str, at: &str) -> Result<NodeKind, 
                 })?,
             },
         },
+        "forEach" => NodeKind::ForEach {
+            items: expression(text(node, "items", at)?, &format!("{at}/items"))?,
+            body: node_id(text(node, "body", at)?, &format!("{at}/body"))?,
+            result: expression(text(node, "result", at)?, &format!("{at}/result"))?,
+            max_items: integer_u32(node, "maxItems", at)?,
+            max_concurrency: integer_u16(node, "maxConcurrency", at)?,
+        },
+        "return" => NodeKind::Return {
+            result: expression(text(node, "result", at)?, &format!("{at}/result"))?,
+        },
         "end" => NodeKind::End {
             output: optional_text(node, "outputExpr", at)?
                 .map(|e| expression(e, &format!("{at}/outputExpr")))
@@ -375,39 +411,21 @@ fn kind_of(node: &Map<String, Value>, kind: &str, at: &str) -> Result<NodeKind, 
     })
 }
 
-pub(crate) fn definition(document: &Value) -> Result<WorkflowDefinition, IrError> {
-    for field in ["bodies", "limits", "state", "chainPolicy"] {
-        if document.get(field).is_some() {
-            return Err(IrError::UnsupportedDeclaration {
-                field,
-                reason: "this workflow capability is not enabled by the runtime",
-            });
-        }
-    }
-    let name = document
-        .pointer("/metadata/name")
-        .and_then(Value::as_str)
-        .ok_or_else(|| issue("/metadata/name".into(), "expected a string"))?;
-    let name = Slug::parse(name).map_err(|e| issue("/metadata/name".into(), e.to_string()))?;
-    let entrypoint = document
-        .get("entrypoint")
-        .and_then(Value::as_str)
-        .ok_or_else(|| issue("/entrypoint".into(), "expected a string"))?;
-    let entrypoint = node_id(entrypoint, "/entrypoint")?;
-    let raw_nodes = document
-        .get("nodes")
-        .and_then(Value::as_array)
-        .ok_or_else(|| issue("/nodes".into(), "expected an array"))?;
-
+fn nodes(raw_nodes: &[Value], at: &str, structured: bool) -> Result<Vec<Node>, IrError> {
     let mut nodes = Vec::with_capacity(raw_nodes.len());
     for (index, raw) in raw_nodes.iter().enumerate() {
-        let at = format!("/nodes/{index}");
+        let at = format!("{at}/{index}");
         let node = raw
             .as_object()
             .ok_or_else(|| issue(at.clone(), "expected an object"))?;
         let id = text(node, "id", &at)?;
         let kind = text(node, "type", &at)?;
-        if let Some(reason) = unsupported(kind) {
+        let unsupported = if structured {
+            unsupported_structured(kind)
+        } else {
+            unsupported(kind)
+        };
+        if let Some(reason) = unsupported {
             return Err(IrError::Unsupported {
                 node: id.chars().take(64).collect(),
                 kind: kind.to_owned(),
@@ -430,7 +448,102 @@ pub(crate) fn definition(document: &Value) -> Result<WorkflowDefinition, IrError
         }
         nodes.push(built);
     }
+    Ok(nodes)
+}
+
+fn identity(document: &Value) -> Result<(Slug, NodeId), IrError> {
+    let name = document
+        .pointer("/metadata/name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| issue("/metadata/name".into(), "expected a string"))?;
+    let name = Slug::parse(name).map_err(|e| issue("/metadata/name".into(), e.to_string()))?;
+    let entrypoint = document
+        .get("entrypoint")
+        .and_then(Value::as_str)
+        .ok_or_else(|| issue("/entrypoint".into(), "expected a string"))?;
+    Ok((name, node_id(entrypoint, "/entrypoint")?))
+}
+
+fn root_nodes(document: &Value, structured: bool) -> Result<Vec<Node>, IrError> {
+    let raw = document
+        .get("nodes")
+        .and_then(Value::as_array)
+        .ok_or_else(|| issue("/nodes".into(), "expected an array"))?;
+    nodes(raw, "/nodes", structured)
+}
+
+pub(crate) fn definition(document: &Value) -> Result<WorkflowDefinition, IrError> {
+    for field in ["bodies", "limits", "state", "chainPolicy"] {
+        if document.get(field).is_some() {
+            return Err(IrError::UnsupportedDeclaration {
+                field,
+                reason: "this workflow capability is not enabled by the runtime",
+            });
+        }
+    }
+    let (name, entrypoint) = identity(document)?;
+    let nodes = root_nodes(document, false)?;
     WorkflowDefinition::new(name, entrypoint, nodes)
+        .and_then(|definition| definition.with_triggers(triggers(document)?))
+        .map_err(IrError::Invalid)
+}
+
+pub(crate) fn structured_definition(document: &Value) -> Result<WorkflowDefinition, IrError> {
+    for field in ["state", "chainPolicy"] {
+        if document.get(field).is_some() {
+            return Err(IrError::UnsupportedDeclaration {
+                field,
+                reason: "this workflow capability has no validated domain mapping",
+            });
+        }
+    }
+    let (name, entrypoint) = identity(document)?;
+    let root = root_nodes(document, true)?;
+    let mut bodies = Vec::new();
+    if let Some(raw_bodies) = document.get("bodies").and_then(Value::as_object) {
+        bodies.reserve(raw_bodies.len());
+        for (body_name, raw_body) in raw_bodies {
+            let at = format!("/bodies/{body_name}");
+            let body = raw_body
+                .as_object()
+                .ok_or_else(|| issue(at.clone(), "expected an object"))?;
+            let name = node_id(body_name, &at)?;
+            let entrypoint = node_id(text(body, "entrypoint", &at)?, &format!("{at}/entrypoint"))?;
+            let raw_nodes = body
+                .get("nodes")
+                .and_then(Value::as_array)
+                .ok_or_else(|| issue(format!("{at}/nodes"), "expected an array"))?;
+            let nodes = nodes(raw_nodes, &format!("{at}/nodes"), true)?;
+            bodies.push(BodyDefinition::new(name, entrypoint, nodes).map_err(IrError::Invalid)?);
+        }
+    }
+    let defaults = WorkflowLimits::default();
+    let limits = match document.get("limits") {
+        None => defaults,
+        Some(Value::Object(raw)) => {
+            let max_instances = match raw.get("maxInstances") {
+                None => defaults.max_instances(),
+                Some(value) => value
+                    .as_u64()
+                    .and_then(|value| u32::try_from(value).ok())
+                    .ok_or_else(|| {
+                        issue("/limits/maxInstances".into(), "expected a positive integer")
+                    })?,
+            };
+            let max_depth = match raw.get("maxDepth") {
+                None => defaults.max_depth(),
+                Some(value) => value
+                    .as_u64()
+                    .and_then(|value| u8::try_from(value).ok())
+                    .ok_or_else(|| {
+                        issue("/limits/maxDepth".into(), "expected a positive integer")
+                    })?,
+            };
+            WorkflowLimits::new(max_instances, max_depth).map_err(IrError::Invalid)?
+        }
+        Some(_) => return Err(issue("/limits".into(), "expected an object")),
+    };
+    WorkflowDefinition::new_structured(name, entrypoint, root, bodies, limits)
         .and_then(|definition| definition.with_triggers(triggers(document)?))
         .map_err(IrError::Invalid)
 }

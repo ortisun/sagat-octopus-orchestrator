@@ -25,6 +25,20 @@ use serde_json::Value;
 #[derive(Debug, Clone, Copy, Default)]
 pub struct JsonIrCodec;
 
+impl JsonIrCodec {
+    /// Validates the additive structured subset without making it publishable or executable.
+    ///
+    /// This entry point currently maps named bodies, `forEach`, `return` and workflow limits. The
+    /// production [`IrCodec::parse`] path remains the publication capability gate.
+    ///
+    /// # Errors
+    /// Returns the same bounded syntax, schema, graph and expression errors as publication parsing,
+    /// plus an unsupported-capability error for structured kinds without a domain mapping.
+    pub fn parse_structured(&self, document: &[u8]) -> Result<ParsedDefinition, IrError> {
+        parse_document(document, convert::structured_definition)
+    }
+}
+
 impl IrCodec for JsonIrCodec {
     fn check_draft(&self, document: &[u8]) -> Result<(), IrError> {
         if document.len() > MAX_IR_BYTES {
@@ -45,27 +59,34 @@ impl IrCodec for JsonIrCodec {
     }
 
     fn parse(&self, document: &[u8]) -> Result<ParsedDefinition, IrError> {
-        if document.len() > MAX_IR_BYTES {
-            return Err(IrError::TooLarge);
-        }
-        // `serde_json` bounds its own recursion (128 levels), so a nesting bomb is a syntax error.
-        let value: Value = serde_json::from_slice(document).map_err(|_| IrError::Malformed)?;
-        let issues = schema::issues(&value);
-        if !issues.is_empty() {
-            return Err(IrError::Schema(issues));
-        }
-        let definition = convert::definition(&value)?;
-        check_expressions(&definition)?;
-        let canonical = canonical::canonical_json(&value);
-        let digest = canonical::digest_of(&canonical);
-        let warnings = definition.warnings();
-        Ok(ParsedDefinition {
-            definition,
-            canonical,
-            digest,
-            warnings,
-        })
+        parse_document(document, convert::definition)
     }
+}
+
+fn parse_document(
+    document: &[u8],
+    convert: fn(&Value) -> Result<WorkflowDefinition, IrError>,
+) -> Result<ParsedDefinition, IrError> {
+    if document.len() > MAX_IR_BYTES {
+        return Err(IrError::TooLarge);
+    }
+    // `serde_json` bounds its own recursion (128 levels), so a nesting bomb is a syntax error.
+    let value: Value = serde_json::from_slice(document).map_err(|_| IrError::Malformed)?;
+    let issues = schema::issues(&value);
+    if !issues.is_empty() {
+        return Err(IrError::Schema(issues));
+    }
+    let definition = convert(&value)?;
+    check_expressions(&definition)?;
+    let canonical = canonical::canonical_json(&value);
+    let digest = canonical::digest_of(&canonical);
+    let warnings = definition.warnings();
+    Ok(ParsedDefinition {
+        definition,
+        canonical,
+        digest,
+        warnings,
+    })
 }
 
 fn expression_error(node: &str, field: &'static str, error: impl ToString) -> IrError {
@@ -78,7 +99,40 @@ fn expression_error(node: &str, field: &'static str, error: impl ToString) -> Ir
 
 /// Every expression must compile in the bounded subset *now*, so a run never meets a syntax error.
 fn check_expressions(definition: &WorkflowDefinition) -> Result<(), IrError> {
-    for node in definition.nodes() {
+    check_node_expressions(definition.nodes())?;
+    for body in definition.bodies() {
+        check_node_expressions(body.nodes())?;
+    }
+    // A trigger's filter sees the event and its data, and nothing of any run: a run does not exist
+    // yet when the filter is evaluated.
+    for (i, trigger) in definition.triggers().iter().enumerate() {
+        if let Some(schedule) = trigger.schedule() {
+            sagat_application::dispatch::CronSchedule::validate(&cron::CronCalendar, schedule)
+                .map_err(|e| expression_error(&format!("triggers[{i}]"), "cron", e))?;
+        }
+        if let Some(filter) = trigger.filter() {
+            let compiled = Compiled::compile(filter.as_str())
+                .map_err(|e| expression_error(&format!("triggers[{i}]"), "filter", e))?;
+            if let Some(other) = compiled
+                .variables()
+                .into_iter()
+                .find(|v| v != "event" && v != "data")
+            {
+                return Err(expression_error(
+                    &format!("triggers[{i}]"),
+                    "filter",
+                    format!("a trigger filter reads `event` and `data`, not `{other}`"),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn check_node_expressions<'a>(
+    nodes: impl Iterator<Item = &'a sagat_domain::workflow::Node>,
+) -> Result<(), IrError> {
+    for node in nodes {
         let id = node.id().as_str();
         match node.kind() {
             NodeKind::Condition { expression, .. } => {
@@ -113,30 +167,16 @@ fn check_expressions(definition: &WorkflowDefinition) -> Result<(), IrError> {
                 Template::compile(template.as_str())
                     .map_err(|e| expression_error(id, "idempotencyTemplate", e))?;
             }
-            _ => {}
-        }
-    }
-    // A trigger's filter sees the event and its data, and nothing of any run: a run does not exist
-    // yet when the filter is evaluated.
-    for (i, trigger) in definition.triggers().iter().enumerate() {
-        if let Some(schedule) = trigger.schedule() {
-            sagat_application::dispatch::CronSchedule::validate(&cron::CronCalendar, schedule)
-                .map_err(|e| expression_error(&format!("triggers[{i}]"), "cron", e))?;
-        }
-        if let Some(filter) = trigger.filter() {
-            let compiled = Compiled::compile(filter.as_str())
-                .map_err(|e| expression_error(&format!("triggers[{i}]"), "filter", e))?;
-            if let Some(other) = compiled
-                .variables()
-                .into_iter()
-                .find(|v| v != "event" && v != "data")
-            {
-                return Err(expression_error(
-                    &format!("triggers[{i}]"),
-                    "filter",
-                    format!("a trigger filter reads `event` and `data`, not `{other}`"),
-                ));
+            NodeKind::ForEach { items, result, .. } => {
+                Compiled::compile(items.as_str()).map_err(|e| expression_error(id, "items", e))?;
+                Compiled::compile(result.as_str())
+                    .map_err(|e| expression_error(id, "result", e))?;
             }
+            NodeKind::Return { result } => {
+                Compiled::compile(result.as_str())
+                    .map_err(|e| expression_error(id, "result", e))?;
+            }
+            _ => {}
         }
     }
     Ok(())

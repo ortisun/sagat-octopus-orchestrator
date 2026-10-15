@@ -13,16 +13,18 @@ mod sagas;
 mod state;
 
 pub use command::{
-    Expiry, Failure, Heartbeat, Progress, Resolution, complete_reconciliation, complete_step,
-    expire_attempt, fail_report_for_storage_quota, fail_step, fail_step_for_storage_quota,
-    finish_child, fire_timer, heartbeat, lease_step, mark_for_review, pause_run, resolve,
-    resolve_review, resume_run, retry_due, retry_review, satisfy_wait, skip_review, start_run,
-    stop_for_storage_quota, stop_run, time_out_wait,
+    Expiry, Failure, Heartbeat, InstanceHeartbeat, Progress, Resolution, complete_reconciliation,
+    complete_step, expire_attempt, fail_report_for_storage_quota, fail_step,
+    fail_step_for_storage_quota, finish_child, fire_timer, heartbeat, heartbeat_instance,
+    lease_instance, lease_step, mark_for_review, pause_run, resolve, resolve_review, resume_run,
+    retry_due, retry_review, satisfy_wait, skip_review, start_run, stop_for_storage_quota,
+    stop_run, time_out_wait,
 };
 pub use error::ExecutionError;
 pub use event::{
-    Cause, ChildOutcome, CorrelationKey, FailureCode, Fence, JoinOutcome, PlannedEntry,
-    ReconcileResult, ReviewOutcome, RunEvent, StopReason, SwitchSelection,
+    AddressedRunEvent, Cause, ChildOutcome, CorrelationKey, EventAddressError, FailureCode, Fence,
+    JoinOutcome, PlannedEntry, ReconcileResult, ReviewOutcome, RunEvent, StopReason,
+    SwitchSelection,
 };
 pub use instance::{
     ExecutionInstanceId, InstanceIdentityError, InstancePath, MAX_ITERATION_INDEX, MAX_SCOPE_DEPTH,

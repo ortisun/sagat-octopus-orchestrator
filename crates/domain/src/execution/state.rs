@@ -13,8 +13,8 @@ use time::OffsetDateTime;
 
 use super::error::ExecutionError;
 use super::event::{
-    ChildOutcome, CorrelationKey, FailureCode, JoinOutcome, ReconcileResult, ReviewOutcome,
-    RunEvent, StopReason, SwitchSelection,
+    AddressedRunEvent, ChildOutcome, CorrelationKey, FailureCode, JoinOutcome, ReconcileResult,
+    ReviewOutcome, RunEvent, StopReason, SwitchSelection,
 };
 use super::instance::ExecutionInstanceId;
 use crate::identity::IdentityError;
@@ -750,6 +750,45 @@ impl RunState {
         }
     }
 
+    fn instance_mut(
+        &mut self,
+        instance: &ExecutionInstanceId,
+        event: &'static str,
+        allowed: &[StepStatus],
+    ) -> Result<&mut StepState, ExecutionError> {
+        let step = self
+            .steps
+            .get_mut(instance)
+            .ok_or_else(|| ExecutionError::UnknownInstance(instance.clone()))?;
+        if allowed.contains(&step.status) {
+            Ok(step)
+        } else {
+            Err(ExecutionError::IllegalInstanceTransition {
+                instance: instance.clone(),
+                status: step.status,
+                event,
+            })
+        }
+    }
+
+    fn fenced_instance(
+        &mut self,
+        instance: &ExecutionInstanceId,
+        event: &'static str,
+        allowed: &[StepStatus],
+        attempt: u32,
+        generation: u64,
+    ) -> Result<&mut StepState, ExecutionError> {
+        let step = self.instance_mut(instance, event, allowed)?;
+        if step.fenced_by(attempt, generation) {
+            Ok(step)
+        } else {
+            Err(ExecutionError::StaleInstanceAttempt {
+                instance: instance.clone(),
+            })
+        }
+    }
+
     fn activate(&mut self, nodes: &[NodeId]) -> Result<(), ExecutionError> {
         for (i, node) in nodes.iter().enumerate() {
             if self
@@ -1354,6 +1393,61 @@ impl RunState {
         }
         self.applied += 1;
         self.refresh_status(event);
+        Ok(())
+    }
+
+    /// Applies a journal event at its explicit logical instance address.
+    ///
+    /// Root events retain the complete existing reducer behavior. Scoped execution currently
+    /// accepts only release, lease and start, which is enough to prove isolated ownership and
+    /// fencing while completion/routing remains gated behind durable planner integration.
+    ///
+    /// # Errors
+    /// An [`ExecutionError`] when the addressed transition is illegal or not enabled.
+    pub fn apply_addressed(&mut self, addressed: &AddressedRunEvent) -> Result<(), ExecutionError> {
+        use StepStatus::{Leased, Pending, Ready};
+
+        if addressed.path().is_root() {
+            return self.apply(addressed.event());
+        }
+        if self.status.is_terminal() {
+            return Err(ExecutionError::RunFinished(self.status));
+        }
+        let instance = addressed.instance().ok_or(ExecutionError::Invariant(
+            "a scoped journal address has no execution instance",
+        ))?;
+        let name = addressed.event().name();
+        match addressed.event() {
+            RunEvent::StepReleased { .. } => {
+                self.instance_mut(&instance, name, &[Pending])?.status = Ready;
+            }
+            RunEvent::StepLeased {
+                attempt,
+                generation,
+                ..
+            } => {
+                let step = self.instance_mut(&instance, name, &[Ready])?;
+                if *attempt != step.attempt + 1 || *generation != step.generation + 1 {
+                    return Err(ExecutionError::StaleInstanceAttempt { instance });
+                }
+                step.status = Leased;
+                step.attempt = *attempt;
+                step.generation = *generation;
+                step.cancel_requested = false;
+                step.next_attempt_at = None;
+            }
+            RunEvent::StepStarted {
+                attempt,
+                generation,
+                ..
+            } => {
+                self.fenced_instance(&instance, name, &[Leased], *attempt, *generation)?
+                    .status = StepStatus::Running;
+            }
+            _ => return Err(ExecutionError::UnsupportedScopedEvent(name)),
+        }
+        self.applied += 1;
+        self.refresh_status(addressed.event());
         Ok(())
     }
 

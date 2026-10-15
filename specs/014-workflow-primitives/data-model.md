@@ -57,6 +57,14 @@ The application graph snapshot also retains the full identity of each projected 
 HTTP graph renderer still presents only the legacy root graph and needs scoped node IDs and edges
 before it can claim complete dynamic topology.
 
+`AddressedRunEvent` pairs a typed path with the existing journal event vocabulary. The reducer
+currently permits scoped release, lease and start on a restored instance and keeps attempt fences
+independent across equal local node names. Scoped completion, routing and replay from an empty
+journal remain unsupported until durable admission events and the full writer/worker path exist.
+The explicit `JsonIrCodec::parse_structured` checks and canonicalizes v1 collection bodies and
+limits for contract validation. The production parse used by publication still rejects structured
+declarations, so a validated body cannot enter execution prematurely.
+
 **IterationScope**: owner instance, kind (`COLLECTION`, `WHILE`, `REPEAT_UNTIL`), lifecycle,
 captured input/state reference, cardinality, admitted cursor, completed count, next iteration index,
 effective limits, original deadline, reserved slots and ordered result references. Collection
