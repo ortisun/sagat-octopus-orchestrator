@@ -398,3 +398,15 @@ seven PostgreSQL tests. Approval has no public endpoint or runtime planner wirin
 
 Fault tests for worker delivery, cancellation, compensation and signals against these primitives,
 plus public API, telemetry, schema publication and five-language runtime conformance remain open.
+
+## Studio unknown-node display (2026-10-15)
+
+The Studio run card, table, details panel and accessible graph label now identify a runtime node
+type absent from its registry as unsupported. Long unknown type values stay bounded on cards and
+remain available through an accessible label. This is reader degradation only; it does not add
+Studio authoring or prove scoped/chain graph projection.
+
+| Check | Result |
+|---|---|
+| `npm test -- --run src/features/runs/RunNodeCard.test.tsx` in `frontend/apps/studio` | Passed: 8/8 |
+| `npm run typecheck`; `npm run lint` in `frontend/apps/studio` | Passed |
