@@ -848,6 +848,96 @@ paths:
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/chains/{chainId}/queries/{operationName}:
+    post:
+      operationId: queryExecutionChain
+      summary: Evaluate a declared business query on the current chain head
+      tags: [Runs]
+      x-implemented: '014'
+      description: |
+        Needs `run:read` and `run:query` in the chain namespace. The transaction takes a shared
+        chain lock before the current run lock, then evaluates the immutable declaration against
+        that run's committed state snapshot. An optional `expectedRunId` rejects a replaced head
+        with `409 CHAIN_HEAD_CHANGED`. The response identifies the run actually observed and is
+        never cached. Authorization and access audit commit before any declared value is returned.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {name: chainId, in: path, required: true, schema: {type: string, format: uuid}}
+        - name: operationName
+          in: path
+          required: true
+          schema: {type: string, minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ChainDeclaredQueryRequest'}
+      responses:
+        '200':
+          description: The declared result and exact current-head revisions observed
+          headers:
+            Cache-Control: {schema: {type: string, const: no-store}}
+            X-Trace-Id: {$ref: '#/components/headers/TraceId'}
+            X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DeclaredQueryResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/chains/{chainId}/updates/{operationName}:
+    post:
+      operationId: updateExecutionChain
+      summary: Apply a declared business update to the expected current chain head
+      tags: [Runs]
+      x-implemented: '014'
+      description: |
+        Needs `run:update` in the chain namespace. The transaction locks the chain before its
+        current run. An optional `expectedRunId` rejects a replaced head for a new update with
+        `409 CHAIN_HEAD_CHANGED`. The caller-chosen `updateKey` is scoped to the chain: an exact
+        replay returns the original applied or rejected receipt after rollover and still names the
+        run that committed it, while changed content returns `IDEMPOTENCY_KEY_REUSED`. State,
+        receipt, journal, resolved-run audit and outbox commit atomically. Responses are never
+        cached and contain only the declared bounded business result.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {name: chainId, in: path, required: true, schema: {type: string, format: uuid}}
+        - name: operationName
+          in: path
+          required: true
+          schema: {type: string, minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ChainDeclaredUpdateRequest'}
+      responses:
+        '200':
+          description: The applied result or exact durable replay
+          headers:
+            Cache-Control: {schema: {type: string, const: no-store}}
+            X-Trace-Id: {$ref: '#/components/headers/TraceId'}
+            X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DeclaredUpdateResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
   /namespaces/{namespaceId}/chains/{chainId}/signals/{signalName}:
     post:
       operationId: signalExecutionChain
@@ -3206,7 +3296,7 @@ components:
       name: resource
       in: path
       required: true
-      schema: {type: string, enum: [active_runs, tenant_active_runs, workflows, worker_sessions, activity_concurrency, secrets, event_endpoints, webhook_subscriptions, broker_subscriptions, event_connectors, scripts, script_jobs, tenant_content_bytes, tenant_log_bytes, api_requests_per_second, events_per_second, event_retention_seconds, script_retention_days]}
+      schema: {type: string, enum: [active_runs, tenant_active_runs, workflows, worker_sessions, activity_concurrency, iteration_concurrency, secrets, event_endpoints, webhook_subscriptions, broker_subscriptions, event_connectors, scripts, script_jobs, tenant_content_bytes, tenant_log_bytes, api_requests_per_second, events_per_second, event_retention_seconds, script_retention_days]}
     ActivityName:
       name: activity
       in: path
@@ -3829,6 +3919,17 @@ components:
       properties:
         args:
           description: JSON value checked against the immutable operation argument schema; at most 256 KiB after canonicalization.
+    ChainDeclaredQueryRequest:
+      type: object
+      additionalProperties: false
+      required: [args]
+      properties:
+        args:
+          description: JSON value checked against the immutable operation argument schema; at most 256 KiB after canonicalization.
+        expectedRunId:
+          type: string
+          format: uuid
+          description: Optional current-head precondition. A different committed head returns CHAIN_HEAD_CHANGED.
     DeclaredQueryResponse:
       type: object
       additionalProperties: false
@@ -3847,6 +3948,19 @@ components:
         updateKey: {type: string, minLength: 1, maxLength: 128, pattern: '^[!-~]+$', description: 'Caller-chosen durable idempotency key. Retries keep this exact key.'}
         args:
           description: JSON value checked against the immutable operation argument schema; at most 256 KiB after canonicalization.
+        expectedStateRevision: {type: integer, format: int64, minimum: 0}
+    ChainDeclaredUpdateRequest:
+      type: object
+      additionalProperties: false
+      required: [updateKey, args]
+      properties:
+        updateKey: {type: string, minLength: 1, maxLength: 128, pattern: '^[!-~]+$', description: 'Caller-chosen idempotency key retained across the entire chain. Retries keep this exact key.'}
+        args:
+          description: JSON value checked against the immutable operation argument schema; at most 256 KiB after canonicalization.
+        expectedRunId:
+          type: string
+          format: uuid
+          description: Optional current-head precondition for a new update. Exact receipt replay remains bound to the original resolved run after rollover.
         expectedStateRevision: {type: integer, format: int64, minimum: 0}
     DeclaredUpdateResponse:
       type: object
@@ -4032,14 +4146,17 @@ components:
         tenant_content_bytes and tenant_log_bytes are logical retained bytes (maximum 2^50);
         api_requests_per_second and events_per_second are requests/second (maximum 1,000,000,
         fixed two-second burst); event_retention_seconds is 0 or 60..2,592,000 seconds;
-        script_retention_days is 0..365 days. Zero disables new admission for that resource.
+        script_retention_days is 0..365 days. iteration_concurrency is tenant-wide; its explicit
+        value is 1..1,000,000,000, its default operator ceiling is 1,024 and, while absent or
+        cleared, structured iteration admission is disabled. Zero disables new admission for
+        resources that accept it.
         Lowering a limit does not erase retained content or rewrite existing expiry.
       type: object
       required: [resource, limit, source, ceiling]
       properties:
-        resource: {type: string, enum: [active_runs, tenant_active_runs, workflows, worker_sessions, activity_concurrency, secrets, event_endpoints, webhook_subscriptions, broker_subscriptions, event_connectors, scripts, script_jobs, tenant_content_bytes, tenant_log_bytes, api_requests_per_second, events_per_second, event_retention_seconds, script_retention_days]}
+        resource: {type: string, enum: [active_runs, tenant_active_runs, workflows, worker_sessions, activity_concurrency, iteration_concurrency, secrets, event_endpoints, webhook_subscriptions, broker_subscriptions, event_connectors, scripts, script_jobs, tenant_content_bytes, tenant_log_bytes, api_requests_per_second, events_per_second, event_retention_seconds, script_retention_days]}
         limit: {type: integer, format: int64, minimum: 0, maximum: 1125899906842624}
-        source: {type: string, enum: [default, tenant, namespace], description: 'Where the limit in force comes from. default means the tenant set nothing and the ceiling applies.'}
+        source: {type: string, enum: [default, tenant, namespace], description: 'Where the limit in force comes from. default means the tenant set nothing; iteration_concurrency then remains disabled, while other resources use their platform default up to the ceiling.'}
         ceiling: {type: integer, format: int64, minimum: 0, maximum: 1125899906842624, description: 'The most the tenant may set for this resource, and the most that can be in force. The platform default unless an operator granted the tenant more. No API call raises it.'}
         used: {type: integer, format: int64, minimum: 0, description: 'Exact charged items or bytes, including outstanding content reservations. Absent for rate/retention policies and for a per-namespace resource in the tenant-wide view.'}
     QuotaList:

@@ -460,6 +460,24 @@ internal sealed class RunMode : IAsyncDisposable
                     };
                 }
 
+            case "queryChain":
+                {
+                    var queried = await client.QueryChainAsync(
+                        ChainRef(step["namespaceId"]), ChainRef(step["chainId"]), (string)step["name"]!, step["args"]?.DeepClone(),
+                        new ChainQueryOptions
+                        {
+                            ExpectedRunId = step["expectedRunId"] is null ? null : ChainRef(step["expectedRunId"]),
+                            Traceparent = (string?)step["traceparent"],
+                        }, cancellationToken).ConfigureAwait(false);
+                    return new JsonObject
+                    {
+                        ["runId"] = queried.RunId,
+                        ["runVersion"] = queried.RunVersion,
+                        ["stateRevision"] = queried.StateRevision,
+                        ["result"] = JsonNode.Parse(queried.Result.GetRawText()),
+                    };
+                }
+
             case "update":
                 {
                     var updated = await client.UpdateAsync(

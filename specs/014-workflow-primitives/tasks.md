@@ -40,7 +40,13 @@ This phase reuses existing foundations and does not depend on unchecked T014-002
 - [x] T014-013 [US01] Document prerequisites, publishing/bindings, all five cases, simulated effects and available/proposed boundaries in `examples/order-processing/README.md`, language READMEs and feature 012 docs; run the shared matrix and record exact commands/gaps in `specs/014-workflow-primitives/validation-report.md`. Refs: FR-014-001–002, SC-014-001.
   _Evidence: `cargo test -p sagat-tests --test e2e_developer_experience --locked -- --ignored order_processing::` passed 1 aggregate test (25 runs + 10 usage checks); current delivery report owns exact environment and additional checks._
 
-## Phase 4 — US02: bounded collections (P1, pending)
+## Phase 4 — US02: bounded collections (P1, restricted public slice)
+
+The public parser accepts a root chain of `forEach` nodes with an Activity→Return body and an
+explicit tenant iteration policy. PostgreSQL, fault and five-SDK scoped-worker identity tests
+cover that slice, including transactional payload retention and storage-quota drain. The tasks
+below remain open for broader bodies, scoped compensation/reconciliation and the complete shared
+collection conformance matrix; evidence is in `validation-report.md`.
 
 **Independent test**: 17 items, concurrency 3, reverse completion, restart, empty/oversized input and
 permanent failure; one ordered result per index, no fourth active iteration and correct saga drain.
@@ -50,7 +56,13 @@ permanent failure; one ordered result per index, no fourth active iteration and 
 - [ ] T014-016 [US02] Wire captured arrays/blob refs and transactional collection progress in `crates/application/src/primitives.rs` and `crates/infra-postgres/src/primitives.rs`; add equivalent forEach/map builders to `sdks/{typescript,go,python,dotnet,java}/` and reviewed WP-03 outputs in `tests/contract/sdk-conformance/expected/`. Refs: FR-014-004,016–017.
 - [ ] T014-017 [US02] Prove crash/duplicate/stale-fence recovery, lost broker reconciliation, cancellation and unknown/failed compensation in `tests/fault/workflow-primitives/collections.rs`; verify FR-003-002 compensation order (reverse topological within an iteration, no order between collection iterations) and all-five WP-03/04 conformance. Refs: FR-014-005,014, NFR-014-001, SC-014-002–004.
 
-## Phase 5 — US03: durable loops (P1, pending)
+## Phase 5 — US03: durable loops (P1, restricted public slice enabled)
+
+Entry, checkpoint, delay and terminal drain have PostgreSQL restart, timer-race, rollback and
+projection evidence. Loop carry/result bytes now commit in the progress transaction after the
+scheduler fence, replay, revision and quota checks. A restricted public activity/return body passed
+PostgreSQL worker, restart and rollback tests; broader bodies and the all-SDK runtime and full fault
+matrix remain open.
 
 **Independent test**: False pre-test, true post-test, three durable carry checkpoints, interruption
 after second commit, explicit loop-delay timer and limit/deadline exhaustion.
@@ -60,7 +72,11 @@ after second commit, explicit loop-delay timer and limit/deadline exhaustion.
 - [ ] T014-020 [US03] Implement atomic checkpoint/timer/next-instance storage in `crates/infra-postgres/src/primitives.rs`, loop ports in `crates/application/src/primitives.rs` and while/repeatUntil builders in `sdks/{typescript,go,python,dotnet,java}/`; add WP-05 reviewed observations. Refs: FR-014-006,016–017.
 - [ ] T014-021 [US03] Test checkpoint restart, duplicate completion, timeout-vs-signal/update/cancel, nested-budget contention and compensation of completed iterations in reverse iteration order in `tests/fault/workflow-primitives/loops.rs`; run five-SDK WP-05 parity and document the zero-worker delay scenario in `specs/014-workflow-primitives/quickstart.md`. Refs: FR-014-006,014–015, SC-014-002–004,006.
 
-## Phase 6 — US04: authorized human approval (P1, pending)
+## Phase 6 — US04: authorized human approval (P1, restricted root slice enabled)
+
+The reviewed root approval shape has public scheduler, HTTP, PostgreSQL, fault and five-SDK
+decision evidence in `validation-report.md`. Approvals inside structured bodies, combinations
+with declared state and chain-addressed execution remain closed.
 
 **Independent test**: Pending approval survives restart, unauthorized identity cannot decide, and
 valid response/expiry/cancel races produce one persisted outcome and matching route.
@@ -70,7 +86,7 @@ valid response/expiry/cancel races produce one persisted outcome and matching ro
 - [ ] T014-024 [US04] Add transactional request/expiry/decision/audit storage in `crates/infra-postgres/src/primitives.rs`, authorized operations in `crates/api-http/src/{routes/primitives.rs,dto_primitives.rs}` and approval builders/client calls in `sdks/{typescript,go,python,dotnet,java}/`; emit declared telemetry/errors. Refs: FR-014-007–008,016–017.
 - [ ] T014-025 [US04] Prove both race commit orders, restart, duplicate/different-body receipts, RBAC revocation, raw-signal denial, audit rollback and cross-tenant opacity in `tests/fault/workflow-primitives/approvals.rs`; run all-five WP-06/14 cases. Refs: FR-014-008,014, NFR-014-001–002, SC-014-002–004.
 
-## Phase 7 — US05: multiway switch (P2, pending)
+## Phase 7 — US05: multiway switch (P2, enabled)
 
 **Independent test**: Overlapping true cases select the first, no match selects default, errors fail
 without fallthrough and replay preserves the recorded case.
@@ -88,7 +104,9 @@ without fallthrough and replay preserves the recorded case.
 produce one apply/one rejection; lost-response replay returns the original receipt with one mutation.
 **Release gate**: ADR-0031 accepts the disclosure policy. The run-addressed slice passed its
 publication, security/audit/result-bound, transaction-fault and all-five runtime conformance gates.
-Chain addressing and the remaining fault matrix stay disabled and keep their tasks open.
+Chain Query/Update have a focused HTTP/transaction slice, including head CAS and receipt replay
+across rollover, but no publicly publishable workflow currently combines declared state and
+continuation. The combined public scenario and remaining fault matrix stay open.
 
 - [ ] T014-029 [P] [US06] Write failing state/operation schemas and malicious-handler fixtures in `tests/contract/workflow-primitives/operations.rs`; enforce “At most 32 queries and 32 updates”, names 1..128, bounded state/closed result schemas, explicit `disclosure: declared-business-result-v1`, no I/O/callback/wait and “expected state revision is an optional nonnegative integer”. Refs: FR-014-010–011,015, NFR-014-002.
 - [ ] T014-030 [US06] Model schema-checked initial state, snapshot query, atomic validator/reducer/result and APPLIED/REJECTED receipts in `crates/domain/src/execution/operations.rs` and `crates/application/src/primitives.rs`; preserve “State revision starts at 0 and increments exactly once per successful Update”; an Update creates no task, timer or subscription. Refs: FR-014-010–011,014.
@@ -96,7 +114,11 @@ Chain addressing and the remaining fault matrix stay disabled and keep their tas
 - [ ] T014-032 [US06] Add typed state/operation declarations and Query/Update calls in `sdks/{typescript,go,python,dotnet,java}/`; execute shared WP-08/09 definitions/results/errors in `tests/contract/sdk-conformance/`, including decimals/UTC and caller cancellation without hidden reapplication. Refs: FR-014-010–011,016, NFR-014-004.
 - [ ] T014-033 [US06] Prove concurrent updates vs worker/timer/signal, lost reply, crash rollback, rejection replay, non-mutable state rules, secret redaction and revoked receipt access in `tests/fault/workflow-primitives/operations.rs`; assert Query never alters workflow journal/scheduling. Refs: FR-014-010–011,014, NFR-014-001–002, SC-014-002–004.
 
-## Phase 9 — US07: continuation chains (P3, pending)
+## Phase 9 — US07: continuation chains (P3, restricted public slice)
+
+The published input-only continuation path and chain inspect/signal/cancel are covered by focused
+PostgreSQL, fault and five-SDK checks. Chain Query/Update have seeded-state transaction/HTTP checks;
+state transfer, public combined authoring, child continuation and the full shared matrix remain open.
 
 **Independent test**: Three segments have one current head and unique successors; crash around each
 handoff and race commands; segment wait and chain wait differ intentionally; child parent waits FINAL.

@@ -1,18 +1,23 @@
 //! The shared SDK loop document must agree with the server's structured v1 model.
 
-use sagat_application::definitions::{IrCodec, IrError};
+use sagat_application::definitions::IrCodec;
 use sagat_domain::workflow::{NodeId, NodeKind};
 use sagat_infra_ir::JsonIrCodec;
 use serde_json::Value;
 
-#[test]
-fn five_sdk_loop_golden_is_a_valid_but_unpublished_structured_v1_definition() {
+fn loop_golden() -> (Value, Vec<u8>) {
     let path = super::repository_root()
         .join("tests/contract/sdk-conformance/expected/loop-builders.workflows.json");
     let source = std::fs::read(path).expect("reviewed SDK golden");
     let golden: Value = serde_json::from_slice(&source).expect("golden JSON");
-    let document = &golden["workflows"]["pre-and-post-test"];
-    let bytes = serde_json::to_vec(document).expect("workflow JSON");
+    let bytes =
+        serde_json::to_vec(&golden["workflows"]["pre-and-post-test"]).expect("workflow JSON");
+    (golden, bytes)
+}
+
+#[test]
+fn five_sdk_loop_golden_is_a_valid_structured_v1_definition() {
+    let (golden, bytes) = loop_golden();
 
     let parsed = JsonIrCodec
         .parse_structured(&bytes)
@@ -29,17 +34,69 @@ fn five_sdk_loop_golden_is_a_valid_but_unpublished_structured_v1_definition() {
     assert!(matches!(post.kind(), NodeKind::RepeatUntil { .. }));
     assert_eq!(parsed.definition.bodies().count(), 1);
     assert_eq!(
-        String::from_utf8(parsed.canonical).expect("canonical UTF-8"),
+        String::from_utf8(parsed.canonical.clone()).expect("canonical UTF-8"),
         golden["canonical"]["pre-and-post-test"]
             .as_str()
             .expect("reviewed canonical text")
     );
 
-    assert!(matches!(
-        JsonIrCodec.parse(&bytes),
-        Err(IrError::UnsupportedDeclaration {
-            field: "bodies",
-            ..
-        })
-    ));
+    let published = JsonIrCodec
+        .parse(&bytes)
+        .expect("the proven sequential-loop subset is publishable");
+    assert_eq!(published.digest, parsed.digest);
+    assert_eq!(published.canonical, parsed.canonical);
+}
+
+#[test]
+fn structured_codec_preserves_the_complete_sequential_loop_contract() {
+    let (_, bytes) = loop_golden();
+    let parsed = JsonIrCodec
+        .parse_structured(&bytes)
+        .expect("structured codec accepts the reviewed loop contract");
+    let pre = parsed
+        .definition
+        .node(&NodeId::parse("pre").expect("node id"))
+        .expect("pre-test loop");
+    let post = parsed
+        .definition
+        .node(&NodeId::parse("post").expect("node id"))
+        .expect("post-test loop");
+
+    match pre.kind() {
+        NodeKind::While {
+            condition,
+            body,
+            initial,
+            carry,
+            max_iterations,
+            delay,
+        } => {
+            assert_eq!(condition.as_str(), "carry < 3");
+            assert_eq!(body.as_str(), "iteration");
+            assert_eq!(initial.as_str(), "input.start");
+            assert_eq!(carry.as_str(), "bodyResult");
+            assert_eq!(*max_iterations, 3);
+            assert_eq!(*delay, Some(std::time::Duration::from_millis(250)));
+        }
+        kind => panic!("expected while, got {kind:?}"),
+    }
+
+    match post.kind() {
+        NodeKind::RepeatUntil {
+            condition,
+            body,
+            initial,
+            carry,
+            max_iterations,
+            delay,
+        } => {
+            assert_eq!(condition.as_str(), "carry >= 5");
+            assert_eq!(body.as_str(), "iteration");
+            assert_eq!(initial.as_str(), "steps.pre.output");
+            assert_eq!(carry.as_str(), "bodyResult");
+            assert_eq!(*max_iterations, 10_000);
+            assert_eq!(*delay, None);
+        }
+        kind => panic!("expected repeatUntil, got {kind:?}"),
+    }
 }

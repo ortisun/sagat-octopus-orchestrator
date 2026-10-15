@@ -76,14 +76,19 @@ the identity had in that namespace. Upgrading an existing deployment: bind its w
 curl "$API/v1/namespaces/$NS/quotas" -H "authorization: Bearer $ADMIN"        # limit, source, exact use
 curl -X PUT  "$API/v1/namespaces/$NS/quotas/active_runs" ... -d '{"limit": 2000}'
 curl -X PUT  "$API/v1/quotas/worker_sessions"            ... -d '{"limit": 200}'   # tenant-wide
+curl -X PUT  "$API/v1/quotas/iteration_concurrency"      ... -d '{"limit": 32}'    # tenant-wide
 curl -X DELETE "$API/v1/namespaces/$NS/quotas/active_runs" ...                  # back to the next level
 ```
 
 Resources: `active_runs` and `workflows` and `secrets` (per namespace), `tenant_active_runs` and
-`worker_sessions` (per tenant). The limit in force is the namespace's setting, else the tenant-wide
-one, else the tenant's **ceiling**, and never more than the ceiling. A refused request is `429` with
-`code: QUOTA_EXCEEDED`, not retryable. Child runs count as runs. The count is exact and taken under a
-lock, so a limit is never overshot by replicas racing for the last place.
+`worker_sessions` (per tenant), and `iteration_concurrency` (active collection and loop iterations
+across the tenant). The limit in force is the namespace's setting, else the tenant-wide one, else
+the platform default, and never more than the ceiling. `iteration_concurrency` is the exception with
+a fail-closed default: it is zero until an administrator explicitly sets 1..1,000,000,000. Clearing
+it disables new iteration admission. Without an operator grant, the ceiling is 1,024 active
+iterations; the operator may grant a higher ceiling up to 1,000,000,000. A refused request is `429` with `code: QUOTA_EXCEEDED`, not
+retryable. Child runs count as runs. Counts are exact and taken under locks, so replicas racing for
+the last place cannot overshoot them.
 
 **The ceiling** is the most a tenant's administrators may set for a resource: the platform default
 (**provisional**: 10 000, 50 000, 1 000, 1 000, 500 in the order above; gap G42) unless an operator has
@@ -100,8 +105,8 @@ DATABASE_URL=... SAGAT_CEILING_TENANT_ID=<tenant uuid> SAGAT_CEILING_RESOURCE=ac
 ```
 
 Lowering a ceiling applies at once, also to a limit the tenant had set higher: what is enforced is the
-smaller of the two. Granting a ceiling does not raise a limit the tenant set; with nothing set, the whole
-ceiling is available.
+smaller of the two. Granting a ceiling does not raise a limit the tenant set. With nothing set, resources
+use their default; iteration admission remains disabled until its tenant setting exists.
 
 ### Secrets
 

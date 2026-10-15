@@ -6,7 +6,7 @@ use sagat_application::declared_operations::{
     CompletedOperationResult, DeclaredOperationDocument, DeclaredOperationSnapshot,
     DeclaredOperationStore, DeclaredOperationStoreError, DeclaredQuery, DeclaredUpdate,
     DeclaredUpdateDecision, EvaluatedOperationWrite, OperationSnapshotPayload,
-    declared_update_request_hash,
+    declared_chain_update_request_hash, declared_update_request_hash,
 };
 use sagat_application::error::StoreError;
 use sagat_application::operation_evaluation::DeclaredOperationArguments;
@@ -98,6 +98,7 @@ fn check_audit(
 
 fn operation_audit(
     audit: &AuditRecord,
+    resolved_run_id: RunId,
     operation: &ActivityName,
     outcome: Option<UpdateReceiptStatus>,
 ) -> AuditRecord {
@@ -110,23 +111,102 @@ fn operation_audit(
             format!("operation={};outcome=rejected", operation.as_str())
         }
     };
-    audit.clone().with_reason(reason)
+    audit.follow_up(
+        AuditAction::RunUpdated,
+        ResourceType::Run,
+        resolved_run_id.to_string(),
+        reason,
+    )
 }
 
 fn stored_i64(value: u64, field: &'static str) -> Result<i64, StoreError> {
     i64::try_from(value).map_err(|_| corrupt(field))
 }
 
-fn check_run_address(
+fn check_update_address(
     scope: &OperationScope,
-    resolved_run_id: RunId,
+    expected_run_id: RunId,
 ) -> Result<(), DeclaredOperationStoreError> {
     match scope.address() {
-        OperationAddress::Run(run_id) if *run_id == resolved_run_id => Ok(()),
-        OperationAddress::Run(_) | OperationAddress::Chain(_) => {
-            Err(DeclaredOperationStoreError::AddressUnavailable)
+        OperationAddress::Run(run_id) if *run_id == expected_run_id => Ok(()),
+        OperationAddress::Chain(_) => Ok(()),
+        OperationAddress::Run(_) => Err(DeclaredOperationStoreError::AddressUnavailable),
+    }
+}
+
+fn address_target(scope: &OperationScope) -> RunId {
+    match scope.address() {
+        OperationAddress::Run(run_id) | OperationAddress::Chain(run_id) => *run_id,
+    }
+}
+
+async fn resolve_query_run(
+    tx: &mut Transaction<'_, Postgres>,
+    query: &DeclaredQuery,
+) -> Result<RunId, DeclaredOperationStoreError> {
+    match query.scope().address() {
+        OperationAddress::Run(run_id) => {
+            if query.expected_run_id() != Some(*run_id) {
+                return Err(DeclaredOperationStoreError::AddressUnavailable);
+            }
+            Ok(*run_id)
+        }
+        OperationAddress::Chain(chain_id) => {
+            let head: Option<uuid::Uuid> = sqlx::query_scalar(
+                "SELECT current_run_id FROM execution_chains \
+                 WHERE tenant_id=$1 AND namespace_id=$2 AND chain_id=$3 FOR SHARE",
+            )
+            .bind(query.scope().tenant_id().as_uuid())
+            .bind(query.scope().namespace_id().as_uuid())
+            .bind(chain_id.as_uuid())
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(store_error)?;
+            let head = head
+                .map(RunId::new)
+                .ok_or(DeclaredOperationStoreError::NotFound)?;
+            if query
+                .expected_run_id()
+                .is_some_and(|expected| expected != head)
+            {
+                return Err(DeclaredOperationStoreError::ChainHeadChanged);
+            }
+            Ok(head)
         }
     }
+}
+
+async fn lock_chain_head(
+    tx: &mut Transaction<'_, Postgres>,
+    scope: &OperationScope,
+    chain_id: RunId,
+    exclusive: bool,
+) -> Result<RunId, DeclaredOperationStoreError> {
+    let head: Option<uuid::Uuid> = if exclusive {
+        sqlx::query_scalar(
+            "SELECT current_run_id FROM execution_chains \
+             WHERE tenant_id=$1 AND namespace_id=$2 AND chain_id=$3 FOR UPDATE",
+        )
+        .bind(scope.tenant_id().as_uuid())
+        .bind(scope.namespace_id().as_uuid())
+        .bind(chain_id.as_uuid())
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(store_error)?
+    } else {
+        sqlx::query_scalar(
+            "SELECT current_run_id FROM execution_chains \
+             WHERE tenant_id=$1 AND namespace_id=$2 AND chain_id=$3 FOR SHARE",
+        )
+        .bind(scope.tenant_id().as_uuid())
+        .bind(scope.namespace_id().as_uuid())
+        .bind(chain_id.as_uuid())
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(store_error)?
+    };
+    head.map(RunId::new)
+        .ok_or(DeclaredOperationStoreError::NotFound)
 }
 
 async fn authorize(
@@ -557,12 +637,12 @@ async fn retain_evaluated_write(
 async fn commit_applied(
     tx: &mut Transaction<'_, Postgres>,
     update: &DeclaredUpdate,
+    request: &sagat_domain::execution::UpdateRequest,
     run: &LockedRun,
     previous: &StoredState,
     state: &DeclaredOperationsState,
     receipt: &UpdateReceipt,
 ) -> Result<(), DeclaredOperationStoreError> {
-    let request = update.request();
     let new_state = state.state();
     let result = receipt
         .result()
@@ -717,12 +797,12 @@ impl DeclaredOperationStore for PgDeclaredOperationStore {
         query: &DeclaredQuery,
         audit: &AuditRecord,
     ) -> Result<DeclaredOperationSnapshot, DeclaredOperationStoreError> {
-        check_run_address(query.scope(), query.resolved_run_id())?;
+        let target_id = address_target(query.scope());
         check_audit(
             audit,
             query.scope().tenant_id(),
             query.actor(),
-            query.resolved_run_id(),
+            target_id,
             AuditAction::RunQueried,
         )?;
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
@@ -742,12 +822,13 @@ impl DeclaredOperationStore for PgDeclaredOperationStore {
             Permission::RunRead,
         )
         .await?;
-        let run = lock_run(&mut tx, query.scope(), query.resolved_run_id(), false).await?;
+        let resolved_run_id = resolve_query_run(&mut tx, query).await?;
+        let run = lock_run(&mut tx, query.scope(), resolved_run_id, false).await?;
         let stored = declared_state(
             &mut tx,
             query.scope(),
             &run,
-            query.resolved_run_id(),
+            resolved_run_id,
             query.operation(),
             "QUERY",
         )
@@ -758,18 +839,23 @@ impl DeclaredOperationStore for PgDeclaredOperationStore {
             stored.last_changed_run_version,
             [],
         )?;
-        let snapshot = state.query_snapshot(query.resolved_run_id(), run.run_version);
+        let snapshot = state.query_snapshot(resolved_run_id, run.run_version);
         let snapshot = operation_snapshot(
             &mut tx,
             query.scope(),
             &run,
-            query.resolved_run_id(),
+            resolved_run_id,
             snapshot,
             stored.declaration_digest,
             stored.content,
         )
         .await?;
-        let audit = operation_audit(audit, query.operation(), None);
+        let audit = audit.follow_up(
+            AuditAction::RunQueried,
+            ResourceType::Run,
+            resolved_run_id.to_string(),
+            format!("operation={}", query.operation().as_str()),
+        );
         insert_audit(&mut tx, &audit).await?;
         tx.commit().await.map_err(store_error)?;
         Ok(snapshot)
@@ -791,22 +877,30 @@ impl DeclaredOperationStore for PgDeclaredOperationStore {
             + Send,
     {
         let request = update.request();
-        if request.request_hash()
-            != declared_update_request_hash(
+        let expected_hash = match request.scope().address() {
+            OperationAddress::Run(run_id) => declared_update_request_hash(
                 request.operation(),
                 update.arguments(),
                 request.expected_state_revision(),
-                request.resolved_run_id(),
-            )
-        {
+                *run_id,
+            ),
+            OperationAddress::Chain(chain_id) => declared_chain_update_request_hash(
+                request.operation(),
+                update.arguments(),
+                request.expected_state_revision(),
+                *chain_id,
+                update.expected_run_id(),
+            ),
+        };
+        if request.request_hash() != expected_hash {
             return Err(OperationError::InvalidStoredOperation.into());
         }
-        check_run_address(request.scope(), request.resolved_run_id())?;
+        check_update_address(request.scope(), request.resolved_run_id())?;
         check_audit(
             update.audit(),
             request.scope().tenant_id(),
             request.actor(),
-            request.resolved_run_id(),
+            address_target(request.scope()),
             AuditAction::RunUpdated,
         )?;
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
@@ -818,19 +912,48 @@ impl DeclaredOperationStore for PgDeclaredOperationStore {
             Permission::RunUpdate,
         )
         .await?;
-        let run = lock_run(&mut tx, request.scope(), request.resolved_run_id(), true).await?;
-        let prior = find_receipt(&mut tx, update).await?;
+        let (resolved_run_id, run, prior) = match request.scope().address() {
+            OperationAddress::Run(run_id) => {
+                let run = lock_run(&mut tx, request.scope(), *run_id, true).await?;
+                let prior = find_receipt(&mut tx, update).await?;
+                (*run_id, run, prior)
+            }
+            OperationAddress::Chain(chain_id) => {
+                let head = lock_chain_head(&mut tx, request.scope(), *chain_id, true).await?;
+                let prior = find_receipt(&mut tx, update).await?;
+                if prior.as_ref().is_some_and(|receipt| {
+                    receipt.operation() != request.operation()
+                        || receipt.request_hash() != request.request_hash()
+                }) {
+                    return Err(OperationError::UpdateKeyReused.into());
+                }
+                let resolved_run_id = match prior.as_ref() {
+                    Some(receipt) => receipt.resolved_run_id(),
+                    None if update
+                        .expected_run_id()
+                        .is_none_or(|expected| expected == head) =>
+                    {
+                        head
+                    }
+                    None => return Err(DeclaredOperationStoreError::ChainHeadChanged),
+                };
+                let run = lock_run(&mut tx, request.scope(), resolved_run_id, true).await?;
+                (resolved_run_id, run, prior)
+            }
+        };
         if prior.as_ref().is_some_and(|receipt| {
             receipt.operation() != request.operation()
                 || receipt.request_hash() != request.request_hash()
+                || receipt.resolved_run_id() != resolved_run_id
         }) {
             return Err(OperationError::UpdateKeyReused.into());
         }
+        let request = update.resolved_request(resolved_run_id);
         let stored = declared_state(
             &mut tx,
             request.scope(),
             &run,
-            request.resolved_run_id(),
+            resolved_run_id,
             request.operation(),
             "UPDATE",
         )
@@ -844,7 +967,7 @@ impl DeclaredOperationStore for PgDeclaredOperationStore {
         if prior.is_some() {
             let resolution = state.resolve_update_advancing(
                 run.status,
-                request,
+                &request,
                 run.run_version,
                 |_| -> Result<UpdateEvaluation, OperationError> {
                     Err(OperationError::InvalidStoredOperation)
@@ -852,6 +975,7 @@ impl DeclaredOperationStore for PgDeclaredOperationStore {
             )?;
             let audit = operation_audit(
                 update.audit(),
+                resolved_run_id,
                 request.operation(),
                 Some(resolution.receipt().status()),
             );
@@ -862,12 +986,12 @@ impl DeclaredOperationStore for PgDeclaredOperationStore {
         if !matches!(run.status, RunStatus::Running | RunStatus::Waiting) {
             return Err(OperationError::RunNotMutable(run.status).into());
         }
-        let query_snapshot = state.query_snapshot(request.resolved_run_id(), run.run_version);
+        let query_snapshot = state.query_snapshot(resolved_run_id, run.run_version);
         let snapshot = operation_snapshot(
             &mut tx,
             request.scope(),
             &run,
-            request.resolved_run_id(),
+            resolved_run_id,
             query_snapshot,
             stored.declaration_digest,
             stored.content.clone(),
@@ -876,7 +1000,7 @@ impl DeclaredOperationStore for PgDeclaredOperationStore {
         validate_arguments(&snapshot, update.arguments())?;
         let mut decision = None;
         let resolution =
-            state.resolve_update_advancing(run.status, request, run.run_version, |_| {
+            state.resolve_update_advancing(run.status, &request, run.run_version, |_| {
                 let evaluated = evaluate(&snapshot)?;
                 let domain = evaluated.domain_evaluation();
                 decision = Some(evaluated);
@@ -890,6 +1014,7 @@ impl DeclaredOperationStore for PgDeclaredOperationStore {
                 insert_rejected_receipt(&mut tx, update, resolution.receipt()).await?;
                 let audit = operation_audit(
                     update.audit(),
+                    resolved_run_id,
                     request.operation(),
                     Some(UpdateReceiptStatus::Rejected),
                 );
@@ -916,10 +1041,19 @@ impl DeclaredOperationStore for PgDeclaredOperationStore {
                 {
                     return Err(OperationError::InvalidStoredOperation.into());
                 }
-                commit_applied(&mut tx, update, &run, &stored, &state, resolution.receipt())
-                    .await?;
+                commit_applied(
+                    &mut tx,
+                    update,
+                    &request,
+                    &run,
+                    &stored,
+                    &state,
+                    resolution.receipt(),
+                )
+                .await?;
                 let audit = operation_audit(
                     update.audit(),
+                    resolved_run_id,
                     request.operation(),
                     Some(UpdateReceiptStatus::Applied),
                 );
@@ -936,7 +1070,7 @@ impl DeclaredOperationStore for PgDeclaredOperationStore {
         resolution: &UpdateResolution,
     ) -> Result<Option<EvaluatedOperationWrite>, DeclaredOperationStoreError> {
         let request = update.request();
-        check_run_address(request.scope(), request.resolved_run_id())?;
+        check_update_address(request.scope(), request.resolved_run_id())?;
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         authorize(
             &mut tx,
@@ -946,19 +1080,33 @@ impl DeclaredOperationStore for PgDeclaredOperationStore {
             Permission::RunUpdate,
         )
         .await?;
-        let run = lock_run(&mut tx, request.scope(), request.resolved_run_id(), false).await?;
+        let (resolved_run_id, run, receipt) = match request.scope().address() {
+            OperationAddress::Run(run_id) => {
+                let run = lock_run(&mut tx, request.scope(), *run_id, false).await?;
+                let receipt = find_receipt(&mut tx, update)
+                    .await?
+                    .ok_or(OperationError::InvalidStoredOperation)?;
+                (*run_id, run, receipt)
+            }
+            OperationAddress::Chain(chain_id) => {
+                lock_chain_head(&mut tx, request.scope(), *chain_id, false).await?;
+                let receipt = find_receipt(&mut tx, update)
+                    .await?
+                    .ok_or(OperationError::InvalidStoredOperation)?;
+                let resolved_run_id = receipt.resolved_run_id();
+                let run = lock_run(&mut tx, request.scope(), resolved_run_id, false).await?;
+                (resolved_run_id, run, receipt)
+            }
+        };
         let stored = declared_state(
             &mut tx,
             request.scope(),
             &run,
-            request.resolved_run_id(),
+            resolved_run_id,
             request.operation(),
             "UPDATE",
         )
         .await?;
-        let receipt = find_receipt(&mut tx, update)
-            .await?
-            .ok_or(OperationError::InvalidStoredOperation)?;
         if &receipt != resolution.receipt() {
             return Err(OperationError::InvalidStoredOperation.into());
         }

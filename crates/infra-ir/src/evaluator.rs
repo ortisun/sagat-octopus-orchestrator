@@ -10,6 +10,7 @@ use sagat_application::dispatch::EventView;
 use sagat_application::execution::{
     ExpressionEvaluator, ExpressionFailure, ReconcileAnswer, RunData, ScopeInput,
 };
+use sagat_application::loop_progress::{LoopCheckpointEvaluation, LoopEntryEvaluation};
 use sagat_domain::execution::{CorrelationKey, ExecutionInstanceId, InstancePath};
 use sagat_domain::workflow::{Expression, NodeId};
 use sagat_infra_expr::{Compiled, Env, Template};
@@ -280,6 +281,78 @@ impl ExpressionEvaluator for JsonEvaluator {
         }
         let value = compiled.eval(&env).map_err(failure)?;
         serde_json::to_vec(&value).map_err(failure)
+    }
+
+    fn loop_entry(
+        &self,
+        initial: &Expression,
+        condition: Option<&Expression>,
+        data: &RunData,
+    ) -> Result<LoopEntryEvaluation, ExpressionFailure> {
+        let initial = Compiled::compile(initial.as_str()).map_err(failure)?;
+        let carry = initial
+            .eval(&environment(&initial.variables(), data, None)?)
+            .map_err(failure)?;
+        let evaluated_condition = condition
+            .map(|condition| {
+                let condition = Compiled::compile(condition.as_str()).map_err(failure)?;
+                let mut variables = condition.variables();
+                variables.remove("carry");
+                let mut env = environment(&variables, data, None)?;
+                if condition.variables().contains("carry") {
+                    env = env.with("carry", carry.clone());
+                }
+                condition.eval_bool(&env).map_err(failure)
+            })
+            .transpose()?;
+        Ok(LoopEntryEvaluation {
+            carry: serde_json::to_vec(&carry).map_err(failure)?,
+            condition: evaluated_condition,
+        })
+    }
+
+    fn loop_checkpoint(
+        &self,
+        result: &Expression,
+        carry: &Expression,
+        condition: &Expression,
+        data: &RunData,
+        return_instance: &ExecutionInstanceId,
+    ) -> Result<LoopCheckpointEvaluation, ExpressionFailure> {
+        if !matches!(
+            data.scope_input(return_instance.path()),
+            Some(ScopeInput::Loop { .. })
+        ) {
+            return Err(failure("the admitted iteration input is unavailable"));
+        }
+        let result = Compiled::compile(result.as_str()).map_err(failure)?;
+        let result_value = result
+            .eval(&environment(
+                &result.variables(),
+                data,
+                Some(return_instance),
+            )?)
+            .map_err(failure)?;
+        let carry = Compiled::compile(carry.as_str()).map_err(failure)?;
+        let mut carry_env = environment(&carry.variables(), data, Some(return_instance))?;
+        if carry.variables().contains("bodyResult") {
+            carry_env = carry_env.with("bodyResult", result_value.clone());
+        }
+        let carry_value = carry.eval(&carry_env).map_err(failure)?;
+        let condition = Compiled::compile(condition.as_str()).map_err(failure)?;
+        let mut condition_env = environment(&condition.variables(), data, Some(return_instance))?;
+        if condition.variables().contains("carry") {
+            condition_env = condition_env.with("carry", carry_value.clone());
+        }
+        if condition.variables().contains("bodyResult") {
+            condition_env = condition_env.with("bodyResult", result_value.clone());
+        }
+        let condition_value = condition.eval_bool(&condition_env).map_err(failure)?;
+        Ok(LoopCheckpointEvaluation {
+            result: serde_json::to_vec(&result_value).map_err(failure)?,
+            carry: serde_json::to_vec(&carry_value).map_err(failure)?,
+            condition: condition_value,
+        })
     }
 
     fn event_document(&self, event: &EventView<'_>) -> Vec<u8> {

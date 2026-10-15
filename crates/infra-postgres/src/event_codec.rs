@@ -246,6 +246,9 @@ pub(crate) fn encode(event: &RunEvent) -> Encoded {
             CollectionDrainReason::Failed { iteration, code } => json!({
                 "reason": "failed", "iteration": iteration, "code": code.as_str(),
             }),
+            CollectionDrainReason::StorageQuotaExceeded => {
+                json!({"reason": "storage_quota_exceeded"})
+            }
             CollectionDrainReason::Cancelled => json!({"reason": "cancelled"}),
         },
         RunEvent::CollectionIterationDrained { index, .. } => json!({"index": index}),
@@ -326,6 +329,7 @@ pub(crate) fn encode(event: &RunEvent) -> Encoded {
             LoopDrainReason::Failed { iteration, code } => json!({
                 "reason": "failed", "iteration": iteration, "code": code.as_str(),
             }),
+            LoopDrainReason::TimedOut => json!({"reason": "timed_out"}),
             LoopDrainReason::Cancelled => json!({"reason": "cancelled"}),
         },
         RunEvent::LoopIterationDrained { index, .. } => json!({"index": index}),
@@ -626,6 +630,7 @@ pub(crate) fn decode(event_type: &str, node: Option<&str>, detail: &Value) -> Op
                     iteration: u32::try_from(number(d, "iteration")?).ok()?,
                     code: FailureCode::parse(text(d, "code")?).ok()?,
                 },
+                "storage_quota_exceeded" => CollectionDrainReason::StorageQuotaExceeded,
                 "cancelled" => CollectionDrainReason::Cancelled,
                 _ => return None,
             },
@@ -713,6 +718,7 @@ pub(crate) fn decode(event_type: &str, node: Option<&str>, detail: &Value) -> Op
                     iteration: u32::try_from(number(d, "iteration")?).ok()?,
                     code: FailureCode::parse(text(d, "code")?).ok()?,
                 },
+                "timed_out" => LoopDrainReason::TimedOut,
                 "cancelled" => LoopDrainReason::Cancelled,
                 _ => return None,
             },
@@ -957,6 +963,10 @@ mod tests {
                     code: failure.clone(),
                 },
             },
+            RunEvent::CollectionDrainStarted {
+                node: owner.clone(),
+                reason: CollectionDrainReason::StorageQuotaExceeded,
+            },
             RunEvent::CollectionIterationDrained {
                 node: owner.clone(),
                 index: 1,
@@ -1096,6 +1106,10 @@ mod tests {
             RunEvent::LoopDrainStarted {
                 node: owner.clone(),
                 reason: LoopDrainReason::Cancelled,
+            },
+            RunEvent::LoopDrainStarted {
+                node: owner.clone(),
+                reason: LoopDrainReason::TimedOut,
             },
             RunEvent::LoopIterationDrained {
                 node: owner.clone(),

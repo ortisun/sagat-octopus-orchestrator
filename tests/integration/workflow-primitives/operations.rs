@@ -2,7 +2,8 @@
 
 use sagat_application::declared_operations::{
     DeclaredOperationStore, DeclaredOperationStoreError, DeclaredQuery, DeclaredUpdate,
-    DeclaredUpdateDecision, EvaluatedOperationWrite, declared_update_request_hash,
+    DeclaredUpdateDecision, EvaluatedOperationWrite, declared_chain_update_request_hash,
+    declared_update_request_hash,
 };
 use sagat_application::definitions::{Applied, DefinitionStore, Idempotency, PublishContext};
 use sagat_application::execution::{RunInfo, RunTx};
@@ -63,6 +64,35 @@ fn canonical_update_hash_frames_operation_arguments_revision_and_run() {
     assert_ne!(
         identity,
         declared_update_request_hash(&operation, &arguments, Some(4), other_run)
+    );
+}
+
+#[test]
+fn canonical_chain_update_hash_is_stable_without_a_head_and_binds_an_explicit_cas() {
+    let operation = ActivityName::parse("balance.replace").expect("operation");
+    let chain = "0198c5a0-0000-7000-8000-000000000001"
+        .parse::<RunId>()
+        .expect("chain");
+    let old_head = "0198c5a0-0000-7000-8000-000000000002"
+        .parse::<RunId>()
+        .expect("old head");
+    let new_head = "0198c5a0-0000-7000-8000-000000000003"
+        .parse::<RunId>()
+        .expect("new head");
+    let arguments = operation_arguments(br#"{"allowed":true,"value":2}"#);
+    let stable = declared_chain_update_request_hash(&operation, &arguments, Some(4), chain, None);
+
+    assert_eq!(
+        stable,
+        declared_chain_update_request_hash(&operation, &arguments, Some(4), chain, None)
+    );
+    assert_ne!(
+        stable,
+        declared_chain_update_request_hash(&operation, &arguments, Some(4), chain, Some(old_head))
+    );
+    assert_ne!(
+        declared_chain_update_request_hash(&operation, &arguments, Some(4), chain, Some(old_head)),
+        declared_chain_update_request_hash(&operation, &arguments, Some(4), chain, Some(new_head))
     );
 }
 
@@ -487,6 +517,44 @@ fn audit(w: &crate::support::engine::World, run: RunId, action: AuditAction) -> 
     )
 }
 
+async fn attach_singleton_chain(
+    w: &crate::support::engine::World,
+    chain_id: RunId,
+    version: WorkflowVersionId,
+) {
+    let mut transaction = w.db.pool.begin().await.expect("chain transaction");
+    let now = crate::support::now();
+    sqlx::query(
+        "INSERT INTO execution_chains \
+         (tenant_id,namespace_id,chain_id,current_run_id,definition_version_id,started_by, \
+          max_segments,original_deadline_at,created_at,updated_at) \
+         VALUES ($1,$2,$3,$3,$4,$5,4,$6,$7,$7)",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .bind(w.namespace.id().as_uuid())
+    .bind(chain_id.as_uuid())
+    .bind(version.as_uuid())
+    .bind(w.admin.subject().as_str())
+    .bind(now + time::Duration::hours(1))
+    .bind(now)
+    .execute(&mut *transaction)
+    .await
+    .expect("chain");
+    sqlx::query(
+        "INSERT INTO chain_segments \
+         (tenant_id,namespace_id,chain_id,segment_index,run_id,created_at) \
+         VALUES ($1,$2,$3,0,$3,$4)",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .bind(w.namespace.id().as_uuid())
+    .bind(chain_id.as_uuid())
+    .bind(now)
+    .execute(&mut *transaction)
+    .await
+    .expect("initial segment");
+    transaction.commit().await.expect("commit chain");
+}
+
 async fn counts(pool: &sqlx::PgPool, tenant: Uuid, run: RunId) -> (i64, i64, i64) {
     let journal =
         sqlx::query_scalar("SELECT count(*) FROM run_events WHERE tenant_id=$1 AND run_id=$2")
@@ -548,6 +616,176 @@ async fn query_returns_one_committed_snapshot_and_only_adds_access_audit() {
     .await
     .expect("query audit");
     assert_eq!(access, 1);
+}
+
+#[tokio::test]
+async fn chain_query_waits_for_handoff_and_reads_only_the_committed_successor_snapshot() {
+    let w = world().await;
+    let (workflow, version, declared) =
+        publish_declared_internally(&w, evaluated_operations_document("state.balance + args"))
+            .await;
+    let predecessor = create_declared_run(
+        &w,
+        workflow,
+        version,
+        &declared,
+        br#"{"account":{"balance":10}}"#.to_vec(),
+    )
+    .await
+    .expect("predecessor");
+    let successor = create_declared_run(
+        &w,
+        workflow,
+        version,
+        &declared,
+        br#"{"account":{"balance":20}}"#.to_vec(),
+    )
+    .await
+    .expect("successor");
+    attach_singleton_chain(&w, predecessor, version).await;
+
+    let store = PgDeclaredOperationStore::new(w.db.pool.clone());
+    let initial_query = DeclaredQuery::for_chain(
+        OperationScope::new(
+            w.admin.tenant_id(),
+            w.namespace.id(),
+            OperationAddress::Chain(predecessor),
+        ),
+        Some(predecessor),
+        ActivityName::parse("balance.read").expect("operation"),
+        w.admin.subject().clone(),
+    );
+    let initial_snapshot = store
+        .query_snapshot(
+            &initial_query,
+            &audit(&w, predecessor, AuditAction::RunQueried),
+        )
+        .await
+        .expect("initial chain snapshot");
+    assert_eq!(initial_snapshot.run_id(), predecessor);
+
+    let mut handoff = w.db.pool.begin().await.expect("handoff transaction");
+    let locked: Uuid = sqlx::query_scalar(
+        "SELECT current_run_id FROM execution_chains \
+         WHERE tenant_id=$1 AND namespace_id=$2 AND chain_id=$3 FOR UPDATE",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .bind(w.namespace.id().as_uuid())
+    .bind(predecessor.as_uuid())
+    .fetch_one(&mut *handoff)
+    .await
+    .expect("lock chain");
+    assert_eq!(locked, predecessor.as_uuid());
+    let now = crate::support::now();
+    sqlx::query(
+        "INSERT INTO chain_segments \
+         (tenant_id,namespace_id,chain_id,segment_index,run_id,predecessor_run_id,created_at) \
+         VALUES ($1,$2,$3,1,$4,$3,$5)",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .bind(w.namespace.id().as_uuid())
+    .bind(predecessor.as_uuid())
+    .bind(successor.as_uuid())
+    .bind(now)
+    .execute(&mut *handoff)
+    .await
+    .expect("successor segment");
+    let input_digest: Vec<u8> =
+        sqlx::query_scalar("SELECT input_digest FROM runs WHERE tenant_id=$1 AND id=$2")
+            .bind(w.admin.tenant_id().as_uuid())
+            .bind(successor.as_uuid())
+            .fetch_one(&mut *handoff)
+            .await
+            .expect("successor input");
+    sqlx::query(
+        "UPDATE chain_segments SET completion_kind='CONTINUED',successor_run_id=$4, \
+                transfer_input_digest=$5,completed_at=$6 \
+         WHERE tenant_id=$1 AND namespace_id=$2 AND chain_id=$3 AND segment_index=0",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .bind(w.namespace.id().as_uuid())
+    .bind(predecessor.as_uuid())
+    .bind(successor.as_uuid())
+    .bind(input_digest)
+    .bind(now)
+    .execute(&mut *handoff)
+    .await
+    .expect("complete predecessor segment");
+    sqlx::query(
+        "UPDATE execution_chains SET current_run_id=$4,segment_count=2,revision=revision+1,updated_at=$5 \
+         WHERE tenant_id=$1 AND namespace_id=$2 AND chain_id=$3",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .bind(w.namespace.id().as_uuid())
+    .bind(predecessor.as_uuid())
+    .bind(successor.as_uuid())
+    .bind(now)
+    .execute(&mut *handoff)
+    .await
+    .expect("advance head");
+
+    let query = DeclaredQuery::for_chain(
+        OperationScope::new(
+            w.admin.tenant_id(),
+            w.namespace.id(),
+            OperationAddress::Chain(predecessor),
+        ),
+        None,
+        ActivityName::parse("balance.read").expect("operation"),
+        w.admin.subject().clone(),
+    );
+    let access = audit(&w, predecessor, AuditAction::RunQueried);
+    let store = store.clone();
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let query_task = tokio::spawn(async move {
+        started_tx.send(()).expect("query start");
+        store.query_snapshot(&query, &access).await
+    });
+    started_rx.await.expect("query started");
+
+    let mut observed_wait = false;
+    for _ in 0..256 {
+        observed_wait = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM pg_stat_activity \
+             WHERE datname=current_database() AND wait_event_type='Lock' \
+               AND query LIKE 'SELECT current_run_id FROM execution_chains%')",
+        )
+        .fetch_one(&w.db.pool)
+        .await
+        .expect("lock observation");
+        if observed_wait {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        observed_wait,
+        "chain query did not wait behind the handoff lock"
+    );
+    handoff.commit().await.expect("commit handoff");
+
+    let snapshot = query_task
+        .await
+        .expect("query task")
+        .expect("chain snapshot");
+    assert_eq!(snapshot.run_id(), successor);
+    assert_eq!(snapshot.state_content(), br#"{"balance":20}"#);
+    let audits: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT resource_id,count(*) FROM audit_records \
+         WHERE tenant_id=$1 AND action='run.queried' AND actor=$2 \
+           AND reason='operation=balance.read' AND resource_id IN ($3,$4) \
+         GROUP BY resource_id ORDER BY resource_id",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .bind(w.admin.subject().as_str())
+    .bind(predecessor.to_string())
+    .bind(successor.to_string())
+    .fetch_all(&w.db.pool)
+    .await
+    .expect("chain query audit");
+    assert_eq!(audits.len(), 2);
+    assert!(audits.contains(&(predecessor.to_string(), 1)));
+    assert!(audits.contains(&(successor.to_string(), 1)));
 }
 
 #[tokio::test]

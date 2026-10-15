@@ -324,7 +324,7 @@ fn map_instance_error(_: InstanceIdentityError) -> CollectionPlanError {
 #[cfg(test)]
 mod tests {
     use sagat_domain::execution::{
-        CollectionPhase, ExecutionError, ExecutionInstanceId, RunEvent, RunId, RunState, StepStatus,
+        CollectionPhase, ExecutionInstanceId, Plan, RunEvent, RunId, RunState, StepStatus,
     };
     use sagat_domain::identity::Slug;
     use sagat_domain::workflow::{
@@ -575,16 +575,13 @@ mod tests {
     }
 
     #[test]
-    fn runtime_stays_closed_until_the_atomic_store_path_calls_the_planner() {
+    fn collection_owner_waits_for_the_atomic_store_path() {
         let definition = definition(1);
         let state = started();
 
         let result =
             sagat_domain::execution::plan(&definition, &state, time::OffsetDateTime::UNIX_EPOCH);
 
-        assert_eq!(
-            result,
-            Err(ExecutionError::UnsupportedStructuredNode(id("items")))
-        );
+        assert_eq!(result, Ok(Plan::Idle));
     }
 }

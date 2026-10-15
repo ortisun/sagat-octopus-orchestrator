@@ -82,10 +82,7 @@ fn unsupported_additive_declarations_remain_unpublishable() {
     ]}});
     assert!(matches!(
         parse(&collection),
-        Err(IrError::UnsupportedDeclaration {
-            field: "bodies",
-            ..
-        })
+        Err(IrError::Unsupported { kind, .. }) if kind == "body"
     ));
     collection
         .as_object_mut()
@@ -93,7 +90,7 @@ fn unsupported_additive_declarations_remain_unpublishable() {
         .remove("bodies");
     assert!(matches!(
         parse(&collection),
-        Err(IrError::Unsupported { kind, .. }) if kind == "forEach"
+        Err(IrError::Invalid(WorkflowError::UnknownBody { .. }))
     ));
 }
 
@@ -144,7 +141,7 @@ fn native_approval_is_publishable_without_enabling_other_structured_capabilities
 }
 
 #[test]
-fn structured_collection_can_be_validated_and_canonicalized_without_enabling_publication() {
+fn structured_collection_can_be_validated_canonicalized_and_published() {
     let mut document = minimal(
         json!([
             {"id": "lines", "type": "forEach", "items": "input.items", "body": "line",
@@ -197,13 +194,11 @@ fn structured_collection_can_be_validated_and_canonicalized_without_enabling_pub
     assert_eq!(reparsed.canonical, parsed.canonical);
     assert_eq!(reparsed.digest, parsed.digest);
 
-    assert!(matches!(
-        JsonIrCodec.parse(document.to_string().as_bytes()),
-        Err(IrError::UnsupportedDeclaration {
-            field: "bodies",
-            ..
-        })
-    ));
+    let published = JsonIrCodec
+        .parse(document.to_string().as_bytes())
+        .expect("proven collection is publishable");
+    assert_eq!(published.canonical, parsed.canonical);
+    assert_eq!(published.digest, parsed.digest);
 }
 
 #[test]
@@ -358,13 +353,7 @@ fn structured_loops_match_the_reviewed_sdk_golden_and_remain_unpublishable() {
         .expect("canonical loops reparse");
     assert_eq!(reparsed.canonical, parsed.canonical);
     assert_eq!(reparsed.digest, parsed.digest);
-    assert!(matches!(
-        JsonIrCodec.parse(document.to_string().as_bytes()),
-        Err(IrError::UnsupportedDeclaration {
-            field: "bodies",
-            ..
-        })
-    ));
+    assert!(JsonIrCodec.parse(document.to_string().as_bytes()).is_err());
 }
 
 #[test]

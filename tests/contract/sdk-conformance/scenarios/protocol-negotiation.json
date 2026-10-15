@@ -1,6 +1,6 @@
 {
   "name": "protocol-negotiation",
-  "description": "A worker offers the newest protocol minor it speaks and runs at the newest both sides speak. Legacy protocol 1, the current 1.4 worker and a 1.5-capable worker are all served; production negotiates the 1.5 offer down to 1.4 and both minors execute the same root task. A different major or malformed version is a canonical UNSUPPORTED_PROTOCOL. The protocol 1 worker keeps a task alive past the 3 s lease with heartbeats that carry no step identity, and the task remains attempt 1.",
+  "description": "A worker offers the newest protocol minor it speaks and runs at the newest both sides speak. Legacy protocol 1, a 1.4 worker and the current 1.5 worker are all served; 1.4 retains its root-task semantics while 1.5 executes the same root task with additive instance identity. A different major or malformed version is a canonical UNSUPPORTED_PROTOCOL. The protocol 1 worker keeps a task alive past the 3 s lease with heartbeats that carry no step identity, and the task remains attempt 1.",
   "server": {"leaseTtlSeconds": 3},
   "workflows": {
     "slow": {"name": "protocol-flow", "program": [{"op": "step", "id": "slow", "activity": "protocol.slow"}]}
@@ -8,7 +8,7 @@
   "workers": {
     "old": {"workerName": "protocol-old", "protocolVersion": "1", "maxInflight": 2, "autostart": false, "heartbeatIntervalMs": 200, "activities": {"protocol.slow": {"behavior": {"sleepMs": 4500, "returns": {"served": "at 1"}}}}},
     "current": {"workerName": "protocol-current", "protocolVersion": "1.4", "maxInflight": 2, "autostart": false, "heartbeatIntervalMs": 200, "activities": {"protocol.slow": {"behavior": {"returns": {"served": "at 1.4"}}}}},
-    "new": {"workerName": "protocol-new", "protocolVersion": "1.5", "maxInflight": 2, "autostart": false, "heartbeatIntervalMs": 200, "activities": {"protocol.slow": {"behavior": {"returns": {"served": "at negotiated 1.4"}}}}}
+    "new": {"workerName": "protocol-new", "protocolVersion": "1.5", "maxInflight": 2, "autostart": false, "heartbeatIntervalMs": 200, "activities": {"protocol.slow": {"behavior": {"returns": {"served": "at 1.5"}}}}}
   },
   "steps": [
     {"id": "offer-1", "op": "probeWorker", "protocolVersion": "1"},

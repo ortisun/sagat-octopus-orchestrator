@@ -913,6 +913,36 @@ class SagatClient:
             raw=raw,
         )
 
+    async def query_chain(
+        self,
+        namespace_id: str,
+        chain_id: str,
+        name: str,
+        args: Any = None,
+        *,
+        expected_run_id: str | None = None,
+        traceparent: str | None = None,
+    ) -> QueryResult:
+        """Evaluates a declared query against the chain head selected under the server's chain lock."""
+        path = (
+            f"/namespaces/{quote(_namespace_id(namespace_id), safe='')}/chains/{quote(_run_id(chain_id), safe='')}"
+            f"/queries/{quote(_declared_operation_name(name), safe='')}"
+        )
+        body: dict[str, Any] = {"args": args}
+        if expected_run_id is not None:
+            body["expectedRunId"] = _run_id(expected_run_id)
+        response = await self._http.request(HttpRequest("POST", path, body=body, traceparent=self._trace(traceparent)))
+        raw = _object(response.body, "a query result")
+        if "result" not in raw:
+            raise SagatError("PROTOCOL", "result is missing from the answer")
+        return QueryResult(
+            run_id=_str(raw, "runId"),
+            run_version=_revision(raw, "runVersion", 0),
+            state_revision=_revision(raw, "stateRevision", 0),
+            result=raw["result"],
+            raw=raw,
+        )
+
     async def update(
         self,
         run_id: str,

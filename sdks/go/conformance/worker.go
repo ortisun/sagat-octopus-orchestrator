@@ -250,12 +250,23 @@ func logEntry(ctx context.Context, name, kind string, input json.RawMessage, out
 	if parts := strings.Split(task.Traceparent, "-"); len(parts) > 1 {
 		traceID = parts[1]
 	}
-	return object{
+	entry := object{
 		"activity": name, "kind": kind, "node": task.Node, "attempt": task.Attempt, "input": input,
 		"taskKind": string(task.Kind), "targetNode": task.TargetNode, "targetIdempotencyKey": task.TargetIdempotencyKey,
 		"idempotencyKey": task.IdempotencyKey, "traceparentPresent": task.Traceparent != "", "traceId": traceID,
 		"steps": task.Steps, "deadlineAhead": task.Deadline().After(time.Now()), "abortedReason": aborted, "outcome": outcome,
 	}
+	if task.Instance != nil {
+		path := make([]any, 0, len(task.Instance.InstancePath))
+		for _, segment := range task.Instance.InstancePath {
+			path = append(path, object{"scopeNodeId": segment.ScopeNodeID, "iterationIndex": segment.IterationIndex})
+		}
+		entry["instance"] = object{"instancePath": path, "definitionNodeId": task.Instance.DefinitionNodeID}
+	}
+	if task.Index != nil {
+		entry["scopeInput"] = object{"item": task.Item, "index": *task.Index}
+	}
+	return entry
 }
 
 func hostOf(def object, config object, p *plan, log *workerLog) (*worker.Host, error) {

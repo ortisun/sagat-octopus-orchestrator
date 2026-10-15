@@ -601,6 +601,33 @@ public final class SagatClient implements AutoCloseable {
         return async(() -> query(runId, name, args, options));
     }
 
+    /** Evaluates a declared query against the chain head selected under the server's chain lock. */
+    public QueryResult queryChain(
+            String namespaceId, String chainId, String name, Object args, ChainQueryOptions options) {
+        if (name == null || !DECLARED_OPERATION_NAME.matcher(name).matches()) {
+            throw SagatException.invalid("an operation name is 1 to 128 permitted characters and starts with a letter or digit");
+        }
+        ChainQueryOptions opts = options == null ? ChainQueryOptions.create() : options;
+        ObjectNode body = JsonNodeFactory.instance.objectNode();
+        body.set("args", Json.toTree(args));
+        if (opts.expectedRunId() != null) {
+            body.put("expectedRunId", runId(opts.expectedRunId()));
+        }
+        JsonNode raw = object(http.request(new RestClient.Request(
+                "POST", chainPath(namespaceId, chainId) + "/queries/" + Endpoints.encodeComponent(name), null, body, null,
+                trace(opts.traceparent()), true)).body(), "a query result");
+        if (!raw.has("result")) {
+            throw SagatException.of(ErrorCode.PROTOCOL, "result is missing from the answer");
+        }
+        return new QueryResult(str(raw, "runId"), revision(raw, "runVersion", 0),
+                revision(raw, "stateRevision", 0), raw.get("result"), raw);
+    }
+
+    public CompletableFuture<QueryResult> queryChainAsync(
+            String namespaceId, String chainId, String name, Object args, ChainQueryOptions options) {
+        return async(() -> queryChain(namespaceId, chainId, name, args, options));
+    }
+
     /** Applies or replays a declared durable state update. */
     public UpdateReceipt update(String runId, String name, Object args, UpdateOptions options) {
         if (options == null || options.updateKey() == null || !UPDATE_KEY.matcher(options.updateKey()).matches()) {

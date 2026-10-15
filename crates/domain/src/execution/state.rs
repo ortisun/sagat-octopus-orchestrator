@@ -716,6 +716,64 @@ pub struct LoopCheckpoint {
     continuation: LoopContinuation,
 }
 
+/// One sequential-loop iteration reconstructed from durable projection rows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoopIterationRestore {
+    index: u32,
+    entry: ExecutionInstanceId,
+    checkpoint: Option<LoopCheckpoint>,
+    drained: bool,
+}
+
+impl LoopIterationRestore {
+    #[must_use]
+    pub const fn admitted(index: u32, entry: ExecutionInstanceId) -> Self {
+        Self {
+            index,
+            entry,
+            checkpoint: None,
+            drained: false,
+        }
+    }
+
+    #[must_use]
+    pub const fn drained(index: u32, entry: ExecutionInstanceId) -> Self {
+        Self {
+            index,
+            entry,
+            checkpoint: None,
+            drained: true,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[must_use]
+    pub fn checkpointed(
+        index: u32,
+        entry: ExecutionInstanceId,
+        return_instance: ExecutionInstanceId,
+        result_digest: Digest,
+        carry_digest: Digest,
+        condition: bool,
+        checked_at: OffsetDateTime,
+        continuation: LoopContinuation,
+    ) -> Self {
+        Self {
+            index,
+            entry,
+            checkpoint: Some(LoopCheckpoint {
+                return_instance,
+                result_digest,
+                carry_digest,
+                condition,
+                checked_at,
+                continuation,
+            }),
+            drained: false,
+        }
+    }
+}
+
 impl LoopCheckpoint {
     #[must_use]
     pub const fn return_instance(&self) -> &ExecutionInstanceId {
@@ -805,6 +863,11 @@ impl LoopState {
     #[must_use]
     pub const fn next_iteration(&self) -> u32 {
         self.next_iteration
+    }
+
+    #[must_use]
+    pub fn active_iteration(&self) -> Option<u32> {
+        self.active.as_ref().map(|active| active.index)
     }
 
     #[must_use]
@@ -1417,7 +1480,10 @@ impl RunState {
                 | (
                     CollectionPhase::Failed,
                     None,
-                    Some(CollectionDrainReason::Failed { .. })
+                    Some(
+                        CollectionDrainReason::Failed { .. }
+                            | CollectionDrainReason::StorageQuotaExceeded
+                    )
                 )
                 | (
                     CollectionPhase::Cancelled,
@@ -1456,8 +1522,10 @@ impl RunState {
                     && matches!(owner.waiting_on(), Some(WaitingOn::Collection))
             }
             CollectionPhase::Failed => {
+                let storage_quota = FailureCode::storage_quota_exceeded();
                 let expected = match &drain_reason {
                     Some(CollectionDrainReason::Failed { code, .. }) => Some(code),
+                    Some(CollectionDrainReason::StorageQuotaExceeded) => Some(&storage_quota),
                     _ => None,
                 };
                 owner.status == StepStatus::Failed
@@ -1615,6 +1683,241 @@ impl RunState {
                 results,
                 result_digest,
                 drain_reason,
+            },
+        );
+        Ok(())
+    }
+
+    /// Restores a sequential loop from its trusted projection without advancing the journal.
+    /// Admitted entry and returned instances must already exist in the restored step map.
+    ///
+    /// # Errors
+    /// Returns an execution invariant error when the projection cannot be produced by loop events.
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    pub fn restore_loop(
+        &mut self,
+        loop_instance: ExecutionInstanceId,
+        kind: LoopKind,
+        phase: LoopPhase,
+        max_iterations: u32,
+        entered_at: OffsetDateTime,
+        deadline: OffsetDateTime,
+        initial_carry_digest: Digest,
+        current_carry_digest: Digest,
+        initial_condition: Option<bool>,
+        next_iteration: u32,
+        delay_until: Option<OffsetDateTime>,
+        drain_reason: Option<LoopDrainReason>,
+        iterations: Vec<LoopIterationRestore>,
+    ) -> Result<(), ExecutionError> {
+        let timeout_ms = (deadline - entered_at).whole_milliseconds();
+        let valid_condition = matches!(
+            (kind, initial_condition),
+            (LoopKind::While, Some(_)) | (LoopKind::RepeatUntil, None)
+        );
+        if !(1..=MAX_ITERATION_INDEX + 1).contains(&max_iterations)
+            || !(1..=31_622_400_000).contains(&timeout_ms)
+            || !valid_condition
+            || self.loops.contains_key(&loop_instance)
+        {
+            return Err(ExecutionError::InvalidLoopEntry(loop_instance));
+        }
+        let owner = self
+            .steps
+            .get(&loop_instance)
+            .ok_or_else(|| ExecutionError::UnknownInstance(loop_instance.clone()))?;
+        let expected_failure = match &drain_reason {
+            Some(LoopDrainReason::Failed { code, .. }) => code.clone(),
+            Some(LoopDrainReason::TimedOut) => FailureCode::run_timed_out(),
+            Some(LoopDrainReason::Cancelled) | None => FailureCode::iteration_limit(),
+        };
+        let owner_matches = match phase {
+            LoopPhase::Ready | LoopPhase::Running | LoopPhase::Delaying => {
+                owner.status == StepStatus::Waiting
+                    && matches!(owner.waiting_on(), Some(WaitingOn::Loop))
+            }
+            LoopPhase::Succeeded => {
+                owner.status == StepStatus::Succeeded && owner.waiting_on().is_none()
+            }
+            LoopPhase::Failed => {
+                owner.status == StepStatus::Failed
+                    && owner.waiting_on().is_none()
+                    && owner.failure() == Some(&expected_failure)
+            }
+            LoopPhase::Draining => {
+                owner.status == StepStatus::Waiting
+                    && matches!(owner.waiting_on(), Some(WaitingOn::Loop))
+            }
+            LoopPhase::Cancelled => {
+                owner.status == StepStatus::Cancelled && owner.waiting_on().is_none()
+            }
+        };
+        if !owner_matches {
+            return Err(ExecutionError::IllegalInstanceTransition {
+                instance: loop_instance,
+                status: owner.status,
+                event: "loop.restore",
+            });
+        }
+
+        let mut active = None;
+        let mut drained = None;
+        let mut checkpoints = BTreeMap::new();
+        for (position, restored) in iterations.into_iter().enumerate() {
+            let expected_index = u32::try_from(position).unwrap_or(u32::MAX);
+            if restored.index != expected_index || restored.index >= max_iterations {
+                return Err(ExecutionError::UnexpectedLoopIteration {
+                    loop_instance,
+                    expected: expected_index,
+                    actual: restored.index,
+                });
+            }
+            Self::validate_loop_instance(&loop_instance, restored.index, &restored.entry)?;
+            if !self.steps.contains_key(&restored.entry) {
+                return Err(ExecutionError::UnknownInstance(restored.entry));
+            }
+            if restored.drained {
+                if restored.checkpoint.is_some() {
+                    return Err(ExecutionError::IllegalLoopTransition {
+                        loop_instance,
+                        event: "loop.restore",
+                    });
+                }
+                if drained.replace(restored.index).is_some() {
+                    return Err(ExecutionError::IllegalLoopTransition {
+                        loop_instance,
+                        event: "loop.restore",
+                    });
+                }
+            } else if let Some(checkpoint) = restored.checkpoint {
+                Self::validate_loop_instance(
+                    &loop_instance,
+                    restored.index,
+                    checkpoint.return_instance(),
+                )?;
+                let returned = self
+                    .steps
+                    .get(checkpoint.return_instance())
+                    .ok_or_else(|| {
+                        ExecutionError::UnknownInstance(checkpoint.return_instance().clone())
+                    })?;
+                if returned.status != StepStatus::Succeeded || !returned.routed {
+                    return Err(ExecutionError::IllegalInstanceTransition {
+                        instance: checkpoint.return_instance().clone(),
+                        status: returned.status,
+                        event: "loop.restore",
+                    });
+                }
+                checkpoints.insert(restored.index, checkpoint);
+            } else if active
+                .replace(LoopActiveIteration {
+                    index: restored.index,
+                    entry: restored.entry,
+                    return_instance: None,
+                })
+                .is_some()
+            {
+                return Err(ExecutionError::IllegalLoopTransition {
+                    loop_instance,
+                    event: "loop.restore",
+                });
+            }
+        }
+
+        let expected_next = u32::try_from(checkpoints.len()).unwrap_or(u32::MAX);
+        let last_checkpoint = checkpoints
+            .last_key_value()
+            .map(|(_, checkpoint)| checkpoint);
+        let carry_matches = last_checkpoint
+            .map_or(current_carry_digest == initial_carry_digest, |checkpoint| {
+                checkpoint.carry_digest() == current_carry_digest
+            });
+        if drained.is_some_and(|index| index != expected_next) {
+            return Err(ExecutionError::IllegalLoopTransition {
+                loop_instance,
+                event: "loop.restore",
+            });
+        }
+        let phase_matches = match phase {
+            LoopPhase::Ready => active.is_none() && drained.is_none() && delay_until.is_none(),
+            LoopPhase::Running => {
+                matches!(active.as_ref(), Some(value) if value.index == expected_next)
+                    && drained.is_none()
+                    && delay_until.is_none()
+            }
+            LoopPhase::Delaying => {
+                active.is_none()
+                    && drained.is_none()
+                    && matches!(
+                        (last_checkpoint.map(LoopCheckpoint::continuation), delay_until),
+                        (Some(LoopContinuation::DelayUntil(expected)), Some(actual))
+                            if expected == actual
+                    )
+            }
+            LoopPhase::Succeeded => {
+                active.is_none()
+                    && drained.is_none()
+                    && delay_until.is_none()
+                    && (matches!(
+                        last_checkpoint.map(LoopCheckpoint::continuation),
+                        Some(LoopContinuation::Complete)
+                    ) || (checkpoints.is_empty()
+                        && kind == LoopKind::While
+                        && initial_condition == Some(false)))
+            }
+            LoopPhase::Failed => {
+                active.is_none()
+                    && delay_until.is_none()
+                    && match &drain_reason {
+                        None => {
+                            matches!(
+                                last_checkpoint.map(LoopCheckpoint::continuation),
+                                Some(LoopContinuation::IterationLimit)
+                            ) && drained.is_none()
+                        }
+                        Some(LoopDrainReason::Failed { .. } | LoopDrainReason::TimedOut) => true,
+                        Some(LoopDrainReason::Cancelled) => false,
+                    }
+            }
+            LoopPhase::Draining => {
+                delay_until.is_none()
+                    && match &drain_reason {
+                        Some(LoopDrainReason::Failed { iteration, .. }) => {
+                            matches!(active.as_ref(), Some(value) if value.index == *iteration)
+                                || drained == Some(*iteration)
+                        }
+                        Some(LoopDrainReason::TimedOut | LoopDrainReason::Cancelled) => true,
+                        None => false,
+                    }
+            }
+            LoopPhase::Cancelled => {
+                active.is_none()
+                    && delay_until.is_none()
+                    && matches!(drain_reason, Some(LoopDrainReason::Cancelled))
+            }
+        };
+        if next_iteration != expected_next || !carry_matches || !phase_matches {
+            return Err(ExecutionError::IllegalLoopTransition {
+                loop_instance,
+                event: "loop.restore",
+            });
+        }
+        self.loops.insert(
+            loop_instance,
+            LoopState {
+                kind,
+                phase,
+                max_iterations,
+                entered_at,
+                deadline,
+                initial_carry_digest,
+                current_carry_digest,
+                next_iteration,
+                active,
+                checkpoints,
+                delay_until,
+                drain_reason,
+                failure: (phase == LoopPhase::Failed).then_some(expected_failure),
             },
         );
         Ok(())
@@ -2198,6 +2501,15 @@ impl RunState {
                         scope.phase == CollectionPhase::Draining && code == recorded && all_settled
                     }
                     (
+                        CollectionOutcome::Failed(code),
+                        None,
+                        Some(CollectionDrainReason::StorageQuotaExceeded),
+                    ) => {
+                        scope.phase == CollectionPhase::Draining
+                            && code == &FailureCode::storage_quota_exceeded()
+                            && all_settled
+                    }
+                    (
                         CollectionOutcome::Cancelled,
                         None,
                         Some(CollectionDrainReason::Cancelled),
@@ -2666,6 +2978,9 @@ impl RunState {
                         LoopOutcome::Failed(code),
                         Some(LoopDrainReason::Failed { code: recorded, .. }),
                     ) => code == recorded,
+                    (LoopOutcome::Failed(code), Some(LoopDrainReason::TimedOut)) => {
+                        code == &FailureCode::run_timed_out()
+                    }
                     (LoopOutcome::Cancelled, Some(LoopDrainReason::Cancelled)) => true,
                     _ => false,
                 };
@@ -3490,7 +3805,8 @@ impl RunState {
     /// An [`ExecutionError`] when the addressed transition is illegal or not enabled.
     pub fn apply_addressed(&mut self, addressed: &AddressedRunEvent) -> Result<(), ExecutionError> {
         use StepStatus::{
-            Failed, Leased, Pending, Ready, RetryWait, Running, Skipped, Succeeded, Waiting,
+            Cancelled, Failed, Leased, Pending, Ready, RetryWait, Running, Skipped, Succeeded,
+            Waiting,
         };
 
         if addressed.path().is_root() {
@@ -3607,6 +3923,32 @@ impl RunState {
                 step.status = Failed;
                 step.failure = Some(code.clone());
                 step.waiting = None;
+                step.cancel_requested = false;
+            }
+            RunEvent::StepCancelRequested { .. } => {
+                let step = self.instance_mut(&instance, name, &[Leased, Running, Waiting])?;
+                if (step.status == Waiting
+                    && !matches!(step.waiting, Some(WaitingOn::Child { .. })))
+                    || step.cancel_requested
+                {
+                    return Err(ExecutionError::IllegalInstanceTransition {
+                        instance,
+                        status: step.status,
+                        event: name,
+                    });
+                }
+                step.cancel_requested = true;
+            }
+            RunEvent::StepCancelled { .. } => {
+                let step = self.instance_mut(
+                    &instance,
+                    name,
+                    &[Pending, Ready, Leased, Running, Waiting, RetryWait],
+                )?;
+                step.status = Cancelled;
+                step.routed = true;
+                step.waiting = None;
+                step.next_attempt_at = None;
                 step.cancel_requested = false;
             }
             RunEvent::ApprovalOpened { request_id, .. } => {

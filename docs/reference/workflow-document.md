@@ -158,6 +158,12 @@ Every node has the fields below; each kind adds its own. The kinds: [`activity`]
 
 ### forEach
 
+The current public runtime accepts root `forEach` chains ending at `end`. Each referenced body must
+contain exactly one `activity` followed by one `return`. The scheduler does not open a collection
+scope until an administrator configures the tenant-wide `iteration_concurrency` quota. Nested
+collections, broader body graphs, `onError`, triggers and combinations with other structured nodes
+remain unavailable.
+
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `body` | [`nodeId`](#nodeId) | yes |  |

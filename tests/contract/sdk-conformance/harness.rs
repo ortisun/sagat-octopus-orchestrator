@@ -310,6 +310,22 @@ async fn boot(scenario: &Value) -> Run {
         ..Options::default()
     })
     .await;
+    if let Some(limit) = scenario["server"]
+        .as_object()
+        .and_then(|settings| settings.get("iterationConcurrency"))
+    {
+        let limit = limit
+            .as_u64()
+            .expect("server.iterationConcurrency is a non-negative integer");
+        let (status, quota) = platform
+            .rest(
+                Method::PUT,
+                "/quotas/iteration_concurrency",
+                Some(&json!({"limit": limit})),
+            )
+            .await;
+        assert_eq!(status, 200, "setting iteration concurrency: {quota}");
+    }
     platform
         .grant(platform.tenant, "conformance-worker", Role::Worker)
         .await;

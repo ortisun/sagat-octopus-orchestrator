@@ -788,6 +788,27 @@ class WorkflowBuilder(Flow):
             if sum(node["type"] == "return" for node in nested) != 1:
                 raise invalid(f"body {name!r} needs exactly one return node")
             bodies[name] = nested
+
+        visiting: set[str] = set()
+        visited: set[str] = set()
+
+        def visit_body(name: str) -> None:
+            if name in visiting:
+                raise invalid("body reference cycle is not allowed")
+            if name in visited:
+                return
+            visiting.add(name)
+            for node in bodies.get(name, []):
+                if node["type"] in ("forEach", "while", "repeatUntil"):
+                    target = node.get("body")
+                    if isinstance(target, str) and target in bodies:
+                        visit_body(target)
+            visiting.remove(name)
+            visited.add(name)
+
+        for name in bodies:
+            visit_body(name)
+
         def validate_scope(scope: list[Node]) -> None:
             local_ids: set[str] = set()
             for node in scope:

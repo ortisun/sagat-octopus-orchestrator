@@ -20,9 +20,9 @@ SAGAT_SDK_REUSE=1 …                                                           
 
 `protocol-negotiation.json` keeps the production worker ceiling and old-minor path executable in
 all five SDKs. It probes the accepted 1.x minors, malformed input and incompatible majors, then
-runs the same root activity through protocol 1, a current 1.4 worker and a worker offering 1.5.
-The 1.5 offer must be accepted as 1.4 by the production adapter. This scenario does not enable or
-exercise scoped work; scoped identity remains a separate pending scenario and test-only adapter gate.
+runs the same root activity through protocol 1, a retained 1.4 worker and the current 1.5 worker.
+The production adapter accepts 1.5 while a worker that offers 1.4 remains at 1.4. This scenario
+exercises additive negotiation and root compatibility; scoped identity has its own runtime scenario.
 
 ## Workflow-primitives scenarios
 
@@ -65,7 +65,10 @@ bounded strings and arrays, operation-count/name limits and the 1,024-byte expre
 `state-operations.json` runs the public Query/Update calls in all five SDKs against the real API and
 PostgreSQL store. It checks the observed revisions, exact update replay, stale-revision conflict,
 durable validator rejection, authentication and opaque cross-tenant lookup. Every retry preserves
-the body `updateKey`; no idempotency header is synthesized.
+the body `updateKey`; no idempotency header is synthesized. Its lost-response fault proves that the
+same update is replayed instead of applied twice. Decimal values and instants stay exact JSON strings,
+including the UTC `Z`, under the harness's non-UTC process timezone. The language unit suites cancel an
+in-flight update and prove that cancellation does not trigger a hidden retry.
 
 `approval-decisions.json` publishes and starts native approval workflows, discovers each request through
 the public run approval page, and calls the public decision route from all five SDKs. It covers
@@ -73,6 +76,18 @@ authentication, opaque tenant isolation, approve and reject routing, exact repla
 of the body decision key. No private store is seeded; the scheduler creates every request through the
 published workflow path. The SDK unit suites separately cover multi-page cursor traversal and strict
 response parsing.
+
+`chain-inspect-cancel.json` starts a public chain with an initial activity waiting for a worker,
+then inspects and cancels it through all five SDKs. The reviewed runtime golden requires opaque
+cross-tenant lookup, exact cancel replay and a terminal `CANCELLED` chain and run. It does not
+exercise continuation handoff or chain-target signals.
+
+`scoped-identity.json` provisions the tenant iteration quota through the public API, then runs the
+restricted collection body through the served scheduler and worker API. A retained 1.4 worker
+completes root work but cannot claim scoped work. A 1.5 worker observes two equal items at distinct
+indices plus a third distinct item, preserves each typed identity, captured `{item,index}` and
+idempotency key across a retry, and reaches a terminal graph with all three logical instances. No
+private store or control tick advances the collection.
 
 ```text
 SAGAT_SDK_SCENARIO=switch-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
@@ -83,6 +98,8 @@ SAGAT_SDK_SCENARIO=continuation-builders cargo test -p sagat-tests --test sdk_co
 SAGAT_SDK_SCENARIO=state-operation-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=state-operations cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=approval-decisions cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=chain-inspect-cancel cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=scoped-identity cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 ```
 
 ## Pending scenarios
@@ -91,24 +108,16 @@ Files ending in `.json.pending` are reviewed contracts for behavior that the ser
 cannot execute yet. The harness deliberately ignores them, so they are never counted as passing evidence
 and have no golden result.
 
-The scoped-identity fixture extends the existing `sagat-octopus-orchestrator.io/v1` document shape
-additively. Worker protocol 1.5 is negotiated independently and does not imply a new workflow IR revision.
-To expose the current failure, copy it to the enabled suffix, run only that scenario, then remove the copy:
-
-```text
-cp tests/contract/sdk-conformance/scenarios/scoped-identity.json.pending tests/contract/sdk-conformance/scenarios/scoped-identity.json
-SAGAT_SDK_SCENARIO=scoped-identity cargo test -p sagat-tests --test sdk_conformance -- --ignored --nocapture
-rm tests/contract/sdk-conformance/scenarios/scoped-identity.json
-```
-
-Enable the fixture permanently only when worker activity context and logs expose typed instance identity, graph inspection exposes each logical
-instance, scoped work is withheld from older workers, and a reviewed cross-language runtime golden exists.
-
-`chain-commands.json.pending` exercises the typed chain inspection, root-signal and cancellation calls
+`chain-commands.json.pending` exercises typed chain inspection, root-signal and cancellation calls
 implemented by all five SDKs, including expected-head fencing, exact command replay and tenant opacity.
-It remains pending because no public workflow path creates an execution chain yet and runner config does
-not expose the namespace UUID required by the route. Enable it only after both are public; do not seed
-the private chain store or substitute the namespace slug.
+It remains pending because its signal-controlled `waitEvent` continuation graph is outside the
+published chain subset. The runner now resolves the namespace UUID and current head from public
+responses. Do not seed the private chain store or substitute the namespace slug.
+
+`chain-query.json.pending` exercises the typed chain Query call and expected-head fence in all five
+SDK runners. It has no runtime golden because the public workflow subset still rejects a definition
+that combines declared state with continuation. Run-addressed Query/Update remains the executable
+shared scenario.
 
 ## What each SDK ships
 
@@ -162,7 +171,7 @@ the server without an SDK API: `expireLease {run, node}`, `elapseRetryDelay {run
 {
   "name": "run-lifecycle",
   "description": "…",
-  "server": { "leaseTtlSeconds": 3 },            // optional
+  "server": { "leaseTtlSeconds": 3, "iterationConcurrency": 2 }, // optional; quota is set through the public API
   "workflows": {                                   // key → builder program
     "linear": { "name": "linear-flow", "description": "…", "program": [ /* ops */ ],
                 "triggers": [], "labels": {}, "inputSchema": {}, "outputSchema": {} }
@@ -250,6 +259,7 @@ stop the scenario.
 | `operate` | `run`, `action`, `reason`, … | `operate` | `{accepted, runStatus}` |
 | `decideApproval` | `approvalId` or `approval` (a list step), `decisionKey`, `decision`, `reasonCode?`, `traceparent?`, `token?` | `decideApproval` | the normalized durable receipt |
 | `query` | `run`, `name`, `args`, `traceparent?`, `token?` | `query` | `{runVersion, stateRevision, result}` |
+| `queryChain` | `namespaceId`, `chainId`, `name`, `args`, `expectedRunId?`, `traceparent?`, `token?` | `queryChain` | `{runId, runVersion, stateRevision, result}` |
 | `update` | `run`, `name`, `args`, `updateKey`, `expectedStateRevision?`, `traceparent?`, `token?` | `update` | the normalized durable receipt |
 | `inspectChain` | `namespaceId`, `chainId`, `traceparent?`, `token?` | `inspectChain` | current head and ordered segments |
 | `signalChain` | `namespaceId`, `chainId`, `expectedRunId`, `name`, `payload`, `idempotencyKey?`, `traceparent?`, `token?` | `signalChain` | `{deliveredTo}` |

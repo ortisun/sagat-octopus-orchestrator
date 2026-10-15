@@ -125,6 +125,48 @@ fn fence_validation_is_scoped_to_the_addressed_instance() {
 }
 
 #[test]
+fn addressed_cancellation_replays_only_for_the_leased_instance() {
+    let first = instance(0);
+    let second = instance(1);
+    let mut state = state_with_two_iterations();
+    let (fence, _) = lease_instance(&mut state, &first).expect("first lease");
+    heartbeat_instance(&mut state, &first, fence).expect("first attempt starts");
+
+    let requested = AddressedRunEvent::in_path(
+        first.path().clone(),
+        RunEvent::StepCancelRequested {
+            node: first.node().clone(),
+        },
+    )
+    .expect("cancel request keeps its path");
+    state
+        .apply_addressed(&requested)
+        .expect("cancel request replays");
+    let beat = heartbeat_instance(&mut state, &first, fence).expect("lease remains fenced");
+    assert!(beat.cancel_requested);
+
+    let cancelled = AddressedRunEvent::in_path(
+        first.path().clone(),
+        RunEvent::StepCancelled {
+            node: first.node().clone(),
+        },
+    )
+    .expect("cancel acknowledgement keeps its path");
+    state
+        .apply_addressed(&cancelled)
+        .expect("cancel acknowledgement replays");
+    assert_eq!(
+        state.instance(&first).map(StepState::status),
+        Some(StepStatus::Cancelled)
+    );
+    assert_eq!(
+        state.instance(&second).map(StepState::status),
+        Some(StepStatus::Ready)
+    );
+    assert!(state.apply_addressed(&cancelled).is_err());
+}
+
+#[test]
 fn unsupported_scoped_condition_is_rejected_without_mutation() {
     let mut state = state_with_two_iterations();
     let before = state.clone();

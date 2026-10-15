@@ -241,6 +241,19 @@ fn drain(
                 | super::CollectionPhase::Cancelled => {}
             }
         }
+        if matches!(step.waiting_on(), Some(WaitingOn::Loop)) {
+            let loop_state = state
+                .loop_state(&super::ExecutionInstanceId::root(node.clone()))
+                .ok_or(ExecutionError::Invariant(
+                    "a loop wait has no durable scope",
+                ))?;
+            if matches!(
+                loop_state.phase(),
+                super::LoopPhase::Ready | super::LoopPhase::Running | super::LoopPhase::Delaying
+            ) {
+                return Err(ExecutionError::UnsupportedStructuredNode(node.clone()));
+            }
+        }
         match step.status() {
             // A step parked on a child that the policy asks to be cancelled *and awaited* is asked
             // to stop like an attempt in flight, then left alone until the child has settled.
@@ -339,11 +352,12 @@ fn start_pending(
                 input: input.clone(),
             }),
             NodeKind::End { .. } => Plan::Emit(RunEvent::EndReached { node: node.clone() }),
-            NodeKind::Approval { .. } | NodeKind::ContinueAsNew { .. } => Plan::Idle,
-            NodeKind::ForEach { .. }
+            NodeKind::Approval { .. }
+            | NodeKind::ContinueAsNew { .. }
+            | NodeKind::ForEach { .. }
             | NodeKind::While { .. }
-            | NodeKind::RepeatUntil { .. }
-            | NodeKind::Return { .. } => {
+            | NodeKind::RepeatUntil { .. } => Plan::Idle,
+            NodeKind::Return { .. } => {
                 return Err(ExecutionError::UnsupportedStructuredNode(node.clone()));
             }
         };

@@ -56,6 +56,6 @@ pub use operations::{
 pub use plan::{AddressedPlan, Evaluation, Plan, plan, plan_addressed};
 pub use state::{
     CollectionIterationRestore, CollectionPhase, CollectionResult, CollectionState, LoopCheckpoint,
-    LoopPhase, LoopState, RunChainState, RunId, RunState, RunStatus, SagaPhase, SagaState,
-    StepState, StepStatus, WaitingOn,
+    LoopIterationRestore, LoopPhase, LoopState, RunChainState, RunId, RunState, RunStatus,
+    SagaPhase, SagaState, StepState, StepStatus, WaitingOn,
 };

@@ -48,6 +48,9 @@ public interface ISagatClient
     /// <summary>Evaluates a declared side-effect-free query over one committed state snapshot.</summary>
     Task<QueryResult> QueryAsync<TArgs>(string runId, string name, TArgs args, RequestOptions? options = null, CancellationToken cancellationToken = default);
 
+    /// <summary>Evaluates a declared query against the chain head selected under the server's chain lock.</summary>
+    Task<QueryResult> QueryChainAsync<TArgs>(string namespaceId, string chainId, string name, TArgs args, ChainQueryOptions? options = null, CancellationToken cancellationToken = default);
+
     /// <summary>Applies or replays a declared durable state update.</summary>
     Task<UpdateReceipt> UpdateAsync<TArgs>(string runId, string name, TArgs args, UpdateOptions options, CancellationToken cancellationToken = default);
 

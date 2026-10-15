@@ -617,7 +617,7 @@ public final class WorkerHost implements AutoCloseable {
         TaskKind kind = minor >= 2 ? TaskKind.of(lease.getTaskKind()) : TaskKind.FORWARD;
 
         if (registered == null) {
-            fail(channel, lease, state, "NO_HANDLER", "no handler is registered for the activity", false, started);
+            fail(channel, lease, state, minor, "NO_HANDLER", "no handler is registered for the activity", false, started);
             return;
         }
 
@@ -627,15 +627,30 @@ public final class WorkerHost implements AutoCloseable {
             JsonNode parsed = text.isEmpty() ? null : Json.mapper().readTree(text);
             document = parsed != null && parsed.isObject() ? parsed : JsonNodeFactory.instance.objectNode();
         } catch (java.io.IOException e) {
-            fail(channel, lease, state, "INPUT_INVALID", "the step document is not JSON", false, started);
+            fail(channel, lease, state, minor, "INPUT_INVALID", "the step document is not JSON", false, started);
             return;
         }
         JsonNode rawInput = document.has("input") ? document.get("input") : NullNode.getInstance();
+        JsonNode collectionItem = null;
+        Integer collectionIndex = null;
+        boolean scoped = minor >= 5 && lease.hasInstance() && lease.getInstance().getInstancePathCount() > 0;
+        boolean hasItem = document.has("item");
+        boolean hasIndex = document.has("index");
+        if (scoped && (hasItem || hasIndex)) {
+            JsonNode rawIndex = document.get("index");
+            if (!hasItem || !hasIndex || rawIndex == null || !rawIndex.isIntegralNumber()
+                    || !rawIndex.canConvertToInt() || rawIndex.intValue() < 0) {
+                fail(channel, lease, state, minor, "INPUT_INVALID", "the collection item context is malformed", false, started);
+                return;
+            }
+            collectionItem = document.get("item").deepCopy();
+            collectionIndex = rawIndex.intValue();
+        }
         Object input;
         try {
             input = bind(rawInput, registered.inputType());
         } catch (Exception e) {
-            fail(channel, lease, state, "INPUT_INVALID", "the input does not have the type of the handler", false, started);
+            fail(channel, lease, state, minor, "INPUT_INVALID", "the input does not have the type of the handler", false, started);
             return;
         }
         Map<String, JsonNode> steps = new LinkedHashMap<>();
@@ -653,7 +668,8 @@ public final class WorkerHost implements AutoCloseable {
             String node = document.path("node").isTextual() && !document.path("node").textValue().isEmpty()
                     ? document.path("node").textValue()
                     : lease.getStepId();
-            Context context = new Context(channel, lease, node, kind, Collections.unmodifiableMap(steps), state, task.cancel, minor);
+            Context context = new Context(channel, lease, node, kind, Collections.unmodifiableMap(steps),
+                    collectionItem, collectionIndex, state, task.cancel, minor);
 
             Object result = null;
             ActivityFailure failure = null;
@@ -689,7 +705,7 @@ public final class WorkerHost implements AutoCloseable {
                 return;
             }
             if (failure != null) {
-                fail(channel, lease, state, failure.code(), failure.getMessage(), failure.isRetryable(), started);
+                fail(channel, lease, state, minor, failure.code(), failure.getMessage(), failure.isRetryable(), started);
                 return;
             }
 
@@ -697,19 +713,19 @@ public final class WorkerHost implements AutoCloseable {
             BlobDescriptor blob = null;
             if (kind == TaskKind.RECONCILIATION && registered.kind() == Kind.RECONCILER) {
                 if (!(result instanceof Verdict verdict)) {
-                    fail(channel, lease, state, "RECONCILIATION_ANSWER_INVALID", "a reconciler answers applied, notApplied or unknown", false, started);
+                    fail(channel, lease, state, minor, "RECONCILIATION_ANSWER_INVALID", "a reconciler answers applied, notApplied or unknown", false, started);
                     return;
                 }
                 output = Json.encode(verdict.toJson());
             } else if (result instanceof BlobOutput blobOutput) {
                 if (minor < 3) {
-                    fail(channel, lease, state, "UNSUPPORTED_PROTOCOL", "blob output requires worker protocol 1.3", false, started);
+                    fail(channel, lease, state, minor, "UNSUPPORTED_PROTOCOL", "blob output requires worker protocol 1.3", false, started);
                     return;
                 }
                 try {
                     validateBlob(blobOutput.descriptor());
                 } catch (SagatException invalid) {
-                    fail(channel, lease, state, "OUTPUT_INVALID", "the blob output descriptor is malformed", false, started);
+                    fail(channel, lease, state, minor, "OUTPUT_INVALID", "the blob output descriptor is malformed", false, started);
                     return;
                 }
                 blob = blobOutput.descriptor();
@@ -720,15 +736,15 @@ public final class WorkerHost implements AutoCloseable {
                 try {
                     output = Json.encode(result instanceof Verdict verdict ? verdict.toJson() : Json.toTree(result));
                 } catch (SagatException e) {
-                    fail(channel, lease, state, "OUTPUT_INVALID", e.getMessage(), false, started);
+                    fail(channel, lease, state, minor, "OUTPUT_INVALID", e.getMessage(), false, started);
                     return;
                 }
             }
             if (output.getBytes(StandardCharsets.UTF_8).length > MAX_OUTPUT_BYTES) {
-                fail(channel, lease, state, "PAYLOAD_TOO_LARGE", "the output is over 256 KiB", false, started);
+                fail(channel, lease, state, minor, "PAYLOAD_TOO_LARGE", "the output is over 256 KiB", false, started);
                 return;
             }
-            complete(channel, lease, state, output, blob, started);
+            complete(channel, lease, state, minor, output, blob, started);
         } finally {
             beat.stop();
         }
@@ -749,6 +765,8 @@ public final class WorkerHost implements AutoCloseable {
         private final String node;
         private final TaskKind kind;
         private final Map<String, JsonNode> steps;
+        private final JsonNode item;
+        private final Integer index;
         private final LeaseState state;
         private final CancellationSource cancel;
         private final int minor;
@@ -756,12 +774,15 @@ public final class WorkerHost implements AutoCloseable {
         private Secrets secrets;
         private boolean dropped;
 
-        Context(WorkerRpc channel, Worker.TaskLease lease, String node, TaskKind kind, Map<String, JsonNode> steps, LeaseState state, CancellationSource cancel, int minor) {
+        Context(WorkerRpc channel, Worker.TaskLease lease, String node, TaskKind kind, Map<String, JsonNode> steps,
+                JsonNode item, Integer index, LeaseState state, CancellationSource cancel, int minor) {
             this.channel = channel;
             this.lease = lease;
             this.node = node;
             this.kind = kind;
             this.steps = steps;
+            this.item = item;
+            this.index = index;
             this.state = state;
             this.cancel = cancel;
             this.minor = minor;
@@ -801,6 +822,27 @@ public final class WorkerHost implements AutoCloseable {
         @Override
         public long generation() {
             return lease.getGeneration();
+        }
+
+        @Override
+        public ExecutionInstanceIdentity instance() {
+            if (minor < 5 || !lease.hasInstance()) {
+                return null;
+            }
+            List<ExecutionScope> path = lease.getInstance().getInstancePathList().stream()
+                    .map(segment -> new ExecutionScope(segment.getScopeNodeId(), segment.getIterationIndex()))
+                    .toList();
+            return new ExecutionInstanceIdentity(path, lease.getInstance().getDefinitionNodeId());
+        }
+
+        @Override
+        public JsonNode item() {
+            return item;
+        }
+
+        @Override
+        public Integer index() {
+            return index;
         }
 
         @Override
@@ -875,8 +917,11 @@ public final class WorkerHost implements AutoCloseable {
                     .setTaskId(lease.getTaskId()).setRunId(lease.getRunId()).setStepId(lease.getStepId())
                     .setAttempt(lease.getAttempt()).setGeneration(lease.getGeneration()).setLeaseToken(lease.getLeaseToken())
                     .setContentType(options.contentType()).setExpectedSize(options.expectedSize())
-                    .setExpectedSha256(options.expectedSha256()).build();
-            var written = channel.writeBlob(header, source, lease.getTraceparent(), cancel);
+                    .setExpectedSha256(options.expectedSha256());
+            if (minor >= 5 && lease.hasInstance()) {
+                header.setInstance(lease.getInstance());
+            }
+            var written = channel.writeBlob(header.build(), source, lease.getTraceparent(), cancel);
             var response = written.response();
             var descriptor = new BlobDescriptor(response.getBlobId(), response.getSize(), response.getSha256(), response.getContentType());
             validateBlob(descriptor);
@@ -898,8 +943,11 @@ public final class WorkerHost implements AutoCloseable {
             var request = Worker.ReadBlobRequest.newBuilder()
                     .setTaskId(lease.getTaskId()).setRunId(lease.getRunId()).setStepId(lease.getStepId())
                     .setAttempt(lease.getAttempt()).setGeneration(lease.getGeneration()).setLeaseToken(lease.getLeaseToken())
-                    .setBlobId(descriptor.id()).build();
-            var read = channel.readBlob(request, lease.getTraceparent());
+                    .setBlobId(descriptor.id());
+            if (minor >= 5 && lease.hasInstance()) {
+                request.setInstance(lease.getInstance());
+            }
+            var read = channel.readBlob(request.build(), lease.getTraceparent());
             return new BlobInputStream(read.parts(), descriptor, cancel, read::cancel);
         }
 
@@ -915,17 +963,18 @@ public final class WorkerHost implements AutoCloseable {
         if (minor < 2) {
             throw SagatException.of(ErrorCode.UNSUPPORTED_PROTOCOL, "the server speaks a protocol older than 1.2, which has no ResolveSecrets");
         }
-        Worker.ResolveSecretsResponse answer = channel.resolveSecrets(
-                Worker.ResolveSecretsRequest.newBuilder()
+        Worker.ResolveSecretsRequest.Builder request = Worker.ResolveSecretsRequest.newBuilder()
                         .setTaskId(lease.getTaskId())
                         .setRunId(lease.getRunId())
                         .setStepId(lease.getStepId())
                         .setAttempt(lease.getAttempt())
                         .setGeneration(lease.getGeneration())
                         .setLeaseToken(lease.getLeaseToken())
-                        .setTraceparent(lease.getTraceparent())
-                        .build(),
-                lease.getTraceparent());
+                        .setTraceparent(lease.getTraceparent());
+        if (minor >= 5 && lease.hasInstance()) {
+            request.setInstance(lease.getInstance());
+        }
+        Worker.ResolveSecretsResponse answer = channel.resolveSecrets(request.build(), lease.getTraceparent());
         Map<String, byte[]> values = new LinkedHashMap<>();
         for (Worker.ResolvedSecret secret : answer.getSecretsList()) {
             values.put(secret.getName(), secret.getValue().toByteArray());
@@ -998,6 +1047,9 @@ public final class WorkerHost implements AutoCloseable {
                     // The step identity came with 1.1.
                     request.setRunId(lease.getRunId()).setStepId(lease.getStepId()).setAttempt(lease.getAttempt());
                 }
+                if (minor >= 5 && lease.hasInstance()) {
+                    request.setInstance(lease.getInstance());
+                }
                 Worker.HeartbeatResponse answer = channel.heartbeat(request.build(), lease.getTraceparent());
                 emit(new WorkerEvent.Heartbeat(lease.getTaskId()));
                 if (answer.getLeaseExpiresAtEpochMs() > 0) {
@@ -1065,9 +1117,9 @@ public final class WorkerHost implements AutoCloseable {
         return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
     }
 
-    private void complete(WorkerRpc channel, Worker.TaskLease lease, LeaseState state, String output, BlobDescriptor blob, long started) {
+    private void complete(WorkerRpc channel, Worker.TaskLease lease, LeaseState state, int minor, String output, BlobDescriptor blob, long started) {
         try {
-            Worker.CompleteStepRequest request = Worker.CompleteStepRequest.newBuilder()
+            Worker.CompleteStepRequest.Builder request = Worker.CompleteStepRequest.newBuilder()
                     .setTaskId(lease.getTaskId())
                     .setRunId(lease.getRunId())
                     .setStepId(lease.getStepId())
@@ -1078,9 +1130,12 @@ public final class WorkerHost implements AutoCloseable {
                     .setOutputJson(output)
                     .setOutputBlobRef(blob == null ? "" : blob.id())
                     .setOutputSha256(blob == null ? "" : blob.sha256())
-                    .setTraceparent(lease.getTraceparent())
-                    .build();
-            Worker.StepCommandResponse answer = withRetries(channel, state, () -> channel.completeStep(request, lease.getTraceparent()));
+                    .setTraceparent(lease.getTraceparent());
+            if (minor >= 5 && lease.hasInstance()) {
+                request.setInstance(lease.getInstance());
+            }
+            Worker.CompleteStepRequest body = request.build();
+            Worker.StepCommandResponse answer = withRetries(channel, state, () -> channel.completeStep(body, lease.getTraceparent()));
             if (answer == null) {
                 emit(new WorkerEvent.TaskStale(lease.getTaskId()));
                 return;
@@ -1092,10 +1147,10 @@ public final class WorkerHost implements AutoCloseable {
         }
     }
 
-    private void fail(WorkerRpc channel, Worker.TaskLease lease, LeaseState state, String code, String message, boolean retryable, long started) {
+    private void fail(WorkerRpc channel, Worker.TaskLease lease, LeaseState state, int minor, String code, String message, boolean retryable, long started) {
         String safeCode = CODE.matcher(code).matches() ? code : "WORKER_ERROR";
         try {
-            Worker.FailStepRequest request = Worker.FailStepRequest.newBuilder()
+            Worker.FailStepRequest.Builder request = Worker.FailStepRequest.newBuilder()
                     .setTaskId(lease.getTaskId())
                     .setRunId(lease.getRunId())
                     .setStepId(lease.getStepId())
@@ -1106,9 +1161,12 @@ public final class WorkerHost implements AutoCloseable {
                     .setErrorCode(safeCode)
                     .setSafeMessage(Text.cut(message, 512))
                     .setRetryable(retryable)
-                    .setTraceparent(lease.getTraceparent())
-                    .build();
-            Worker.StepCommandResponse answer = withRetries(channel, state, () -> channel.failStep(request, lease.getTraceparent()));
+                    .setTraceparent(lease.getTraceparent());
+            if (minor >= 5 && lease.hasInstance()) {
+                request.setInstance(lease.getInstance());
+            }
+            Worker.FailStepRequest body = request.build();
+            Worker.StepCommandResponse answer = withRetries(channel, state, () -> channel.failStep(body, lease.getTraceparent()));
             if (answer == null) {
                 emit(new WorkerEvent.TaskStale(lease.getTaskId()));
                 return;

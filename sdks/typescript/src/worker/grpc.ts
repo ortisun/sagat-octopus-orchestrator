@@ -22,27 +22,34 @@ export interface WorkerCapabilities {
 export interface RegisterWorkerRequest { worker_name: string; namespace: string; capabilities: WorkerCapabilities }
 export interface RegisterWorkerResponse { worker_id: string; session_token: string; accepted_protocol_version: string }
 export interface PollTasksRequest { worker_id: string; session_token: string; max_tasks: number }
+export interface ScopePathSegment { scope_node_id: string; iteration_index: number }
+export interface ExecutionInstanceIdentity { instance_path: ScopePathSegment[]; definition_node_id: string }
 export interface TaskLease {
   task_id: string; run_id: string; step_id: string; attempt: number; generation: number; lease_token: string;
   expires_at_epoch_ms: number; activity_name: string; input_json: string; input_blob_ref: string;
   traceparent: string; tenant_alias: string; idempotency_key: string; task_kind: string;
   target_node: string; target_idempotency_key: string;
+  instance?: ExecutionInstanceIdentity; target_instance?: ExecutionInstanceIdentity;
 }
 export interface PollTasksResponse { tasks: TaskLease[]; retry_after_ms: number }
 export interface HeartbeatRequest {
   task_id: string; worker_id: string; generation: number; lease_token: string; run_id: string; step_id: string; attempt: number;
+  instance?: ExecutionInstanceIdentity;
 }
 export interface HeartbeatResponse { lease_expires_at_epoch_ms: number; cancel_requested: boolean }
 export interface CompleteStepRequest {
   task_id: string; run_id: string; step_id: string; attempt: number; generation: number; lease_token: string;
   idempotency_key: string; output_json: string; output_blob_ref: string; output_sha256: string; traceparent: string;
+  instance?: ExecutionInstanceIdentity;
 }
 export interface FailStepRequest {
   task_id: string; run_id: string; step_id: string; attempt: number; generation: number; lease_token: string;
   idempotency_key: string; error_code: string; safe_message: string; retryable: boolean; traceparent: string;
+  instance?: ExecutionInstanceIdentity;
 }
 export interface ResolveSecretsRequest {
   task_id: string; run_id: string; step_id: string; attempt: number; generation: number; lease_token: string; traceparent: string;
+  instance?: ExecutionInstanceIdentity;
 }
 export interface ResolvedSecret { name: string; value: Buffer; version: number }
 export interface ResolveSecretsResponse { secrets: ResolvedSecret[] }
@@ -50,10 +57,12 @@ export interface WriteBlobRequest { header?: WriteBlobHeader; chunk?: Buffer }
 export interface WriteBlobHeader {
   task_id: string; run_id: string; step_id: string; attempt: number; generation: number; lease_token: string;
   content_type: string; expected_size: number; expected_sha256: string;
+  instance?: ExecutionInstanceIdentity;
 }
 export interface WriteBlobResponse { blob_id: string; size: number; sha256: string; content_type: string }
 export interface ReadBlobRequest {
   task_id: string; run_id: string; step_id: string; attempt: number; generation: number; lease_token: string; blob_id: string;
+  instance?: ExecutionInstanceIdentity;
 }
 export interface ReadBlobResponse { header?: WriteBlobResponse; chunk?: Buffer; part?: string }
 export interface StepCommandResponse { command_id: string; already_applied: boolean; step_status: string; run_status: string }

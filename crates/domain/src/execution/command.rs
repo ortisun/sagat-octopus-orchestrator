@@ -610,9 +610,9 @@ pub fn fail_step(
 
 /// Records a failed attempt for one admitted activity instance.
 ///
-/// Scoped sagas, reconciliation and cancellation retain their dedicated owners and fail closed in
-/// this command. Ordinary retries and terminal `onError` routing remain isolated to the addressed
-/// path.
+/// Scoped sagas and reconciliation retain their dedicated owners and fail closed in this command.
+/// A worker that observes an addressed cancellation may acknowledge it with a failed report;
+/// ordinary retries and terminal `onError` routing remain isolated to the addressed path.
 pub fn fail_instance(
     def: &WorkflowDefinition,
     state: &mut RunState,
@@ -631,11 +631,40 @@ pub fn fail_instance(
         .ok_or_else(|| ExecutionError::UnknownStep(instance.node().clone()))?;
     let reconciliation =
         ExecutionInstanceId::in_path(instance.path().clone(), instance.node().reconciliation());
-    if declared.origin() != &NodeOrigin::Declared
-        || instance.node().is_reconciliation()
-        || step.cancel_requested()
-        || (is_ambiguous(&failure.code)
-            && (declared.effect().high_risk || def.node_for_instance(&reconciliation).is_some()))
+    if declared.origin() != &NodeOrigin::Declared || instance.node().is_reconciliation() {
+        return Err(ExecutionError::UnsupportedScopedEvent(
+            "scoped failure policy",
+        ));
+    }
+    if step.cancel_requested() {
+        let cancelled = AddressedRunEvent::in_path(
+            instance.path().clone(),
+            RunEvent::StepCancelled {
+                node: instance.node().clone(),
+            },
+        )
+        .map_err(|_| ExecutionError::Invariant("a cancellation lost its instance path"))?;
+        if is_ambiguous(&failure.code) || failure.code == FailureCode::storage_quota_exceeded() {
+            let lost = AddressedRunEvent::in_path(
+                instance.path().clone(),
+                RunEvent::StepRetryScheduled {
+                    node: instance.node().clone(),
+                    attempt: failure.fence.attempt,
+                    generation: failure.fence.generation,
+                    code: failure.code,
+                    not_before: now,
+                },
+            )
+            .map_err(|_| ExecutionError::Invariant("a lost attempt lost its instance path"))?;
+            state.apply_addressed(&lost)?;
+            state.apply_addressed(&cancelled)?;
+            return settle_addressed(def, state, instance.path(), vec![lost, cancelled]);
+        }
+        state.apply_addressed(&cancelled)?;
+        return settle_addressed(def, state, instance.path(), vec![cancelled]);
+    }
+    if is_ambiguous(&failure.code)
+        && (declared.effect().high_risk || def.node_for_instance(&reconciliation).is_some())
     {
         return Err(ExecutionError::UnsupportedScopedEvent(
             "scoped failure policy",

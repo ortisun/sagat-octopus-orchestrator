@@ -102,6 +102,7 @@ All calls are `<apiUrl><path>` with `Authorization: Bearer <token>`, `Accept: ap
 | `signal(runId, name, payload, options)` | `POST /runs/{runId}/signals/{name}` with the payload object, `Idempotency-Key` | `202` `{deliveredTo}` |
 | `decideApproval(approvalId, decision, options)` | `POST /approvals/{approvalId}/decisions` with `{decisionKey, decision: APPROVE \| REJECT, reasonCode?}` | `200` ApprovalDecisionReceipt |
 | `query(runId, name, args, options)` | `POST /runs/{runId}/queries/{name}` with `{args}` | `200` QueryResult with the observed run and state revisions |
+| `queryChain(namespaceId, chainId, name, args, options)` | `POST /namespaces/{namespaceId}/chains/{chainId}/queries/{name}` with `{args, expectedRunId?}` | `200` QueryResult for the head resolved under the chain lock |
 | `update(runId, name, args, options)` | `POST /runs/{runId}/updates/{name}` with `{updateKey, args, expectedStateRevision?}` | `200` UpdateReceipt |
 | `inspectChain(namespaceId, chainId)` | `GET /namespaces/{namespaceId}/chains/{chainId}` | `200` ChainInspection |
 | `signalChain(namespaceId, chainId, name, payload, options)` | `POST /namespaces/{namespaceId}/chains/{chainId}/signals/{name}` with `{expectedRunId, payload}`, `Idempotency-Key` | `202` `{deliveredTo}` |
@@ -211,7 +212,7 @@ pools, max_inflight, protocol_version}}`:
   1 to 256.
 - `max_inflight`: the host's concurrency limit, 1 to 1000 (default 10).
 - `protocol_version`: the newest minor version of protocol 1 the SDK speaks — a constant of the SDK,
-  `1.4` for SDK 0.1 (`1` is `1.0`). The server answers `accepted_protocol_version`: the newest both
+  `1.5` for SDK 0.1 (`1` is `1.0`). The server answers `accepted_protocol_version`: the newest both
   speak (the worker's own if it is not newer than the server's, the server's otherwise). The host **MUST**
   use only the features of the accepted version: against `1` it sends `Heartbeat` without the step
   identity (`run_id`, `step_id`, `attempt`) and does not call `ResolveSecrets`; against `1.1` it does
@@ -219,6 +220,17 @@ pools, max_inflight, protocol_version}}`:
   the server (`UNSUPPORTED_PROTOCOL`); the host does not retry it.
 - The host exposes the accepted version (`host.protocolVersion`).
 - There is one live session per worker name and identity: registering again replaces it (§6.2).
+- Protocol `1.5` adds the execution-instance identity to a lease. When `1.5` is accepted, the host
+  echoes the identity supplied by the server on heartbeat, completion, failure, secret resolution,
+  blob upload and blob read. It does not construct or alter this identity. When `1.4` or older is
+  accepted, the host omits it from every request, even if an additive field is present on the lease.
+  The server uses the echoed identity with the lease fence and tenant-bound worker session; an SDK
+  never treats the identity alone as authorization.
+- The activity context exposes a copied, typed `ExecutionInstanceIdentity` only when protocol `1.5`
+  was accepted and the lease supplied it. Its ordered path contains `{scopeNodeId, iterationIndex}`
+  segments and its `definitionNodeId` identifies the node activated at that path. The field is absent
+  at protocol `1.4` or older. Reports still echo the original lease field, so handler code cannot
+  change the identity used for authorization or fencing.
 
 ### 6.2 The loop
 
@@ -250,12 +262,14 @@ For a `TaskLease` the host:
 
 1. finds the handler by `activity_name`; none → `FailStep(error_code = "NO_HANDLER", retryable = false)`
    (the server would not have leased it to a worker that did not advertise it, so this is a bug report);
-2. parses `input_json` — the **step document** `{run: {id}, node, input, steps: {<node>: {output}}}` —
+2. parses `input_json` — the **step document** `{run: {id}, node, input, steps: {<node>: {output}}}`,
+   with `{item,index}` for an admitted collection instance —
    and hands the handler `input` (the run's input) typed by the handler's declared type, plus the context
    (`ctx`): `activityName`, `taskId`, `runId`, `node` (the node id of the workflow definition, `node` of the step document;
    the lease's `step_id` when the document has none), `stepId` (the lease's `step_id`, a UUID, which the reports carry), `attempt`, `generation`,
    `idempotencyKey`, `traceparent`, `deadline`, `taskKind` (`FORWARD` when empty, `COMPENSATION`,
-   `RECONCILIATION`), `targetNode`, `targetIdempotencyKey`, `steps` (the outputs of earlier steps,
+   `RECONCILIATION`), `targetNode`, `targetIdempotencyKey`, `item`/`index` (the immutable captured value
+   and index for collection work; absent otherwise), `steps` (the outputs of earlier steps,
    by node), a cancellation token, a logger and `secrets()`;
 3. starts the **heartbeat** before the handler and keeps it until the report is made (§6.4);
 4. runs the handler with the lease as its deadline; its result is the output;

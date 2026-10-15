@@ -12,9 +12,28 @@ pub struct DeclaredQueryBody {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChainDeclaredQueryBody {
+    pub args: Value,
+    #[serde(default)]
+    pub expected_run_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DeclaredUpdateBody {
     pub update_key: String,
     pub args: Value,
+    #[serde(default)]
+    pub expected_state_revision: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChainDeclaredUpdateBody {
+    pub update_key: String,
+    pub args: Value,
+    #[serde(default)]
+    pub expected_run_id: Option<String>,
     #[serde(default)]
     pub expected_state_revision: Option<u64>,
 }

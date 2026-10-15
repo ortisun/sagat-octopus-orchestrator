@@ -408,6 +408,23 @@ def behavior_handler(name: str, kind: str, behavior: Obj, log: list[Obj], measur
                     "kind": kind,
                     "node": ctx.node,
                     "attempt": ctx.attempt,
+                    **(
+                        {
+                            "instance": {
+                                "instancePath": [
+                                    {
+                                        "scopeNodeId": segment.scope_node_id,
+                                        "iterationIndex": segment.iteration_index,
+                                    }
+                                    for segment in ctx.instance.instance_path
+                                ],
+                                "definitionNodeId": ctx.instance.definition_node_id,
+                            }
+                        }
+                        if ctx.instance is not None
+                        else {}
+                    ),
+                    **({"scopeInput": {"item": ctx.item, "index": ctx.index}} if ctx.index is not None else {}),
                     "input": run_input,
                     "taskKind": ctx.task_kind,
                     "targetNode": ctx.target_node,
@@ -698,6 +715,21 @@ async def run(scenario: Obj, config: Obj) -> Obj:
                         "runVersion": updated.run_version,
                         "replayed": updated.replayed,
                     }
+                elif op == "queryChain":
+                    queried = await client.query_chain(
+                        chain_ref(step["namespaceId"]),
+                        chain_ref(step["chainId"]),
+                        step["name"],
+                        step.get("args"),
+                        expected_run_id=(chain_ref(step["expectedRunId"]) if step.get("expectedRunId") else None),
+                        traceparent=step.get("traceparent"),
+                    )
+                    result = {
+                        "runId": queried.run_id,
+                        "runVersion": queried.run_version,
+                        "stateRevision": queried.state_revision,
+                        "result": queried.result,
+                    }
                 elif op == "inspectChain":
                     chain = await client.inspect_chain(
                         chain_ref(step["namespaceId"]), chain_ref(step["chainId"]), traceparent=step.get("traceparent")
@@ -709,7 +741,8 @@ async def run(scenario: Obj, config: Obj) -> Obj:
                                 break
                             await asyncio.sleep(0.05)
                             chain = await client.inspect_chain(
-                                chain_ref(step["namespaceId"]), chain_ref(step["chainId"]),
+                                chain_ref(step["namespaceId"]),
+                                chain_ref(step["chainId"]),
                                 traceparent=step.get("traceparent"),
                             )
                     result = {

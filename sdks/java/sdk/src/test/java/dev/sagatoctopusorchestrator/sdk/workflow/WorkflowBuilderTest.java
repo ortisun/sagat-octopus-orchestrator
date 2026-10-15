@@ -172,6 +172,18 @@ class WorkflowBuilderTest {
     }
 
     @Test
+    void namedBodiesCannotReferenceThemselves() {
+        Flow recursive = Flow.body()
+                .forEach("nested", "input.items", "line", "bodyResult", CollectionOptions.of(2, 1))
+                .returnValue("return", "steps.nested.output");
+        refused(() -> workflow("recursive-body")
+                .body("line", recursive)
+                .forEach("lines", "input.items", "line", "bodyResult", CollectionOptions.of(2, 1))
+                .end("done")
+                .build(), "body reference cycle");
+    }
+
+    @Test
     void whileAndRepeatUntilWriteBoundedPreTestAndPostTestLoopNodes() {
         Flow iteration = Flow.body().step("increment", "counter.increment").returnValue("return", "steps.increment.output");
         ObjectNode document = workflow("loop-flow")

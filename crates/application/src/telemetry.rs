@@ -18,8 +18,9 @@ use sagat_domain::execution::{
 };
 use sagat_domain::identity::{NamespaceId, TenantId};
 use sagat_telemetry::{
-    AttrValue, SpanData, SpanEvent, SpanId, SpanKind, SpanStatus, TraceId, WorkflowPrimitiveKind,
-    WorkflowPrimitiveOutcome, WorkflowPrimitiveSpan, attempt_span_id, event_span_id, run_span_id,
+    AttrValue, SpanData, SpanEvent, SpanId, SpanKind, SpanLink, SpanStatus, TraceId,
+    WorkflowPrimitiveKind, WorkflowPrimitiveOutcome, WorkflowPrimitiveSpan, attempt_span_id,
+    event_span_id, run_span_id,
 };
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -379,7 +380,7 @@ pub async fn all_attempts<S: TelemetryStore>(
 /// The event types [`derive`] needs from the part of the journal that was projected already: the
 /// ones that close an attempt leased in an earlier batch, and the starts of the timers and waits
 /// that end in this one.
-pub const CONTEXT_EVENTS: [&str; 11] = [
+pub const CONTEXT_EVENTS: [&str; 12] = [
     "step.released",
     "step.retry_due",
     "step.leased",
@@ -391,6 +392,7 @@ pub const CONTEXT_EVENTS: [&str; 11] = [
     "step.cancelled",
     "timer.started",
     "wait.started",
+    "approval.opened",
 ];
 
 /// Whether `actor` is the platform itself or one of its workers, as opposed to a person: the only
@@ -438,6 +440,14 @@ fn path_attribute(path: &InstancePath) -> Option<String> {
     })
 }
 
+fn primitive_span_status(outcome: WorkflowPrimitiveOutcome) -> SpanStatus {
+    match outcome {
+        WorkflowPrimitiveOutcome::Failed => SpanStatus::Error("PRIMITIVE_FAILED".to_owned()),
+        WorkflowPrimitiveOutcome::Cancelled => SpanStatus::Error("PRIMITIVE_CANCELLED".to_owned()),
+        _ => SpanStatus::Ok,
+    }
+}
+
 /// The spans and measurements of the entries after `applied_seq`. Entries at or before it are only
 /// context: they are never turned into a span again.
 #[must_use]
@@ -465,6 +475,12 @@ pub fn derive(facts: &RunFacts, entries: &[JournalEntry], applied_seq: u64) -> D
         if let Some(path) = path_attribute(attempt.instance.path()) {
             attributes.push(("sagat.instance.path".to_owned(), AttrValue::from(path)));
         }
+        attributes.push((
+            "sagat.scope.depth".to_owned(),
+            AttrValue::from(
+                u32::try_from(attempt.instance.path().segments().len()).unwrap_or(u32::MAX),
+            ),
+        ));
         attributes.push(("sagat.attempt".to_owned(), AttrValue::from(attempt.attempt)));
         attributes.push((
             "sagat.generation".to_owned(),
@@ -542,6 +558,15 @@ pub fn derive(facts: &RunFacts, entries: &[JournalEntry], applied_seq: u64) -> D
         };
         let mut attributes = base_attributes(facts);
         attributes.push(("sagat.node".to_owned(), AttrValue::from(node.as_str())));
+        if let Some(path) = path_attribute(&entry.instance_path) {
+            attributes.push(("sagat.instance.path".to_owned(), AttrValue::from(path)));
+        }
+        attributes.push((
+            "sagat.scope.depth".to_owned(),
+            AttrValue::from(
+                u32::try_from(entry.instance_path.segments().len()).unwrap_or(u32::MAX),
+            ),
+        ));
         attributes.push((
             "sagat.primitive.kind".to_owned(),
             AttrValue::from(WorkflowPrimitiveKind::Switch.as_str()),
@@ -576,86 +601,308 @@ pub fn derive(facts: &RunFacts, entries: &[JournalEntry], applied_seq: u64) -> D
         });
     }
 
+    let mut approval_opened = HashMap::new();
+    for entry in entries {
+        match &entry.event {
+            RunEvent::ExecutionChainStarted { .. } if entry.seq > applied_seq => {
+                out.observations.push(Observation::PrimitiveTransition {
+                    kind: WorkflowPrimitiveKind::Continuation,
+                    outcome: WorkflowPrimitiveOutcome::Entered,
+                });
+            }
+            RunEvent::ApprovalOpened {
+                node, request_id, ..
+            } => {
+                approval_opened.insert(*request_id, (entry.seq, entry.occurred_at, node));
+                if entry.seq > applied_seq {
+                    out.observations.push(Observation::PrimitiveTransition {
+                        kind: WorkflowPrimitiveKind::Approval,
+                        outcome: WorkflowPrimitiveOutcome::Entered,
+                    });
+                }
+            }
+            RunEvent::ApprovalDecided {
+                node,
+                request_id,
+                decision,
+                ..
+            } if entry.seq > applied_seq => {
+                let outcome = match decision {
+                    ApprovalDecision::Approve => WorkflowPrimitiveOutcome::Approved,
+                    ApprovalDecision::Reject => WorkflowPrimitiveOutcome::Rejected,
+                };
+                let (_, opened_at, opened_node) = approval_opened.remove(request_id).unwrap_or((
+                    entry.seq,
+                    entry.occurred_at,
+                    node,
+                ));
+                let mut attributes = base_attributes(facts);
+                attributes.push((
+                    "sagat.primitive.kind".to_owned(),
+                    AttrValue::from(WorkflowPrimitiveKind::Approval.as_str()),
+                ));
+                attributes.push((
+                    "sagat.outcome".to_owned(),
+                    AttrValue::from(outcome.as_str()),
+                ));
+                attributes.push((
+                    "sagat.node".to_owned(),
+                    AttrValue::from(opened_node.as_str()),
+                ));
+                let ended_at = nanos(entry.occurred_at);
+                out.spans.push(SpanData {
+                    trace_id: facts.trace_id,
+                    span_id: event_span_id(run_uuid, entry.seq),
+                    parent: Some(run_span),
+                    name: WorkflowPrimitiveSpan::ApprovalDecide.as_str().to_owned(),
+                    kind: SpanKind::Internal,
+                    start_unix_nano: nanos(opened_at),
+                    end_unix_nano: ended_at,
+                    attributes,
+                    events: Vec::new(),
+                    links: Vec::new(),
+                    status: SpanStatus::Ok,
+                });
+                out.observations.push(Observation::PrimitiveTransition {
+                    kind: WorkflowPrimitiveKind::Approval,
+                    outcome,
+                });
+            }
+            RunEvent::ApprovalExpired {
+                node, request_id, ..
+            } if entry.seq > applied_seq => {
+                let outcome = WorkflowPrimitiveOutcome::Expired;
+                let (_, opened_at, opened_node) = approval_opened.remove(request_id).unwrap_or((
+                    entry.seq,
+                    entry.occurred_at,
+                    node,
+                ));
+                let mut attributes = base_attributes(facts);
+                attributes.push((
+                    "sagat.primitive.kind".to_owned(),
+                    AttrValue::from(WorkflowPrimitiveKind::Approval.as_str()),
+                ));
+                attributes.push((
+                    "sagat.outcome".to_owned(),
+                    AttrValue::from(outcome.as_str()),
+                ));
+                attributes.push((
+                    "sagat.node".to_owned(),
+                    AttrValue::from(opened_node.as_str()),
+                ));
+                let ended_at = nanos(entry.occurred_at);
+                out.spans.push(SpanData {
+                    trace_id: facts.trace_id,
+                    span_id: event_span_id(run_uuid, entry.seq),
+                    parent: Some(run_span),
+                    name: WorkflowPrimitiveSpan::ApprovalDecide.as_str().to_owned(),
+                    kind: SpanKind::Internal,
+                    start_unix_nano: nanos(opened_at),
+                    end_unix_nano: ended_at,
+                    attributes,
+                    events: Vec::new(),
+                    links: Vec::new(),
+                    status: SpanStatus::Ok,
+                });
+                out.observations.push(Observation::PrimitiveTransition {
+                    kind: WorkflowPrimitiveKind::Approval,
+                    outcome,
+                });
+            }
+            _ => {}
+        }
+    }
+
     for entry in entries {
         if entry.seq <= applied_seq {
             continue;
         }
-        let (kind, outcome, span, node, index) = match &entry.event {
-            RunEvent::CollectionIterationAdmitted { node, index, .. } => (
-                WorkflowPrimitiveKind::Collection,
-                WorkflowPrimitiveOutcome::Admitted,
-                WorkflowPrimitiveSpan::ScopeAdmit,
-                Some(node),
-                Some(*index),
-            ),
-            RunEvent::CollectionIterationCheckpointed { node, index, .. } => (
-                WorkflowPrimitiveKind::Collection,
-                WorkflowPrimitiveOutcome::Committed,
-                WorkflowPrimitiveSpan::IterationCommit,
-                Some(node),
-                Some(*index),
-            ),
-            RunEvent::CollectionFinished { node, outcome, .. } => (
-                WorkflowPrimitiveKind::Collection,
-                match outcome {
-                    CollectionOutcome::Succeeded => WorkflowPrimitiveOutcome::Succeeded,
-                    CollectionOutcome::Failed(_) => WorkflowPrimitiveOutcome::Failed,
-                    CollectionOutcome::Cancelled => WorkflowPrimitiveOutcome::Cancelled,
-                },
-                WorkflowPrimitiveSpan::IterationCommit,
-                Some(node),
-                None,
-            ),
-            RunEvent::LoopIterationAdmitted { node, index, .. } => (
-                WorkflowPrimitiveKind::Loop,
-                WorkflowPrimitiveOutcome::Admitted,
-                WorkflowPrimitiveSpan::ScopeAdmit,
-                Some(node),
-                Some(*index),
-            ),
-            RunEvent::LoopIterationCheckpointed { node, index, .. } => (
-                WorkflowPrimitiveKind::Loop,
-                WorkflowPrimitiveOutcome::Committed,
-                WorkflowPrimitiveSpan::IterationCommit,
-                Some(node),
-                Some(*index),
-            ),
-            RunEvent::LoopFinished { node, outcome } => (
-                WorkflowPrimitiveKind::Loop,
-                match outcome {
-                    LoopOutcome::Failed(_) => WorkflowPrimitiveOutcome::Failed,
-                    LoopOutcome::Cancelled => WorkflowPrimitiveOutcome::Cancelled,
-                },
-                WorkflowPrimitiveSpan::IterationCommit,
-                Some(node),
-                None,
-            ),
-            RunEvent::ApprovalDecided { node, decision, .. } => (
-                WorkflowPrimitiveKind::Approval,
-                match decision {
-                    ApprovalDecision::Approve => WorkflowPrimitiveOutcome::Approved,
-                    ApprovalDecision::Reject => WorkflowPrimitiveOutcome::Rejected,
-                },
-                WorkflowPrimitiveSpan::ApprovalDecide,
-                Some(node),
-                None,
-            ),
-            RunEvent::ApprovalExpired { node, .. } => (
-                WorkflowPrimitiveKind::Approval,
-                WorkflowPrimitiveOutcome::Expired,
-                WorkflowPrimitiveSpan::ApprovalDecide,
-                Some(node),
-                None,
-            ),
-            RunEvent::RunContinued { .. } => (
-                WorkflowPrimitiveKind::Continuation,
-                WorkflowPrimitiveOutcome::Continued,
-                WorkflowPrimitiveSpan::Continue,
-                None,
-                None,
-            ),
-            _ => continue,
-        };
+        let (kind, outcome, span, node, index, segment, instance, linked_run, observe) =
+            match &entry.event {
+                RunEvent::CollectionEntered { node, .. } => (
+                    WorkflowPrimitiveKind::Collection,
+                    WorkflowPrimitiveOutcome::Entered,
+                    WorkflowPrimitiveSpan::ScopeAdmit,
+                    Some(node),
+                    None,
+                    None,
+                    None,
+                    None,
+                    true,
+                ),
+                RunEvent::CollectionIterationAdmitted {
+                    node, index, entry, ..
+                } => (
+                    WorkflowPrimitiveKind::Collection,
+                    WorkflowPrimitiveOutcome::Admitted,
+                    WorkflowPrimitiveSpan::ScopeAdmit,
+                    Some(node),
+                    Some(*index),
+                    None,
+                    Some(entry),
+                    None,
+                    true,
+                ),
+                RunEvent::CollectionIterationCheckpointed {
+                    node,
+                    index,
+                    return_instance,
+                    ..
+                } => (
+                    WorkflowPrimitiveKind::Collection,
+                    WorkflowPrimitiveOutcome::Committed,
+                    WorkflowPrimitiveSpan::IterationCommit,
+                    Some(node),
+                    Some(*index),
+                    None,
+                    Some(return_instance),
+                    None,
+                    true,
+                ),
+                RunEvent::CollectionDrainStarted { node, .. } => (
+                    WorkflowPrimitiveKind::Collection,
+                    WorkflowPrimitiveOutcome::Draining,
+                    WorkflowPrimitiveSpan::IterationCommit,
+                    Some(node),
+                    None,
+                    None,
+                    None,
+                    None,
+                    true,
+                ),
+                RunEvent::CollectionFinished { node, outcome, .. } => (
+                    WorkflowPrimitiveKind::Collection,
+                    match outcome {
+                        CollectionOutcome::Succeeded => WorkflowPrimitiveOutcome::Succeeded,
+                        CollectionOutcome::Failed(_) => WorkflowPrimitiveOutcome::Failed,
+                        CollectionOutcome::Cancelled => WorkflowPrimitiveOutcome::Cancelled,
+                    },
+                    WorkflowPrimitiveSpan::IterationCommit,
+                    Some(node),
+                    None,
+                    None,
+                    None,
+                    None,
+                    true,
+                ),
+                RunEvent::LoopEntered { node, .. } => (
+                    WorkflowPrimitiveKind::Loop,
+                    WorkflowPrimitiveOutcome::Entered,
+                    WorkflowPrimitiveSpan::ScopeAdmit,
+                    Some(node),
+                    None,
+                    None,
+                    None,
+                    None,
+                    true,
+                ),
+                RunEvent::LoopIterationAdmitted {
+                    node, index, entry, ..
+                } => (
+                    WorkflowPrimitiveKind::Loop,
+                    WorkflowPrimitiveOutcome::Admitted,
+                    WorkflowPrimitiveSpan::ScopeAdmit,
+                    Some(node),
+                    Some(*index),
+                    None,
+                    Some(entry),
+                    None,
+                    true,
+                ),
+                RunEvent::LoopIterationCheckpointed {
+                    node,
+                    index,
+                    return_instance,
+                    continuation,
+                    ..
+                } => (
+                    WorkflowPrimitiveKind::Loop,
+                    match continuation {
+                        sagat_domain::execution::LoopContinuation::Complete => {
+                            WorkflowPrimitiveOutcome::Succeeded
+                        }
+                        sagat_domain::execution::LoopContinuation::IterationLimit => {
+                            WorkflowPrimitiveOutcome::Failed
+                        }
+                        sagat_domain::execution::LoopContinuation::Continue
+                        | sagat_domain::execution::LoopContinuation::DelayUntil(_) => {
+                            WorkflowPrimitiveOutcome::Committed
+                        }
+                    },
+                    WorkflowPrimitiveSpan::IterationCommit,
+                    Some(node),
+                    Some(*index),
+                    None,
+                    Some(return_instance),
+                    None,
+                    true,
+                ),
+                RunEvent::LoopDrainStarted { node, .. } => (
+                    WorkflowPrimitiveKind::Loop,
+                    WorkflowPrimitiveOutcome::Draining,
+                    WorkflowPrimitiveSpan::IterationCommit,
+                    Some(node),
+                    None,
+                    None,
+                    None,
+                    None,
+                    true,
+                ),
+                RunEvent::LoopFinished { node, outcome } => (
+                    WorkflowPrimitiveKind::Loop,
+                    match outcome {
+                        LoopOutcome::Failed(_) => WorkflowPrimitiveOutcome::Failed,
+                        LoopOutcome::Cancelled => WorkflowPrimitiveOutcome::Cancelled,
+                    },
+                    WorkflowPrimitiveSpan::IterationCommit,
+                    Some(node),
+                    None,
+                    None,
+                    None,
+                    None,
+                    true,
+                ),
+                RunEvent::ContinuationSelected {
+                    node, successor, ..
+                } => (
+                    WorkflowPrimitiveKind::Continuation,
+                    WorkflowPrimitiveOutcome::Continued,
+                    WorkflowPrimitiveSpan::Continue,
+                    Some(node),
+                    None,
+                    None,
+                    None,
+                    Some(*successor),
+                    true,
+                ),
+                RunEvent::RunContinued { successor, .. } => (
+                    WorkflowPrimitiveKind::Continuation,
+                    WorkflowPrimitiveOutcome::Continued,
+                    WorkflowPrimitiveSpan::Continue,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(*successor),
+                    true,
+                ),
+                RunEvent::ExecutionChainSuccessorLinked {
+                    predecessor,
+                    segment_index,
+                    ..
+                } => (
+                    WorkflowPrimitiveKind::Continuation,
+                    WorkflowPrimitiveOutcome::Continued,
+                    WorkflowPrimitiveSpan::Continue,
+                    None,
+                    None,
+                    Some(u32::from(*segment_index)),
+                    None,
+                    Some(*predecessor),
+                    false,
+                ),
+                _ => continue,
+            };
         let mut attributes = base_attributes(facts);
         attributes.push((
             "sagat.primitive.kind".to_owned(),
@@ -671,6 +918,22 @@ pub fn derive(facts: &RunFacts, entries: &[JournalEntry], applied_seq: u64) -> D
         if let Some(index) = index {
             attributes.push(("sagat.iteration.index".to_owned(), AttrValue::from(index)));
         }
+        if let Some(segment) = segment {
+            attributes.push((
+                "sagat.continuation.segment_index".to_owned(),
+                AttrValue::from(segment),
+            ));
+        }
+        let path = instance
+            .map(ExecutionInstanceId::path)
+            .unwrap_or(&entry.instance_path);
+        if let Some(path) = path_attribute(path) {
+            attributes.push(("sagat.instance.path".to_owned(), AttrValue::from(path)));
+        }
+        attributes.push((
+            "sagat.scope.depth".to_owned(),
+            AttrValue::from(u32::try_from(path.segments().len()).unwrap_or(u32::MAX)),
+        ));
         let at = nanos(entry.occurred_at);
         out.spans.push(SpanData {
             trace_id: facts.trace_id,
@@ -682,73 +945,102 @@ pub fn derive(facts: &RunFacts, entries: &[JournalEntry], applied_seq: u64) -> D
             end_unix_nano: at,
             attributes,
             events: Vec::new(),
-            links: Vec::new(),
-            status: SpanStatus::Ok,
+            links: linked_run
+                .map(|run| SpanLink {
+                    trace_id: facts.trace_id,
+                    span_id: run_span_id(run.as_uuid()),
+                })
+                .into_iter()
+                .collect(),
+            status: primitive_span_status(outcome),
         });
-        out.observations
-            .push(Observation::PrimitiveTransition { kind, outcome });
+        if observe {
+            out.observations
+                .push(Observation::PrimitiveTransition { kind, outcome });
+        }
     }
 
     // Timers and waits: where the time of a run goes when no worker holds it.
-    let mut timers: HashMap<String, (u64, OffsetDateTime)> = HashMap::new();
-    let mut waits: HashMap<String, (u64, OffsetDateTime)> = HashMap::new();
+    let mut timers: HashMap<ExecutionInstanceId, (u64, OffsetDateTime)> = HashMap::new();
+    let mut waits: HashMap<ExecutionInstanceId, (u64, OffsetDateTime)> = HashMap::new();
     for entry in entries {
         let at = entry.occurred_at;
-        let mut finished =
-            |kind: &str, started: Option<(u64, OffsetDateTime)>, node: &str, outcome: &str| {
-                if let Some((started_seq, started_at)) = started
-                    && entry.seq > applied_seq
-                {
-                    let mut attributes = base_attributes(facts);
-                    attributes.push(("sagat.node".to_owned(), AttrValue::from(node)));
-                    attributes.push(("sagat.outcome".to_owned(), AttrValue::from(outcome)));
-                    out.spans.push(SpanData {
-                        trace_id: facts.trace_id,
-                        span_id: event_span_id(run_uuid, started_seq),
-                        parent: Some(run_span),
-                        name: kind.to_owned(),
-                        kind: SpanKind::Internal,
-                        start_unix_nano: nanos(started_at),
-                        end_unix_nano: nanos(at),
-                        attributes,
-                        events: Vec::new(),
-                        links: Vec::new(),
-                        status: if outcome == "timed_out" {
-                            SpanStatus::Error("WAIT_TIMED_OUT".to_owned())
-                        } else {
-                            SpanStatus::Unset
-                        },
-                    });
+        let mut finished = |kind: &str,
+                            started: Option<(u64, OffsetDateTime)>,
+                            instance: &ExecutionInstanceId,
+                            outcome: &str| {
+            if let Some((started_seq, started_at)) = started
+                && entry.seq > applied_seq
+            {
+                let mut attributes = base_attributes(facts);
+                attributes.push((
+                    "sagat.node".to_owned(),
+                    AttrValue::from(instance.node().as_str()),
+                ));
+                if let Some(path) = path_attribute(instance.path()) {
+                    attributes.push(("sagat.instance.path".to_owned(), AttrValue::from(path)));
                 }
-            };
+                attributes.push((
+                    "sagat.scope.depth".to_owned(),
+                    AttrValue::from(
+                        u32::try_from(instance.path().segments().len()).unwrap_or(u32::MAX),
+                    ),
+                ));
+                attributes.push(("sagat.outcome".to_owned(), AttrValue::from(outcome)));
+                out.spans.push(SpanData {
+                    trace_id: facts.trace_id,
+                    span_id: event_span_id(run_uuid, started_seq),
+                    parent: Some(run_span),
+                    name: kind.to_owned(),
+                    kind: SpanKind::Internal,
+                    start_unix_nano: nanos(started_at),
+                    end_unix_nano: nanos(at),
+                    attributes,
+                    events: Vec::new(),
+                    links: Vec::new(),
+                    status: if outcome == "timed_out" {
+                        SpanStatus::Error("WAIT_TIMED_OUT".to_owned())
+                    } else {
+                        SpanStatus::Unset
+                    },
+                });
+            }
+        };
         match &entry.event {
             RunEvent::TimerStarted { node, .. } => {
-                timers.insert(node.as_str().to_owned(), (entry.seq, at));
-            }
-            RunEvent::TimerFired { node } => {
-                finished(
-                    "timer",
-                    timers.remove(node.as_str()),
-                    node.as_str(),
-                    "fired",
+                timers.insert(
+                    ExecutionInstanceId::in_path(entry.instance_path.clone(), node.clone()),
+                    (entry.seq, at),
                 );
             }
+            RunEvent::TimerFired { node } => {
+                let instance =
+                    ExecutionInstanceId::in_path(entry.instance_path.clone(), node.clone());
+                finished("timer", timers.remove(&instance), &instance, "fired");
+            }
             RunEvent::WaitStarted { node, .. } => {
-                waits.insert(node.as_str().to_owned(), (entry.seq, at));
+                waits.insert(
+                    ExecutionInstanceId::in_path(entry.instance_path.clone(), node.clone()),
+                    (entry.seq, at),
+                );
             }
             RunEvent::WaitSatisfied { node } => {
+                let instance =
+                    ExecutionInstanceId::in_path(entry.instance_path.clone(), node.clone());
                 finished(
                     "wait.event",
-                    waits.remove(node.as_str()),
-                    node.as_str(),
+                    waits.remove(&instance),
+                    &instance,
                     "satisfied",
                 );
             }
             RunEvent::WaitTimedOut { node, .. } => {
+                let instance =
+                    ExecutionInstanceId::in_path(entry.instance_path.clone(), node.clone());
                 finished(
                     "wait.event",
-                    waits.remove(node.as_str()),
-                    node.as_str(),
+                    waits.remove(&instance),
+                    &instance,
                     "timed_out",
                 );
             }
@@ -981,7 +1273,7 @@ pub trait TelemetryStore: Send + Sync {
 }
 
 #[cfg(test)]
-mod switch_tests {
+mod primitive_tests {
     use super::*;
     use sagat_domain::execution::{ExecutionInstanceId, SwitchSelection};
     use sagat_domain::workflow::{Digest, NodeId};

@@ -156,6 +156,11 @@ fn equal_local_nodes_in_two_iterations_have_distinct_attempt_spans() {
         attr(&spans[1], "sagat.instance.path"),
         Some(&AttrValue::from("items[1]"))
     );
+    assert!(
+        spans
+            .iter()
+            .all(|span| { attr(span, "sagat.scope.depth") == Some(&AttrValue::from(1_u32)) })
+    );
 }
 
 /// `charge` is leased and fails twice, then succeeds: three attempts.
@@ -590,6 +595,100 @@ fn timers_and_waits_are_spans_of_the_time_a_run_spent_not_working() {
         SpanStatus::Error("WAIT_TIMED_OUT".to_owned())
     );
     assert_ne!(timers[0].span_id, waits[0].span_id);
+}
+
+#[test]
+fn equal_local_timers_in_two_scopes_project_independently() {
+    let facts = facts(&[]);
+    let scope = node("items");
+    let timer = node("pause");
+    let first = InstancePath::root()
+        .child(scope.clone(), 0)
+        .expect("first timer scope");
+    let second = InstancePath::root()
+        .child(scope, 1)
+        .expect("second timer scope");
+    let started = facts.created_at + Duration::seconds(1);
+    let entries = [
+        JournalEntry {
+            seq: 1,
+            event: RunEvent::TimerStarted {
+                node: timer.clone(),
+                due_at: started + Duration::seconds(1),
+            },
+            instance_path: first.clone(),
+            actor: "system:engine".into(),
+            occurred_at: started,
+        },
+        JournalEntry {
+            seq: 2,
+            event: RunEvent::TimerStarted {
+                node: timer.clone(),
+                due_at: started + Duration::seconds(2),
+            },
+            instance_path: second.clone(),
+            actor: "system:engine".into(),
+            occurred_at: started,
+        },
+        JournalEntry {
+            seq: 3,
+            event: RunEvent::TimerFired {
+                node: timer.clone(),
+            },
+            instance_path: first,
+            actor: "system:scheduler".into(),
+            occurred_at: started + Duration::seconds(1),
+        },
+        JournalEntry {
+            seq: 4,
+            event: RunEvent::TimerFired { node: timer },
+            instance_path: second,
+            actor: "system:scheduler".into(),
+            occurred_at: started + Duration::seconds(2),
+        },
+    ];
+
+    let derived = derive(&facts, &entries, 0);
+    let spans = named(&derived.spans, "timer");
+    assert_eq!(spans.len(), 2);
+    assert_eq!(
+        attr(spans[0], "sagat.instance.path"),
+        Some(&AttrValue::from("items[0]"))
+    );
+    assert_eq!(
+        attr(spans[1], "sagat.instance.path"),
+        Some(&AttrValue::from("items[1]"))
+    );
+    assert_ne!(spans[0].span_id, spans[1].span_id);
+}
+
+#[test]
+fn scoped_switch_selection_carries_its_instance_identity() {
+    let facts = facts(&[]);
+    let path = InstancePath::root()
+        .child(node("items"), 7)
+        .expect("switch scope");
+    let entries = [JournalEntry {
+        seq: 1,
+        event: RunEvent::SwitchEvaluated {
+            node: node("choose"),
+            selection: sagat_domain::execution::SwitchSelection::Default,
+        },
+        instance_path: path,
+        actor: "system:engine".into(),
+        occurred_at: facts.created_at,
+    }];
+
+    let derived = derive(&facts, &entries, 0);
+    let span = named(&derived.spans, "workflow.switch.evaluate")[0];
+    assert_eq!(
+        attr(span, "sagat.instance.path"),
+        Some(&AttrValue::from("items[7]"))
+    );
+    assert_eq!(
+        attr(span, "sagat.scope.depth"),
+        Some(&AttrValue::from(1_u32))
+    );
 }
 
 #[test]

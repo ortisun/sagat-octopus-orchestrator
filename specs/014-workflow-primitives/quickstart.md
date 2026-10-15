@@ -59,8 +59,22 @@ default route wins. A missing `amount` fails evaluation; no later case or defaul
 switch integration target exercises these outcomes against PostgreSQL and checks journal/replay.
 
 The five SDKs can construct additive v1 collection, bounded-loop, approval and continuation
-documents. These builder fixtures check authoring only. The server accepts a bounded root approval
-with basic nodes and two closed continuation graphs: `activity -> continueAsNew`, and
+documents. The server accepts a restricted collection graph made from one or more root `forEach`
+nodes ending at `end`; every referenced body must contain exactly one activity followed by one
+`return`. Before starting work, an administrator must set the tenant-wide active iteration budget:
+
+```sh
+curl -X PUT "$API/v1/quotas/iteration_concurrency" \
+  -H "authorization: Bearer $ADMIN" -H 'content-type: application/json' \
+  -d '{"limit": 32}'
+```
+
+Without this setting, the scheduler fails closed before opening a scope or dispatching body work.
+The setting is audited, ceiling checked and shared by collection and loop iterations across every
+namespace in the tenant. Its default operator ceiling is 1,024 active iterations; raising that
+ceiling is a separate operator action.
+
+The server also accepts a bounded root approval with basic nodes and two closed continuation graphs: `activity -> continueAsNew`, and
 `activity -> condition -> (continueAsNew | end)`. Continuation transfer is input-only; declared
 state, bodies, top-level limits, triggers and wider graphs fail publication. Run the current builder
 parity checks with:
@@ -87,6 +101,57 @@ outside the published continuation subset. Typed inspect and cancel can address 
 the reviewed server shapes; signal has only its negative no-matching-wait path there. The pending
 fixture is not runtime proof.
 
+The chain Query REST route can resolve declared state on an existing chain, as exercised by
+internally seeded compatibility tests. Public publication still rejects a workflow that combines
+declared state with continuation, so this route does not yet provide a public end-to-end Query
+example. For a chain with declared state, the request shape is:
+
+```sh
+curl -X POST \
+  "$API/v1/namespaces/$NAMESPACE_ID/chains/$CHAIN_ID/queries/balance" \
+  -H "authorization: Bearer $TOKEN" \
+  -H 'content-type: application/json' \
+  -d "{\"args\":{},\"expectedRunId\":\"$CURRENT_RUN_ID\"}"
+```
+
+The token needs `run:read` and `run:query`. `expectedRunId` is optional; supplying it prevents an
+unnoticed handoff and returns `409` with `details.reason=CHAIN_HEAD_CHANGED` when the committed head
+has changed. Inspect the chain again before deciding whether to retry. A successful response names
+the actual run, run version and state revision used for the result and carries
+`Cache-Control: no-store`. The server locks the chain before the run snapshot, so a concurrent
+handoff returns one complete old-head or successor snapshot. It never combines the two and does not
+append a workflow event or schedule work.
+
+Chain Update uses the same declared evaluator and addresses the current head under an exclusive
+chain-before-run lock. `expectedRunId` is optional. A new key with an obsolete expected head returns
+`409 CHAIN_HEAD_CHANGED`; an exact retry uses the same presence/value and returns its original
+applied or rejected receipt even after rollover:
+
+```sh
+curl -X POST \
+  "$API/v1/namespaces/$NAMESPACE_ID/chains/$CHAIN_ID/updates/balance.replace" \
+  -H "authorization: Bearer $TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{"updateKey":"replace-27","args":{"allowed":true,"nextState":{"balance":27}},"expectedRunId":"'$CURRENT_RUN_ID'"}'
+```
+
+The response names the run that actually committed the receipt and carries `Cache-Control:
+no-store`. A run-addressed Update remains bound to that exact run and never forwards. Operation
+arguments and results are each limited to 256 KiB; the existing 4 MiB retained run-data and 8 MiB
+task-context limits still apply. Evaluation uses immutable closed schemas and receives no secret or
+network capability. Run the focused public and handoff/replay checks against real PostgreSQL with:
+
+```sh
+cargo test -p sagat-tests --test integration_workflow_primitives \
+  chain_query_ --locked -- --nocapture --test-threads=1
+cargo test -p sagat-tests --test integration_workflow_primitives \
+  chain_update_ --locked -- --nocapture --test-threads=1
+```
+
+Public workflow publication still rejects a document that combines declared state and continuation,
+so these chain operation checks use a retained compatibility fixture. They prove the HTTP and
+transaction behavior, but do not yet provide a public authoring example for that combination.
+
 Run-addressed declared Query/Update is available for workflows made from the existing basic
 root nodes. The shared runtime scenario publishes one such workflow, starts a run, applies and
 replays an update, queries the resulting revision, and checks rejection and tenant opacity in all
@@ -105,11 +170,11 @@ idempotency and recovery checks. Approval combined with parallel execution is re
 concurrent-run expiry semantics are verified. A declared state document combined with a
 collection, loop, approval or continuation node is still rejected at publication.
 
-The PostgreSQL integration target now verifies atomic collection checkpoint/finish,
-addressed journal restoration, declared-operation receipts, loop delay checkpoints and chain
-membership constraints. Scheduler ticks now discover open collection scopes and advance their
-admission/checkpoint under a real fence, but no published workflow can create those scopes yet;
-production scoped workers also remain disabled. To
+The PostgreSQL integration target verifies public collection publication/start, missing-policy
+fail-closed behavior, audited capacity provisioning, scoped worker leasing, ordered checkpoint,
+terminal finish and journal/projection replay. It also verifies declared-operation receipts, loop
+delay checkpoints and chain membership constraints. Worker protocol 1.5 carries the complete
+collection instance identity; protocol 1.4 remains root-only. To
 inspect a delayed loop checkpoint after a restart, run:
 
 ```sh
@@ -120,6 +185,23 @@ cargo test -p sagat-tests --test integration_workflow_primitives \
 The test asserts that the timer and journal checkpoint survive reload, a duplicate timer fire
 does not admit another iteration, and no worker lease is retained during the delay. The full
 zero-worker production scenario remains a release gate until planner and worker wiring are enabled.
+
+The private durable drain boundary can be checked independently while the public loop gate remains
+closed:
+
+```sh
+cargo test -p sagat-tests --test integration_workflow_primitives --locked \
+  loop_progress::expression_failure_drains_once_restarts_and_finishes_from_the_journal -- --exact --nocapture
+cargo test -p sagat-tests --test integration_workflow_primitives --locked \
+  loop_progress::deadline_cancels_a_suspended_timer_and_fences_the_stale_fire -- --exact --nocapture
+cargo test -p sagat-tests --test integration_workflow_primitives --locked \
+  loop_progress::cancellation_drains_the_active_iteration_and_finishes_after_restart -- --exact --nocapture
+```
+
+These checks prove the journal/projection, timer, capacity, audit, outbox and replay boundaries of
+the private adapter. They are not public runtime evidence. Carry and result payload retention must
+join the same transaction before loop publication can be enabled; otherwise a revision or
+cancellation race can retain content without committing the corresponding loop transition.
 
 The other proposed node names and endpoints in `contracts/README.md` remain unavailable until their
 runtime, fault and security gates pass. These targets are registered, but their presence does not

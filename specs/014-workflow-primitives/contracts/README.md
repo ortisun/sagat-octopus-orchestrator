@@ -98,11 +98,12 @@ durable behavior implicitly. No generated pseudo-API is added to current example
 
 All paths are relative to the existing `/v1` REST base. New operations use existing authentication,
 namespace resolution, canonical error envelope and request/trace headers. They never accept tenant
-or actor identity from the request body. The implemented run Query/Update, approval decision and
-chain inspect/signal/cancel shapes are mirrored in the canonical OpenAPI. The reviewed workflow
-shapes above create chains and hand off through the scheduler; chain Query/Update, paged segment
-operations and wider continuation graphs remain gated until their transactional resolution and
-conformance evidence are complete.
+or actor identity from the request body. The implemented run Query/Update, chain Query/Update, approval
+decision and chain inspect/signal/cancel shapes are mirrored in the canonical OpenAPI. The reviewed
+workflow shapes above create chains and hand off through the scheduler. Declared state combined with
+continuation cannot yet be published, so chain operations on declared state currently have seeded
+PostgreSQL/HTTP evidence rather than a public authoring scenario. Paged segment operations and wider
+continuation graphs remain gated.
 
 | Method/path | Body/query | Success result / authorization |
 | --- | --- | --- |
@@ -113,9 +114,9 @@ conformance evidence are complete.
 | `GET /namespaces/{namespaceId}/chains/{chainId}` | none | 200 current head, revision, final outcome and ordered segment links; requires `run:read`. |
 | `POST /namespaces/{namespaceId}/chains/{chainId}/signals/{signalName}` | required `expectedRunId`, `payload`; `Idempotency-Key` header | 202 with the root waits woken; requires `run:signal`; a missing matching wait or changed head is 409. Scoped waits remain gated. |
 | `POST /namespaces/{namespaceId}/chains/{chainId}/cancel` | required `expectedRunId`, `reason`; `Idempotency-Key` header | 202 durable cancellation or exact replay; requires `run:operate`; latches chain cancellation and cancels the current head atomically. |
+| `POST /namespaces/{namespaceId}/chains/{chainId}/queries/{name}` | `args`, optional `expectedRunId` | 200 current-head declared result plus the actual `runId`; requires `run:read` + `run:query`; a changed expected head returns 409. |
+| `POST /namespaces/{namespaceId}/chains/{chainId}/updates/{name}` | `updateKey`, `args`, optional `expectedRunId` and `expectedStateRevision` | 200 current-head APPLIED receipt/result; durable 422 rejection or 409 revision conflict; requires `run:update`. Exact receipt replay stays bound to its original resolved run after rollover. |
 | `GET /chains/{chainId}/runs` | bounded cursor/page size | Planned ordered segment page with no implicit payloads. |
-| `POST /chains/{chainId}/queries/{name}` | `args`, optional `expectedRunId` | Planned current-head Query. |
-| `POST /chains/{chainId}/updates/{name}` | `updateKey`, `args`, optional `expectedRunId`, `expectedStateRevision` | Planned current-head Update. |
 
 **Permissions (accepted by ADR-0030/0031/0032)**: new permissions follow the existing
 `resource:action` form. `approval:read` goes to `admin`, `developer`, `operator` and `viewer`;
@@ -183,8 +184,10 @@ not caller timestamps. The server supplies all outcome timestamps.
 behavior (where provided) and polling helpers remain segment waits. Documentation must not label
 an old run's SUCCEEDED as final chain success. No automatic redirect on a 409 or hidden retry with a
 new key. Signal and cancel require `expectedRunId`, so a delayed caller never applies its command
-to a replacement head. Planned chain Query/Update may make that precondition optional only if their
-final contracts preserve one serialized head decision.
+to a replacement head. Chain Query and Update make the precondition optional because each locks the
+chain before resolving one head. For Update, the optional value is part of the canonical request
+hash: exact replay uses the same presence/value and returns the original receipt across rollover;
+a new key with an obsolete value fails with `CHAIN_HEAD_CHANGED`.
 
 Chain signal/cancel use a mandatory 8..160 printable ASCII `Idempotency-Key`, scoped by
 `(tenant,namespace,chainId,operationKind,key)` and canonical content hash. Shared chain/run locking

@@ -168,6 +168,12 @@ type QueryResult struct {
 	Raw           map[string]json.RawMessage
 }
 
+// ChainQueryRequest selects the current head or requires one exact head before evaluating a query.
+type ChainQueryRequest struct {
+	Args          any
+	ExpectedRunID string
+}
+
 // UpdateRequest identifies one durable update. Retries keep UpdateKey unchanged.
 type UpdateRequest struct {
 	UpdateKey             string

@@ -119,6 +119,29 @@ impl IrCodec for JsonIrCodec {
                 digest: parsed.digest(),
                 warnings: parsed.warnings().to_vec(),
             })
+        } else if value
+            .get("nodes")
+            .and_then(Value::as_array)
+            .is_some_and(|nodes| {
+                nodes
+                    .iter()
+                    .any(|node| node.get("type").and_then(Value::as_str) == Some("forEach"))
+            })
+        {
+            converted_document(&value, convert::published_collection_definition)
+        } else if value
+            .get("nodes")
+            .and_then(Value::as_array)
+            .is_some_and(|nodes| {
+                nodes.iter().any(|node| {
+                    matches!(
+                        node.get("type").and_then(Value::as_str),
+                        Some("while" | "repeatUntil")
+                    )
+                })
+            })
+        {
+            converted_document(&value, convert::published_loop_definition)
         } else {
             converted_document(&value, convert::definition)
         }

@@ -790,6 +790,39 @@ public sealed partial class WorkflowBuilder : FlowBase<WorkflowBuilder>
 
             bodyNodes[bodyName] = nested;
         }
+        var visiting = new HashSet<string>(StringComparer.Ordinal);
+        var visited = new HashSet<string>(StringComparer.Ordinal);
+        void VisitBody(string bodyName)
+        {
+            if (!visiting.Add(bodyName))
+            {
+                throw Invalid("body reference cycle is not allowed");
+            }
+
+            if (visited.Contains(bodyName))
+            {
+                visiting.Remove(bodyName);
+                return;
+            }
+
+            foreach (var node in bodyNodes[bodyName])
+            {
+                var kind = (string?)node["type"];
+                var target = (string?)node["body"];
+                if ((kind is "forEach" or "while" or "repeatUntil") && target is not null && bodyNodes.ContainsKey(target))
+                {
+                    VisitBody(target);
+                }
+            }
+
+            visiting.Remove(bodyName);
+            visited.Add(bodyName);
+        }
+
+        foreach (var bodyName in bodyNodes.Keys)
+        {
+            VisitBody(bodyName);
+        }
         void ValidateScope(List<JsonObject> scope)
         {
             var local = new HashSet<string>(StringComparer.Ordinal);

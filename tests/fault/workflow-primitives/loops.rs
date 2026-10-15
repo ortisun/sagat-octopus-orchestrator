@@ -860,7 +860,7 @@ async fn timer_delivery_fails_closed_after_cancel_signal_or_update_commit() {
 }
 
 #[tokio::test]
-async fn terminal_routing_and_destructive_down_migration_fail_closed() {
+async fn terminal_routing_replays_and_destructive_down_migration_fails_closed() {
     let fixture = seed_running_loop("loop-terminal-gates").await;
     let store = PgLoopProgressStore::new(fixture.db.pool.clone(), fixture.definitions.clone());
     let complete = LoopCheckpointCommand::new(
@@ -883,11 +883,55 @@ async fn terminal_routing_and_destructive_down_migration_fail_closed() {
         Uuid::now_v7(),
     )
     .expect("complete checkpoint");
+    let applied = store.checkpoint(&complete).await.expect("terminal routing");
+    assert!(applied.applied);
+    assert_eq!(applied.run_version, 13);
+    let replay = store.checkpoint(&complete).await.expect("terminal replay");
+    assert!(!replay.applied);
+    assert_eq!(replay.run_version, 13);
+    let evidence: (String, String, bool, String, String, bool, i64, i64, i64, i64, i64) =
+        sqlx::query_as(
+            "SELECT run.status,owner.status,owner.routed,scope.lifecycle,ended.status,ended.routed, \
+                    (SELECT count(*) FROM run_events WHERE tenant_id=run.tenant_id AND run_id=run.id \
+                       AND event_type='loop.iteration_returned'), \
+                    (SELECT count(*) FROM run_events WHERE tenant_id=run.tenant_id AND run_id=run.id \
+                       AND event_type='loop.iteration_checkpointed'), \
+                    (SELECT count(*) FROM run_events WHERE tenant_id=run.tenant_id AND run_id=run.id \
+                       AND event_type='end.reached'), \
+                    (SELECT count(*) FROM run_events WHERE tenant_id=run.tenant_id AND run_id=run.id \
+                       AND event_type='run.finished'), \
+                    (SELECT count(*) FROM event_outbox WHERE tenant_id=run.tenant_id \
+                       AND aggregate_id=run.id AND event_type='run.finished') \
+             FROM runs run JOIN loop_scopes scope \
+               ON scope.tenant_id=run.tenant_id AND scope.run_id=run.id \
+             JOIN steps owner ON owner.tenant_id=scope.tenant_id AND owner.run_id=scope.run_id \
+               AND owner.step_id=scope.owner_instance_id \
+             JOIN steps ended ON ended.tenant_id=run.tenant_id AND ended.run_id=run.id \
+               AND ended.node='done' AND cardinality(ended.instance_path_nodes)=0 \
+             WHERE run.tenant_id=$1 AND run.id=$2",
+        )
+        .bind(fixture.tenant)
+        .bind(fixture.run.as_uuid())
+        .fetch_one(&fixture.db.pool)
+        .await
+        .expect("terminal projection and journal");
     assert_eq!(
-        store.checkpoint(&complete).await,
-        Err(LoopProgressError::RuntimeNotIntegrated)
+        evidence,
+        (
+            "SUCCEEDED".into(),
+            "SUCCEEDED".into(),
+            true,
+            "SUCCEEDED".into(),
+            "SUCCEEDED".into(),
+            true,
+            1,
+            1,
+            1,
+            1,
+            1,
+        )
     );
-    assert_eq!(run_version(&fixture).await, 8);
+    assert_eq!(run_version(&fixture).await, 13);
     let error = MIGRATOR
         .undo(&fixture.db.pool, BEFORE_LOOP_PROGRESS)
         .await

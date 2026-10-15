@@ -451,6 +451,40 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
     }
 
     /// <inheritdoc/>
+    public async Task<QueryResult> QueryChainAsync<TArgs>(
+        string namespaceId,
+        string chainId,
+        string name,
+        TArgs args,
+        ChainQueryOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        var path = name is not null && DeclaredOperationNamePattern().IsMatch(name)
+            ? ChainPath(namespaceId, chainId) + "/queries/" + Uri.EscapeDataString(name)
+            : throw SagatException.Invalid("an operation name is 1 to 128 permitted characters and starts with a letter or digit");
+        var body = Wire.Write(writer =>
+        {
+            writer.WriteStartObject();
+            writer.WritePropertyName("args");
+            Wire.WritePayload(writer, args, json);
+            if (options?.ExpectedRunId is { } expectedRunId)
+            {
+                writer.WriteString("expectedRunId", ExpectedRunId(expectedRunId));
+            }
+            writer.WriteEndObject();
+        });
+        var answer = await transport.SendAsync(
+            new HttpCall("query chain", HttpMethod.Post, path, "/namespaces/{namespaceId}/chains/{chainId}/queries/{name}", [], body, null, TraceOf(options?.Traceparent), SafeToRepeat: true),
+            cancellationToken).ConfigureAwait(false);
+        var raw = Object(answer.Body, "a query result");
+        if (!raw.TryGetProperty("result", out var result))
+        {
+            throw new SagatException(SagatErrorCode.Protocol, "result is missing from the answer");
+        }
+        return new QueryResult(Str(raw, "runId"), Revision(raw, "runVersion", 0), Revision(raw, "stateRevision", 0), result, raw);
+    }
+
+    /// <inheritdoc/>
     public async Task<UpdateReceipt> UpdateAsync<TArgs>(
         string runId,
         string name,

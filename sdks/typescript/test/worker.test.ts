@@ -213,10 +213,51 @@ test('a worker registers its activities and the newest protocol it speaks, with 
   assert.ok(register);
   assert.deepEqual(register.request, {
     worker_name: 'test-worker', namespace: 'payments',
-    capabilities: { languages: ['typescript'], activities: ['a.undo', 'b.second', 'c.lookup'], pools: [], max_inflight: 7, protocol_version: '1.4' },
+    capabilities: { languages: ['typescript'], activities: ['a.undo', 'b.second', 'c.lookup'], pools: [], max_inflight: 7, protocol_version: '1.5' },
   });
   assert.equal(register.metadata.get('authorization')[0], 'Bearer tok');
   assert.equal(h.protocolVersion, '1.2');
+});
+
+test('protocol 1.5 echoes scoped identity and protocol 1.4 omits it', async () => {
+  const instance = {
+    instance_path: [{ scope_node_id: 'lines', iteration_index: 7 }],
+    definition_node_id: 'charge',
+  };
+  fake.acceptedVersion = '1.5';
+  fake.leases = [lease({ instance, input_json: JSON.stringify({ input: { order: 7 }, item: { sku: 'one' }, index: 7, steps: {} }) })];
+  const current = host({ workerName: 'scoped-current' });
+  let currentContext: ActivityContext | undefined;
+  current.registerActivity('charge', (_input, context) => {
+    currentContext = context;
+    return { ok: true };
+  });
+  await current.start();
+  await until(() => fake.of('completeStep').length === 1, 'the scoped completion');
+  assert.deepEqual(fake.of('completeStep')[0]!.request['instance'], instance);
+  assert.deepEqual(currentContext?.instance, {
+    instancePath: [{ scopeNodeId: 'lines', iterationIndex: 7 }],
+    definitionNodeId: 'charge',
+  });
+  assert.deepEqual(currentContext?.item, { sku: 'one' });
+  assert.equal(currentContext?.index, 7);
+  await current.stop();
+
+  fake.reset();
+  fake.acceptedVersion = '1.4';
+  fake.leases = [lease({ instance, input_json: JSON.stringify({ input: { order: 7 }, item: { sku: 'one' }, index: 7, steps: {} }) })];
+  const legacy = host({ workerName: 'scoped-legacy', protocolVersion: '1.4' });
+  let legacyContext: ActivityContext | undefined;
+  legacy.registerActivity('charge', (_input, context) => {
+    legacyContext = context;
+    return { ok: true };
+  });
+  await legacy.start();
+  await until(() => fake.of('completeStep').length === 1, 'the legacy completion');
+  assert.equal(fake.of('completeStep')[0]!.request['instance'], null);
+  assert.equal(legacyContext?.instance, undefined);
+  assert.equal(legacyContext?.item, undefined);
+  assert.equal(legacyContext?.index, undefined);
 });
 
 test('a task is run with its context and completed once with a key that is the same on every retry', async () => {

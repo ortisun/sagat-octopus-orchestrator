@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use sagat_domain::execution::{
     AddressedRunEvent, CollectionDrainReason, CollectionOutcome, CollectionPhase, ExecutionError,
     ExecutionInstanceId, FailureCode, Fence, InstancePath, Plan, RunEvent, RunId, RunState,
-    StepStatus, StopReason, lease_instance, plan,
+    StepStatus, StopReason, lease_instance, plan, start_run,
 };
 use sagat_domain::identity::Slug;
 use sagat_domain::workflow::{
@@ -98,6 +98,27 @@ fn started(item_count: u32, max_concurrency: u16) -> RunState {
         })
         .expect("collection enters");
     state
+}
+
+#[test]
+fn starting_a_collection_parks_the_owner_for_its_transactional_scheduler() {
+    let run = RunId::generate();
+    let (state, progress) =
+        start_run(&definition(), run, OffsetDateTime::UNIX_EPOCH).expect("collection run starts");
+
+    assert_eq!(progress.events.len(), 1);
+    assert!(progress.pending.is_none());
+    assert_eq!(
+        state
+            .step(&node("items"))
+            .expect("collection owner")
+            .status(),
+        StepStatus::Pending
+    );
+    assert_eq!(
+        plan(&definition(), &state, OffsetDateTime::UNIX_EPOCH).expect("parked collection"),
+        Plan::Idle
+    );
 }
 
 fn admit(state: &mut RunState, index: u32) {
@@ -372,6 +393,62 @@ fn permanent_failure_stops_admission_and_finishes_only_after_drain() {
         state.step(&node("items")).map(|step| step.status()),
         Some(StepStatus::Failed)
     );
+}
+
+#[test]
+fn storage_quota_failure_drains_admitted_work_and_replays_without_an_iteration_cause() {
+    let run = RunId::generate();
+    let code = FailureCode::storage_quota_exceeded();
+    let events = vec![
+        AddressedRunEvent::root(RunEvent::RunStarted {
+            entrypoint: node("items"),
+        }),
+        AddressedRunEvent::root(RunEvent::CollectionEntered {
+            node: node("items"),
+            item_count: 2,
+            max_items: 2,
+            max_concurrency: 1,
+            snapshot_digest: Digest::new([0x51; 32]),
+        }),
+        AddressedRunEvent::root(RunEvent::CollectionIterationAdmitted {
+            node: node("items"),
+            index: 0,
+            entry: body(0),
+            item_digest: Digest::new([0; 32]),
+        }),
+        AddressedRunEvent::root(RunEvent::RunStopRequested {
+            reason: StopReason::Failed,
+            code: Some(code.clone()),
+        }),
+        AddressedRunEvent::root(RunEvent::CollectionDrainStarted {
+            node: node("items"),
+            reason: CollectionDrainReason::StorageQuotaExceeded,
+        }),
+        AddressedRunEvent::root(RunEvent::CollectionIterationDrained {
+            node: node("items"),
+            index: 0,
+        }),
+        AddressedRunEvent::root(RunEvent::CollectionFinished {
+            node: node("items"),
+            outcome: CollectionOutcome::Failed(code.clone()),
+            result_digest: None,
+        }),
+    ];
+
+    let state = RunState::replay_addressed(run, &events).expect("quota drain replays");
+    let scope = state.collection(&collection()).expect("collection state");
+    assert_eq!(scope.phase(), CollectionPhase::Failed);
+    assert_eq!(
+        scope.drain_reason(),
+        Some(&CollectionDrainReason::StorageQuotaExceeded)
+    );
+    assert_eq!(scope.active_count(), 0);
+    assert_eq!(
+        state.step(&node("items")).map(|step| step.failure()),
+        Some(Some(&code))
+    );
+    assert_eq!(state.stop_reason(), Some(StopReason::Failed));
+    assert_eq!(state.stop_code(), Some(&code));
 }
 
 #[test]

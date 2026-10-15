@@ -235,6 +235,21 @@ final class Behaviors {
         e.put("kind", kind);
         e.put("node", ctx.node());
         e.put("attempt", ctx.attempt());
+        if (ctx.instance() != null) {
+            ObjectNode instance = e.putObject("instance");
+            var path = instance.putArray("instancePath");
+            for (var segment : ctx.instance().instancePath()) {
+                ObjectNode item = path.addObject();
+                item.put("scopeNodeId", segment.scopeNodeId());
+                item.put("iterationIndex", segment.iterationIndex());
+            }
+            instance.put("definitionNodeId", ctx.instance().definitionNodeId());
+        }
+        if (ctx.index() != null) {
+            ObjectNode scopeInput = e.putObject("scopeInput");
+            scopeInput.set("item", ctx.item());
+            scopeInput.put("index", ctx.index());
+        }
         e.set("input", input);
         e.put("taskKind", ctx.taskKind().name());
         e.put("targetNode", ctx.targetNode());

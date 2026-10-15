@@ -600,6 +600,22 @@ export class WorkflowBuilder extends Flow {
       }
       bodyNodes.set(name, nested);
     }
+    const visiting = new Set<string>();
+    const visited = new Set<string>();
+    const visitBody = (name: string): void => {
+      if (visiting.has(name)) throw invalid('body reference cycle is not allowed');
+      if (visited.has(name)) return;
+      visiting.add(name);
+      for (const node of bodyNodes.get(name) ?? []) {
+        if (node['type'] === 'forEach' || node['type'] === 'while' || node['type'] === 'repeatUntil') {
+          const target = node['body'];
+          if (typeof target === 'string' && bodyNodes.has(target)) visitBody(target);
+        }
+      }
+      visiting.delete(name);
+      visited.add(name);
+    };
+    for (const name of bodyNodes.keys()) visitBody(name);
     const validateScope = (scope: Node[]): void => {
       const localIds = new Set<string>();
       for (const node of scope) {

@@ -208,6 +208,40 @@ test('chain inspection and commands use namespace identity, expected head and du
   assert.deepEqual(seen[2]?.body, { expectedRunId: head, reason: 'operator requested cancellation' });
 });
 
+test('chain query carries the optional expected head and returns the resolved run revisions', async () => {
+  const namespaceId = '0190aaaa-0000-7000-8000-000000000010';
+  const chainId = '0190aaaa-0000-7000-8000-000000000011';
+  const head = '0190aaaa-0000-7000-8000-000000000012';
+  prepare((_request, res) => reply(res, 200, {
+    runId: head, runVersion: 7, stateRevision: 3, result: { amount: '19.99', occurredAt: '2026-10-15T15:34:56.789Z' },
+  }));
+  const result = await client().queryChain<{ amount: string; occurredAt: string }>(
+    namespaceId, chainId, 'account.snapshot', {}, { expectedRunId: head },
+  );
+  assert.equal(seen[0]?.url, `/v1/namespaces/${namespaceId}/chains/${chainId}/queries/account.snapshot`);
+  assert.deepEqual(seen[0]?.body, { args: {}, expectedRunId: head });
+  assert.deepEqual(result.result, { amount: '19.99', occurredAt: '2026-10-15T15:34:56.789Z' });
+  assert.equal(result.runId, head);
+});
+
+test('cancelling a declared update stops the call without retrying it', async () => {
+  const runId = '0190aaaa-0000-7000-8000-000000000001';
+  prepare((_request, response) => {
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.write('{"runId":');
+  });
+  const abort = new AbortController();
+  const call = client({ timeoutMs: 5_000 }).update(runId, 'account.credit', { amount: '19.99' }, {
+    updateKey: 'credit-1', signal: abort.signal,
+  });
+  while (seen.length === 0) await new Promise((resolve) => setTimeout(resolve, 1));
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  abort.abort();
+  await assert.rejects(call, (error: unknown) => error instanceof SagatError && error.code === 'CANCELLED');
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(seen.length, 1);
+});
+
 test('an event without an id gets one per call, kept across retries, so a repetition is a duplicate and not a second event', async () => {
   let attempts = 0;
   prepare((_req, res) => (++attempts < 2 ? reply(res, 503, 'upstream down') : reply(res, 202, { eventId: 'e', source: 'api', status: 'ACCEPTED' })));

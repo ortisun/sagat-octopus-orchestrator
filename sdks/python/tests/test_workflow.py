@@ -228,6 +228,16 @@ def test_collections_use_named_bodies_and_map_writes_the_same_for_each_node() ->
     }
 
 
+def test_named_bodies_cannot_reference_themselves() -> None:
+    recursive = body().for_each(
+        "nested", "input.items", "line", "bodyResult", max_items=2, max_concurrency=1
+    ).return_value("return", "steps.nested.output")
+    with pytest.raises(SagatError, match="body reference cycle"):
+        workflow("recursive-body").body("line", recursive).for_each(
+            "lines", "input.items", "line", "bodyResult", max_items=2, max_concurrency=1
+        ).end("done").build()
+
+
 def test_while_and_repeat_until_write_bounded_pre_test_and_post_test_loop_nodes() -> None:
     iteration = body().step("increment", "counter.increment").return_value("return", "steps.increment.output")
     document = (

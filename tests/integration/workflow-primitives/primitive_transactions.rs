@@ -14,6 +14,7 @@ use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::definition::{WorkflowId, WorkflowVersionId};
 use sagat_domain::execution::{CollectionPhase, ExecutionInstanceId, InstancePath, RunId};
 use sagat_domain::identity::Subject;
+use sagat_domain::quota::QuotaResource;
 use sagat_domain::workflow::{ActivityName, Digest, NodeId};
 use sagat_infra_ir::JsonIrCodec;
 use sagat_infra_postgres::{MIGRATOR, PgCollectionStore, PgRunStore, migrate};
@@ -148,6 +149,18 @@ async fn run_version(pool: &sqlx::PgPool, tenant: Uuid, run: Uuid) -> u64 {
     u64::try_from(value).expect("nonnegative run version")
 }
 
+async fn telemetry_head(pool: &sqlx::PgPool, tenant: Uuid, run: Uuid) -> u64 {
+    let head: i64 = sqlx::query_scalar(
+        "SELECT head_seq FROM telemetry_pending WHERE tenant_id=$1 AND run_id=$2",
+    )
+    .bind(tenant)
+    .bind(run)
+    .fetch_one(pool)
+    .await
+    .expect("telemetry head");
+    u64::try_from(head).expect("nonnegative telemetry head")
+}
+
 async fn scheduler_authority(pool: &sqlx::PgPool, run: RunId) -> SchedulerAuthority {
     let owner = "primitive-test-scheduler";
     let generation: i64 = sqlx::query_scalar(
@@ -185,6 +198,63 @@ async fn set_tenant_collection_capacity(pool: &sqlx::PgPool, tenant: Uuid, limit
     .execute(pool)
     .await
     .expect("tenant collection capacity");
+}
+
+async fn set_content_quota_to_current_usage(pool: &sqlx::PgPool, tenant: Uuid) {
+    let used: i64 = sqlx::query_scalar(
+        "SELECT content_bytes + content_reserved_bytes FROM tenant_retained_usage \
+         WHERE tenant_id=$1",
+    )
+    .bind(tenant)
+    .fetch_one(pool)
+    .await
+    .expect("retained usage");
+    let mut tx = pool.begin().await.expect("content quota transaction");
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+        .bind(format!("quota-policy:tenant_content_bytes:{tenant}"))
+        .execute(&mut *tx)
+        .await
+        .expect("content quota policy fence");
+    sqlx::query(
+        "DELETE FROM quota_limits WHERE tenant_id=$1 AND namespace_id IS NULL \
+         AND resource='tenant_content_bytes'",
+    )
+    .bind(tenant)
+    .execute(&mut *tx)
+    .await
+    .expect("clear content quota");
+    sqlx::query(
+        "INSERT INTO quota_limits (tenant_id,namespace_id,resource,max_value,updated_by) \
+         VALUES ($1,NULL,'tenant_content_bytes',$2,'collection-transaction-test')",
+    )
+    .bind(tenant)
+    .bind(used)
+    .execute(&mut *tx)
+    .await
+    .expect("close content quota");
+    tx.commit().await.expect("commit content quota");
+    sqlx::query("UPDATE quota_accounting_control SET content_enforcement_enabled=true")
+        .execute(pool)
+        .await
+        .expect("enable content enforcement");
+}
+
+async fn remove_content_quota(pool: &sqlx::PgPool, tenant: Uuid) {
+    let mut tx = pool.begin().await.expect("content quota transaction");
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+        .bind(format!("quota-policy:tenant_content_bytes:{tenant}"))
+        .execute(&mut *tx)
+        .await
+        .expect("content quota policy fence");
+    sqlx::query(
+        "DELETE FROM quota_limits WHERE tenant_id=$1 AND namespace_id IS NULL \
+         AND resource='tenant_content_bytes'",
+    )
+    .bind(tenant)
+    .execute(&mut *tx)
+    .await
+    .expect("remove content quota");
+    tx.commit().await.expect("commit content quota removal");
 }
 
 async fn primitive_run(
@@ -757,6 +827,10 @@ async fn collection_payloads_require_same_tenant_and_matching_content_digests() 
         )
         .await
         .expect("enter collection");
+    assert_eq!(
+        telemetry_head(&w.db.pool, tenant, run.as_uuid()).await,
+        entered.run_version
+    );
     let member = ExecutionInstanceId::in_path(
         InstancePath::root()
             .child(owner.node().clone(), 0)
@@ -853,6 +927,10 @@ async fn collection_admission_writes_expected_journal_projection_and_usage_atomi
         )
         .await
         .expect("admit activity");
+    assert_eq!(
+        telemetry_head(&w.db.pool, tenant, run.as_uuid()).await,
+        admitted.run_version
+    );
 
     let events: Vec<(String, serde_json::Value)> = sqlx::query_as(
         "SELECT event_type, detail FROM run_events WHERE tenant_id = $1 AND run_id = $2 ORDER BY seq",
@@ -949,15 +1027,13 @@ async fn checkpoint_and_finish_are_atomic_replayable_and_restart_safe() {
     let verifier = PgRunStore::new(w.db.pool.clone(), definitions.clone());
     let store = PgCollectionStore::with_definition_cache(w.db.pool.clone(), definitions);
     let scope = CollectionScopeId::generate();
-    let snapshot = retain_payload(&w.db.pool, tenant, br#"[1]"#).await;
-    let item = retain_payload(&w.db.pool, tenant, b"1").await;
     let entered = store
         .enter_collection(
-            &CollectionEntry::new(
+            &CollectionEntry::from_snapshot(
                 transition(&w, run, 1, owner.clone(), authority.clone()),
                 scope,
                 1,
-                snapshot,
+                br#"[1]"#.to_vec(),
                 CollectionLimits::new(1, 1, 100_000, 8).expect("limits"),
             )
             .expect("entry"),
@@ -1004,7 +1080,7 @@ async fn checkpoint_and_finish_are_atomic_replayable_and_restart_safe() {
     let admission_outbox = Uuid::now_v7();
     let admitted = store
         .admit_collection_activity(
-            &CollectionAdmission::new(
+            &CollectionAdmission::from_item(
                 transition(
                     &w,
                     run,
@@ -1016,7 +1092,7 @@ async fn checkpoint_and_finish_are_atomic_replayable_and_restart_safe() {
                 0,
                 entry.clone(),
                 ActivityName::parse("line.process").expect("activity"),
-                item,
+                b"1".to_vec(),
                 1,
                 admission_outbox,
             )
@@ -1055,17 +1131,18 @@ async fn checkpoint_and_finish_are_atomic_replayable_and_restart_safe() {
         routed_version
     );
 
-    let result = retain_payload(&w.db.pool, tenant, br#""member-result""#).await;
+    let result_content = br#""member-result""#.to_vec();
+    let result = digest(&result_content);
     let stale =
         SchedulerAuthority::for_run(authority.owner(), run, authority.lease().generation + 1);
     let error = store
         .checkpoint_collection_iteration(
-            &CollectionCheckpoint::new(
+            &CollectionCheckpoint::from_result(
                 transition(&w, run, routed_version, owner.clone(), stale),
                 scope,
                 0,
                 returned.clone(),
-                result,
+                result_content.clone(),
                 Uuid::now_v7(),
             )
             .expect("stale checkpoint"),
@@ -1073,6 +1150,51 @@ async fn checkpoint_and_finish_are_atomic_replayable_and_restart_safe() {
         .await
         .expect_err("stale checkpoint fence");
     assert_eq!(error, PrimitiveStoreError::SchedulerFenceLost);
+    let retained_after_fence: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM payloads WHERE tenant_id=$1 AND digest=$2")
+            .bind(tenant)
+            .bind(result.as_bytes().as_slice())
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("payload count after stale fence");
+    assert_eq!(retained_after_fence, 0);
+
+    let revision_race_content = br#""revision-race""#.to_vec();
+    let revision_race_digest = digest(&revision_race_content);
+    let error = store
+        .checkpoint_collection_iteration(
+            &CollectionCheckpoint::from_result(
+                transition(
+                    &w,
+                    run,
+                    routed_version - 1,
+                    owner.clone(),
+                    authority.clone(),
+                ),
+                scope,
+                0,
+                returned.clone(),
+                revision_race_content,
+                Uuid::now_v7(),
+            )
+            .expect("revision-race checkpoint"),
+        )
+        .await
+        .expect_err("stale revision must reject inline retention");
+    assert_eq!(
+        error,
+        PrimitiveStoreError::RevisionConflict {
+            current: routed_version
+        }
+    );
+    let retained_after_revision: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM payloads WHERE tenant_id=$1 AND digest=$2")
+            .bind(tenant)
+            .bind(revision_race_digest.as_bytes().as_slice())
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("payload count after stale revision");
+    assert_eq!(retained_after_revision, 0);
 
     let conflicting_outbox = Uuid::now_v7();
     sqlx::query(
@@ -1087,12 +1209,12 @@ async fn checkpoint_and_finish_are_atomic_replayable_and_restart_safe() {
     .expect("conflicting checkpoint outbox");
     let error = store
         .checkpoint_collection_iteration(
-            &CollectionCheckpoint::new(
+            &CollectionCheckpoint::from_result(
                 transition(&w, run, routed_version, owner.clone(), authority.clone()),
                 scope,
                 0,
                 returned.clone(),
-                result,
+                result_content.clone(),
                 conflicting_outbox,
             )
             .expect("checkpoint with duplicate outbox"),
@@ -1126,6 +1248,14 @@ async fn checkpoint_and_finish_are_atomic_replayable_and_restart_safe() {
         run_version(&w.db.pool, tenant, run.as_uuid()).await,
         routed_version
     );
+    let retained_after_outbox: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM payloads WHERE tenant_id=$1 AND digest=$2")
+            .bind(tenant)
+            .bind(result.as_bytes().as_slice())
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("payload count after outbox rollback");
+    assert_eq!(retained_after_outbox, 0);
 
     let duplicate_audit = AuditRecord::by(
         &w.admin,
@@ -1154,7 +1284,7 @@ async fn checkpoint_and_finish_are_atomic_replayable_and_restart_safe() {
     .expect("existing audit fixture");
     let error = store
         .checkpoint_collection_iteration(
-            &CollectionCheckpoint::new(
+            &CollectionCheckpoint::from_result(
                 transition_with_audit(
                     &w,
                     run,
@@ -1166,7 +1296,7 @@ async fn checkpoint_and_finish_are_atomic_replayable_and_restart_safe() {
                 scope,
                 0,
                 returned.clone(),
-                result,
+                result_content.clone(),
                 Uuid::now_v7(),
             )
             .expect("checkpoint with duplicate audit"),
@@ -1195,14 +1325,68 @@ async fn checkpoint_and_finish_are_atomic_replayable_and_restart_safe() {
         run_version(&w.db.pool, tenant, run.as_uuid()).await,
         routed_version
     );
+    let retained_after_audit: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM payloads WHERE tenant_id=$1 AND digest=$2")
+            .bind(tenant)
+            .bind(result.as_bytes().as_slice())
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("payload count after audit rollback");
+    assert_eq!(retained_after_audit, 0);
+
+    set_content_quota_to_current_usage(&w.db.pool, tenant).await;
+    let error = store
+        .checkpoint_collection_iteration(
+            &CollectionCheckpoint::from_result(
+                transition(&w, run, routed_version, owner.clone(), authority.clone()),
+                scope,
+                0,
+                returned.clone(),
+                result_content.clone(),
+                Uuid::now_v7(),
+            )
+            .expect("quota checkpoint"),
+        )
+        .await
+        .expect_err("content quota must roll back payload and checkpoint");
+    let PrimitiveStoreError::Storage(sagat_application::error::StoreError::QuotaExceeded { what }) =
+        error
+    else {
+        panic!("unexpected quota error: {error:?}");
+    };
+    assert_eq!(what, QuotaResource::TenantContentBytes.limit_name());
+    let after_quota_failure: (String, bool, i32, i32, i64, i64) = sqlx::query_as(
+        "SELECT ci.lifecycle,ci.slot_held,s.active_count,t.active_iterations, \
+                (SELECT count(*) FROM iteration_checkpoints c \
+                 WHERE c.tenant_id=ci.tenant_id AND c.run_id=ci.run_id \
+                   AND c.scope_id=ci.scope_id), \
+                (SELECT count(*) FROM payloads p WHERE p.tenant_id=ci.tenant_id AND p.digest=$4) \
+         FROM collection_iterations ci \
+         JOIN iteration_scopes s USING (tenant_id,run_id,scope_id) \
+         JOIN tenant_iteration_usage t USING (tenant_id) \
+         WHERE ci.tenant_id=$1 AND ci.run_id=$2 AND ci.scope_id=$3",
+    )
+    .bind(tenant)
+    .bind(run.as_uuid())
+    .bind(scope.as_uuid())
+    .bind(result.as_bytes().as_slice())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("quota rollback state");
+    assert_eq!(after_quota_failure, ("ADMITTED".into(), true, 1, 1, 0, 0));
+    assert_eq!(
+        run_version(&w.db.pool, tenant, run.as_uuid()).await,
+        routed_version
+    );
+    remove_content_quota(&w.db.pool, tenant).await;
 
     let checkpoint_outbox = Uuid::now_v7();
-    let checkpoint_request = CollectionCheckpoint::new(
+    let checkpoint_request = CollectionCheckpoint::from_result(
         transition(&w, run, routed_version, owner.clone(), authority.clone()),
         scope,
         0,
         returned,
-        result,
+        result_content,
         checkpoint_outbox,
     )
     .expect("checkpoint");
@@ -1212,6 +1396,10 @@ async fn checkpoint_and_finish_are_atomic_replayable_and_restart_safe() {
         .expect("checkpoint iteration");
     assert!(checkpointed.applied);
     assert_eq!(checkpointed.run_version, routed_version + 2);
+    assert_eq!(
+        telemetry_head(&w.db.pool, tenant, run.as_uuid()).await,
+        checkpointed.run_version
+    );
     let stale_checkpoint_replay = CollectionCheckpoint::new(
         transition(
             &w,
@@ -1284,7 +1472,7 @@ async fn checkpoint_and_finish_are_atomic_replayable_and_restart_safe() {
                 0,
                 entry.clone(),
                 ActivityName::parse("line.process").expect("activity"),
-                item,
+                digest(b"1"),
                 1,
                 admission_outbox,
             )
@@ -1350,9 +1538,10 @@ async fn checkpoint_and_finish_are_atomic_replayable_and_restart_safe() {
         .await
         .expect_err("aggregate order and values must match checkpoints");
     assert_eq!(error, PrimitiveStoreError::InvalidTransition);
-    let aggregate = retain_payload(&w.db.pool, tenant, br#"["member-result"]"#).await;
+    let aggregate_content = br#"["member-result"]"#.to_vec();
+    let aggregate = digest(&aggregate_content);
     let finish_outbox = Uuid::now_v7();
-    let finish_request = CollectionFinish::new(
+    let finish_request = CollectionFinish::from_result(
         transition(
             &w,
             run,
@@ -1361,7 +1550,7 @@ async fn checkpoint_and_finish_are_atomic_replayable_and_restart_safe() {
             authority.clone(),
         ),
         scope,
-        aggregate,
+        aggregate_content,
         finish_outbox,
     );
     let finished = store
@@ -1405,12 +1594,19 @@ async fn checkpoint_and_finish_are_atomic_replayable_and_restart_safe() {
     .fetch_one(&w.db.pool)
     .await
     .expect("finished collection scope");
+    let finish_sequence: i64 = sqlx::query_scalar(
+        "SELECT seq FROM run_events WHERE tenant_id = $1 AND run_id = $2 \
+           AND event_type = 'collection.finished' \
+           AND instance_path_nodes = '{}' AND instance_path_indices = '{}' AND node = 'items'",
+    )
+    .bind(tenant)
+    .bind(run.as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("collection finish journal sequence");
     assert_eq!(final_scope.0, "SUCCEEDED");
     assert_eq!(final_scope.1, aggregate.as_bytes());
-    assert_eq!(
-        final_scope.2,
-        Some(i64::try_from(finished.run_version - 1).expect("version"))
-    );
+    assert_eq!(final_scope.2, Some(finish_sequence));
     assert_eq!(final_scope.3, Some(finish_outbox));
     let owner_state: (String, bool, Option<String>) = sqlx::query_as(
         "SELECT status, routed, waiting_kind FROM steps \
@@ -1432,19 +1628,22 @@ async fn checkpoint_and_finish_are_atomic_replayable_and_restart_safe() {
     .fetch_one(&w.db.pool)
     .await
     .expect("collection successor");
-    assert_eq!(successor, ("PENDING".into(), false));
-    let hints: (i64, i64) = sqlx::query_as(
+    assert_eq!(successor, ("SUCCEEDED".into(), true));
+    let hints: (i64, i64, i64) = sqlx::query_as(
         "SELECT \
-           count(*) FILTER (WHERE event_type = 'task.ready'), \
-           count(*) FILTER (WHERE event_type = 'collection.finished') \
+           count(*) FILTER (WHERE event_type = 'task.ready' AND routing_key = 'done'), \
+           count(*) FILTER (WHERE event_type = 'collection.finished' AND id = $3), \
+           count(*) FILTER (WHERE event_type = 'run.finished' \
+             AND payload ->> 'status' = 'SUCCEEDED') \
          FROM event_outbox WHERE tenant_id = $1 AND aggregate_id = $2",
     )
     .bind(tenant)
     .bind(run.as_uuid())
+    .bind(finish_outbox)
     .fetch_one(&w.db.pool)
     .await
     .expect("collection outbox");
-    assert_eq!(hints, (1, 1));
+    assert_eq!(hints, (0, 1, 1));
     let mut reopened = verifier
         .begin(w.admin.tenant_id(), run, Lock::Wait)
         .await
@@ -1457,6 +1656,36 @@ async fn checkpoint_and_finish_are_atomic_replayable_and_restart_safe() {
     assert_eq!(reopened_scope.phase(), CollectionPhase::Succeeded);
     assert_eq!(reopened_scope.result_digest(), Some(aggregate));
     drop(reopened);
+    let terminal_tail: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT seq, event_type FROM run_events WHERE tenant_id = $1 AND run_id = $2 \
+           AND seq >= $3 ORDER BY seq",
+    )
+    .bind(tenant)
+    .bind(run.as_uuid())
+    .bind(finish_sequence)
+    .fetch_all(&w.db.pool)
+    .await
+    .expect("terminal journal sequence");
+    assert_eq!(
+        terminal_tail
+            .iter()
+            .map(|(_, event_type)| event_type.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "collection.finished",
+            "step.routed",
+            "end.reached",
+            "run.finished",
+        ]
+    );
+    assert_eq!(
+        terminal_tail
+            .iter()
+            .map(|(sequence, _)| *sequence)
+            .collect::<Vec<_>>(),
+        (finish_sequence..=i64::try_from(finished.run_version).expect("run version"))
+            .collect::<Vec<_>>()
+    );
     let terminal_events: Vec<String> = sqlx::query_scalar(
         "SELECT event_type FROM run_events WHERE tenant_id = $1 AND run_id = $2 \
            AND event_type LIKE 'collection.%' ORDER BY seq",

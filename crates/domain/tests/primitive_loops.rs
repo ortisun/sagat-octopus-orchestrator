@@ -5,10 +5,14 @@ use time::OffsetDateTime;
 
 use sagat_domain::execution::{
     AddressedRunEvent, ExecutionError, ExecutionInstanceId, FailureCode, InstancePath,
-    LoopContinuation, LoopDrainReason, LoopKind, LoopOutcome, LoopPhase, RunEvent, RunId, RunState,
-    StepStatus, lease_instance,
+    LoopContinuation, LoopDrainReason, LoopKind, LoopOutcome, LoopPhase, Plan, RunEvent, RunId,
+    RunState, StepStatus, StopReason, lease_instance, plan, start_run,
 };
-use sagat_domain::workflow::{Digest, NodeId};
+use sagat_domain::identity::Slug;
+use sagat_domain::workflow::{
+    ActivityName, BodyDefinition, Digest, Expression, Node, NodeId, NodeKind, RetryPolicy,
+    WorkflowDefinition, WorkflowLimits,
+};
 
 fn node(value: &str) -> NodeId {
     NodeId::parse(value).expect("valid node")
@@ -29,6 +33,113 @@ fn body(index: u32) -> ExecutionInstanceId {
             .expect("bounded path"),
         node("check"),
     )
+}
+
+fn definition(kind: LoopKind) -> WorkflowDefinition {
+    let body = BodyDefinition::new(
+        node("iteration"),
+        node("check"),
+        vec![
+            Node::new(
+                node("check"),
+                NodeKind::Activity {
+                    activity: ActivityName::parse("loop.check").expect("activity"),
+                    retry: RetryPolicy::DEFAULT,
+                    compensate_with: None,
+                    reconcile_with: None,
+                    idempotency_template: None,
+                    secrets: Vec::new(),
+                },
+            )
+            .with_next(node("returned")),
+            Node::new(
+                node("returned"),
+                NodeKind::Return {
+                    result: Expression::parse("steps.check.output").expect("result"),
+                },
+            ),
+        ],
+    )
+    .expect("loop body");
+    let loop_kind = match kind {
+        LoopKind::While => NodeKind::While {
+            condition: Expression::parse("carry < 2").expect("condition"),
+            body: node("iteration"),
+            initial: Expression::parse("0").expect("initial"),
+            carry: Expression::parse("bodyResult").expect("carry"),
+            max_iterations: 2,
+            delay: None,
+        },
+        LoopKind::RepeatUntil => NodeKind::RepeatUntil {
+            condition: Expression::parse("carry >= 2").expect("condition"),
+            body: node("iteration"),
+            initial: Expression::parse("0").expect("initial"),
+            carry: Expression::parse("bodyResult").expect("carry"),
+            max_iterations: 2,
+            delay: None,
+        },
+    };
+    WorkflowDefinition::new_structured(
+        Slug::parse("loop-planner").expect("workflow name"),
+        node("poll"),
+        vec![
+            Node::new(node("poll"), loop_kind)
+                .with_timeout(std::time::Duration::from_secs(60))
+                .with_next(node("done")),
+            Node::new(node("done"), NodeKind::End { output: None }),
+        ],
+        vec![body],
+        WorkflowLimits::default(),
+    )
+    .expect("loop workflow")
+}
+
+#[test]
+fn starting_a_loop_parks_its_owner_for_the_transactional_scheduler() {
+    for kind in [LoopKind::While, LoopKind::RepeatUntil] {
+        let definition = definition(kind);
+        let (state, progress) =
+            start_run(&definition, RunId::generate(), OffsetDateTime::UNIX_EPOCH)
+                .expect("loop run starts");
+        assert_eq!(progress.events.len(), 1);
+        assert!(progress.pending.is_none());
+        assert_eq!(
+            state.step(&node("poll")).map(|step| step.status()),
+            Some(StepStatus::Pending)
+        );
+        assert_eq!(
+            plan(&definition, &state, OffsetDateTime::UNIX_EPOCH).expect("loop stays parked"),
+            Plan::Idle
+        );
+    }
+}
+
+#[test]
+fn cancellation_fails_closed_while_a_loop_scope_is_active() {
+    let definition = definition(LoopKind::While);
+    let (mut state, _) = start_run(&definition, RunId::generate(), OffsetDateTime::UNIX_EPOCH)
+        .expect("loop run starts");
+    state
+        .apply(&RunEvent::LoopEntered {
+            node: node("poll"),
+            kind: LoopKind::While,
+            max_iterations: 2,
+            entered_at: at(100),
+            deadline: at(200),
+            initial_carry_digest: Digest::new([0x10; 32]),
+            initial_condition: Some(true),
+        })
+        .expect("loop enters");
+    state
+        .apply(&RunEvent::RunStopRequested {
+            reason: StopReason::Cancelled,
+            code: None,
+        })
+        .expect("cancel requested");
+    assert_eq!(
+        plan(&definition, &state, at(101)),
+        Err(ExecutionError::UnsupportedStructuredNode(node("poll")))
+    );
 }
 
 fn start(kind: LoopKind, max_iterations: u32, initial_condition: Option<bool>) -> RunState {
@@ -347,6 +458,33 @@ fn a_failed_body_drains_and_retains_its_failure_code() {
     let scope = state.loop_state(&loop_instance()).expect("loop state");
     assert_eq!(scope.phase(), LoopPhase::Failed);
     assert_eq!(scope.failure(), Some(&FailureCode::worker_error()));
+}
+
+#[test]
+fn a_deadline_can_drain_a_suspended_loop_without_an_active_iteration() {
+    let mut state = start(LoopKind::While, 3, Some(true));
+    admit(&mut state, 0);
+    return_body(&mut state, 0);
+    checkpoint(&mut state, 0, true, LoopContinuation::DelayUntil(at(400)));
+
+    state
+        .apply(&RunEvent::LoopDrainStarted {
+            node: node("poll"),
+            reason: LoopDrainReason::TimedOut,
+        })
+        .expect("deadline begins drain without an active body");
+    state
+        .apply(&RunEvent::LoopFinished {
+            node: node("poll"),
+            outcome: LoopOutcome::Failed(FailureCode::run_timed_out()),
+        })
+        .expect("deadline finishes loop");
+
+    let scope = state.loop_state(&loop_instance()).expect("loop state");
+    assert_eq!(scope.phase(), LoopPhase::Failed);
+    assert_eq!(scope.failure(), Some(&FailureCode::run_timed_out()));
+    assert_eq!(scope.active_iteration(), None);
+    assert_eq!(scope.delay_until(), None);
 }
 
 #[test]

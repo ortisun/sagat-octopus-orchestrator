@@ -188,7 +188,8 @@ async fn collection_run(world: &World, workflow: WorkflowId, version: WorkflowVe
 
 async fn authority(world: &World, run: RunId) -> SchedulerAuthority {
     let generation: i64 = sqlx::query_scalar(
-        "UPDATE scheduler_shards SET owner='collection-security',generation=generation+1, \
+        "UPDATE scheduler_shards SET owner='collection-security', \
+                generation=CASE WHEN owner='collection-security' THEN generation ELSE generation+1 END, \
                 acquired_at=clock_timestamp(),expires_at=clock_timestamp()+interval '1 hour' \
          WHERE shard=run_shard($1) RETURNING generation",
     )

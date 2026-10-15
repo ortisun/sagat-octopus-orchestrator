@@ -12,9 +12,13 @@ use sagat_application::primitives::{
     CollectionEntry, CollectionFinish, CollectionIterationDrain, CollectionProgress,
     CollectionScopeId, CollectionStore, CollectionTransition, PrimitiveStoreError, PrimitiveWrite,
 };
+use sagat_domain::audit::{AuditAction, ResourceType};
 use sagat_domain::definition::WorkflowVersionId;
-use sagat_domain::execution::{CollectionDrainReason, ExecutionInstanceId};
-use sagat_domain::identity::{NamespaceId, TenantId};
+use sagat_domain::execution::{
+    CollectionDrainReason, ExecutionInstanceId, FailureCode, InstancePath,
+};
+use sagat_domain::identity::{NamespaceId, Subject, TenantId};
+use sagat_domain::outbound::OutboundKind;
 use sagat_domain::sharding::Shard;
 use sagat_domain::workflow::{NodeId, NodeKind, WorkflowDefinition};
 use serde_json::{Value, json};
@@ -101,6 +105,29 @@ fn path_parts(instance: &ExecutionInstanceId) -> (Vec<String>, Vec<i32>) {
         .unzip()
 }
 
+fn stored_instance(
+    path_nodes: Vec<String>,
+    path_indices: Vec<i32>,
+    node: String,
+) -> Result<ExecutionInstanceId, PrimitiveStoreError> {
+    if path_nodes.len() != path_indices.len() {
+        return Err(invalid_storage("collection member path"));
+    }
+    let mut path = InstancePath::root();
+    for (scope, index) in path_nodes.into_iter().zip(path_indices) {
+        let scope =
+            NodeId::parse_stored(&scope).map_err(|_| invalid_storage("collection member scope"))?;
+        let index =
+            u32::try_from(index).map_err(|_| invalid_storage("collection member iteration"))?;
+        path = path
+            .child(scope, index)
+            .map_err(|_| invalid_storage("collection member path"))?;
+    }
+    let node =
+        NodeId::parse_stored(&node).map_err(|_| invalid_storage("collection member node"))?;
+    Ok(ExecutionInstanceId::in_path(path, node))
+}
+
 fn instance_json(instance: &ExecutionInstanceId) -> Value {
     json!({
         "path": instance.path().segments().iter().map(|segment| json!({
@@ -113,6 +140,46 @@ fn instance_json(instance: &ExecutionInstanceId) -> Value {
 
 fn payload_matches(content: &[u8], digest: sagat_domain::workflow::Digest) -> bool {
     Sha256::digest(content).as_slice() == digest.as_bytes()
+}
+
+async fn retain_payload_in_transaction(
+    conn: &mut PgConnection,
+    tenant_id: TenantId,
+    digest: sagat_domain::workflow::Digest,
+    content: Option<&[u8]>,
+) -> Result<Vec<u8>, PrimitiveStoreError> {
+    if let Some(content) = content {
+        if !payload_matches(content, digest) {
+            return Err(PrimitiveStoreError::InvalidTransition);
+        }
+        sqlx::query(
+            "INSERT INTO payloads (tenant_id,digest,content) VALUES ($1,$2,$3) \
+             ON CONFLICT (tenant_id,digest) DO NOTHING",
+        )
+        .bind(tenant_id.as_uuid())
+        .bind(digest.as_bytes().as_slice())
+        .bind(content)
+        .execute(&mut *conn)
+        .await
+        .map_err(store_error)?;
+    }
+    let retained: Option<Vec<u8>> =
+        sqlx::query_scalar("SELECT content FROM payloads WHERE tenant_id=$1 AND digest=$2")
+            .bind(tenant_id.as_uuid())
+            .bind(digest.as_bytes().as_slice())
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(store_error)?;
+    let Some(retained) = retained else {
+        return Err(PrimitiveStoreError::InvalidTransition);
+    };
+    if !payload_matches(&retained, digest) {
+        return Err(PrimitiveStoreError::InvalidTransition);
+    }
+    if content.is_some_and(|value| value != retained) {
+        return Err(PrimitiveStoreError::DuplicateMismatch);
+    }
+    Ok(retained)
 }
 
 fn number(value: u64, field: &'static str) -> Result<i64, PrimitiveStoreError> {
@@ -321,6 +388,108 @@ async fn finish_version(
     Ok(())
 }
 
+async fn finish_terminal_version(
+    conn: &mut PgConnection,
+    transition: &CollectionTransition,
+    new_version: u64,
+) -> Result<(), PrimitiveStoreError> {
+    let updated = sqlx::query(
+        "UPDATE runs SET status='SUCCEEDED',run_version=$3,updated_at=$4,finished_at=$4 \
+         WHERE tenant_id=$1 AND id=$2 AND finished_at IS NULL",
+    )
+    .bind(transition.tenant_id().as_uuid())
+    .bind(transition.run_id().as_uuid())
+    .bind(number(new_version, "run version")?)
+    .bind(transition.occurred_at())
+    .execute(&mut *conn)
+    .await
+    .map_err(store_error)?;
+    if updated.rows_affected() != 1 {
+        return Err(PrimitiveStoreError::InvalidTransition);
+    }
+    if let Some(audit) = transition.audit() {
+        insert_audit(conn, audit).await?;
+    }
+    Ok(())
+}
+
+async fn outbox_run_finished(
+    conn: &mut PgConnection,
+    transition: &CollectionTransition,
+    definition: &WorkflowDefinition,
+    status: &'static str,
+) -> Result<(), PrimitiveStoreError> {
+    let message = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO event_outbox (id,tenant_id,aggregate_id,event_type,payload) \
+         VALUES ($1,$2,$3,'run.finished',$4)",
+    )
+    .bind(message)
+    .bind(transition.tenant_id().as_uuid())
+    .bind(transition.run_id().as_uuid())
+    .bind(json!({
+        "tenantId": transition.tenant_id().to_string(),
+        "namespaceId": transition.namespace_id().to_string(),
+        "runId": transition.run_id().to_string(),
+        "status": status,
+        "traceId": transition.trace_id(),
+    }))
+    .execute(&mut *conn)
+    .await
+    .map_err(store_error)?;
+    let body = json!({
+        "id": message.to_string(),
+        "type": "run.finished",
+        "time": transition
+            .occurred_at()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_default(),
+        "data": {
+            "tenantId": transition.tenant_id().to_string(),
+            "namespaceId": transition.namespace_id().to_string(),
+            "runId": transition.run_id().to_string(),
+            "workflow": definition.name().as_str(),
+            "status": status,
+            "traceId": transition.trace_id(),
+        },
+    });
+    crate::outbound::fan_out(
+        conn,
+        transition.tenant_id(),
+        transition.namespace_id(),
+        OutboundKind::RunFinished,
+        &message.to_string(),
+        &serde_json::to_vec(&body).unwrap_or_default(),
+        transition.occurred_at(),
+    )
+    .await?;
+    Ok(())
+}
+
+async fn mark_telemetry_pending(
+    conn: &mut PgConnection,
+    transition: &CollectionTransition,
+    head: u64,
+) -> Result<(), PrimitiveStoreError> {
+    sqlx::query(
+        "INSERT INTO telemetry_pending \
+         (tenant_id,run_id,head_seq,applied_seq,behind_since) \
+         VALUES ($1,$2,$3,0,clock_timestamp()) \
+         ON CONFLICT (tenant_id,run_id) DO UPDATE SET \
+           behind_since=CASE \
+             WHEN telemetry_pending.applied_seq >= telemetry_pending.head_seq \
+             THEN clock_timestamp() ELSE telemetry_pending.behind_since END, \
+           head_seq=GREATEST(telemetry_pending.head_seq,EXCLUDED.head_seq)",
+    )
+    .bind(transition.tenant_id().as_uuid())
+    .bind(transition.run_id().as_uuid())
+    .bind(number(head, "telemetry journal sequence")?)
+    .execute(&mut *conn)
+    .await
+    .map_err(store_error)?;
+    Ok(())
+}
+
 async fn finish_drain_version(
     conn: &mut PgConnection,
     transition: &CollectionTransition,
@@ -417,8 +586,11 @@ async fn tenant_active_limit(
 ) -> Result<u32, PrimitiveStoreError> {
     shared_policy_fence(conn, transition).await?;
     let limit: Option<i32> = sqlx::query_scalar(
-        "SELECT max_active_iterations FROM tenant_collection_policies \
-         WHERE tenant_id = $1 FOR SHARE",
+        "SELECT least(policy.max_active_iterations, coalesce(ceiling.max_value, 1024))::integer \
+           FROM tenant_collection_policies policy \
+           LEFT JOIN quota_ceilings ceiling ON ceiling.tenant_id = policy.tenant_id \
+            AND ceiling.resource = 'iteration_concurrency' \
+          WHERE policy.tenant_id = $1 FOR SHARE OF policy",
     )
     .bind(transition.tenant_id().as_uuid())
     .fetch_optional(&mut *conn)
@@ -602,19 +774,13 @@ impl CollectionStore for PgCollectionStore {
         check_revision(run, &entry.transition)?;
         tenant_active_limit(&mut tx, &entry.transition).await?;
 
-        let snapshot_content: Option<Vec<u8>> =
-            sqlx::query_scalar("SELECT content FROM payloads WHERE tenant_id = $1 AND digest = $2")
-                .bind(entry.transition.tenant_id().as_uuid())
-                .bind(entry.snapshot_digest.as_bytes().as_slice())
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(store_error)?;
-        let Some(snapshot_content) = snapshot_content else {
-            return Err(PrimitiveStoreError::InvalidTransition);
-        };
-        if !payload_matches(&snapshot_content, entry.snapshot_digest) {
-            return Err(PrimitiveStoreError::InvalidTransition);
-        }
+        let snapshot_content = retain_payload_in_transaction(
+            &mut tx,
+            entry.transition.tenant_id(),
+            entry.snapshot_digest,
+            entry.snapshot_content(),
+        )
+        .await?;
         let snapshot: Value = serde_json::from_slice(&snapshot_content)
             .map_err(|_| PrimitiveStoreError::InvalidTransition)?;
         let Value::Array(items) = snapshot else {
@@ -769,6 +935,7 @@ impl CollectionStore for PgCollectionStore {
         )
         .await?;
         finish_version(&mut tx, &entry.transition, new_version).await?;
+        mark_telemetry_pending(&mut tx, &entry.transition, new_version).await?;
         tx.commit().await.map_err(store_error)?;
         Ok(PrimitiveWrite {
             applied: true,
@@ -932,19 +1099,13 @@ impl CollectionStore for PgCollectionStore {
         if expected_item.as_deref() != Some(admission.item_digest.as_bytes().as_slice()) {
             return Err(PrimitiveStoreError::InvalidTransition);
         }
-        let item_content: Option<Vec<u8>> =
-            sqlx::query_scalar("SELECT content FROM payloads WHERE tenant_id = $1 AND digest = $2")
-                .bind(admission.transition.tenant_id().as_uuid())
-                .bind(admission.item_digest.as_bytes().as_slice())
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(store_error)?;
-        if item_content
-            .as_deref()
-            .is_none_or(|content| !payload_matches(content, admission.item_digest))
-        {
-            return Err(PrimitiveStoreError::InvalidTransition);
-        }
+        retain_payload_in_transaction(
+            &mut tx,
+            admission.transition.tenant_id(),
+            admission.item_digest,
+            admission.item_content(),
+        )
+        .await?;
         let (entry_nodes, entry_indices) = path_parts(&admission.entry);
         let entry_id = instance_step_id(
             run.version_id,
@@ -1071,6 +1232,7 @@ impl CollectionStore for PgCollectionStore {
         .await
         .map_err(store_error)?;
         finish_version(&mut tx, &admission.transition, released_sequence).await?;
+        mark_telemetry_pending(&mut tx, &admission.transition, released_sequence).await?;
         tx.commit().await.map_err(store_error)?;
         Ok(PrimitiveWrite {
             applied: true,
@@ -1218,19 +1380,13 @@ impl CollectionStore for PgCollectionStore {
         {
             return Err(PrimitiveStoreError::InvalidTransition);
         }
-        let result_content: Option<Vec<u8>> =
-            sqlx::query_scalar("SELECT content FROM payloads WHERE tenant_id = $1 AND digest = $2")
-                .bind(checkpoint.transition.tenant_id().as_uuid())
-                .bind(checkpoint.result_digest.as_bytes().as_slice())
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(store_error)?;
-        if result_content
-            .as_deref()
-            .is_none_or(|content| !payload_matches(content, checkpoint.result_digest))
-        {
-            return Err(PrimitiveStoreError::InvalidTransition);
-        }
+        retain_payload_in_transaction(
+            &mut tx,
+            checkpoint.transition.tenant_id(),
+            checkpoint.result_digest,
+            checkpoint.result_content(),
+        )
+        .await?;
 
         let member_steps = sqlx::query(
             "SELECT node, step_id, status, routed, attempt, generation, lease_token_hash, \
@@ -1420,6 +1576,7 @@ impl CollectionStore for PgCollectionStore {
         .await
         .map_err(store_error)?;
         finish_version(&mut tx, &checkpoint.transition, checkpoint_sequence).await?;
+        mark_telemetry_pending(&mut tx, &checkpoint.transition, checkpoint_sequence).await?;
         tx.commit().await.map_err(store_error)?;
         Ok(PrimitiveWrite {
             applied: true,
@@ -1455,6 +1612,7 @@ impl CollectionStore for PgCollectionStore {
         {
             return Err(PrimitiveStoreError::InvalidTransition);
         }
+        let storage_quota_code = FailureCode::storage_quota_exceeded();
         let (kind, iteration, code) = match &drain.reason {
             CollectionDrainReason::Failed { iteration, code } => (
                 "FAILED",
@@ -1464,6 +1622,9 @@ impl CollectionStore for PgCollectionStore {
                 ),
                 Some(code.as_str()),
             ),
+            CollectionDrainReason::StorageQuotaExceeded => {
+                ("STORAGE_QUOTA", None, Some(storage_quota_code.as_str()))
+            }
             CollectionDrainReason::Cancelled => ("CANCELLED", None, None),
         };
         if matches!(
@@ -1491,6 +1652,17 @@ impl CollectionStore for PgCollectionStore {
             });
         }
         if scope.get::<String, _>("lifecycle") != "OPEN" {
+            return Err(PrimitiveStoreError::InvalidTransition);
+        }
+        if matches!(drain.reason, CollectionDrainReason::StorageQuotaExceeded)
+            && !drain.transition.audit().is_some_and(|audit| {
+                audit.action() == AuditAction::RunStorageQuotaExceeded
+                    && audit.resource_type() == ResourceType::Run
+                    && audit.resource_id() == drain.transition.run_id().to_string()
+                    && audit.actor() == drain.transition.actor()
+                    && audit.actor() == &Subject::engine()
+            })
+        {
             return Err(PrimitiveStoreError::InvalidTransition);
         }
         check_revision(locked.run, &drain.transition)?;
@@ -1556,8 +1728,78 @@ impl CollectionStore for PgCollectionStore {
                     _ => return Err(PrimitiveStoreError::InvalidTransition),
                 }
             }
+            CollectionDrainReason::StorageQuotaExceeded => match (
+                locked.status.as_str(),
+                locked.stop_reason.as_deref(),
+                locked.stop_code.as_deref(),
+            ) {
+                ("RUNNING" | "WAITING", None, None) => {
+                    sequence += 1;
+                    append_run_event(
+                        &mut tx,
+                        &drain.transition,
+                        sequence,
+                        "run.stop_requested",
+                        json!({
+                            "reason":"FAILED",
+                            "code":storage_quota_code.as_str()
+                        }),
+                    )
+                    .await?;
+                    sqlx::query(
+                        "UPDATE runs SET status='CANCELLING',stop_reason='FAILED',stop_code=$3 \
+                         WHERE tenant_id=$1 AND id=$2",
+                    )
+                    .bind(drain.transition.tenant_id().as_uuid())
+                    .bind(drain.transition.run_id().as_uuid())
+                    .bind(storage_quota_code.as_str())
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(store_error)?;
+                }
+                ("CANCELLING", Some("FAILED"), Some(stored))
+                    if stored == storage_quota_code.as_str() => {}
+                _ => return Err(PrimitiveStoreError::InvalidTransition),
+            },
         }
-        sequence += 1;
+        let cancellable = sqlx::query(
+            "SELECT s.node,s.instance_path_nodes,s.instance_path_indices \
+             FROM collection_iterations i JOIN steps s \
+               ON s.tenant_id=i.tenant_id AND s.run_id=i.run_id \
+              AND s.instance_path_nodes=i.entry_path_nodes \
+              AND s.instance_path_indices=i.entry_path_indices \
+             WHERE i.tenant_id=$1 AND i.run_id=$2 AND i.scope_id=$3 \
+               AND i.lifecycle='ADMITTED' AND s.status IN ('LEASED','RUNNING') \
+               AND s.cancel_requested=false \
+             ORDER BY s.instance_path_nodes,s.instance_path_indices,s.node FOR UPDATE OF s",
+        )
+        .bind(drain.transition.tenant_id().as_uuid())
+        .bind(drain.transition.run_id().as_uuid())
+        .bind(drain.scope_id.as_uuid())
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        let cancellable = cancellable
+            .into_iter()
+            .map(|row| {
+                stored_instance(
+                    row.get("instance_path_nodes"),
+                    row.get("instance_path_indices"),
+                    row.get("node"),
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let final_sequence = sequence
+            .checked_add(1)
+            .and_then(|value| {
+                u64::try_from(cancellable.len())
+                    .ok()
+                    .and_then(|count| value.checked_add(count))
+            })
+            .ok_or_else(|| invalid_storage("journal sequence"))?;
+        sequence = sequence
+            .checked_add(1)
+            .ok_or_else(|| invalid_storage("journal sequence"))?;
         sqlx::query(
             "UPDATE iteration_scopes SET lifecycle='DRAINING',drain_kind=$4,drain_iteration=$5, \
                     drain_failure_code=$6,drain_sequence=$7,drain_outbox_id=$8,updated_at=$9 \
@@ -1569,7 +1811,7 @@ impl CollectionStore for PgCollectionStore {
         .bind(kind)
         .bind(iteration)
         .bind(code)
-        .bind(number(sequence, "journal sequence")?)
+        .bind(number(final_sequence, "journal sequence")?)
         .bind(drain.outbox_id)
         .bind(drain.transition.occurred_at())
         .execute(&mut *tx)
@@ -1578,6 +1820,9 @@ impl CollectionStore for PgCollectionStore {
         let detail = match &drain.reason {
             CollectionDrainReason::Failed { iteration, code } => {
                 json!({"reason":"failed","iteration":iteration,"code":code.as_str()})
+            }
+            CollectionDrainReason::StorageQuotaExceeded => {
+                json!({"reason":"storage_quota_exceeded"})
             }
             CollectionDrainReason::Cancelled => json!({"reason":"cancelled"}),
         };
@@ -1590,6 +1835,42 @@ impl CollectionStore for PgCollectionStore {
             detail,
         )
         .await?;
+        for instance in &cancellable {
+            sequence = sequence
+                .checked_add(1)
+                .ok_or_else(|| invalid_storage("journal sequence"))?;
+            append_instance_event(
+                &mut tx,
+                &drain.transition,
+                locked.run,
+                instance,
+                sequence,
+                "step.cancel_requested",
+                json!({}),
+            )
+            .await?;
+            let (path_nodes, path_indices) = path_parts(instance);
+            let updated = sqlx::query(
+                "UPDATE steps SET cancel_requested=true,updated_at=$6 \
+                 WHERE tenant_id=$1 AND run_id=$2 AND instance_path_nodes=$3 \
+                   AND instance_path_indices=$4 AND node=$5 \
+                   AND status IN ('LEASED','RUNNING') AND cancel_requested=false",
+            )
+            .bind(drain.transition.tenant_id().as_uuid())
+            .bind(drain.transition.run_id().as_uuid())
+            .bind(path_nodes)
+            .bind(path_indices)
+            .bind(instance.node().as_str())
+            .bind(drain.transition.occurred_at())
+            .execute(&mut *tx)
+            .await
+            .map_err(store_error)?;
+            if updated.rows_affected() != 1 {
+                return Err(PrimitiveStoreError::RevisionConflict {
+                    current: locked.run.run_version,
+                });
+            }
+        }
         sqlx::query(
             "INSERT INTO event_outbox \
              (id,tenant_id,aggregate_id,event_type,routing_key,payload) \
@@ -1610,11 +1891,13 @@ impl CollectionStore for PgCollectionStore {
         .execute(&mut *tx)
         .await
         .map_err(store_error)?;
-        finish_drain_version(&mut tx, &drain.transition, sequence).await?;
+        debug_assert_eq!(sequence, final_sequence);
+        finish_drain_version(&mut tx, &drain.transition, final_sequence).await?;
+        mark_telemetry_pending(&mut tx, &drain.transition, final_sequence).await?;
         tx.commit().await.map_err(store_error)?;
         Ok(PrimitiveWrite {
             applied: true,
-            run_version: sequence,
+            run_version: final_sequence,
         })
     }
 
@@ -1839,6 +2122,7 @@ impl CollectionStore for PgCollectionStore {
         .await
         .map_err(store_error)?;
         finish_drain_version(&mut tx, &drain.transition, sequence).await?;
+        mark_telemetry_pending(&mut tx, &drain.transition, sequence).await?;
         tx.commit().await.map_err(store_error)?;
         Ok(PrimitiveWrite {
             applied: true,
@@ -1926,14 +2210,18 @@ impl CollectionStore for PgCollectionStore {
             .get::<Option<String>, _>("drain_kind")
             .ok_or_else(|| invalid_storage("collection drain reason"))?;
         let code = scope.get::<Option<String>, _>("drain_failure_code");
-        let (outcome, terminal_status) = match (kind.as_str(), code.as_deref()) {
-            ("FAILED", Some(code)) => (json!({"outcome":"failed","code":code}), "FAILED"),
-            ("CANCELLED", None) => (json!({"outcome":"cancelled"}), "CANCELLED"),
+        let (outcome, terminal_status, expected_reason) = match (kind.as_str(), code.as_deref()) {
+            ("FAILED", Some(code)) => (json!({"outcome":"failed","code":code}), "FAILED", "FAILED"),
+            ("STORAGE_QUOTA", Some(code))
+                if code == FailureCode::storage_quota_exceeded().as_str() =>
+            {
+                (json!({"outcome":"failed","code":code}), "FAILED", "FAILED")
+            }
+            ("CANCELLED", None) => (json!({"outcome":"cancelled"}), "CANCELLED", "CANCELLED"),
             _ => return Err(invalid_storage("collection drain reason")),
         };
-        let expected_reason = kind.as_str();
         if locked.stop_reason.as_deref() != Some(expected_reason)
-            || (kind == "FAILED" && locked.stop_code.as_deref() != code.as_deref())
+            || (expected_reason == "FAILED" && locked.stop_code.as_deref() != code.as_deref())
         {
             return Err(PrimitiveStoreError::InvalidTransition);
         }
@@ -2011,8 +2299,7 @@ impl CollectionStore for PgCollectionStore {
         sqlx::query(
             "INSERT INTO event_outbox \
              (id,tenant_id,aggregate_id,event_type,routing_key,payload) \
-             VALUES ($1,$2,$3,'collection.finished',$4,$5), \
-                    ($6,$2,$3,'run.finished',NULL,$7)",
+             VALUES ($1,$2,$3,'collection.finished',$4,$5)",
         )
         .bind(finish.outbox_id)
         .bind(finish.transition.tenant_id().as_uuid())
@@ -2026,17 +2313,18 @@ impl CollectionStore for PgCollectionStore {
             "status":terminal_status,
             "traceId":finish.transition.trace_id(),
         }))
-        .bind(Uuid::now_v7())
-        .bind(json!({
-            "tenantId":finish.transition.tenant_id().to_string(),
-            "namespaceId":finish.transition.namespace_id().to_string(),
-            "runId":finish.transition.run_id().to_string(),
-            "status":terminal_status,
-            "traceId":finish.transition.trace_id(),
-        }))
         .execute(&mut *tx)
         .await
         .map_err(store_error)?;
+        let definition = self
+            .definition(
+                &mut tx,
+                finish.transition.tenant_id().as_uuid(),
+                locked.run.version_id,
+            )
+            .await?;
+        outbox_run_finished(&mut tx, &finish.transition, &definition, terminal_status).await?;
+        mark_telemetry_pending(&mut tx, &finish.transition, final_sequence).await?;
         tx.commit().await.map_err(store_error)?;
         Ok(PrimitiveWrite {
             applied: true,
@@ -2050,8 +2338,15 @@ impl CollectionStore for PgCollectionStore {
     ) -> Result<PrimitiveWrite, PrimitiveStoreError> {
         check_audit(&finish.transition)?;
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
-        let run = lock_run(&mut tx, &finish.transition).await?;
+        let locked_run = lock_drain_run(&mut tx, &finish.transition).await?;
         check_scheduler_fence(&mut tx, &finish.transition).await?;
+        if !matches!(
+            locked_run.status.as_str(),
+            "RUNNING" | "WAITING" | "SUCCEEDED"
+        ) {
+            return Err(PrimitiveStoreError::InvalidTransition);
+        }
+        let run = locked_run.run;
         let _: i32 = sqlx::query_scalar(
             "SELECT active_iterations FROM tenant_iteration_usage \
              WHERE tenant_id = $1 FOR UPDATE",
@@ -2113,6 +2408,9 @@ impl CollectionStore for PgCollectionStore {
                 run_version: run.run_version,
             });
         }
+        if locked_run.status == "SUCCEEDED" {
+            return Err(PrimitiveStoreError::InvalidTransition);
+        }
 
         check_revision(run, &finish.transition)?;
         let item_count = scope.get::<i32, _>("item_count");
@@ -2148,19 +2446,13 @@ impl CollectionStore for PgCollectionStore {
         if unsettled != 0 || checkpoint_count != i64::from(item_count) {
             return Err(PrimitiveStoreError::InvalidTransition);
         }
-        let aggregate_content: Option<Vec<u8>> =
-            sqlx::query_scalar("SELECT content FROM payloads WHERE tenant_id = $1 AND digest = $2")
-                .bind(finish.transition.tenant_id().as_uuid())
-                .bind(finish.result_digest.as_bytes().as_slice())
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(store_error)?;
-        let Some(aggregate_content) = aggregate_content else {
-            return Err(PrimitiveStoreError::InvalidTransition);
-        };
-        if !payload_matches(&aggregate_content, finish.result_digest) {
-            return Err(PrimitiveStoreError::InvalidTransition);
-        }
+        let aggregate_content = retain_payload_in_transaction(
+            &mut tx,
+            finish.transition.tenant_id(),
+            finish.result_digest,
+            finish.result_content(),
+        )
+        .await?;
         let result_rows = sqlx::query(
             "SELECT c.result_digest, p.content FROM iteration_checkpoints c \
              JOIN payloads p ON p.tenant_id = c.tenant_id AND p.digest = c.result_digest \
@@ -2202,12 +2494,14 @@ impl CollectionStore for PgCollectionStore {
             .ok_or(PrimitiveStoreError::RuntimeNotIntegrated)?;
         let successor =
             ExecutionInstanceId::in_path(finish.transition.owner().path().clone(), successor_node);
-        let successor_activity = match definition
+        let (successor_activity, successor_is_end) = match definition
             .node_for_instance(&successor)
             .map(sagat_domain::workflow::Node::kind)
         {
-            Some(NodeKind::Activity { activity, .. }) => Some(activity.clone()),
-            Some(_) => None,
+            Some(NodeKind::Activity { activity, .. }) => (Some(activity.clone()), false),
+            Some(NodeKind::ForEach { .. }) => (None, false),
+            Some(NodeKind::End { .. }) => (None, true),
+            Some(_) => return Err(PrimitiveStoreError::RuntimeNotIntegrated),
             None => return Err(PrimitiveStoreError::InvalidTransition),
         };
         let owner_finished = sqlx::query(
@@ -2231,7 +2525,9 @@ impl CollectionStore for PgCollectionStore {
         }
         let finish_sequence = run.run_version + 1;
         let routed_sequence = finish_sequence + 1;
-        let final_sequence = if successor_activity.is_some() {
+        let final_sequence = if successor_is_end {
+            routed_sequence + 2
+        } else if successor_activity.is_some() {
             routed_sequence + 1
         } else {
             routed_sequence
@@ -2255,6 +2551,28 @@ impl CollectionStore for PgCollectionStore {
             ))
             .bind(run.namespace_id.as_uuid())
             .bind(activity.as_str())
+            .bind(finish.transition.occurred_at())
+            .bind(&successor_nodes)
+            .bind(&successor_indices)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_error)?;
+        } else if successor_is_end {
+            sqlx::query(
+                "INSERT INTO steps \
+                 (tenant_id,run_id,node,step_id,namespace_id,status,routed,updated_at, \
+                  instance_path_nodes,instance_path_indices) \
+                 VALUES ($1,$2,$3,$4,$5,'SUCCEEDED',true,$6,$7,$8)",
+            )
+            .bind(finish.transition.tenant_id().as_uuid())
+            .bind(finish.transition.run_id().as_uuid())
+            .bind(successor.node().as_str())
+            .bind(instance_step_id(
+                run.version_id,
+                finish.transition.run_id(),
+                &successor,
+            ))
+            .bind(run.namespace_id.as_uuid())
             .bind(finish.transition.occurred_at())
             .bind(&successor_nodes)
             .bind(&successor_indices)
@@ -2352,6 +2670,25 @@ impl CollectionStore for PgCollectionStore {
             .execute(&mut *tx)
             .await
             .map_err(store_error)?;
+        } else if successor_is_end {
+            append_instance_event(
+                &mut tx,
+                &finish.transition,
+                run,
+                &successor,
+                routed_sequence + 1,
+                "end.reached",
+                json!({}),
+            )
+            .await?;
+            append_run_event(
+                &mut tx,
+                &finish.transition,
+                routed_sequence + 2,
+                "run.finished",
+                json!({ "status": "SUCCEEDED" }),
+            )
+            .await?;
         }
         sqlx::query(
             "INSERT INTO event_outbox \
@@ -2373,7 +2710,13 @@ impl CollectionStore for PgCollectionStore {
         .execute(&mut *tx)
         .await
         .map_err(store_error)?;
-        finish_version(&mut tx, &finish.transition, final_sequence).await?;
+        if successor_is_end {
+            outbox_run_finished(&mut tx, &finish.transition, &definition, "SUCCEEDED").await?;
+            finish_terminal_version(&mut tx, &finish.transition, final_sequence).await?;
+        } else {
+            finish_version(&mut tx, &finish.transition, final_sequence).await?;
+        }
+        mark_telemetry_pending(&mut tx, &finish.transition, final_sequence).await?;
         tx.commit().await.map_err(store_error)?;
         Ok(PrimitiveWrite {
             applied: true,

@@ -379,6 +379,56 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/runs/{runId}/queries/{operationName}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Evaluate a declared side-effect-free business query
+         * @description Needs `run:read` and `run:query` in the run's current namespace. The named operation must
+         *     be pinned in the run's immutable workflow version with
+         *     `disclosure: declared-business-result-v1`. Evaluation observes one committed snapshot and
+         *     returns only the schema-checked declared result. It does not append a journal event, change
+         *     state or schedule work. Authorization and audit commit before any value is returned.
+         */
+        post: operations["queryRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/runs/{runId}/updates/{operationName}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Apply a declared business state update
+         * @description Needs `run:update` in the run's current namespace. A fresh request is accepted only while
+         *     the run is RUNNING or WAITING. The immutable declaration validates arguments and computes
+         *     state and result without I/O, callbacks or external effects. APPLIED commits state, result,
+         *     receipt, journal, audit and outbox atomically without scheduling work. Business-validator
+         *     and expected-revision failures commit stable REJECTED receipts without changing state. An
+         *     exact replay returns the durable receipt only after current authorization; changing any
+         *     request content under the same `updateKey` returns `409 IDEMPOTENCY_KEY_REUSED`.
+         */
+        post: operations["updateRunState"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/runs/{runId}/payload-inspections": {
         parameters: {
             query?: never;
@@ -569,6 +619,136 @@ export interface paths {
          * @description The payload becomes the output of each woken waitEvent step. A signal that no step is waiting for is refused with 409, never buffered or dropped silently. A signal that would take the run over what a run may retain (4 MiB of step outputs and signal payloads) is refused with 429 and code `QUOTA_EXCEEDED`; retrying it will not help.
          */
         post: operations["signalRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/chains/{chainId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Inspect the immutable lineage and current head of an execution chain
+         * @description Needs `run:read`. The tenant is taken from authentication and a chain in another tenant is indistinguishable from a missing chain. The response is read from one database snapshot and is never cached.
+         */
+        get: operations["inspectExecutionChain"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/chains/{chainId}/queries/{operationName}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Evaluate a declared business query on the current chain head
+         * @description Needs `run:read` and `run:query` in the chain namespace. The transaction takes a shared
+         *     chain lock before the current run lock, then evaluates the immutable declaration against
+         *     that run's committed state snapshot. An optional `expectedRunId` rejects a replaced head
+         *     with `409 CHAIN_HEAD_CHANGED`. The response identifies the run actually observed and is
+         *     never cached. Authorization and access audit commit before any declared value is returned.
+         */
+        post: operations["queryExecutionChain"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/chains/{chainId}/updates/{operationName}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Apply a declared business update to the expected current chain head
+         * @description Needs `run:update` in the chain namespace. The transaction locks the chain before its
+         *     current run. An optional `expectedRunId` rejects a replaced head for a new update with
+         *     `409 CHAIN_HEAD_CHANGED`. The caller-chosen `updateKey` is scoped to the chain: an exact
+         *     replay returns the original applied or rejected receipt after rollover and still names the
+         *     run that committed it, while changed content returns `IDEMPOTENCY_KEY_REUSED`. State,
+         *     receipt, journal, resolved-run audit and outbox commit atomically. Responses are never
+         *     cached and contain only the declared bounded business result.
+         */
+        post: operations["updateExecutionChain"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/chains/{chainId}/signals/{signalName}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Signal a wait on the expected current chain head
+         * @description The command locks the chain before the current run. `expectedRunId` prevents a delayed caller from signalling a replacement head. The signal, journal, projection, payload retention, audit and idempotency record commit together. A signal for which no root wait exists is refused with 409. Scoped waits remain unavailable until addressed signal routing is integrated.
+         */
+        post: operations["signalExecutionChain"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/chains/{chainId}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel the expected current chain head and latch chain cancellation
+         * @description Needs `run:operate`. The chain cancellation latch and current-head cancellation journal, projection, outbox, audit and idempotency record commit atomically. `expectedRunId` makes a command for a replaced head fail with 409 and `details.reason=CHAIN_HEAD_CHANGED`.
+         */
+        post: operations["cancelExecutionChain"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/runs/{runId}/approvals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List approval requests for one run
+         * @description Needs both `run:read` and `approval:read`. Results are ordered by the immutable opening journal sequence and use a bounded opaque cursor. The response deliberately omits the eligibility policy, initiating identity and decision actor. Missing and foreign-tenant run identifiers both return the same `404` response.
+         */
+        get: operations["listRunApprovals"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2206,7 +2386,7 @@ export interface components {
             requestId?: string;
             /** @description What can be done about it, in a sentence from a closed table: the same for every error of a `code`, refined by `details.reason` when that changes what to do. It never carries a payload, a secret or another tenant's data. Absent from the errors of a platform older than feature 008. */
             remediation?: string;
-            /** @description Extra, safe context. `reason` is a stable machine-readable refinement of `code` (for example `IDEMPOTENCY_KEY_REUSED`, `STATE_CONFLICT`). A call the server does not have is `NOT_FOUND` with the reason `ROUTE_NOT_FOUND` (an unknown path) or `BAD_REQUEST` with `METHOD_NOT_ALLOWED` (a known path, another method): an SDK newer than the server tells that from a resource that does not exist, which is `NOT_FOUND` without those reasons. Structured workflow capabilities refine existing codes with `INVALID_SCOPE`, `INVALID_OPERATION_STATE`, `NOT_ELIGIBLE`, `INITIATOR_CANNOT_DECIDE`, `CHAIN_HEAD_CHANGED`, `RUN_NOT_MUTABLE`, `RUN_CONTINUED` and `UPDATE_REJECTED`; they do not add a new `Error.code` value. */
+            /** @description Extra, safe context. `reason` is a stable machine-readable refinement of `code` (for example `IDEMPOTENCY_KEY_REUSED`, `STATE_CONFLICT`). A call the server does not have is `NOT_FOUND` with the reason `ROUTE_NOT_FOUND` (an unknown path) or `BAD_REQUEST` with `METHOD_NOT_ALLOWED` (a known path, another method): an SDK newer than the server tells that from a resource that does not exist, which is `NOT_FOUND` without those reasons. Structured workflow capabilities refine existing codes with `INVALID_SCOPE`, `INVALID_OPERATION_STATE`, `NOT_ELIGIBLE`, `INITIATOR_CANNOT_DECIDE`, `CHAIN_HEAD_CHANGED`, `RUN_NOT_MUTABLE`, `RUN_CONTINUED`, `INVALID_ARGUMENTS`, `INVALID_UPDATE_KEY`, `REVISION_CONFLICT` and `UPDATE_REJECTED`; they do not add a new `Error.code` value. */
             details?: {
                 [key: string]: unknown;
             };
@@ -2694,6 +2874,89 @@ export interface components {
             /** @enum {string|null} */
             finalOutcome?: "SUCCEEDED" | "FAILED" | "CANCELLED" | "TIMED_OUT" | "COMPENSATED" | "PARTIAL" | "COMPENSATION_FAILED" | null;
         };
+        DeclaredQueryRequest: {
+            /** @description JSON value checked against the immutable operation argument schema; at most 256 KiB after canonicalization. */
+            args: unknown;
+        };
+        ChainDeclaredQueryRequest: {
+            /** @description JSON value checked against the immutable operation argument schema; at most 256 KiB after canonicalization. */
+            args: unknown;
+            /**
+             * Format: uuid
+             * @description Optional current-head precondition. A different committed head returns CHAIN_HEAD_CHANGED.
+             */
+            expectedRunId?: string;
+        };
+        DeclaredQueryResponse: {
+            /** Format: uuid */
+            runId: string;
+            /** Format: int64 */
+            runVersion: number;
+            /** Format: int64 */
+            stateRevision: number;
+            /** @description Only the explicitly disclosed result, validated against its closed bounded schema. */
+            result: unknown;
+        };
+        DeclaredUpdateRequest: {
+            /** @description Caller-chosen durable idempotency key. Retries keep this exact key. */
+            updateKey: string;
+            /** @description JSON value checked against the immutable operation argument schema; at most 256 KiB after canonicalization. */
+            args: unknown;
+            /** Format: int64 */
+            expectedStateRevision?: number;
+        };
+        ChainDeclaredUpdateRequest: {
+            /** @description Caller-chosen idempotency key retained across the entire chain. Retries keep this exact key. */
+            updateKey: string;
+            /** @description JSON value checked against the immutable operation argument schema; at most 256 KiB after canonicalization. */
+            args: unknown;
+            /**
+             * Format: uuid
+             * @description Optional current-head precondition for a new update. Exact receipt replay remains bound to the original resolved run after rollover.
+             */
+            expectedRunId?: string;
+            /** Format: int64 */
+            expectedStateRevision?: number;
+        };
+        DeclaredUpdateResponse: {
+            /** Format: uuid */
+            runId: string;
+            operation: string;
+            updateKey: string;
+            /** @constant */
+            status: "APPLIED";
+            /** @description Only the explicitly disclosed result, validated before it is retained and returned. */
+            result: unknown;
+            /** Format: int64 */
+            beforeStateRevision: number;
+            /** Format: int64 */
+            afterStateRevision: number;
+            /** Format: int64 */
+            runVersion: number;
+            replayed: boolean;
+        };
+        ApprovalScope: {
+            scopeNodeId: string;
+            iterationIndex: number;
+        };
+        ApprovalListItem: {
+            /** Format: uuid */
+            approvalId: string;
+            /** Format: uuid */
+            runId: string;
+            nodeId: string;
+            instancePath: components["schemas"]["ApprovalScope"][];
+            /** @enum {string} */
+            status: "PENDING" | "APPROVED" | "REJECTED" | "EXPIRED" | "CANCELLED";
+            /** Format: date-time */
+            deadline: string;
+            /** Format: date-time */
+            settledAt: string | null;
+        };
+        ApprovalList: {
+            items: components["schemas"]["ApprovalListItem"][];
+            nextCursor: string | null;
+        };
         ApprovalDecisionRequest: {
             /** @description Caller-chosen idempotency key for this approval. */
             decisionKey: string;
@@ -2829,16 +3092,19 @@ export interface components {
          *     tenant_content_bytes and tenant_log_bytes are logical retained bytes (maximum 2^50);
          *     api_requests_per_second and events_per_second are requests/second (maximum 1,000,000,
          *     fixed two-second burst); event_retention_seconds is 0 or 60..2,592,000 seconds;
-         *     script_retention_days is 0..365 days. Zero disables new admission for that resource.
+         *     script_retention_days is 0..365 days. iteration_concurrency is tenant-wide; its explicit
+         *     value is 1..1,000,000,000, its default operator ceiling is 1,024 and, while absent or
+         *     cleared, structured iteration admission is disabled. Zero disables new admission for
+         *     resources that accept it.
          *     Lowering a limit does not erase retained content or rewrite existing expiry.
          */
         Quota: {
             /** @enum {string} */
-            resource: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "activity_concurrency" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "broker_subscriptions" | "event_connectors" | "scripts" | "script_jobs" | "tenant_content_bytes" | "tenant_log_bytes" | "api_requests_per_second" | "events_per_second" | "event_retention_seconds" | "script_retention_days";
+            resource: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "activity_concurrency" | "iteration_concurrency" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "broker_subscriptions" | "event_connectors" | "scripts" | "script_jobs" | "tenant_content_bytes" | "tenant_log_bytes" | "api_requests_per_second" | "events_per_second" | "event_retention_seconds" | "script_retention_days";
             /** Format: int64 */
             limit: number;
             /**
-             * @description Where the limit in force comes from. default means the tenant set nothing and the ceiling applies.
+             * @description Where the limit in force comes from. default means the tenant set nothing; iteration_concurrency then remains disabled, while other resources use their platform default up to the ceiling.
              * @enum {string}
              */
             source: "default" | "tenant" | "namespace";
@@ -2888,6 +3154,44 @@ export interface components {
         SignalResult: {
             /** @description The waitEvent nodes the signal woke. */
             deliveredTo: string[];
+        };
+        ChainSignalRequest: {
+            /**
+             * Format: uuid
+             * @description The current head observed by the caller.
+             */
+            expectedRunId: string;
+            /** @description JSON retained as the output of every matching root wait. */
+            payload: unknown;
+        };
+        ChainCancelRequest: {
+            /**
+             * Format: uuid
+             * @description The current head observed by the caller.
+             */
+            expectedRunId: string;
+            reason: string;
+        };
+        ChainSegment: {
+            index: number;
+            /** Format: uuid */
+            runId: string;
+            /** Format: uuid */
+            predecessorRunId: string | null;
+            /** Format: uuid */
+            successorRunId: string | null;
+        };
+        ChainInspection: {
+            /** Format: uuid */
+            chainId: string;
+            /** Format: uuid */
+            currentRunId: string;
+            /** Format: int64 */
+            revision: number;
+            cancelRequested: boolean;
+            /** @enum {string|null} */
+            finalOutcome: "SUCCEEDED" | "FAILED" | "CANCELLED" | "TIMED_OUT" | "COMPENSATED" | "PARTIAL" | "COMPENSATION_FAILED" | null;
+            segments: components["schemas"]["ChainSegment"][];
         };
         EventPayload: components["schemas"]["JsonObject"];
         IncomingEvent: {
@@ -4117,7 +4421,7 @@ export interface components {
         DeliveryId: string;
         ConnectorId: string;
         DeadLetterId: string;
-        QuotaResourceName: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "activity_concurrency" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "broker_subscriptions" | "event_connectors" | "scripts" | "script_jobs" | "tenant_content_bytes" | "tenant_log_bytes" | "api_requests_per_second" | "events_per_second" | "event_retention_seconds" | "script_retention_days";
+        QuotaResourceName: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "activity_concurrency" | "iteration_concurrency" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "broker_subscriptions" | "event_connectors" | "scripts" | "script_jobs" | "tenant_content_bytes" | "tenant_log_bytes" | "api_requests_per_second" | "events_per_second" | "event_retention_seconds" | "script_retention_days";
         ActivityName: string;
         WorkflowId: string;
         VersionNumber: number;
@@ -4965,6 +5269,85 @@ export interface operations {
             default: components["responses"]["InternalError"];
         };
     };
+    queryRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: components["parameters"]["RunId"];
+                operationName: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeclaredQueryRequest"];
+            };
+        };
+        responses: {
+            /** @description The declared result and the exact revisions observed */
+            200: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeclaredQueryResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            413: components["responses"]["PayloadTooLarge"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    updateRunState: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: components["parameters"]["RunId"];
+                operationName: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeclaredUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description The applied durable receipt and declared result, including exact replay */
+            200: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeclaredUpdateResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            413: components["responses"]["PayloadTooLarge"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
     inspectRunPayload: {
         parameters: {
             query?: never;
@@ -5269,6 +5652,239 @@ export interface operations {
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
             422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    inspectExecutionChain: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                chainId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current chain head and immutable lineage */
+            200: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChainInspection"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    queryExecutionChain: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                chainId: string;
+                operationName: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChainDeclaredQueryRequest"];
+            };
+        };
+        responses: {
+            /** @description The declared result and exact current-head revisions observed */
+            200: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeclaredQueryResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            413: components["responses"]["PayloadTooLarge"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    updateExecutionChain: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                chainId: string;
+                operationName: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChainDeclaredUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description The applied result or exact durable replay */
+            200: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeclaredUpdateResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            413: components["responses"]["PayloadTooLarge"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    signalExecutionChain: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                chainId: string;
+                signalName: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChainSignalRequest"];
+            };
+        };
+        responses: {
+            /** @description Signal committed, or the exact durable replay */
+            202: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SignalResult"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    cancelExecutionChain: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                chainId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChainCancelRequest"];
+            };
+        };
+        responses: {
+            /** @description Cancellation committed, or the exact durable replay */
+            202: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    listRunApprovals: {
+        parameters: {
+            query?: {
+                /** @description Opaque cursor returned as `nextCursor` by the previous page. */
+                cursor?: components["parameters"]["Cursor"];
+                /** @description Page size; values outside 1..200 are clamped. */
+                limit?: components["parameters"]["Limit"];
+            };
+            header?: never;
+            path: {
+                runId: components["parameters"]["RunId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A bounded page of approval requests for the run */
+            200: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApprovalList"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
             429: components["responses"]["TooManyRequests"];
             503: components["responses"]["Unavailable"];
             default: components["responses"]["InternalError"];

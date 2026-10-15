@@ -638,6 +638,190 @@ pub(crate) fn structured_definition(document: &Value) -> Result<WorkflowDefiniti
     structured_definition_inner(document)
 }
 
+pub(crate) fn published_collection_definition(
+    document: &Value,
+) -> Result<WorkflowDefinition, IrError> {
+    if document.get("chainPolicy").is_some() {
+        return Err(IrError::UnsupportedDeclaration {
+            field: "chainPolicy",
+            reason: "collection continuation has not passed its transactional runtime gate",
+        });
+    }
+    if document.get("triggers").is_some() {
+        return Err(IrError::UnsupportedDeclaration {
+            field: "triggers",
+            reason: "triggered collections are not enabled by the runtime",
+        });
+    }
+    let definition = structured_definition(document)?;
+    if !definition
+        .node(definition.entrypoint())
+        .is_some_and(|node| matches!(node.kind(), NodeKind::ForEach { .. }))
+    {
+        return Err(IrError::UnsupportedDeclaration {
+            field: "entrypoint",
+            reason: "a published collection workflow starts at its collection owner",
+        });
+    }
+    if let Some(node) = definition
+        .nodes()
+        .find(|node| !matches!(node.kind(), NodeKind::ForEach { .. } | NodeKind::End { .. }))
+    {
+        return Err(IrError::Unsupported {
+            node: node.id().as_str().to_owned(),
+            kind: node.kind().label().to_owned(),
+            reason: "the public collection subset is a collection chain ending at end",
+        });
+    }
+    let referenced_bodies = definition
+        .nodes()
+        .filter_map(|node| match node.kind() {
+            NodeKind::ForEach { body, .. } => Some(body),
+            NodeKind::While { .. }
+            | NodeKind::RepeatUntil { .. }
+            | NodeKind::Approval { .. }
+            | NodeKind::ContinueAsNew { .. }
+            | NodeKind::Return { .. } => None,
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if referenced_bodies.is_empty() {
+        return Err(IrError::UnsupportedDeclaration {
+            field: "bodies",
+            reason: "published bodies require a collection owner",
+        });
+    }
+    if let Some(node) = definition.nodes().find(|node| {
+        matches!(
+            node.kind(),
+            NodeKind::While { .. }
+                | NodeKind::RepeatUntil { .. }
+                | NodeKind::Approval { .. }
+                | NodeKind::ContinueAsNew { .. }
+                | NodeKind::Return { .. }
+        )
+    }) {
+        return Err(IrError::Unsupported {
+            node: node.id().as_str().to_owned(),
+            kind: node.kind().label().to_owned(),
+            reason: "this combination with a collection is not enabled by the runtime",
+        });
+    }
+    for body in definition.bodies() {
+        if !referenced_bodies.contains(&body.name()) {
+            return Err(IrError::Unsupported {
+                node: body.name().as_str().to_owned(),
+                kind: "body".to_owned(),
+                reason: "published collection bodies must be referenced by a collection owner",
+            });
+        }
+        let nodes = body.nodes().collect::<Vec<_>>();
+        let all_nodes = body.all_nodes().count();
+        let entry = body.node(body.entrypoint());
+        let return_node = entry
+            .and_then(|node| node.next())
+            .and_then(|next| body.node(next));
+        let proven = nodes.len() == 2
+            && all_nodes == 2
+            && entry.is_some_and(|node| {
+                matches!(node.kind(), NodeKind::Activity { .. }) && node.on_error().is_none()
+            })
+            && return_node.is_some_and(|node| matches!(node.kind(), NodeKind::Return { .. }));
+        if !proven {
+            return Err(IrError::Unsupported {
+                node: body.name().as_str().to_owned(),
+                kind: "body".to_owned(),
+                reason: "the runtime supports a collection body with one activity followed by one return",
+            });
+        }
+    }
+    Ok(definition)
+}
+
+pub(crate) fn published_loop_definition(document: &Value) -> Result<WorkflowDefinition, IrError> {
+    if document.get("chainPolicy").is_some() {
+        return Err(IrError::UnsupportedDeclaration {
+            field: "chainPolicy",
+            reason: "loop continuation has not passed its combined runtime gate",
+        });
+    }
+    if document.get("triggers").is_some() {
+        return Err(IrError::UnsupportedDeclaration {
+            field: "triggers",
+            reason: "triggered loops are not enabled by the runtime",
+        });
+    }
+    let definition = structured_definition(document)?;
+    if !definition
+        .node(definition.entrypoint())
+        .is_some_and(|node| {
+            matches!(
+                node.kind(),
+                NodeKind::While { .. } | NodeKind::RepeatUntil { .. }
+            )
+        })
+    {
+        return Err(IrError::UnsupportedDeclaration {
+            field: "entrypoint",
+            reason: "a published loop workflow starts at its loop owner",
+        });
+    }
+    if let Some(node) = definition.nodes().find(|node| {
+        !matches!(
+            node.kind(),
+            NodeKind::While { .. } | NodeKind::RepeatUntil { .. } | NodeKind::End { .. }
+        )
+    }) {
+        return Err(IrError::Unsupported {
+            node: node.id().as_str().to_owned(),
+            kind: node.kind().label().to_owned(),
+            reason: "the public loop subset is a loop chain ending at end",
+        });
+    }
+    let referenced_bodies = definition
+        .nodes()
+        .filter_map(|node| match node.kind() {
+            NodeKind::While { body, .. } | NodeKind::RepeatUntil { body, .. } => Some(body),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if referenced_bodies.is_empty() {
+        return Err(IrError::UnsupportedDeclaration {
+            field: "bodies",
+            reason: "published bodies require a loop owner",
+        });
+    }
+    for body in definition.bodies() {
+        if !referenced_bodies.contains(&body.name()) {
+            return Err(IrError::Unsupported {
+                node: body.name().as_str().to_owned(),
+                kind: "body".to_owned(),
+                reason: "published loop bodies must be referenced by a loop owner",
+            });
+        }
+        let nodes = body.nodes().collect::<Vec<_>>();
+        let all_nodes = body.all_nodes().count();
+        let entry = body.node(body.entrypoint());
+        let return_node = entry
+            .and_then(|node| node.next())
+            .and_then(|next| body.node(next));
+        let proven = nodes.len() == 2
+            && all_nodes == 2
+            && entry.is_some_and(|node| {
+                matches!(node.kind(), NodeKind::Activity { .. }) && node.on_error().is_none()
+            })
+            && return_node.is_some_and(|node| matches!(node.kind(), NodeKind::Return { .. }));
+        if !proven {
+            return Err(IrError::Unsupported {
+                node: body.name().as_str().to_owned(),
+                kind: "body".to_owned(),
+                reason: "the runtime supports a loop body with one activity followed by one return",
+            });
+        }
+    }
+    Ok(definition)
+}
+
 pub(crate) fn declared_state_definition(document: &Value) -> Result<WorkflowDefinition, IrError> {
     if document.get("chainPolicy").is_some() {
         return Err(IrError::UnsupportedDeclaration {

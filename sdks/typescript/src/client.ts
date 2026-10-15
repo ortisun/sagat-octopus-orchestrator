@@ -134,6 +134,11 @@ export interface ApprovalListOptions extends QueryOptions {
 
 export interface QueryOptions {
   traceparent?: string;
+  signal?: AbortSignal;
+}
+
+export interface ChainQueryOptions extends QueryOptions {
+  expectedRunId?: string;
 }
 
 export interface QueryResult<TResult = unknown> {
@@ -149,6 +154,7 @@ export interface UpdateOptions {
   updateKey: string;
   expectedStateRevision?: number;
   traceparent?: string;
+  signal?: AbortSignal;
 }
 
 export interface UpdateReceipt<TResult = unknown> {
@@ -522,7 +528,8 @@ export class SagatClient {
   async listApprovals(runId: string, options: ApprovalListOptions = {}): Promise<ApprovalPage> {
     const response = await this.#http.request({
       method: 'GET', path: `/runs/${encodeURIComponent(runIdOf(runId))}/approvals`,
-      query: { cursor: options.cursor, limit: options.limit }, traceparent: this.trace(options.traceparent), safeToRepeat: true,
+      query: { cursor: options.cursor, limit: options.limit }, traceparent: this.trace(options.traceparent),
+      signal: options.signal, safeToRepeat: true,
     });
     const raw = object(response.body, 'an approval page');
     const values = raw['items'];
@@ -608,6 +615,38 @@ export class SagatClient {
       path: `/runs/${encodeURIComponent(runIdOf(runId))}/queries/${encodeURIComponent(operationName(name))}`,
       body: { args },
       traceparent: this.trace(options.traceparent),
+      signal: options.signal,
+      safeToRepeat: true,
+    });
+    const raw = object(response.body, 'a query result');
+    if (!Object.prototype.hasOwnProperty.call(raw, 'result')) {
+      throw new SagatError({ code: 'PROTOCOL', message: 'result is missing from the answer' });
+    }
+    return {
+      runId: str(raw, 'runId'),
+      runVersion: revision(raw, 'runVersion'),
+      stateRevision: revision(raw, 'stateRevision'),
+      result: raw['result'] as TResult,
+      raw,
+    };
+  }
+
+  /** Evaluates a declared query against the chain head selected under the server's chain lock. */
+  async queryChain<TResult = unknown>(
+    namespaceId: string,
+    chainId: string,
+    name: string,
+    args: unknown,
+    options: ChainQueryOptions = {},
+  ): Promise<QueryResult<TResult>> {
+    const body: Record<string, unknown> = { args };
+    if (options.expectedRunId !== undefined) body['expectedRunId'] = runIdOf(options.expectedRunId);
+    const response = await this.#http.request({
+      method: 'POST',
+      path: `/namespaces/${encodeURIComponent(namespaceIdOf(namespaceId))}/chains/${encodeURIComponent(runIdOf(chainId))}/queries/${encodeURIComponent(operationName(name))}`,
+      body,
+      traceparent: this.trace(options.traceparent),
+      signal: options.signal,
       safeToRepeat: true,
     });
     const raw = object(response.body, 'a query result');
@@ -639,6 +678,7 @@ export class SagatClient {
       path: `/runs/${encodeURIComponent(runIdOf(runId))}/updates/${encodeURIComponent(operationName(name))}`,
       body,
       traceparent: this.trace(options.traceparent),
+      signal: options.signal,
       safeToRepeat: true,
     });
     const raw = object(response.body, 'an update receipt');
@@ -677,7 +717,7 @@ export class SagatClient {
     const response = await this.#http.request({
       method: 'GET',
       path: `/namespaces/${encodeURIComponent(namespaceIdOf(namespaceId))}/chains/${encodeURIComponent(runIdOf(chainId))}`,
-      traceparent: this.trace(options.traceparent), safeToRepeat: true,
+      traceparent: this.trace(options.traceparent), signal: options.signal, safeToRepeat: true,
     });
     const raw = object(response.body, 'a chain inspection');
     const segments = raw['segments'];

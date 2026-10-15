@@ -179,6 +179,21 @@ public class WorkflowBuilderTests
     }
 
     [Fact]
+    public void NamedBodiesCannotReferenceThemselves()
+    {
+        var recursive = Workflow.Body()
+            .ForEach("nested", "input.items", "line", "bodyResult", new CollectionOptions { MaxItems = 2, MaxConcurrency = 1 })
+            .Return("return", "steps.nested.output");
+        var error = Assert.Throws<SagatException>(() => Workflow.Create("recursive-body")
+            .Body("line", recursive)
+            .ForEach("lines", "input.items", "line", "bodyResult", new CollectionOptions { MaxItems = 2, MaxConcurrency = 1 })
+            .End("done")
+            .Build());
+        Assert.Equal(SagatErrorCode.ValidationFailed, error.Code);
+        Assert.Contains("body reference cycle", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void WhileAndRepeatUntilWriteBoundedPreTestAndPostTestLoopNodes()
     {
         var iteration = Workflow.Body().Step("increment", "counter.increment").Return("return", "steps.increment.output");

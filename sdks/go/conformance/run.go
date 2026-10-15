@@ -432,6 +432,32 @@ func playStep(ctx context.Context, step object, op string, c *client.Client, con
 			return nil, err
 		}
 		return object{"runVersion": result.RunVersion, "stateRevision": result.StateRevision, "result": result.Result}, nil
+	case "queryChain":
+		query := client.ChainQueryRequest{Args: payloadOf(step["args"])}
+		if value := asString(step["expectedRunId"]); value != "" {
+			expectedRunID, err := chainRef(value)
+			if err != nil {
+				return nil, broken("%v", err)
+			}
+			query.ExpectedRunID = expectedRunID
+		}
+		namespaceID, err := chainRef(step["namespaceId"])
+		if err != nil {
+			return nil, broken("%v", err)
+		}
+		chainID, err := chainRef(step["chainId"])
+		if err != nil {
+			return nil, broken("%v", err)
+		}
+		opts := callOpts
+		if value := asString(step["traceparent"]); value != "" {
+			opts = append(opts, client.WithTraceparent(value))
+		}
+		result, err := c.QueryChain(ctx, namespaceID, chainID, asString(step["name"]), query, opts...)
+		if err != nil {
+			return nil, err
+		}
+		return object{"runId": result.RunID, "runVersion": result.RunVersion, "stateRevision": result.StateRevision, "result": result.Result}, nil
 	case "update":
 		id, err := runOf(step)
 		if err != nil {
@@ -457,9 +483,13 @@ func playStep(ctx context.Context, step object, op string, c *client.Client, con
 		}, nil
 	case "inspectChain":
 		namespaceID, err := chainRef(step["namespaceId"])
-		if err != nil { return nil, err }
+		if err != nil {
+			return nil, err
+		}
 		chainID, err := chainRef(step["chainId"])
-		if err != nil { return nil, err }
+		if err != nil {
+			return nil, err
+		}
 		opts := callOpts
 		if value := asString(step["traceparent"]); value != "" {
 			opts = append(opts, client.WithTraceparent(value))
@@ -470,11 +500,15 @@ func playStep(ctx context.Context, step object, op string, c *client.Client, con
 		}
 		if wait := asString(step["waitForHeadChange"]); wait != "" {
 			previous, err := chainRef(wait)
-			if err != nil { return nil, err }
+			if err != nil {
+				return nil, err
+			}
 			for attempt := 0; result.CurrentRunID == previous && attempt < 100; attempt++ {
 				time.Sleep(50 * time.Millisecond)
 				result, err = c.InspectChain(ctx, namespaceID, chainID, opts...)
-				if err != nil { return nil, err }
+				if err != nil {
+					return nil, err
+				}
 			}
 		}
 		segments := make([]any, 0, len(result.Segments))
@@ -484,11 +518,17 @@ func playStep(ctx context.Context, step object, op string, c *client.Client, con
 		return object{"chainId": result.ChainID, "currentRunId": result.CurrentRunID, "revision": result.Revision, "cancelRequested": result.CancelRequested, "finalOutcome": orNull(result.FinalOutcome), "segments": segments}, nil
 	case "signalChain":
 		namespaceID, err := chainRef(step["namespaceId"])
-		if err != nil { return nil, err }
+		if err != nil {
+			return nil, err
+		}
 		chainID, err := chainRef(step["chainId"])
-		if err != nil { return nil, err }
+		if err != nil {
+			return nil, err
+		}
 		expectedRunID, err := chainRef(step["expectedRunId"])
-		if err != nil { return nil, err }
+		if err != nil {
+			return nil, err
+		}
 		opts := callOpts
 		if value := asString(step["traceparent"]); value != "" {
 			opts = append(opts, client.WithTraceparent(value))
@@ -504,11 +544,17 @@ func playStep(ctx context.Context, step object, op string, c *client.Client, con
 		return object{"deliveredTo": delivered}, nil
 	case "cancelChain":
 		namespaceID, err := chainRef(step["namespaceId"])
-		if err != nil { return nil, err }
+		if err != nil {
+			return nil, err
+		}
 		chainID, err := chainRef(step["chainId"])
-		if err != nil { return nil, err }
+		if err != nil {
+			return nil, err
+		}
 		expectedRunID, err := chainRef(step["expectedRunId"])
-		if err != nil { return nil, err }
+		if err != nil {
+			return nil, err
+		}
 		opts := callOpts
 		if value := asString(step["traceparent"]); value != "" {
 			opts = append(opts, client.WithTraceparent(value))

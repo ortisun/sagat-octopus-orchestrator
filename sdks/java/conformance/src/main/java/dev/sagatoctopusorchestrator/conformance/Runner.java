@@ -16,6 +16,7 @@ import dev.sagatoctopusorchestrator.sdk.ApprovalListItem;
 import dev.sagatoctopusorchestrator.sdk.ApprovalListOptions;
 import dev.sagatoctopusorchestrator.sdk.ApprovalPage;
 import dev.sagatoctopusorchestrator.sdk.ClientConfig;
+import dev.sagatoctopusorchestrator.sdk.ChainQueryOptions;
 import dev.sagatoctopusorchestrator.sdk.EventAccepted;
 import dev.sagatoctopusorchestrator.sdk.EventInput;
 import dev.sagatoctopusorchestrator.sdk.JdkHttpTransport;
@@ -836,6 +837,23 @@ public final class Runner {
                 dev.sagatoctopusorchestrator.sdk.QueryResult queried = client.query(
                         runOf(step, results), step.get("name").asText(), step.get("args"), CallOptions.create());
                 ObjectNode result = F.objectNode();
+                result.put("runVersion", queried.runVersion());
+                result.put("stateRevision", queried.stateRevision());
+                result.set("result", queried.result());
+                return result;
+            }
+            case "queryChain": {
+                ChainQueryOptions options = ChainQueryOptions.create();
+                if (step.has("expectedRunId")) {
+                    options.expectedRunId(chainRef(step.get("expectedRunId"), config, results));
+                }
+                if (step.has("traceparent")) options.traceparent(step.get("traceparent").asText());
+                dev.sagatoctopusorchestrator.sdk.QueryResult queried = client.queryChain(
+                        chainRef(step.get("namespaceId"), config, results),
+                        chainRef(step.get("chainId"), config, results),
+                        step.get("name").asText(), step.get("args"), options);
+                ObjectNode result = F.objectNode();
+                result.put("runId", queried.runId());
                 result.put("runVersion", queried.runVersion());
                 result.put("stateRevision", queried.stateRevision());
                 result.set("result", queried.result());

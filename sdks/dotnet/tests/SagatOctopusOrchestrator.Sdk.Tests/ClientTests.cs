@@ -621,6 +621,41 @@ public sealed class ClientTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ChainQueryCarriesExpectedHeadAndReturnsResolvedRevisions()
+    {
+        const string namespaceId = "0190aaaa-0000-7000-8000-000000000010";
+        const string chainId = "0190aaaa-0000-7000-8000-000000000011";
+        const string head = "0190aaaa-0000-7000-8000-000000000012";
+        server.Handler = _ => Reply(200, new JsonObject
+        {
+            ["runId"] = head, ["runVersion"] = 7, ["stateRevision"] = 3,
+            ["result"] = new JsonObject { ["amount"] = "19.99", ["occurredAt"] = "2026-10-15T15:34:56.789Z" },
+        });
+        var result = await NewClient().QueryChainAsync(
+            namespaceId, chainId, "account.snapshot", new { }, new ChainQueryOptions { ExpectedRunId = head });
+        Assert.Equal($"/v1/namespaces/{namespaceId}/chains/{chainId}/queries/account.snapshot", server.Requests[0].PathAndQuery);
+        Assert.Equal("""{"args":{},"expectedRunId":"0190aaaa-0000-7000-8000-000000000012"}""", server.Requests[0].BodyText);
+        Assert.Equal(head, result.RunId);
+        Assert.Equal("19.99", result.Result.GetProperty("amount").GetString());
+        Assert.Equal("2026-10-15T15:34:56.789Z", result.Result.GetProperty("occurredAt").GetString());
+    }
+
+    [Fact]
+    public async Task CancellingADeclaredUpdateStopsTheCallWithoutRetrying()
+    {
+        server.Delay = TimeSpan.FromSeconds(5);
+        server.Handler = _ => Reply(200, new JsonObject());
+        using var cancel = new CancellationTokenSource();
+        var call = NewClient().UpdateAsync(
+            Ids.Run, "account.credit", new { amount = "19.99" }, new UpdateOptions { UpdateKey = "credit-1" }, cancel.Token);
+        await Eventually.UntilAsync(() => server.Requests.Count == 1, "the update request");
+        await cancel.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => call);
+        await Task.Delay(100);
+        Assert.Single(server.Requests);
+    }
+
+    [Fact]
     public async Task OperationsOtherThanCancelNameTheirActionAndCarryTheirArguments()
     {
         server.Handler = _ => Reply(202, new JsonObject { ["operationId"] = "op-2", ["accepted"] = true });

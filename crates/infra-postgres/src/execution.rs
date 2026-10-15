@@ -31,7 +31,8 @@ use sagat_domain::definition::{Workflow, WorkflowId, WorkflowVersion, WorkflowVe
 use sagat_domain::execution::{
     AddressedRunEvent, ApprovalRequestId, ChainFinalOutcome, ChainPolicy, ChainScope,
     CollectionDrainReason, CollectionIterationRestore, CollectionPhase, ContinuationTransfer,
-    CorrelationKey, ExecutionInstanceId, FailureCode, InstancePath, RunChainState, RunEvent, RunId,
+    CorrelationKey, ExecutionInstanceId, FailureCode, InstancePath, LoopContinuation,
+    LoopDrainReason, LoopIterationRestore, LoopKind, LoopPhase, RunChainState, RunEvent, RunId,
     RunState, RunStatus, SagaPhase, SagaState, SegmentCompletionKind, SegmentIndex, StepState,
     StepStatus, StopReason, SwitchSelection, WaitingOn,
 };
@@ -226,6 +227,7 @@ impl PgRunStore {
             record.version,
         );
         load_collections(&mut tx, tenant, run, &mut state).await?;
+        load_loops(&mut tx, tenant, run, &mut state).await?;
         load_chain(&mut tx, tenant, run, &mut state).await?;
         let definition = self
             .definition(&mut tx, tenant, record.info.version_id)
@@ -758,19 +760,18 @@ impl RunStore for PgRunStore {
                 // decode (one written by a newer engine) says nothing of what it changed: `None`, and a
                 // change of the graph that holds one is the whole graph.
                 let decoded = decode(&event_type, node.as_deref(), &detail);
-                let touched = decoded.as_ref().map(|event| {
-                    event
-                        .changed_nodes()
-                        .iter()
-                        .map(|n| n.as_str().to_owned())
-                        .collect()
+                let event_path = event_instance_path(row)?;
+                let touched = decoded.as_ref().and_then(|event| {
+                    AddressedRunEvent::in_path(event_path.clone(), event.clone())
+                        .ok()
+                        .map(|addressed| addressed.changed_instances())
                 });
                 let attempt = attempt.and_then(|a| u32::try_from(a).ok());
                 let instance = node
                     .as_deref()
                     .map(|node| {
                         Ok(ExecutionInstanceId::in_path(
-                            event_instance_path(row)?,
+                            event_path,
                             NodeId::parse_stored(node).map_err(|_| corrupt("journal node"))?,
                         ))
                     })
@@ -943,6 +944,7 @@ impl RunStore for PgRunStore {
                         Some("SAGA") => Some("saga"),
                         Some("RECONCILIATION") => Some("reconciliation"),
                         Some("OPERATOR") => Some("operator"),
+                        Some("LOOP") => Some("loop"),
                         Some("APPROVAL") => Some("approval"),
                         _ => None,
                     },
@@ -1208,6 +1210,7 @@ fn step_state(row: &PgRow) -> Result<StepState, StoreError> {
         (None, _) => None,
         (Some("BRANCHES"), _) => Some(WaitingOn::Branches),
         (Some("COLLECTION"), _) => Some(WaitingOn::Collection),
+        (Some("LOOP"), _) => Some(WaitingOn::Loop),
         (Some("SAGA"), _) => Some(WaitingOn::Saga),
         (Some("RECONCILIATION"), _) => Some(WaitingOn::Reconciliation),
         (Some("OPERATOR"), _) => Some(WaitingOn::Operator {
@@ -1516,6 +1519,11 @@ async fn load_collections(
                         .map_err(|_| corrupt("collection drain failure code"))?,
                 })
             }
+            (Some("STORAGE_QUOTA"), None, Some(code), Some(_), Some(_))
+                if code == FailureCode::storage_quota_exceeded().as_str() =>
+            {
+                Some(CollectionDrainReason::StorageQuotaExceeded)
+            }
             (Some("CANCELLED"), None, None, Some(_), Some(_)) => {
                 Some(CollectionDrainReason::Cancelled)
             }
@@ -1550,7 +1558,13 @@ async fn load_collections(
                 if stored_result_digest.is_none()
                     && col::<Option<i64>>(row, "finish_sequence")?.is_some()
                     && col::<Option<Uuid>>(row, "finish_outbox_id")?.is_some()
-                    && matches!(&drain_reason, Some(CollectionDrainReason::Failed { .. })) =>
+                    && matches!(
+                        &drain_reason,
+                        Some(
+                            CollectionDrainReason::Failed { .. }
+                                | CollectionDrainReason::StorageQuotaExceeded
+                        )
+                    ) =>
             {
                 CollectionPhase::Failed
             }
@@ -1591,6 +1605,478 @@ async fn load_collections(
     }
     if !iterations.is_empty() {
         return Err(corrupt("collection iteration owner"));
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct RestoredLoopRows {
+    iterations: Vec<LoopIterationRestore>,
+    active_iteration: Option<u32>,
+    last_checkpoint_sequence: Option<i64>,
+}
+
+#[derive(Debug)]
+struct StoredLoopCheckpoint {
+    return_instance_id: Uuid,
+    result_digest: Digest,
+    carry_digest: Digest,
+    condition: bool,
+    checked_at: OffsetDateTime,
+    continuation: LoopContinuation,
+    journal_sequence: i64,
+}
+
+#[derive(Debug)]
+struct StoredLoopTimer {
+    timer_id: Uuid,
+    next_iteration: u32,
+    due_at: OffsetDateTime,
+    lifecycle: String,
+    scheduled_sequence: i64,
+    scheduled_outbox_id: Uuid,
+    fired_sequence: Option<i64>,
+    fired_outbox_id: Option<Uuid>,
+}
+
+fn stored_loop_continuation(
+    kind: &str,
+    due_at: Option<OffsetDateTime>,
+    timer_id: Option<Uuid>,
+) -> Result<LoopContinuation, StoreError> {
+    match (kind, due_at, timer_id) {
+        ("CONTINUE", None, None) => Ok(LoopContinuation::Continue),
+        ("DELAY", Some(due_at), Some(_)) => Ok(LoopContinuation::DelayUntil(due_at)),
+        ("COMPLETE", None, None) => Ok(LoopContinuation::Complete),
+        ("ITERATION_LIMIT", None, None) => Ok(LoopContinuation::IterationLimit),
+        _ => Err(corrupt("loop checkpoint continuation")),
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+async fn load_loops(
+    tx: &mut Transaction<'static, Postgres>,
+    tenant: TenantId,
+    run: RunId,
+    state: &mut RunState,
+) -> Result<(), StoreError> {
+    let scopes = sqlx::query(
+        "SELECT scope.owner_instance_id,scope.owner_path_nodes,scope.owner_path_indices, \
+                scope.owner_node,scope.kind,scope.lifecycle,scope.max_iterations, \
+                scope.deadline_at,scope.initial_carry_digest,scope.current_carry_digest, \
+                scope.initial_condition,scope.next_iteration,scope.active_iteration, \
+                scope.delay_due_at,scope.entered_sequence,scope.last_checkpoint_sequence, \
+                scope.drain_kind,scope.drain_iteration,scope.drain_failure_code, \
+                scope.drain_sequence,scope.drain_outbox_id,scope.finish_sequence, \
+                scope.finish_outbox_id,scope.created_at,owner.step_id AS projected_owner_id, \
+                scope.namespace_id = runs.namespace_id AS namespace_matches \
+         FROM loop_scopes scope \
+         JOIN runs ON runs.tenant_id=scope.tenant_id AND runs.id=scope.run_id \
+         LEFT JOIN steps owner \
+           ON owner.tenant_id=scope.tenant_id AND owner.run_id=scope.run_id \
+          AND owner.instance_path_nodes=scope.owner_path_nodes \
+          AND owner.instance_path_indices=scope.owner_path_indices \
+          AND owner.node=scope.owner_node \
+         WHERE scope.tenant_id=$1 AND scope.run_id=$2 \
+         ORDER BY scope.owner_path_nodes,scope.owner_path_indices,scope.owner_node",
+    )
+    .bind(tenant.as_uuid())
+    .bind(run.as_uuid())
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(store_error)?;
+    if scopes.is_empty() {
+        return Ok(());
+    }
+
+    let checkpoint_rows = sqlx::query(
+        "SELECT owner_instance_id,iteration_index,return_instance_id,result_digest, \
+                carry_digest,condition,checked_at,continuation,delay_due_at,timer_id, \
+                journal_sequence,outbox_id \
+         FROM loop_checkpoints WHERE tenant_id=$1 AND run_id=$2",
+    )
+    .bind(tenant.as_uuid())
+    .bind(run.as_uuid())
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(store_error)?;
+    let timer_rows = sqlx::query(
+        "SELECT owner_instance_id,checkpoint_iteration,timer_id,next_iteration,due_at,lifecycle, \
+                scheduled_sequence,scheduled_outbox_id,fired_sequence,fired_outbox_id \
+         FROM loop_timers WHERE tenant_id=$1 AND run_id=$2",
+    )
+    .bind(tenant.as_uuid())
+    .bind(run.as_uuid())
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(store_error)?;
+    let mut timers = BTreeMap::new();
+    for row in &timer_rows {
+        let key = (
+            col::<Uuid>(row, "owner_instance_id")?,
+            u32::try_from(col::<i32>(row, "checkpoint_iteration")?)
+                .map_err(|_| corrupt("loop timer checkpoint iteration"))?,
+        );
+        let timer = StoredLoopTimer {
+            timer_id: col(row, "timer_id")?,
+            next_iteration: u32::try_from(col::<i32>(row, "next_iteration")?)
+                .map_err(|_| corrupt("loop timer next iteration"))?,
+            due_at: col(row, "due_at")?,
+            lifecycle: col(row, "lifecycle")?,
+            scheduled_sequence: col(row, "scheduled_sequence")?,
+            scheduled_outbox_id: col(row, "scheduled_outbox_id")?,
+            fired_sequence: col(row, "fired_sequence")?,
+            fired_outbox_id: col(row, "fired_outbox_id")?,
+        };
+        if timers.insert(key, timer).is_some() {
+            return Err(corrupt("duplicate loop timer"));
+        }
+    }
+    let mut checkpoints = BTreeMap::new();
+    let mut waiting_timers = BTreeMap::new();
+    for row in &checkpoint_rows {
+        let owner = col::<Uuid>(row, "owner_instance_id")?;
+        let index = u32::try_from(col::<i32>(row, "iteration_index")?)
+            .map_err(|_| corrupt("loop checkpoint iteration"))?;
+        let continuation_name: String = col(row, "continuation")?;
+        let due_at = col::<Option<OffsetDateTime>>(row, "delay_due_at")?;
+        let timer_id = col::<Option<Uuid>>(row, "timer_id")?;
+        let journal_sequence = col::<i64>(row, "journal_sequence")?;
+        let outbox_id = col::<Uuid>(row, "outbox_id")?;
+        let continuation = stored_loop_continuation(&continuation_name, due_at, timer_id)?;
+        if let Some(expected_timer_id) = timer_id {
+            let timer = timers
+                .remove(&(owner, index))
+                .ok_or_else(|| corrupt("loop checkpoint timer"))?;
+            let next = index
+                .checked_add(1)
+                .ok_or_else(|| corrupt("loop timer next iteration"))?;
+            if timer.timer_id != expected_timer_id
+                || timer.next_iteration != next
+                || Some(timer.due_at) != due_at
+                || timer.scheduled_sequence != journal_sequence
+                || timer.scheduled_outbox_id != outbox_id
+            {
+                return Err(corrupt("loop checkpoint timer"));
+            }
+            match (
+                timer.lifecycle.as_str(),
+                timer.fired_sequence,
+                timer.fired_outbox_id,
+            ) {
+                ("WAITING", None, None) => {
+                    if waiting_timers.insert(owner, index).is_some() {
+                        return Err(corrupt("duplicate waiting loop timer"));
+                    }
+                }
+                ("FIRED", Some(fired), Some(_)) if fired > timer.scheduled_sequence => {}
+                ("CANCELLED", None, None) => {}
+                _ => return Err(corrupt("loop timer lifecycle")),
+            }
+        } else if timers.contains_key(&(owner, index)) {
+            return Err(corrupt("unexpected loop timer"));
+        }
+        let checkpoint = StoredLoopCheckpoint {
+            return_instance_id: col(row, "return_instance_id")?,
+            result_digest: stored_digest(col(row, "result_digest")?, "loop result digest")?,
+            carry_digest: stored_digest(col(row, "carry_digest")?, "loop carry digest")?,
+            condition: col(row, "condition")?,
+            checked_at: col(row, "checked_at")?,
+            continuation,
+            journal_sequence,
+        };
+        if checkpoints.insert((owner, index), checkpoint).is_some() {
+            return Err(corrupt("duplicate loop checkpoint"));
+        }
+    }
+    if !timers.is_empty() {
+        return Err(corrupt("orphan loop timer"));
+    }
+
+    let iteration_rows = sqlx::query(
+        "SELECT iteration.owner_instance_id,iteration.iteration_index, \
+                iteration.entry_instance_id,iteration.entry_path_nodes, \
+                iteration.entry_path_indices,iteration.entry_node,iteration.lifecycle, \
+                iteration.slot_held,iteration.remaining_reservations, \
+                iteration.return_instance_id,iteration.return_node,iteration.result_digest, \
+                iteration.carry_digest,iteration.condition,iteration.checked_at, \
+                iteration.checkpoint_sequence,iteration.drained_sequence, \
+                iteration.drain_outbox_id,entry.step_id AS projected_entry_id, \
+                returned.step_id AS projected_return_id \
+         FROM loop_iterations iteration \
+         LEFT JOIN steps entry \
+           ON entry.tenant_id=iteration.tenant_id AND entry.run_id=iteration.run_id \
+          AND entry.instance_path_nodes=iteration.entry_path_nodes \
+          AND entry.instance_path_indices=iteration.entry_path_indices \
+          AND entry.node=iteration.entry_node \
+         LEFT JOIN steps returned \
+           ON returned.tenant_id=iteration.tenant_id AND returned.run_id=iteration.run_id \
+          AND returned.instance_path_nodes=iteration.entry_path_nodes \
+          AND returned.instance_path_indices=iteration.entry_path_indices \
+          AND returned.node=iteration.return_node \
+         WHERE iteration.tenant_id=$1 AND iteration.run_id=$2 \
+         ORDER BY iteration.owner_instance_id,iteration.iteration_index",
+    )
+    .bind(tenant.as_uuid())
+    .bind(run.as_uuid())
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(store_error)?;
+    let mut iterations: BTreeMap<Uuid, RestoredLoopRows> = BTreeMap::new();
+    for row in &iteration_rows {
+        let owner = col::<Uuid>(row, "owner_instance_id")?;
+        let index = u32::try_from(col::<i32>(row, "iteration_index")?)
+            .map_err(|_| corrupt("loop iteration index"))?;
+        let entry_id = col::<Uuid>(row, "entry_instance_id")?;
+        if Some(entry_id) != col::<Option<Uuid>>(row, "projected_entry_id")? {
+            return Err(corrupt("loop entry identity"));
+        }
+        let entry_path = instance_path(
+            col(row, "entry_path_nodes")?,
+            col(row, "entry_path_indices")?,
+            "loop entry path",
+        )?;
+        let entry_node: String = col(row, "entry_node")?;
+        let entry = ExecutionInstanceId::in_path(
+            entry_path.clone(),
+            NodeId::parse_stored(&entry_node).map_err(|_| corrupt("loop entry node"))?,
+        );
+        let lifecycle: String = col(row, "lifecycle")?;
+        let slot_held = col::<bool>(row, "slot_held")?;
+        let remaining = col::<i32>(row, "remaining_reservations")?;
+        let return_id = col::<Option<Uuid>>(row, "return_instance_id")?;
+        let return_node = col::<Option<String>>(row, "return_node")?;
+        let result = col::<Option<Vec<u8>>>(row, "result_digest")?;
+        let carry = col::<Option<Vec<u8>>>(row, "carry_digest")?;
+        let condition = col::<Option<bool>>(row, "condition")?;
+        let checked_at = col::<Option<OffsetDateTime>>(row, "checked_at")?;
+        let sequence = col::<Option<i64>>(row, "checkpoint_sequence")?;
+        let drained_sequence = col::<Option<i64>>(row, "drained_sequence")?;
+        let drain_outbox_id = col::<Option<Uuid>>(row, "drain_outbox_id")?;
+        let rows = iterations.entry(owner).or_insert_with(|| RestoredLoopRows {
+            iterations: Vec::new(),
+            active_iteration: None,
+            last_checkpoint_sequence: None,
+        });
+        match lifecycle.as_str() {
+            "ADMITTED"
+                if slot_held
+                    && remaining > 0
+                    && return_id.is_none()
+                    && return_node.is_none()
+                    && result.is_none()
+                    && carry.is_none()
+                    && condition.is_none()
+                    && checked_at.is_none()
+                    && sequence.is_none()
+                    && drained_sequence.is_none()
+                    && drain_outbox_id.is_none() =>
+            {
+                if checkpoints.contains_key(&(owner, index))
+                    || rows.active_iteration.replace(index).is_some()
+                {
+                    return Err(corrupt("loop active iteration"));
+                }
+                rows.iterations
+                    .push(LoopIterationRestore::admitted(index, entry));
+            }
+            "CHECKPOINTED"
+                if !slot_held
+                    && remaining == 0
+                    && drained_sequence.is_none()
+                    && drain_outbox_id.is_none() =>
+            {
+                let stored = checkpoints
+                    .remove(&(owner, index))
+                    .ok_or_else(|| corrupt("loop checkpoint projection"))?;
+                let return_id = return_id.ok_or_else(|| corrupt("loop return identity"))?;
+                let return_node = return_node.ok_or_else(|| corrupt("loop return node"))?;
+                let result = stored_digest(
+                    result.ok_or_else(|| corrupt("loop result digest"))?,
+                    "loop result digest",
+                )?;
+                let carry = stored_digest(
+                    carry.ok_or_else(|| corrupt("loop carry digest"))?,
+                    "loop carry digest",
+                )?;
+                let condition = condition.ok_or_else(|| corrupt("loop condition"))?;
+                let checked_at = checked_at.ok_or_else(|| corrupt("loop checked at"))?;
+                let sequence = sequence.ok_or_else(|| corrupt("loop checkpoint sequence"))?;
+                if return_id != stored.return_instance_id
+                    || Some(return_id) != col::<Option<Uuid>>(row, "projected_return_id")?
+                    || result != stored.result_digest
+                    || carry != stored.carry_digest
+                    || condition != stored.condition
+                    || checked_at != stored.checked_at
+                    || sequence != stored.journal_sequence
+                {
+                    return Err(corrupt("loop checkpoint projection"));
+                }
+                let return_instance = ExecutionInstanceId::in_path(
+                    entry_path,
+                    NodeId::parse_stored(&return_node).map_err(|_| corrupt("loop return node"))?,
+                );
+                rows.last_checkpoint_sequence = Some(sequence);
+                rows.iterations.push(LoopIterationRestore::checkpointed(
+                    index,
+                    entry,
+                    return_instance,
+                    result,
+                    carry,
+                    condition,
+                    checked_at,
+                    stored.continuation,
+                ));
+            }
+            "DRAINED"
+                if !slot_held
+                    && remaining == 0
+                    && return_id.is_none()
+                    && return_node.is_none()
+                    && result.is_none()
+                    && carry.is_none()
+                    && condition.is_none()
+                    && checked_at.is_none()
+                    && sequence.is_none()
+                    && drained_sequence.is_some_and(|value| value >= 1)
+                    && drain_outbox_id.is_some() =>
+            {
+                if checkpoints.contains_key(&(owner, index)) {
+                    return Err(corrupt("drained loop checkpoint"));
+                }
+                rows.iterations
+                    .push(LoopIterationRestore::drained(index, entry));
+            }
+            _ => return Err(corrupt("unsupported loop iteration projection")),
+        }
+    }
+    if !checkpoints.is_empty() {
+        return Err(corrupt("orphan loop checkpoint"));
+    }
+
+    for row in &scopes {
+        let owner_id = col::<Uuid>(row, "owner_instance_id")?;
+        if Some(owner_id) != col::<Option<Uuid>>(row, "projected_owner_id")?
+            || !col::<bool>(row, "namespace_matches")?
+        {
+            return Err(corrupt("loop owner identity"));
+        }
+        let owner_path = instance_path(
+            col(row, "owner_path_nodes")?,
+            col(row, "owner_path_indices")?,
+            "loop owner path",
+        )?;
+        let owner_node: String = col(row, "owner_node")?;
+        let owner = ExecutionInstanceId::in_path(
+            owner_path,
+            NodeId::parse_stored(&owner_node).map_err(|_| corrupt("loop owner node"))?,
+        );
+        let kind = match col::<String>(row, "kind")?.as_str() {
+            "WHILE" => LoopKind::While,
+            "REPEAT_UNTIL" => LoopKind::RepeatUntil,
+            _ => return Err(corrupt("loop kind")),
+        };
+        let phase = match col::<String>(row, "lifecycle")?.as_str() {
+            "READY" => LoopPhase::Ready,
+            "RUNNING" => LoopPhase::Running,
+            "DELAYING" => LoopPhase::Delaying,
+            "SUCCEEDED" => LoopPhase::Succeeded,
+            "FAILED" => LoopPhase::Failed,
+            "DRAINING" => LoopPhase::Draining,
+            "CANCELLED" => LoopPhase::Cancelled,
+            _ => return Err(corrupt("loop lifecycle")),
+        };
+        let restored = iterations.remove(&owner_id).unwrap_or(RestoredLoopRows {
+            iterations: Vec::new(),
+            active_iteration: None,
+            last_checkpoint_sequence: None,
+        });
+        let projected_active = col::<Option<i32>>(row, "active_iteration")?
+            .map(|value| u32::try_from(value).map_err(|_| corrupt("loop active iteration")))
+            .transpose()?;
+        if projected_active != restored.active_iteration
+            || col::<Option<i64>>(row, "last_checkpoint_sequence")?
+                != restored.last_checkpoint_sequence
+            || col::<i64>(row, "entered_sequence")? < 1
+        {
+            return Err(corrupt("loop scope projection"));
+        }
+        let next_iteration = u32::try_from(col::<i32>(row, "next_iteration")?)
+            .map_err(|_| corrupt("loop next iteration"))?;
+        let delay_due_at = col::<Option<OffsetDateTime>>(row, "delay_due_at")?;
+        let drain_kind = col::<Option<String>>(row, "drain_kind")?;
+        let drain_iteration = col::<Option<i32>>(row, "drain_iteration")?;
+        let drain_failure_code = col::<Option<String>>(row, "drain_failure_code")?;
+        let drain_sequence = col::<Option<i64>>(row, "drain_sequence")?;
+        let drain_outbox_id = col::<Option<Uuid>>(row, "drain_outbox_id")?;
+        let finish_sequence = col::<Option<i64>>(row, "finish_sequence")?;
+        let finish_outbox_id = col::<Option<Uuid>>(row, "finish_outbox_id")?;
+        let drain_reason = match (
+            drain_kind.as_deref(),
+            drain_iteration,
+            drain_failure_code.as_deref(),
+            drain_sequence,
+            drain_outbox_id,
+        ) {
+            (None, None, None, None, None) => None,
+            (Some("FAILED"), Some(iteration), Some(code), Some(sequence), Some(_))
+                if sequence >= 1 =>
+            {
+                Some(LoopDrainReason::Failed {
+                    iteration: u32::try_from(iteration)
+                        .map_err(|_| corrupt("loop drain iteration"))?,
+                    code: FailureCode::parse(code)
+                        .map_err(|_| corrupt("loop drain failure code"))?,
+                })
+            }
+            (Some("TIMED_OUT"), None, Some("RUN_TIMED_OUT"), Some(sequence), Some(_))
+                if sequence >= 1 =>
+            {
+                Some(LoopDrainReason::TimedOut)
+            }
+            (Some("CANCELLED"), None, None, Some(sequence), Some(_)) if sequence >= 1 => {
+                Some(LoopDrainReason::Cancelled)
+            }
+            _ => return Err(corrupt("loop drain reason")),
+        };
+        let finish_matches = match phase {
+            LoopPhase::Draining => finish_sequence.is_none() && finish_outbox_id.is_none(),
+            LoopPhase::Failed | LoopPhase::Cancelled if drain_reason.is_some() => {
+                finish_sequence.is_some_and(|value| value >= 1) && finish_outbox_id.is_some()
+            }
+            _ => finish_sequence.is_none() && finish_outbox_id.is_none(),
+        };
+        if !finish_matches {
+            return Err(corrupt("loop drain finish receipt"));
+        }
+        match (phase, waiting_timers.remove(&owner_id)) {
+            (LoopPhase::Delaying, Some(index)) if index.checked_add(1) == Some(next_iteration) => {}
+            (LoopPhase::Delaying, _) | (_, Some(_)) => {
+                return Err(corrupt("loop waiting timer projection"));
+            }
+            _ => {}
+        }
+        state
+            .restore_loop(
+                owner,
+                kind,
+                phase,
+                u32::try_from(col::<i32>(row, "max_iterations")?)
+                    .map_err(|_| corrupt("loop iteration limit"))?,
+                col(row, "created_at")?,
+                col(row, "deadline_at")?,
+                stored_digest(col(row, "initial_carry_digest")?, "loop initial carry")?,
+                stored_digest(col(row, "current_carry_digest")?, "loop current carry")?,
+                col(row, "initial_condition")?,
+                next_iteration,
+                delay_due_at,
+                drain_reason,
+                restored.iterations,
+            )
+            .map_err(|_| corrupt("loop projection"))?;
+    }
+    if !iterations.is_empty() || !waiting_timers.is_empty() {
+        return Err(corrupt("loop iteration owner"));
     }
     Ok(())
 }
@@ -2714,6 +3200,14 @@ impl RunTx for PgRunTx {
                 .iter()
                 .all(|(instance, _)| instance.path().is_root())
             && effects.rehint_instances.is_empty()
+            && effects
+                .lease
+                .as_ref()
+                .is_none_or(|grant| grant.instance.path().is_root())
+            && effects
+                .renewal
+                .as_ref()
+                .is_none_or(|renewal| renewal.instance.path().is_root())
         {
             let root_events = events
                 .iter()
@@ -3077,6 +3571,8 @@ impl PgRunTx {
                     | RunEvent::StepRetryScheduled { .. }
                     | RunEvent::StepRetryDue { .. }
                     | RunEvent::StepReleased { .. }
+                    | RunEvent::StepCancelRequested { .. }
+                    | RunEvent::StepCancelled { .. }
             ) {
                 return Err(StoreError::Internal {
                     detail: "the scoped event is not supported by addressed storage".into(),

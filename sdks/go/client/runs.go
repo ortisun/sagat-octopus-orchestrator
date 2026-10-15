@@ -713,7 +713,47 @@ func (c *Client) Query(ctx context.Context, runID, name string, args any, opts .
 	if err != nil {
 		return nil, err
 	}
+	return queryResult(raw)
+}
+
+// QueryChain evaluates a declared query against the chain head selected under the server's chain lock.
+func (c *Client) QueryChain(ctx context.Context, namespaceID, chainID, name string, query ChainQueryRequest, opts ...CallOption) (*QueryResult, error) {
+	path, err := chainPath(namespaceID, chainID)
+	if err != nil {
+		return nil, err
+	}
+	if !declaredOperationNamePattern.MatchString(name) {
+		return nil, sagat.Invalid("an operation name is 1 to 128 permitted characters and starts with a letter or digit")
+	}
+	body := map[string]any{"args": query.Args}
+	if query.ExpectedRunID != "" {
+		if !uuidPattern.MatchString(query.ExpectedRunID) {
+			return nil, sagat.Invalid("an expected run id is a UUID")
+		}
+		body["expectedRunId"] = lower(query.ExpectedRunID)
+	}
+	o := callOptionsOf(opts)
+	traceparent, err := c.trace(ctx, o.traceparent)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.do(ctx, request{
+		method: "POST", path: path + "/queries/" + url.PathEscape(name), body: body, hasBody: true,
+		traceparent: traceparent, repeatable: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	raw, err := object(resp.body, "a query result")
+	if err != nil {
+		return nil, err
+	}
+	return queryResult(raw)
+}
+
+func queryResult(raw map[string]json.RawMessage) (*QueryResult, error) {
 	result := &QueryResult{Raw: raw}
+	var err error
 	if result.RunID, err = requiredString(raw, "runId"); err != nil {
 		return nil, err
 	}

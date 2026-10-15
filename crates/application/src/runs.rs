@@ -74,10 +74,10 @@ pub struct JournalEntry {
     /// The span of the attempt the event belongs to (16 hex), for the events of an attempt: the span
     /// the worker was given, which a trace backend shows.
     pub span_id: Option<String>,
-    /// Every step the event created or changed: the one it names and the ones it activated
-    /// (`RunEvent::changed_nodes`). The journal view shows `node` only; the changes of the graph
-    /// need all of them. `None` for an event this build cannot decode, whose effect is not known.
-    pub touched: Option<Vec<String>>,
+    /// Every logical instance the event created or changed. The journal view still shows the local
+    /// `node`; graph deltas need the complete scope path to distinguish repeated activations.
+    /// `None` means this build could not decode the event and must return a full reset.
+    pub touched: Option<Vec<sagat_domain::execution::ExecutionInstanceId>>,
 }
 
 /// One step as the runtime graph shows it.

@@ -684,6 +684,46 @@ class SagatClientTest {
     }
 
     @Test
+    void chainQueryCarriesExpectedHeadAndReturnsResolvedRevisions() {
+        String namespaceId = "0190aaaa-0000-7000-8000-000000000010";
+        String chainId = "0190aaaa-0000-7000-8000-000000000011";
+        String head = "0190aaaa-0000-7000-8000-000000000012";
+        server.prepare((req, reply) -> reply.send(200,
+                "{\"runId\":\"" + head + "\",\"runVersion\":7,\"stateRevision\":3,"
+                        + "\"result\":{\"amount\":\"19.99\",\"occurredAt\":\"2026-10-15T15:34:56.789Z\"}}"));
+        QueryResult result = client().queryChain(namespaceId, chainId, "account.snapshot", Map.of(),
+                ChainQueryOptions.create().expectedRunId(head));
+        assertEquals("/v1/namespaces/" + namespaceId + "/chains/" + chainId + "/queries/account.snapshot",
+                server.seen.get(0).path());
+        assertEquals(head, server.seen.get(0).body().path("expectedRunId").asText());
+        assertEquals(head, result.runId());
+        assertEquals("19.99", result.result().path("amount").asText());
+        assertEquals("2026-10-15T15:34:56.789Z", result.result().path("occurredAt").asText());
+    }
+
+    @Test
+    void cancellingADeclaredUpdateStopsTheCallWithoutRetrying() throws Exception {
+        server.prepare((req, reply) -> {
+            try {
+                Thread.sleep(300);
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+            }
+            reply.send(200, "{}");
+        });
+        try (SagatClient c = client()) {
+            CompletableFuture<UpdateReceipt> call = c.updateAsync(
+                    RUN, "account.credit", Map.of("amount", "19.99"), UpdateOptions.create("credit-1"));
+            for (int attempt = 0; server.seen.isEmpty() && attempt < 100; attempt++) {
+                Thread.sleep(2);
+            }
+            assertTrue(call.cancel(true));
+            Thread.sleep(500);
+            assertEquals(1, server.seen.size());
+        }
+    }
+
+    @Test
     void waitingForCompletionPollsUntilTheRunIsTerminal() {
         AtomicInteger polls = new AtomicInteger();
         server.prepare((req, reply) -> reply.send(200, run("status", polls.incrementAndGet() < 3 ? "\"RUNNING\"" : "\"SUCCEEDED\"")));

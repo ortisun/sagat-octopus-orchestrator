@@ -9,17 +9,19 @@ use sagat_application::error::AppError;
 use sagat_application::execution::{DefinitionCache, Engine, instance_step_id};
 use sagat_application::maintenance::{MaintenanceStore, Window};
 use sagat_application::primitives::{
-    CollectionAdmission, CollectionEntry, CollectionLimits, CollectionScopeId, CollectionStore,
-    CollectionTransition, SchedulerAuthority,
+    CollectionAdmission, CollectionDrain, CollectionDrainFinish, CollectionEntry,
+    CollectionIterationDrain, CollectionLimits, CollectionScopeId, CollectionStore,
+    CollectionTransition, PrimitiveStoreError, SchedulerAuthority,
 };
-use sagat_application::runs::RunStore;
+use sagat_application::runs::{RunOperation, RunService, RunStore};
 use sagat_application::shards::Lease;
 use sagat_application::telemetry::all_attempts;
 use sagat_application::worker::{
     Capabilities, ClaimedTask, TaskRef, WorkerService, WorkerSettings,
 };
+use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::definition::WorkflowVersionId;
-use sagat_domain::execution::{ExecutionInstanceId, InstancePath, RunId};
+use sagat_domain::execution::{CollectionDrainReason, ExecutionInstanceId, InstancePath, RunId};
 use sagat_domain::identity::Subject;
 use sagat_domain::sharding::Shard;
 use sagat_domain::workflow::{Digest, NodeId};
@@ -33,7 +35,7 @@ use sha2::{Digest as _, Sha256};
 use sqlx::Row;
 use uuid::Uuid;
 
-use crate::support::engine::{Session, World, chain, task_ref, world};
+use crate::support::engine::{Session, World, chain, ctx, task_ref, world};
 use crate::support::now;
 
 type ScopedWorkers = WorkerService<PgRunStore, SystemClock, JsonEvaluator, SystemEntropy>;
@@ -448,6 +450,664 @@ fn scheduler(fixture: &Fixture) -> Scheduler<PgRunStore, JsonEvaluator, SystemEn
         SchedulerSettings::default(),
     )
     .with_placement(fixture.placement.clone())
+}
+
+async fn close_content_quota(fixture: &Fixture) {
+    let tenant = fixture.world.admin.tenant_id().as_uuid();
+    let used: i64 = sqlx::query_scalar(
+        "SELECT content_bytes + content_reserved_bytes FROM tenant_retained_usage \
+         WHERE tenant_id=$1",
+    )
+    .bind(tenant)
+    .fetch_one(&fixture.world.db.pool)
+    .await
+    .expect("retained usage");
+    let mut tx = fixture
+        .world
+        .db
+        .pool
+        .begin()
+        .await
+        .expect("quota policy transaction");
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+        .bind(format!("quota-policy:tenant_content_bytes:{tenant}"))
+        .execute(&mut *tx)
+        .await
+        .expect("quota policy fence");
+    sqlx::query(
+        "DELETE FROM quota_limits WHERE tenant_id=$1 AND namespace_id IS NULL \
+         AND resource='tenant_content_bytes'",
+    )
+    .bind(tenant)
+    .execute(&mut *tx)
+    .await
+    .expect("clear content limit");
+    sqlx::query(
+        "INSERT INTO quota_limits (tenant_id,namespace_id,resource,max_value,updated_by) \
+         VALUES ($1,NULL,'tenant_content_bytes',$2,'collection-quota-test')",
+    )
+    .bind(tenant)
+    .bind(used)
+    .execute(&mut *tx)
+    .await
+    .expect("close content limit");
+    tx.commit().await.expect("commit content limit");
+    sqlx::query("UPDATE quota_accounting_control SET content_enforcement_enabled=true")
+        .execute(&fixture.world.db.pool)
+        .await
+        .expect("enable content enforcement");
+}
+
+async fn storage_quota_audits(fixture: &Fixture, reason: &str) -> i64 {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM audit_records WHERE tenant_id=$1 AND action=$2 \
+           AND resource_type='run' AND resource_id=$3 AND reason=$4",
+    )
+    .bind(fixture.world.admin.tenant_id().as_uuid())
+    .bind(AuditAction::RunStorageQuotaExceeded.as_str())
+    .bind(fixture.run.to_string())
+    .bind(reason)
+    .fetch_one(&fixture.world.db.pool)
+    .await
+    .expect("storage quota audit count")
+}
+
+async fn cancel(fixture: &Fixture, key: &str) {
+    let cache = DefinitionCache::new(Arc::new(StructuredJsonIrCodec), 8);
+    RunService::new(
+        PgRunStore::new(fixture.world.db.pool.clone(), cache.clone()).with_scoped_worker_protocol(),
+        SystemClock,
+        Engine::new(JsonEvaluator),
+        cache,
+    )
+    .operate(
+        &fixture.world.admin,
+        fixture.run,
+        RunOperation::Cancel,
+        "cancel collection",
+        None,
+        key,
+        &ctx(),
+    )
+    .await
+    .expect("request collection cancellation");
+}
+
+async fn subscribe_to_run_finished(fixture: &Fixture, label: &str) -> Uuid {
+    let subscription = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO webhook_subscriptions \
+         (id,tenant_id,namespace_id,name,destination_kind,destination_settings,url,secret_name, \
+          kinds,rate_per_second,timeout_ms,status,created_by) \
+         VALUES ($1,$2,$3,$4,'WEBHOOK','{}','https://example.invalid/drain','drain-key', \
+                 ARRAY['run.finished'],100,1000,'ACTIVE','test')",
+    )
+    .bind(subscription)
+    .bind(fixture.world.admin.tenant_id().as_uuid())
+    .bind(fixture.world.namespace.id().as_uuid())
+    .bind(format!("drain-{label}-{}", Uuid::now_v7()))
+    .execute(&fixture.world.db.pool)
+    .await
+    .expect("run finished subscription");
+    subscription
+}
+
+#[tokio::test]
+async fn cancellation_drains_members_atomically_and_finishes_after_restart() {
+    let fixture = fixture("scoped-collection-cancel").await;
+    let tenant = fixture.world.admin.tenant_id();
+    let subscription = subscribe_to_run_finished(&fixture, "cancel").await;
+    cancel(&fixture, "cancel-scoped-collection").await;
+
+    let (scope, version): (Uuid, i64) = sqlx::query_as(
+        "SELECT scope.scope_id,run.run_version FROM iteration_scopes scope JOIN runs run \
+           ON run.tenant_id=scope.tenant_id AND run.id=scope.run_id \
+         WHERE scope.tenant_id=$1 AND scope.run_id=$2",
+    )
+    .bind(tenant.as_uuid())
+    .bind(fixture.run.as_uuid())
+    .fetch_one(&fixture.world.db.pool)
+    .await
+    .expect("open drain identity");
+    let lease = fixture
+        .placement
+        .snapshot()
+        .lease_of(Shard::of(fixture.run.as_uuid()), std::time::Instant::now())
+        .expect("scheduler shard");
+    let conflicting_outbox = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO event_outbox (id,tenant_id,aggregate_id,event_type,payload) \
+         VALUES ($1,$2,$3,'run.finished','{}')",
+    )
+    .bind(conflicting_outbox)
+    .bind(tenant.as_uuid())
+    .bind(fixture.run.as_uuid())
+    .execute(&fixture.world.db.pool)
+    .await
+    .expect("conflicting drain outbox");
+    let error = fixture
+        .store
+        .start_collection_drain(&CollectionDrain::new(
+            collection_transition(
+                &fixture.world,
+                fixture.run,
+                u64::try_from(version).expect("run version"),
+                ExecutionInstanceId::root(NodeId::parse("items").expect("owner")),
+                lease,
+            ),
+            CollectionScopeId::new(scope),
+            CollectionDrainReason::Cancelled,
+            conflicting_outbox,
+        ))
+        .await
+        .expect_err("outbox conflict must roll back drain start");
+    assert!(matches!(error, PrimitiveStoreError::Storage(_)));
+    let rolled_back_start: (String, String, i64, i64, i64) = sqlx::query_as(
+        "SELECT run.status,scope.lifecycle,run.run_version, \
+                (SELECT count(*) FROM run_events event WHERE event.tenant_id=run.tenant_id \
+                  AND event.run_id=run.id AND event.event_type='collection.drain_started'), \
+                (SELECT count(*) FROM event_outbox message WHERE message.tenant_id=run.tenant_id \
+                  AND message.aggregate_id=run.id AND message.event_type='collection.drain.started') \
+           FROM runs run JOIN iteration_scopes scope \
+             ON scope.tenant_id=run.tenant_id AND scope.run_id=run.id \
+          WHERE run.tenant_id=$1 AND run.id=$2",
+    )
+    .bind(tenant.as_uuid())
+    .bind(fixture.run.as_uuid())
+    .fetch_one(&fixture.world.db.pool)
+    .await
+    .expect("rolled back drain start");
+    assert_eq!(
+        rolled_back_start,
+        ("CANCELLING".into(), "OPEN".into(), version, 0, 0)
+    );
+    let started = scheduler(&fixture).tick().await;
+    assert_eq!(started.collections_advanced, 1, "{started:?}");
+    let phase: String = sqlx::query_scalar(
+        "SELECT lifecycle FROM iteration_scopes WHERE tenant_id=$1 AND run_id=$2",
+    )
+    .bind(tenant.as_uuid())
+    .bind(fixture.run.as_uuid())
+    .fetch_one(&fixture.world.db.pool)
+    .await
+    .expect("draining collection");
+    assert_eq!(phase, "DRAINING");
+
+    sqlx::query(
+        "CREATE FUNCTION reject_collection_drain() RETURNS trigger LANGUAGE plpgsql AS $$ \
+         BEGIN \
+           IF NEW.event_type='collection.iteration_drained' THEN \
+             RAISE EXCEPTION 'injected drain failure'; \
+           END IF; \
+           RETURN NEW; \
+         END $$",
+    )
+    .execute(&fixture.world.db.pool)
+    .await
+    .expect("fault function");
+    sqlx::query(
+        "CREATE TRIGGER reject_collection_drain BEFORE INSERT ON run_events \
+         FOR EACH ROW EXECUTE FUNCTION reject_collection_drain()",
+    )
+    .execute(&fixture.world.db.pool)
+    .await
+    .expect("fault trigger");
+    let rolled_back = scheduler(&fixture).tick().await;
+    assert_eq!(rolled_back.collections_advanced, 0, "{rolled_back:?}");
+    assert_eq!(rolled_back.failed, 1, "{rolled_back:?}");
+    let before_retry: (i64, i32, i32) = sqlx::query_as(
+        "SELECT count(*) FILTER (WHERE lifecycle='DRAINED'), \
+                min(remaining_reservations), \
+                (SELECT active_iterations FROM tenant_iteration_usage WHERE tenant_id=$1) \
+         FROM collection_iterations WHERE tenant_id=$1 AND run_id=$2",
+    )
+    .bind(tenant.as_uuid())
+    .bind(fixture.run.as_uuid())
+    .fetch_one(&fixture.world.db.pool)
+    .await
+    .expect("rolled back drain");
+    assert_eq!(before_retry, (0, 2, 2));
+    sqlx::query("DROP TRIGGER reject_collection_drain ON run_events")
+        .execute(&fixture.world.db.pool)
+        .await
+        .expect("drop fault trigger");
+    sqlx::query("DROP FUNCTION reject_collection_drain()")
+        .execute(&fixture.world.db.pool)
+        .await
+        .expect("drop fault function");
+
+    for expected in 1..=2 {
+        let drained = scheduler(&fixture).tick().await;
+        assert_eq!(drained.collections_advanced, 1, "{drained:?}");
+        let count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM collection_iterations \
+             WHERE tenant_id=$1 AND run_id=$2 AND lifecycle='DRAINED'",
+        )
+        .bind(tenant.as_uuid())
+        .bind(fixture.run.as_uuid())
+        .fetch_one(&fixture.world.db.pool)
+        .await
+        .expect("drained count");
+        assert_eq!(count, expected);
+    }
+    let before_terminal: (String, String, i64, i64, i64) = sqlx::query_as(
+        "SELECT run.status,scope.lifecycle,run.run_version, \
+                coalesce((SELECT head_seq FROM telemetry_pending \
+                          WHERE tenant_id=run.tenant_id AND run_id=run.id),0), \
+                (SELECT count(*) FROM webhook_deliveries \
+                  WHERE tenant_id=run.tenant_id AND subscription_id=$3) \
+         FROM runs run JOIN iteration_scopes scope \
+           ON scope.tenant_id=run.tenant_id AND scope.run_id=run.id \
+         WHERE run.tenant_id=$1 AND run.id=$2",
+    )
+    .bind(tenant.as_uuid())
+    .bind(fixture.run.as_uuid())
+    .bind(subscription)
+    .fetch_one(&fixture.world.db.pool)
+    .await
+    .expect("pre-terminal drain evidence");
+    assert_eq!(before_terminal.2, before_terminal.3);
+    sqlx::query(
+        "CREATE FUNCTION reject_collection_terminal_delivery() RETURNS trigger LANGUAGE plpgsql AS $$ \
+         BEGIN RAISE EXCEPTION 'injected terminal delivery failure'; END $$",
+    )
+    .execute(&fixture.world.db.pool)
+    .await
+    .expect("terminal delivery fault function");
+    sqlx::query(
+        "CREATE TRIGGER reject_collection_terminal_delivery BEFORE INSERT ON webhook_deliveries \
+         FOR EACH ROW EXECUTE FUNCTION reject_collection_terminal_delivery()",
+    )
+    .execute(&fixture.world.db.pool)
+    .await
+    .expect("terminal delivery fault trigger");
+    let rejected = scheduler(&fixture).tick().await;
+    assert_eq!(rejected.collections_advanced, 0, "{rejected:?}");
+    assert_eq!(rejected.failed, 1, "{rejected:?}");
+    let after_rejected: (String, String, i64, i64, i64) = sqlx::query_as(
+        "SELECT run.status,scope.lifecycle,run.run_version, \
+                coalesce((SELECT head_seq FROM telemetry_pending \
+                          WHERE tenant_id=run.tenant_id AND run_id=run.id),0), \
+                (SELECT count(*) FROM webhook_deliveries \
+                  WHERE tenant_id=run.tenant_id AND subscription_id=$3) \
+         FROM runs run JOIN iteration_scopes scope \
+           ON scope.tenant_id=run.tenant_id AND scope.run_id=run.id \
+         WHERE run.tenant_id=$1 AND run.id=$2",
+    )
+    .bind(tenant.as_uuid())
+    .bind(fixture.run.as_uuid())
+    .bind(subscription)
+    .fetch_one(&fixture.world.db.pool)
+    .await
+    .expect("rolled back terminal evidence");
+    assert_eq!(after_rejected, before_terminal);
+    sqlx::query("DROP TRIGGER reject_collection_terminal_delivery ON webhook_deliveries")
+        .execute(&fixture.world.db.pool)
+        .await
+        .expect("drop terminal delivery fault trigger");
+    sqlx::query("DROP FUNCTION reject_collection_terminal_delivery()")
+        .execute(&fixture.world.db.pool)
+        .await
+        .expect("drop terminal delivery fault function");
+    let finished = scheduler(&fixture).tick().await;
+    assert_eq!(finished.collections_advanced, 1, "{finished:?}");
+    let terminal: (String, String, i32, i32, i32, i64, i64, i64, Vec<u8>) = sqlx::query_as(
+        "SELECT run.status,scope.lifecycle,scope.active_count,usage.active_iterations, \
+                instances.reserved_instances, \
+                (SELECT count(*) FROM run_events e WHERE e.tenant_id=run.tenant_id \
+                  AND e.run_id=run.id AND e.event_type='collection.iteration_drained'), \
+                telemetry.head_seq,run.run_version,delivery.payload \
+         FROM runs run JOIN iteration_scopes scope \
+           ON scope.tenant_id=run.tenant_id AND scope.run_id=run.id \
+         JOIN tenant_iteration_usage usage ON usage.tenant_id=run.tenant_id \
+         JOIN run_instance_usage instances \
+           ON instances.tenant_id=run.tenant_id AND instances.run_id=run.id \
+         JOIN telemetry_pending telemetry \
+           ON telemetry.tenant_id=run.tenant_id AND telemetry.run_id=run.id \
+         JOIN webhook_deliveries delivery \
+           ON delivery.tenant_id=run.tenant_id AND delivery.subscription_id=$3 \
+         WHERE run.tenant_id=$1 AND run.id=$2",
+    )
+    .bind(tenant.as_uuid())
+    .bind(fixture.run.as_uuid())
+    .bind(subscription)
+    .fetch_one(&fixture.world.db.pool)
+    .await
+    .expect("terminal drain projection");
+    assert_eq!(terminal.0, "CANCELLED");
+    assert_eq!(terminal.1, "CANCELLED");
+    assert_eq!(
+        (terminal.2, terminal.3, terminal.4, terminal.5),
+        (0, 0, 0, 2)
+    );
+    assert_eq!(terminal.6, terminal.7);
+    let outbound: serde_json::Value =
+        serde_json::from_slice(&terminal.8).expect("terminal outbound payload");
+    assert_eq!(outbound["data"]["status"], "CANCELLED");
+    let (scope, drain_outbox, finish_outbox, version): (Uuid, Uuid, Uuid, i64) = sqlx::query_as(
+        "SELECT scope.scope_id,scope.drain_outbox_id,scope.finish_outbox_id,run.run_version \
+             FROM iteration_scopes scope JOIN runs run \
+               ON run.tenant_id=scope.tenant_id AND run.id=scope.run_id \
+             WHERE scope.tenant_id=$1 AND scope.run_id=$2",
+    )
+    .bind(tenant.as_uuid())
+    .bind(fixture.run.as_uuid())
+    .fetch_one(&fixture.world.db.pool)
+    .await
+    .expect("terminal receipts");
+    let lease = fixture
+        .placement
+        .snapshot()
+        .lease_of(Shard::of(fixture.run.as_uuid()), std::time::Instant::now())
+        .expect("scheduler shard");
+    let transition = || {
+        collection_transition(
+            &fixture.world,
+            fixture.run,
+            u64::try_from(version).expect("run version"),
+            ExecutionInstanceId::root(NodeId::parse("items").expect("owner")),
+            lease,
+        )
+    };
+    assert!(
+        !fixture
+            .store
+            .start_collection_drain(&CollectionDrain::new(
+                transition(),
+                CollectionScopeId::new(scope),
+                CollectionDrainReason::Cancelled,
+                drain_outbox,
+            ))
+            .await
+            .expect("replay drain start")
+            .applied
+    );
+    for index in 0..2 {
+        let outbox: Uuid = sqlx::query_scalar(
+            "SELECT drain_outbox_id FROM collection_iterations \
+             WHERE tenant_id=$1 AND run_id=$2 AND iteration_index=$3",
+        )
+        .bind(tenant.as_uuid())
+        .bind(fixture.run.as_uuid())
+        .bind(index)
+        .fetch_one(&fixture.world.db.pool)
+        .await
+        .expect("member drain receipt");
+        assert!(
+            !fixture
+                .store
+                .drain_collection_iteration(&CollectionIterationDrain::new(
+                    transition(),
+                    CollectionScopeId::new(scope),
+                    u32::try_from(index).expect("index"),
+                    outbox,
+                ))
+                .await
+                .expect("replay member drain")
+                .applied
+        );
+    }
+    assert!(
+        !fixture
+            .store
+            .finish_collection_drain(&CollectionDrainFinish::new(
+                transition(),
+                CollectionScopeId::new(scope),
+                finish_outbox,
+            ))
+            .await
+            .expect("replay drain finish")
+            .applied
+    );
+    let replay_effects: (i64, i64) = sqlx::query_as(
+        "SELECT \
+           (SELECT count(*) FROM webhook_deliveries \
+             WHERE tenant_id=$1 AND subscription_id=$3), \
+           (SELECT head_seq FROM telemetry_pending WHERE tenant_id=$1 AND run_id=$2)",
+    )
+    .bind(tenant.as_uuid())
+    .bind(fixture.run.as_uuid())
+    .bind(subscription)
+    .fetch_one(&fixture.world.db.pool)
+    .await
+    .expect("replayed terminal effects");
+    assert_eq!(replay_effects, (1, terminal.6));
+    fixture
+        .store
+        .verify_run(tenant, fixture.run)
+        .await
+        .expect("drained run replay");
+}
+
+#[tokio::test]
+async fn exhausted_member_failure_starts_fail_fast_drain_and_survives_restart() {
+    let fixture = fixture("scoped-collection-failure-drain").await;
+    let tenant = fixture.world.admin.tenant_id();
+    let subscription = subscribe_to_run_finished(&fixture, "failed").await;
+    let first = poll(&fixture, 1).await.pop().expect("first attempt");
+    fail(&fixture, &first, "drain-first-failure")
+        .await
+        .expect("schedule retry");
+    age_instance_column(&fixture, &first, "next_attempt_at").await;
+    let released = scheduler(&fixture).tick().await;
+    assert_eq!(released.retries_released, 1, "{released:?}");
+    let mut claimed = poll(&fixture, 8).await;
+    let position = claimed
+        .iter()
+        .position(|task| task.instance == first.instance)
+        .expect("replacement attempt");
+    let replacement = claimed.remove(position);
+    for task in &claimed {
+        complete(&fixture, task, 7, "drain-other-member")
+            .await
+            .expect("settle other accepted member");
+    }
+    fail(&fixture, &replacement, "drain-final-failure")
+        .await
+        .expect("exhaust retry policy");
+    let failed_status: String = sqlx::query_scalar(
+        "SELECT status FROM steps WHERE tenant_id=$1 AND run_id=$2 AND step_id=$3",
+    )
+    .bind(tenant.as_uuid())
+    .bind(fixture.run.as_uuid())
+    .bind(first.step_id)
+    .fetch_one(&fixture.world.db.pool)
+    .await
+    .expect("failed member status");
+    assert_eq!(failed_status, "FAILED");
+
+    let started = scheduler(&fixture).tick().await;
+    assert_eq!(started.collections_advanced, 1, "{started:?}");
+    let drain: (String, String, i32, String) = sqlx::query_as(
+        "SELECT run.status,scope.drain_kind,scope.drain_iteration,scope.drain_failure_code \
+         FROM runs run JOIN iteration_scopes scope \
+           ON scope.tenant_id=run.tenant_id AND scope.run_id=run.id \
+         WHERE run.tenant_id=$1 AND run.id=$2",
+    )
+    .bind(tenant.as_uuid())
+    .bind(fixture.run.as_uuid())
+    .fetch_one(&fixture.world.db.pool)
+    .await
+    .expect("fail-fast drain");
+    assert_eq!(
+        drain,
+        (
+            "CANCELLING".into(),
+            "FAILED".into(),
+            i32::try_from(index(&first)).expect("index"),
+            "TRANSIENT_PROVIDER_FAILURE".into(),
+        )
+    );
+
+    for _ in 0..2 {
+        let drained = scheduler(&fixture).tick().await;
+        let evidence: Vec<(Vec<i32>, String, i32)> = sqlx::query_as(
+            "SELECT instance_path_indices,status,attempt FROM steps \
+             WHERE tenant_id=$1 AND run_id=$2 AND cardinality(instance_path_nodes)>0 \
+             ORDER BY instance_path_indices,node",
+        )
+        .bind(tenant.as_uuid())
+        .bind(fixture.run.as_uuid())
+        .fetch_all(&fixture.world.db.pool)
+        .await
+        .expect("drain evidence");
+        assert_eq!(drained.collections_advanced, 1, "{drained:?} {evidence:?}");
+    }
+    let finished = scheduler(&fixture).tick().await;
+    assert_eq!(finished.collections_advanced, 1, "{finished:?}");
+    let terminal: (String, String, i64, i64, i64, i64, Vec<u8>) = sqlx::query_as(
+        "SELECT run.status,scope.lifecycle, \
+                (SELECT count(*) FROM run_events e WHERE e.tenant_id=run.tenant_id \
+                  AND e.run_id=run.id AND e.event_type='run.stop_requested'), \
+                (SELECT count(*) FROM run_events e WHERE e.tenant_id=run.tenant_id \
+                  AND e.run_id=run.id AND e.event_type='run.finished'), \
+                telemetry.head_seq,run.run_version,delivery.payload \
+         FROM runs run JOIN iteration_scopes scope \
+           ON scope.tenant_id=run.tenant_id AND scope.run_id=run.id \
+         JOIN telemetry_pending telemetry \
+           ON telemetry.tenant_id=run.tenant_id AND telemetry.run_id=run.id \
+         JOIN webhook_deliveries delivery \
+           ON delivery.tenant_id=run.tenant_id AND delivery.subscription_id=$3 \
+         WHERE run.tenant_id=$1 AND run.id=$2",
+    )
+    .bind(tenant.as_uuid())
+    .bind(fixture.run.as_uuid())
+    .bind(subscription)
+    .fetch_one(&fixture.world.db.pool)
+    .await
+    .expect("failed terminal projection");
+    assert_eq!(terminal.0, "FAILED");
+    assert_eq!(terminal.1, "FAILED");
+    assert_eq!((terminal.2, terminal.3), (1, 1));
+    assert_eq!(terminal.4, terminal.5);
+    let outbound: serde_json::Value =
+        serde_json::from_slice(&terminal.6).expect("failed outbound payload");
+    assert_eq!(outbound["data"]["status"], "FAILED");
+    fixture
+        .store
+        .verify_run(tenant, fixture.run)
+        .await
+        .expect("failed drain replay");
+}
+
+#[tokio::test]
+async fn failed_derived_obligations_keep_member_capacity_reserved() {
+    for (label, node, kind, failure_code) in [
+        ("compensation", "a~c", "COMPENSATION", "COMPENSATION_FAILED"),
+        (
+            "reconciliation",
+            "a~r",
+            "RECONCILIATION",
+            "RECONCILIATION_FAILED",
+        ),
+    ] {
+        let fixture = fixture(&format!("scoped-collection-{label}-drain")).await;
+        let tenant = fixture.world.admin.tenant_id();
+        cancel(&fixture, &format!("cancel-before-failed-{label}")).await;
+        let started = scheduler(&fixture).tick().await;
+        assert_eq!(started.collections_advanced, 1, "{label}: {started:?}");
+        let changed = sqlx::query(
+            "UPDATE steps SET node=$3,kind=$4,status='FAILED',failure_code=$5 \
+             WHERE tenant_id=$1 AND run_id=$2 AND node='a' AND instance_path_indices=ARRAY[0]",
+        )
+        .bind(tenant.as_uuid())
+        .bind(fixture.run.as_uuid())
+        .bind(node)
+        .bind(kind)
+        .bind(failure_code)
+        .execute(&fixture.world.db.pool)
+        .await
+        .expect("failed derived projection");
+        assert_eq!(changed.rows_affected(), 1, "{label}");
+        let (scope, version): (Uuid, i64) = sqlx::query_as(
+            "SELECT scope.scope_id,run.run_version FROM iteration_scopes scope JOIN runs run \
+               ON run.tenant_id=scope.tenant_id AND run.id=scope.run_id \
+             WHERE scope.tenant_id=$1 AND scope.run_id=$2",
+        )
+        .bind(tenant.as_uuid())
+        .bind(fixture.run.as_uuid())
+        .fetch_one(&fixture.world.db.pool)
+        .await
+        .expect("drain identity");
+        let lease = fixture
+            .placement
+            .snapshot()
+            .lease_of(Shard::of(fixture.run.as_uuid()), std::time::Instant::now())
+            .expect("scheduler shard");
+        let error = fixture
+            .store
+            .drain_collection_iteration(&CollectionIterationDrain::new(
+                collection_transition(
+                    &fixture.world,
+                    fixture.run,
+                    u64::try_from(version).expect("run version"),
+                    ExecutionInstanceId::root(NodeId::parse("items").expect("owner")),
+                    lease,
+                ),
+                CollectionScopeId::new(scope),
+                0,
+                Uuid::now_v7(),
+            ))
+            .await
+            .expect_err("failed derived obligation must stay visible");
+        assert_eq!(error, PrimitiveStoreError::InvalidTransition, "{label}");
+        let retained: (String, bool, i32, i32, i32, i32, i64, i64) = sqlx::query_as(
+            "SELECT member.lifecycle,member.slot_held,member.remaining_reservations, \
+                    usage.active_iterations,instances.admitted_instances, \
+                    instances.reserved_instances, \
+                    (SELECT count(*) FROM run_events WHERE tenant_id=member.tenant_id \
+                      AND run_id=member.run_id AND event_type='collection.iteration_drained'), \
+                    (SELECT count(*) FROM event_outbox WHERE tenant_id=member.tenant_id \
+                      AND aggregate_id=member.run_id \
+                      AND event_type='collection.iteration.drained') \
+             FROM collection_iterations member JOIN tenant_iteration_usage usage \
+               ON usage.tenant_id=member.tenant_id \
+             JOIN run_instance_usage instances \
+               ON instances.tenant_id=member.tenant_id AND instances.run_id=member.run_id \
+             WHERE member.tenant_id=$1 AND member.run_id=$2 AND member.iteration_index=0",
+        )
+        .bind(tenant.as_uuid())
+        .bind(fixture.run.as_uuid())
+        .fetch_one(&fixture.world.db.pool)
+        .await
+        .expect("retained drain obligation");
+        assert_eq!(
+            retained,
+            ("ADMITTED".into(), true, 2, 2, 3, 4, 0, 0),
+            "{label}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn collection_discovery_filters_unrelated_pending_roots_before_pagination() {
+    let fixture = fixture_with_progress("collection-discovery-page", false).await;
+    for index in 0..16 {
+        sqlx::query(
+            "INSERT INTO steps \
+             (tenant_id,run_id,node,step_id,namespace_id,status,updated_at, \
+              instance_path_nodes,instance_path_indices) \
+             VALUES ($1,$2,$3,$4,$5,'PENDING',$6 - interval '1 day','{}','{}')",
+        )
+        .bind(fixture.world.admin.tenant_id().as_uuid())
+        .bind(fixture.run.as_uuid())
+        .bind(format!("noise-{index}"))
+        .bind(Uuid::now_v7())
+        .bind(fixture.world.namespace.id().as_uuid())
+        .bind(now())
+        .execute(&fixture.world.db.pool)
+        .await
+        .expect("unrelated pending root");
+    }
+
+    let candidates = fixture
+        .store
+        .collection_candidates(&Window::everything(1))
+        .await
+        .expect("collection candidates");
+    assert_eq!(candidates.len(), 1, "{candidates:?}");
+    assert_eq!(candidates[0].run_id, fixture.run);
+    assert_eq!(candidates[0].node.as_str(), "items");
 }
 
 #[tokio::test]
@@ -1290,4 +1950,535 @@ async fn a_scoped_lost_lease_rolls_back_then_recovers_after_restart() {
     complete(&fixture, &replacement, 2, "scoped-loss-recovered")
         .await
         .expect("complete recovered task");
+}
+
+#[tokio::test]
+async fn scoped_lease_capabilities_reject_a_foreign_tenant_without_leaking_the_attempt() {
+    let fixture = fixture("scoped-worker-tenant-boundary").await;
+    let task = poll(&fixture, 1).await.pop().expect("one scoped task");
+    let outsider = sagat_domain::identity::Principal::new(
+        fixture.world.other_admin.tenant_id(),
+        crate::support::engine::subject_of("foreign-scoped-worker"),
+        sagat_domain::identity::Role::Worker,
+    );
+    let reference = task_ref(&task);
+
+    assert_eq!(
+        fixture
+            .workers
+            .heartbeat(&outsider, &reference)
+            .await
+            .map(|_| ()),
+        Err(AppError::StaleAttempt)
+    );
+    assert_eq!(
+        fixture
+            .workers
+            .complete(&outsider, &reference, b"{}", "foreign-scoped-complete")
+            .await
+            .map(|_| ()),
+        Err(AppError::StaleAttempt)
+    );
+    assert_eq!(
+        fixture
+            .workers
+            .resolve_secrets(&outsider, &reference, None)
+            .await
+            .map(|_| ()),
+        Err(AppError::StaleAttempt)
+    );
+    assert_eq!(
+        fixture
+            .workers
+            .check_blob_upload(&outsider, &reference)
+            .await
+            .map(|_| ()),
+        Err(AppError::StaleAttempt)
+    );
+
+    let secrets = fixture
+        .workers
+        .resolve_secrets(&fixture.session.principal, &reference, None)
+        .await
+        .expect("owner still resolves scoped secrets");
+    assert_eq!(secrets[0].name.as_str(), "scoped-key");
+    complete(&fixture, &task, 1, "owner-after-foreign-denials")
+        .await
+        .expect("foreign attempts did not consume the lease");
+}
+
+#[tokio::test]
+async fn a_scoped_lease_observes_cancellation_and_acknowledges_it_before_restart() {
+    let fixture = fixture("scoped-worker-cancel-lease").await;
+    let task = poll(&fixture, 1).await.pop().expect("one scoped task");
+    cancel(&fixture, "cancel-with-scoped-lease").await;
+    let draining = scheduler(&fixture).tick().await;
+    assert_eq!(draining.collections_advanced, 1, "{draining:?}");
+
+    let beat = fixture
+        .workers
+        .heartbeat(&fixture.session.principal, &task_ref(&task))
+        .await
+        .expect("leased member observes cancellation");
+    assert!(beat.cancel_requested);
+    fixture
+        .workers
+        .fail(
+            &fixture.session.principal,
+            &task_ref(&task),
+            "CANCELLED",
+            false,
+            "scoped-cancel-ack",
+        )
+        .await
+        .expect("worker acknowledges cancellation");
+
+    let status: String = sqlx::query_scalar(
+        "SELECT status FROM steps WHERE tenant_id=$1 AND run_id=$2 AND node=$3 \
+           AND instance_path_nodes=$4 AND instance_path_indices=$5",
+    )
+    .bind(fixture.world.admin.tenant_id().as_uuid())
+    .bind(fixture.run.as_uuid())
+    .bind(task.instance.node().as_str())
+    .bind(vec!["items".to_owned()])
+    .bind(vec![i32::try_from(index(&task)).expect("index")])
+    .fetch_one(&fixture.world.db.pool)
+    .await
+    .expect("cancelled scoped projection");
+    assert_eq!(status, "CANCELLED");
+
+    let cancellation_events: Vec<(String, Vec<String>, Vec<i32>)> = sqlx::query_as(
+        "SELECT event_type,instance_path_nodes,instance_path_indices FROM run_events \
+         WHERE tenant_id=$1 AND run_id=$2 \
+           AND event_type IN ('step.cancel_requested','step.cancelled') ORDER BY seq",
+    )
+    .bind(fixture.world.admin.tenant_id().as_uuid())
+    .bind(fixture.run.as_uuid())
+    .fetch_all(&fixture.world.db.pool)
+    .await
+    .expect("canonical scoped cancellation journal");
+    assert_eq!(
+        cancellation_events,
+        vec![
+            (
+                "step.cancel_requested".to_owned(),
+                vec!["items".to_owned()],
+                vec![i32::try_from(index(&task)).expect("index")],
+            ),
+            (
+                "step.cancelled".to_owned(),
+                vec!["items".to_owned()],
+                vec![i32::try_from(index(&task)).expect("index")],
+            ),
+        ]
+    );
+
+    let restarted = scheduler(&fixture).tick().await;
+    assert_eq!(restarted.collections_advanced, 1, "{restarted:?}");
+    fixture
+        .store
+        .verify_run(fixture.world.admin.tenant_id(), fixture.run)
+        .await
+        .expect("cancelled scoped run replays after restart");
+}
+
+#[tokio::test]
+async fn snapshot_retention_quota_stops_the_pending_owner_without_creating_a_scope() {
+    let fixture = fixture_with_progress("collection-snapshot-storage-quota", false).await;
+    let tenant = fixture.world.admin.tenant_id();
+    close_content_quota(&fixture).await;
+
+    let stopped = scheduler(&fixture).tick().await;
+    assert_eq!(stopped.quota_stops, 1, "{stopped:?}");
+    assert_eq!(stopped.collections_advanced, 0, "{stopped:?}");
+    assert_eq!(stopped.failed, 0, "{stopped:?}");
+
+    let projection: (String, Option<String>, Option<String>, i64, i64) = sqlx::query_as(
+        "SELECT run.status,run.stop_reason,run.stop_code, \
+                (SELECT count(*) FROM iteration_scopes scope \
+                  WHERE scope.tenant_id=run.tenant_id AND scope.run_id=run.id), \
+                (SELECT count(*) FROM run_events event \
+                  WHERE event.tenant_id=run.tenant_id AND event.run_id=run.id \
+                    AND event.event_type='run.stop_requested') \
+         FROM runs run WHERE run.tenant_id=$1 AND run.id=$2",
+    )
+    .bind(tenant.as_uuid())
+    .bind(fixture.run.as_uuid())
+    .fetch_one(&fixture.world.db.pool)
+    .await
+    .expect("quota-stopped pending collection");
+    assert_eq!(
+        projection,
+        (
+            "FAILED".to_owned(),
+            Some("FAILED".to_owned()),
+            Some("STORAGE_QUOTA_EXCEEDED".to_owned()),
+            0,
+            1,
+        )
+    );
+    fixture
+        .store
+        .verify_run(tenant, fixture.run)
+        .await
+        .expect("pending quota stop replays");
+    assert_eq!(
+        storage_quota_audits(&fixture, "storage quota exceeded").await,
+        1
+    );
+
+    let replay = scheduler(&fixture).tick().await;
+    assert_eq!(replay.quota_stops, 0, "{replay:?}");
+    assert_eq!(replay.failed, 0, "{replay:?}");
+    assert_eq!(
+        storage_quota_audits(&fixture, "storage quota exceeded").await,
+        1
+    );
+}
+
+#[tokio::test]
+async fn aggregate_retention_quota_atomically_drains_and_replays_the_open_scope() {
+    let fixture = fixture_with_progress("collection-aggregate-storage-quota", false).await;
+    let tenant = fixture.world.admin.tenant_id();
+    let owner = ExecutionInstanceId::root(NodeId::parse("items").expect("owner"));
+
+    for _ in 0..3 {
+        let report = scheduler(&fixture).tick().await;
+        assert_eq!(report.collections_advanced, 1, "{report:?}");
+        assert_eq!(report.failed, 0, "{report:?}");
+    }
+    let mut entries = poll(&fixture, 8).await;
+    entries.sort_by_key(index);
+    assert_eq!(entries.len(), 2);
+    for (position, task) in entries.iter().enumerate() {
+        complete(
+            &fixture,
+            task,
+            u32::try_from(position + 1).expect("entry output"),
+            &format!("quota-entry-{position}"),
+        )
+        .await
+        .expect("complete entry");
+    }
+    let mut bodies = poll(&fixture, 8).await;
+    bodies.sort_by_key(index);
+    assert_eq!(bodies.len(), 2);
+    for (position, task) in bodies.iter().enumerate() {
+        complete(
+            &fixture,
+            task,
+            u32::try_from((position + 1) * 10).expect("body output"),
+            &format!("quota-body-{position}"),
+        )
+        .await
+        .expect("complete body");
+    }
+    for _ in 0..2 {
+        let checkpoint = scheduler(&fixture).tick().await;
+        assert_eq!(checkpoint.collections_advanced, 1, "{checkpoint:?}");
+        assert_eq!(checkpoint.failed, 0, "{checkpoint:?}");
+    }
+
+    let before: (i64, i32, i32, i32) = sqlx::query_as(
+        "SELECT run.run_version,scope.active_count,usage.active_iterations,instances.reserved_instances \
+         FROM runs run JOIN iteration_scopes scope \
+           ON scope.tenant_id=run.tenant_id AND scope.run_id=run.id \
+         JOIN tenant_iteration_usage usage ON usage.tenant_id=run.tenant_id \
+         JOIN run_instance_usage instances \
+           ON instances.tenant_id=run.tenant_id AND instances.run_id=run.id \
+         WHERE run.tenant_id=$1 AND run.id=$2",
+    )
+    .bind(tenant.as_uuid())
+    .bind(fixture.run.as_uuid())
+    .fetch_one(&fixture.world.db.pool)
+    .await
+    .expect("pre-quota projection");
+    assert_eq!((before.1, before.2, before.3), (0, 0, 0));
+    let scope_id: Uuid = sqlx::query_scalar(
+        "SELECT scope_id FROM iteration_scopes WHERE tenant_id=$1 AND run_id=$2",
+    )
+    .bind(tenant.as_uuid())
+    .bind(fixture.run.as_uuid())
+    .fetch_one(&fixture.world.db.pool)
+    .await
+    .expect("open collection scope");
+    let lease = fixture
+        .placement
+        .snapshot()
+        .lease_of(Shard::of(fixture.run.as_uuid()), std::time::Instant::now())
+        .expect("scheduler shard");
+    let transition = collection_transition(
+        &fixture.world,
+        fixture.run,
+        u64::try_from(before.0).expect("run version"),
+        owner.clone(),
+        lease,
+    );
+    for unaudited in [
+        transition.clone(),
+        transition.with_audit(AuditRecord::engine(
+            tenant,
+            AuditAction::RunCancelRequested,
+            ResourceType::Run,
+            fixture.run.to_string(),
+            "wrong action",
+            None,
+            now(),
+        )),
+        collection_transition(
+            &fixture.world,
+            fixture.run,
+            u64::try_from(before.0).expect("run version"),
+            owner.clone(),
+            lease,
+        )
+        .with_audit(AuditRecord::engine(
+            tenant,
+            AuditAction::RunStorageQuotaExceeded,
+            ResourceType::Run,
+            RunId::generate().to_string(),
+            "wrong resource",
+            None,
+            now(),
+        )),
+        collection_transition(
+            &fixture.world,
+            fixture.run,
+            u64::try_from(before.0).expect("run version"),
+            owner.clone(),
+            lease,
+        )
+        .with_audit(AuditRecord::operator(
+            tenant,
+            AuditAction::RunStorageQuotaExceeded,
+            ResourceType::Run,
+            fixture.run.to_string(),
+            "wrong actor",
+            now(),
+        )),
+    ] {
+        assert!(matches!(
+            fixture
+                .store
+                .start_collection_drain(&CollectionDrain::new(
+                    unaudited,
+                    CollectionScopeId::new(scope_id),
+                    CollectionDrainReason::StorageQuotaExceeded,
+                    Uuid::now_v7(),
+                ))
+                .await,
+            Err(PrimitiveStoreError::InvalidTransition)
+        ));
+    }
+    let after_rejections: i64 =
+        sqlx::query_scalar("SELECT run_version FROM runs WHERE tenant_id=$1 AND id=$2")
+            .bind(tenant.as_uuid())
+            .bind(fixture.run.as_uuid())
+            .fetch_one(&fixture.world.db.pool)
+            .await
+            .expect("run version after rejected audits");
+    assert_eq!(after_rejections, before.0);
+    close_content_quota(&fixture).await;
+
+    sqlx::query(
+        "CREATE FUNCTION reject_quota_drain_telemetry() RETURNS trigger LANGUAGE plpgsql AS $$ \
+         BEGIN \
+           IF EXISTS (SELECT 1 FROM runs WHERE tenant_id=NEW.tenant_id AND id=NEW.run_id \
+                      AND status='CANCELLING') THEN \
+             RAISE EXCEPTION 'injected quota drain telemetry failure'; \
+           END IF; \
+           RETURN NEW; \
+         END $$",
+    )
+    .execute(&fixture.world.db.pool)
+    .await
+    .expect("quota drain telemetry fault function");
+    sqlx::query(
+        "CREATE TRIGGER reject_quota_drain_telemetry BEFORE INSERT OR UPDATE ON telemetry_pending \
+         FOR EACH ROW EXECUTE FUNCTION reject_quota_drain_telemetry()",
+    )
+    .execute(&fixture.world.db.pool)
+    .await
+    .expect("quota drain telemetry fault trigger");
+    let rejected = scheduler(&fixture).tick().await;
+    assert_eq!(rejected.quota_stops, 0, "{rejected:?}");
+    assert_eq!(rejected.collections_advanced, 0, "{rejected:?}");
+    assert_eq!(rejected.failed, 1, "{rejected:?}");
+    let rolled_back: (String, String, i64, i64) = sqlx::query_as(
+        "SELECT run.status,scope.lifecycle, \
+                (SELECT count(*) FROM run_events event \
+                 WHERE event.tenant_id=run.tenant_id AND event.run_id=run.id \
+                   AND event.event_type IN ('run.stop_requested','collection.drain_started')), \
+                (SELECT count(*) FROM audit_records audit \
+                 WHERE audit.tenant_id=run.tenant_id AND audit.resource_type='run' \
+                   AND audit.resource_id=run.id::text AND audit.action=$3) \
+         FROM runs run JOIN iteration_scopes scope \
+           ON scope.tenant_id=run.tenant_id AND scope.run_id=run.id \
+         WHERE run.tenant_id=$1 AND run.id=$2",
+    )
+    .bind(tenant.as_uuid())
+    .bind(fixture.run.as_uuid())
+    .bind(AuditAction::RunStorageQuotaExceeded.as_str())
+    .fetch_one(&fixture.world.db.pool)
+    .await
+    .expect("rolled back quota drain evidence");
+    assert_eq!(rolled_back, ("WAITING".to_owned(), "OPEN".to_owned(), 0, 0));
+    sqlx::query("DROP TRIGGER reject_quota_drain_telemetry ON telemetry_pending")
+        .execute(&fixture.world.db.pool)
+        .await
+        .expect("drop quota drain telemetry fault trigger");
+    sqlx::query("DROP FUNCTION reject_quota_drain_telemetry()")
+        .execute(&fixture.world.db.pool)
+        .await
+        .expect("drop quota drain telemetry fault function");
+
+    let stopped = scheduler(&fixture).tick().await;
+    assert_eq!(stopped.quota_stops, 1, "{stopped:?}");
+    assert_eq!(stopped.collections_advanced, 0, "{stopped:?}");
+    assert_eq!(stopped.failed, 0, "{stopped:?}");
+    let draining: (
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        i64,
+        i64,
+        i64,
+        i64,
+    ) = sqlx::query_as(
+        "SELECT run.status,scope.lifecycle,scope.drain_kind,scope.drain_failure_code, \
+                    run.run_version, \
+                    (SELECT count(*) FROM run_events event \
+                      WHERE event.tenant_id=run.tenant_id AND event.run_id=run.id \
+                        AND event.event_type='run.stop_requested'), \
+                    (SELECT count(*) FROM run_events event \
+                      WHERE event.tenant_id=run.tenant_id AND event.run_id=run.id \
+                        AND event.event_type='collection.drain_started'), \
+                    coalesce((SELECT head_seq FROM telemetry_pending telemetry \
+                      WHERE telemetry.tenant_id=run.tenant_id AND telemetry.run_id=run.id),0) \
+             FROM runs run JOIN iteration_scopes scope \
+               ON scope.tenant_id=run.tenant_id AND scope.run_id=run.id \
+             WHERE run.tenant_id=$1 AND run.id=$2",
+    )
+    .bind(tenant.as_uuid())
+    .bind(fixture.run.as_uuid())
+    .fetch_one(&fixture.world.db.pool)
+    .await
+    .expect("atomic quota drain");
+    assert_eq!(draining.0, "CANCELLING");
+    assert_eq!(draining.1, "DRAINING");
+    assert_eq!(draining.2.as_deref(), Some("STORAGE_QUOTA"));
+    assert_eq!(draining.3.as_deref(), Some("STORAGE_QUOTA_EXCEEDED"));
+    assert_eq!(draining.4, before.0 + 2);
+    assert_eq!((draining.5, draining.6), (1, 1));
+    assert_eq!(draining.7, draining.4);
+    assert_eq!(
+        storage_quota_audits(&fixture, "collection storage quota exceeded").await,
+        1
+    );
+
+    fixture
+        .store
+        .verify_run(tenant, fixture.run)
+        .await
+        .expect("draining quota projection replays after restart");
+    let finished = scheduler(&fixture).tick().await;
+    assert_eq!(finished.collections_advanced, 1, "{finished:?}");
+    assert_eq!(finished.failed, 0, "{finished:?}");
+
+    let receipts: (Uuid, Uuid, Uuid, i64) = sqlx::query_as(
+        "SELECT scope.scope_id,scope.drain_outbox_id,scope.finish_outbox_id,run.run_version \
+             FROM runs run JOIN iteration_scopes scope \
+               ON scope.tenant_id=run.tenant_id AND scope.run_id=run.id \
+             WHERE run.tenant_id=$1 AND run.id=$2",
+    )
+    .bind(tenant.as_uuid())
+    .bind(fixture.run.as_uuid())
+    .fetch_one(&fixture.world.db.pool)
+    .await
+    .expect("terminal quota receipts");
+    let terminal: (String, String, Option<String>, i32, i32, i32, i64, i64) =
+        sqlx::query_as(
+            "SELECT run.status,scope.lifecycle,owner.failure_code,scope.active_count, \
+                    usage.active_iterations,instances.reserved_instances, \
+                    (SELECT count(*) FROM run_events event \
+                      WHERE event.tenant_id=run.tenant_id AND event.run_id=run.id \
+                        AND event.event_type='collection.finished'), \
+                    (SELECT count(*) FROM run_events event \
+                      WHERE event.tenant_id=run.tenant_id AND event.run_id=run.id \
+                        AND event.event_type='run.finished') \
+             FROM runs run JOIN iteration_scopes scope \
+               ON scope.tenant_id=run.tenant_id AND scope.run_id=run.id \
+             JOIN steps owner ON owner.tenant_id=scope.tenant_id AND owner.run_id=scope.run_id \
+               AND owner.node=scope.owner_node AND owner.instance_path_nodes=scope.owner_path_nodes \
+               AND owner.instance_path_indices=scope.owner_path_indices \
+             JOIN tenant_iteration_usage usage ON usage.tenant_id=run.tenant_id \
+             JOIN run_instance_usage instances \
+               ON instances.tenant_id=run.tenant_id AND instances.run_id=run.id \
+             WHERE run.tenant_id=$1 AND run.id=$2",
+        )
+        .bind(tenant.as_uuid())
+        .bind(fixture.run.as_uuid())
+        .fetch_one(&fixture.world.db.pool)
+        .await
+        .expect("terminal quota drain");
+    assert_eq!(
+        (terminal.0.as_str(), terminal.1.as_str()),
+        ("FAILED", "FAILED")
+    );
+    assert_eq!(terminal.2.as_deref(), Some("STORAGE_QUOTA_EXCEEDED"));
+    assert_eq!((terminal.3, terminal.4, terminal.5), (0, 0, 0));
+    assert_eq!((terminal.6, terminal.7), (1, 1));
+
+    let lease = fixture
+        .placement
+        .snapshot()
+        .lease_of(Shard::of(fixture.run.as_uuid()), std::time::Instant::now())
+        .expect("scheduler shard");
+    let transition = || {
+        collection_transition(
+            &fixture.world,
+            fixture.run,
+            u64::try_from(receipts.3).expect("run version"),
+            owner.clone(),
+            lease,
+        )
+    };
+    assert!(
+        !fixture
+            .store
+            .start_collection_drain(&CollectionDrain::new(
+                transition(),
+                CollectionScopeId::new(receipts.0),
+                CollectionDrainReason::StorageQuotaExceeded,
+                receipts.1,
+            ))
+            .await
+            .expect("replay quota drain start")
+            .applied
+    );
+    assert!(
+        !fixture
+            .store
+            .finish_collection_drain(&CollectionDrainFinish::new(
+                transition(),
+                CollectionScopeId::new(receipts.0),
+                receipts.2,
+            ))
+            .await
+            .expect("replay quota drain finish")
+            .applied
+    );
+    fixture
+        .store
+        .verify_run(tenant, fixture.run)
+        .await
+        .expect("terminal quota drain replays");
+    let replay = scheduler(&fixture).tick().await;
+    assert_eq!(replay.quota_stops, 0, "{replay:?}");
+    assert_eq!(replay.failed, 0, "{replay:?}");
+    assert_eq!(
+        storage_quota_audits(&fixture, "collection storage quota exceeded").await,
+        1
+    );
 }

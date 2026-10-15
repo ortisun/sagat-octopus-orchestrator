@@ -1,5 +1,7 @@
 {
-  "faultsApplied": [],
+  "faultsApplied": [
+    1
+  ],
   "observations": [
     {
       "id": "start",
@@ -34,6 +36,26 @@
       }
     },
     {
+      "id": "decimal",
+      "ok": true,
+      "op": "query",
+      "result": {
+        "result": "19.99",
+        "runVersion": 2,
+        "stateRevision": 0
+      }
+    },
+    {
+      "id": "utc",
+      "ok": true,
+      "op": "query",
+      "result": {
+        "result": "<time>",
+        "runVersion": 2,
+        "stateRevision": 0
+      }
+    },
+    {
       "id": "apply",
       "ok": true,
       "op": "update",
@@ -41,7 +63,7 @@
         "afterStateRevision": 1,
         "beforeStateRevision": 0,
         "operation": "balance.replace",
-        "replayed": false,
+        "replayed": true,
         "result": 20,
         "runVersion": 3,
         "status": "APPLIED",

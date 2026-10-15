@@ -257,6 +257,16 @@ function behaviorHandler(
         kind,
         node: ctx.node,
         attempt: ctx.attempt,
+        ...(ctx.instance ? {
+          instance: {
+            instancePath: ctx.instance.instancePath.map((segment) => ({
+              scopeNodeId: segment.scopeNodeId,
+              iterationIndex: segment.iterationIndex,
+            })),
+            definitionNodeId: ctx.instance.definitionNodeId,
+          },
+        } : {}),
+        ...(ctx.index !== undefined ? { scopeInput: { item: ctx.item, index: ctx.index } } : {}),
         input,
         taskKind: ctx.taskKind,
         targetNode: ctx.targetNode,
@@ -436,6 +446,14 @@ async function run(scenario: Obj, config: Obj): Promise<Obj> {
         case 'query': {
           const r = await client.query(runOf(step), step['name'], step['args'] ?? null, { traceparent: step['traceparent'] });
           result = { runVersion: r.runVersion, stateRevision: r.stateRevision, result: r.result };
+          break;
+        }
+        case 'queryChain': {
+          const r = await client.queryChain(
+            chainRef(step['namespaceId']), chainRef(step['chainId']), step['name'], step['args'] ?? null,
+            { expectedRunId: step['expectedRunId'] ? chainRef(step['expectedRunId']) : undefined, traceparent: step['traceparent'] },
+          );
+          result = { runId: r.runId, runVersion: r.runVersion, stateRevision: r.stateRevision, result: r.result };
           break;
         }
         case 'update': {

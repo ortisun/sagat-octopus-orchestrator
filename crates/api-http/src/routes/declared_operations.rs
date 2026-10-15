@@ -24,6 +24,7 @@ use sagat_domain::execution::{
     OperationAddress, OperationError, OperationScope, RunId, UpdateKey, UpdateReceiptStatus,
     UpdateRequest,
 };
+use sagat_domain::identity::NamespaceId;
 use sagat_domain::identity::Permission;
 use sagat_domain::workflow::{ActivityName, Digest};
 use tower_http::limit::RequestBodyLimitLayer;
@@ -33,8 +34,8 @@ use crate::admission::{Admission, admit};
 use crate::concurrency::TenantConcurrency;
 use crate::core::Core;
 use crate::dto_declared_operations::{
-    DeclaredQueryBody, DeclaredQueryResponseBody, DeclaredUpdateBody, DeclaredUpdateResponseBody,
-    RejectedUpdateDetails,
+    ChainDeclaredQueryBody, ChainDeclaredUpdateBody, DeclaredQueryBody, DeclaredQueryResponseBody,
+    DeclaredUpdateBody, DeclaredUpdateResponseBody, RejectedUpdateDetails,
 };
 use crate::error::ApiError;
 use crate::extract::{ApiJson, Caller};
@@ -175,6 +176,14 @@ where
     Router::new()
         .route("/runs/{run_id}/queries/{name}", post(query::<B>))
         .route("/runs/{run_id}/updates/{name}", post(update::<B>))
+        .route(
+            "/namespaces/{namespace_id}/chains/{chain_id}/queries/{name}",
+            post(query_chain::<B>),
+        )
+        .route(
+            "/namespaces/{namespace_id}/chains/{chain_id}/updates/{name}",
+            post(update_chain::<B>),
+        )
         .layer(RequestBodyLimitLayer::new(max_body_bytes))
         .with_state(state)
 }
@@ -275,11 +284,88 @@ fn store_error(error: DeclaredOperationStoreError, permission: Permission) -> Ap
                 .with_status(StatusCode::CONFLICT)
                 .with_reason("ADDRESS_UNAVAILABLE")
         }
+        DeclaredOperationStoreError::ChainHeadChanged => {
+            ApiError::from(AppError::StateConflict("the execution chain head changed"))
+                .with_reason("CHAIN_HEAD_CHANGED")
+        }
         DeclaredOperationStoreError::AuditMismatch => {
             tracing::error!(%error, "declared operation audit invariant failed");
             ApiError::from(AppError::Internal)
         }
     }
+}
+
+pub async fn query_chain<B: DeclaredOperationApi>(
+    caller: Caller,
+    State(state): State<B>,
+    Path((namespace_id, chain_id, name)): Path<(String, String, String)>,
+    ApiJson(body): ApiJson<ChainDeclaredQueryBody>,
+) -> Result<(HeaderMap, Json<DeclaredQueryResponseBody>), ApiError> {
+    let namespace_id = namespace_id
+        .parse::<Uuid>()
+        .map(NamespaceId::new)
+        .map_err(|_| ApiError::not_found())?;
+    let chain_id = chain_id
+        .parse::<RunId>()
+        .map_err(|_| ApiError::not_found())?;
+    let operation = ActivityName::parse(&name).map_err(|_| ApiError::not_found())?;
+    let namespace = admit(
+        &state,
+        &caller,
+        ApiOperation::RunQuery,
+        ApiTarget::Namespace(namespace_id),
+    )
+    .await?;
+    let expected_run_id = body
+        .expected_run_id
+        .as_deref()
+        .map(str::parse::<RunId>)
+        .transpose()
+        .map_err(|_| {
+            ApiError::validation("expectedRunId must be a valid run identifier")
+                .with_reason("INVALID_EXPECTED_RUN_ID")
+        })?;
+    let arguments = arguments(&body.args)?;
+    let query = DeclaredQuery::for_chain(
+        OperationScope::new(
+            caller.session.principal.tenant_id(),
+            namespace,
+            OperationAddress::Chain(chain_id),
+        ),
+        expected_run_id,
+        operation.clone(),
+        caller.session.principal.subject().clone(),
+    );
+    let audit = AuditRecord::by(
+        &caller.session.principal,
+        AuditAction::RunQueried,
+        ResourceType::Run,
+        chain_id.to_string(),
+        caller.ctx.trace_id.clone(),
+        state.operation_clock().now(),
+    );
+    let snapshot = state
+        .operation_store()
+        .query_snapshot(&query, &audit)
+        .await
+        .map_err(|error| store_error(error, Permission::RunQuery))?;
+    let evaluated = state
+        .operation_evaluator()
+        .query(&snapshot, &operation, &arguments)
+        .map_err(evaluation_error)?;
+    let result = serde_json::from_slice(evaluated.result().content())
+        .map_err(|_| ApiError::from(AppError::Internal))?;
+    metrics::counter!("workflow_declared_operations_total", "kind" => "query", "outcome" => "returned").increment(1);
+    tracing::info!(operation = %operation, chain_id = %chain_id, run_id = %evaluated.response().run_id(), "chain declared query returned");
+    Ok((
+        no_store(),
+        Json(DeclaredQueryResponseBody {
+            run_id: evaluated.response().run_id().to_string(),
+            run_version: evaluated.response().run_version(),
+            state_revision: evaluated.response().state_revision(),
+            result,
+        }),
+    ))
 }
 
 pub async fn query<B: DeclaredOperationApi>(
@@ -430,6 +516,124 @@ pub async fn update<B: DeclaredOperationApi>(
     };
     metrics::counter!("workflow_declared_operations_total", "kind" => "update", "outcome" => outcome).increment(1);
     tracing::info!(operation = %operation, run_id = %run_id, outcome, "declared update resolved");
+    Ok((
+        no_store(),
+        Json(DeclaredUpdateResponseBody::applied(
+            resolution.receipt(),
+            result,
+            resolution.replayed(),
+        )),
+    ))
+}
+
+pub async fn update_chain<B: DeclaredOperationApi>(
+    caller: Caller,
+    State(state): State<B>,
+    Path((namespace_id, chain_id, name)): Path<(String, String, String)>,
+    ApiJson(body): ApiJson<ChainDeclaredUpdateBody>,
+) -> Result<(HeaderMap, Json<DeclaredUpdateResponseBody>), ApiError> {
+    let namespace_id = namespace_id
+        .parse::<Uuid>()
+        .map(NamespaceId::new)
+        .map_err(|_| ApiError::not_found())?;
+    let chain_id = chain_id
+        .parse::<RunId>()
+        .map_err(|_| ApiError::not_found())?;
+    let operation = ActivityName::parse(&name).map_err(|_| ApiError::not_found())?;
+    let namespace = admit(
+        &state,
+        &caller,
+        ApiOperation::RunUpdate,
+        ApiTarget::Namespace(namespace_id),
+    )
+    .await?;
+    let expected_run_id = body
+        .expected_run_id
+        .as_deref()
+        .map(str::parse::<RunId>)
+        .transpose()
+        .map_err(|_| {
+            ApiError::validation("expectedRunId must be a valid run identifier")
+                .with_reason("INVALID_EXPECTED_RUN_ID")
+        })?;
+    let update_key = UpdateKey::parse(&body.update_key).map_err(operation_error)?;
+    let arguments = arguments(&body.args)?;
+    let occurred_at = state.operation_clock().now();
+    let audit = AuditRecord::by(
+        &caller.session.principal,
+        AuditAction::RunUpdated,
+        ResourceType::Run,
+        chain_id.to_string(),
+        caller.ctx.trace_id.clone(),
+        occurred_at,
+    );
+    let command = DeclaredUpdate::for_chain(
+        OperationScope::new(
+            caller.session.principal.tenant_id(),
+            namespace,
+            OperationAddress::Chain(chain_id),
+        ),
+        expected_run_id,
+        operation.clone(),
+        update_key,
+        body.expected_state_revision,
+        caller.session.principal.subject().clone(),
+        arguments,
+        audit,
+        Uuid::now_v7(),
+        occurred_at,
+    )
+    .map_err(|error| store_error(error, Permission::RunUpdate))?;
+    let evaluator = state.operation_evaluator();
+    let evaluated_arguments = command.arguments().clone();
+    let resolution = state
+        .operation_store()
+        .apply_update(
+            &command,
+            |snapshot, arguments| {
+                evaluator
+                    .validate_update_arguments(snapshot, &operation, arguments)
+                    .map_err(update_argument_error)
+            },
+            |snapshot| {
+                evaluator
+                    .update(snapshot, &operation, &evaluated_arguments)
+                    .map_err(|_| OperationError::EvaluationFailed)
+            },
+        )
+        .await
+        .map_err(|error| store_error(error, Permission::RunUpdate))?;
+    if resolution.receipt().status() == UpdateReceiptStatus::Rejected {
+        let details =
+            RejectedUpdateDetails::from_receipt(resolution.receipt(), resolution.replayed());
+        let status = if details.reason == "REVISION_CONFLICT" {
+            StatusCode::CONFLICT
+        } else {
+            StatusCode::UNPROCESSABLE_ENTITY
+        };
+        metrics::counter!("workflow_declared_operations_total", "kind" => "update", "outcome" => "rejected").increment(1);
+        tracing::info!(operation = %operation, chain_id = %chain_id, run_id = %resolution.receipt().resolved_run_id(), outcome = "rejected", "chain declared update resolved");
+        return Err(ApiError::validation("the declared update was rejected")
+            .with_status(status)
+            .with_details(
+                serde_json::to_value(details).map_err(|_| ApiError::from(AppError::Internal))?,
+            ));
+    }
+    let result = state
+        .operation_store()
+        .update_result(&command, &resolution)
+        .await
+        .map_err(|error| store_error(error, Permission::RunUpdate))?
+        .ok_or_else(|| ApiError::from(AppError::Internal))?;
+    let result =
+        serde_json::from_slice(result.content()).map_err(|_| ApiError::from(AppError::Internal))?;
+    let outcome = if resolution.replayed() {
+        "replayed"
+    } else {
+        "applied"
+    };
+    metrics::counter!("workflow_declared_operations_total", "kind" => "update", "outcome" => outcome).increment(1);
+    tracing::info!(operation = %operation, chain_id = %chain_id, run_id = %resolution.receipt().resolved_run_id(), outcome, "chain declared update resolved");
     Ok((
         no_store(),
         Json(DeclaredUpdateResponseBody::applied(

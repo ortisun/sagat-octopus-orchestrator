@@ -329,7 +329,7 @@ pub async fn start_with(options: Options) -> TestApi {
         options.limits.max_in_flight_per_tenant,
     ));
     let cache = DefinitionCache::new(Arc::new(JsonIrCodec), 64);
-    let executions = PgRunStore::new(api_pool.clone(), cache.clone());
+    let executions = PgRunStore::new(api_pool.clone(), cache.clone()).with_scoped_worker_protocol();
     let key_k1 = sagat_infra_secrets::generate_key().expect("a key");
     let keys =
         sagat_infra_secrets::SecretsConfig::parse(&format!("k1:{key_k1}")).expect("a key ring");

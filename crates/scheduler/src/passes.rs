@@ -18,6 +18,11 @@ use sagat_application::execution::{
     Actor, DefinitionCache, Effects, Engine, EngineError, ExpressionEvaluator, ParentLink, RunInfo,
     RunTx,
 };
+use sagat_application::loop_progress::{
+    LoopCandidate, LoopCheckpointCommand, LoopDelayElapsedCommand, LoopDrainCommand,
+    LoopDrainFinishCommand, LoopEntryCommand, LoopInputError, LoopIterationDrainCommand,
+    LoopNextActivity, LoopProgressError, LoopProgressStore, LoopTransition,
+};
 use sagat_application::maintenance::{
     EndedChild, LeaseLoss, MaintenanceStore, PendingChild, PendingContinuation, RunRef, StepRef,
     Window,
@@ -35,7 +40,7 @@ use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::execution::RunId;
 use sagat_domain::execution::{
     self, AddressedProgress, ChildOutcome, ExecutionError, ExecutionInstanceId, Expiry,
-    FailureCode, Progress, RunStatus, StopReason,
+    FailureCode, LoopContinuation, LoopKind, LoopPhase, Progress, RunStatus, StopReason,
 };
 use sagat_domain::identity::{NamespaceId, Subject, TenantId};
 use sagat_domain::sharding::{Shard, ShardSet};
@@ -97,6 +102,7 @@ impl Default for SchedulerSettings {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Report {
     pub collections_advanced: u32,
+    pub loops_advanced: u32,
     pub continuations_advanced: u32,
     pub approvals_opened: u32,
     pub approvals_expired: u32,
@@ -123,12 +129,20 @@ pub struct Report {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CollectionAdvance {
     Entered,
-    Admitted { index: u32 },
-    Checkpointed { index: u32 },
+    Admitted {
+        index: u32,
+    },
+    Checkpointed {
+        index: u32,
+    },
     DrainStarted,
-    Drained { index: u32 },
+    Drained {
+        index: u32,
+    },
     DrainFinished,
     Finished,
+    /// The attempted transition retained no value and the run began its durable quota drain.
+    QuotaStopped,
     Waiting,
     AlreadyFinished,
 }
@@ -153,6 +167,51 @@ pub enum CollectionAdvanceError {
     #[error(transparent)]
     Input(#[from] PrimitiveInputError),
     #[error("collection expression evaluation failed")]
+    Expression,
+}
+
+/// One durable sequential-loop transition committed by the scheduler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoopAdvance {
+    Entered,
+    Checkpointed {
+        index: u32,
+    },
+    DelayElapsed {
+        index: u32,
+    },
+    DrainStarted,
+    Drained {
+        index: u32,
+    },
+    DrainFinished,
+    ExpressionStopped,
+    /// Entry retained no value and the run was stopped for its durable-content quota.
+    QuotaStopped,
+    Waiting,
+    AlreadyFinished,
+}
+
+/// A sequential loop could not advance without weakening its durable invariants.
+#[derive(Debug, thiserror::Error)]
+pub enum LoopAdvanceError {
+    #[error("the run does not exist")]
+    MissingRun,
+    #[error("the scheduler does not hold the run shard")]
+    FenceUnavailable,
+    #[error("the logical instance is not a sequential loop")]
+    NotLoop,
+    #[error("durable loop progress does not match the run projection")]
+    InvalidProgress,
+    #[error(transparent)]
+    Store(#[from] StoreError),
+    #[error(transparent)]
+    Engine(#[from] EngineError),
+    #[error(transparent)]
+    Progress(#[from] LoopProgressError),
+    #[error(transparent)]
+    Input(#[from] LoopInputError),
+    #[error("loop expression evaluation failed")]
     Expression,
 }
 
@@ -185,6 +244,7 @@ impl Report {
     pub const fn did_work(&self) -> bool {
         self.timers_fired
             + self.collections_advanced
+            + self.loops_advanced
             + self.continuations_advanced
             + self.approvals_opened
             + self.approvals_expired
@@ -269,6 +329,23 @@ fn content_store_quota(error: &StoreError) -> bool {
     )
 }
 
+fn collection_content_quota(error: &PrimitiveStoreError) -> bool {
+    matches!(error, PrimitiveStoreError::Storage(error) if content_store_quota(error))
+}
+
+fn loop_content_quota(error: &LoopProgressError) -> bool {
+    matches!(error, LoopProgressError::Storage(error) if content_store_quota(error))
+}
+
+fn loop_discovery_error(error: LoopProgressError) -> StoreError {
+    match error {
+        LoopProgressError::Storage(error) => error,
+        other => StoreError::Internal {
+            detail: format!("loop discovery failed: {other}"),
+        },
+    }
+}
+
 fn recovery_guard(
     shard_held: bool,
     expected_version: u64,
@@ -347,7 +424,12 @@ impl<S, E, R> std::fmt::Debug for Scheduler<S, E, R> {
 
 impl<S, E, R> Scheduler<S, E, R>
 where
-    S: RunStore + MaintenanceStore + DefinitionStore + CollectionStore + ApprovalSchedulerStore,
+    S: RunStore
+        + MaintenanceStore
+        + DefinitionStore
+        + CollectionStore
+        + LoopProgressStore
+        + ApprovalSchedulerStore,
     E: ExpressionEvaluator,
     R: Entropy,
 {
@@ -414,6 +496,7 @@ where
         // leases the keeper has renewed since, not keep acting on the snapshot it began with until
         // that runs out (every later action would be counted as fenced and the later passes starved).
         self.collections(&self.view(), &mut report).await;
+        self.loops(&self.view(), &mut report).await;
         self.continuations(&self.view(), &mut report).await;
         self.approvals_expire(&self.view(), &mut report).await;
         self.approvals_open(&self.view(), &mut report).await;
@@ -447,6 +530,26 @@ where
     {
         let view = self.view();
         self.advance_collection_in_view(&view, tenant, run, owner)
+            .await
+    }
+
+    /// Advances one sequential loop by one fenced durable transition.
+    ///
+    /// `timer_id` is present only when discovery found the current durable delay. It is rechecked
+    /// by the transaction before the next body is admitted.
+    ///
+    /// # Errors
+    /// Returns a typed error when the definition, projection, fence or expression snapshot cannot
+    /// be proven consistent.
+    pub async fn advance_loop(
+        &self,
+        tenant: TenantId,
+        run: RunId,
+        owner: &ExecutionInstanceId,
+        timer_id: Option<uuid::Uuid>,
+    ) -> Result<LoopAdvance, LoopAdvanceError> {
+        let view = self.view();
+        self.advance_loop_in_view(&view, tenant, run, owner, timer_id)
             .await
     }
 
@@ -622,8 +725,9 @@ where
     where
         S: CollectionStore,
     {
-        let lease = match view.hold_for(run) {
-            Hold::Lease(lease) => lease,
+        let hold = view.hold_for(run);
+        let lease = match &hold {
+            Hold::Lease(lease) => *lease,
             Hold::Nothing | Hold::Lost => return Err(CollectionAdvanceError::FenceUnavailable),
         };
         let mut tx = self
@@ -684,26 +788,49 @@ where
                 .map_err(|_| CollectionAdvanceError::Expression)?;
             let snapshot =
                 serde_json::to_vec(&json_items).map_err(|_| CollectionAdvanceError::Expression)?;
-            let snapshot_digest = self
-                .store
-                .retain_collection_payload(tenant, &snapshot)
-                .await?;
             let limits = CollectionLimits::new(
                 *max_items,
                 *max_concurrency,
                 definition.limits().max_instances(),
                 definition.limits().max_depth(),
             )?;
-            self.store
-                .enter_collection(&CollectionEntry::new(
-                    transition(state.version()),
-                    CollectionScopeId::generate(),
-                    u32::try_from(item_values.len())
-                        .map_err(|_| CollectionAdvanceError::InvalidProgress)?,
-                    snapshot_digest,
-                    limits,
-                )?)
-                .await?;
+            let entry = CollectionEntry::from_snapshot(
+                transition(state.version()),
+                CollectionScopeId::generate(),
+                u32::try_from(item_values.len())
+                    .map_err(|_| CollectionAdvanceError::InvalidProgress)?,
+                snapshot,
+                limits,
+            )?;
+            match self.store.enter_collection(&entry).await {
+                Ok(_) => {}
+                Err(error) if collection_content_quota(&error) => {
+                    return match self
+                        .stop_for_storage_quota(
+                            view,
+                            &hold,
+                            RunRef {
+                                tenant_id: tenant,
+                                run_id: run,
+                            },
+                            "collection",
+                            Condition::Always,
+                            state.version(),
+                        )
+                        .await?
+                    {
+                        Outcome::QuotaStopped => Ok(CollectionAdvance::QuotaStopped),
+                        Outcome::Skipped => Ok(CollectionAdvance::Waiting),
+                        Outcome::Fenced => Err(CollectionAdvanceError::FenceUnavailable),
+                        Outcome::Done | Outcome::Failed => Err(CollectionAdvanceError::Engine(
+                            EngineError::Store(StoreError::Internal {
+                                detail: "unexpected collection quota recovery outcome".to_owned(),
+                            }),
+                        )),
+                    };
+                }
+                Err(error) => return Err(error.into()),
+            }
             return Ok(CollectionAdvance::Entered);
         };
 
@@ -850,20 +977,30 @@ where
                 .evaluator()
                 .collection_return(return_expression, &data, return_instance)
                 .map_err(|_| CollectionAdvanceError::Expression)?;
-            let result_digest = self
+            let checkpoint = CollectionCheckpoint::from_result(
+                transition(state.version()),
+                progress.scope_id,
+                index,
+                return_instance.clone(),
+                returned,
+                uuid::Uuid::now_v7(),
+            )?;
+            match self
                 .store
-                .retain_collection_payload(tenant, &returned)
-                .await?;
-            self.store
-                .checkpoint_collection_iteration(&CollectionCheckpoint::new(
-                    transition(state.version()),
-                    progress.scope_id,
-                    index,
-                    return_instance.clone(),
-                    result_digest,
-                    uuid::Uuid::now_v7(),
-                )?)
-                .await?;
+                .checkpoint_collection_iteration(&checkpoint)
+                .await
+            {
+                Ok(_) => {}
+                Err(error) if collection_content_quota(&error) => {
+                    return self
+                        .drain_collection_for_storage_quota(
+                            transition(state.version()),
+                            progress.scope_id,
+                        )
+                        .await;
+                }
+                Err(error) => return Err(error.into()),
+            }
             return Ok(CollectionAdvance::Checkpointed { index });
         }
 
@@ -894,19 +1031,28 @@ where
                 .items
                 .get(usize::try_from(index).map_err(|_| CollectionAdvanceError::InvalidProgress)?)
                 .ok_or(CollectionAdvanceError::InvalidProgress)?;
-            let item_digest = self.store.retain_collection_payload(tenant, item).await?;
-            self.store
-                .admit_collection_activity(&CollectionAdmission::new(
-                    transition(state.version()),
-                    progress.scope_id,
-                    index,
-                    entry,
-                    activity.clone(),
-                    item_digest,
-                    reserved_instances,
-                    uuid::Uuid::now_v7(),
-                )?)
-                .await?;
+            let admission = CollectionAdmission::from_item(
+                transition(state.version()),
+                progress.scope_id,
+                index,
+                entry,
+                activity.clone(),
+                item.clone(),
+                reserved_instances,
+                uuid::Uuid::now_v7(),
+            )?;
+            match self.store.admit_collection_activity(&admission).await {
+                Ok(_) => {}
+                Err(error) if collection_content_quota(&error) => {
+                    return self
+                        .drain_collection_for_storage_quota(
+                            transition(state.version()),
+                            progress.scope_id,
+                        )
+                        .await;
+                }
+                Err(error) => return Err(error.into()),
+            }
             return Ok(CollectionAdvance::Admitted { index });
         }
 
@@ -944,22 +1090,496 @@ where
             }
             let aggregate =
                 serde_json::to_vec(&mapped).map_err(|_| CollectionAdvanceError::Expression)?;
-            let result_digest = self
-                .store
-                .retain_collection_payload(tenant, &aggregate)
-                .await?;
-            self.store
-                .finish_collection(&CollectionFinish::new(
-                    transition(state.version()),
-                    progress.scope_id,
-                    result_digest,
-                    uuid::Uuid::now_v7(),
-                ))
-                .await?;
+            let finish = CollectionFinish::from_result(
+                transition(state.version()),
+                progress.scope_id,
+                aggregate,
+                uuid::Uuid::now_v7(),
+            );
+            match self.store.finish_collection(&finish).await {
+                Ok(_) => {}
+                Err(error) if collection_content_quota(&error) => {
+                    return self
+                        .drain_collection_for_storage_quota(
+                            transition(state.version()),
+                            progress.scope_id,
+                        )
+                        .await;
+                }
+                Err(error) => return Err(error.into()),
+            }
             return Ok(CollectionAdvance::Finished);
         }
 
         Ok(CollectionAdvance::Waiting)
+    }
+
+    async fn drain_collection_for_storage_quota(
+        &self,
+        transition: CollectionTransition,
+        scope_id: CollectionScopeId,
+    ) -> Result<CollectionAdvance, CollectionAdvanceError> {
+        let audit = AuditRecord::engine(
+            transition.tenant_id(),
+            AuditAction::RunStorageQuotaExceeded,
+            ResourceType::Run,
+            transition.run_id().to_string(),
+            "collection storage quota exceeded",
+            transition.trace_id().map(str::to_owned),
+            transition.occurred_at(),
+        );
+        self.store
+            .start_collection_drain(&CollectionDrain::new(
+                transition.with_audit(audit),
+                scope_id,
+                execution::CollectionDrainReason::StorageQuotaExceeded,
+                uuid::Uuid::now_v7(),
+            ))
+            .await?;
+        metrics::counter!(
+            "scheduler_quota_stops_total",
+            "limit" => sagat_domain::quota::QuotaResource::TenantContentBytes.limit_name(),
+            "kind" => "collection",
+        )
+        .increment(1);
+        Ok(CollectionAdvance::QuotaStopped)
+    }
+
+    async fn advance_loop_in_view(
+        &self,
+        view: &View,
+        tenant: TenantId,
+        run: RunId,
+        owner: &ExecutionInstanceId,
+        timer_id: Option<uuid::Uuid>,
+    ) -> Result<LoopAdvance, LoopAdvanceError> {
+        let hold = view.hold_for(run);
+        let lease = match &hold {
+            Hold::Lease(lease) => *lease,
+            Hold::Nothing | Hold::Lost => return Err(LoopAdvanceError::FenceUnavailable),
+        };
+        let mut tx = self
+            .store
+            .begin(tenant, run, Lock::Wait)
+            .await?
+            .ok_or(LoopAdvanceError::MissingRun)?;
+        let info = tx.info().clone();
+        let occurred_at = tx.now();
+        let data = tx.data().await?.clone();
+        let (definition, state) = tx.parts();
+        let definition = definition.clone();
+        let state = state.clone();
+        drop(tx);
+
+        let loop_node = definition
+            .node_for_instance(owner)
+            .ok_or(LoopAdvanceError::NotLoop)?;
+        let (kind, condition, body_name, initial, carry, max_iterations, delay) =
+            match loop_node.kind() {
+                NodeKind::While {
+                    condition,
+                    body,
+                    initial,
+                    carry,
+                    max_iterations,
+                    delay,
+                } => (
+                    LoopKind::While,
+                    condition,
+                    body,
+                    initial,
+                    carry,
+                    *max_iterations,
+                    *delay,
+                ),
+                NodeKind::RepeatUntil {
+                    condition,
+                    body,
+                    initial,
+                    carry,
+                    max_iterations,
+                    delay,
+                } => (
+                    LoopKind::RepeatUntil,
+                    condition,
+                    body,
+                    initial,
+                    carry,
+                    *max_iterations,
+                    *delay,
+                ),
+                _ => return Err(LoopAdvanceError::NotLoop),
+            };
+        let timeout = loop_node.timeout().ok_or(LoopAdvanceError::NotLoop)?;
+        let body = definition
+            .body(body_name)
+            .ok_or(LoopAdvanceError::NotLoop)?;
+        if body.all_nodes().count() != body.nodes().count() {
+            return Err(LoopAdvanceError::InvalidProgress);
+        }
+        let next_activity = |index| -> Result<LoopNextActivity, LoopAdvanceError> {
+            let entry = body
+                .node(body.entrypoint())
+                .ok_or(LoopAdvanceError::InvalidProgress)?;
+            let NodeKind::Activity { activity, .. } = entry.kind() else {
+                return Err(LoopAdvanceError::InvalidProgress);
+            };
+            let path = owner
+                .path()
+                .child(owner.node().clone(), index)
+                .map_err(|_| LoopAdvanceError::InvalidProgress)?;
+            let reserved_instances = body
+                .all_nodes()
+                .count()
+                .checked_sub(1)
+                .and_then(|count| u16::try_from(count).ok())
+                .ok_or(LoopAdvanceError::InvalidProgress)?;
+            Ok(LoopNextActivity::new(
+                ExecutionInstanceId::in_path(path, body.entrypoint().clone()),
+                activity.clone(),
+                reserved_instances,
+            )?)
+        };
+        let authority = SchedulerAuthority::new(view.owner.clone(), lease);
+        let transition = |expected_run_version| {
+            LoopTransition::new(
+                tenant,
+                info.namespace_id,
+                run,
+                expected_run_version,
+                owner.clone(),
+                authority.clone(),
+                Subject::engine(),
+                info.trace_id.clone(),
+                occurred_at,
+                AuditRecord::engine(
+                    tenant,
+                    AuditAction::RunUpdated,
+                    ResourceType::Run,
+                    run.to_string(),
+                    "sequential loop advanced",
+                    info.trace_id.clone(),
+                    occurred_at,
+                ),
+            )
+        };
+
+        let Some(loop_state) = state.loop_state(owner) else {
+            let evaluated = match self.engine.evaluator().loop_entry(
+                initial,
+                (kind == LoopKind::While).then_some(condition),
+                &data,
+            ) {
+                Ok(evaluated) => evaluated,
+                Err(_) => {
+                    return match self
+                        .stop_loop_for_expression(
+                            view,
+                            &hold,
+                            RunRef {
+                                tenant_id: tenant,
+                                run_id: run,
+                            },
+                            state.version(),
+                        )
+                        .await?
+                    {
+                        Outcome::Done => Ok(LoopAdvance::ExpressionStopped),
+                        Outcome::Skipped => Ok(LoopAdvance::Waiting),
+                        Outcome::Fenced => Err(LoopAdvanceError::FenceUnavailable),
+                        Outcome::Failed | Outcome::QuotaStopped => {
+                            Err(LoopAdvanceError::Expression)
+                        }
+                    };
+                }
+            };
+            let needs_body = kind == LoopKind::RepeatUntil || evaluated.condition == Some(true);
+            let first_activity = needs_body.then(|| next_activity(0)).transpose()?;
+            let entry = LoopEntryCommand::from_carry(
+                transition(state.version()),
+                kind,
+                max_iterations,
+                occurred_at + timeout,
+                evaluated.carry,
+                evaluated.condition,
+                first_activity,
+                uuid::Uuid::now_v7(),
+            )?;
+            match self.store.enter_loop(&entry).await {
+                Ok(_) => {}
+                Err(error) if loop_content_quota(&error) => {
+                    return match self
+                        .stop_for_storage_quota(
+                            view,
+                            &hold,
+                            RunRef {
+                                tenant_id: tenant,
+                                run_id: run,
+                            },
+                            "loop",
+                            Condition::Always,
+                            state.version(),
+                        )
+                        .await?
+                    {
+                        Outcome::QuotaStopped => Ok(LoopAdvance::QuotaStopped),
+                        Outcome::Skipped => Ok(LoopAdvance::Waiting),
+                        Outcome::Fenced => Err(LoopAdvanceError::FenceUnavailable),
+                        Outcome::Done | Outcome::Failed => Err(LoopAdvanceError::Engine(
+                            EngineError::Store(StoreError::Internal {
+                                detail: "unexpected loop quota recovery outcome".to_owned(),
+                            }),
+                        )),
+                    };
+                }
+                Err(error) => return Err(error.into()),
+            }
+            return Ok(LoopAdvance::Entered);
+        };
+
+        if matches!(
+            loop_state.phase(),
+            LoopPhase::Succeeded | LoopPhase::Failed | LoopPhase::Cancelled
+        ) {
+            return Ok(LoopAdvance::AlreadyFinished);
+        }
+        if loop_state.phase() == LoopPhase::Draining {
+            if let Some(index) = loop_state.active_iteration() {
+                let path = owner
+                    .path()
+                    .child(owner.node().clone(), index)
+                    .map_err(|_| LoopAdvanceError::InvalidProgress)?;
+                let safe = state
+                    .instances()
+                    .filter(|(instance, _)| instance.path() == &path)
+                    .all(|(instance, step)| {
+                        let settled_derived = instance.node().is_derived()
+                            && matches!(
+                                step.status(),
+                                execution::StepStatus::Succeeded | execution::StepStatus::Skipped
+                            );
+                        let safe_unstarted = step.attempt() == 0
+                            && matches!(
+                                step.status(),
+                                execution::StepStatus::Pending | execution::StepStatus::Ready
+                            );
+                        step.status().is_terminal() && !instance.node().is_derived()
+                            || settled_derived
+                            || safe_unstarted
+                    });
+                if !safe {
+                    return Ok(LoopAdvance::Waiting);
+                }
+                self.store
+                    .drain_iteration(&LoopIterationDrainCommand::new(
+                        transition(state.version()),
+                        index,
+                        uuid::Uuid::now_v7(),
+                    )?)
+                    .await?;
+                return Ok(LoopAdvance::Drained { index });
+            }
+            if state.instances().any(|(instance, step)| {
+                instance != owner && instance.path().is_root() && !step.status().is_terminal()
+            }) {
+                return Ok(LoopAdvance::Waiting);
+            }
+            self.store
+                .finish_drain(&LoopDrainFinishCommand::new(
+                    transition(state.version()),
+                    uuid::Uuid::now_v7(),
+                ))
+                .await?;
+            return Ok(LoopAdvance::DrainFinished);
+        }
+        if state.stop_reason() == Some(StopReason::Cancelled) {
+            self.store
+                .start_drain(&LoopDrainCommand::new(
+                    transition(state.version()),
+                    execution::LoopDrainReason::Cancelled,
+                    uuid::Uuid::now_v7(),
+                )?)
+                .await?;
+            return Ok(LoopAdvance::DrainStarted);
+        }
+        if occurred_at >= loop_state.deadline() {
+            self.store
+                .start_drain(&LoopDrainCommand::new(
+                    transition(state.version()),
+                    execution::LoopDrainReason::TimedOut,
+                    uuid::Uuid::now_v7(),
+                )?)
+                .await?;
+            return Ok(LoopAdvance::DrainStarted);
+        }
+
+        if loop_state.phase() == LoopPhase::Delaying {
+            let due_at = loop_state
+                .delay_until()
+                .ok_or(LoopAdvanceError::InvalidProgress)?;
+            if due_at > occurred_at {
+                return Ok(LoopAdvance::Waiting);
+            }
+            let timer_id = timer_id.ok_or(LoopAdvanceError::InvalidProgress)?;
+            let index = loop_state.next_iteration();
+            self.store
+                .fire_delay(&LoopDelayElapsedCommand::new(
+                    transition(state.version()),
+                    timer_id,
+                    index,
+                    next_activity(index)?,
+                    uuid::Uuid::now_v7(),
+                )?)
+                .await?;
+            return Ok(LoopAdvance::DelayElapsed { index });
+        }
+
+        if loop_state.phase() != LoopPhase::Running {
+            return Err(LoopAdvanceError::InvalidProgress);
+        }
+        let index = loop_state
+            .active_iteration()
+            .ok_or(LoopAdvanceError::InvalidProgress)?;
+        let member_path = owner
+            .path()
+            .child(owner.node().clone(), index)
+            .map_err(|_| LoopAdvanceError::InvalidProgress)?;
+        if let Some(code) = state.instances().find_map(|(instance, step)| {
+            (instance.path() == &member_path && step.status() == execution::StepStatus::Failed)
+                .then(|| step.failure().cloned())
+                .flatten()
+        }) {
+            self.store
+                .start_drain(&LoopDrainCommand::new(
+                    transition(state.version()),
+                    execution::LoopDrainReason::Failed {
+                        iteration: index,
+                        code,
+                    },
+                    uuid::Uuid::now_v7(),
+                )?)
+                .await?;
+            return Ok(LoopAdvance::DrainStarted);
+        }
+        let return_instance = state.instances().find_map(|(instance, step)| {
+            (instance.path() == &member_path
+                && step.status() == execution::StepStatus::Pending
+                && matches!(
+                    definition
+                        .node_for_instance(instance)
+                        .map(sagat_domain::workflow::Node::kind),
+                    Some(NodeKind::Return { .. })
+                ))
+            .then_some(instance.clone())
+        });
+        let Some(return_instance) = return_instance else {
+            return Ok(LoopAdvance::Waiting);
+        };
+        let NodeKind::Return { result } = definition
+            .node_for_instance(&return_instance)
+            .ok_or(LoopAdvanceError::InvalidProgress)?
+            .kind()
+        else {
+            return Err(LoopAdvanceError::InvalidProgress);
+        };
+        let evaluated = match self.engine.evaluator().loop_checkpoint(
+            result,
+            carry,
+            condition,
+            &data,
+            &return_instance,
+        ) {
+            Ok(evaluated) => evaluated,
+            Err(_) => {
+                self.store
+                    .start_drain(&LoopDrainCommand::new(
+                        transition(state.version()),
+                        execution::LoopDrainReason::Failed {
+                            iteration: index,
+                            code: FailureCode::expression_error(),
+                        },
+                        uuid::Uuid::now_v7(),
+                    )?)
+                    .await?;
+                return Ok(LoopAdvance::DrainStarted);
+            }
+        };
+        let next_index = index
+            .checked_add(1)
+            .ok_or(LoopAdvanceError::InvalidProgress)?;
+        let continues = match kind {
+            LoopKind::While => evaluated.condition,
+            LoopKind::RepeatUntil => !evaluated.condition,
+        };
+        let (continuation, next, delay_timer) = if !continues {
+            (LoopContinuation::Complete, None, None)
+        } else if next_index >= max_iterations {
+            (LoopContinuation::IterationLimit, None, None)
+        } else if let Some(delay) = delay {
+            let due_at = occurred_at + delay;
+            if due_at > loop_state.deadline() {
+                self.store
+                    .start_drain(&LoopDrainCommand::new(
+                        transition(state.version()),
+                        execution::LoopDrainReason::TimedOut,
+                        uuid::Uuid::now_v7(),
+                    )?)
+                    .await?;
+                return Ok(LoopAdvance::DrainStarted);
+            }
+            (
+                LoopContinuation::DelayUntil(due_at),
+                None,
+                Some(uuid::Uuid::now_v7()),
+            )
+        } else {
+            (
+                LoopContinuation::Continue,
+                Some(next_activity(next_index)?),
+                None,
+            )
+        };
+        let checkpoint = LoopCheckpointCommand::from_evaluation(
+            transition(state.version()),
+            index,
+            return_instance,
+            evaluated,
+            occurred_at,
+            continuation,
+            next,
+            delay_timer,
+            uuid::Uuid::now_v7(),
+        )?;
+        match self.store.checkpoint(&checkpoint).await {
+            Ok(_) => {}
+            Err(error) if loop_content_quota(&error) => {
+                return match self
+                    .stop_for_storage_quota(
+                        view,
+                        &hold,
+                        RunRef {
+                            tenant_id: tenant,
+                            run_id: run,
+                        },
+                        "loop",
+                        Condition::Always,
+                        state.version(),
+                    )
+                    .await?
+                {
+                    Outcome::QuotaStopped => Ok(LoopAdvance::QuotaStopped),
+                    Outcome::Skipped => Ok(LoopAdvance::Waiting),
+                    Outcome::Fenced => Err(LoopAdvanceError::FenceUnavailable),
+                    Outcome::Done | Outcome::Failed => Err(LoopAdvanceError::Engine(
+                        EngineError::Store(StoreError::Internal {
+                            detail: "unexpected loop quota recovery outcome".to_owned(),
+                        }),
+                    )),
+                };
+            }
+            Err(error) => return Err(error.into()),
+        }
+        Ok(LoopAdvance::Checkpointed { index })
     }
 
     /// Purges expired idempotency records and worker sessions. Run it rarely.
@@ -1293,8 +1913,20 @@ where
         if !condition.holds(&mut tx).await.map_err(EngineError::Store)? {
             return Ok(Outcome::Skipped);
         }
+        let mut effects = self.effects();
+        if tx.parts().1.stop_reason().is_none() {
+            effects.audit = Some(AuditRecord::engine(
+                tenant,
+                AuditAction::RunStorageQuotaExceeded,
+                ResourceType::Run,
+                run.to_string(),
+                "storage quota exceeded",
+                tx.info().trace_id.clone(),
+                tx.now(),
+            ));
+        }
         self.engine
-            .run(&mut tx, self.effects(), |def, state, now| {
+            .run(&mut tx, effects, |def, state, now| {
                 Ok(((), execution::stop_for_storage_quota(def, state, now)?))
             })
             .await?;
@@ -1306,6 +1938,49 @@ where
         )
         .increment(1);
         Ok(Outcome::QuotaStopped)
+    }
+
+    async fn stop_loop_for_expression(
+        &self,
+        view: &View,
+        hold: &Hold,
+        RunRef {
+            tenant_id: tenant,
+            run_id: run,
+        }: RunRef,
+        version: u64,
+    ) -> Result<Outcome, EngineError> {
+        let Some(mut tx) = self
+            .store
+            .begin(tenant, run, Lock::Wait)
+            .await
+            .map_err(EngineError::Store)?
+        else {
+            return Ok(Outcome::Skipped);
+        };
+        let shard_held = view
+            .holds(&mut tx, hold)
+            .await
+            .map_err(EngineError::Store)?;
+        if let Err(outcome) = recovery_guard(shard_held, version, tx.parts().1.version()) {
+            return Ok(outcome);
+        }
+        self.engine
+            .run(&mut tx, self.effects(), |definition, state, now| {
+                Ok((
+                    (),
+                    execution::stop_run(
+                        definition,
+                        state,
+                        StopReason::Failed,
+                        Some(FailureCode::expression_error()),
+                        now,
+                    )?,
+                ))
+            })
+            .await?;
+        tx.commit().await.map_err(EngineError::Store)?;
+        Ok(Outcome::Done)
     }
 
     /// [`Self::apply_if`] with nothing to re-check: the domain command itself refuses what is stale.
@@ -1511,6 +2186,7 @@ where
                         | CollectionAdvance::DrainFinished
                         | CollectionAdvance::Finished,
                     ) => Outcome::Done,
+                    Ok(CollectionAdvance::QuotaStopped) => Outcome::QuotaStopped,
                     Ok(CollectionAdvance::Waiting | CollectionAdvance::AlreadyFinished)
                     | Err(CollectionAdvanceError::NotCollection)
                     | Err(CollectionAdvanceError::Primitive(
@@ -1541,6 +2217,80 @@ where
             .await;
         for outcome in outcomes {
             Self::tally(report, outcome, |value| value.collections_advanced += 1);
+        }
+    }
+
+    async fn loops(&self, view: &View, report: &mut Report) {
+        if view.snapshot.is_none() {
+            return;
+        }
+        let candidates = self
+            .pick(
+                view,
+                "loops",
+                report,
+                |candidate: &LoopCandidate| candidate.step.tenant_id,
+                |candidate| (candidate.step.run_id, candidate.step.instance()),
+                |store, window| async move {
+                    store
+                        .loop_candidates(&window)
+                        .await
+                        .map_err(loop_discovery_error)
+                },
+            )
+            .await;
+        let outcomes = self
+            .each(candidates, |candidate| async move {
+                let run = candidate.step.run_id;
+                let instance = candidate.step.instance();
+                let outcome = match self
+                    .advance_loop_in_view(
+                        view,
+                        candidate.step.tenant_id,
+                        run,
+                        &instance,
+                        candidate.timer_id,
+                    )
+                    .await
+                {
+                    Ok(
+                        LoopAdvance::Entered
+                        | LoopAdvance::Checkpointed { .. }
+                        | LoopAdvance::DelayElapsed { .. }
+                        | LoopAdvance::DrainStarted
+                        | LoopAdvance::Drained { .. }
+                        | LoopAdvance::DrainFinished
+                        | LoopAdvance::ExpressionStopped,
+                    ) => Outcome::Done,
+                    Ok(LoopAdvance::QuotaStopped) => Outcome::QuotaStopped,
+                    Ok(LoopAdvance::Waiting | LoopAdvance::AlreadyFinished)
+                    | Err(LoopAdvanceError::NotLoop)
+                    | Err(LoopAdvanceError::Progress(
+                        LoopProgressError::AtCapacity | LoopProgressError::RevisionConflict { .. },
+                    )) => Outcome::Skipped,
+                    Err(LoopAdvanceError::FenceUnavailable)
+                    | Err(LoopAdvanceError::Progress(LoopProgressError::SchedulerFenceLost)) => {
+                        Outcome::Fenced
+                    }
+                    Err(error) => {
+                        tracing::error!(%error, %run, ?instance, "a loop scheduler action failed");
+                        Outcome::Failed
+                    }
+                };
+                metrics::counter!(
+                    "scheduler_actions_total",
+                    "kind" => "loop",
+                    "outcome" => outcome.label()
+                )
+                .increment(1);
+                if outcome == Outcome::Fenced {
+                    metrics::counter!("scheduler_fenced_total", "kind" => "loop").increment(1);
+                }
+                outcome
+            })
+            .await;
+        for outcome in outcomes {
+            Self::tally(report, outcome, |value| value.loops_advanced += 1);
         }
     }
 
@@ -2448,7 +3198,12 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{Outcome, recovery_guard};
+    use sagat_application::error::StoreError;
+    use sagat_application::loop_progress::LoopProgressError;
+    use sagat_application::primitives::PrimitiveStoreError;
+    use sagat_domain::quota::QuotaResource;
+
+    use super::{Outcome, collection_content_quota, loop_content_quota, recovery_guard};
 
     #[test]
     fn quota_recovery_does_not_mutate_after_version_change_or_shard_loss() {
@@ -2466,5 +3221,26 @@ mod tests {
             assert_eq!(mutations, 0);
         }
         assert_eq!(recovery_guard(true, 7, 7), Ok(()));
+    }
+
+    #[test]
+    fn only_the_retained_content_limit_enters_the_terminal_recovery_path() {
+        let content = StoreError::QuotaExceeded {
+            what: QuotaResource::TenantContentBytes.limit_name(),
+        };
+        assert!(collection_content_quota(&PrimitiveStoreError::Storage(
+            content.clone()
+        )));
+        assert!(loop_content_quota(&LoopProgressError::Storage(content)));
+
+        let capacity = StoreError::QuotaExceeded {
+            what: QuotaResource::IterationConcurrency.limit_name(),
+        };
+        assert!(!collection_content_quota(&PrimitiveStoreError::Storage(
+            capacity.clone()
+        )));
+        assert!(!loop_content_quota(&LoopProgressError::Storage(capacity)));
+        assert!(!collection_content_quota(&PrimitiveStoreError::AtCapacity));
+        assert!(!loop_content_quota(&LoopProgressError::AtCapacity));
     }
 }

@@ -163,9 +163,15 @@ impl MaintenanceStore for PgRunStore {
                         step.instance_path_indices,step.updated_at \
                  FROM steps step JOIN runs run \
                    ON run.tenant_id=step.tenant_id AND run.id=step.run_id \
+                 JOIN workflow_versions version \
+                   ON version.tenant_id=run.tenant_id AND version.id=run.workflow_version_id \
                  WHERE run_shard(step.run_id)=sh.s AND run.status='RUNNING' \
                    AND step.status='PENDING' AND cardinality(step.instance_path_nodes)=0 \
                    AND step.tenant_id <> ALL($3::uuid[]) \
+                   AND EXISTS ( \
+                     SELECT 1 FROM jsonb_array_elements( \
+                       (convert_from(version.document,'UTF8')::jsonb)->'nodes') declared \
+                     WHERE declared->>'id'=step.node AND declared->>'type'='forEach') \
                  UNION ALL \
                  SELECT scope.tenant_id,scope.run_id,scope.owner_node, \
                         scope.owner_path_nodes,scope.owner_path_indices,scope.updated_at \

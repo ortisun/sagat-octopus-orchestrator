@@ -40,12 +40,13 @@ use sagat_domain::secrets::{SecretCipher, SecretName, SecretValue, associated_da
 
 /// The newest minor version of worker protocol 1 this server speaks. Every minor version adds fields
 /// and calls and removes none, so a worker of any minor version of protocol 1 can be served
-/// (`negotiate_protocol`). This is the newest minor enabled for stores that do not yet implement
-/// scoped execution identity.
-pub const PROTOCOL_MINOR: u32 = 4;
+/// (`negotiate_protocol`).
+pub const PROTOCOL_MINOR: u32 = 5;
+/// The newest minor a storage adapter may negotiate before it proves scoped claim and report.
+pub const ROOT_PROTOCOL_MINOR: u32 = 4;
 /// Scoped execution identity is allocated to worker protocol 1.5. A store must explicitly declare
 /// that its claim and report transactions address scoped instances before this minor is negotiated.
-pub const SCOPED_PROTOCOL_MINOR: u32 = 5;
+pub const SCOPED_PROTOCOL_MINOR: u32 = PROTOCOL_MINOR;
 /// Streaming blob references first became safe to hand to workers in protocol 1.3.
 pub const BLOB_PROTOCOL_MINOR: u32 = 3;
 /// Server-streaming task receive first became available in protocol 1.4.
@@ -477,9 +478,9 @@ where
     ) -> Result<Registered, AppError> {
         principal.authorize(Permission::WorkerExecute)?;
         let server_minor = if self.store.supports_scoped_worker_protocol() {
-            SCOPED_PROTOCOL_MINOR
-        } else {
             PROTOCOL_MINOR
+        } else {
+            ROOT_PROTOCOL_MINOR
         };
         let Some((accepted_protocol_version, accepted_protocol_minor)) =
             negotiate_protocol_details(&capabilities.protocol_version, server_minor)
@@ -2417,9 +2418,9 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        PROTOCOL_MINOR, SCOPED_PROTOCOL_MINOR, TaskRef, blob_report_identity, json_escaped,
-        negotiate_protocol, negotiate_protocol_details, report_scope, require_supported_task,
-        root_task_id,
+        PROTOCOL_MINOR, ROOT_PROTOCOL_MINOR, SCOPED_PROTOCOL_MINOR, TaskRef, blob_report_identity,
+        json_escaped, negotiate_protocol, negotiate_protocol_details, report_scope,
+        require_supported_task, root_task_id,
     };
 
     #[test]
@@ -2451,11 +2452,12 @@ mod tests {
 
     #[test]
     fn scoped_identity_negotiation_is_gated_by_storage_support() {
-        assert_eq!(PROTOCOL_MINOR, 4);
-        assert_eq!(negotiate_protocol("1.5").as_deref(), Some("1.4"));
+        assert_eq!(PROTOCOL_MINOR, 5);
+        assert_eq!(ROOT_PROTOCOL_MINOR, 4);
+        assert_eq!(negotiate_protocol("1.5").as_deref(), Some("1.5"));
         assert_eq!(
-            negotiate_protocol_details("1.5", SCOPED_PROTOCOL_MINOR),
-            Some(("1.5".to_owned(), SCOPED_PROTOCOL_MINOR))
+            negotiate_protocol_details("1.5", ROOT_PROTOCOL_MINOR),
+            Some(("1.4".to_owned(), ROOT_PROTOCOL_MINOR))
         );
         assert_eq!(
             negotiate_protocol_details("1.999", SCOPED_PROTOCOL_MINOR),

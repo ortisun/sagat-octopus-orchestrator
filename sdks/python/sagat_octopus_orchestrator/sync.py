@@ -104,6 +104,7 @@ class SyncSagatClient:
     decide_approval = _blocking(SagatClient.decide_approval)
     list_approvals = _blocking(SagatClient.list_approvals)
     query = _blocking(SagatClient.query)
+    query_chain = _blocking(SagatClient.query_chain)
     update = _blocking(SagatClient.update)
     inspect_chain = _blocking(SagatClient.inspect_chain)
     signal_chain = _blocking(SagatClient.signal_chain)

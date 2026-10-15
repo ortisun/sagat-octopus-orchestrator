@@ -30,6 +30,7 @@ use sagat_domain::audit::AuditRecord;
 use crate::blobs::BlobCommit;
 use crate::definitions::{Idempotency, IrCodec, IrError};
 use crate::error::StoreError;
+use crate::loop_progress::{LoopCheckpointEvaluation, LoopEntryEvaluation};
 use crate::secrets::{SecretInputs, StoredSecret};
 use sagat_domain::secrets::SecretName;
 
@@ -380,6 +381,26 @@ pub trait ExpressionEvaluator: Send + Sync {
         instance: &ExecutionInstanceId,
         body_result: &[u8],
     ) -> Result<Vec<u8>, ExpressionFailure>;
+
+    /// Evaluates the initial carry and, for a pre-test loop, its first condition from the same
+    /// immutable run snapshot.
+    fn loop_entry(
+        &self,
+        initial: &Expression,
+        condition: Option<&Expression>,
+        data: &RunData,
+    ) -> Result<LoopEntryEvaluation, ExpressionFailure>;
+
+    /// Evaluates one body return, the new carry and the condition against that new carry from one
+    /// immutable iteration snapshot.
+    fn loop_checkpoint(
+        &self,
+        result: &Expression,
+        carry: &Expression,
+        condition: &Expression,
+        data: &RunData,
+        return_instance: &ExecutionInstanceId,
+    ) -> Result<LoopCheckpointEvaluation, ExpressionFailure>;
 
     /// Reads the answer of a reconciliation activity: a JSON object
     /// `{"effect": "applied" | "not_applied" | "unknown", "output": <JSON>}` where `output` is

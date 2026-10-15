@@ -1,7 +1,9 @@
 {
   "name": "scoped-identity",
-  "status": "pending server and five-SDK support",
-  "description": "Two equal collection items execute the same definition node at distinct typed paths. Each retries under one logical identity, graph projection retains both instances, old root work is unchanged, and an older worker cannot receive scoped work.",
+  "description": "Two equal collection items and one distinct item execute the same definition node at distinct typed paths. Each retries under one logical identity and captured item, graph projection retains all instances, old root work is unchanged, and an older worker cannot receive scoped work.",
+  "server": {
+    "iterationConcurrency": 2
+  },
   "workflows": {
     "root": {
       "name": "identity-root",
@@ -17,7 +19,7 @@
       "apiVersion": "sagat-octopus-orchestrator.io/v1",
       "name": "identity-scoped",
       "limits": {
-        "maxInstances": 16,
+        "maxInstances": 24,
         "maxDepth": 1
       },
       "bodies": {
@@ -43,7 +45,7 @@
           "items": "input.items",
           "body": "line",
           "result": "bodyResult",
-          "maxItems": 2,
+          "maxItems": 3,
           "maxConcurrency": 1
         },
         {
@@ -58,7 +60,7 @@
   },
   "invalidWorkflows": {
     "body-terminal": {
-      "contains": "INVALID_SCOPE",
+      "contains": "cannot hold an end node",
       "workflow": {
         "apiVersion": "sagat-octopus-orchestrator.io/v1",
         "name": "identity-body-terminal",
@@ -86,7 +88,7 @@
       }
     },
     "recursive-body": {
-      "contains": "INVALID_SCOPE",
+      "contains": "body reference cycle",
       "workflow": {
         "apiVersion": "sagat-octopus-orchestrator.io/v1",
         "name": "identity-recursive-body",
@@ -119,12 +121,16 @@
             "result": "bodyResult",
             "maxItems": 2,
             "maxConcurrency": 1
+          },
+          {
+            "op": "end",
+            "id": "done"
           }
         ]
       }
     },
     "escaping-body": {
-      "contains": "INVALID_SCOPE",
+      "contains": "which is not a node",
       "workflow": {
         "apiVersion": "sagat-octopus-orchestrator.io/v1",
         "name": "identity-escaping-body",
@@ -231,6 +237,9 @@
           },
           {
             "value": "same"
+          },
+          {
+            "value": "different"
           }
         ]
       }
@@ -244,6 +253,13 @@
       "id": "still-waiting",
       "op": "get",
       "run": "run-scoped"
+    },
+    {
+      "id": "old-root-only",
+      "op": "awaitWorkerLog",
+      "worker": "old",
+      "count": 1,
+      "timeoutMs": 30000
     },
     {
       "id": "stop-old",
@@ -262,9 +278,11 @@
       "timeoutMs": 30000
     },
     {
-      "id": "scoped-graph",
-      "op": "graph",
-      "run": "run-scoped"
+      "id": "three-paths-retried",
+      "op": "awaitWorkerLog",
+      "worker": "current",
+      "count": 6,
+      "timeoutMs": 30000
     }
   ]
 }

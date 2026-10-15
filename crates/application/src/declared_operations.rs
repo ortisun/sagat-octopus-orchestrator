@@ -145,7 +145,7 @@ impl DeclaredOperationKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeclaredQuery {
     scope: OperationScope,
-    resolved_run_id: RunId,
+    expected_run_id: Option<RunId>,
     operation: ActivityName,
     actor: Subject,
 }
@@ -154,13 +154,28 @@ impl DeclaredQuery {
     #[must_use]
     pub const fn new(
         scope: OperationScope,
-        resolved_run_id: RunId,
+        expected_run_id: RunId,
         operation: ActivityName,
         actor: Subject,
     ) -> Self {
         Self {
             scope,
-            resolved_run_id,
+            expected_run_id: Some(expected_run_id),
+            operation,
+            actor,
+        }
+    }
+
+    #[must_use]
+    pub const fn for_chain(
+        scope: OperationScope,
+        expected_run_id: Option<RunId>,
+        operation: ActivityName,
+        actor: Subject,
+    ) -> Self {
+        Self {
+            scope,
+            expected_run_id,
             operation,
             actor,
         }
@@ -172,8 +187,8 @@ impl DeclaredQuery {
     }
 
     #[must_use]
-    pub const fn resolved_run_id(&self) -> RunId {
-        self.resolved_run_id
+    pub const fn expected_run_id(&self) -> Option<RunId> {
+        self.expected_run_id
     }
 
     #[must_use]
@@ -485,6 +500,7 @@ impl DeclaredUpdateDecision {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeclaredUpdate {
     request: UpdateRequest,
+    expected_run_id: Option<RunId>,
     arguments: DeclaredOperationArguments,
     audit: AuditRecord,
     outbox_id: Uuid,
@@ -492,6 +508,8 @@ pub struct DeclaredUpdate {
 }
 
 impl DeclaredUpdate {
+    /// Builds an Update addressed to one exact run. Chain-addressed callers must use
+    /// [`Self::for_chain`] so the receipt identity does not depend on the current head.
     #[must_use]
     pub fn new(
         request: UpdateRequest,
@@ -514,8 +532,10 @@ impl DeclaredUpdate {
             request.expected_state_revision(),
             request.actor().clone(),
         );
+        let expected_run_id = request.resolved_run_id();
         Self {
             request,
+            expected_run_id: Some(expected_run_id),
             arguments,
             audit,
             outbox_id,
@@ -523,9 +543,79 @@ impl DeclaredUpdate {
         }
     }
 
+    /// Builds a chain-scoped Update whose durable identity is independent of the head resolved by
+    /// the transaction. An explicit expected run remains part of that identity and acts as the CAS
+    /// precondition for a new receipt.
+    ///
+    /// # Errors
+    /// Returns [`DeclaredOperationStoreError::AddressUnavailable`] unless the scope addresses the
+    /// supplied chain.
+    #[allow(clippy::too_many_arguments)]
+    pub fn for_chain(
+        scope: OperationScope,
+        expected_run_id: Option<RunId>,
+        operation: ActivityName,
+        update_key: sagat_domain::execution::UpdateKey,
+        expected_state_revision: Option<u64>,
+        actor: Subject,
+        arguments: DeclaredOperationArguments,
+        audit: AuditRecord,
+        outbox_id: Uuid,
+        occurred_at: OffsetDateTime,
+    ) -> Result<Self, DeclaredOperationStoreError> {
+        let chain_id = match scope.address() {
+            sagat_domain::execution::OperationAddress::Chain(chain_id) => *chain_id,
+            sagat_domain::execution::OperationAddress::Run(_) => {
+                return Err(DeclaredOperationStoreError::AddressUnavailable);
+            }
+        };
+        let request_hash = declared_chain_update_request_hash(
+            &operation,
+            &arguments,
+            expected_state_revision,
+            chain_id,
+            expected_run_id,
+        );
+        let request = UpdateRequest::new(
+            scope,
+            expected_run_id.unwrap_or(chain_id),
+            operation,
+            update_key,
+            request_hash,
+            expected_state_revision,
+            actor,
+        );
+        Ok(Self {
+            request,
+            expected_run_id,
+            arguments,
+            audit,
+            outbox_id,
+            occurred_at,
+        })
+    }
+
     #[must_use]
     pub const fn request(&self) -> &UpdateRequest {
         &self.request
+    }
+
+    #[must_use]
+    pub const fn expected_run_id(&self) -> Option<RunId> {
+        self.expected_run_id
+    }
+
+    #[must_use]
+    pub fn resolved_request(&self, resolved_run_id: RunId) -> UpdateRequest {
+        UpdateRequest::new(
+            self.request.scope().clone(),
+            resolved_run_id,
+            self.request.operation().clone(),
+            self.request.update_key().clone(),
+            self.request.request_hash(),
+            self.request.expected_state_revision(),
+            self.request.actor().clone(),
+        )
     }
 
     #[must_use]
@@ -574,6 +664,40 @@ pub fn declared_update_request_hash(
     Digest::new(hash.finalize().into())
 }
 
+/// Produces the stable identity of a chain Update. The current head is deliberately absent: an
+/// exact retry without a CAS precondition must find the original receipt after rollover.
+#[must_use]
+pub fn declared_chain_update_request_hash(
+    operation: &ActivityName,
+    arguments: &DeclaredOperationArguments,
+    expected_state_revision: Option<u64>,
+    chain_id: RunId,
+    expected_run_id: Option<RunId>,
+) -> Digest {
+    let mut hash = Sha256::new();
+    hash.update(b"sagat.declared-chain-update.v1\0");
+    hash.update(chain_id.as_uuid().as_bytes());
+    hash.update((operation.as_str().len() as u64).to_be_bytes());
+    hash.update(operation.as_str().as_bytes());
+    hash.update((arguments.canonical().len() as u64).to_be_bytes());
+    hash.update(arguments.canonical());
+    match expected_state_revision {
+        Some(revision) => {
+            hash.update([1]);
+            hash.update(revision.to_be_bytes());
+        }
+        None => hash.update([0]),
+    }
+    match expected_run_id {
+        Some(run_id) => {
+            hash.update([1]);
+            hash.update(run_id.as_uuid().as_bytes());
+        }
+        None => hash.update([0]),
+    }
+    Digest::new(hash.finalize().into())
+}
+
 /// Safe failure categories of the declared-operation transaction boundary.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DeclaredOperationStoreError {
@@ -587,6 +711,8 @@ pub enum DeclaredOperationStoreError {
     AuditMismatch,
     #[error("the address kind is not available")]
     AddressUnavailable,
+    #[error("the execution chain head changed")]
+    ChainHeadChanged,
     #[error("declared operation rejected: {0}")]
     Operation(#[from] OperationError),
     #[error("declared operation storage failed: {0}")]
@@ -671,8 +797,9 @@ pub trait DeclaredOperationStore: Send + Sync {
         audit: &AuditRecord,
     ) -> impl Future<Output = Result<DeclaredOperationSnapshot, DeclaredOperationStoreError>> + Send;
 
-    /// Serializes on the addressed run, replays a receipt before mutability checks, and invokes
-    /// `evaluate` at most once with the current persisted state for a new request.
+    /// Serializes on the addressed run, or on the chain before its resolved run, replays a receipt
+    /// before mutability checks, and invokes `evaluate` at most once with the current persisted
+    /// state for a new request.
     fn apply_update<V, F>(
         &self,
         update: &DeclaredUpdate,

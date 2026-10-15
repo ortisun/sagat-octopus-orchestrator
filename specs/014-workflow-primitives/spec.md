@@ -2,7 +2,7 @@
 
 **Feature Branch**: `feature/workflow-primitives`
 **Created**: 2026-10-14
-**Revised**: 2026-10-14, after validation against accepted ADRs and canonical contracts ([analysis](./analysis.md))
+**Revised**: 2026-10-15, after validation against accepted ADRs and canonical contracts ([analysis](./analysis.md))
 **Status**: Architecture accepted in ADR-0030/0031/0032; runtime implementation partial
 **Input**: Specify additional workflow primitives with Spec Kit and improve practical workflow examples in TypeScript, Go, Python, C# and Java.
 
@@ -14,8 +14,14 @@ continue a long-lived process without an ever-growing individual run.
 
 The accepted implementation scope includes US01–US07. US01 supplies practical examples of
 **existing** behavior. Bounded switch, run-addressed declared Query/Update and root approval have
-public runtime evidence; collections, loops and continuation have private durable slices but
-remain closed for general publication. The remaining acceptance and release evidence is tracked
+public runtime evidence. Continuation has a restricted public input-only path with an activity
+followed by continuation, or an activity and condition choosing continuation or a terminal end.
+Collections have a restricted public path: one or more root `forEach` nodes ending at `end`, with
+each referenced body containing exactly one activity followed by one `return`. Admission remains
+disabled until an administrator sets the tenant-wide iteration-concurrency quota. A restricted
+public loop with an activity/return body has focused PostgreSQL restart and rollback evidence.
+Other collection and loop graphs and nested scopes remain closed for general publication. The
+remaining acceptance and release evidence is tracked
 in [the validation report](./validation-report.md).
 [ADR-0030](../../docs/adr/ADR-0030-structured-instances-and-continuation-chains.md) accepts the
 execution design and [ADR-0031](../../docs/adr/ADR-0031-declared-operation-result-disclosure.md)
@@ -174,9 +180,12 @@ response.
 
 **Release gate**: ADR-0031 accepts explicit declared-result disclosure separately from ADR-0028
 structural inspection. The bounded run-addressed slice is enabled after authorization, audit,
-bounded result, receipt/replay, transaction-fault and all-five conformance tests passed. A state
-document combined with continuation or another structured primitive, and chain-addressed
-Query/Update, remain disabled until their separate transactional and conformance evidence passes.
+bounded result, receipt/replay, transaction-fault and all-five conformance tests passed. The
+chain-addressed Query/Update routes have chain-before-run locking, authorization, audit, head-CAS,
+handoff-race and stable-receipt evidence from seeded chain fixtures; a combined
+state-and-continuation workflow cannot yet be published. A state document combined with another
+structured primitive remains disabled until its separate transactional and conformance evidence
+passes.
 
 **Acceptance Scenarios**:
 

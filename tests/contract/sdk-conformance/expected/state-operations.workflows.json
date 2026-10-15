@@ -1,6 +1,6 @@
 {
   "canonical": {
-    "account": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"hold\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"declared-account-operations\"},\"nodes\":[{\"activity\":\"operations.unserved\",\"id\":\"hold\",\"type\":\"activity\"}],\"state\":{\"initial\":\"input.account\",\"queries\":{\"balance.read\":{\"argsSchema\":{\"type\":\"integer\"},\"disclosure\":\"declared-business-result-v1\",\"expression\":\"state.balance + args\",\"resultSchema\":{\"type\":\"integer\"}}},\"schema\":{\"additionalProperties\":false,\"properties\":{\"balance\":{\"minimum\":0,\"type\":\"integer\"}},\"required\":[\"balance\"],\"type\":\"object\"},\"updates\":{\"balance.replace\":{\"argsSchema\":{\"additionalProperties\":false,\"properties\":{\"allowed\":{\"type\":\"boolean\"},\"nextState\":{\"additionalProperties\":false,\"properties\":{\"balance\":{\"minimum\":0,\"type\":\"integer\"}},\"required\":[\"balance\"],\"type\":\"object\"}},\"required\":[\"allowed\",\"nextState\"],\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"result\":\"newState.balance\",\"resultSchema\":{\"minimum\":0,\"type\":\"integer\"},\"state\":\"args.nextState\",\"validate\":\"args.allowed\"}}}}"
+    "account": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"hold\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"declared-account-operations\"},\"nodes\":[{\"activity\":\"operations.unserved\",\"id\":\"hold\",\"type\":\"activity\"}],\"state\":{\"initial\":\"input.account\",\"queries\":{\"amount.read\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"expression\":\"state.amount\",\"resultSchema\":{\"maxLength\":64,\"type\":\"string\"}},\"balance.read\":{\"argsSchema\":{\"type\":\"integer\"},\"disclosure\":\"declared-business-result-v1\",\"expression\":\"state.balance + args\",\"resultSchema\":{\"type\":\"integer\"}},\"occurred-at.read\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"expression\":\"state.occurredAt\",\"resultSchema\":{\"maxLength\":64,\"type\":\"string\"}}},\"schema\":{\"additionalProperties\":false,\"properties\":{\"amount\":{\"maxLength\":64,\"type\":\"string\"},\"balance\":{\"minimum\":0,\"type\":\"integer\"},\"occurredAt\":{\"maxLength\":64,\"type\":\"string\"}},\"required\":[\"balance\",\"amount\",\"occurredAt\"],\"type\":\"object\"},\"updates\":{\"balance.replace\":{\"argsSchema\":{\"additionalProperties\":false,\"properties\":{\"allowed\":{\"type\":\"boolean\"},\"nextState\":{\"additionalProperties\":false,\"properties\":{\"amount\":{\"maxLength\":64,\"type\":\"string\"},\"balance\":{\"minimum\":0,\"type\":\"integer\"},\"occurredAt\":{\"maxLength\":64,\"type\":\"string\"}},\"required\":[\"balance\",\"amount\",\"occurredAt\"],\"type\":\"object\"}},\"required\":[\"allowed\",\"nextState\"],\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"result\":\"newState.balance\",\"resultSchema\":{\"minimum\":0,\"type\":\"integer\"},\"state\":\"args.nextState\",\"validate\":\"args.allowed\"}}}}"
   },
   "workflows": {
     "account": {
@@ -20,6 +20,18 @@
       "state": {
         "initial": "input.account",
         "queries": {
+          "amount.read": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "expression": "state.amount",
+            "resultSchema": {
+              "maxLength": 64,
+              "type": "string"
+            }
+          },
           "balance.read": {
             "argsSchema": {
               "type": "integer"
@@ -29,18 +41,40 @@
             "resultSchema": {
               "type": "integer"
             }
+          },
+          "occurred-at.read": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "expression": "state.occurredAt",
+            "resultSchema": {
+              "maxLength": 64,
+              "type": "string"
+            }
           }
         },
         "schema": {
           "additionalProperties": false,
           "properties": {
+            "amount": {
+              "maxLength": 64,
+              "type": "string"
+            },
             "balance": {
               "minimum": 0,
               "type": "integer"
+            },
+            "occurredAt": {
+              "maxLength": 64,
+              "type": "string"
             }
           },
           "required": [
-            "balance"
+            "balance",
+            "amount",
+            "occurredAt"
           ],
           "type": "object"
         },
@@ -55,13 +89,23 @@
                 "nextState": {
                   "additionalProperties": false,
                   "properties": {
+                    "amount": {
+                      "maxLength": 64,
+                      "type": "string"
+                    },
                     "balance": {
                       "minimum": 0,
                       "type": "integer"
+                    },
+                    "occurredAt": {
+                      "maxLength": 64,
+                      "type": "string"
                     }
                   },
                   "required": [
-                    "balance"
+                    "balance",
+                    "amount",
+                    "occurredAt"
                   ],
                   "type": "object"
                 }

@@ -54,7 +54,7 @@
       "ok": true,
       "op": "probeWorker",
       "result": {
-        "accepted": "1.4"
+        "accepted": "1.5"
       }
     },
     {
@@ -62,7 +62,7 @@
       "ok": true,
       "op": "probeWorker",
       "result": {
-        "accepted": "1.4"
+        "accepted": "1.5"
       }
     },
     {
@@ -229,7 +229,7 @@
       "ok": true,
       "op": "startWorker",
       "result": {
-        "protocolVersion": "1.4"
+        "protocolVersion": "1.5"
       }
     },
     {
@@ -364,6 +364,10 @@
         "idempotencyKey": "<uuid:5>:slow",
         "input": {
           "for": "new"
+        },
+        "instance": {
+          "definitionNodeId": "slow",
+          "instancePath": []
         },
         "kind": "activity",
         "node": "slow",

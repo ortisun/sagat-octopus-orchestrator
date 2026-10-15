@@ -11,6 +11,7 @@ use sagat_domain::execution::{CollectionDrainReason, ExecutionInstanceId, RunId}
 use sagat_domain::identity::{NamespaceId, Subject, TenantId};
 use sagat_domain::sharding::Shard;
 use sagat_domain::workflow::{ActivityName, Digest};
+use sha2::{Digest as _, Sha256};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -236,6 +237,12 @@ impl CollectionTransition {
     pub const fn audit(&self) -> Option<&AuditRecord> {
         self.audit.as_ref()
     }
+
+    #[must_use]
+    pub fn with_audit(mut self, audit: AuditRecord) -> Self {
+        self.audit = Some(audit);
+        self
+    }
 }
 
 /// Immutable membership captured before any collection member is dispatched.
@@ -246,6 +253,7 @@ pub struct CollectionEntry {
     pub item_count: u32,
     pub snapshot_digest: Digest,
     pub limits: CollectionLimits,
+    snapshot_content: Option<Vec<u8>>,
 }
 
 impl CollectionEntry {
@@ -267,7 +275,30 @@ impl CollectionEntry {
             item_count,
             snapshot_digest,
             limits,
+            snapshot_content: None,
         })
+    }
+
+    /// Constructs a runtime entry whose snapshot must be retained with the transition.
+    ///
+    /// # Errors
+    /// Returns [`PrimitiveInputError::ItemCount`] if the snapshot exceeds the pinned item limit.
+    pub fn from_snapshot(
+        transition: CollectionTransition,
+        scope_id: CollectionScopeId,
+        item_count: u32,
+        snapshot_content: Vec<u8>,
+        limits: CollectionLimits,
+    ) -> Result<Self, PrimitiveInputError> {
+        let snapshot_digest = digest(&snapshot_content);
+        let mut entry = Self::new(transition, scope_id, item_count, snapshot_digest, limits)?;
+        entry.snapshot_content = Some(snapshot_content);
+        Ok(entry)
+    }
+
+    #[must_use]
+    pub fn snapshot_content(&self) -> Option<&[u8]> {
+        self.snapshot_content.as_deref()
     }
 }
 
@@ -282,6 +313,7 @@ pub struct CollectionAdmission {
     pub item_digest: Digest,
     pub reserved_instances: u16,
     pub outbox_id: Uuid,
+    item_content: Option<Vec<u8>>,
 }
 
 impl CollectionAdmission {
@@ -321,7 +353,43 @@ impl CollectionAdmission {
             item_digest,
             reserved_instances,
             outbox_id,
+            item_content: None,
         })
+    }
+
+    /// Constructs a runtime admission whose item must be retained with the transition.
+    ///
+    /// # Errors
+    /// Returns [`PrimitiveInputError`] if the index/path or reservation is invalid.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_item(
+        transition: CollectionTransition,
+        scope_id: CollectionScopeId,
+        index: u32,
+        entry: ExecutionInstanceId,
+        activity: ActivityName,
+        item_content: Vec<u8>,
+        reserved_instances: u16,
+        outbox_id: Uuid,
+    ) -> Result<Self, PrimitiveInputError> {
+        let item_digest = digest(&item_content);
+        let mut admission = Self::new(
+            transition,
+            scope_id,
+            index,
+            entry,
+            activity,
+            item_digest,
+            reserved_instances,
+            outbox_id,
+        )?;
+        admission.item_content = Some(item_content);
+        Ok(admission)
+    }
+
+    #[must_use]
+    pub fn item_content(&self) -> Option<&[u8]> {
+        self.item_content.as_deref()
     }
 }
 
@@ -334,6 +402,7 @@ pub struct CollectionCheckpoint {
     pub return_instance: ExecutionInstanceId,
     pub result_digest: Digest,
     pub outbox_id: Uuid,
+    result_content: Option<Vec<u8>>,
 }
 
 impl CollectionCheckpoint {
@@ -362,7 +431,38 @@ impl CollectionCheckpoint {
             return_instance,
             result_digest,
             outbox_id,
+            result_content: None,
         })
+    }
+
+    /// Constructs a runtime checkpoint whose result must be retained with the transition.
+    ///
+    /// # Errors
+    /// Returns [`PrimitiveInputError::InstancePath`] if the return is outside this iteration.
+    pub fn from_result(
+        transition: CollectionTransition,
+        scope_id: CollectionScopeId,
+        index: u32,
+        return_instance: ExecutionInstanceId,
+        result_content: Vec<u8>,
+        outbox_id: Uuid,
+    ) -> Result<Self, PrimitiveInputError> {
+        let result_digest = digest(&result_content);
+        let mut checkpoint = Self::new(
+            transition,
+            scope_id,
+            index,
+            return_instance,
+            result_digest,
+            outbox_id,
+        )?;
+        checkpoint.result_content = Some(result_content);
+        Ok(checkpoint)
+    }
+
+    #[must_use]
+    pub fn result_content(&self) -> Option<&[u8]> {
+        self.result_content.as_deref()
     }
 }
 
@@ -373,6 +473,7 @@ pub struct CollectionFinish {
     pub scope_id: CollectionScopeId,
     pub result_digest: Digest,
     pub outbox_id: Uuid,
+    result_content: Option<Vec<u8>>,
 }
 
 /// Starts fail-fast or cancellation drain under the collection owner's scheduler fence.
@@ -463,8 +564,31 @@ impl CollectionFinish {
             scope_id,
             result_digest,
             outbox_id,
+            result_content: None,
         }
     }
+
+    #[must_use]
+    pub fn from_result(
+        transition: CollectionTransition,
+        scope_id: CollectionScopeId,
+        result_content: Vec<u8>,
+        outbox_id: Uuid,
+    ) -> Self {
+        let result_digest = digest(&result_content);
+        let mut finish = Self::new(transition, scope_id, result_digest, outbox_id);
+        finish.result_content = Some(result_content);
+        finish
+    }
+
+    #[must_use]
+    pub fn result_content(&self) -> Option<&[u8]> {
+        self.result_content.as_deref()
+    }
+}
+
+fn digest(content: &[u8]) -> Digest {
+    Digest::new(Sha256::digest(content).into())
 }
 
 /// Whether a write changed durable state or replayed the already committed transition.
@@ -646,5 +770,79 @@ mod tests {
             CollectionLimits::new(1, 1, 1, 1).expect("limits"),
         );
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn runtime_commands_pin_the_digest_to_their_inline_content() {
+        let owner_node = NodeId::parse("items").expect("owner node");
+        let owner = ExecutionInstanceId::root(owner_node.clone());
+        let run_id = RunId::generate();
+        let transition = CollectionTransition::new(
+            TenantId::generate(),
+            NamespaceId::generate(),
+            run_id,
+            4,
+            owner,
+            SchedulerAuthority::for_run("scheduler-a", run_id, 1),
+            Subject::engine(),
+            None,
+            OffsetDateTime::UNIX_EPOCH,
+            None,
+        );
+        let scope = CollectionScopeId::generate();
+        let snapshot = br#"[{"value":1}]"#.to_vec();
+        let entry = CollectionEntry::from_snapshot(
+            transition.clone(),
+            scope,
+            1,
+            snapshot.clone(),
+            CollectionLimits::new(1, 1, 4, 2).expect("limits"),
+        )
+        .expect("entry");
+        assert_eq!(entry.snapshot_digest, digest(&snapshot));
+        assert_eq!(entry.snapshot_content(), Some(snapshot.as_slice()));
+
+        let path = InstancePath::root()
+            .child(owner_node, 0)
+            .expect("member path");
+        let activity = ExecutionInstanceId::in_path(
+            path.clone(),
+            NodeId::parse("work").expect("activity node"),
+        );
+        let item = br#"{"value":1}"#.to_vec();
+        let admission = CollectionAdmission::from_item(
+            transition.clone(),
+            scope,
+            0,
+            activity,
+            ActivityName::parse("line.process").expect("activity"),
+            item.clone(),
+            1,
+            Uuid::now_v7(),
+        )
+        .expect("admission");
+        assert_eq!(admission.item_digest, digest(&item));
+        assert_eq!(admission.item_content(), Some(item.as_slice()));
+
+        let returned =
+            ExecutionInstanceId::in_path(path, NodeId::parse("return").expect("return node"));
+        let result = br#"{"ok":true}"#.to_vec();
+        let checkpoint = CollectionCheckpoint::from_result(
+            transition.clone(),
+            scope,
+            0,
+            returned,
+            result.clone(),
+            Uuid::now_v7(),
+        )
+        .expect("checkpoint");
+        assert_eq!(checkpoint.result_digest, digest(&result));
+        assert_eq!(checkpoint.result_content(), Some(result.as_slice()));
+
+        let aggregate = br#"[{"ok":true}]"#.to_vec();
+        let finish =
+            CollectionFinish::from_result(transition, scope, aggregate.clone(), Uuid::now_v7());
+        assert_eq!(finish.result_digest, digest(&aggregate));
+        assert_eq!(finish.result_content(), Some(aggregate.as_slice()));
     }
 }

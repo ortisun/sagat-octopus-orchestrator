@@ -145,6 +145,14 @@ test('collections use named bodies and map writes the same forEach node', () => 
   });
 });
 
+test('named bodies cannot reference themselves', () => {
+  const recursive = body().forEach('nested', 'input.items', 'line', 'bodyResult', { maxItems: 2, maxConcurrency: 1 }).returnValue('return', 'steps.nested.output');
+  assert.throws(
+    () => workflow('recursive-body').body('line', recursive).forEach('lines', 'input.items', 'line', 'bodyResult', { maxItems: 2, maxConcurrency: 1 }).end('done').build(),
+    (error: unknown) => error instanceof SagatError && error.code === 'VALIDATION_FAILED' && /body reference cycle/.test(error.message),
+  );
+});
+
 test('while and repeatUntil write bounded pre-test and post-test loop nodes', () => {
   const iteration = body().step('increment', 'counter.increment').returnValue('return', 'steps.increment.output');
   const document = workflow('loop-flow')

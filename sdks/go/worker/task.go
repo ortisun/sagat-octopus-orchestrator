@@ -41,6 +41,28 @@ func minorOf(version string) int {
 	return minor
 }
 
+func instanceOf(lease *pb.TaskLease, minor int) *pb.ExecutionInstanceIdentity {
+	if minor < 5 {
+		return nil
+	}
+	return lease.GetInstance()
+}
+
+func activityInstanceOf(lease *pb.TaskLease, minor int) *ExecutionInstanceIdentity {
+	instance := instanceOf(lease, minor)
+	if instance == nil {
+		return nil
+	}
+	path := make([]ExecutionScope, 0, len(instance.GetInstancePath()))
+	for _, segment := range instance.GetInstancePath() {
+		path = append(path, ExecutionScope{
+			ScopeNodeID:    segment.GetScopeNodeId(),
+			IterationIndex: segment.GetIterationIndex(),
+		})
+	}
+	return &ExecutionInstanceIdentity{InstancePath: path, DefinitionNodeID: instance.GetDefinitionNodeId()}
+}
+
 func (h *Host) dispatch(l *link, lease *pb.TaskLease) {
 	ctx, cancel := context.WithCancelCause(context.Background())
 	task := &running{cancel: cancel}
@@ -87,7 +109,7 @@ func (h *Host) execute(ctx context.Context, l *link, cancel context.CancelCauseF
 	minor := minorOf(sess.accepted)
 	reg := h.lookup(lease.GetActivityName())
 	if reg == nil {
-		h.fail(l, lease, "NO_HANDLER", "no handler is registered for the activity", false, started)
+		h.fail(l, lease, minor, "NO_HANDLER", "no handler is registered for the activity", false, started)
 		return
 	}
 
@@ -95,7 +117,7 @@ func (h *Host) execute(ctx context.Context, l *link, cancel context.CancelCauseF
 	document := map[string]json.RawMessage{}
 	if text := lease.GetInputJson(); text != "" {
 		if !json.Valid([]byte(text)) {
-			h.fail(l, lease, "INPUT_INVALID", "the step document is not JSON", false, started)
+			h.fail(l, lease, minor, "INPUT_INVALID", "the step document is not JSON", false, started)
 			return
 		}
 		if parsed, err := jsonx.Object([]byte(text)); err == nil {
@@ -120,6 +142,21 @@ func (h *Host) execute(ctx context.Context, l *link, cancel context.CancelCauseF
 	if node == "" {
 		node = lease.GetStepId()
 	}
+	var item json.RawMessage
+	var index *uint32
+	if minor >= 5 && len(lease.GetInstance().GetInstancePath()) > 0 {
+		rawItem, hasItem := document["item"]
+		rawIndex, hasIndex := document["index"]
+		if hasItem || hasIndex {
+			var parsed uint32
+			if !hasItem || !hasIndex || json.Unmarshal(rawIndex, &parsed) != nil {
+				h.fail(l, lease, minor, "INPUT_INVALID", "the collection item context is malformed", false, started)
+				return
+			}
+			item = append(json.RawMessage(nil), rawItem...)
+			index = &parsed
+		}
+	}
 	kind := KindForward
 	if minor >= 2 {
 		switch lease.GetTaskKind() {
@@ -133,6 +170,7 @@ func (h *Host) execute(ctx context.Context, l *link, cancel context.CancelCauseF
 	task := &Task{
 		ActivityName: lease.GetActivityName(), TaskID: lease.GetTaskId(), RunID: lease.GetRunId(), Node: node,
 		StepID: lease.GetStepId(), Attempt: int(lease.GetAttempt()), Generation: lease.GetGeneration(),
+		Instance: activityInstanceOf(lease, minor), Item: item, Index: index,
 		IdempotencyKey: lease.GetIdempotencyKey(), Traceparent: lease.GetTraceparent(), Kind: kind,
 		TargetNode: lease.GetTargetNode(), TargetIdempotencyKey: lease.GetTargetIdempotencyKey(), Steps: steps,
 		Logger: h.log.With("task", lease.GetTaskId(), "activity", lease.GetActivityName(), "run", lease.GetRunId(), "node", node, "attempt", lease.GetAttempt()),
@@ -170,7 +208,7 @@ func (h *Host) execute(ctx context.Context, l *link, cancel context.CancelCauseF
 			return
 		}
 		code, message, retryable := failureOf(ctx, err)
-		h.fail(l, lease, code, message, retryable, started)
+		h.fail(l, lease, minor, code, message, retryable, started)
 		return
 	}
 
@@ -178,7 +216,7 @@ func (h *Host) execute(ctx context.Context, l *link, cancel context.CancelCauseF
 	var blob *BlobDescriptor
 	if reg.reconciler != nil {
 		if verdict.Effect != EffectApplied && verdict.Effect != EffectNotApplied && verdict.Effect != EffectUnknown {
-			h.fail(l, lease, "RECONCILIATION_ANSWER_INVALID", "a reconciler answers applied, not_applied or unknown", false, started)
+			h.fail(l, lease, minor, "RECONCILIATION_ANSWER_INVALID", "a reconciler answers applied, not_applied or unknown", false, started)
 			return
 		}
 		answer := map[string]any{"effect": string(verdict.Effect)}
@@ -189,11 +227,11 @@ func (h *Host) execute(ctx context.Context, l *link, cancel context.CancelCauseF
 	}
 	if blobOutput, ok := result.(BlobOutput); ok {
 		if minor < 3 {
-			h.fail(l, lease, "UNSUPPORTED_PROTOCOL", "blob output requires worker protocol 1.3", false, started)
+			h.fail(l, lease, minor, "UNSUPPORTED_PROTOCOL", "blob output requires worker protocol 1.3", false, started)
 			return
 		}
 		if err := validateDescriptor(blobOutput.descriptor); err != nil {
-			h.fail(l, lease, "OUTPUT_INVALID", "the blob output descriptor is malformed", false, started)
+			h.fail(l, lease, minor, "OUTPUT_INVALID", "the blob output descriptor is malformed", false, started)
 			return
 		}
 		copy := blobOutput.descriptor
@@ -206,16 +244,16 @@ func (h *Host) execute(ctx context.Context, l *link, cancel context.CancelCauseF
 			if errors.As(err, &se) {
 				message = se.Message
 			}
-			h.fail(l, lease, "OUTPUT_INVALID", message, false, started)
+			h.fail(l, lease, minor, "OUTPUT_INVALID", message, false, started)
 			return
 		}
 		output = string(encoded)
 	}
 	if len(output) > maxOutputBytes {
-		h.fail(l, lease, "PAYLOAD_TOO_LARGE", "the output is over 256 KiB", false, started)
+		h.fail(l, lease, minor, "PAYLOAD_TOO_LARGE", "the output is over 256 KiB", false, started)
 		return
 	}
-	h.complete(l, lease, output, blob, started)
+	h.complete(l, lease, minor, output, blob, started)
 }
 
 func (h *Host) lookup(name string) *registered {
@@ -287,6 +325,7 @@ func (h *Host) beat(l *link, lease *pb.TaskLease, minor int, task *Task, cancel 
 			if minor >= 1 {
 				request.RunId, request.StepId, request.Attempt = lease.GetRunId(), lease.GetStepId(), lease.GetAttempt()
 			}
+			request.Instance = instanceOf(lease, minor)
 			answer, err := l.rpc.heartbeat(ctx, request, lease.GetTraceparent())
 			if err == nil {
 				h.emit(Event{Type: EventHeartbeat, TaskID: lease.GetTaskId()})
@@ -352,11 +391,11 @@ func (h *Host) report(l *link, call func(ctx context.Context) error) (stale bool
 	}
 }
 
-func (h *Host) complete(l *link, lease *pb.TaskLease, output string, blob *BlobDescriptor, started time.Time) {
+func (h *Host) complete(l *link, lease *pb.TaskLease, minor int, output string, blob *BlobDescriptor, started time.Time) {
 	request := &pb.CompleteStepRequest{
 		TaskId: lease.GetTaskId(), RunId: lease.GetRunId(), StepId: lease.GetStepId(), Attempt: lease.GetAttempt(),
 		Generation: lease.GetGeneration(), LeaseToken: lease.GetLeaseToken(), IdempotencyKey: "done-" + lease.GetTaskId(),
-		OutputJson: output, Traceparent: lease.GetTraceparent(),
+		OutputJson: output, Traceparent: lease.GetTraceparent(), Instance: instanceOf(lease, minor),
 	}
 	if blob != nil {
 		request.OutputBlobRef = blob.ID
@@ -377,7 +416,7 @@ func (h *Host) complete(l *link, lease *pb.TaskLease, output string, blob *BlobD
 	}
 }
 
-func (h *Host) fail(l *link, lease *pb.TaskLease, code, message string, retryable bool, started time.Time) {
+func (h *Host) fail(l *link, lease *pb.TaskLease, minor int, code, message string, retryable bool, started time.Time) {
 	if !errorCode.MatchString(code) {
 		code = "WORKER_ERROR"
 	}
@@ -385,6 +424,7 @@ func (h *Host) fail(l *link, lease *pb.TaskLease, code, message string, retryabl
 		TaskId: lease.GetTaskId(), RunId: lease.GetRunId(), StepId: lease.GetStepId(), Attempt: lease.GetAttempt(),
 		Generation: lease.GetGeneration(), LeaseToken: lease.GetLeaseToken(), IdempotencyKey: "failed-" + lease.GetTaskId(),
 		ErrorCode: code, SafeMessage: safeMessage(message), Retryable: retryable, Traceparent: lease.GetTraceparent(),
+		Instance: instanceOf(lease, minor),
 	}
 	stale, err := h.report(l, func(ctx context.Context) error {
 		_, err := l.rpc.failStep(ctx, request, lease.GetTraceparent())
@@ -420,6 +460,7 @@ func (h *Host) resolveSecrets(ctx context.Context, l *link, lease *pb.TaskLease,
 	answer, err := l.rpc.resolveSecrets(ctx, &pb.ResolveSecretsRequest{
 		TaskId: lease.GetTaskId(), RunId: lease.GetRunId(), StepId: lease.GetStepId(), Attempt: lease.GetAttempt(),
 		Generation: lease.GetGeneration(), LeaseToken: lease.GetLeaseToken(), Traceparent: lease.GetTraceparent(),
+		Instance: instanceOf(lease, minor),
 	}, lease.GetTraceparent())
 	if err != nil {
 		return nil, err

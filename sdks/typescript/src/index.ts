@@ -1,6 +1,6 @@
 export { SagatClient, TERMINAL_STATUSES, toRun } from './client.js';
 export type {
-  ApprovalDecision, ApprovalDecisionOptions, ApprovalDecisionReceipt, ApprovalListItem, ApprovalListOptions, ApprovalPage, ApprovalScope, ApprovalStatus, CallOptions, ChainCommandOptions, ChainFinalOutcome, ChainInspection, ChainSegment, EventAccepted, JournalEvent, ListOptions, OperationResult, PublishEventInput, QueryOptions, QueryResult, Run, RunPage,
+  ApprovalDecision, ApprovalDecisionOptions, ApprovalDecisionReceipt, ApprovalListItem, ApprovalListOptions, ApprovalPage, ApprovalScope, ApprovalStatus, CallOptions, ChainCommandOptions, ChainFinalOutcome, ChainInspection, ChainQueryOptions, ChainSegment, EventAccepted, JournalEvent, ListOptions, OperationResult, PublishEventInput, QueryOptions, QueryResult, Run, RunPage,
   RunStatus, SignalResult, StartOptions, UpdateOptions, UpdateReceipt, WaitOptions,
 } from './client.js';
 export { PROTOCOL_VERSION, SDK_VERSION, safeLogger, silentLogger, warnIfNotSecure } from './config.js';
@@ -13,7 +13,7 @@ export type { RetryPolicy } from './retry.js';
 export { checkTraceparent, isTraceparent, newTraceparent, traceIdOf } from './traceparent.js';
 export { ActivityFailure, BlobOutput, reconcile } from './worker/activity.js';
 export type {
-  ActivityContext, ActivityHandler, ActivityLogger, BlobDescriptor, RegisterOptions, Secrets, TaskKind, Verdict, WriteBlobOptions,
+  ActivityContext, ActivityHandler, ActivityLogger, BlobDescriptor, ExecutionInstanceIdentity, ExecutionScope, RegisterOptions, Secrets, TaskKind, Verdict, WriteBlobOptions,
 } from './worker/activity.js';
 export { WorkerHost } from './worker/host.js';
 export type { WorkerConfig, WorkerEvent, WorkerTransport } from './worker/host.js';

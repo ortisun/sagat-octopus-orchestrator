@@ -81,6 +81,10 @@ fn stored_names_are_a_stable_contract() {
     assert_eq!(AuditAction::NamespaceCreated.as_str(), "namespace.created");
     assert_eq!(AuditAction::RunQueried.as_str(), "run.queried");
     assert_eq!(AuditAction::RunUpdated.as_str(), "run.updated");
+    assert_eq!(
+        AuditAction::RunStorageQuotaExceeded.as_str(),
+        "run.storage_quota_exceeded"
+    );
     assert!(AuditAction::RunQueried.collapses_repeats());
     assert_eq!(
         AuditAction::RunQueried.repeat_window(),

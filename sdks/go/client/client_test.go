@@ -464,6 +464,60 @@ func TestChainInspectionSignalAndCancelUseExpectedHeadAndKeys(t *testing.T) {
 	}
 }
 
+func TestChainQueryCarriesExpectedHeadAndReturnsResolvedRevisions(t *testing.T) {
+	f := newFake(t)
+	namespaceID := "0190aaaa-0000-7000-8000-000000000010"
+	chainID := "0190aaaa-0000-7000-8000-000000000011"
+	head := "0190aaaa-0000-7000-8000-000000000012"
+	f.answer(func(_ seen, w http.ResponseWriter) {
+		reply(w, 200, map[string]any{
+			"runId": head, "runVersion": 7, "stateRevision": 3,
+			"result": map[string]any{"amount": "19.99", "occurredAt": "2026-10-15T15:34:56.789Z"},
+		})
+	})
+	result, err := newClient(t, f).QueryChain(context.Background(), namespaceID, chainID, "account.snapshot", client.ChainQueryRequest{
+		Args: map[string]any{}, ExpectedRunID: head,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := f.requests()[0]
+	if request.url != "/v1/namespaces/"+namespaceID+"/chains/"+chainID+"/queries/account.snapshot" {
+		t.Fatalf("path = %s", request.url)
+	}
+	if request.json(t)["expectedRunId"] != head || result.RunID != head || result.StateRevision != 3 {
+		t.Fatalf("request=%+v result=%+v", request.json(t), result)
+	}
+	value := result.Result.(map[string]any)
+	if value["amount"] != "19.99" || value["occurredAt"] != "2026-10-15T15:34:56.789Z" {
+		t.Fatalf("result = %+v", value)
+	}
+}
+
+func TestCancellingADeclaredUpdateStopsTheCallWithoutRetrying(t *testing.T) {
+	f := newFake(t)
+	started := make(chan struct{})
+	f.answer(func(_ seen, w http.ResponseWriter) {
+		close(started)
+		time.Sleep(time.Second)
+		reply(w, 200, map[string]any{})
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		<-started
+		cancel()
+	}()
+	_, err := newClient(t, f).Update(ctx, runUUID, "account.credit", client.UpdateRequest{
+		UpdateKey: "credit-1", Args: map[string]any{"amount": "19.99"},
+	})
+	if !sagat.IsCode(err, sagat.CodeCancelled) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v", err)
+	}
+	if len(f.requests()) != 1 {
+		t.Fatalf("cancelled update attempts = %d", len(f.requests()))
+	}
+}
+
 func TestGetIsRetriedOnUnavailabilityAndOnRateLimitingHonouringRetryAfterAndGivesUpAfterTheAttempts(t *testing.T) {
 	f := newFake(t)
 	attempts := 0

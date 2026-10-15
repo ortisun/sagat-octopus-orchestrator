@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
+import time
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -341,6 +343,52 @@ async def test_chain_inspection_and_commands_use_expected_head_and_durable_keys(
     assert http.seen[1].body == {"expectedRunId": head, "payload": {"ok": True}}
     assert http.seen[1].headers["idempotency-key"] == "chain-signal-1"
     assert http.seen[2].body == {"expectedRunId": head, "reason": "operator requested cancellation"}
+
+
+async def test_chain_query_carries_expected_head_and_returns_resolved_revisions(
+    http: FakeHttpServer, make_client: MakeClient
+) -> None:
+    namespace_id = "0190aaaa-0000-7000-8000-000000000010"
+    chain_id = "0190aaaa-0000-7000-8000-000000000011"
+    head = "0190aaaa-0000-7000-8000-000000000012"
+    http.serve(
+        lambda _seen: reply(
+            200,
+            {
+                "runId": head,
+                "runVersion": 7,
+                "stateRevision": 3,
+                "result": {"amount": "19.99", "occurredAt": "2026-10-15T15:34:56.789Z"},
+            },
+        )
+    )
+    result = await make_client().query_chain(namespace_id, chain_id, "account.snapshot", {}, expected_run_id=head)
+    assert http.seen[0].url == f"/v1/namespaces/{namespace_id}/chains/{chain_id}/queries/account.snapshot"
+    assert http.seen[0].body == {"args": {}, "expectedRunId": head}
+    assert result.run_id == head and result.state_revision == 3
+    assert result.result == {"amount": "19.99", "occurredAt": "2026-10-15T15:34:56.789Z"}
+
+
+async def test_cancelling_a_declared_update_stops_the_call_without_retrying(
+    http: FakeHttpServer, make_client: MakeClient
+) -> None:
+    def serve(_seen: Seen) -> Any:
+        time.sleep(1)
+        return reply(200)
+
+    http.serve(serve)
+    call = asyncio.create_task(
+        make_client(timeout=5).update(RUN, "account.credit", {"amount": "19.99"}, update_key="credit-1")
+    )
+    for _ in range(100):
+        if http.seen:
+            break
+        await asyncio.sleep(0.001)
+    call.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await call
+    await asyncio.sleep(0.02)
+    assert len(http.seen) == 1
 
 
 async def test_get_is_retried_on_unavailability_and_on_rate_limiting_honouring_retry_after_and_gives_up_after_the_attempts(

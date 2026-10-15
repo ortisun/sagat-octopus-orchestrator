@@ -720,3 +720,264 @@ The five-SDK chain-command fixture stays pending because it needs a signal-contr
 graph, which is outside this publication subset. State transfer, child-chain creation, chain-level
 Query/Update and all other continuation graph combinations remain closed until their own runtime
 and conformance evidence exists.
+
+## Restricted public collection checkpoint (2026-10-15)
+
+The public v1 parser accepts a root chain of `forEach` nodes ending at `end` when every referenced
+body contains exactly one activity followed by one `return`. Broader bodies, nested collections,
+triggers and combinations with other structured nodes remain closed. Starting the workflow parks
+the owner for the fenced scheduler. Collection admission stays fail-closed until an administrator
+sets the tenant-wide `iteration_concurrency` quota through the public governance route. The setting
+is audited and shares a conservative default operator ceiling of 1,024 active iterations across
+collections and loops; an operator can explicitly grant a higher ceiling.
+
+The public PostgreSQL round trip publishes and starts `lines -> taxes -> end`, provisions capacity
+and the worker binding through authorized HTTP routes, and executes two items in each body through
+worker protocol 1.5. Each scope checkpoints results in input order. The final transition commits
+the second `collection.finished`, terminal `end`, `run.finished`, event outbox, telemetry head and
+run projection together. An injected failure on the terminal outbox rolls the whole transition
+back; a later scheduler tick retries it and canonical replay matches the stored projection.
+
+| Check | Result |
+|---|---|
+| `cargo test -p sagat-tests --test integration_workflow_primitives --locked collections_http:: -- --test-threads=1 --nocapture` | Passed: 3/3 against real HTTP, gRPC and PostgreSQL, including missing policy, RBAC/audit, two chained collections, terminal rollback/retry and replay |
+| `cargo test -p sagat-infra-ir --test codec --locked` | Passed: 49/49 parser and canonicalization tests |
+| `cargo test -p sagat-tests --test contract_workflow_primitives --locked` | Passed: 25/25, with the public loop contract still ignored |
+| `cargo test -p sagat-domain --test collection_reducer --locked`; `cargo test -p sagat-domain quota --locked` | Passed: 14/14 collection reducer tests and 10/10 quota tests |
+| `cargo clippy -p sagat-domain -p sagat-infra-ir -p sagat-infra-postgres --all-targets --locked -- -D warnings`; formatting and diff checks | Passed |
+
+The shared five-language scoped-worker runtime scenario remains a separate compatibility gate at
+this checkpoint. Collection bodies with more than one activity, nested scopes, collection-local
+compensation/reconciliation, scripts, blobs and combinations with other structured nodes remain
+unpublished.
+
+## Worker and chain checks (2026-10-15)
+
+The public collection transaction and two-collection chain are covered in the preceding checkpoint.
+Separate worker checks verify scoped cancellation, heartbeat, acknowledgement and restart, along
+with tenant, secret and blob boundaries. The collection scenarios do not yet cover 17 items at
+concurrency three, nested bodies, compensation or all-language collection runtime.
+
+| Check | Result |
+|---|---|
+| Focused scoped-worker integration filters on the same Colima PostgreSQL | Passed: 2/2 for cancellation/heartbeat/ack/journal/restart and tenant/secrets/blob isolation |
+| `DOCKER_HOST=unix:///Users/marcelo/.colima/sagat-remaining/docker.sock cargo test -p sagat-tests --test fault_workflow_primitives --locked chains:: -- --nocapture` | Passed: 4/4 for handoff/cancel serialization, restart after a lost hint, limit-finish rollback/retry and workflow-version pinning |
+| `DOCKER_HOST=unix:///Users/marcelo/.colima/sagat-remaining/docker.sock SAGAT_SDK_SCENARIO=protocol-negotiation cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture` | Passed: all five SDKs against the reviewed protocol-1.5 golden; protocol 1 and 1.4 retain root behavior |
+| `DOCKER_HOST=unix:///Users/marcelo/.colima/sagat-remaining/docker.sock SAGAT_SDK_SCENARIO=chain-inspect-cancel cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture` | Passed: all five SDKs against the reviewed public inspect/cancel golden |
+
+The first protocol run failed because every SDK emitted an absent legacy instance as JSON `null`
+while the golden required omission. The runners were corrected to omit it for workers through 1.4;
+the reviewed 1.5 golden requires the root instance object. The first chain run failed only because
+its runtime golden did not yet exist; equal five-language observations were inspected before that
+golden was added and the no-bless rerun passed. Neither run is counted as a pass before its rerun.
+
+Loop entry and restoration are separate private slices: `loop_progress::` passed 11/11 real
+PostgreSQL tests, including restart, terminal routing and canonical projection verification.
+Publication, timeout/cancel/drain, chain-target signals and the full fault and capacity matrix
+remain open. The aggregate integration run after these changes passed 113/116 and exposed three
+regressions in old-schema quota lookup and a pre-terminal test expectation. Each of those three
+cases passed on its focused rerun after correction. The complete aggregate rerun then passed
+116/116 against real PostgreSQL (184.20 seconds, one test thread).
+
+## Collection capacity, recovery and drain checks (2026-10-15)
+
+The public collection fault fixture processed 17 items with `maxConcurrency: 3`. It marked the
+first three task hints delivered without broker delivery, expired the scheduler lease, then used
+durable polling after restart. It completed each admitted batch in reverse order and verified the
+final aggregate in input order, 17 distinct instance identities, at most three active iterations,
+terminal `SUCCEEDED` and canonical run replay. Recovery did not depend on a duplicate hint.
+
+The drain transaction now records cancellation requests for leased/running members with the
+collection transition. Focused tests injected rollback at the cancellation outbox and member
+journal, exhausted a retry into fail-fast, and verified that failed derived compensation or
+reconciliation obligations retain slots and reservations. These checks do not prove successful
+scoped compensation or reconciliation; the restricted public body still excludes them.
+
+| Check | Result |
+|---|---|
+| `DOCKER_HOST=unix:///Users/marcelo/.colima/sagat-remaining/docker.sock cargo test -p sagat-tests --test fault_workflow_primitives --locked collections:: -- --nocapture` | Passed: 1/1 real PostgreSQL 17-item/restart/lost-hint scenario |
+| Focused `scoped_worker::` drain tests against real PostgreSQL | Passed: cancellation rollback/restart, fail-fast, and retention under failed derived obligations |
+| Focused legacy-upgrade and collection terminal replay regressions | Passed: 3/3 against real PostgreSQL after the old-schema quota query and terminal assertion corrections |
+
+## Scoped worker item and identity conformance (2026-10-15)
+
+The worker protocol 1.5 lease contains a typed execution path and a pinned collection item and
+index. Each of the five SDK hosts now exposes that `item/index` pair to the activity handler while
+preserving the existing root input argument. A worker negotiated at 1.4 has neither the scoped
+identity nor the pair. The shared scenario executes `same`, `same`, `different` through three
+logical paths. One retry per path proves stable path, item and idempotency key within an instance,
+distinct keys between instances, and a terminal scoped graph; the old worker executes a separate
+root task and cannot lease the scoped tasks. The two goldens were inspected before the no-bless run.
+
+| Check | Result |
+|---|---|
+| `SAGAT_SDK_SCENARIO=scoped-identity cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture` with real PostgreSQL | Passed: all five SDKs against reviewed runtime and workflow goldens, no bless; runtime SHA-256 `b89c63513a56839d412b1b62ca1b2abf990b7af59f565afb8553116d896e26d9`, workflow SHA-256 `b0a307dc9ecb871a122937055d25fcfb772a4910b78346a42500b1a61beb5318` |
+| SDK unit suites | TypeScript 122/122, Python 253/253, .NET 442/442, Go `go test ./...` and Java Maven passed; Python focused Ruff and mypy also passed |
+| Rust conformance harness check, Clippy, format, JSON and diff checks | Passed |
+
+## Aggregate regression and retention quota checkpoint (2026-10-15)
+
+The real-PostgreSQL aggregate integration suite passed **120/120** with one test thread after
+the collection retention-quota change. The two new cases cover quota denial before collection
+entry and while a scope is open. The former ends the owner without creating a scope; the latter
+commits stop, drain, member cancellation, terminal failure and capacity release. Restart and
+canonical projection verification match the journal, and duplicate receipts do not add events.
+The aggregate fault suite passed **23/23** with one test thread, including the 17-item collection
+recovery case and loop timer races. These results do not close the remaining collection or loop
+release gates in `tasks.md`.
+
+| Check | Result |
+|---|---|
+| `DOCKER_HOST=unix:///Users/marcelo/.colima/sagat-remaining/docker.sock TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock cargo test -p sagat-tests --test integration_workflow_primitives --locked -- --test-threads=1` | Passed: 120/120, 196.41 seconds |
+| `DOCKER_HOST=unix:///Users/marcelo/.colima/sagat-remaining/docker.sock TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock cargo test -p sagat-tests --test fault_workflow_primitives --locked -- --test-threads=1` | Passed: 23/23, 52.43 seconds |
+| `python3 scripts/check-architecture.py`; `python3 -m unittest discover -s scripts/tests -q` | Passed: 22 workspace crates and 8 architecture-script tests |
+
+## Transactional collection payload and chain Query checkpoint (2026-10-15)
+
+Collection snapshot, member item, checkpoint result and aggregate bytes now enter the same
+PostgreSQL transaction as their addressed transition. A stale scheduler fence or run revision,
+outbox or audit failure, and quota denial leave no new payload or retained-byte charge. A
+matching replay returns the previous transition without writing bytes or audit again. Retention
+quota stops are audited as `run.storage_quota_exceeded`; the drain's telemetry head advances with
+the stop and cancellation events. The focused PostgreSQL transaction test passed 1/1, and the
+quota/audit tests passed 2/2. The earlier 120/120 and 23/23 aggregate runs preceded this
+transactional-retention change and must be rerun before a release claim.
+
+An explicit chain Query endpoint resolves the current head under a chain lock before taking its
+run snapshot. It returns the actual run ID and an optional `expectedRunId` rejects a stale head
+with `CHAIN_HEAD_CHANGED`. The PostgreSQL HTTP/security and deterministic Query-vs-handoff race
+tests passed 2/2. Chain Update remains unavailable. The run/chain Query contract and operator
+guide document this boundary. The tests seed chains with declared state directly; publication of
+one workflow combining declared state and continuation remains closed, so this is not yet a public
+end-to-end Query workflow.
+
+| Check | Result |
+|---|---|
+| Focused collection payload transition test against real PostgreSQL | Passed: 1/1 for four payload paths, fence/revision conflict, outbox/audit/quota rollback and replay |
+| Focused retention quota and audit tests against real PostgreSQL | Passed: 2/2 for pre-scope stop, open-scope drain, terminal replay, one audit and telemetry head |
+| `DOCKER_HOST=unix:///Users/marcelo/.colima/sagat-remaining/docker.sock cargo test -p sagat-tests --test integration_workflow_primitives chain_query_ --locked -- --nocapture --test-threads=1` | Passed: 2/2, 123 filtered; tenant/expected-head/no-store/audit and a handoff lock race |
+
+## Consolidated integration rerun (2026-10-15)
+
+The first consolidated run after these changes passed 124/126 and found two regressions. A
+corrupted stored digest returned `DuplicateMismatch` instead of `InvalidTransition`; the payload
+verifier now separates storage corruption from a conflicting supplied body. An older capacity
+fixture acquired scheduler authority twice; if two generated runs shared a shard, the second
+acquisition invalidated the first. The fixture now reuses the same generation for the same owner.
+Both cases passed isolated PostgreSQL reruns, then the complete integration target passed
+**126/126** with one test thread in 200.32 seconds. The timeout case was then extended to assert
+restart and terminal `RUN_TIMED_OUT` and passed its focused PostgreSQL rerun. The consolidated
+fault target was rerun after the loop drain, transactional payload and chain Query additions and
+passed **23/23** in 49.16 seconds.
+
+An initial loop-drain test attempt did not reach PostgreSQL because container creation returned
+`meta.db: read-only file system`; the shared fixture poisoned the remaining cases in that attempt.
+The Colima daemon and VM filesystem were inspected, a cached PostgreSQL container launched in
+isolation, and each affected drain case then passed against real PostgreSQL. The failed attempt is
+not counted as test evidence. Loop publication remains closed because carry/result payload
+retention still precedes the progress transaction and a revision/cancellation race can retain
+unreferenced bytes.
+
+| Check | Result |
+|---|---|
+| `DOCKER_HOST=unix:///Users/marcelo/.colima/sagat-remaining/docker.sock TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock cargo test -p sagat-tests --test integration_workflow_primitives --locked -- --test-threads=1` | Passed: 126/126, 200.32 seconds, after both focused regressions passed |
+| `cargo test -p sagat-tests --test contract_workflow_primitives --locked` | Passed: 26/26; the public loop contract remains separately gated |
+| Focused loop drain PostgreSQL cases | Passed: 4/4 for expression failure/restart, timeout/stale fire/terminal restart, cancellation/restart and outbox rollback |
+| `DOCKER_HOST=unix:///Users/marcelo/.colima/sagat-remaining/docker.sock TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock cargo test -p sagat-tests --test fault_workflow_primitives --locked -- --test-threads=1` | Passed: 23/23, 49.16 seconds |
+| `DOCKER_HOST=unix:///Users/marcelo/.colima/sagat-remaining/docker.sock TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock SAGAT_SDK_SCENARIO=scoped-identity cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture` | Passed: all five SDKs, no golden bless, after transactional collection payload change (52.41 seconds) |
+
+The locked workspace check across all targets and Clippy across all targets with `-D warnings`
+passed. `cargo test --workspace --lib --locked` passed, with the repository's intentionally ignored
+native-container cases still ignored. An unrestricted `cargo test --workspace --locked` was stopped
+during parallel test-binary compilation when the host had only 347 MiB free; it did not produce a
+test result. Regenerable `target/debug/deps` performance/e2e build artifacts were removed, restoring
+space, and the bounded workspace library run was used instead. The full all-target workspace test
+gate therefore remains open.
+
+| Check | Result |
+|---|---|
+| `cargo check --workspace --all-targets --locked` | Passed |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | Passed |
+| `DOCKER_HOST=unix:///Users/marcelo/.colima/sagat-remaining/docker.sock TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock CARGO_BUILD_JOBS=2 cargo test --workspace --lib --locked` | Passed; intentionally ignored native-container tests were not counted |
+| `cargo fmt --all -- --check`; `git diff --check`; `python3 scripts/check-architecture.py`; `python3 -m unittest discover -s scripts/tests -q` | Passed |
+
+### Review follow-up: chain Query and collection invariants
+
+The final review found and corrected three gaps in the restricted paths. A chain-addressed Query
+with a stale expected head now returns `409` with `code=CONFLICT`; its audit targets the resolved
+run under the chain lock, so predecessor and successor reads have distinct records. A same-tenant
+Viewer has `run:read` but no `run:query` and receives `403` with `no-store` and no Query audit.
+The focused chain Query PostgreSQL target passed 2/2 after these changes.
+
+Collection entry, admission, checkpoint and member drain now advance `telemetry_pending.head_seq`
+in the same transaction as the journal. A storage-quota drain requires an engine audit for the
+same tenant, run and action before the first transition; invalid evidence is rejected without
+changing the run. The real PostgreSQL collection transaction target passed 11/11, including
+entry/admission/checkpoint telemetry checks. The aggregate storage-quota rollback/replay target
+passed 1/1 with missing and wrong-action/resource/actor audit rejections. The cancellation/drain
+telemetry PostgreSQL target also passed 1/1. Two focused PostgreSQL loop tests passed for both
+`LEASED` cancellation and `RUNNING` timeout: the transactional drain writes
+`step.cancel_requested`, the scoped heartbeat observes it, the worker acknowledges it, and
+restart/replay releases iteration capacity. The `RUNNING` case also exposed a scoped renewal that
+incorrectly entered the root fast path in `PgRunTx::persist_addressed`; that selection was fixed
+and covered by the timeout regression. Loop carry/result bytes are now retained in the progress
+transaction after fence, replay, revision and quota checks, with no scheduler-side pre-retention.
+Three focused PostgreSQL tests passed for entry commit/replay, stale fence/iteration/budget/content
+quota/outbox rollback without orphan carry, and checkpoint outbox/audit rollback without orphan
+result or carry. The application loop unit target passed 2/2 and the affected crates passed
+Clippy `-D warnings`. Broader public loop and release gates remain open.
+
+Chain-addressed declared Update now accepts optional `expectedRunId` and hashes the stable chain
+address, request content, expected state revision and explicit head precondition, never the
+resolved head. Under the chain-before-run lock it finds a prior receipt before comparing the
+current head, so an exact retry after handoff returns the original applied/rejected receipt;
+a new key with a stale explicit head is rejected. The focused HTTP/PostgreSQL test passed 1/1 for
+RBAC, tenant opacity, `no-store`, lock serialization, applied and rejected receipts, handoff,
+replay, key mismatch, stale-head CAS, successor application and run-targeted audit.
+The complete `operations_http::` PostgreSQL regression then passed 7/7, including the existing
+run-addressed Query/Update paths and the chain paths.
+
+The shared `state-operations` SDK conformance target passed 1/1 against real PostgreSQL in 18.01
+seconds after a reviewed normalized golden was installed, then rerun without blessing. TypeScript,
+Go, Python, C# and Java produced the same normalized output: one dropped Update response, decimal
+string `19.99`, exact UTC value `2026-10-15T15:34:56.789Z`, and `replayed:true` on retry. The
+five SDK workflow builders also matched the reviewed canonical workflow golden. Their local unit
+suites passed (TypeScript 124, Python 255, C# 444, Java 230, and Go `./...`). Chain Query
+conformance remains separately gated because public state-plus-continuation publication is not
+yet enabled.
+
+The journal-derived projection target passed 3/3 in PostgreSQL: graph deltas preserve exact
+scoped identities, selected switch routes follow persisted decisions, and continuation chain
+links agree between graph and telemetry. The scoped attempt span now carries both
+`sagat.instance.path` and bounded `sagat.scope.depth`. The telemetry derivation unit target
+passed 20/20, graph DTO tests 3/3, and affected application/API/PostgreSQL crates and the
+integration target passed Clippy with `-D warnings`. The Studio already has an explicit
+unsupported-node fallback and its existing test; no new authoring behavior is claimed.
+
+## Public loop discovery and aggregate verification (2026-10-15)
+
+The restricted public `while`/`repeatUntil` body now advances after a scoped activity finishes.
+An admitted iteration has `return_node=NULL` until checkpoint; candidate discovery instead reads
+the single exact `return` node from the pinned immutable body definition. A PostgreSQL regression
+asserts that pre-checkpoint projection and pending return, then completes both loop forms across a
+scheduler restart. It also injects terminal outbox rollback and verifies retry. Publication still
+rejects unproven body shapes. These tests cover the restricted public worker path, not arbitrary
+nested bodies or all-five SDK runtime parity.
+
+The first aggregate fault run passed 22/23. Its collection restart fixture created a different
+scheduler owner after expiring the old leases; the new owner could lack the run's shard, so the
+first checkpoint tick did no work. Recreating the same owner on restart restored the intended
+lease takeover without changing production behavior. That case passed in isolation and the full
+fault suite then passed 23/23. The complete PostgreSQL integration suite passed 135/135 with one
+test thread after the public loop fix. Contract tests passed 26/26. The locked workspace check,
+workspace Clippy with `-D warnings`, workspace library tests, format, architecture checks and
+`git diff --check` passed. The empty feature-specific E2E target and the remaining task matrix are
+still open; these aggregate runs are not a full release claim.
+
+| Check | Result |
+|---|---|
+| `DOCKER_HOST=unix:///Users/marcelo/.colima/sagat-remaining/docker.sock TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock cargo test -p sagat-tests --test integration_workflow_primitives --locked -- --test-threads=1` | Passed: 135/135, 215.78 seconds |
+| `DOCKER_HOST=unix:///Users/marcelo/.colima/sagat-remaining/docker.sock TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock cargo test -p sagat-tests --test fault_workflow_primitives --locked -- --test-threads=1` | Passed: 23/23, 49.74 seconds after the fixture correction |
+| `cargo test -p sagat-tests --test contract_workflow_primitives --locked` | Passed: 26/26 |
+| `cargo check --workspace --all-targets --locked`; `cargo clippy --workspace --all-targets --locked -- -D warnings`; `cargo test --workspace --lib --locked` | Passed |
+| `cargo fmt --all -- --check`; `python3 scripts/check-architecture.py`; `python3 -m unittest discover -s scripts/tests -q`; `git diff --check` | Passed |

@@ -389,6 +389,8 @@ pub enum ChildOutcome {
 pub enum CollectionDrainReason {
     /// One admitted iteration failed permanently.
     Failed { iteration: u32, code: FailureCode },
+    /// Retaining an automatic collection value exceeded the tenant's durable-content quota.
+    StorageQuotaExceeded,
     /// The enclosing run asked the collection to stop.
     Cancelled,
 }
@@ -421,6 +423,7 @@ pub enum LoopContinuation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoopDrainReason {
     Failed { iteration: u32, code: FailureCode },
+    TimedOut,
     Cancelled,
 }
 
@@ -1079,6 +1082,10 @@ impl RunEvent {
                 ..
             } => cause("failure", code.as_str()),
             Self::CollectionDrainStarted {
+                reason: CollectionDrainReason::StorageQuotaExceeded,
+                ..
+            } => cause("failure", FailureCode::storage_quota_exceeded().as_str()),
+            Self::CollectionDrainStarted {
                 reason: CollectionDrainReason::Cancelled,
                 ..
             }
@@ -1106,6 +1113,10 @@ impl RunEvent {
                 outcome: LoopOutcome::Cancelled,
                 ..
             } => cause("cancel", "REQUESTED"),
+            Self::LoopDrainStarted {
+                reason: LoopDrainReason::TimedOut,
+                ..
+            } => cause("failure", FailureCode::run_timed_out().as_str()),
             Self::RunPaused => cause("request", "PAUSE"),
             Self::RunResumed => cause("request", "RESUME"),
             Self::RunFinished { status } => cause("outcome", status.as_str()),

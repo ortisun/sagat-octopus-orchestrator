@@ -264,6 +264,7 @@ public final class WorkflowBuilder {
             }
             bodyNodes.put(entry.getKey(), nested);
         }
+        validateBodyReferences(bodyNodes);
         validateScope(nodes);
         bodyNodes.values().forEach(this::validateScope);
         ObjectNode metadata = F.objectNode();
@@ -310,6 +311,38 @@ public final class WorkflowBuilder {
             });
         }
         return document;
+    }
+
+    private static void validateBodyReferences(Map<String, List<ObjectNode>> bodyNodes) {
+        Set<String> visiting = new HashSet<>();
+        Set<String> visited = new HashSet<>();
+        for (String bodyName : bodyNodes.keySet()) {
+            visitBody(bodyName, bodyNodes, visiting, visited);
+        }
+    }
+
+    private static void visitBody(
+            String bodyName,
+            Map<String, List<ObjectNode>> bodyNodes,
+            Set<String> visiting,
+            Set<String> visited) {
+        if (!visiting.add(bodyName)) {
+            throw SagatException.invalid("body reference cycle is not allowed");
+        }
+        if (visited.contains(bodyName)) {
+            visiting.remove(bodyName);
+            return;
+        }
+        for (ObjectNode node : bodyNodes.get(bodyName)) {
+            String kind = node.path("type").textValue();
+            String target = node.path("body").textValue();
+            if (("forEach".equals(kind) || "while".equals(kind) || "repeatUntil".equals(kind))
+                    && bodyNodes.containsKey(target)) {
+                visitBody(target, bodyNodes, visiting, visited);
+            }
+        }
+        visiting.remove(bodyName);
+        visited.add(bodyName);
     }
 
     private void validateScope(List<ObjectNode> nodes) {

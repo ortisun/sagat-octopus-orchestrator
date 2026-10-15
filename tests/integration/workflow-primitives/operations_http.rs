@@ -16,6 +16,8 @@ use crate::support::api::{TestApi, json_of};
 struct Fixture {
     api: TestApi,
     tenant: sagat_domain::identity::TenantId,
+    namespace: NamespaceId,
+    version: WorkflowVersionId,
     run: RunId,
 }
 
@@ -261,8 +263,14 @@ async fn fixture(name: &str) -> Fixture {
     let declared = JsonIrCodec
         .parse_declared_state(document(name).to_string().as_bytes())
         .expect("declared document");
-    let (_, run) = seed_version(&api, tenant, namespace, workflow, &declared).await;
-    Fixture { api, tenant, run }
+    let (version, run) = seed_version(&api, tenant, namespace, workflow, &declared).await;
+    Fixture {
+        api,
+        tenant,
+        namespace,
+        version,
+        run,
+    }
 }
 
 fn query_path(fixture: &Fixture) -> String {
@@ -271,6 +279,195 @@ fn query_path(fixture: &Fixture) -> String {
 
 fn update_path(fixture: &Fixture) -> String {
     format!("/runs/{}/updates/balance.replace", fixture.run)
+}
+
+async fn attach_singleton_chain(fixture: &Fixture) {
+    let mut transaction = fixture
+        .api
+        .db
+        .pool
+        .begin()
+        .await
+        .expect("chain transaction");
+    let now = support::now();
+    sqlx::query(
+        "INSERT INTO execution_chains \
+         (tenant_id,namespace_id,chain_id,current_run_id,definition_version_id,started_by, \
+          max_segments,original_deadline_at,created_at,updated_at) \
+         VALUES ($1,$2,$3,$3,$4,'alice',4,$5,$6,$6)",
+    )
+    .bind(fixture.tenant.as_uuid())
+    .bind(fixture.namespace.as_uuid())
+    .bind(fixture.run.as_uuid())
+    .bind(fixture.version.as_uuid())
+    .bind(now + time::Duration::hours(1))
+    .bind(now)
+    .execute(&mut *transaction)
+    .await
+    .expect("chain");
+    sqlx::query(
+        "INSERT INTO chain_segments \
+         (tenant_id,namespace_id,chain_id,segment_index,run_id,created_at) \
+         VALUES ($1,$2,$3,0,$3,$4)",
+    )
+    .bind(fixture.tenant.as_uuid())
+    .bind(fixture.namespace.as_uuid())
+    .bind(fixture.run.as_uuid())
+    .bind(now)
+    .execute(&mut *transaction)
+    .await
+    .expect("initial segment");
+    transaction.commit().await.expect("commit chain");
+}
+
+fn chain_query_path(fixture: &Fixture) -> String {
+    format!(
+        "/namespaces/{}/chains/{}/queries/balance.read",
+        fixture.namespace, fixture.run
+    )
+}
+
+fn chain_update_path(fixture: &Fixture) -> String {
+    format!(
+        "/namespaces/{}/chains/{}/updates/balance.replace",
+        fixture.namespace, fixture.run
+    )
+}
+
+async fn seed_successor(fixture: &Fixture, balance: i64) -> RunId {
+    let (workflow_id, input_digest, state_schema_digest): (Uuid, Vec<u8>, Vec<u8>) =
+        sqlx::query_as(
+            "SELECT r.workflow_id,r.input_digest,s.state_schema_digest \
+             FROM runs r JOIN workflow_operation_states s \
+               ON s.tenant_id=r.tenant_id AND s.run_id=r.id \
+             WHERE r.tenant_id=$1 AND r.id=$2",
+        )
+        .bind(fixture.tenant.as_uuid())
+        .bind(fixture.run.as_uuid())
+        .fetch_one(&fixture.api.db.pool)
+        .await
+        .expect("predecessor state");
+    let state = serde_json::to_vec(&json!({"balance": balance})).expect("successor state");
+    let state_digest = digest(&state);
+    sqlx::query(
+        "INSERT INTO payloads (tenant_id,digest,content) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING",
+    )
+    .bind(fixture.tenant.as_uuid())
+    .bind(state_digest.as_bytes().as_slice())
+    .bind(&state)
+    .execute(&fixture.api.db.pool)
+    .await
+    .expect("successor state payload");
+    let run = RunId::generate();
+    let now = support::now();
+    sqlx::query(
+        "INSERT INTO runs \
+         (id,tenant_id,namespace_id,workflow_id,workflow_version_id,status,run_version, \
+          input_digest,started_by,created_at,updated_at,root_run_id) \
+         VALUES ($1,$2,$3,$4,$5,'WAITING',1,$6,'alice',$7,$7,$8)",
+    )
+    .bind(run.as_uuid())
+    .bind(fixture.tenant.as_uuid())
+    .bind(fixture.namespace.as_uuid())
+    .bind(workflow_id)
+    .bind(fixture.version.as_uuid())
+    .bind(input_digest)
+    .bind(now)
+    .bind(run.as_uuid())
+    .execute(&fixture.api.db.pool)
+    .await
+    .expect("successor run");
+    sqlx::query(
+        "INSERT INTO run_events \
+         (tenant_id,run_id,seq,event_type,detail,actor,occurred_at) \
+         VALUES ($1,$2,1,'run.started',$3,'system:scheduler',$4)",
+    )
+    .bind(fixture.tenant.as_uuid())
+    .bind(run.as_uuid())
+    .bind(json!({"entrypoint": "done"}))
+    .bind(now)
+    .execute(&fixture.api.db.pool)
+    .await
+    .expect("successor journal");
+    sqlx::query(
+        "INSERT INTO workflow_operation_states \
+         (tenant_id,namespace_id,run_id,state_digest,state_schema_digest,state_size_bytes, \
+          state_revision,last_changed_run_version,updated_at) \
+         VALUES ($1,$2,$3,$4,$5,$6,0,1,$7)",
+    )
+    .bind(fixture.tenant.as_uuid())
+    .bind(fixture.namespace.as_uuid())
+    .bind(run.as_uuid())
+    .bind(state_digest.as_bytes().as_slice())
+    .bind(state_schema_digest)
+    .bind(i32::try_from(state.len()).expect("state size"))
+    .bind(now)
+    .execute(&fixture.api.db.pool)
+    .await
+    .expect("successor operation state");
+    run
+}
+
+async fn advance_chain(fixture: &Fixture, successor: RunId) {
+    let mut transaction = fixture.api.db.pool.begin().await.expect("handoff tx");
+    let now = support::now();
+    let successor_input: Vec<u8> =
+        sqlx::query_scalar("SELECT input_digest FROM runs WHERE tenant_id=$1 AND id=$2")
+            .bind(fixture.tenant.as_uuid())
+            .bind(successor.as_uuid())
+            .fetch_one(&mut *transaction)
+            .await
+            .expect("successor input");
+    sqlx::query(
+        "UPDATE runs SET status='SUCCEEDED',finished_at=$3,updated_at=$3 \
+         WHERE tenant_id=$1 AND id=$2",
+    )
+    .bind(fixture.tenant.as_uuid())
+    .bind(fixture.run.as_uuid())
+    .bind(now)
+    .execute(&mut *transaction)
+    .await
+    .expect("complete predecessor");
+    sqlx::query(
+        "UPDATE chain_segments SET completion_kind='CONTINUED',successor_run_id=$4, \
+                transfer_input_digest=$5,completed_at=$6 \
+         WHERE tenant_id=$1 AND namespace_id=$2 AND chain_id=$3 AND segment_index=0",
+    )
+    .bind(fixture.tenant.as_uuid())
+    .bind(fixture.namespace.as_uuid())
+    .bind(fixture.run.as_uuid())
+    .bind(successor.as_uuid())
+    .bind(successor_input)
+    .bind(now)
+    .execute(&mut *transaction)
+    .await
+    .expect("complete predecessor segment");
+    sqlx::query(
+        "INSERT INTO chain_segments \
+         (tenant_id,namespace_id,chain_id,segment_index,run_id,predecessor_run_id,created_at) \
+         VALUES ($1,$2,$3,1,$4,$3,$5)",
+    )
+    .bind(fixture.tenant.as_uuid())
+    .bind(fixture.namespace.as_uuid())
+    .bind(fixture.run.as_uuid())
+    .bind(successor.as_uuid())
+    .bind(now)
+    .execute(&mut *transaction)
+    .await
+    .expect("successor segment");
+    sqlx::query(
+        "UPDATE execution_chains SET current_run_id=$4,segment_count=2,revision=revision+1,updated_at=$5 \
+         WHERE tenant_id=$1 AND namespace_id=$2 AND chain_id=$3",
+    )
+    .bind(fixture.tenant.as_uuid())
+    .bind(fixture.namespace.as_uuid())
+    .bind(fixture.run.as_uuid())
+    .bind(successor.as_uuid())
+    .bind(now)
+    .execute(&mut *transaction)
+    .await
+    .expect("advance chain head");
+    transaction.commit().await.expect("commit handoff");
 }
 
 #[tokio::test]
@@ -351,6 +548,293 @@ async fn query_returns_only_the_declared_result_without_mutating_the_run() {
         .await;
     assert_eq!(missing.status(), StatusCode::NOT_FOUND);
     assert_eq!(missing.headers()["cache-control"], "no-store");
+}
+
+#[tokio::test]
+async fn chain_query_resolves_one_head_and_enforces_tenant_and_expected_run() {
+    let fixture = fixture("http-chain-declared-query").await;
+    attach_singleton_chain(&fixture).await;
+    add_member(&fixture, "vera", Role::Viewer).await;
+    let path = chain_query_path(&fixture);
+
+    let viewer = fixture
+        .api
+        .post_as(&path, "vera", "acme", &json!({"args": 5}))
+        .await;
+    assert_eq!(viewer.status(), StatusCode::FORBIDDEN);
+    assert_eq!(viewer.headers()["cache-control"], "no-store");
+    assert_eq!(json_of(viewer).await["code"], "FORBIDDEN");
+
+    let response = fixture
+        .api
+        .post_as(
+            &path,
+            "alice",
+            "acme",
+            &json!({"args": 5, "expectedRunId": fixture.run.to_string()}),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    let body = json_of(response).await;
+    assert_eq!(body["runId"], fixture.run.to_string());
+    assert_eq!(body["runVersion"], 1);
+    assert_eq!(body["stateRevision"], 0);
+    assert_eq!(body["result"], 15);
+
+    let stale = fixture
+        .api
+        .post_as(
+            &path,
+            "alice",
+            "acme",
+            &json!({"args": 5, "expectedRunId": RunId::generate().to_string()}),
+        )
+        .await;
+    assert_eq!(stale.status(), StatusCode::CONFLICT);
+    assert_eq!(stale.headers()["cache-control"], "no-store");
+    let stale = json_of(stale).await;
+    assert_eq!(stale["code"], "CONFLICT");
+    assert_eq!(stale["details"]["reason"], "CHAIN_HEAD_CHANGED");
+
+    let foreign = fixture
+        .api
+        .post_as(&path, "bob", "globex", &json!({"args": 5}))
+        .await;
+    assert_eq!(foreign.status(), StatusCode::NOT_FOUND);
+    assert_eq!(foreign.headers()["cache-control"], "no-store");
+
+    let audits: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_records WHERE tenant_id=$1 AND action='run.queried' \
+         AND resource_id=$2 AND actor='alice' AND reason='operation=balance.read'",
+    )
+    .bind(fixture.tenant.as_uuid())
+    .bind(fixture.run.to_string())
+    .fetch_one(&fixture.api.db.pool)
+    .await
+    .expect("chain query audit");
+    assert_eq!(audits, 1);
+    let viewer_audits: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_records WHERE tenant_id=$1 AND action='run.queried' \
+         AND resource_id=$2 AND actor='vera'",
+    )
+    .bind(fixture.tenant.as_uuid())
+    .bind(fixture.run.to_string())
+    .fetch_one(&fixture.api.db.pool)
+    .await
+    .expect("viewer query audit");
+    assert_eq!(viewer_audits, 0);
+}
+
+#[tokio::test]
+async fn chain_update_keeps_one_receipt_across_handoff_and_cas_protects_new_keys() {
+    let fixture = fixture("http-chain-declared-update").await;
+    attach_singleton_chain(&fixture).await;
+    add_member(&fixture, "vera", Role::Viewer).await;
+    let path = chain_update_path(&fixture);
+    let body = json!({
+        "updateKey": "chain-balance-27",
+        "args": {"allowed": true, "nextState": {"balance": 27}},
+        "expectedStateRevision": 0
+    });
+
+    let viewer = fixture.api.post_as(&path, "vera", "acme", &body).await;
+    assert_eq!(viewer.status(), StatusCode::FORBIDDEN);
+    assert_eq!(viewer.headers()["cache-control"], "no-store");
+
+    let foreign = fixture.api.post_as(&path, "bob", "globex", &body).await;
+    assert_eq!(foreign.status(), StatusCode::NOT_FOUND);
+    assert_eq!(foreign.headers()["cache-control"], "no-store");
+
+    let mut chain_lock = fixture.api.db.pool.begin().await.expect("chain lock tx");
+    let locked: Uuid = sqlx::query_scalar(
+        "SELECT current_run_id FROM execution_chains \
+         WHERE tenant_id=$1 AND namespace_id=$2 AND chain_id=$3 FOR UPDATE",
+    )
+    .bind(fixture.tenant.as_uuid())
+    .bind(fixture.namespace.as_uuid())
+    .bind(fixture.run.as_uuid())
+    .fetch_one(&mut *chain_lock)
+    .await
+    .expect("lock current head");
+    assert_eq!(locked, fixture.run.as_uuid());
+    let mut first_request = Box::pin(fixture.api.post_as(&path, "alice", "acme", &body));
+    tokio::select! {
+        response = &mut first_request => panic!("chain update bypassed the chain lock: {}", response.status()),
+        () = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
+    }
+    chain_lock.commit().await.expect("release chain lock");
+    let first = first_request.await;
+    assert_eq!(first.status(), StatusCode::OK);
+    assert_eq!(first.headers()["cache-control"], "no-store");
+    let first = json_of(first).await;
+    assert_eq!(first["runId"], fixture.run.to_string());
+    assert_eq!(first["result"], 27);
+    assert_eq!(first["replayed"], false);
+
+    let explicit = json!({
+        "updateKey": "chain-explicit-head",
+        "args": {"allowed": true, "nextState": {"balance": 28}},
+        "expectedRunId": fixture.run.to_string(),
+        "expectedStateRevision": 1
+    });
+    let explicit_first = fixture.api.post_as(&path, "alice", "acme", &explicit).await;
+    assert_eq!(explicit_first.status(), StatusCode::OK);
+    let explicit_first = json_of(explicit_first).await;
+    assert_eq!(explicit_first["runId"], fixture.run.to_string());
+    assert_eq!(explicit_first["result"], 28);
+    assert_eq!(explicit_first["replayed"], false);
+
+    let denied = json!({
+        "updateKey": "chain-validator-rejection",
+        "args": {"allowed": false, "nextState": {"balance": 99}}
+    });
+    let denied_first = fixture.api.post_as(&path, "alice", "acme", &denied).await;
+    assert_eq!(denied_first.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(denied_first.headers()["cache-control"], "no-store");
+    assert_eq!(json_of(denied_first).await["details"]["replayed"], false);
+
+    let successor = seed_successor(&fixture, 50).await;
+    advance_chain(&fixture, successor).await;
+
+    let replay = fixture.api.post_as(&path, "alice", "acme", &body).await;
+    assert_eq!(replay.status(), StatusCode::OK);
+    assert_eq!(replay.headers()["cache-control"], "no-store");
+    let replay = json_of(replay).await;
+    assert_eq!(replay["runId"], fixture.run.to_string());
+    assert_eq!(replay["result"], 27);
+    assert_eq!(replay["replayed"], true);
+
+    let explicit_replay = fixture.api.post_as(&path, "alice", "acme", &explicit).await;
+    assert_eq!(explicit_replay.status(), StatusCode::OK);
+    let explicit_replay = json_of(explicit_replay).await;
+    assert_eq!(explicit_replay["runId"], fixture.run.to_string());
+    assert_eq!(explicit_replay["result"], 28);
+    assert_eq!(explicit_replay["replayed"], true);
+
+    let denied_replay = fixture.api.post_as(&path, "alice", "acme", &denied).await;
+    assert_eq!(denied_replay.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let denied_replay = json_of(denied_replay).await;
+    assert_eq!(denied_replay["details"]["runId"], fixture.run.to_string());
+    assert_eq!(denied_replay["details"]["replayed"], true);
+
+    let changed = fixture
+        .api
+        .post_as(
+            &path,
+            "alice",
+            "acme",
+            &json!({
+                "updateKey": "chain-balance-27",
+                "args": {"allowed": true, "nextState": {"balance": 28}},
+                "expectedStateRevision": 0
+            }),
+        )
+        .await;
+    assert_eq!(changed.status(), StatusCode::CONFLICT);
+    assert_eq!(changed.headers()["cache-control"], "no-store");
+    assert_eq!(
+        json_of(changed).await["details"]["reason"],
+        "IDEMPOTENCY_KEY_REUSED"
+    );
+
+    let stale = fixture
+        .api
+        .post_as(
+            &path,
+            "alice",
+            "acme",
+            &json!({
+                "updateKey": "chain-stale-head",
+                "args": {"allowed": true, "nextState": {"balance": 60}},
+                "expectedRunId": fixture.run.to_string()
+            }),
+        )
+        .await;
+    assert_eq!(stale.status(), StatusCode::CONFLICT);
+    assert_eq!(stale.headers()["cache-control"], "no-store");
+    assert_eq!(
+        json_of(stale).await["details"]["reason"],
+        "CHAIN_HEAD_CHANGED"
+    );
+
+    let next = fixture
+        .api
+        .post_as(
+            &path,
+            "alice",
+            "acme",
+            &json!({
+                "updateKey": "chain-successor",
+                "args": {"allowed": true, "nextState": {"balance": 61}},
+                "expectedRunId": successor.to_string(),
+                "expectedStateRevision": 0
+            }),
+        )
+        .await;
+    assert_eq!(next.status(), StatusCode::OK);
+    let next = json_of(next).await;
+    assert_eq!(next["runId"], successor.to_string());
+    assert_eq!(next["result"], 61);
+
+    let receipts: Vec<(Uuid, Uuid, String)> = sqlx::query_as(
+        "SELECT target_id,resolved_run_id,update_key FROM operation_update_receipts \
+         WHERE tenant_id=$1 AND namespace_id=$2 AND address_scope='CHAIN' \
+         ORDER BY update_key",
+    )
+    .bind(fixture.tenant.as_uuid())
+    .bind(fixture.namespace.as_uuid())
+    .fetch_all(&fixture.api.db.pool)
+    .await
+    .expect("chain update receipts");
+    assert_eq!(receipts.len(), 4);
+    assert!(
+        receipts
+            .iter()
+            .all(|receipt| receipt.0 == fixture.run.as_uuid())
+    );
+    assert!(
+        receipts.iter().any(|receipt| {
+            receipt.1 == fixture.run.as_uuid() && receipt.2 == "chain-balance-27"
+        })
+    );
+    assert!(receipts.iter().any(|receipt| {
+        receipt.1 == fixture.run.as_uuid() && receipt.2 == "chain-explicit-head"
+    }));
+    assert!(receipts.iter().any(|receipt| {
+        receipt.1 == fixture.run.as_uuid() && receipt.2 == "chain-validator-rejection"
+    }));
+    assert!(
+        receipts
+            .iter()
+            .any(|receipt| { receipt.1 == successor.as_uuid() && receipt.2 == "chain-successor" })
+    );
+
+    let audits: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT resource_id,count(*) FROM audit_records \
+         WHERE tenant_id=$1 AND action='run.updated' AND actor='alice' \
+           AND reason LIKE 'operation=balance.replace;outcome=%' \
+           AND resource_id IN ($2,$3) GROUP BY resource_id ORDER BY resource_id",
+    )
+    .bind(fixture.tenant.as_uuid())
+    .bind(fixture.run.to_string())
+    .bind(successor.to_string())
+    .fetch_all(&fixture.api.db.pool)
+    .await
+    .expect("resolved update audits");
+    assert!(audits.contains(&(fixture.run.to_string(), 6)));
+    assert!(audits.contains(&(successor.to_string(), 1)));
+    let viewer_audits: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_records WHERE tenant_id=$1 AND action='run.updated' \
+         AND actor='vera' AND resource_id IN ($2,$3)",
+    )
+    .bind(fixture.tenant.as_uuid())
+    .bind(fixture.run.to_string())
+    .bind(successor.to_string())
+    .fetch_one(&fixture.api.db.pool)
+    .await
+    .expect("viewer update audit");
+    assert_eq!(viewer_audits, 0);
 }
 
 #[tokio::test]

@@ -618,6 +618,37 @@ func (b *Builder) Build() (map[string]any, error) {
 		}
 		bodyNodes[name] = nested
 	}
+	visiting := make(map[string]bool, len(bodyNodes))
+	visited := make(map[string]bool, len(bodyNodes))
+	var visitBody func(string) error
+	visitBody = func(name string) error {
+		if visiting[name] {
+			return sagat.Invalid("body reference cycle is not allowed")
+		}
+		if visited[name] {
+			return nil
+		}
+		visiting[name] = true
+		for _, n := range bodyNodes[name] {
+			kind, _ := n["type"].(string)
+			if kind == "forEach" || kind == "while" || kind == "repeatUntil" {
+				target, _ := n["body"].(string)
+				if _, found := bodyNodes[target]; found {
+					if err := visitBody(target); err != nil {
+						return err
+					}
+				}
+			}
+		}
+		visiting[name] = false
+		visited[name] = true
+		return nil
+	}
+	for name := range bodyNodes {
+		if err := visitBody(name); err != nil {
+			return nil, err
+		}
+	}
 	validateScope := func(scope []node) error {
 		local := make(map[string]struct{}, len(scope))
 		for _, n := range scope {

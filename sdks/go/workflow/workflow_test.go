@@ -222,6 +222,18 @@ func TestCollectionsUseNamedBodiesAndMapWritesTheSameForEachNode(t *testing.T) {
 	}
 }
 
+func TestNamedBodiesCannotReferenceThemselves(t *testing.T) {
+	recursive := workflow.Flow().ForEach("nested", "input.items", "line", "bodyResult", 2, 1).
+		Return("return", "steps.nested.output")
+	_, err := workflow.New("recursive-body").
+		Body("line", recursive).
+		ForEach("lines", "input.items", "line", "bodyResult", 2, 1).
+		End("done").Build()
+	if err == nil || !strings.Contains(err.Error(), "body reference cycle") {
+		t.Fatalf("recursive body error = %v", err)
+	}
+}
+
 func TestWhileAndRepeatUntilWriteBoundedPreTestAndPostTestLoopNodes(t *testing.T) {
 	iteration := workflow.Flow().Step("increment", "counter.increment").Return("return", "steps.increment.output")
 	document, err := workflow.New("loop-flow").

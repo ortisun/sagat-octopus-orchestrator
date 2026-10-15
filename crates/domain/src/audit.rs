@@ -31,6 +31,8 @@ pub enum AuditAction {
     RunContinued,
     /// A scheduler committed the terminal outcome of a run and its execution chain.
     RunFinished,
+    /// Retained workflow content exceeded the tenant storage ceiling and forced the run to stop.
+    RunStorageQuotaExceeded,
     RunCancelRequested,
     RunPaused,
     RunResumed,
@@ -231,6 +233,7 @@ impl AuditAction {
             Self::RunStarted => "run.started",
             Self::RunContinued => "run.continued",
             Self::RunFinished => "run.finished",
+            Self::RunStorageQuotaExceeded => "run.storage_quota_exceeded",
             Self::RunCancelRequested => "run.cancel_requested",
             Self::RunPaused => "run.paused",
             Self::RunResumed => "run.resumed",

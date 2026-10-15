@@ -200,6 +200,74 @@ fn loop_instance_receives_its_iteration_and_carry() {
 }
 
 #[test]
+fn loop_decisions_bind_the_condition_to_the_new_carry() {
+    let evaluator = JsonEvaluator;
+    let entry = evaluator
+        .loop_entry(
+            &Expression::parse("input.start").expect("initial"),
+            Some(&Expression::parse("carry < 3").expect("condition")),
+            &RunData {
+                input: br#"{"start":1}"#.to_vec(),
+                ..RunData::default()
+            },
+        )
+        .expect("entry decision");
+    assert_eq!(entry.carry, b"1");
+    assert_eq!(entry.condition, Some(true));
+
+    let path = InstancePath::root()
+        .child(node("poll"), 0)
+        .expect("iteration path");
+    let returned = ExecutionInstanceId::in_path(path.clone(), node("returned"));
+    let mut data = RunData {
+        input: br#"{"start":1}"#.to_vec(),
+        ..RunData::default()
+    };
+    data.scope_inputs.insert(
+        path.clone(),
+        ScopeInput::Loop {
+            iteration: 0,
+            carry: b"1".to_vec(),
+        },
+    );
+    data.insert_output(
+        ExecutionInstanceId::in_path(path, node("work")),
+        b"2".to_vec(),
+    );
+    let checkpoint = evaluator
+        .loop_checkpoint(
+            &Expression::parse("steps.work.output").expect("result"),
+            &Expression::parse("bodyResult + 1").expect("carry"),
+            &Expression::parse("carry >= 3").expect("condition"),
+            &data,
+            &returned,
+        )
+        .expect("checkpoint decision");
+    assert_eq!(checkpoint.result, b"2");
+    assert_eq!(checkpoint.carry, b"3");
+    assert!(checkpoint.condition);
+}
+
+#[test]
+fn loop_checkpoint_fails_without_the_exact_iteration_context() {
+    let error = JsonEvaluator
+        .loop_checkpoint(
+            &Expression::parse("bodyResult").expect("result"),
+            &Expression::parse("bodyResult").expect("carry"),
+            &Expression::parse("carry == 1").expect("condition"),
+            &RunData::default(),
+            &ExecutionInstanceId::in_path(
+                InstancePath::root()
+                    .child(node("poll"), 0)
+                    .expect("iteration path"),
+                node("returned"),
+            ),
+        )
+        .expect_err("missing loop context must fail closed");
+    assert!(error.to_string().contains("iteration input is unavailable"));
+}
+
+#[test]
 fn collection_expressions_keep_item_order_and_exact_scope() {
     let evaluator = JsonEvaluator;
     let path = InstancePath::root()

@@ -226,6 +226,16 @@ public sealed record ApprovalListOptions
 /// <summary>The result of a declared query and the committed revisions it observed.</summary>
 public sealed record QueryResult(string RunId, long RunVersion, long StateRevision, JsonElement Result, JsonElement Raw);
 
+/// <summary>Options for resolving and querying a continuation chain head.</summary>
+public sealed record ChainQueryOptions
+{
+    /// <summary>Require this run to remain the current head while the query is evaluated.</summary>
+    public string? ExpectedRunId { get; init; }
+
+    /// <summary>An explicit W3C <c>traceparent</c>.</summary>
+    public string? Traceparent { get; init; }
+}
+
 /// <summary>Options that identify one durable state update.</summary>
 public sealed record UpdateOptions
 {
