@@ -1,10 +1,12 @@
 # Workflow primitives: operating and validating the current build
 
 The public workflow document remains additive `sagat-octopus-orchestrator.io/v1`. Bounded
-`switch` is the available runtime primitive. Collection, loop, approval, declared operations and
-continuation have private models or storage in progress; their builder fixtures and private
-integration tests do not authorize publishing those nodes. The publication parser must keep
-rejecting them until each primitive's fault, security, compatibility and recovery gates pass.
+`switch` and run-addressed declared Query/Update are available with the existing basic root
+nodes. Collection, loop, human approval and continuation documents still fail publication.
+Their builder fixtures and private integration tests do not authorize publishing those nodes.
+The worker adapter advertises minor 1.4; scoped 1.5 execution is enabled only in the test
+harness. Keep these gates closed until each primitive's fault, security, compatibility and
+recovery evidence is complete.
 
 ## Check the running system
 
@@ -29,11 +31,13 @@ SAGAT_SDK_SCENARIO=collection-builders cargo test -p sagat-tests --test sdk_conf
 SAGAT_SDK_SCENARIO=loop-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
 SAGAT_SDK_SCENARIO=approval-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
 SAGAT_SDK_SCENARIO=continuation-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
+SAGAT_SDK_SCENARIO=state-operations cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
 ```
 
-These scenarios compare complete normalized documents with reviewed goldens; they do not call the
-server's runtime APIs. Do not replace a golden merely because a builder output changed: inspect
-the contract and the intended compatibility behavior first.
+The four builder scenarios compare normalized documents with reviewed goldens and do not call
+the server's runtime APIs. `state-operations` publishes a supported document and exercises
+Query/Update through the real server in all five languages. Do not replace a golden merely
+because an output changed: inspect the contract and intended compatibility behavior first.
 
 ## Diagnose a stuck or duplicated transition
 
@@ -54,10 +58,22 @@ reconciliation procedure; neither a journal event nor an SDK retry makes an exte
 exactly once.
 
 For declared Update, check the operation name, immutable definition version, expected state
-revision, request hash and update key. A durable rejected receipt must replay the same business
-result after the caller's current authorization is rechecked. Query reads one committed snapshot
-and adds an access audit, without appending a workflow event or scheduling work. Do not expose
-these operations until schema evaluation, role checks and malicious-handler tests pass.
+revision, request hash and update key. `POST /runs/{runId}/updates/{operationName}` rechecks
+current authorization even on receipt replay. A durable rejected receipt replays the same
+business result. `POST /runs/{runId}/queries/{operationName}` reads one committed snapshot and
+adds an access audit without appending a workflow event or scheduling work. Both responses must
+carry `Cache-Control: no-store`; a foreign tenant's run remains opaque. A stale state revision
+is a conflict, while a schema or declared-business rejection has a typed reason. If an outbox
+write fails, the state, receipt and journal must all roll back before retrying the same update
+key.
+
+For chain commands, use `GET /namespaces/{namespaceId}/chains/{chainId}` to inspect the current
+head. `POST` to the chain's `signals/{signalName}` or `cancel` path requires `expectedRunId` in
+the body and `Idempotency-Key` in the header. `CHAIN_HEAD_CHANGED` means the caller should
+inspect again before choosing a new command. Replaying the same key and body returns the same
+receipt; a different body is a conflict. These endpoints can operate on an existing retained
+chain, but a published workflow cannot yet create or hand off a chain. Exact-run commands remain
+bound to their segment and do not forward silently.
 
 ## Rollback and compatibility
 
