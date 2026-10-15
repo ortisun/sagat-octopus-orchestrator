@@ -79,6 +79,30 @@ impl ErrorCode {
             (Self::Conflict, "STATE_CONFLICT") => {
                 "Read the resource again: someone else may have already done this, or it is in a state that does not allow it."
             }
+            (Self::ValidationFailed, "INVALID_SCOPE") => {
+                "Keep the referenced node inside its declared body and remove recursive or overlapping scope paths."
+            }
+            (Self::ValidationFailed, "INVALID_OPERATION_STATE") => {
+                "Use the declared bounded state schema and return a value that matches it."
+            }
+            (Self::ValidationFailed, "UPDATE_REJECTED") => {
+                "Change the update arguments so they satisfy the declared business validator."
+            }
+            (Self::Forbidden, "NOT_ELIGIBLE") => {
+                "Ask an eligible decision maker with the approval permission to decide this request."
+            }
+            (Self::Forbidden, "INITIATOR_CANNOT_DECIDE") => {
+                "Ask a different eligible person to decide this approval request."
+            }
+            (Self::Conflict, "CHAIN_HEAD_CHANGED") => {
+                "Read the chain head again and retry only if that run is still the intended target."
+            }
+            (Self::Conflict, "RUN_NOT_MUTABLE") => {
+                "Read the run status and submit the update only while it is running or waiting."
+            }
+            (Self::Conflict, "RUN_CONTINUED") => {
+                "Address the current chain head explicitly if the update is meant for its successor."
+            }
             (Self::NotFound, "ROUTE_NOT_FOUND") | (Self::BadRequest, "METHOD_NOT_ALLOWED") => {
                 "This server does not have that call: check the path and method, and the version of the API it speaks."
             }

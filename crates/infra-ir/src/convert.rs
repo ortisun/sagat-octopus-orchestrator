@@ -7,7 +7,9 @@
 use std::time::Duration;
 
 use sagat_application::definitions::{IrError, IrIssue};
+use sagat_domain::execution::ApprovalPolicy;
 use sagat_domain::identity::Slug;
+use sagat_domain::identity::{Role, Subject};
 use sagat_domain::saga::{EffectPolicy, OnCompensationFailure, SagaCancelPolicy};
 use sagat_domain::scripts::{Digest, Language, activity_of};
 use sagat_domain::secrets::{MAX_SECRETS_PER_ACTIVITY, SecretName};
@@ -86,7 +88,7 @@ fn unsupported_structured(kind: &str) -> Option<&'static str> {
     Some(match kind {
         "foreach" => "legacy collection placeholder has no executable definition",
         "humanApproval" => "legacy approval placeholder has no executable definition",
-        "approval" | "continueAsNew" => "this workflow capability has no validated domain mapping",
+        "continueAsNew" => "this workflow capability has no validated domain mapping",
         _ => return None,
     })
 }
@@ -411,6 +413,53 @@ fn kind_of(node: &Map<String, Value>, kind: &str, at: &str) -> Result<NodeKind, 
                 Some(_) => Some(millis(node, "delayMs", at)?),
             },
         },
+        "approval" => {
+            let policy_path = format!("{at}/policy");
+            let policy = node
+                .get("policy")
+                .and_then(Value::as_object)
+                .ok_or_else(|| issue(policy_path.clone(), "expected an object"))?;
+            let subjects = policy
+                .get("subjects")
+                .and_then(Value::as_array)
+                .map_or(&[][..], Vec::as_slice)
+                .iter()
+                .enumerate()
+                .map(|(index, value)| {
+                    let path = format!("{policy_path}/subjects/{index}");
+                    value
+                        .as_str()
+                        .ok_or_else(|| issue(path.clone(), "expected a string"))
+                        .and_then(|value| Subject::parse(value).map_err(|error| issue(path, error.to_string())))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let roles = policy
+                .get("roles")
+                .and_then(Value::as_array)
+                .map_or(&[][..], Vec::as_slice)
+                .iter()
+                .enumerate()
+                .map(|(index, value)| {
+                    let path = format!("{policy_path}/roles/{index}");
+                    value
+                        .as_str()
+                        .ok_or_else(|| issue(path.clone(), "expected a string"))
+                        .and_then(|value| value.parse::<Role>().map_err(|error| issue(path, error.to_string())))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let exclude_initiator = policy
+                .get("excludeInitiator")
+                .map(Value::as_bool)
+                .unwrap_or(Some(true))
+                .ok_or_else(|| issue(format!("{policy_path}/excludeInitiator"), "expected a boolean"))?;
+            NodeKind::Approval {
+                policy: ApprovalPolicy::with_initiator_exclusion(subjects, roles, exclude_initiator)
+                    .map_err(|error| issue(policy_path, error.to_string()))?,
+                on_approve: node_id(text(node, "onApprove", at)?, &format!("{at}/onApprove"))?,
+                on_reject: node_id(text(node, "onReject", at)?, &format!("{at}/onReject"))?,
+                on_expire: node_id(text(node, "onExpire", at)?, &format!("{at}/onExpire"))?,
+            }
+        }
         "return" => NodeKind::Return {
             result: expression(text(node, "result", at)?, &format!("{at}/result"))?,
         },

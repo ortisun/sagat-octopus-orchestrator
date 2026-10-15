@@ -233,7 +233,11 @@ fn start_pending(
                 input: input.clone(),
             }),
             NodeKind::End { .. } => Plan::Emit(RunEvent::EndReached { node: node.clone() }),
-            NodeKind::ForEach { .. } | NodeKind::Return { .. } => {
+            NodeKind::ForEach { .. }
+            | NodeKind::Approval { .. }
+            | NodeKind::While { .. }
+            | NodeKind::RepeatUntil { .. }
+            | NodeKind::Return { .. } => {
                 return Err(ExecutionError::UnsupportedStructuredNode(node.clone()));
             }
         };

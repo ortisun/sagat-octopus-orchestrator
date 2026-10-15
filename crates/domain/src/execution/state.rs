@@ -14,8 +14,8 @@ use time::OffsetDateTime;
 use super::error::ExecutionError;
 use super::event::{
     AddressedRunEvent, ChildOutcome, CollectionDrainReason, CollectionOutcome, CorrelationKey,
-    FailureCode, JoinOutcome, ReconcileResult, ReviewOutcome, RunEvent, StopReason,
-    SwitchSelection,
+    FailureCode, JoinOutcome, LoopContinuation, LoopDrainReason, LoopKind, LoopOutcome,
+    ReconcileResult, ReviewOutcome, RunEvent, StopReason, SwitchSelection,
 };
 use super::instance::{ExecutionInstanceId, InstancePath, MAX_ITERATION_INDEX};
 use crate::identity::IdentityError;
@@ -226,6 +226,8 @@ pub enum WaitingOn {
     Branches,
     /// A bounded dynamic collection whose accepted iterations are tracked separately.
     Collection,
+    /// A sequential loop whose current iteration or delay is tracked separately.
+    Loop,
     /// A child run, reserved by `child.started`; it may not exist yet.
     Child {
         run: RunId,
@@ -268,6 +270,64 @@ pub struct CollectionResult {
     digest: Digest,
 }
 
+/// One collection iteration reconstructed from durable projection rows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CollectionIterationRestore {
+    index: u32,
+    entry: ExecutionInstanceId,
+    item_digest: Digest,
+    returned: Option<(ExecutionInstanceId, Option<Digest>)>,
+}
+
+impl CollectionIterationRestore {
+    #[must_use]
+    pub const fn admitted(index: u32, entry: ExecutionInstanceId, item_digest: Digest) -> Self {
+        Self {
+            index,
+            entry,
+            item_digest,
+            returned: None,
+        }
+    }
+
+    #[must_use]
+    pub fn returned(
+        index: u32,
+        entry: ExecutionInstanceId,
+        item_digest: Digest,
+        return_instance: ExecutionInstanceId,
+    ) -> Self {
+        Self {
+            index,
+            entry,
+            item_digest,
+            returned: Some((return_instance, None)),
+        }
+    }
+
+    #[must_use]
+    pub fn checkpointed(
+        index: u32,
+        entry: ExecutionInstanceId,
+        item_digest: Digest,
+        return_instance: ExecutionInstanceId,
+        result_digest: Digest,
+    ) -> Self {
+        Self {
+            index,
+            entry,
+            item_digest,
+            returned: Some((return_instance, Some(result_digest))),
+        }
+    }
+
+    fn is_active(&self) -> bool {
+        self.returned
+            .as_ref()
+            .is_none_or(|(_, result_digest)| result_digest.is_none())
+    }
+}
+
 impl CollectionResult {
     #[must_use]
     pub const fn return_instance(&self) -> &ExecutionInstanceId {
@@ -303,6 +363,7 @@ pub struct CollectionState {
     item_digests: BTreeMap<u32, Digest>,
     iterations: BTreeMap<u32, CollectionIterationState>,
     results: BTreeMap<u32, CollectionResult>,
+    result_digest: Option<Digest>,
     drain_reason: Option<CollectionDrainReason>,
 }
 
@@ -351,6 +412,11 @@ impl CollectionState {
     }
 
     #[must_use]
+    pub const fn result_digest(&self) -> Option<Digest> {
+        self.result_digest
+    }
+
+    #[must_use]
     pub fn item_digest(&self, index: u32) -> Option<Digest> {
         self.item_digests.get(&index).copied()
     }
@@ -363,6 +429,148 @@ impl CollectionState {
     #[must_use]
     pub fn drain_reason(&self) -> Option<&CollectionDrainReason> {
         self.drain_reason.as_ref()
+    }
+}
+
+/// Durable lifecycle of one sequential loop scope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoopPhase {
+    Ready,
+    Running,
+    Delaying,
+    Draining,
+    Succeeded,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LoopActiveIteration {
+    index: u32,
+    entry: ExecutionInstanceId,
+    return_instance: Option<ExecutionInstanceId>,
+}
+
+/// Immutable evidence committed after one loop body returns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoopCheckpoint {
+    return_instance: ExecutionInstanceId,
+    result_digest: Digest,
+    carry_digest: Digest,
+    condition: bool,
+    checked_at: OffsetDateTime,
+    continuation: LoopContinuation,
+}
+
+impl LoopCheckpoint {
+    #[must_use]
+    pub const fn return_instance(&self) -> &ExecutionInstanceId {
+        &self.return_instance
+    }
+
+    #[must_use]
+    pub const fn result_digest(&self) -> Digest {
+        self.result_digest
+    }
+
+    #[must_use]
+    pub const fn carry_digest(&self) -> Digest {
+        self.carry_digest
+    }
+
+    #[must_use]
+    pub const fn condition(&self) -> bool {
+        self.condition
+    }
+
+    #[must_use]
+    pub const fn checked_at(&self) -> OffsetDateTime {
+        self.checked_at
+    }
+
+    #[must_use]
+    pub const fn continuation(&self) -> LoopContinuation {
+        self.continuation
+    }
+}
+
+/// Journal-derived progress for one sequential loop activation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoopState {
+    kind: LoopKind,
+    phase: LoopPhase,
+    max_iterations: u32,
+    entered_at: OffsetDateTime,
+    deadline: OffsetDateTime,
+    initial_carry_digest: Digest,
+    current_carry_digest: Digest,
+    next_iteration: u32,
+    active: Option<LoopActiveIteration>,
+    checkpoints: BTreeMap<u32, LoopCheckpoint>,
+    delay_until: Option<OffsetDateTime>,
+    drain_reason: Option<LoopDrainReason>,
+    failure: Option<FailureCode>,
+}
+
+impl LoopState {
+    #[must_use]
+    pub const fn kind(&self) -> LoopKind {
+        self.kind
+    }
+
+    #[must_use]
+    pub const fn phase(&self) -> LoopPhase {
+        self.phase
+    }
+
+    #[must_use]
+    pub const fn max_iterations(&self) -> u32 {
+        self.max_iterations
+    }
+
+    #[must_use]
+    pub const fn entered_at(&self) -> OffsetDateTime {
+        self.entered_at
+    }
+
+    #[must_use]
+    pub const fn deadline(&self) -> OffsetDateTime {
+        self.deadline
+    }
+
+    #[must_use]
+    pub const fn initial_carry_digest(&self) -> Digest {
+        self.initial_carry_digest
+    }
+
+    #[must_use]
+    pub const fn current_carry_digest(&self) -> Digest {
+        self.current_carry_digest
+    }
+
+    #[must_use]
+    pub const fn next_iteration(&self) -> u32 {
+        self.next_iteration
+    }
+
+    #[must_use]
+    pub fn checkpoint(&self, index: u32) -> Option<&LoopCheckpoint> {
+        self.checkpoints.get(&index)
+    }
+
+    #[must_use]
+    pub const fn delay_until(&self) -> Option<OffsetDateTime> {
+        self.delay_until
+    }
+
+    #[must_use]
+    pub const fn drain_reason(&self) -> Option<&LoopDrainReason> {
+        self.drain_reason.as_ref()
+    }
+
+    #[must_use]
+    pub const fn failure(&self) -> Option<&FailureCode> {
+        self.failure.as_ref()
     }
 }
 
@@ -633,6 +841,7 @@ pub struct RunState {
     paused: bool,
     steps: BTreeMap<ExecutionInstanceId, StepState>,
     collections: BTreeMap<ExecutionInstanceId, CollectionState>,
+    loops: BTreeMap<ExecutionInstanceId, LoopState>,
     sagas: BTreeMap<NodeId, SagaState>,
     applied: u64,
 }
@@ -648,6 +857,7 @@ impl RunState {
             paused: false,
             steps: BTreeMap::new(),
             collections: BTreeMap::new(),
+            loops: BTreeMap::new(),
             sagas: BTreeMap::new(),
             applied: 0,
         }
@@ -729,6 +939,7 @@ impl RunState {
             paused,
             steps,
             collections: BTreeMap::new(),
+            loops: BTreeMap::new(),
             sagas,
             applied: version,
         }
@@ -787,9 +998,172 @@ impl RunState {
         self.collections.get(id)
     }
 
+    #[must_use]
+    pub fn loop_state(&self, id: &ExecutionInstanceId) -> Option<&LoopState> {
+        self.loops.get(id)
+    }
+
     /// Every entered collection scope, ordered by its complete instance identity.
     pub fn collections(&self) -> impl Iterator<Item = (&ExecutionInstanceId, &CollectionState)> {
         self.collections.iter()
+    }
+
+    /// Restores collection progress from its trusted projection without advancing the journal
+    /// sequence. The owner, admitted entries and recorded returns must already exist in the
+    /// restored step map.
+    ///
+    /// # Errors
+    /// Returns an execution invariant error when the projection is internally inconsistent.
+    #[allow(clippy::too_many_arguments)]
+    pub fn restore_collection(
+        &mut self,
+        collection: ExecutionInstanceId,
+        phase: CollectionPhase,
+        item_count: u32,
+        max_items: u32,
+        max_concurrency: u16,
+        snapshot_digest: Digest,
+        result_digest: Option<Digest>,
+        admitted: Vec<CollectionIterationRestore>,
+    ) -> Result<(), ExecutionError> {
+        let max_cardinality = MAX_ITERATION_INDEX + 1;
+        let active = admitted
+            .iter()
+            .filter(|iteration| iteration.is_active())
+            .count();
+        if max_items == 0
+            || max_items > max_cardinality
+            || item_count > max_items
+            || !(1..=256).contains(&max_concurrency)
+            || active > usize::from(max_concurrency)
+            || admitted.len() > usize::try_from(item_count).unwrap_or(usize::MAX)
+            || !matches!(phase, CollectionPhase::Open | CollectionPhase::Succeeded)
+            || (phase == CollectionPhase::Open && result_digest.is_some())
+            || (phase == CollectionPhase::Succeeded && result_digest.is_none())
+        {
+            return Err(ExecutionError::InvalidCollectionLimits { collection });
+        }
+        if self.collections.contains_key(&collection) {
+            return Err(ExecutionError::CollectionAlreadyEntered(collection));
+        }
+        let owner = self
+            .steps
+            .get(&collection)
+            .ok_or_else(|| ExecutionError::UnknownInstance(collection.clone()))?;
+        let owner_matches = match phase {
+            CollectionPhase::Open => {
+                owner.status == StepStatus::Waiting
+                    && matches!(owner.waiting_on(), Some(WaitingOn::Collection))
+            }
+            CollectionPhase::Succeeded => {
+                owner.status == StepStatus::Succeeded && owner.waiting_on().is_none()
+            }
+            CollectionPhase::Draining | CollectionPhase::Failed | CollectionPhase::Cancelled => {
+                false
+            }
+        };
+        if !owner_matches {
+            return Err(ExecutionError::IllegalInstanceTransition {
+                instance: collection,
+                status: owner.status,
+                event: "collection.restore",
+            });
+        }
+
+        let mut entries = BTreeMap::new();
+        let mut item_digests = BTreeMap::new();
+        let mut iterations = BTreeMap::new();
+        let mut results = BTreeMap::new();
+        for (position, restored) in admitted.into_iter().enumerate() {
+            let CollectionIterationRestore {
+                index,
+                entry,
+                item_digest,
+                returned,
+            } = restored;
+            let expected =
+                u32::try_from(position).map_err(|_| ExecutionError::InvalidCollectionLimits {
+                    collection: collection.clone(),
+                })?;
+            if index != expected || index >= item_count {
+                return Err(ExecutionError::UnexpectedCollectionAdmission {
+                    collection,
+                    expected,
+                    actual: index,
+                });
+            }
+            Self::validate_collection_instance(&collection, index, &entry)?;
+            if !self.steps.contains_key(&entry) {
+                return Err(ExecutionError::UnknownInstance(entry));
+            }
+            let iteration = match returned {
+                None => CollectionIterationState::Admitted,
+                Some((return_instance, result_digest)) => {
+                    Self::validate_collection_instance(&collection, index, &return_instance)?;
+                    let returned_step = self
+                        .steps
+                        .get(&return_instance)
+                        .ok_or_else(|| ExecutionError::UnknownInstance(return_instance.clone()))?;
+                    if returned_step.status != StepStatus::Succeeded || !returned_step.routed {
+                        return Err(ExecutionError::IllegalInstanceTransition {
+                            instance: return_instance,
+                            status: returned_step.status,
+                            event: "collection.restore",
+                        });
+                    }
+                    match result_digest {
+                        None => CollectionIterationState::Returned { return_instance },
+                        Some(digest) => {
+                            results.insert(
+                                index,
+                                CollectionResult {
+                                    return_instance: return_instance.clone(),
+                                    digest,
+                                },
+                            );
+                            CollectionIterationState::Checkpointed
+                        }
+                    }
+                }
+            };
+            entries.insert(index, entry);
+            item_digests.insert(index, item_digest);
+            iterations.insert(index, iteration);
+        }
+        let complete = entries.len() == usize::try_from(item_count).unwrap_or(usize::MAX)
+            && results.len() == usize::try_from(item_count).unwrap_or(usize::MAX)
+            && iterations
+                .values()
+                .all(|iteration| matches!(iteration, CollectionIterationState::Checkpointed));
+        if phase == CollectionPhase::Succeeded && !complete {
+            return Err(ExecutionError::IllegalCollectionTransition {
+                collection,
+                event: "collection.restore",
+            });
+        }
+        self.collections.insert(
+            collection,
+            CollectionState {
+                phase,
+                item_count,
+                max_items,
+                max_concurrency,
+                snapshot_digest,
+                next_admission: u32::try_from(entries.len()).unwrap_or(u32::MAX),
+                entries,
+                item_digests,
+                iterations,
+                results,
+                result_digest,
+                drain_reason: None,
+            },
+        );
+        Ok(())
+    }
+
+    /// Every entered loop scope, ordered by its complete instance identity.
+    pub fn loops(&self) -> impl Iterator<Item = (&ExecutionInstanceId, &LoopState)> {
+        self.loops.iter()
     }
 
     /// All root steps, ordered by node id. Scoped instances have their own iterator.
@@ -964,6 +1338,26 @@ impl RunState {
         Ok(())
     }
 
+    fn activate_in_path(
+        &mut self,
+        path: &InstancePath,
+        nodes: &[NodeId],
+    ) -> Result<(), ExecutionError> {
+        for (position, node) in nodes.iter().enumerate() {
+            let instance = ExecutionInstanceId::in_path(path.clone(), node.clone());
+            if self.steps.contains_key(&instance) || nodes[..position].contains(node) {
+                return Err(ExecutionError::AlreadyScheduled(node.clone()));
+            }
+        }
+        for node in nodes {
+            self.steps.insert(
+                ExecutionInstanceId::in_path(path.clone(), node.clone()),
+                StepState::pending(),
+            );
+        }
+        Ok(())
+    }
+
     fn require_saga(
         &self,
         node: &NodeId,
@@ -1053,6 +1447,7 @@ impl RunState {
                         item_digests: BTreeMap::new(),
                         iterations: BTreeMap::new(),
                         results: BTreeMap::new(),
+                        result_digest: None,
                         drain_reason: None,
                     },
                 );
@@ -1314,7 +1709,11 @@ impl RunState {
                     .iterations
                     .insert(*index, CollectionIterationState::Drained);
             }
-            RunEvent::CollectionFinished { outcome, .. } => {
+            RunEvent::CollectionFinished {
+                outcome,
+                result_digest,
+                ..
+            } => {
                 let scope = self
                     .collections
                     .get(collection)
@@ -1323,8 +1722,8 @@ impl RunState {
                     .iterations
                     .values()
                     .all(CollectionIterationState::is_settled);
-                let valid = match (outcome, &scope.drain_reason) {
-                    (CollectionOutcome::Succeeded, None) => {
+                let valid = match (outcome, result_digest, &scope.drain_reason) {
+                    (CollectionOutcome::Succeeded, Some(_), None) => {
                         scope.phase == CollectionPhase::Open
                             && scope.next_admission == scope.item_count
                             && scope.results.len() == scope.item_count as usize
@@ -1332,13 +1731,16 @@ impl RunState {
                     }
                     (
                         CollectionOutcome::Failed(code),
+                        None,
                         Some(CollectionDrainReason::Failed { code: recorded, .. }),
                     ) => {
                         scope.phase == CollectionPhase::Draining && code == recorded && all_settled
                     }
-                    (CollectionOutcome::Cancelled, Some(CollectionDrainReason::Cancelled)) => {
-                        scope.phase == CollectionPhase::Draining && all_settled
-                    }
+                    (
+                        CollectionOutcome::Cancelled,
+                        None,
+                        Some(CollectionDrainReason::Cancelled),
+                    ) => scope.phase == CollectionPhase::Draining && all_settled,
                     _ => false,
                 };
                 if !valid {
@@ -1375,10 +1777,477 @@ impl RunState {
                     CollectionOutcome::Failed(_) => CollectionPhase::Failed,
                     CollectionOutcome::Cancelled => CollectionPhase::Cancelled,
                 };
+                scope.result_digest = *result_digest;
             }
             _ => {
                 return Err(ExecutionError::Invariant(
                     "a non-collection event reached the collection reducer",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn loop_iteration_path(
+        loop_instance: &ExecutionInstanceId,
+        index: u32,
+    ) -> Result<InstancePath, ExecutionError> {
+        loop_instance
+            .path()
+            .child(loop_instance.node().clone(), index)
+            .map_err(|_| ExecutionError::InvalidLoopEntry(loop_instance.clone()))
+    }
+
+    fn validate_loop_instance(
+        loop_instance: &ExecutionInstanceId,
+        index: u32,
+        instance: &ExecutionInstanceId,
+    ) -> Result<(), ExecutionError> {
+        let expected = Self::loop_iteration_path(loop_instance, index)?;
+        if instance.path() == &expected {
+            Ok(())
+        } else {
+            Err(ExecutionError::InvalidLoopInstance {
+                loop_instance: loop_instance.clone(),
+                instance: instance.clone(),
+            })
+        }
+    }
+
+    fn apply_loop_event(
+        &mut self,
+        loop_instance: &ExecutionInstanceId,
+        event: &RunEvent,
+    ) -> Result<(), ExecutionError> {
+        let name = event.name();
+        match event {
+            RunEvent::LoopEntered {
+                kind,
+                max_iterations,
+                entered_at,
+                deadline,
+                initial_carry_digest,
+                initial_condition,
+                ..
+            } => {
+                let timeout_ms = (*deadline - *entered_at).whole_milliseconds();
+                let valid_condition = matches!(
+                    (kind, initial_condition),
+                    (LoopKind::While, Some(_)) | (LoopKind::RepeatUntil, None)
+                );
+                if !(1..=MAX_ITERATION_INDEX + 1).contains(max_iterations)
+                    || !(1..=31_622_400_000).contains(&timeout_ms)
+                    || !valid_condition
+                {
+                    return Err(ExecutionError::InvalidLoopEntry(loop_instance.clone()));
+                }
+                if self.loops.contains_key(loop_instance) {
+                    return Err(ExecutionError::LoopAlreadyEntered(loop_instance.clone()));
+                }
+                let completes = *kind == LoopKind::While && *initial_condition == Some(false);
+                let step = self.instance_mut(loop_instance, name, &[StepStatus::Pending])?;
+                if completes {
+                    step.status = StepStatus::Succeeded;
+                } else {
+                    step.status = StepStatus::Waiting;
+                    step.waiting = Some(WaitingOn::Loop);
+                }
+                self.loops.insert(
+                    loop_instance.clone(),
+                    LoopState {
+                        kind: *kind,
+                        phase: if completes {
+                            LoopPhase::Succeeded
+                        } else {
+                            LoopPhase::Ready
+                        },
+                        max_iterations: *max_iterations,
+                        entered_at: *entered_at,
+                        deadline: *deadline,
+                        initial_carry_digest: *initial_carry_digest,
+                        current_carry_digest: *initial_carry_digest,
+                        next_iteration: 0,
+                        active: None,
+                        checkpoints: BTreeMap::new(),
+                        delay_until: None,
+                        drain_reason: None,
+                        failure: None,
+                    },
+                );
+            }
+            RunEvent::LoopIterationAdmitted { index, entry, .. } => {
+                let scope = self
+                    .loops
+                    .get(loop_instance)
+                    .ok_or_else(|| ExecutionError::UnknownLoop(loop_instance.clone()))?;
+                if scope.phase != LoopPhase::Ready {
+                    return Err(ExecutionError::LoopNotReady {
+                        loop_instance: loop_instance.clone(),
+                        phase: scope.phase,
+                    });
+                }
+                if *index != scope.next_iteration || *index >= scope.max_iterations {
+                    return Err(ExecutionError::UnexpectedLoopIteration {
+                        loop_instance: loop_instance.clone(),
+                        expected: scope.next_iteration,
+                        actual: *index,
+                    });
+                }
+                if scope.active.is_some() || scope.checkpoints.contains_key(index) {
+                    return Err(ExecutionError::IllegalLoopTransition {
+                        loop_instance: loop_instance.clone(),
+                        event: name,
+                    });
+                }
+                Self::validate_loop_instance(loop_instance, *index, entry)?;
+                if self.steps.contains_key(entry) {
+                    return Err(ExecutionError::InvalidLoopInstance {
+                        loop_instance: loop_instance.clone(),
+                        instance: entry.clone(),
+                    });
+                }
+                self.steps.insert(entry.clone(), StepState::pending());
+                let scope = self
+                    .loops
+                    .get_mut(loop_instance)
+                    .ok_or(ExecutionError::Invariant("validated loop disappeared"))?;
+                scope.phase = LoopPhase::Running;
+                scope.active = Some(LoopActiveIteration {
+                    index: *index,
+                    entry: entry.clone(),
+                    return_instance: None,
+                });
+            }
+            RunEvent::LoopIterationReturned {
+                index,
+                return_instance,
+                ..
+            } => {
+                Self::validate_loop_instance(loop_instance, *index, return_instance)?;
+                let scope = self
+                    .loops
+                    .get(loop_instance)
+                    .ok_or_else(|| ExecutionError::UnknownLoop(loop_instance.clone()))?;
+                let Some(active) = scope.active.as_ref() else {
+                    return Err(ExecutionError::UnknownLoopIteration {
+                        loop_instance: loop_instance.clone(),
+                        index: *index,
+                    });
+                };
+                if scope.phase != LoopPhase::Running
+                    || active.index != *index
+                    || active.return_instance.is_some()
+                {
+                    return Err(ExecutionError::IllegalLoopTransition {
+                        loop_instance: loop_instance.clone(),
+                        event: name,
+                    });
+                }
+                let returned = self.instance_mut(return_instance, name, &[StepStatus::Pending])?;
+                returned.status = StepStatus::Succeeded;
+                returned.routed = true;
+                let scope = self
+                    .loops
+                    .get_mut(loop_instance)
+                    .ok_or(ExecutionError::Invariant("validated loop disappeared"))?;
+                let active = scope.active.as_mut().ok_or(ExecutionError::Invariant(
+                    "validated loop iteration disappeared",
+                ))?;
+                active.return_instance = Some(return_instance.clone());
+            }
+            RunEvent::LoopIterationCheckpointed {
+                index,
+                return_instance,
+                result_digest,
+                carry_digest,
+                condition,
+                checked_at,
+                continuation,
+                ..
+            } => {
+                let scope = self
+                    .loops
+                    .get(loop_instance)
+                    .ok_or_else(|| ExecutionError::UnknownLoop(loop_instance.clone()))?;
+                let Some(active) = scope.active.as_ref() else {
+                    return Err(ExecutionError::UnknownLoopIteration {
+                        loop_instance: loop_instance.clone(),
+                        index: *index,
+                    });
+                };
+                if scope.phase != LoopPhase::Running
+                    || active.index != *index
+                    || active.return_instance.as_ref() != Some(return_instance)
+                    || scope.checkpoints.contains_key(index)
+                    || *checked_at < scope.entered_at
+                    || *checked_at > scope.deadline
+                {
+                    return Err(ExecutionError::IllegalLoopTransition {
+                        loop_instance: loop_instance.clone(),
+                        event: name,
+                    });
+                }
+                let needs_another = match scope.kind {
+                    LoopKind::While => *condition,
+                    LoopKind::RepeatUntil => !*condition,
+                };
+                let next_iteration =
+                    index
+                        .checked_add(1)
+                        .ok_or(ExecutionError::InvalidLoopContinuation {
+                            loop_instance: loop_instance.clone(),
+                            index: *index,
+                        })?;
+                let valid_continuation = if !needs_another {
+                    matches!(continuation, LoopContinuation::Complete)
+                } else if next_iteration >= scope.max_iterations {
+                    matches!(continuation, LoopContinuation::IterationLimit)
+                } else {
+                    match continuation {
+                        LoopContinuation::Continue => true,
+                        LoopContinuation::DelayUntil(due_at) => {
+                            (*due_at - *checked_at).whole_milliseconds() >= 1
+                                && *due_at <= scope.deadline
+                        }
+                        LoopContinuation::Complete | LoopContinuation::IterationLimit => false,
+                    }
+                };
+                if !valid_continuation {
+                    return Err(ExecutionError::InvalidLoopContinuation {
+                        loop_instance: loop_instance.clone(),
+                        index: *index,
+                    });
+                }
+                let terminal = matches!(
+                    continuation,
+                    LoopContinuation::Complete | LoopContinuation::IterationLimit
+                );
+                if terminal {
+                    let step = self
+                        .steps
+                        .get(loop_instance)
+                        .ok_or_else(|| ExecutionError::UnknownInstance(loop_instance.clone()))?;
+                    if step.status != StepStatus::Waiting
+                        || !matches!(step.waiting, Some(WaitingOn::Loop))
+                    {
+                        return Err(ExecutionError::IllegalInstanceTransition {
+                            instance: loop_instance.clone(),
+                            status: step.status,
+                            event: name,
+                        });
+                    }
+                }
+                let checkpoint = LoopCheckpoint {
+                    return_instance: return_instance.clone(),
+                    result_digest: *result_digest,
+                    carry_digest: *carry_digest,
+                    condition: *condition,
+                    checked_at: *checked_at,
+                    continuation: *continuation,
+                };
+                let scope = self
+                    .loops
+                    .get_mut(loop_instance)
+                    .ok_or(ExecutionError::Invariant("validated loop disappeared"))?;
+                scope.checkpoints.insert(*index, checkpoint);
+                scope.current_carry_digest = *carry_digest;
+                scope.next_iteration = next_iteration;
+                scope.active = None;
+                scope.delay_until = match continuation {
+                    LoopContinuation::DelayUntil(due_at) => Some(*due_at),
+                    _ => None,
+                };
+                scope.phase = match continuation {
+                    LoopContinuation::Complete => LoopPhase::Succeeded,
+                    LoopContinuation::Continue => LoopPhase::Ready,
+                    LoopContinuation::DelayUntil(_) => LoopPhase::Delaying,
+                    LoopContinuation::IterationLimit => LoopPhase::Failed,
+                };
+                if matches!(continuation, LoopContinuation::IterationLimit) {
+                    scope.failure = Some(FailureCode::iteration_limit());
+                }
+                if terminal {
+                    let step = self
+                        .steps
+                        .get_mut(loop_instance)
+                        .ok_or(ExecutionError::Invariant("validated loop step disappeared"))?;
+                    step.waiting = None;
+                    if matches!(continuation, LoopContinuation::Complete) {
+                        step.status = StepStatus::Succeeded;
+                    } else {
+                        step.status = StepStatus::Failed;
+                        step.failure = Some(FailureCode::iteration_limit());
+                    }
+                }
+            }
+            RunEvent::LoopDelayElapsed { next_iteration, .. } => {
+                let scope = self
+                    .loops
+                    .get(loop_instance)
+                    .ok_or_else(|| ExecutionError::UnknownLoop(loop_instance.clone()))?;
+                if scope.phase != LoopPhase::Delaying
+                    || scope.delay_until.is_none()
+                    || scope.next_iteration != *next_iteration
+                {
+                    return Err(ExecutionError::IllegalLoopTransition {
+                        loop_instance: loop_instance.clone(),
+                        event: name,
+                    });
+                }
+                let scope = self
+                    .loops
+                    .get_mut(loop_instance)
+                    .ok_or(ExecutionError::Invariant("validated loop disappeared"))?;
+                scope.phase = LoopPhase::Ready;
+                scope.delay_until = None;
+            }
+            RunEvent::LoopDrainStarted { reason, .. } => {
+                let scope = self
+                    .loops
+                    .get(loop_instance)
+                    .ok_or_else(|| ExecutionError::UnknownLoop(loop_instance.clone()))?;
+                if !matches!(
+                    scope.phase,
+                    LoopPhase::Ready | LoopPhase::Running | LoopPhase::Delaying
+                ) {
+                    return Err(ExecutionError::IllegalLoopTransition {
+                        loop_instance: loop_instance.clone(),
+                        event: name,
+                    });
+                }
+                if let LoopDrainReason::Failed { iteration, .. } = reason
+                    && !matches!(scope.active.as_ref(), Some(active) if active.index == *iteration)
+                {
+                    return Err(ExecutionError::UnknownLoopIteration {
+                        loop_instance: loop_instance.clone(),
+                        index: *iteration,
+                    });
+                }
+                let scope = self
+                    .loops
+                    .get_mut(loop_instance)
+                    .ok_or(ExecutionError::Invariant("validated loop disappeared"))?;
+                scope.phase = LoopPhase::Draining;
+                scope.delay_until = None;
+                scope.drain_reason = Some(reason.clone());
+            }
+            RunEvent::LoopIterationDrained { index, .. } => {
+                let scope = self
+                    .loops
+                    .get(loop_instance)
+                    .ok_or_else(|| ExecutionError::UnknownLoop(loop_instance.clone()))?;
+                let Some(active) = scope.active.as_ref() else {
+                    return Err(ExecutionError::UnknownLoopIteration {
+                        loop_instance: loop_instance.clone(),
+                        index: *index,
+                    });
+                };
+                if scope.phase != LoopPhase::Draining || active.index != *index {
+                    return Err(ExecutionError::IllegalLoopTransition {
+                        loop_instance: loop_instance.clone(),
+                        event: name,
+                    });
+                }
+                let path = Self::loop_iteration_path(loop_instance, *index)?;
+                let entry = active.entry.clone();
+                let reason = scope
+                    .drain_reason
+                    .clone()
+                    .ok_or(ExecutionError::Invariant("a draining loop has no reason"))?;
+                let mut found = false;
+                for (_, step) in self.steps.iter().filter(|(id, _)| id.path() == &path) {
+                    found = true;
+                    let safe_to_stop = step.attempt == 0
+                        && matches!(step.status, StepStatus::Pending | StepStatus::Ready);
+                    if !step.status.is_terminal() && !safe_to_stop {
+                        return Err(ExecutionError::IllegalLoopTransition {
+                            loop_instance: loop_instance.clone(),
+                            event: name,
+                        });
+                    }
+                }
+                if !found {
+                    return Err(ExecutionError::InvalidLoopInstance {
+                        loop_instance: loop_instance.clone(),
+                        instance: entry,
+                    });
+                }
+                for (instance, step) in self.steps.iter_mut().filter(|(id, _)| id.path() == &path) {
+                    if !step.status.is_terminal() {
+                        match &reason {
+                            LoopDrainReason::Failed {
+                                iteration, code, ..
+                            } if iteration == index && instance == &entry => {
+                                step.status = StepStatus::Failed;
+                                step.failure = Some(code.clone());
+                            }
+                            _ => step.status = StepStatus::Cancelled,
+                        }
+                        step.waiting = None;
+                        step.next_attempt_at = None;
+                        step.cancel_requested = false;
+                        step.routed = true;
+                    }
+                }
+                let scope = self
+                    .loops
+                    .get_mut(loop_instance)
+                    .ok_or(ExecutionError::Invariant("validated loop disappeared"))?;
+                scope.active = None;
+            }
+            RunEvent::LoopFinished { outcome, .. } => {
+                let scope = self
+                    .loops
+                    .get(loop_instance)
+                    .ok_or_else(|| ExecutionError::UnknownLoop(loop_instance.clone()))?;
+                let matching_outcome = match (outcome, &scope.drain_reason) {
+                    (
+                        LoopOutcome::Failed(code),
+                        Some(LoopDrainReason::Failed { code: recorded, .. }),
+                    ) => code == recorded,
+                    (LoopOutcome::Cancelled, Some(LoopDrainReason::Cancelled)) => true,
+                    _ => false,
+                };
+                let valid = scope.phase == LoopPhase::Draining
+                    && scope.active.is_none()
+                    && matching_outcome;
+                if !valid {
+                    return Err(ExecutionError::IllegalLoopTransition {
+                        loop_instance: loop_instance.clone(),
+                        event: name,
+                    });
+                }
+                let step = self.instance_mut(loop_instance, name, &[StepStatus::Waiting])?;
+                if !matches!(step.waiting, Some(WaitingOn::Loop)) {
+                    return Err(ExecutionError::IllegalInstanceTransition {
+                        instance: loop_instance.clone(),
+                        status: step.status,
+                        event: name,
+                    });
+                }
+                step.waiting = None;
+                match outcome {
+                    LoopOutcome::Failed(code) => {
+                        step.status = StepStatus::Failed;
+                        step.failure = Some(code.clone());
+                    }
+                    LoopOutcome::Cancelled => step.status = StepStatus::Cancelled,
+                }
+                let scope = self
+                    .loops
+                    .get_mut(loop_instance)
+                    .ok_or(ExecutionError::Invariant("validated loop disappeared"))?;
+                match outcome {
+                    LoopOutcome::Failed(code) => {
+                        scope.phase = LoopPhase::Failed;
+                        scope.failure = Some(code.clone());
+                    }
+                    LoopOutcome::Cancelled => scope.phase = LoopPhase::Cancelled,
+                }
+            }
+            _ => {
+                return Err(ExecutionError::Invariant(
+                    "a non-loop event reached the loop reducer",
                 ));
             }
         }
@@ -1599,6 +2468,17 @@ impl RunState {
             | RunEvent::CollectionFinished { node, .. }) => {
                 let collection = ExecutionInstanceId::root(node.clone());
                 self.apply_collection_event(&collection, event)?;
+            }
+            event @ (RunEvent::LoopEntered { node, .. }
+            | RunEvent::LoopIterationAdmitted { node, .. }
+            | RunEvent::LoopIterationReturned { node, .. }
+            | RunEvent::LoopIterationCheckpointed { node, .. }
+            | RunEvent::LoopDelayElapsed { node, .. }
+            | RunEvent::LoopDrainStarted { node, .. }
+            | RunEvent::LoopIterationDrained { node, .. }
+            | RunEvent::LoopFinished { node, .. }) => {
+                let loop_instance = ExecutionInstanceId::root(node.clone());
+                self.apply_loop_event(&loop_instance, event)?;
             }
             RunEvent::ChildStarted { node, child } => {
                 let step = self.step_mut(node, name, &[Pending])?;
@@ -1934,6 +2814,19 @@ impl RunState {
                     }
                 }
             }
+            RunEvent::StateUpdated {
+                before_revision,
+                after_revision,
+                ..
+            } => {
+                if !matches!(self.status, RunStatus::Running | RunStatus::Waiting)
+                    || before_revision.checked_add(1) != Some(*after_revision)
+                {
+                    return Err(ExecutionError::Invariant(
+                        "a state update advances one revision on a mutable run",
+                    ));
+                }
+            }
             RunEvent::RunPaused => {
                 if self.paused {
                     return Err(ExecutionError::AlreadyPaused);
@@ -1968,13 +2861,15 @@ impl RunState {
     /// Applies a journal event at its explicit logical instance address.
     ///
     /// Root events retain the complete existing reducer behavior. Scoped collection control and
-    /// release, lease and start use the same typed address; other scoped transitions stay gated
-    /// behind durable planner integration.
+    /// activity lifecycle use the same typed address; other scoped transitions stay gated behind
+    /// durable planner integration.
     ///
     /// # Errors
     /// An [`ExecutionError`] when the addressed transition is illegal or not enabled.
     pub fn apply_addressed(&mut self, addressed: &AddressedRunEvent) -> Result<(), ExecutionError> {
-        use StepStatus::{Leased, Pending, Ready};
+        use StepStatus::{
+            Failed, Leased, Pending, Ready, RetryWait, Running, Skipped, Succeeded, Waiting,
+        };
 
         if addressed.path().is_root() {
             return self.apply(addressed.event());
@@ -1987,6 +2882,25 @@ impl RunState {
         ))?;
         let name = addressed.event().name();
         match addressed.event() {
+            RunEvent::StepRouted { activated, .. } => {
+                {
+                    let step = self.instance_mut(&instance, name, &[Succeeded, Failed, Skipped])?;
+                    if step.routed {
+                        return Err(ExecutionError::IllegalInstanceTransition {
+                            instance,
+                            status: step.status,
+                            event: name,
+                        });
+                    }
+                }
+                self.activate_in_path(addressed.path(), activated)?;
+                self.steps
+                    .get_mut(&instance)
+                    .ok_or(ExecutionError::Invariant(
+                        "validated scoped step disappeared",
+                    ))?
+                    .routed = true;
+            }
             RunEvent::StepReleased { .. } => {
                 self.instance_mut(&instance, name, &[Pending])?.status = Ready;
             }
@@ -2013,6 +2927,66 @@ impl RunState {
                 self.fenced_instance(&instance, name, &[Leased], *attempt, *generation)?
                     .status = StepStatus::Running;
             }
+            RunEvent::StepCompleted {
+                attempt,
+                generation,
+                ..
+            } => {
+                let step = self.fenced_instance(
+                    &instance,
+                    name,
+                    &[Leased, Running],
+                    *attempt,
+                    *generation,
+                )?;
+                step.status = Succeeded;
+                step.cancel_requested = false;
+            }
+            RunEvent::StepRetryScheduled {
+                attempt,
+                generation,
+                code,
+                not_before,
+                ..
+            } => {
+                let step = self.fenced_instance(
+                    &instance,
+                    name,
+                    &[Leased, Running],
+                    *attempt,
+                    *generation,
+                )?;
+                step.status = RetryWait;
+                step.failure = Some(code.clone());
+                step.next_attempt_at = Some(*not_before);
+            }
+            RunEvent::StepRetryDue { .. } => {
+                let step = self.instance_mut(&instance, name, &[RetryWait])?;
+                step.status = Ready;
+                step.next_attempt_at = None;
+            }
+            RunEvent::StepFailed { code, fence, .. } => {
+                let step =
+                    self.instance_mut(&instance, name, &[Leased, Running, Pending, Waiting])?;
+                match (step.status.is_leased(), fence) {
+                    (true, Some(fence)) if step.fenced_by(fence.attempt, fence.generation) => {}
+                    (true, _) => {
+                        return Err(ExecutionError::StaleInstanceAttempt { instance });
+                    }
+                    (false, None) => {}
+                    (false, Some(_)) => {
+                        return Err(ExecutionError::IllegalInstanceTransition {
+                            instance,
+                            status: step.status,
+                            event: name,
+                        });
+                    }
+                }
+                step.status = Failed;
+                step.failure = Some(code.clone());
+                step.waiting = None;
+                step.cancel_requested = false;
+            }
             event @ (RunEvent::CollectionEntered { .. }
             | RunEvent::CollectionIterationAdmitted { .. }
             | RunEvent::CollectionIterationReturned { .. }
@@ -2021,6 +2995,16 @@ impl RunState {
             | RunEvent::CollectionIterationDrained { .. }
             | RunEvent::CollectionFinished { .. }) => {
                 self.apply_collection_event(&instance, event)?;
+            }
+            event @ (RunEvent::LoopEntered { .. }
+            | RunEvent::LoopIterationAdmitted { .. }
+            | RunEvent::LoopIterationReturned { .. }
+            | RunEvent::LoopIterationCheckpointed { .. }
+            | RunEvent::LoopDelayElapsed { .. }
+            | RunEvent::LoopDrainStarted { .. }
+            | RunEvent::LoopIterationDrained { .. }
+            | RunEvent::LoopFinished { .. }) => {
+                self.apply_loop_event(&instance, event)?;
             }
             _ => return Err(ExecutionError::UnsupportedScopedEvent(name)),
         }

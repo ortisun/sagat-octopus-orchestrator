@@ -28,7 +28,7 @@ pub struct JsonIrCodec;
 impl JsonIrCodec {
     /// Validates the additive structured subset without making it publishable or executable.
     ///
-    /// This entry point currently maps named bodies, collections, sequential loops, `return` and
+    /// This entry point currently maps named bodies, collections, sequential loops, approval, `return` and
     /// workflow limits. The production [`IrCodec::parse`] path remains the publication capability
     /// gate.
     ///

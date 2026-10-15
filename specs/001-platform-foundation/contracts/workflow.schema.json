@@ -1372,7 +1372,7 @@
       "additionalProperties": false,
       "properties": {
         "schema": {
-          "type": "object"
+          "$ref": "#/$defs/resultSchema"
         },
         "initial": {
           "$ref": "#/$defs/expression"

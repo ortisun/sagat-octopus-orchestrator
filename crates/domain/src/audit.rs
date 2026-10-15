@@ -30,6 +30,10 @@ pub enum AuditAction {
     RunCancelRequested,
     RunPaused,
     RunResumed,
+    /// An authorized caller evaluated a declared Query. Arguments and results are never recorded.
+    RunQueried,
+    /// A declared Update committed an applied or rejected receipt.
+    RunUpdated,
     /// An operator inspected a payload's uniformly redacted structure.
     PayloadInspected,
     /// An authenticated caller without the dedicated permission tried to inspect a payload.
@@ -167,6 +171,7 @@ impl AuditAction {
                 | Self::PublicationDenied
                 | Self::PayloadInspected
                 | Self::PayloadInspectionDenied
+                | Self::RunQueried
         )
     }
 
@@ -180,7 +185,8 @@ impl AuditAction {
             Self::AuditRead
             | Self::PublicationDenied
             | Self::PayloadInspected
-            | Self::PayloadInspectionDenied => Some(std::time::Duration::from_secs(300)),
+            | Self::PayloadInspectionDenied
+            | Self::RunQueried => Some(std::time::Duration::from_secs(300)),
             _ => None,
         }
     }
@@ -210,6 +216,8 @@ impl AuditAction {
             Self::RunCancelRequested => "run.cancel_requested",
             Self::RunPaused => "run.paused",
             Self::RunResumed => "run.resumed",
+            Self::RunQueried => "run.queried",
+            Self::RunUpdated => "run.updated",
             Self::PayloadInspected => "payload.inspected",
             Self::PayloadInspectionDenied => "payload.inspection_denied",
             Self::RunSignalled => "run.signalled",

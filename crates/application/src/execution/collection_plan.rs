@@ -8,8 +8,8 @@
 #![allow(dead_code)]
 
 use sagat_domain::execution::{
-    AddressedRunEvent, CollectionOutcome, CollectionPhase, EventAddressError, ExecutionError,
-    ExecutionInstanceId, InstanceIdentityError, RunEvent, RunState,
+    AddressedRunEvent, CollectionPhase, EventAddressError, ExecutionError, ExecutionInstanceId,
+    InstanceIdentityError, RunEvent, RunState,
 };
 use sagat_domain::workflow::{Digest, NodeKind, WorkflowDefinition};
 
@@ -50,6 +50,7 @@ pub(super) enum CollectionContinuation {
     None,
     ContinueAfterCommit,
     WaitForIteration,
+    FinishCollection,
 }
 
 /// Ordered events that must be committed as one unit.
@@ -229,17 +230,9 @@ fn plan_open_collection(
 
     if scope.next_admission() == scope.item_count() && scope.active_count() == 0 {
         if scope.ordered_results().count() == scope.item_count() as usize {
-            let finished = addressed(
-                collection,
-                RunEvent::CollectionFinished {
-                    node: collection.node().clone(),
-                    outcome: CollectionOutcome::Succeeded,
-                },
-            )?;
-            validate_events(state, std::slice::from_ref(&finished))?;
             return Ok(CollectionPlan {
-                events: vec![finished],
-                continuation: CollectionContinuation::None,
+                events: Vec::new(),
+                continuation: CollectionContinuation::FinishCollection,
             });
         }
         return Err(CollectionPlanError::SnapshotChanged);
@@ -521,12 +514,11 @@ mod tests {
         )
         .expect("empty plan");
 
-        assert_eq!(plan.events().len(), 2);
-        assert!(matches!(
-            plan.events()[1].event(),
-            RunEvent::CollectionFinished { .. }
-        ));
-        assert_eq!(plan.continuation(), CollectionContinuation::None);
+        assert_eq!(plan.events().len(), 1);
+        assert_eq!(
+            plan.continuation(),
+            CollectionContinuation::FinishCollection
+        );
 
         let mut reduced = state;
         for event in plan.events() {
@@ -539,7 +531,7 @@ mod tests {
                 .collection(&collection)
                 .expect("collection state")
                 .phase(),
-            CollectionPhase::Succeeded
+            CollectionPhase::Open
         );
     }
 

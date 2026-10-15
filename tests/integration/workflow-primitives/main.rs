@@ -6,7 +6,10 @@
 #[path = "../../support/mod.rs"]
 mod support;
 
+mod collection_restore;
 mod identity_storage;
 mod journal_identity;
+mod operations;
+mod primitive_transactions;
 mod security;
 mod switch_storage;

@@ -4,14 +4,23 @@
 //! the data-dependent decisions (conditions, correlation keys) are resolved by an adapter and
 //! returned as journal events (`FR-002-001`, `FR-002-002`; `docs/architecture/execution-semantics.md`).
 
+mod approval;
 mod command;
+mod continuation;
 mod error;
 mod event;
 mod instance;
+mod operations;
 mod plan;
 mod sagas;
 mod state;
 
+pub use approval::{
+    ApprovalDecision, ApprovalDecisionCommand, ApprovalDecisionReceipt, ApprovalDecisionResolution,
+    ApprovalError, ApprovalPolicy, ApprovalReasonCode, ApprovalReceiptId, ApprovalRequest,
+    ApprovalRequestId, ApprovalStatus, ApprovalTransition, DecisionKey,
+    MAX_APPROVAL_POLICY_ENTRIES, MAX_APPROVAL_REASON_CODE_BYTES, MAX_DECISION_KEY_BYTES,
+};
 pub use command::{
     Expiry, Failure, Heartbeat, InstanceHeartbeat, Progress, Resolution, complete_reconciliation,
     complete_step, expire_attempt, fail_report_for_storage_quota, fail_step,
@@ -20,18 +29,32 @@ pub use command::{
     retry_due, retry_review, satisfy_wait, skip_review, start_run, stop_for_storage_quota,
     stop_run, time_out_wait,
 };
+pub use continuation::{
+    CancelResolution, ChainError, ChainFinalOutcome, ChainHandoff, ChainPolicy, ChainScope,
+    ChildChainLink, ChildObservation, ContinuationProposal, ContinuationTransfer, ExecutionChain,
+    FinalizationResolution, MAX_CHAIN_SEGMENTS, Quiescence, QuiescenceBlocker, Segment,
+    SegmentCompletionKind, SegmentIndex,
+};
 pub use error::ExecutionError;
 pub use event::{
     AddressedRunEvent, Cause, ChildOutcome, CollectionDrainReason, CollectionOutcome,
-    CorrelationKey, EventAddressError, FailureCode, Fence, JoinOutcome, PlannedEntry,
-    ReconcileResult, ReviewOutcome, RunEvent, StopReason, SwitchSelection,
+    CorrelationKey, EventAddressError, FailureCode, Fence, JoinOutcome, LoopContinuation,
+    LoopDrainReason, LoopKind, LoopOutcome, PlannedEntry, ReconcileResult, ReviewOutcome, RunEvent,
+    StopReason, SwitchSelection,
 };
 pub use instance::{
     ExecutionInstanceId, InstanceIdentityError, InstancePath, MAX_ITERATION_INDEX, MAX_SCOPE_DEPTH,
     ScopeSegment,
 };
+pub use operations::{
+    DeclaredOperationsState, MAX_OPERATION_NAME_BYTES, MAX_OPERATION_VALUE_BYTES,
+    MAX_UPDATE_KEY_BYTES, OperationAddress, OperationError, OperationScope, OperationValue,
+    QueryResponse, QuerySnapshot, ResultDisclosure, UpdateEvaluation, UpdateKey, UpdateReceipt,
+    UpdateReceiptStatus, UpdateRejection, UpdateRequest, UpdateResolution,
+};
 pub use plan::{Evaluation, Plan, plan};
 pub use state::{
-    CollectionPhase, CollectionResult, CollectionState, RunId, RunState, RunStatus, SagaPhase,
-    SagaState, StepState, StepStatus, WaitingOn,
+    CollectionIterationRestore, CollectionPhase, CollectionResult, CollectionState, LoopCheckpoint,
+    LoopPhase, LoopState, RunId, RunState, RunStatus, SagaPhase, SagaState, StepState, StepStatus,
+    WaitingOn,
 };

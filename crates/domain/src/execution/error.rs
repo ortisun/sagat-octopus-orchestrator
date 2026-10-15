@@ -1,7 +1,7 @@
 //! Typed errors of the execution model. None of them carries payload data.
 
 use super::instance::ExecutionInstanceId;
-use super::state::{CollectionPhase, RunStatus, StepStatus};
+use super::state::{CollectionPhase, LoopPhase, RunStatus, StepStatus};
 use crate::workflow::NodeId;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -101,6 +101,43 @@ pub enum ExecutionError {
     #[error("collection scope '{collection:?}' cannot apply '{event}' in its current progress")]
     IllegalCollectionTransition {
         collection: ExecutionInstanceId,
+        event: &'static str,
+    },
+    #[error("the run has no loop scope '{0:?}'")]
+    UnknownLoop(ExecutionInstanceId),
+    #[error("loop scope '{0:?}' has already entered")]
+    LoopAlreadyEntered(ExecutionInstanceId),
+    #[error("loop scope '{0:?}' has invalid bounds or pre/post-test entry data")]
+    InvalidLoopEntry(ExecutionInstanceId),
+    #[error("loop scope '{loop_instance:?}' received an invalid instance '{instance:?}'")]
+    InvalidLoopInstance {
+        loop_instance: ExecutionInstanceId,
+        instance: ExecutionInstanceId,
+    },
+    #[error("loop scope '{loop_instance:?}' expected iteration {expected}, got {actual}")]
+    UnexpectedLoopIteration {
+        loop_instance: ExecutionInstanceId,
+        expected: u32,
+        actual: u32,
+    },
+    #[error("loop scope '{loop_instance:?}' has no active iteration {index}")]
+    UnknownLoopIteration {
+        loop_instance: ExecutionInstanceId,
+        index: u32,
+    },
+    #[error("loop scope '{loop_instance:?}' is {phase:?} and cannot admit an iteration")]
+    LoopNotReady {
+        loop_instance: ExecutionInstanceId,
+        phase: LoopPhase,
+    },
+    #[error("loop scope '{loop_instance:?}' has an invalid continuation after iteration {index}")]
+    InvalidLoopContinuation {
+        loop_instance: ExecutionInstanceId,
+        index: u32,
+    },
+    #[error("loop scope '{loop_instance:?}' cannot apply '{event}' in its current progress")]
+    IllegalLoopTransition {
+        loop_instance: ExecutionInstanceId,
         event: &'static str,
     },
 }

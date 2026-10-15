@@ -125,22 +125,23 @@ fn fence_validation_is_scoped_to_the_addressed_instance() {
 }
 
 #[test]
-fn unsupported_scoped_completion_is_rejected_without_mutation() {
+fn unsupported_scoped_condition_is_rejected_without_mutation() {
     let mut state = state_with_two_iterations();
     let before = state.clone();
     let event = AddressedRunEvent::in_path(
         instance(0).path().clone(),
-        RunEvent::StepCompleted {
+        RunEvent::ConditionEvaluated {
             node: node("work"),
-            attempt: 1,
-            generation: 1,
+            outcome: true,
         },
     )
     .expect("step event can be addressed");
 
     assert_eq!(
         state.apply_addressed(&event),
-        Err(ExecutionError::UnsupportedScopedEvent("step.completed"))
+        Err(ExecutionError::UnsupportedScopedEvent(
+            "condition.evaluated"
+        ))
     );
     assert_eq!(state, before);
 }

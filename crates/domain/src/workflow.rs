@@ -24,7 +24,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::time::Duration;
 
-use crate::execution::ExecutionInstanceId;
+use crate::execution::{ApprovalPolicy, ExecutionInstanceId};
 use crate::identity::{Slug, clip};
 use crate::saga::{EffectPolicy, NodeOrigin, OnCompensationFailure, SagaCancelPolicy};
 use crate::secrets::{MAX_DECLARED_SECRETS, SecretName};
@@ -655,6 +655,13 @@ pub enum NodeKind {
         cases: Vec<SwitchCase>,
         default: NodeId,
     },
+    /// Requests one authorized human decision, then follows its recorded outcome.
+    Approval {
+        policy: ApprovalPolicy,
+        on_approve: NodeId,
+        on_reject: NodeId,
+        on_expire: NodeId,
+    },
     /// Fans out to `branches` and joins them according to `join`.
     Parallel {
         branches: Vec<NodeId>,
@@ -723,6 +730,7 @@ impl NodeKind {
             Self::WaitEvent { .. } => "waitEvent",
             Self::Condition { .. } => "condition",
             Self::Switch { .. } => "switch",
+            Self::Approval { .. } => "approval",
             Self::Parallel { .. } => "parallel",
             Self::Child { .. } => "child",
             Self::Saga { .. } => "saga",
@@ -859,6 +867,16 @@ impl Node {
             NodeKind::Switch { cases, default } => {
                 out.extend(cases.iter().map(SwitchCase::target));
                 out.push(default);
+            }
+            NodeKind::Approval {
+                on_approve,
+                on_reject,
+                on_expire,
+                ..
+            } => {
+                out.push(on_approve);
+                out.push(on_reject);
+                out.push(on_expire);
             }
             NodeKind::Parallel { branches, .. } => out.extend(branches.iter()),
             NodeKind::Saga { begin, .. } => out.push(begin),
@@ -1505,6 +1523,20 @@ fn check_graph_kind(node: &Node, kind: GraphKind) -> Result<(), WorkflowError> {
             }
             if cases.iter().any(|case| case.when().as_str().len() > 1024) {
                 return Err(invalid("predicate exceeds the supported byte limit"));
+            }
+        }
+        NodeKind::Approval { .. } => {
+            if kind == GraphKind::Legacy {
+                return Err(scope_error(
+                    node.id(),
+                    "approval requires a structured definition",
+                ));
+            }
+            if node.timeout().is_none() || node.next().is_some() {
+                return Err(scope_error(
+                    node.id(),
+                    "approval requires a timeout and outcome routes",
+                ));
             }
         }
         NodeKind::ForEach {

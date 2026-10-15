@@ -26,8 +26,9 @@ use sagat_application::runs::{
 use sagat_domain::audit::AuditRecord;
 use sagat_domain::definition::{Workflow, WorkflowId, WorkflowVersion, WorkflowVersionId};
 use sagat_domain::execution::{
-    CorrelationKey, ExecutionInstanceId, FailureCode, InstancePath, RunEvent, RunId, RunState,
-    RunStatus, SagaPhase, SagaState, StepState, StepStatus, StopReason, SwitchSelection, WaitingOn,
+    AddressedRunEvent, CollectionIterationRestore, CollectionPhase, CorrelationKey,
+    ExecutionInstanceId, FailureCode, InstancePath, RunEvent, RunId, RunState, RunStatus,
+    SagaPhase, SagaState, StepState, StepStatus, StopReason, SwitchSelection, WaitingOn,
 };
 use sagat_domain::identity::{Namespace, NamespaceId, Principal, Slug, TenantId};
 use sagat_domain::saga::{NodeOrigin, SagaOutcome};
@@ -143,13 +144,20 @@ impl PgRunStore {
     /// # Errors
     /// A description of the first difference found.
     pub async fn verify_run(&self, tenant: TenantId, run: RunId) -> Result<(), String> {
+        let mut stored_tx = self
+            .begin(tenant, run, Lock::Wait)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or("the run does not exist")?;
+        let stored = stored_tx.state.clone();
         let rows = sqlx::query(
-            "SELECT seq, event_type, node, detail FROM run_events \
+            "SELECT seq, event_type, node, detail, instance_path_nodes, instance_path_indices \
+             FROM run_events \
              WHERE tenant_id = $1 AND run_id = $2 ORDER BY seq",
         )
         .bind(tenant.as_uuid())
         .bind(run.as_uuid())
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *stored_tx.tx)
         .await
         .map_err(|e| e.to_string())?;
         let mut events = Vec::with_capacity(rows.len());
@@ -161,18 +169,17 @@ impl PgRunStore {
             let event_type: String = col(row, "event_type").map_err(|e| e.to_string())?;
             let node: Option<String> = col(row, "node").map_err(|e| e.to_string())?;
             let detail: serde_json::Value = col(row, "detail").map_err(|e| e.to_string())?;
+            let event = decode(&event_type, node.as_deref(), &detail)
+                .ok_or_else(|| format!("event {seq} ('{event_type}') cannot be decoded"))?;
+            let path = event_instance_path(row).map_err(|e| e.to_string())?;
             events.push(
-                decode(&event_type, node.as_deref(), &detail)
-                    .ok_or_else(|| format!("event {seq} ('{event_type}') cannot be decoded"))?,
+                AddressedRunEvent::in_path(path, event).map_err(|e| {
+                    format!("event {seq} ('{event_type}') has an invalid path: {e}")
+                })?,
             );
         }
-        let replayed = RunState::replay(run, &events).map_err(|e| format!("replay failed: {e}"))?;
-        let mut tx = self
-            .begin(tenant, run, Lock::Wait)
-            .await
-            .map_err(|e| e.to_string())?
-            .ok_or("the run does not exist")?;
-        let stored = tx.parts().1.clone();
+        let replayed =
+            RunState::replay_addressed(run, &events).map_err(|e| format!("replay failed: {e}"))?;
         if replayed == stored {
             Ok(())
         } else {
@@ -392,10 +399,9 @@ impl RunStore for PgRunStore {
             let node: String = col(row, "node")?;
             let node = NodeId::parse_stored(&node).map_err(|_| corrupt("step node"))?;
             let path = step_instance_path(row)?;
-            if path.is_root() {
-                stored.insert(node.clone());
-            }
-            steps.insert(ExecutionInstanceId::in_path(path, node), step_state(row)?);
+            let instance = ExecutionInstanceId::in_path(path, node);
+            stored.insert(instance.clone());
+            steps.insert(instance, step_state(row)?);
         }
         let sagas = load_sagas(&mut tx, tenant, run).await?;
         let stop = match record.stop_reason {
@@ -408,7 +414,7 @@ impl RunStore for PgRunStore {
                     .map_err(|_| corrupt("stop code"))?,
             )),
         };
-        let state = RunState::restore_instances(
+        let mut state = RunState::restore_instances(
             run,
             record.status,
             stop,
@@ -417,6 +423,7 @@ impl RunStore for PgRunStore {
             sagas,
             record.version,
         );
+        load_collections(&mut tx, tenant, run, &mut state).await?;
         let def = self
             .definition(&mut tx, tenant, record.info.version_id)
             .await?;
@@ -502,7 +509,8 @@ impl RunStore for PgRunStore {
         }
         let rows = sqlx::query(
             "SELECT seq, event_type, node, attempt, actor, trace_id, occurred_at, detail, \
-                    encode(payload_digest, 'hex') AS payload_ref \
+                    encode(payload_digest, 'hex') AS payload_ref, instance_path_nodes, \
+                    instance_path_indices \
              FROM run_events WHERE tenant_id = $1 AND run_id = $2 AND seq > $3 \
              ORDER BY seq LIMIT $4",
         )
@@ -514,16 +522,27 @@ impl RunStore for PgRunStore {
         .await
         .map_err(store_error)?;
         // The identity of each step, which the span of an attempt is computed from.
-        let steps: std::collections::HashMap<String, Uuid> =
-            sqlx::query("SELECT node, step_id FROM steps WHERE tenant_id = $1 AND run_id = $2")
-                .bind(tenant.as_uuid())
-                .bind(run.as_uuid())
-                .fetch_all(&self.pool)
-                .await
-                .map_err(store_error)?
-                .iter()
-                .map(|r| Ok((col::<String>(r, "node")?, col::<Uuid>(r, "step_id")?)))
-                .collect::<Result<_, StoreError>>()?;
+        let steps: BTreeMap<ExecutionInstanceId, Uuid> = sqlx::query(
+            "SELECT node, step_id, instance_path_nodes, instance_path_indices \
+                 FROM steps WHERE tenant_id = $1 AND run_id = $2",
+        )
+        .bind(tenant.as_uuid())
+        .bind(run.as_uuid())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_error)?
+        .iter()
+        .map(|row| {
+            let node: String = col(row, "node")?;
+            Ok((
+                ExecutionInstanceId::in_path(
+                    step_instance_path(row)?,
+                    NodeId::parse_stored(&node).map_err(|_| corrupt("step node"))?,
+                ),
+                col::<Uuid>(row, "step_id")?,
+            ))
+        })
+        .collect::<Result<_, StoreError>>()?;
         rows.iter()
             .map(|row| {
                 let seq: i64 = col(row, "seq")?;
@@ -543,10 +562,20 @@ impl RunStore for PgRunStore {
                         .collect()
                 });
                 let attempt = attempt.and_then(|a| u32::try_from(a).ok());
-                let span_id = attempt.and_then(|a| {
-                    node.as_deref()
-                        .and_then(|n| steps.get(n))
-                        .map(|step| sagat_telemetry::attempt_span_id(*step, a).to_string())
+                let instance = node
+                    .as_deref()
+                    .map(|node| {
+                        Ok(ExecutionInstanceId::in_path(
+                            event_instance_path(row)?,
+                            NodeId::parse_stored(node).map_err(|_| corrupt("journal node"))?,
+                        ))
+                    })
+                    .transpose()?;
+                let span_id = attempt.and_then(|attempt| {
+                    instance
+                        .as_ref()
+                        .and_then(|instance| steps.get(instance))
+                        .map(|step| sagat_telemetry::attempt_span_id(*step, attempt).to_string())
                 });
                 Ok(JournalEntry {
                     seq: u64::try_from(seq).map_err(|_| corrupt("sequence"))?,
@@ -855,21 +884,79 @@ fn run_record(row: &PgRow) -> Result<RunRecord, StoreError> {
     })
 }
 
-fn step_instance_path(row: &PgRow) -> Result<InstancePath, StoreError> {
-    let path_nodes: Vec<String> = col(row, "instance_path_nodes")?;
-    let path_indices: Vec<i32> = col(row, "instance_path_indices")?;
+fn instance_path(
+    path_nodes: Vec<String>,
+    path_indices: Vec<i32>,
+    what: &str,
+) -> Result<InstancePath, StoreError> {
     if path_nodes.len() != path_indices.len() {
-        return Err(corrupt("step instance path"));
+        return Err(corrupt(what));
     }
     let mut path = InstancePath::root();
     for (scope, index) in path_nodes.into_iter().zip(path_indices) {
-        let scope = NodeId::parse_stored(&scope).map_err(|_| corrupt("step scope"))?;
-        let index = u32::try_from(index).map_err(|_| corrupt("step iteration index"))?;
-        path = path
-            .child(scope, index)
-            .map_err(|_| corrupt("step instance path"))?;
+        let scope = NodeId::parse_stored(&scope).map_err(|_| corrupt(what))?;
+        let index = u32::try_from(index).map_err(|_| corrupt(what))?;
+        path = path.child(scope, index).map_err(|_| corrupt(what))?;
     }
     Ok(path)
+}
+
+fn stored_path_parts(path: &InstancePath) -> (Vec<String>, Vec<i32>) {
+    path.segments()
+        .iter()
+        .map(|segment| {
+            (
+                segment.scope_node().as_str().to_owned(),
+                i32::try_from(segment.iteration_index()).unwrap_or(i32::MAX),
+            )
+        })
+        .unzip()
+}
+
+fn step_instance_path(row: &PgRow) -> Result<InstancePath, StoreError> {
+    instance_path(
+        col(row, "instance_path_nodes")?,
+        col(row, "instance_path_indices")?,
+        "step instance path",
+    )
+}
+
+fn event_instance_path(row: &PgRow) -> Result<InstancePath, StoreError> {
+    match (
+        col::<Option<Vec<String>>>(row, "instance_path_nodes")?,
+        col::<Option<Vec<i32>>>(row, "instance_path_indices")?,
+    ) {
+        (None, None) => Ok(InstancePath::root()),
+        (Some(nodes), Some(indices)) => instance_path(nodes, indices, "journal instance path"),
+        _ => Err(corrupt("journal instance path")),
+    }
+}
+
+fn stored_digest(bytes: Vec<u8>, what: &str) -> Result<Digest, StoreError> {
+    <[u8; 32]>::try_from(bytes)
+        .map(Digest::new)
+        .map_err(|_| corrupt(what))
+}
+
+fn restored_return_instance(
+    path_nodes: Option<Vec<String>>,
+    path_indices: Option<Vec<i32>>,
+    node: Option<String>,
+    instance_id: Option<Uuid>,
+    projected_id: Option<Uuid>,
+) -> Result<ExecutionInstanceId, StoreError> {
+    let (Some(path_nodes), Some(path_indices), Some(node), Some(instance_id), Some(projected_id)) =
+        (path_nodes, path_indices, node, instance_id, projected_id)
+    else {
+        return Err(corrupt("collection return identity"));
+    };
+    if instance_id != projected_id {
+        return Err(corrupt("collection return identity"));
+    }
+    Ok(ExecutionInstanceId::in_path(
+        instance_path(path_nodes, path_indices, "collection return path")?,
+        NodeId::parse_stored(&node).map_err(|_| corrupt("collection return node"))?,
+    ))
 }
 
 fn step_state(row: &PgRow) -> Result<StepState, StoreError> {
@@ -882,6 +969,7 @@ fn step_state(row: &PgRow) -> Result<StepState, StoreError> {
     let waiting = match (waiting_kind.as_deref(), due_at) {
         (None, _) => None,
         (Some("BRANCHES"), _) => Some(WaitingOn::Branches),
+        (Some("COLLECTION"), _) => Some(WaitingOn::Collection),
         (Some("SAGA"), _) => Some(WaitingOn::Saga),
         (Some("RECONCILIATION"), _) => Some(WaitingOn::Reconciliation),
         (Some("OPERATOR"), _) => Some(WaitingOn::Operator {
@@ -932,6 +1020,260 @@ fn switch_selection(row: &PgRow) -> Result<Option<SwitchSelection>, StoreError> 
             .map(Some)
             .map_err(|_| corrupt("switch case id")),
     }
+}
+
+struct RestoredCollectionRows {
+    iterations: Vec<CollectionIterationRestore>,
+    completed_count: i32,
+    active_count: i32,
+}
+
+async fn load_collections(
+    tx: &mut Transaction<'static, Postgres>,
+    tenant: TenantId,
+    run: RunId,
+    state: &mut RunState,
+) -> Result<(), StoreError> {
+    let scopes = sqlx::query(
+        "SELECT scope_id, owner_path_nodes, owner_path_indices, owner_node, kind, lifecycle, \
+                snapshot_digest, item_count, max_items, max_concurrency, next_admission_index, \
+                admitted_count, completed_count, active_count, result_digest, finish_sequence, \
+                finish_outbox_id \
+         FROM iteration_scopes WHERE tenant_id = $1 AND run_id = $2 \
+         ORDER BY owner_path_nodes, owner_path_indices, owner_node",
+    )
+    .bind(tenant.as_uuid())
+    .bind(run.as_uuid())
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(store_error)?;
+    if scopes.is_empty() {
+        return Ok(());
+    }
+
+    let iteration_rows = sqlx::query(
+        "SELECT i.scope_id, i.iteration_index, i.entry_path_nodes, i.entry_path_indices, \
+                i.entry_node, i.entry_instance_id, i.item_digest, i.lifecycle, i.slot_held, \
+                i.remaining_reservations, i.return_path_nodes, i.return_path_indices, \
+                i.return_node, i.return_instance_id, i.result_digest, i.checkpoint_sequence, \
+                entry_step.step_id AS projected_entry_id, \
+                return_step.step_id AS projected_return_id \
+         FROM collection_iterations i \
+         LEFT JOIN steps entry_step \
+           ON entry_step.tenant_id = i.tenant_id AND entry_step.run_id = i.run_id \
+          AND entry_step.instance_path_nodes = i.entry_path_nodes \
+          AND entry_step.instance_path_indices = i.entry_path_indices \
+          AND entry_step.node = i.entry_node \
+         LEFT JOIN steps return_step \
+           ON return_step.tenant_id = i.tenant_id AND return_step.run_id = i.run_id \
+          AND return_step.instance_path_nodes = i.return_path_nodes \
+          AND return_step.instance_path_indices = i.return_path_indices \
+          AND return_step.node = i.return_node \
+         WHERE i.tenant_id = $1 AND i.run_id = $2 \
+         ORDER BY i.scope_id, i.iteration_index",
+    )
+    .bind(tenant.as_uuid())
+    .bind(run.as_uuid())
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(store_error)?;
+    let checkpoint_rows = sqlx::query(
+        "SELECT scope_id, iteration_index, return_instance_id, result_digest, journal_sequence \
+         FROM iteration_checkpoints WHERE tenant_id = $1 AND run_id = $2",
+    )
+    .bind(tenant.as_uuid())
+    .bind(run.as_uuid())
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(store_error)?;
+    let mut checkpoints = BTreeMap::new();
+    for row in &checkpoint_rows {
+        let key = (
+            col::<Uuid>(row, "scope_id")?,
+            u32::try_from(col::<i32>(row, "iteration_index")?)
+                .map_err(|_| corrupt("checkpoint iteration index"))?,
+        );
+        if checkpoints
+            .insert(
+                key,
+                (
+                    col::<Uuid>(row, "return_instance_id")?,
+                    stored_digest(col(row, "result_digest")?, "checkpoint result digest")?,
+                    col::<i64>(row, "journal_sequence")?,
+                ),
+            )
+            .is_some()
+        {
+            return Err(corrupt("duplicate iteration checkpoint"));
+        }
+    }
+    let mut iterations: BTreeMap<Uuid, RestoredCollectionRows> = BTreeMap::new();
+    for row in &iteration_rows {
+        let scope_id: Uuid = col(row, "scope_id")?;
+        let index = u32::try_from(col::<i32>(row, "iteration_index")?)
+            .map_err(|_| corrupt("collection iteration index"))?;
+        let lifecycle: String = col(row, "lifecycle")?;
+        let return_nodes = col::<Option<Vec<String>>>(row, "return_path_nodes")?;
+        let return_indices = col::<Option<Vec<i32>>>(row, "return_path_indices")?;
+        let return_node = col::<Option<String>>(row, "return_node")?;
+        let return_id = col::<Option<Uuid>>(row, "return_instance_id")?;
+        let result_digest = col::<Option<Vec<u8>>>(row, "result_digest")?;
+        let checkpoint_sequence = col::<Option<i64>>(row, "checkpoint_sequence")?;
+        if col::<Uuid>(row, "entry_instance_id")?
+            != col::<Option<Uuid>>(row, "projected_entry_id")?
+                .ok_or_else(|| corrupt("collection entry projection"))?
+        {
+            return Err(corrupt("collection entry identity"));
+        }
+        let path = instance_path(
+            col(row, "entry_path_nodes")?,
+            col(row, "entry_path_indices")?,
+            "collection entry path",
+        )?;
+        let node: String = col(row, "entry_node")?;
+        let entry = ExecutionInstanceId::in_path(
+            path,
+            NodeId::parse_stored(&node).map_err(|_| corrupt("collection entry node"))?,
+        );
+        let item_digest = stored_digest(col(row, "item_digest")?, "collection item digest")?;
+        let (restored, completed) = match lifecycle.as_str() {
+            "ADMITTED"
+                if col::<bool>(row, "slot_held")?
+                    && col::<i32>(row, "remaining_reservations")? > 0
+                    && return_nodes.is_none()
+                    && return_indices.is_none()
+                    && return_node.is_none()
+                    && return_id.is_none()
+                    && result_digest.is_none()
+                    && checkpoint_sequence.is_none() =>
+            {
+                (
+                    CollectionIterationRestore::admitted(index, entry, item_digest),
+                    false,
+                )
+            }
+            "CHECKPOINTED" if !col::<bool>(row, "slot_held")? => {
+                let return_id_value =
+                    return_id.ok_or_else(|| corrupt("collection checkpoint return identity"))?;
+                let result = stored_digest(
+                    result_digest.ok_or_else(|| corrupt("collection checkpoint result digest"))?,
+                    "collection checkpoint result digest",
+                )?;
+                let sequence =
+                    checkpoint_sequence.ok_or_else(|| corrupt("collection checkpoint sequence"))?;
+                let checkpoint = checkpoints
+                    .remove(&(scope_id, index))
+                    .ok_or_else(|| corrupt("collection checkpoint projection"))?;
+                if checkpoint != (return_id_value, result, sequence)
+                    || col::<i32>(row, "remaining_reservations")? != 0
+                {
+                    return Err(corrupt("collection checkpoint projection"));
+                }
+                (
+                    CollectionIterationRestore::checkpointed(
+                        index,
+                        entry,
+                        item_digest,
+                        restored_return_instance(
+                            return_nodes,
+                            return_indices,
+                            return_node,
+                            Some(return_id_value),
+                            col(row, "projected_return_id")?,
+                        )?,
+                        result,
+                    ),
+                    true,
+                )
+            }
+            _ => return Err(corrupt("unsupported collection iteration projection")),
+        };
+        let rows = iterations
+            .entry(scope_id)
+            .or_insert_with(|| RestoredCollectionRows {
+                iterations: Vec::new(),
+                completed_count: 0,
+                active_count: 0,
+            });
+        rows.iterations.push(restored);
+        if completed {
+            rows.completed_count += 1;
+        } else {
+            rows.active_count += 1;
+        }
+    }
+    if !checkpoints.is_empty() {
+        return Err(corrupt("orphan iteration checkpoint"));
+    }
+
+    for row in &scopes {
+        let scope_id: Uuid = col(row, "scope_id")?;
+        let kind: String = col(row, "kind")?;
+        let lifecycle: String = col(row, "lifecycle")?;
+        let admitted = iterations
+            .remove(&scope_id)
+            .unwrap_or(RestoredCollectionRows {
+                iterations: Vec::new(),
+                completed_count: 0,
+                active_count: 0,
+            });
+        let admitted_count = i32::try_from(admitted.iterations.len()).unwrap_or(i32::MAX);
+        let stored_result_digest = col::<Option<Vec<u8>>>(row, "result_digest")?
+            .map(|digest| stored_digest(digest, "collection result digest"))
+            .transpose()?;
+        let owner_path = instance_path(
+            col(row, "owner_path_nodes")?,
+            col(row, "owner_path_indices")?,
+            "collection owner path",
+        )?;
+        let owner_node: String = col(row, "owner_node")?;
+        let parsed_owner_node =
+            NodeId::parse_stored(&owner_node).map_err(|_| corrupt("collection owner node"))?;
+        let phase = match lifecycle.as_str() {
+            "OPEN"
+                if stored_result_digest.is_none()
+                    && col::<Option<i64>>(row, "finish_sequence")?.is_none()
+                    && col::<Option<Uuid>>(row, "finish_outbox_id")?.is_none() =>
+            {
+                CollectionPhase::Open
+            }
+            "SUCCEEDED"
+                if stored_result_digest.is_some()
+                    && col::<Option<i64>>(row, "finish_sequence")?.is_some()
+                    && col::<Option<Uuid>>(row, "finish_outbox_id")?.is_some() =>
+            {
+                CollectionPhase::Succeeded
+            }
+            _ => return Err(corrupt("unsupported collection scope projection")),
+        };
+        if kind != "COLLECTION"
+            || col::<i32>(row, "next_admission_index")? != admitted_count
+            || col::<i32>(row, "admitted_count")? != admitted_count
+            || col::<i32>(row, "completed_count")? != admitted.completed_count
+            || col::<i32>(row, "active_count")? != admitted.active_count
+        {
+            return Err(corrupt("unsupported collection scope projection"));
+        }
+        state
+            .restore_collection(
+                ExecutionInstanceId::in_path(owner_path, parsed_owner_node),
+                phase,
+                u32::try_from(col::<i32>(row, "item_count")?)
+                    .map_err(|_| corrupt("collection item count"))?,
+                u32::try_from(col::<i32>(row, "max_items")?)
+                    .map_err(|_| corrupt("collection item limit"))?,
+                u16::try_from(col::<i32>(row, "max_concurrency")?)
+                    .map_err(|_| corrupt("collection concurrency limit"))?,
+                stored_digest(col(row, "snapshot_digest")?, "collection snapshot digest")?,
+                stored_result_digest,
+                admitted.iterations,
+            )
+            .map_err(|_| corrupt("collection projection"))?;
+    }
+    if !iterations.is_empty() {
+        return Err(corrupt("collection iteration owner"));
+    }
+    Ok(())
 }
 
 /// The sagas of a run, rebuilt from their rows.
@@ -1027,7 +1369,7 @@ pub struct PgRunTx {
     /// Steps that already have a row. Every write to a run's steps happens under its row lock, so
     /// "insert or update" is decided here, not by `ON CONFLICT` (which checks constraints on the
     /// proposed row before it takes the update path).
-    stored: BTreeSet<NodeId>,
+    stored: BTreeSet<ExecutionInstanceId>,
     breaker: BreakerPolicy,
     /// Pins selected under the retention-policy fence before a lease is granted. `persist` adds
     /// them to the matching immutable `step.leased` detail in this transaction.
@@ -1724,6 +2066,33 @@ impl RunTx for PgRunTx {
         Ok(())
     }
 
+    async fn persist_addressed(
+        &mut self,
+        events: &[AddressedRunEvent],
+        outputs: &[(ExecutionInstanceId, Vec<u8>)],
+        mut effects: Effects,
+    ) -> Result<(), StoreError> {
+        if events.iter().all(|event| event.path().is_root())
+            && outputs
+                .iter()
+                .all(|(instance, _)| instance.path().is_root())
+        {
+            let root_events = events
+                .iter()
+                .cloned()
+                .map(AddressedRunEvent::into_event)
+                .collect::<Vec<_>>();
+            effects.outputs.extend(
+                outputs
+                    .iter()
+                    .map(|(instance, bytes)| (instance.node().clone(), bytes.clone())),
+            );
+            return self.persist(&root_events, effects).await;
+        }
+        self.persist_scoped_addressed(events, outputs, effects)
+            .await
+    }
+
     async fn record_delivery(
         &mut self,
         delivery: &sagat_application::dispatch::DeliveryRef,
@@ -1763,6 +2132,201 @@ impl RunTx for PgRunTx {
 }
 
 impl PgRunTx {
+    async fn persist_scoped_addressed(
+        &mut self,
+        events: &[AddressedRunEvent],
+        outputs: &[(ExecutionInstanceId, Vec<u8>)],
+        effects: Effects,
+    ) -> Result<(), StoreError> {
+        if events.iter().any(|event| event.path().is_root())
+            || outputs
+                .iter()
+                .any(|(instance, _)| instance.path().is_root())
+            || !effects.outputs.is_empty()
+            || effects.lease.is_some()
+            || effects.renewal.is_some()
+            || !effects.rehint.is_empty()
+            || !effects.children.is_empty()
+            || !effects.blobs.is_empty()
+        {
+            return Err(StoreError::Internal {
+                detail: "a scoped addressed write contains root-only effects".into(),
+            });
+        }
+        for addressed in events {
+            if !matches!(
+                addressed.event(),
+                RunEvent::StepCompleted { .. }
+                    | RunEvent::StepFailed { .. }
+                    | RunEvent::StepRouted { .. }
+                    | RunEvent::StepRetryScheduled { .. }
+                    | RunEvent::StepRetryDue { .. }
+                    | RunEvent::StepReleased { .. }
+            ) {
+                return Err(StoreError::Internal {
+                    detail: "the scoped event is not supported by addressed storage".into(),
+                });
+            }
+        }
+
+        let version = self.state.version();
+        let written = u64::try_from(events.len()).map_err(|_| corrupt("event count"))?;
+        if version != self.persisted + written {
+            return Err(StoreError::Internal {
+                detail: "the in-memory state and the addressed events to write diverged".into(),
+            });
+        }
+        let tenant = self.info.tenant_id;
+        let run = self.info.run_id;
+        let completed = events
+            .iter()
+            .filter_map(|addressed| {
+                matches!(addressed.event(), RunEvent::StepCompleted { .. })
+                    .then(|| addressed.instance())
+                    .flatten()
+            })
+            .collect::<BTreeSet<_>>();
+        let mut output_digest = BTreeMap::new();
+        for (instance, bytes) in outputs {
+            if !completed.contains(instance) || output_digest.contains_key(instance) {
+                return Err(StoreError::Internal {
+                    detail: "a scoped output has no unique completion event".into(),
+                });
+            }
+            let digest = Sha256::digest(bytes).to_vec();
+            sqlx::query(
+                "INSERT INTO payloads (tenant_id, digest, content) VALUES ($1, $2, $3) \
+                 ON CONFLICT DO NOTHING",
+            )
+            .bind(tenant.as_uuid())
+            .bind(&digest)
+            .bind(bytes)
+            .execute(&mut *self.tx)
+            .await
+            .map_err(store_error)?;
+            output_digest.insert(instance.clone(), digest);
+            if let Some(data) = &mut self.data {
+                data.insert_output(instance.clone(), bytes.clone());
+            }
+        }
+        let mut touched = BTreeSet::new();
+        let mut hinted = BTreeSet::new();
+        for (offset, addressed) in events.iter().enumerate() {
+            let instance = addressed.instance().ok_or_else(|| StoreError::Internal {
+                detail: "a scoped event has no logical instance".into(),
+            })?;
+            let event = addressed.event();
+            let encoded = encode(event);
+            let seq = i64::try_from(self.persisted + 1 + offset as u64)
+                .map_err(|_| corrupt("sequence"))?;
+            let (path_nodes, path_indices) = stored_path_parts(instance.path());
+            let payload = matches!(event, RunEvent::StepCompleted { .. })
+                .then(|| output_digest.get(&instance))
+                .flatten();
+            sqlx::query(
+                "INSERT INTO run_events \
+                 (tenant_id, run_id, seq, event_type, node, attempt, detail, payload_digest, actor, \
+                  trace_id, occurred_at, instance_id, instance_path_nodes, instance_path_indices) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
+            )
+            .bind(tenant.as_uuid())
+            .bind(run.as_uuid())
+            .bind(seq)
+            .bind(encoded.event_type)
+            .bind(encoded.node.as_deref())
+            .bind(encoded.attempt)
+            .bind(&encoded.detail)
+            .bind(payload.map(Vec::as_slice))
+            .bind(effects.actor.label())
+            .bind(effects.trace_id.as_deref().or(self.info.trace_id.as_deref()))
+            .bind(self.now)
+            .bind(instance_step_id(self.info.version_id, run, &instance))
+            .bind(path_nodes)
+            .bind(path_indices)
+            .execute(&mut *self.tx)
+            .await
+            .map_err(store_error)?;
+            touched.extend(addressed.changed_instances());
+            if matches!(
+                event,
+                RunEvent::StepReleased { .. } | RunEvent::StepRetryDue { .. }
+            ) {
+                hinted.insert(instance);
+            }
+        }
+
+        if !events.is_empty() {
+            let head = i64::try_from(version).map_err(|_| corrupt("sequence"))?;
+            sqlx::query(
+                "INSERT INTO telemetry_pending (tenant_id, run_id, head_seq, applied_seq, behind_since) \
+                 VALUES ($1, $2, $3, 0, clock_timestamp()) \
+                 ON CONFLICT (tenant_id, run_id) DO UPDATE \
+                   SET behind_since = CASE WHEN telemetry_pending.applied_seq >= telemetry_pending.head_seq \
+                                           THEN clock_timestamp() ELSE telemetry_pending.behind_since END, \
+                       head_seq = GREATEST(telemetry_pending.head_seq, EXCLUDED.head_seq)",
+            )
+            .bind(tenant.as_uuid())
+            .bind(run.as_uuid())
+            .bind(head)
+            .execute(&mut *self.tx)
+            .await
+            .map_err(store_error)?;
+        }
+
+        for instance in &touched {
+            self.upsert_scoped_instance(
+                instance,
+                hinted.contains(instance),
+                output_digest.get(instance),
+            )
+            .await?;
+        }
+        for instance in &hinted {
+            self.outbox_task_ready_instance(instance).await?;
+        }
+
+        if written > 0 {
+            let updated = sqlx::query(
+                "UPDATE runs SET status = $4, run_version = $5, updated_at = $6 \
+                 WHERE tenant_id = $1 AND id = $2 AND run_version = $3",
+            )
+            .bind(tenant.as_uuid())
+            .bind(run.as_uuid())
+            .bind(i64::try_from(self.persisted).map_err(|_| corrupt("run version"))?)
+            .bind(self.state.status().as_str())
+            .bind(i64::try_from(version).map_err(|_| corrupt("run version"))?)
+            .bind(self.now)
+            .execute(&mut *self.tx)
+            .await
+            .map_err(store_error)?
+            .rows_affected();
+            if updated != 1 {
+                return Err(StoreError::Internal {
+                    detail: "the run changed while its row was locked".into(),
+                });
+            }
+        }
+        self.persisted = version;
+        if let Some(audit) = &effects.audit {
+            insert_audit(&mut self.tx, audit).await?;
+        }
+        if let Some((idempotency, result)) = &effects.idempotency
+            && !remember(
+                &mut self.tx,
+                tenant,
+                idempotency,
+                &hash(&idempotency.fingerprint),
+                result,
+            )
+            .await?
+        {
+            return Err(StoreError::Unavailable {
+                detail: "an idempotency record for this command appeared concurrently".into(),
+            });
+        }
+        Ok(())
+    }
+
     async fn ready_script_retention(
         &mut self,
         activity: &ActivityName,
@@ -1985,6 +2549,63 @@ impl PgRunTx {
         Ok(())
     }
 
+    async fn outbox_task_ready_instance(
+        &mut self,
+        instance: &ExecutionInstanceId,
+    ) -> Result<(), StoreError> {
+        let (path_nodes, path_indices) = stored_path_parts(instance.path());
+        let activity: Option<String> = sqlx::query_scalar(
+            "SELECT activity FROM steps WHERE tenant_id = $1 AND run_id = $2 AND node = $3 \
+               AND instance_path_nodes = $4 AND instance_path_indices = $5",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.run_id.as_uuid())
+        .bind(instance.node().as_str())
+        .bind(&path_nodes)
+        .bind(&path_indices)
+        .fetch_optional(&mut *self.tx)
+        .await
+        .map_err(store_error)?
+        .flatten();
+        let Some(activity) = activity else {
+            return Err(StoreError::Internal {
+                detail: "a scoped ready step has no activity".into(),
+            });
+        };
+        let path = instance
+            .path()
+            .segments()
+            .iter()
+            .map(|segment| {
+                serde_json::json!({
+                    "scope": segment.scope_node().as_str(),
+                    "index": segment.iteration_index(),
+                })
+            })
+            .collect::<Vec<_>>();
+        sqlx::query(
+            "INSERT INTO event_outbox (id, tenant_id, aggregate_id, event_type, routing_key, payload) \
+             VALUES ($1, $2, $3, 'task.ready', $4, $5)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.run_id.as_uuid())
+        .bind(&activity)
+        .bind(serde_json::json!({
+            "tenantId": self.info.tenant_id.to_string(),
+            "namespaceId": self.info.namespace_id.to_string(),
+            "runId": self.info.run_id.to_string(),
+            "node": instance.node().as_str(),
+            "instancePath": path,
+            "activity": activity,
+            "traceId": self.info.trace_id,
+        }))
+        .execute(&mut *self.tx)
+        .await
+        .map_err(store_error)?;
+        Ok(())
+    }
+
     async fn outbox_run_finished(&mut self, status: RunStatus) -> Result<(), StoreError> {
         let message = Uuid::now_v7();
         sqlx::query(
@@ -2103,6 +2724,131 @@ impl PgRunTx {
         Ok(())
     }
 
+    async fn upsert_scoped_instance(
+        &mut self,
+        instance: &ExecutionInstanceId,
+        hinted: bool,
+        output: Option<&Vec<u8>>,
+    ) -> Result<(), StoreError> {
+        let step = self
+            .state
+            .instance(instance)
+            .ok_or_else(|| corrupt("scoped step projection"))?;
+        if step.waiting_on().is_some()
+            || step.condition().is_some()
+            || step.switch_selection().is_some()
+        {
+            return Err(StoreError::Internal {
+                detail: "the scoped step projection is not supported by addressed storage".into(),
+            });
+        }
+        let status = step.status().as_str();
+        let attempt = i32::try_from(step.attempt()).map_err(|_| corrupt("attempt"))?;
+        let generation = i64::try_from(step.generation()).map_err(|_| corrupt("generation"))?;
+        let (path_nodes, path_indices) = stored_path_parts(instance.path());
+        let step_uuid = instance_step_id(self.info.version_id, self.info.run_id, instance);
+        if !self.stored.contains(instance) {
+            if !matches!(step.status(), StepStatus::Pending | StepStatus::Ready) {
+                return Err(StoreError::Internal {
+                    detail: "a scoped step cannot be created after it started".into(),
+                });
+            }
+            let activity =
+                self.def
+                    .node_for_instance(instance)
+                    .and_then(|node| match node.kind() {
+                        NodeKind::Activity { activity, .. } => Some(activity.as_str()),
+                        _ => None,
+                    });
+            if step.status() == StepStatus::Ready && activity.is_none() {
+                return Err(StoreError::Internal {
+                    detail: "a scoped ready step has no declared activity".into(),
+                });
+            }
+            sqlx::query(
+                "INSERT INTO steps \
+                 (tenant_id, run_id, node, step_id, namespace_id, status, attempt, generation, \
+                  cancel_requested, routed, timed_out, failure_code, next_attempt_at, activity, \
+                  ready_at, last_hinted_at, output_digest, updated_at, kind, \
+                  instance_path_nodes, instance_path_indices) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, \
+                         CASE WHEN $6 = 'READY' THEN $15 END, CASE WHEN $16 THEN $15 END, $17, \
+                         $15, 'FORWARD', $18, $19)",
+            )
+            .bind(self.info.tenant_id.as_uuid())
+            .bind(self.info.run_id.as_uuid())
+            .bind(instance.node().as_str())
+            .bind(step_uuid)
+            .bind(self.info.namespace_id.as_uuid())
+            .bind(status)
+            .bind(attempt)
+            .bind(generation)
+            .bind(step.cancel_requested())
+            .bind(step.routed())
+            .bind(step.timed_out())
+            .bind(step.failure().map(FailureCode::as_str))
+            .bind(step.next_attempt_at())
+            .bind(activity)
+            .bind(self.now)
+            .bind(hinted)
+            .bind(output.cloned())
+            .bind(path_nodes)
+            .bind(path_indices)
+            .execute(&mut *self.tx)
+            .await
+            .map_err(store_error)?;
+            self.stored.insert(instance.clone());
+            return Ok(());
+        }
+
+        let updated = sqlx::query(
+            "UPDATE steps SET status = $6, attempt = $7, generation = $8, \
+                    cancel_requested = $9, routed = $10, timed_out = $11, failure_code = $12, \
+                    next_attempt_at = $13, \
+                    ready_at = CASE WHEN $6 = 'READY' \
+                                    THEN COALESCE(CASE WHEN status = 'READY' THEN ready_at END, $14) \
+                                    ELSE ready_at END, \
+                    last_hinted_at = CASE WHEN $15 THEN $14 ELSE last_hinted_at END, \
+                    hint_count = CASE WHEN $15 THEN 0 ELSE hint_count END, \
+                    lease_token_hash = CASE WHEN $6 IN ('LEASED', 'RUNNING') \
+                                            THEN lease_token_hash END, \
+                    lease_expires_at = CASE WHEN $6 IN ('LEASED', 'RUNNING') \
+                                            THEN lease_expires_at END, \
+                    attempt_deadline_at = CASE WHEN $6 IN ('LEASED', 'RUNNING') \
+                                               THEN attempt_deadline_at END, \
+                    leased_by = CASE WHEN $6 IN ('LEASED', 'RUNNING') THEN leased_by END, \
+                    output_digest = COALESCE($16, output_digest), updated_at = $14 \
+             WHERE tenant_id = $1 AND run_id = $2 AND node = $3 AND step_id = $4 \
+               AND namespace_id = $5 AND instance_path_nodes = $17 AND instance_path_indices = $18",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.run_id.as_uuid())
+        .bind(instance.node().as_str())
+        .bind(step_uuid)
+        .bind(self.info.namespace_id.as_uuid())
+        .bind(status)
+        .bind(attempt)
+        .bind(generation)
+        .bind(step.cancel_requested())
+        .bind(step.routed())
+        .bind(step.timed_out())
+        .bind(step.failure().map(FailureCode::as_str))
+        .bind(step.next_attempt_at())
+        .bind(self.now)
+        .bind(hinted)
+        .bind(output.cloned())
+        .bind(path_nodes)
+        .bind(path_indices)
+        .execute(&mut *self.tx)
+        .await
+        .map_err(store_error)?
+        .rows_affected();
+        if updated != 1 {
+            return Err(corrupt("scoped step identity"));
+        }
+        Ok(())
+    }
+
     async fn upsert_step(
         &mut self,
         node: &NodeId,
@@ -2144,6 +2890,11 @@ impl PgRunTx {
                     detail: "collection projection is not persisted".into(),
                 });
             }
+            Some(WaitingOn::Loop) => {
+                return Err(StoreError::Internal {
+                    detail: "loop projection is not persisted".into(),
+                });
+            }
         };
         // How far back an event wait accepts events, beyond the moment it began waiting.
         let lookback = match def_node.map(sagat_domain::workflow::Node::kind) {
@@ -2171,7 +2922,7 @@ impl PgRunTx {
         });
         let attempt = i32::try_from(step.attempt()).map_err(|_| corrupt("attempt"))?;
         let generation = i64::try_from(step.generation()).map_err(|_| corrupt("generation"))?;
-        let inserted = !self.stored.contains(node);
+        let inserted = !self.stored.contains(&instance);
         if inserted {
             if leased {
                 return Err(StoreError::Internal {
@@ -2220,7 +2971,7 @@ impl PgRunTx {
             .execute(&mut *self.tx)
             .await
             .map_err(store_error)?;
-            self.stored.insert(node.clone());
+            self.stored.insert(instance);
             return Ok(());
         }
         sqlx::query(
@@ -2260,7 +3011,8 @@ impl PgRunTx {
                 event_scanned_at = CASE WHEN $15 = 'EVENT' AND waiting_kind = 'EVENT' \
                                         THEN event_scanned_at END, \
                 updated_at = $20, switch_case_id = $32 \
-             WHERE tenant_id = $1 AND run_id = $2 AND node = $3",
+             WHERE tenant_id = $1 AND run_id = $2 AND node = $3 \
+               AND cardinality(instance_path_nodes) = 0",
         )
         .bind(self.info.tenant_id.as_uuid())
         .bind(self.info.run_id.as_uuid())

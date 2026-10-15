@@ -7,8 +7,11 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
+mod approval_ir;
+mod errors;
 mod identity_limits;
 mod loops;
+mod operations;
 mod revision;
 mod sdk_collection_ir;
 mod worker_protocol;

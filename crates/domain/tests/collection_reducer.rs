@@ -245,12 +245,14 @@ fn replay_uses_only_admitted_instances_and_recorded_checkpoints() {
         AddressedRunEvent::root(RunEvent::CollectionFinished {
             node: node("items"),
             outcome: CollectionOutcome::Succeeded,
+            result_digest: Some(Digest::new([0x90; 32])),
         }),
     ];
 
     let state = RunState::replay_addressed(run, &events).expect("events replay");
     let scope = state.collection(&collection()).expect("collection state");
     assert_eq!(scope.phase(), CollectionPhase::Succeeded);
+    assert_eq!(scope.result_digest(), Some(Digest::new([0x90; 32])));
     assert_eq!(
         scope
             .ordered_results()
@@ -303,6 +305,7 @@ fn permanent_failure_stops_admission_and_finishes_only_after_drain() {
         .apply(&RunEvent::CollectionFinished {
             node: node("items"),
             outcome: CollectionOutcome::Failed(FailureCode::worker_error()),
+            result_digest: None,
         })
         .expect("collection fails after drain");
 
@@ -324,6 +327,7 @@ fn empty_collection_finishes_without_allocating_an_iteration() {
         .apply(&RunEvent::CollectionFinished {
             node: node("items"),
             outcome: CollectionOutcome::Succeeded,
+            result_digest: Some(Digest::new([0x90; 32])),
         })
         .expect("empty collection succeeds");
 
@@ -331,6 +335,41 @@ fn empty_collection_finishes_without_allocating_an_iteration() {
     assert_eq!(scope.phase(), CollectionPhase::Succeeded);
     assert_eq!(scope.active_count(), 0);
     assert_eq!(scope.ordered_results().count(), 0);
+}
+
+#[test]
+fn collection_finish_requires_a_digest_only_for_success() {
+    let mut success = started(0, 1);
+    assert_eq!(
+        success.apply(&RunEvent::CollectionFinished {
+            node: node("items"),
+            outcome: CollectionOutcome::Succeeded,
+            result_digest: None,
+        }),
+        Err(ExecutionError::IllegalCollectionTransition {
+            collection: collection(),
+            event: "collection.finished",
+        })
+    );
+
+    let mut cancelled = started(0, 1);
+    cancelled
+        .apply(&RunEvent::CollectionDrainStarted {
+            node: node("items"),
+            reason: CollectionDrainReason::Cancelled,
+        })
+        .expect("cancellation starts drain");
+    assert_eq!(
+        cancelled.apply(&RunEvent::CollectionFinished {
+            node: node("items"),
+            outcome: CollectionOutcome::Cancelled,
+            result_digest: Some(Digest::new([0x90; 32])),
+        }),
+        Err(ExecutionError::IllegalCollectionTransition {
+            collection: collection(),
+            event: "collection.finished",
+        })
+    );
 }
 
 #[test]
@@ -354,6 +393,7 @@ fn cancellation_drains_only_admitted_work_before_finishing() {
         .apply(&RunEvent::CollectionFinished {
             node: node("items"),
             outcome: CollectionOutcome::Cancelled,
+            result_digest: None,
         })
         .expect("cancelled collection finishes");
 

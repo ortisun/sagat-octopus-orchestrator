@@ -79,6 +79,14 @@ fn stored_names_are_a_stable_contract() {
     );
     assert_eq!(AuditAction::WorkspaceCreated.as_str(), "workspace.created");
     assert_eq!(AuditAction::NamespaceCreated.as_str(), "namespace.created");
+    assert_eq!(AuditAction::RunQueried.as_str(), "run.queried");
+    assert_eq!(AuditAction::RunUpdated.as_str(), "run.updated");
+    assert!(AuditAction::RunQueried.collapses_repeats());
+    assert_eq!(
+        AuditAction::RunQueried.repeat_window(),
+        Some(std::time::Duration::from_secs(300))
+    );
+    assert!(!AuditAction::RunUpdated.collapses_repeats());
     assert_eq!(
         AuditAction::MembershipGranted.as_str(),
         "membership.granted"

@@ -248,5 +248,109 @@ build-only; neither publication nor execution of these nodes is enabled.
 | .NET SDK tests and format verification | 431 tests passed; format passed (supporting agent) |
 | Java SDK tests | Passed (supporting agent) |
 
-The structured server parser still rejects loops until their workflow definition mapping and
-runtime are complete. These builder results are authoring evidence only.
+The production publication parser still rejects loops. The explicit structured-v1 validation
+path accepts their definition mapping; these builder results are authoring evidence only.
+
+## Loop model and structured validation checkpoint (2026-10-15)
+
+The explicit structured v1 parser now maps `while` and `repeatUntil` to typed definition nodes,
+checks expressions and closed body references, and preserves the five-SDK loop golden byte for
+byte. The production publication parser still rejects these nodes. A pure domain reducer records
+pre/post-test entry, sequential iteration admission, result and carry digests, the predicate
+decision, delay, limit exhaustion, drain and final outcome. It replays without reevaluating a
+predicate, rejects an active lease during drain, and checks iteration/deadline bounds. The
+PostgreSQL event codec round-trips its eight event kinds, but storage has no loop projection or
+timer/outbox transaction and explicitly refuses to persist a loop wait.
+
+| Check | Result |
+|---|---|
+| `cargo test -p sagat-domain -p sagat-application -p sagat-infra-ir -p sagat-infra-postgres --locked -q` | Passed across all package test targets, including 10 new loop reducer tests and 4 event codec tests |
+| `cargo test -p sagat-tests --test contract_workflow_primitives --test integration_workflow_primitives --locked -q` | Passed: 16 contracts and 14 real-PostgreSQL integration tests at this checkpoint |
+| `cargo check --workspace --all-targets --locked -q` | Passed |
+
+The collection planner helper is private and prevalidates a bounded event batch against a cloned
+`RunState`; the production planner still returns `UnsupportedStructuredNode`. It does not yet
+dispatch bodies or bridge to the storage adapter. Scoped Return routing, projection restoration,
+quotas, compensation and failure tests remain release gates for loops and collections.
+
+## Scoped storage and transaction checkpoint (2026-10-15)
+
+PostgreSQL now retains a collection entry and bounded activity admission with the addressed
+journal, steps, outbox and counters in one transaction. The canonical run reader restores an open
+collection and its admitted instances; `verify_run` replays addressed journal events and detects a
+divergent scope projection. Journal attempt spans use the complete instance path. Legacy worker
+claims and maintenance candidates remain root-only. The domain reducer accepts scoped activity
+completion, fenced failure, retry and same-path routing, while the legacy transaction adapter
+refuses scoped events and outputs before it can flatten their identities.
+
+The store validates the scheduler shard lease under a row fence and reads tenant iteration
+capacity from a persisted policy. Missing policy prevents entry before the owner is parked.
+Admissions across runs serialize on tenant usage. A root-step trigger counts its first activation
+against the lifetime run budget; historic cancelled steps remain an explicitly documented lower
+bound because their prior activation cannot be reconstructed. The policy has no public management
+route yet. Collection checkpoint/finish, scoped worker claims/completions, compensation and public
+publication remain disabled.
+
+| Check | Result |
+|---|---|
+| `cargo test -p sagat-tests --test integration_workflow_primitives --locked -q` | Passed: 23 real-PostgreSQL tests, including transaction rollback, tenant contention and projection divergence |
+| `cargo test -p sagat-domain --locked -q` | Passed: complete domain suite including scoped lifecycle, loop and declared-operation model tests |
+| `cargo test -p sagat-tests --test contract_workflow_primitives --locked -q` | Passed: 21 contracts |
+| `cargo check --workspace --all-targets --locked -q` | Passed |
+
+These results validate isolated foundations, not an executable collection or loop. The complete
+workspace test, fault matrix, five-language runtime conformance and performance gates remain open.
+
+## Approval authoring and domain checkpoint (2026-10-15)
+
+The five SDKs now build the same additive v1 approval document in build-only mode. Their common
+golden covers the default initiator exclusion, explicit opt-out, role and subject policy, bounded
+timeout and the three mandatory outcome routes. The structured parser maps those documents to a
+typed `ApprovalPolicy` and checks the graph; the production publication parser still rejects them.
+The pure domain approval model validates current authorization and eligibility before accepting a
+decision or replaying a receipt. It records a first settlement and treats losing expiry/cancel
+attempts deterministically. There is no request, timer, audit, journal, outbox or API transaction
+for approval yet, so this is not runtime evidence.
+
+| Check | Result |
+|---|---|
+| `SAGAT_SDK_SCENARIO=approval-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture` | Passed: all five SDKs matched the reviewed canonical golden; normalized SHA-256 `7da0a408466d50f813a820a55de9a2f1c23673373c53030014b581101f1e0fbc` |
+| SDK suites | TypeScript 114; Python 245 plus Ruff/Mypy; .NET 431; Go and Java suites passed |
+| `cargo test -p sagat-domain --locked` | Passed, including 11 approval domain tests |
+| `cargo test -p sagat-tests --test contract_workflow_primitives --locked -q` | Passed: 23 contracts, including canonical approval IR with publication gate |
+| `cargo clippy -p sagat-domain -p sagat-infra-ir --all-targets --locked -- -D warnings` | Passed |
+
+## Worker protocol capability gate (2026-10-15)
+
+The worker adapter can negotiate minor 1.5 only when its storage implementation explicitly
+declares transactional support for scoped claims and reports. PostgreSQL still declares no such
+support, so it negotiates 1.4, claims only root instances and rejects scoped reports. The six
+attempt-scoped RPCs validate the same structural identity; the Protobuf contract retains field
+numbers and accepts legacy messages without an instance field. This gate does not prove scoped
+worker execution because the PostgreSQL claim, lease and transaction paths remain root-only.
+
+| Check | Result |
+|---|---|
+| `cargo test -p sagat-application --locked` | Passed: 168 tests |
+| `cargo test -p sagat-api-grpc --locked` | Passed: 24 tests |
+| `cargo clippy -p sagat-application -p sagat-api-grpc --all-targets --locked -- -D warnings` | Passed |
+
+## Transactional collection and addressed-storage checkpoint (2026-10-15)
+
+The private collection adapter now checkpoints an iteration and finishes its collection in
+PostgreSQL with journal, projection, counters and outbox in the same transaction. The finish checks
+that the retained aggregate array equals checkpoint values in iteration order. The canonical run
+reader restores open and finished collection state, including the aggregate digest, and
+`verify_run` detects a corrupted digest. The generic run transaction now has an addressed scoped
+write path for a bounded set of step events and outputs; it retains full instance identity in the
+journal and step projection. Scoped worker claims are still disabled, and the collection planner
+is not connected to the adapter, so no end-to-end collection runtime guarantee follows.
+
+| Check | Result |
+|---|---|
+| `cargo test -p sagat-tests --test integration_workflow_primitives --locked -q` | Passed: 32 real-PostgreSQL tests, including checkpoint/finish restart, addressed storage, empty collection, corrupted snapshot/index rejection and declared-operation transactions at this checkpoint |
+| `cargo check --workspace --all-targets --locked -q` | Passed |
+| Clippy for application and infra-postgres all targets, plus the primitive integration target, with `-D warnings` | Passed in the collection adapter checkpoint; a combined rerun remains pending after concurrent edits |
+
+Full fault matrix, quota and audit semantics, scoped worker
+claim/report, body routing, compensation and all-five runtime conformance remain open gates.
