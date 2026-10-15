@@ -1,9 +1,11 @@
 //! Collection progress is derived only from explicit journal events.
 #![allow(clippy::expect_used)]
 
+use std::collections::BTreeMap;
+
 use sagat_domain::execution::{
     AddressedRunEvent, CollectionDrainReason, CollectionOutcome, CollectionPhase, ExecutionError,
-    ExecutionInstanceId, FailureCode, InstancePath, RunEvent, RunId, RunState, StepStatus,
+    ExecutionInstanceId, FailureCode, Fence, InstancePath, RunEvent, RunId, RunState, StepStatus,
     lease_instance,
 };
 use sagat_domain::workflow::Digest;
@@ -437,4 +439,124 @@ fn drain_refuses_to_hide_an_attempt_that_is_still_in_flight() {
         })
     );
     assert_eq!(state, before);
+}
+
+#[test]
+fn drain_refuses_to_hide_failed_derived_obligations() {
+    for derived_node in [node("work").compensation(), node("work").reconciliation()] {
+        let mut state = started(1, 1);
+        admit(&mut state, 0);
+        let path = body(0).path().clone();
+        for event in [
+            RunEvent::StepReleased { node: node("work") },
+            RunEvent::StepLeased {
+                node: node("work"),
+                attempt: 1,
+                generation: 1,
+            },
+            RunEvent::StepStarted {
+                node: node("work"),
+                attempt: 1,
+                generation: 1,
+            },
+            RunEvent::StepCompleted {
+                node: node("work"),
+                attempt: 1,
+                generation: 1,
+            },
+            RunEvent::StepRouted {
+                node: node("work"),
+                activated: vec![derived_node.clone()],
+            },
+            RunEvent::StepReleased {
+                node: derived_node.clone(),
+            },
+            RunEvent::StepLeased {
+                node: derived_node.clone(),
+                attempt: 1,
+                generation: 1,
+            },
+            RunEvent::StepStarted {
+                node: derived_node.clone(),
+                attempt: 1,
+                generation: 1,
+            },
+            RunEvent::StepFailed {
+                node: derived_node.clone(),
+                code: FailureCode::worker_error(),
+                fence: Some(Fence {
+                    attempt: 1,
+                    generation: 1,
+                }),
+            },
+        ] {
+            state
+                .apply_addressed(
+                    &AddressedRunEvent::in_path(path.clone(), event).expect("scoped event"),
+                )
+                .expect("prepare failed derived obligation");
+        }
+        let reason = CollectionDrainReason::Failed {
+            iteration: 0,
+            code: FailureCode::worker_error(),
+        };
+        state
+            .apply(&RunEvent::CollectionDrainStarted {
+                node: node("items"),
+                reason: reason.clone(),
+            })
+            .expect("collection begins draining");
+        let before = state.clone();
+
+        assert_eq!(
+            state.apply(&RunEvent::CollectionIterationDrained {
+                node: node("items"),
+                index: 0,
+            }),
+            Err(ExecutionError::IllegalCollectionTransition {
+                collection: collection(),
+                event: "collection.iteration_drained",
+            })
+        );
+        assert_eq!(state, before);
+
+        let mut restored = RunState::restore_instances(
+            state.run_id(),
+            state.status(),
+            state
+                .stop_reason()
+                .map(|stop| (stop, state.stop_code().cloned())),
+            state.is_paused(),
+            state
+                .instances()
+                .map(|(instance, step)| (instance.clone(), step.clone()))
+                .collect::<BTreeMap<_, _>>(),
+            BTreeMap::new(),
+            state.version(),
+        );
+        assert_eq!(
+            restored.restore_collection_progress(
+                collection(),
+                CollectionPhase::Draining,
+                1,
+                1,
+                1,
+                Digest::new([0x51; 32]),
+                None,
+                Some(reason),
+                vec![
+                    sagat_domain::execution::CollectionIterationRestore::drained(
+                        0,
+                        body(0),
+                        Digest::new([0; 32]),
+                    )
+                ],
+            ),
+            Err(ExecutionError::IllegalCollectionTransition {
+                collection: collection(),
+                event: "collection.restore",
+            })
+        );
+        assert!(restored.collection(&collection()).is_none());
+    }
 }

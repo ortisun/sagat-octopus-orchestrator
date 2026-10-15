@@ -196,6 +196,17 @@ impl ExpressionEvaluator for JsonEvaluator {
         serde_json::to_vec(&value).map_err(failure)
     }
 
+    fn continuation_value(
+        &self,
+        expression: &Expression,
+        data: &RunData,
+    ) -> Result<Vec<u8>, ExpressionFailure> {
+        let compiled = Compiled::compile(expression.as_str()).map_err(failure)?;
+        let env = environment(&compiled.variables(), data, None)?;
+        let value = compiled.eval(&env).map_err(failure)?;
+        serde_json::to_vec(&value).map_err(failure)
+    }
+
     fn task_input(&self, data: &RunData, node: &NodeId) -> Vec<u8> {
         let input = parse(&data.input).unwrap_or(Value::Null);
         let mut steps = Map::new();

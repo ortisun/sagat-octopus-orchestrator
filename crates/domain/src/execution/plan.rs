@@ -320,8 +320,8 @@ fn start_pending(
                 input: input.clone(),
             }),
             NodeKind::End { .. } => Plan::Emit(RunEvent::EndReached { node: node.clone() }),
+            NodeKind::Approval { .. } => Plan::Idle,
             NodeKind::ForEach { .. }
-            | NodeKind::Approval { .. }
             | NodeKind::While { .. }
             | NodeKind::RepeatUntil { .. }
             | NodeKind::Return { .. }

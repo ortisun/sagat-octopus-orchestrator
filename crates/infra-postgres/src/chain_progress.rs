@@ -1,13 +1,13 @@
 //! PostgreSQL transaction adapter for private execution-chain continuation.
 //!
-//! The adapter supports an activity entrypoint and unchanged retained input. More general input
-//! evaluation, child-chain reconciliation and non-activity planning remain closed at the port.
+//! The adapter commits an already evaluated object input into an activity-entrypoint successor.
+//! Schema-checked state transfer and non-activity successor planning remain closed at the port.
 
 use sagat_application::chain_progress::{
     ChainCommandStore, ChainFinalizationCommand, ChainFinalizationWrite, ChainHandoffCommand,
     ChainHandoffWrite, ChainInitialization, ChainInspection, ChainProgressError,
     ChainProgressStore, ChainSegmentView, ChildChainSettlementCommand, ChildChainSettlementWrite,
-    LockedChainHead,
+    EvaluatedChainHandoffCommand, LockedChainHead,
 };
 use sagat_application::error::StoreError;
 use sagat_application::execution::{DefinitionCache, instance_step_id};
@@ -24,6 +24,7 @@ use sagat_domain::workflow::{Digest, NodeId, NodeKind, WorkflowDefinition};
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
 use sqlx::{PgConnection, PgPool, Row};
+use time::OffsetDateTime;
 
 use crate::event_codec::{decode, encode};
 use crate::identity::{insert_audit, store_error};
@@ -205,6 +206,11 @@ struct LockedRun {
     run_version: u64,
     input_digest: Digest,
     parent_run_id: Option<uuid::Uuid>,
+    parent_node: Option<String>,
+    cancel_policy: Option<String>,
+    root_run_id: uuid::Uuid,
+    depth: i16,
+    trace_parent_span: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -422,6 +428,32 @@ async fn validate_payload(
     Ok(content)
 }
 
+async fn retain_payload(
+    conn: &mut PgConnection,
+    tenant_id: TenantId,
+    value: Digest,
+    content: &[u8],
+) -> Result<(), ChainProgressError> {
+    if Sha256::digest(content).as_slice() != value.as_bytes() {
+        return Err(ChainProgressError::CorruptProjection);
+    }
+    sqlx::query(
+        "INSERT INTO payloads (tenant_id,digest,content) VALUES ($1,$2,$3) \
+         ON CONFLICT (tenant_id,digest) DO NOTHING",
+    )
+    .bind(tenant_id.as_uuid())
+    .bind(value.as_bytes().as_slice())
+    .bind(content)
+    .execute(&mut *conn)
+    .await
+    .map_err(store_error)?;
+    let stored = validate_payload(conn, tenant_id, value).await?;
+    if stored != content {
+        return Err(ChainProgressError::CorruptProjection);
+    }
+    Ok(())
+}
+
 async fn lock_chain(
     conn: &mut PgConnection,
     command: &ChainHandoffCommand,
@@ -462,7 +494,8 @@ async fn lock_run(
 ) -> Result<LockedRun, ChainProgressError> {
     let row = sqlx::query(
         "SELECT namespace_id, workflow_id, workflow_version_id, status, run_version, input_digest, \
-                deadline_at, parent_run_id, stop_reason, paused \
+                deadline_at, parent_run_id, parent_node, cancel_policy, root_run_id, depth, \
+                trace_parent_span, stop_reason, paused \
          FROM runs WHERE tenant_id = $1 AND id = $2 FOR UPDATE",
     )
     .bind(command.scope().tenant_id().as_uuid())
@@ -490,6 +523,11 @@ async fn lock_run(
         run_version: stored_u64(row.get("run_version"), "run version")?,
         input_digest: digest(row.get("input_digest"), "run input digest")?,
         parent_run_id: row.get("parent_run_id"),
+        parent_node: row.get("parent_node"),
+        cancel_policy: row.get("cancel_policy"),
+        root_run_id: row.get("root_run_id"),
+        depth: row.get("depth"),
+        trace_parent_span: row.get("trace_parent_span"),
     })
 }
 
@@ -707,6 +745,65 @@ async fn segment_quiescent(
     .map_err(ChainProgressError::from)
 }
 
+async fn typed_segment_quiescent(
+    conn: &mut PgConnection,
+    command: &EvaluatedChainHandoffCommand,
+) -> Result<bool, ChainProgressError> {
+    let handoff = command.handoff();
+    sqlx::query_scalar(
+        "SELECT \
+           EXISTS (SELECT 1 FROM steps WHERE tenant_id=$1 AND run_id=$2 AND node=$3 \
+             AND instance_path_nodes='{}' AND instance_path_indices='{}' \
+             AND status='PENDING' AND routed=false AND waiting_kind IS NULL \
+             AND lease_token_hash IS NULL) \
+           AND NOT EXISTS (SELECT 1 FROM steps WHERE tenant_id=$1 AND run_id=$2 \
+             AND (node<>$3 OR instance_path_nodes<>'{}' OR instance_path_indices<>'{}') \
+             AND (status<>'SUCCEEDED' OR routed=false)) \
+           AND NOT EXISTS (SELECT 1 FROM run_sagas WHERE tenant_id=$1 AND run_id=$2 \
+             AND phase<>'DONE') \
+           AND NOT EXISTS (SELECT 1 FROM approval_requests WHERE tenant_id=$1 AND run_id=$2 \
+             AND status='PENDING') \
+           AND NOT EXISTS (SELECT 1 FROM runs WHERE tenant_id=$1 AND parent_run_id=$2 \
+             AND parent_settled=false) \
+           AND NOT EXISTS (SELECT 1 FROM child_chain_links WHERE tenant_id=$1 AND parent_run_id=$2 \
+             AND (final_outcome IS NULL OR settled=false))",
+    )
+    .bind(handoff.scope().tenant_id().as_uuid())
+    .bind(handoff.expected_head().as_uuid())
+    .bind(command.boundary().as_str())
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(store_error)
+    .map_err(ChainProgressError::from)
+}
+
+async fn ensure_tree_capacity_for_successor(
+    conn: &mut PgConnection,
+    tenant_id: TenantId,
+    run: &LockedRun,
+) -> Result<(), ChainProgressError> {
+    if run.parent_run_id.is_none() {
+        return Ok(());
+    }
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(format!("run-tree:{tenant_id}:{}", run.root_run_id))
+        .execute(&mut *conn)
+        .await
+        .map_err(store_error)?;
+    let members: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM runs WHERE tenant_id=$1 AND root_run_id=$2")
+            .bind(tenant_id.as_uuid())
+            .bind(run.root_run_id)
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(store_error)?;
+    if usize::try_from(members).unwrap_or(usize::MAX) >= sagat_application::execution::MAX_TREE_RUNS
+    {
+        return Err(ChainProgressError::AtCapacity);
+    }
+    Ok(())
+}
+
 /// Adds chain metadata and its replay event inside the transaction that owns the initial run.
 /// Dropping or rolling back `conn` therefore removes the run and its chain together.
 pub async fn initialize_chain_in_transaction(
@@ -851,10 +948,25 @@ async fn replay_handoff(
     .fetch_one(&mut *conn)
     .await
     .map_err(store_error)?;
+    let audit_matches: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM audit_records WHERE tenant_id=$1 AND id=$2 \
+           AND actor=$3 AND action='run.continued' AND resource_type='run' \
+           AND resource_id=$4 AND trace_id IS NOT DISTINCT FROM $5 AND created_at=$6)",
+    )
+    .bind(command.scope().tenant_id().as_uuid())
+    .bind(command.audit().id().as_uuid())
+    .bind(command.audit().actor().as_str())
+    .bind(command.expected_head().to_string())
+    .bind(command.audit().trace_id())
+    .bind(command.occurred_at())
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(store_error)?;
     if successor != command.successor()
         || input != command.transfer().input()
         || state != command.transfer().state()
         || !outbox_matches
+        || !audit_matches
     {
         return Err(ChainProgressError::Chain(
             sagat_domain::execution::ChainError::ContinuationConflict,
@@ -1085,6 +1197,410 @@ impl ChainProgressStore for PgChainProgressStore {
             .execute(&mut *tx)
             .await
             .map_err(store_error)?;
+        }
+        let segment_changed = sqlx::query(
+            "UPDATE chain_segments SET completion_kind = 'CONTINUED', successor_run_id = $5, \
+                    transfer_input_digest = $6, transfer_state_digest = $7, completed_at = $8 \
+             WHERE tenant_id = $1 AND namespace_id = $2 AND chain_id = $3 AND run_id = $4 \
+               AND completion_kind IS NULL",
+        )
+        .bind(command.scope().tenant_id().as_uuid())
+        .bind(command.scope().namespace_id().as_uuid())
+        .bind(command.chain_id().as_uuid())
+        .bind(command.expected_head().as_uuid())
+        .bind(command.successor().as_uuid())
+        .bind(command.transfer().input().as_bytes().as_slice())
+        .bind(
+            command
+                .transfer()
+                .state()
+                .map(|value| value.as_bytes().to_vec()),
+        )
+        .bind(command.occurred_at())
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?
+        .rows_affected();
+        if segment_changed != 1 {
+            return Err(ChainProgressError::CorruptProjection);
+        }
+        let segment_inserted = sqlx::query(
+            "INSERT INTO chain_segments \
+             (tenant_id, namespace_id, chain_id, segment_index, run_id, predecessor_run_id, created_at) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7)",
+        )
+        .bind(command.scope().tenant_id().as_uuid())
+        .bind(command.scope().namespace_id().as_uuid())
+        .bind(command.chain_id().as_uuid())
+        .bind(i32::from(successor_index))
+        .bind(command.successor().as_uuid())
+        .bind(command.expected_head().as_uuid())
+        .bind(command.occurred_at())
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?
+        .rows_affected();
+        if segment_inserted != 1 {
+            return Err(ChainProgressError::CorruptProjection);
+        }
+        let chain_changed = sqlx::query(
+            "UPDATE execution_chains SET current_run_id = $4, segment_count = segment_count + 1, \
+                    revision = revision + 1, updated_at = $5 \
+             WHERE tenant_id = $1 AND namespace_id = $2 AND chain_id = $3 \
+               AND current_run_id = $6 AND revision = $7",
+        )
+        .bind(command.scope().tenant_id().as_uuid())
+        .bind(command.scope().namespace_id().as_uuid())
+        .bind(command.chain_id().as_uuid())
+        .bind(command.successor().as_uuid())
+        .bind(command.occurred_at())
+        .bind(command.expected_head().as_uuid())
+        .bind(number(chain.revision, "chain revision")?)
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?
+        .rows_affected();
+        if chain_changed != 1 {
+            return Err(ChainProgressError::CorruptProjection);
+        }
+        sqlx::query(
+            "INSERT INTO event_outbox (id, tenant_id, aggregate_id, event_type, payload) \
+             VALUES ($1,$2,$3,'run.continued',$4)",
+        )
+        .bind(command.continuation_outbox_id())
+        .bind(command.scope().tenant_id().as_uuid())
+        .bind(command.expected_head().as_uuid())
+        .bind(json!({
+            "tenantId": command.scope().tenant_id().to_string(),
+            "namespaceId": command.scope().namespace_id().to_string(),
+            "chainId": command.chain_id().to_string(),
+            "predecessorRunId": command.expected_head().to_string(),
+            "successorRunId": command.successor().to_string(),
+            "traceId": command.trace_id(),
+        }))
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        sqlx::query(
+            "INSERT INTO event_outbox \
+             (id, tenant_id, aggregate_id, event_type, routing_key, payload) \
+             VALUES ($1,$2,$3,'task.ready',$4,$5)",
+        )
+        .bind(command.successor_outbox_id())
+        .bind(command.scope().tenant_id().as_uuid())
+        .bind(command.successor().as_uuid())
+        .bind(activity.as_str())
+        .bind(json!({
+            "tenantId": command.scope().tenant_id().to_string(),
+            "namespaceId": command.scope().namespace_id().to_string(),
+            "runId": command.successor().to_string(),
+            "node": entrypoint.as_str(),
+            "instancePath": [],
+            "activity": activity.as_str(),
+            "traceId": command.trace_id(),
+        }))
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        insert_audit(&mut tx, command.audit()).await?;
+        mark_telemetry(
+            &mut tx,
+            command.scope().tenant_id(),
+            command.expected_head(),
+            old_sequence,
+        )
+        .await?;
+        mark_telemetry(&mut tx, command.scope().tenant_id(), command.successor(), 3).await?;
+        tx.commit().await.map_err(store_error)?;
+        Ok(ChainHandoffWrite::new(
+            command.expected_head(),
+            command.successor(),
+            successor_index,
+            false,
+        ))
+    }
+
+    async fn continue_evaluated(
+        &self,
+        prepared: &EvaluatedChainHandoffCommand,
+    ) -> Result<ChainHandoffWrite, ChainProgressError> {
+        let command = prepared.handoff();
+        validate_audit(command)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        let chain = lock_chain(&mut tx, command).await?;
+        let run = lock_run(&mut tx, command).await?;
+        check_scheduler_fence(&mut tx, command).await?;
+        if chain.current_run_id != command.expected_head() {
+            let result = replay_handoff(&mut tx, command, &chain).await?;
+            let selected = sqlx::query(
+                "SELECT node,detail FROM run_events WHERE tenant_id=$1 AND run_id=$2 \
+                   AND seq=$3 AND event_type='continuation.selected' AND node=$4",
+            )
+            .bind(command.scope().tenant_id().as_uuid())
+            .bind(command.expected_head().as_uuid())
+            .bind(number(
+                command
+                    .expected_run_version()
+                    .checked_add(1)
+                    .ok_or_else(|| corrupt("predecessor journal exhausted"))?,
+                "continuation replay sequence",
+            )?)
+            .bind(prepared.boundary().as_str())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(store_error)?;
+            let selected = selected.and_then(|row| {
+                let node: Option<String> = row.get("node");
+                let detail: serde_json::Value = row.get("detail");
+                decode("continuation.selected", node.as_deref(), &detail)
+            });
+            if selected
+                != Some(RunEvent::ContinuationSelected {
+                    node: prepared.boundary().clone(),
+                    successor: command.successor(),
+                    input_digest: command.transfer().input(),
+                    state_digest: command.transfer().state(),
+                })
+            {
+                return Err(ChainProgressError::Chain(
+                    sagat_domain::execution::ChainError::ContinuationConflict,
+                ));
+            }
+            tx.rollback().await.map_err(store_error)?;
+            return Ok(result);
+        }
+        if child_link_cancelled(&mut tx, command.scope(), command.chain_id()).await? {
+            return Err(ChainProgressError::Chain(
+                sagat_domain::execution::ChainError::ChildCancellationRequested,
+            ));
+        }
+        let transaction_now: OffsetDateTime = sqlx::query_scalar("SELECT clock_timestamp()")
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(store_error)?;
+        if chain.namespace_id != command.scope().namespace_id()
+            || chain.version_id != run.version_id
+            || chain.revision != command.expected_chain_revision()
+            || run.run_version != command.expected_run_version()
+            || chain.cancel_requested
+            || chain.final_outcome.is_some()
+            || chain.segment_count >= chain.max_segments
+            || chain.original_deadline <= transaction_now
+        {
+            return Err(ChainProgressError::RuntimeNotIntegrated);
+        }
+        ensure_tree_capacity_for_successor(&mut tx, command.scope().tenant_id(), &run).await?;
+        ensure_replacement_capacity(&mut tx, command).await?;
+        if !matches!(
+            serde_json::from_slice::<serde_json::Value>(prepared.input()),
+            Ok(serde_json::Value::Object(_))
+        ) {
+            return Err(ChainProgressError::RuntimeNotIntegrated);
+        }
+        retain_payload(
+            &mut tx,
+            command.scope().tenant_id(),
+            command.transfer().input(),
+            prepared.input(),
+        )
+        .await?;
+        let state_row = sqlx::query(
+            "SELECT state_digest, state_schema_digest, state_size_bytes, state_revision \
+             FROM workflow_operation_states WHERE tenant_id = $1 AND namespace_id = $2 \
+               AND run_id = $3 FOR UPDATE",
+        )
+        .bind(command.scope().tenant_id().as_uuid())
+        .bind(command.scope().namespace_id().as_uuid())
+        .bind(command.expected_head().as_uuid())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        match (
+            command.transfer().state(),
+            prepared.state(),
+            prepared.expected_state_revision(),
+            state_row.as_ref(),
+        ) {
+            (None, None, None, None) => {}
+            _ => return Err(ChainProgressError::RuntimeNotIntegrated),
+        }
+        let definition = self
+            .definition(&mut tx, command.scope().tenant_id(), run.version_id)
+            .await?;
+        if !matches!(
+            definition.node(prepared.boundary()).map(|node| node.kind()),
+            Some(NodeKind::ContinueAsNew { .. })
+        ) || !typed_segment_quiescent(&mut tx, prepared).await?
+        {
+            return Err(ChainProgressError::Chain(
+                sagat_domain::execution::ChainError::NotQuiescent(
+                    sagat_domain::execution::QuiescenceBlocker::SiblingWork,
+                ),
+            ));
+        }
+        let entrypoint = definition.entrypoint().clone();
+        let activity = match definition.node(&entrypoint).map(|node| node.kind()) {
+            Some(NodeKind::Activity { activity, .. }) => activity.clone(),
+            _ => return Err(ChainProgressError::RuntimeNotIntegrated),
+        };
+        let successor_index = chain.segment_count;
+        let old_sequence = run
+            .run_version
+            .checked_add(1)
+            .ok_or_else(|| corrupt("predecessor journal exhausted"))?;
+        let metadata = JournalMetadata {
+            tenant_id: command.scope().tenant_id(),
+            actor: command.actor().as_str(),
+            trace_id: command.trace_id(),
+            occurred_at: command.occurred_at(),
+        };
+        let selected = RunEvent::ContinuationSelected {
+            node: prepared.boundary().clone(),
+            successor: command.successor(),
+            input_digest: command.transfer().input(),
+            state_digest: command.transfer().state(),
+        };
+        let mut replayed = replay_root_journal(
+            &mut tx,
+            command.scope().tenant_id(),
+            command.expected_head(),
+        )
+        .await?;
+        if replayed.version() != run.run_version || replayed.apply(&selected).is_err() {
+            return Err(ChainProgressError::CorruptProjection);
+        }
+        append_event(
+            &mut tx,
+            command.expected_head(),
+            old_sequence,
+            &selected,
+            Some(command.transfer().input()),
+            &metadata,
+        )
+        .await?;
+        let old_changed = sqlx::query(
+            "UPDATE runs SET status = 'SUCCEEDED', run_version = $3, updated_at = $4, finished_at = $4 \
+             WHERE tenant_id = $1 AND id = $2 AND run_version = $5 AND finished_at IS NULL",
+        )
+        .bind(command.scope().tenant_id().as_uuid())
+        .bind(command.expected_head().as_uuid())
+        .bind(number(old_sequence, "predecessor sequence")?)
+        .bind(command.occurred_at())
+        .bind(number(run.run_version, "predecessor run version")?)
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?
+        .rows_affected();
+        if old_changed != 1 {
+            return Err(ChainProgressError::CorruptProjection);
+        }
+        let boundary_changed = sqlx::query(
+            "UPDATE steps SET status='SUCCEEDED',routed=true,updated_at=$5 \
+             WHERE tenant_id=$1 AND run_id=$2 AND node=$3 \
+               AND instance_path_nodes='{}' AND instance_path_indices='{}' \
+               AND step_id=$4 AND status='PENDING' AND routed=false",
+        )
+        .bind(command.scope().tenant_id().as_uuid())
+        .bind(command.expected_head().as_uuid())
+        .bind(prepared.boundary().as_str())
+        .bind(instance_step_id(
+            run.version_id,
+            command.expected_head(),
+            &ExecutionInstanceId::root(prepared.boundary().clone()),
+        ))
+        .bind(command.occurred_at())
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?
+        .rows_affected();
+        if boundary_changed != 1 {
+            return Err(ChainProgressError::CorruptProjection);
+        }
+        let successor_root = run
+            .parent_run_id
+            .map_or(command.successor().as_uuid(), |_| run.root_run_id);
+        sqlx::query(
+            "INSERT INTO runs \
+             (id, tenant_id, namespace_id, workflow_id, workflow_version_id, status, run_version, \
+              paused, input_digest, started_by, trace_id, deadline_at, created_at, updated_at, \
+              root_run_id, depth, parent_run_id, parent_node, cancel_policy, trace_parent_span) \
+             VALUES ($1,$2,$3,$4,$5,'RUNNING',3,false,$6,$7,$8,$9,$10,$10,$11,$12,$13,$14,$15,$16)",
+        )
+        .bind(command.successor().as_uuid())
+        .bind(command.scope().tenant_id().as_uuid())
+        .bind(command.scope().namespace_id().as_uuid())
+        .bind(run.workflow_id.as_uuid())
+        .bind(run.version_id.as_uuid())
+        .bind(command.transfer().input().as_bytes().as_slice())
+        .bind(&chain.started_by)
+        .bind(command.trace_id())
+        .bind(chain.original_deadline)
+        .bind(command.occurred_at())
+        .bind(successor_root)
+        .bind(run.depth)
+        .bind(run.parent_run_id)
+        .bind(run.parent_node.as_deref())
+        .bind(run.cancel_policy.as_deref())
+        .bind(run.trace_parent_span.as_deref())
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        let entry_instance = ExecutionInstanceId::root(entrypoint.clone());
+        sqlx::query(
+            "INSERT INTO steps \
+             (tenant_id, run_id, node, step_id, namespace_id, status, activity, ready_at, \
+              last_hinted_at, hint_count, updated_at, instance_path_nodes, instance_path_indices) \
+             VALUES ($1,$2,$3,$4,$5,'READY',$6,$7,$7,1,$7,'{}','{}')",
+        )
+        .bind(command.scope().tenant_id().as_uuid())
+        .bind(command.successor().as_uuid())
+        .bind(entrypoint.as_str())
+        .bind(instance_step_id(
+            run.version_id,
+            command.successor(),
+            &entry_instance,
+        ))
+        .bind(command.scope().namespace_id().as_uuid())
+        .bind(activity.as_str())
+        .bind(command.occurred_at())
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        for (sequence, event) in [
+            (
+                1,
+                RunEvent::RunStarted {
+                    entrypoint: entrypoint.clone(),
+                },
+            ),
+            (
+                2,
+                RunEvent::ExecutionChainSuccessorLinked {
+                    chain_id: command.chain_id(),
+                    predecessor: command.expected_head(),
+                    segment_index: successor_index,
+                    max_segments: chain.max_segments,
+                    original_deadline: chain.original_deadline,
+                    input_digest: command.transfer().input(),
+                    state_digest: command.transfer().state(),
+                },
+            ),
+            (
+                3,
+                RunEvent::StepReleased {
+                    node: entrypoint.clone(),
+                },
+            ),
+        ] {
+            append_event(
+                &mut tx,
+                command.successor(),
+                sequence,
+                &event,
+                None,
+                &metadata,
+            )
+            .await?;
         }
         let segment_changed = sqlx::query(
             "UPDATE chain_segments SET completion_kind = 'CONTINUED', successor_run_id = $5, \
@@ -1739,6 +2255,44 @@ impl ChainProgressStore for PgChainProgressStore {
             command.child_chain_id(),
             false,
         ))
+    }
+}
+
+impl ChainProgressStore for PgRunStore {
+    async fn continue_as_new(
+        &self,
+        command: &ChainHandoffCommand,
+    ) -> Result<ChainHandoffWrite, ChainProgressError> {
+        PgChainProgressStore::new(self.pool.clone(), self.cache.clone())
+            .continue_as_new(command)
+            .await
+    }
+
+    async fn continue_evaluated(
+        &self,
+        command: &EvaluatedChainHandoffCommand,
+    ) -> Result<ChainHandoffWrite, ChainProgressError> {
+        PgChainProgressStore::new(self.pool.clone(), self.cache.clone())
+            .continue_evaluated(command)
+            .await
+    }
+
+    async fn finalize_chain(
+        &self,
+        command: &ChainFinalizationCommand,
+    ) -> Result<ChainFinalizationWrite, ChainProgressError> {
+        PgChainProgressStore::new(self.pool.clone(), self.cache.clone())
+            .finalize_chain(command)
+            .await
+    }
+
+    async fn settle_child_chain(
+        &self,
+        command: &ChildChainSettlementCommand,
+    ) -> Result<ChildChainSettlementWrite, ChainProgressError> {
+        PgChainProgressStore::new(self.pool.clone(), self.cache.clone())
+            .settle_child_chain(command)
+            .await
     }
 }
 

@@ -462,6 +462,28 @@ async fn verify_projection(
         }
         return Ok(());
     }
+    if request.status() == ApprovalStatus::Cancelled {
+        if col::<String>(&step, "status")? != "CANCELLED"
+            || !col::<bool>(&step, "routed")?
+            || col::<Option<String>>(&step, "waiting_kind")?.is_some()
+            || col::<Option<Uuid>>(&step, "approval_request_id")?.is_some()
+        {
+            return Err(ApprovalProgressError::CorruptProjection);
+        }
+        let sequence = request
+            .outcome_sequence()
+            .ok_or(ApprovalProgressError::CorruptProjection)?;
+        let (outcome, outcome_owner) = journal_event(tx, request, sequence).await?;
+        if outcome_owner != *request.owner()
+            || outcome
+                != (RunEvent::StepCancelled {
+                    node: request.owner().node().clone(),
+                })
+        {
+            return Err(ApprovalProgressError::CorruptProjection);
+        }
+        return Ok(());
+    }
     if col::<String>(&step, "status")? != "SUCCEEDED"
         || !col::<bool>(&step, "routed")?
         || col::<Option<String>>(&step, "waiting_kind")?.is_some()

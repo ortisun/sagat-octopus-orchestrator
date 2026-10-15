@@ -98,6 +98,42 @@ fn unsupported_additive_declarations_remain_unpublishable() {
 }
 
 #[test]
+fn native_approval_is_publishable_without_enabling_other_structured_capabilities() {
+    let document = minimal(
+        json!([
+            {
+                "id": "review",
+                "type": "approval",
+                "policy": {"roles": ["operator"], "excludeInitiator": true},
+                "timeoutMs": 60_000,
+                "onApprove": "approved",
+                "onReject": "rejected",
+                "onExpire": "expired"
+            },
+            {"id": "approved", "type": "end"},
+            {"id": "rejected", "type": "end"},
+            {"id": "expired", "type": "end"}
+        ]),
+        "review",
+    );
+    let parsed = parse(&document).expect("native approval is publishable");
+    assert!(matches!(
+        parsed
+            .definition
+            .node(&NodeId::parse("review").expect("approval node"))
+            .map(|node| node.kind()),
+        Some(NodeKind::Approval { .. })
+    ));
+
+    let mut combined = document;
+    combined["state"] = json!({"schema": {"type": "integer"}, "initial": "0"});
+    assert!(matches!(
+        parse(&combined),
+        Err(IrError::Unsupported { kind, .. }) if kind == "approval"
+    ));
+}
+
+#[test]
 fn structured_collection_can_be_validated_and_canonicalized_without_enabling_publication() {
     let mut document = minimal(
         json!([

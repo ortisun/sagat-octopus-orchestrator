@@ -24,14 +24,14 @@ use sagat_application::execution::{
 use sagat_application::runs::{
     ChainView, GraphSnapshot, JournalEntry, Lock, NewRun, RunFilter, RunStore, SagaView, StepView,
 };
-use sagat_domain::audit::AuditRecord;
+use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::definition::{Workflow, WorkflowId, WorkflowVersion, WorkflowVersionId};
 use sagat_domain::execution::{
-    AddressedRunEvent, ChainFinalOutcome, ChainScope, CollectionIterationRestore, CollectionPhase,
-    ContinuationTransfer, CorrelationKey, ExecutionInstanceId, FailureCode, InstancePath,
-    RunChainState, RunEvent, RunId, RunState, RunStatus, SagaPhase, SagaState,
-    SegmentCompletionKind, SegmentIndex, StepState, StepStatus, StopReason, SwitchSelection,
-    WaitingOn,
+    AddressedRunEvent, ApprovalRequestId, ChainFinalOutcome, ChainScope,
+    CollectionIterationRestore, CollectionPhase, ContinuationTransfer, CorrelationKey,
+    ExecutionInstanceId, FailureCode, InstancePath, RunChainState, RunEvent, RunId, RunState,
+    RunStatus, SagaPhase, SagaState, SegmentCompletionKind, SegmentIndex, StepState, StepStatus,
+    StopReason, SwitchSelection, WaitingOn,
 };
 use sagat_domain::identity::{Namespace, NamespaceId, Principal, Slug, TenantId};
 use sagat_domain::saga::{NodeOrigin, SagaOutcome};
@@ -185,7 +185,7 @@ impl PgRunStore {
         let step_rows = sqlx::query(
             "SELECT node, instance_path_nodes, instance_path_indices, status, attempt, generation, cancel_requested, routed, condition, switch_case_id, \
                     timed_out, failure_code, next_attempt_at, waiting_kind, due_at, correlation_key, \
-                    child_run_id \
+                    child_run_id, approval_request_id \
              FROM steps WHERE tenant_id = $1 AND run_id = $2",
         )
         .bind(tenant.as_uuid())
@@ -608,7 +608,8 @@ impl RunStore for PgRunStore {
                         run_id: Some(new.info.run_id),
                         input: new.input.clone(),
                         input_blob,
-                        state: None,
+                        state: initial_state.as_ref().map(|value| value.content().to_vec()),
+                        state_revision: initial_state.as_ref().map(|_| 0),
                         outputs: BTreeMap::new(),
                         scope_inputs: BTreeMap::new(),
                     }),
@@ -938,6 +939,7 @@ impl RunStore for PgRunStore {
                         Some("SAGA") => Some("saga"),
                         Some("RECONCILIATION") => Some("reconciliation"),
                         Some("OPERATOR") => Some("operator"),
+                        Some("APPROVAL") => Some("approval"),
                         _ => None,
                     },
                     child_run: col::<Option<Uuid>>(row, "child_run_id")?.map(RunId::new),
@@ -1221,6 +1223,12 @@ fn step_state(row: &PgRow) -> Result<StepState, StoreError> {
             correlation_key: CorrelationKey::parse(&key.ok_or_else(|| corrupt("correlation key"))?)
                 .map_err(|_| corrupt("correlation key"))?,
             deadline,
+        }),
+        (Some("APPROVAL"), _) => Some(WaitingOn::Approval {
+            request_id: ApprovalRequestId::new(
+                col::<Option<Uuid>>(row, "approval_request_id")?
+                    .ok_or_else(|| corrupt("approval request"))?,
+            ),
         }),
         _ => return Err(corrupt("waiting step")),
     };
@@ -1777,8 +1785,8 @@ impl RunTx for PgRunTx {
                     col::<Vec<u8>>(row, "content")?,
                 );
             }
-            let state = sqlx::query_scalar(
-                "SELECT p.content FROM workflow_operation_states s JOIN payloads p \
+            let state_row = sqlx::query(
+                "SELECT p.content, s.state_revision FROM workflow_operation_states s JOIN payloads p \
                  ON p.tenant_id=s.tenant_id AND p.digest=s.state_digest \
                  WHERE s.tenant_id=$1 AND s.run_id=$2",
             )
@@ -1787,6 +1795,17 @@ impl RunTx for PgRunTx {
             .fetch_optional(&mut *self.tx)
             .await
             .map_err(store_error)?;
+            let state = state_row
+                .as_ref()
+                .map(|row| col::<Vec<u8>>(row, "content"))
+                .transpose()?;
+            let state_revision = state_row
+                .as_ref()
+                .map(|row| {
+                    u64::try_from(col::<i64>(row, "state_revision")?)
+                        .map_err(|_| corrupt("operation state revision"))
+                })
+                .transpose()?;
             let collection_inputs = sqlx::query(
                 "SELECT i.entry_path_nodes, i.entry_path_indices, i.iteration_index, p.content \
                  FROM collection_iterations i JOIN payloads p \
@@ -1861,6 +1880,7 @@ impl RunTx for PgRunTx {
                 input_blob: col::<Option<Uuid>>(&input_row, "input_blob_id")?
                     .map(sagat_domain::blobs::BlobId::new),
                 state,
+                state_revision,
                 outputs,
                 scope_inputs,
             });
@@ -2465,7 +2485,21 @@ impl RunTx for PgRunTx {
                     ..
                 } if node.is_compensation() => self.breaker_outcome(node, false).await?,
                 RunEvent::ChildFinished { child, .. } => self.settle_child(*child, false).await?,
-                RunEvent::StepCancelled { node } => self.release_child(node, true).await?,
+                RunEvent::StepCancelled { node } => {
+                    self.release_child(node, true).await?;
+                    if matches!(
+                        self.def.node(node).map(sagat_domain::workflow::Node::kind),
+                        Some(NodeKind::Approval { .. })
+                    ) {
+                        self.cancel_approval(
+                            node,
+                            u64::try_from(seq)
+                                .map_err(|_| corrupt("approval cancellation sequence"))?,
+                            &effects,
+                        )
+                        .await?;
+                    }
+                }
                 RunEvent::StepCancelRequested { node } => self.release_child(node, false).await?,
                 RunEvent::RunFinished { status } => self.outbox_run_finished(*status).await?,
                 _ => {}
@@ -2666,6 +2700,118 @@ impl ChainRunTx for PgRunTx {
 }
 
 impl PgRunTx {
+    async fn cancel_approval(
+        &mut self,
+        owner: &NodeId,
+        sequence: u64,
+        effects: &Effects,
+    ) -> Result<(), StoreError> {
+        let row = sqlx::query(
+            "SELECT step.status,step.waiting_kind, \
+                    step.approval_request_id AS projected_request_id,request.request_id \
+             FROM steps step LEFT JOIN approval_requests request \
+               ON request.tenant_id=step.tenant_id \
+              AND request.request_id=step.approval_request_id \
+              AND request.run_id=step.run_id \
+              AND request.owner_node=step.node \
+              AND request.owner_path_nodes=step.instance_path_nodes \
+              AND request.owner_path_indices=step.instance_path_indices \
+              AND request.status='PENDING' \
+             WHERE step.tenant_id=$1 AND step.run_id=$2 AND step.node=$3 \
+               AND cardinality(step.instance_path_nodes)=0 \
+             FOR UPDATE OF step",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.run_id.as_uuid())
+        .bind(owner.as_str())
+        .fetch_optional(&mut *self.tx)
+        .await
+        .map_err(store_error)?
+        .ok_or_else(|| corrupt("cancelled approval owner"))?;
+        let stored_status: String = col(&row, "status")?;
+        let waiting_kind: Option<String> = col(&row, "waiting_kind")?;
+        let projected_request: Option<Uuid> = col(&row, "projected_request_id")?;
+        let request_id: Option<Uuid> = col(&row, "request_id")?;
+        let Some(request_id) = request_id else {
+            if stored_status == "PENDING" && waiting_kind.is_none() && projected_request.is_none() {
+                return Ok(());
+            }
+            return Err(corrupt("cancelled approval owner"));
+        };
+        if stored_status != "WAITING"
+            || waiting_kind.as_deref() != Some("APPROVAL")
+            || projected_request != Some(request_id)
+        {
+            return Err(corrupt("cancelled approval owner"));
+        }
+        let outbox_id = Uuid::now_v7();
+        let updated = sqlx::query(
+            "UPDATE approval_requests \
+             SET status='CANCELLED',outcome_sequence=$4,settled_at=$5, \
+                 outcome_outbox_id=$6,updated_at=$5 \
+             WHERE tenant_id=$1 AND run_id=$2 AND request_id=$3 AND status='PENDING'",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.run_id.as_uuid())
+        .bind(request_id)
+        .bind(i64::try_from(sequence).map_err(|_| corrupt("approval cancellation sequence"))?)
+        .bind(self.now)
+        .bind(outbox_id)
+        .execute(&mut *self.tx)
+        .await
+        .map_err(store_error)?
+        .rows_affected();
+        if updated != 1 {
+            return Err(corrupt("cancelled approval request"));
+        }
+        let timer_updated = sqlx::query(
+            "UPDATE approval_timers SET state='CANCELLED',updated_at=$3 \
+             WHERE tenant_id=$1 AND request_id=$2 AND state='PENDING'",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(request_id)
+        .bind(self.now)
+        .execute(&mut *self.tx)
+        .await
+        .map_err(store_error)?
+        .rows_affected();
+        if timer_updated != 1 {
+            return Err(corrupt("cancelled approval timer"));
+        }
+        sqlx::query(
+            "INSERT INTO event_outbox (id,tenant_id,aggregate_id,event_type,payload) \
+             VALUES ($1,$2,$3,'approval.cancelled',$4)",
+        )
+        .bind(outbox_id)
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.run_id.as_uuid())
+        .bind(serde_json::json!({
+            "tenantId": self.info.tenant_id.to_string(),
+            "namespaceId": self.info.namespace_id.to_string(),
+            "runId": self.info.run_id.to_string(),
+            "requestId": ApprovalRequestId::new(request_id).to_string(),
+            "outcomeSequence": sequence,
+            "traceId": effects.trace_id.as_deref().or(self.info.trace_id.as_deref()),
+        }))
+        .execute(&mut *self.tx)
+        .await
+        .map_err(store_error)?;
+        let audit = effects
+            .audit
+            .as_ref()
+            .ok_or_else(|| StoreError::Internal {
+                detail: "approval cancellation requires its enclosing run audit".into(),
+            })?
+            .follow_up(
+                AuditAction::ApprovalCancelled,
+                ResourceType::ApprovalRequest,
+                ApprovalRequestId::new(request_id).to_string(),
+                "approval cancelled with its run",
+            );
+        insert_audit(&mut self.tx, &audit).await?;
+        Ok(())
+    }
+
     async fn latch_chain_cancel_inner(&mut self) -> Result<(), StoreError> {
         let Some(chain) = self.chain_lock else {
             return Ok(());
@@ -3792,6 +3938,8 @@ impl PgRunTx {
                 child_run_id = COALESCE($28, child_run_id), \
                 child_input = CASE WHEN $29::bytea IS NOT NULL THEN $29 \
                                    WHEN $6 = 'WAITING' THEN child_input ELSE NULL END, \
+                approval_request_id = CASE WHEN $15 = 'APPROVAL' \
+                                           THEN approval_request_id ELSE NULL END, \
                 event_since = CASE WHEN $15::text IS DISTINCT FROM 'EVENT' THEN NULL \
                                    ELSE COALESCE(CASE WHEN waiting_kind = 'EVENT' THEN event_since END, \
                                                  $20 - $31 * interval '1 microsecond') END, \

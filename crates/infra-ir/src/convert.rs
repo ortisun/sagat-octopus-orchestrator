@@ -77,7 +77,7 @@ fn unsupported(kind: &str) -> Option<&'static str> {
     Some(match kind {
         "foreach" => "legacy collection placeholder has no executable definition",
         "humanApproval" => "legacy approval placeholder has no executable definition",
-        "forEach" | "while" | "repeatUntil" | "approval" | "return" | "continueAsNew" => {
+        "forEach" | "while" | "repeatUntil" | "return" | "continueAsNew" => {
             "this workflow capability is not enabled by the runtime"
         }
         _ => return None,
@@ -557,7 +557,21 @@ pub(crate) fn definition(document: &Value) -> Result<WorkflowDefinition, IrError
     }
     let (name, entrypoint) = identity(document)?;
     let nodes = root_nodes(document, false)?;
-    WorkflowDefinition::new(name, entrypoint, nodes)
+    let has_approval = nodes
+        .iter()
+        .any(|node| matches!(node.kind(), NodeKind::Approval { .. }));
+    let definition = if has_approval {
+        WorkflowDefinition::new_structured(
+            name,
+            entrypoint,
+            nodes,
+            Vec::new(),
+            WorkflowLimits::default(),
+        )
+    } else {
+        WorkflowDefinition::new(name, entrypoint, nodes)
+    };
+    definition
         .and_then(|definition| definition.with_triggers(triggers(document)?))
         .map_err(IrError::Invalid)
 }
@@ -572,6 +586,27 @@ pub(crate) fn published_declared_state_definition(
                 reason: "this workflow capability is not enabled by the runtime",
             });
         }
+    }
+    if let Some(node) = document
+        .get("nodes")
+        .and_then(Value::as_array)
+        .and_then(|nodes| {
+            nodes
+                .iter()
+                .find(|node| node.get("type").and_then(Value::as_str) == Some("approval"))
+        })
+    {
+        return Err(IrError::Unsupported {
+            node: node
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("approval")
+                .chars()
+                .take(64)
+                .collect(),
+            kind: "approval".into(),
+            reason: "declared state and approval are not enabled together",
+        });
     }
     let (name, entrypoint) = identity(document)?;
     let nodes = root_nodes(document, false)?;

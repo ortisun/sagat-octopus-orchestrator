@@ -13,7 +13,8 @@ use sagat_domain::execution::{
     RunId, RunStatus, StepStatus, StopReason, WaitingOn,
 };
 use sagat_domain::identity::{NamespaceId, Permission, Principal, Subject, TenantId};
-use sagat_domain::workflow::{NodeId, NodeKind};
+use sagat_domain::workflow::{Digest, NodeId, NodeKind};
+use sha2::{Digest as _, Sha256};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -195,6 +196,142 @@ pub struct ChainHandoffWrite {
     successor: RunId,
     successor_index: u16,
     replayed: bool,
+}
+
+/// Evaluated transfer values tied to the immutable run snapshot that selected them.
+///
+/// The write adapter rechecks these bytes, their digests and the snapshot revisions after taking
+/// the chain and run locks. Evaluation is pure and may happen before the write transaction; no
+/// mutation may commit unless those compare-and-swap guards still match.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvaluatedChainHandoffCommand {
+    handoff: ChainHandoffCommand,
+    boundary: NodeId,
+    input: Vec<u8>,
+    state: Option<Vec<u8>>,
+    expected_state_revision: Option<u64>,
+}
+
+/// Bounded values selected from one immutable run snapshot before the handoff lock is reacquired.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContinuationSelection {
+    boundary: NodeId,
+    input: Vec<u8>,
+    state: Option<Vec<u8>>,
+    expected_state_revision: Option<u64>,
+}
+
+impl ContinuationSelection {
+    /// # Errors
+    /// Returns a typed preparation error when a selected value exceeds the retained payload limit
+    /// or state presence is not pinned to a revision.
+    pub fn new(
+        boundary: NodeId,
+        input: Vec<u8>,
+        state: Option<Vec<u8>>,
+        expected_state_revision: Option<u64>,
+    ) -> Result<Self, ContinuationPreparationError> {
+        if input.len() > MAX_PAYLOAD_BYTES
+            || state
+                .as_ref()
+                .is_some_and(|value| value.len() > MAX_PAYLOAD_BYTES)
+        {
+            return Err(ContinuationPreparationError::PayloadTooLarge);
+        }
+        if state.is_some() != expected_state_revision.is_some() {
+            return Err(ContinuationPreparationError::StateRevisionMismatch);
+        }
+        Ok(Self {
+            boundary,
+            input,
+            state,
+            expected_state_revision,
+        })
+    }
+
+    #[must_use]
+    pub fn transfer(&self) -> ContinuationTransfer {
+        ContinuationTransfer::new(digest(&self.input), self.state.as_deref().map(digest))
+    }
+
+    /// Binds this selection to the command whose CAS guards describe the same snapshot.
+    ///
+    /// # Errors
+    /// Returns [`ContinuationPreparationError::DigestMismatch`] if the command carries a different
+    /// transfer identity.
+    pub fn into_command(
+        self,
+        handoff: ChainHandoffCommand,
+    ) -> Result<EvaluatedChainHandoffCommand, ContinuationPreparationError> {
+        if self.transfer() != *handoff.transfer() {
+            return Err(ContinuationPreparationError::DigestMismatch);
+        }
+        Ok(EvaluatedChainHandoffCommand {
+            handoff,
+            boundary: self.boundary,
+            input: self.input,
+            state: self.state,
+            expected_state_revision: self.expected_state_revision,
+        })
+    }
+}
+
+impl EvaluatedChainHandoffCommand {
+    /// Binds evaluated bytes to the digests already present in the handoff command.
+    ///
+    /// # Errors
+    /// Returns a typed preparation error when a value exceeds the workflow payload ceiling, its
+    /// digest differs from the selected transfer, or state presence does not match its revision.
+    pub fn new(
+        handoff: ChainHandoffCommand,
+        boundary: NodeId,
+        input: Vec<u8>,
+        state: Option<Vec<u8>>,
+        expected_state_revision: Option<u64>,
+    ) -> Result<Self, ContinuationPreparationError> {
+        ContinuationSelection::new(boundary, input, state, expected_state_revision)?
+            .into_command(handoff)
+    }
+
+    #[must_use]
+    pub const fn handoff(&self) -> &ChainHandoffCommand {
+        &self.handoff
+    }
+
+    #[must_use]
+    pub const fn boundary(&self) -> &NodeId {
+        &self.boundary
+    }
+
+    #[must_use]
+    pub fn input(&self) -> &[u8] {
+        &self.input
+    }
+
+    #[must_use]
+    pub fn state(&self) -> Option<&[u8]> {
+        self.state.as_deref()
+    }
+
+    #[must_use]
+    pub const fn expected_state_revision(&self) -> Option<u64> {
+        self.expected_state_revision
+    }
+}
+
+fn digest(value: &[u8]) -> Digest {
+    Digest::new(Sha256::digest(value).into())
+}
+
+/// A continuation selection that cannot safely enter the write transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ContinuationPreparationError {
+    #[error("a continuation transfer exceeds the retained payload limit")]
+    PayloadTooLarge,
+    #[error("continuation transfer bytes do not match their selected digests")]
+    DigestMismatch,
+    #[error("continuation state and its expected revision must be present together")]
+    StateRevisionMismatch,
 }
 
 /// Serialized terminal decision for the current chain head.
@@ -520,6 +657,15 @@ pub trait ChainProgressStore: Send + Sync {
         &self,
         command: &ChainHandoffCommand,
     ) -> impl Future<Output = Result<ChainHandoffWrite, ChainProgressError>> + Send;
+
+    /// Commits a prepared continuation only if its chain, run and declared-state snapshot still
+    /// match under the canonical locks.
+    fn continue_evaluated(
+        &self,
+        _command: &EvaluatedChainHandoffCommand,
+    ) -> impl Future<Output = Result<ChainHandoffWrite, ChainProgressError>> + Send {
+        async { Err(ChainProgressError::RuntimeNotIntegrated) }
+    }
 
     fn finalize_chain(
         &self,

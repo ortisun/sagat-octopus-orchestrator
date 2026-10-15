@@ -150,6 +150,16 @@ pub(crate) fn encode(event: &RunEvent) -> Encoded {
             "input_digest": input_digest.to_hex(),
             "state_digest": state_digest.as_ref().map(Digest::to_hex),
         }),
+        RunEvent::ContinuationSelected {
+            successor,
+            input_digest,
+            state_digest,
+            ..
+        } => json!({
+            "successor": successor.to_string(),
+            "input_digest": input_digest.to_hex(),
+            "state_digest": state_digest.as_ref().map(Digest::to_hex),
+        }),
         RunEvent::TimerStarted { due_at, .. } => json!({ "due_at_us": micros(*due_at) }),
         RunEvent::WaitStarted {
             correlation_key,
@@ -837,6 +847,16 @@ pub(crate) fn decode(event_type: &str, node: Option<&str>, detail: &Value) -> Op
                 _ => return None,
             },
         },
+        "continuation.selected" => RunEvent::ContinuationSelected {
+            node: node_id()?,
+            successor: text(d, "successor")?.parse::<RunId>().ok()?,
+            input_digest: Digest::from_hex(text(d, "input_digest")?)?,
+            state_digest: match d.get("state_digest")? {
+                Value::Null => None,
+                Value::String(value) => Some(Digest::from_hex(value)?),
+                _ => return None,
+            },
+        },
         "run.finished" => RunEvent::RunFinished {
             status: text(d, "status")?.parse::<RunStatus>().ok()?,
         },
@@ -1162,6 +1182,12 @@ mod tests {
                 successor,
                 input_digest: input,
                 state_digest: None,
+            },
+            RunEvent::ContinuationSelected {
+                node: NodeId::parse("rollover").expect("node"),
+                successor,
+                input_digest: input,
+                state_digest: Some(state),
             },
         ];
         for event in events {

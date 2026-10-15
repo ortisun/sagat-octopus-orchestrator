@@ -190,6 +190,8 @@ pub struct RunData {
     pub input_blob: Option<sagat_domain::blobs::BlobId>,
     /// Current declared workflow state, when this version defines one.
     pub state: Option<Vec<u8>>,
+    /// Revision of `state`; absent exactly when no declared state exists.
+    pub state_revision: Option<u64>,
     /// Outputs of the step instances that succeeded.
     pub outputs: BTreeMap<ExecutionInstanceId, Vec<u8>>,
     /// Input owned by an admitted collection or loop iteration, keyed by its exact scope path.
@@ -322,6 +324,16 @@ pub trait ExpressionEvaluator: Send + Sync {
     fn child_input(
         &self,
         expression: Option<&Expression>,
+        data: &RunData,
+    ) -> Result<Vec<u8>, ExpressionFailure>;
+
+    /// Evaluates an expression as a canonical JSON value selected for continuation.
+    ///
+    /// # Errors
+    /// [`ExpressionFailure`] when the expression cannot be evaluated or serialized.
+    fn continuation_value(
+        &self,
+        expression: &Expression,
         data: &RunData,
     ) -> Result<Vec<u8>, ExpressionFailure>;
 

@@ -1,9 +1,11 @@
 # Workflow primitives: operating and validating the current build
 
 The public workflow document remains additive `sagat-octopus-orchestrator.io/v1`. Bounded
-`switch` and run-addressed declared Query/Update are available with the existing basic root
-nodes. Collection, loop, human approval and continuation documents still fail publication.
-Their builder fixtures and private integration tests do not authorize publishing those nodes.
+`switch`, run-addressed declared Query/Update and a bounded root human approval are available
+with the existing basic root nodes. Collection, loop and continuation documents still fail
+publication. Their builder fixtures and private integration tests do not authorize publishing
+those nodes. Approval documents cannot combine approval with declared state or another structured
+primitive yet.
 The worker adapter advertises minor 1.4; scoped 1.5 execution is enabled only in the test
 harness. Keep these gates closed until each primitive's fault, security, compatibility and
 recovery evidence is complete.
@@ -36,11 +38,14 @@ SAGAT_SDK_SCENARIO=loop-builders cargo test -p sagat-tests --test sdk_conformanc
 SAGAT_SDK_SCENARIO=approval-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
 SAGAT_SDK_SCENARIO=continuation-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
 SAGAT_SDK_SCENARIO=state-operations cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
+SAGAT_SDK_SCENARIO=approval-decisions cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
 ```
 
 The four builder scenarios compare normalized documents with reviewed goldens and do not call
 the server's runtime APIs. `state-operations` publishes a supported document and exercises
-Query/Update through the real server in all five languages. Do not replace a golden merely
+Query/Update through the real server in all five languages. `approval-decisions` publishes a
+root approval workflow, lists its pending request and submits approve/reject decisions through
+the real server in all five languages. Do not replace a golden merely
 because an output changed: inspect the contract and intended compatibility behavior first.
 
 ## Diagnose a stuck or duplicated transition
@@ -70,6 +75,13 @@ carry `Cache-Control: no-store`; a foreign tenant's run remains opaque. A stale 
 is a conflict, while a schema or declared-business rejection has a typed reason. If an outbox
 write fails, the state, receipt and journal must all roll back before retrying the same update
 key.
+
+For a pending approval, list `GET /runs/{runId}/approvals` under current run and approval read
+permissions, then submit the decision with a stable decision key. The decision transaction must
+commit its route, receipt, audit and outbox together. A replay with the same key and body returns
+the original receipt; a changed body conflicts. Cancellation and deadline expiry race the decision
+under the run lock, so inspect the committed approval status after a conflict. A raw signal cannot
+stand in for a decision. Keep identity, policy details and reason text out of logs.
 
 For chain commands, use `GET /namespaces/{namespaceId}/chains/{chainId}` to inspect the current
 head. `POST` to the chain's `signals/{signalName}` or `cancel` path requires `expectedRunId` in

@@ -44,6 +44,8 @@ pub enum AuditAction {
     ApprovalDecided,
     /// The approval timer committed before a human decision.
     ApprovalExpired,
+    /// The enclosing run cancelled a still-pending approval.
+    ApprovalCancelled,
     /// A caller was not currently authorized or eligible to decide an approval.
     ApprovalDenied,
     /// An operator inspected a payload's uniformly redacted structure.
@@ -237,6 +239,7 @@ impl AuditAction {
             Self::ApprovalOpened => "approval.opened",
             Self::ApprovalDecided => "approval.decided",
             Self::ApprovalExpired => "approval.expired",
+            Self::ApprovalCancelled => "approval.cancelled",
             Self::ApprovalDenied => "approval.denied",
             Self::PayloadInspected => "payload.inspected",
             Self::PayloadInspectionDenied => "payload.inspection_denied",

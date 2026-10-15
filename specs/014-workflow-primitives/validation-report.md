@@ -589,9 +589,10 @@ does not include the eligibility policy, initiating identity, decision actor or 
 
 The endpoint returns `Cache-Control: no-store`, uses the common typed error envelope, records a
 bounded read metric without identifiers and makes foreign-tenant and missing runs indistinguishable.
-The public workflow parser still rejects approval nodes: discovery and decisions are usable only for
-requests opened through the internal durable approval boundary until scheduler opening, expiry and
-routing are proven end to end.
+At this checkpoint, the public workflow parser still rejected approval nodes: discovery and
+decisions were usable only for requests opened through the internal durable approval boundary.
+The later approval-runtime checkpoint records the scheduler and public-runtime evidence that
+removed that restriction for the reviewed root approval shape.
 
 | Check | Result |
 |---|---|
@@ -599,6 +600,40 @@ routing are proven end to end.
 | `cargo test -p sagat-tests --test contract_developer_experience --locked` after regenerating `docs/reference/api.md` | Passed: 8/8 documentation contracts |
 | `cargo clippy -p sagat-application -p sagat-infra-postgres -p sagat-api-http -p sagat-tests --test integration_workflow_primitives --locked -- -D warnings` | Passed |
 | Focused `rustfmt --check`; `git diff --check` | Passed |
+
+## Public approval runtime checkpoint (2026-10-15)
+
+The public v1 parser now accepts the reviewed root approval shape while retaining the typed policy,
+timeout and three outcome routes. It continues to reject approval combined with declared state and
+does not enable approvals inside bodies, chain handoff, collection, loop or continuation shapes.
+Starting a run leaves the approval idle for the scheduler, which opens the request and timer in one
+fenced PostgreSQL transaction. Restart preserves the pending request. An approval, rejection or
+expiry commits one canonical outcome and routes the owner step exactly once; a raw signal cannot
+bypass eligibility or the approval decision boundary.
+
+Cancelling a run either prevents a request from being opened or cancels the exact pending request
+and timer in the same transaction as the canonical step cancellation. The cancellation projection
+is verified against that journal event. Decision-versus-cancellation and expiry-versus-cancellation
+races admit one committed outcome, while injected outbox or audit failures roll back the entire
+transition. Audit and outbox records contain bounded identifiers and do not disclose the approval
+policy or decision payload.
+
+The five SDKs execute the same public scenario through the HTTP API: publish, start, list the
+request, approve or reject it, replay the same decision, exercise authentication and verify tenant
+opacity. The reviewed runtime golden has SHA-256
+`4cd74239c4305ce39d214571f94cdded0746fd3da32ae12a25f8838bfbdfeb0e`; the workflow golden has
+SHA-256 `c184b3dd7e4e9c7556ef0448e2e83f8beef99eb4579986ddfbc99d65ac235c86`.
+
+| Check | Result |
+|---|---|
+| `cargo test -p sagat-tests --test integration_workflow_primitives approval --locked -- --nocapture` | Passed: 20/20 against real HTTP and PostgreSQL, including public start, scheduler opening, restart, approval and rejection routing, expiry, raw-signal denial, cancellation races and rollback |
+| `cargo test -p sagat-tests --test fault_workflow_primitives approval --locked -- --nocapture` | Passed: 7/7 fault tests |
+| `cargo test -p sagat-infra-ir --locked`; `cargo test -p sagat-tests --test contract_workflow_primitives --locked -q` | Passed: parser/codec suites and 23/23 primitive contracts |
+| `SAGAT_SDK_SCENARIO=approval-decisions SAGAT_SDK_REUSE=1 cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture` | Passed: one common runtime scenario across TypeScript, Go, Python, C# and Java, both when reviewing the generated golden and on a no-bless replay |
+| Focused Clippy with `-D warnings`; `cargo fmt --all -- --check`; `git diff --check` | Passed |
+
+This checkpoint enables only the reviewed root approval shape. Approval combined with declared
+state, approvals in named bodies and chain-addressed approval execution remain closed.
 
 ## Automatic collection tick checkpoint (2026-10-15)
 
@@ -636,3 +671,19 @@ from the same tenant contend for the same slot budget, including after a policy 
 
 This verifies admission for the tested collection shape. Nested bodies, compensation and
 reconciliation settlement, retained-byte ceilings and full production publication remain open.
+
+## Combined primitive regression checkpoint (2026-10-15)
+
+After integrating the public approval scheduler and the private chain handoff path, the complete
+primitive targets were rerun on the same real PostgreSQL harness. A green aggregate verifies the
+current tested slices together; it does not open collection, loop or continuation publication.
+
+| Check | Result |
+|---|---|
+| `cargo check --workspace --all-targets --locked -q` | Passed |
+| `cargo test -p sagat-tests --test integration_workflow_primitives --locked -q` | Passed: 97/97 against real PostgreSQL |
+| `cargo test -p sagat-tests --test fault_workflow_primitives --locked -q` | Passed: 18/18 |
+| `cargo test -p sagat-tests --test contract_workflow_primitives --locked -q` | Passed: 23/23 |
+
+This checkpoint predates any public chain creation or scoped production-worker capability. Those
+gates, the remaining primitive fault matrix and measured capacity evidence remain open.

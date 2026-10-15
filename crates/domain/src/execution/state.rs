@@ -170,6 +170,115 @@ mod continuation_tests {
         );
         assert_eq!(state, before);
     }
+
+    #[test]
+    fn typed_continuation_closes_its_pending_boundary() {
+        let predecessor = RunId::generate();
+        let successor = RunId::generate();
+        let work = node("work");
+        let boundary = node("rollover");
+        let input = Digest::new([7; 32]);
+        let events = [
+            RunEvent::RunStarted {
+                entrypoint: work.clone(),
+            },
+            RunEvent::ExecutionChainStarted {
+                max_segments: 3,
+                original_deadline: OffsetDateTime::UNIX_EPOCH + time::Duration::hours(1),
+            },
+            RunEvent::StepReleased { node: work.clone() },
+            RunEvent::StepLeased {
+                node: work.clone(),
+                attempt: 1,
+                generation: 1,
+            },
+            RunEvent::StepStarted {
+                node: work.clone(),
+                attempt: 1,
+                generation: 1,
+            },
+            RunEvent::StepCompleted {
+                node: work.clone(),
+                attempt: 1,
+                generation: 1,
+            },
+            RunEvent::StepRouted {
+                node: work,
+                activated: vec![boundary.clone()],
+            },
+            RunEvent::ContinuationSelected {
+                node: boundary.clone(),
+                successor,
+                input_digest: input,
+                state_digest: None,
+            },
+        ];
+
+        let state = RunState::replay(predecessor, &events).expect("typed continuation replay");
+        assert_eq!(state.status(), RunStatus::Succeeded);
+        let step = state.step(&boundary).expect("continuation boundary");
+        assert_eq!(step.status(), StepStatus::Succeeded);
+        assert!(step.routed());
+        let chain = state.chain().expect("chain");
+        assert_eq!(chain.successor(), Some(successor));
+        assert_eq!(
+            chain.transfer(),
+            Some(&ContinuationTransfer::new(input, None))
+        );
+    }
+
+    #[test]
+    fn typed_continuation_refuses_an_unsettled_sibling_without_mutation() {
+        let run = RunId::generate();
+        let work = node("work");
+        let boundary = node("rollover");
+        let blocker = node("still-open");
+        let mut state = RunState::replay(
+            run,
+            &[
+                RunEvent::RunStarted {
+                    entrypoint: work.clone(),
+                },
+                RunEvent::ExecutionChainStarted {
+                    max_segments: 3,
+                    original_deadline: OffsetDateTime::UNIX_EPOCH + time::Duration::hours(1),
+                },
+                RunEvent::StepReleased { node: work.clone() },
+                RunEvent::StepLeased {
+                    node: work.clone(),
+                    attempt: 1,
+                    generation: 1,
+                },
+                RunEvent::StepStarted {
+                    node: work.clone(),
+                    attempt: 1,
+                    generation: 1,
+                },
+                RunEvent::StepCompleted {
+                    node: work.clone(),
+                    attempt: 1,
+                    generation: 1,
+                },
+                RunEvent::StepRouted {
+                    node: work,
+                    activated: vec![boundary.clone(), blocker],
+                },
+            ],
+        )
+        .expect("pending continuation and sibling");
+        let before = state.clone();
+        assert!(
+            state
+                .apply(&RunEvent::ContinuationSelected {
+                    node: boundary,
+                    successor: RunId::generate(),
+                    input_digest: Digest::new([9; 32]),
+                    state_digest: None,
+                })
+                .is_err()
+        );
+        assert_eq!(state, before);
+    }
 }
 
 impl RunStatus {
@@ -398,6 +507,7 @@ pub struct CollectionIterationRestore {
     entry: ExecutionInstanceId,
     item_digest: Digest,
     returned: Option<(ExecutionInstanceId, Option<Digest>)>,
+    drained: bool,
 }
 
 impl CollectionIterationRestore {
@@ -408,6 +518,7 @@ impl CollectionIterationRestore {
             entry,
             item_digest,
             returned: None,
+            drained: false,
         }
     }
 
@@ -423,6 +534,7 @@ impl CollectionIterationRestore {
             entry,
             item_digest,
             returned: Some((return_instance, None)),
+            drained: false,
         }
     }
 
@@ -439,13 +551,27 @@ impl CollectionIterationRestore {
             entry,
             item_digest,
             returned: Some((return_instance, Some(result_digest))),
+            drained: false,
+        }
+    }
+
+    #[must_use]
+    pub const fn drained(index: u32, entry: ExecutionInstanceId, item_digest: Digest) -> Self {
+        Self {
+            index,
+            entry,
+            item_digest,
+            returned: None,
+            drained: true,
         }
     }
 
     fn is_active(&self) -> bool {
-        self.returned
-            .as_ref()
-            .is_none_or(|(_, result_digest)| result_digest.is_none())
+        !self.drained
+            && self
+                .returned
+                .as_ref()
+                .is_none_or(|(_, result_digest)| result_digest.is_none())
     }
 }
 
@@ -1239,20 +1365,67 @@ impl RunState {
         result_digest: Option<Digest>,
         admitted: Vec<CollectionIterationRestore>,
     ) -> Result<(), ExecutionError> {
+        self.restore_collection_progress(
+            collection,
+            phase,
+            item_count,
+            max_items,
+            max_concurrency,
+            snapshot_digest,
+            result_digest,
+            None,
+            admitted,
+        )
+    }
+
+    /// Restores collection progress that carries a durable drain reason without advancing the
+    /// journal sequence. Every drained member must already be terminal in the restored step map.
+    ///
+    /// # Errors
+    /// Returns an execution invariant error when the projection is internally inconsistent.
+    #[allow(clippy::too_many_arguments)]
+    pub fn restore_collection_progress(
+        &mut self,
+        collection: ExecutionInstanceId,
+        phase: CollectionPhase,
+        item_count: u32,
+        max_items: u32,
+        max_concurrency: u16,
+        snapshot_digest: Digest,
+        result_digest: Option<Digest>,
+        drain_reason: Option<CollectionDrainReason>,
+        admitted: Vec<CollectionIterationRestore>,
+    ) -> Result<(), ExecutionError> {
         let max_cardinality = MAX_ITERATION_INDEX + 1;
         let active = admitted
             .iter()
             .filter(|iteration| iteration.is_active())
             .count();
+        let has_drained = admitted.iter().any(|iteration| iteration.drained);
+        let lifecycle_matches = matches!(
+            (phase, result_digest, &drain_reason),
+            (CollectionPhase::Open, None, None)
+                | (CollectionPhase::Succeeded, Some(_), None)
+                | (CollectionPhase::Draining, None, Some(_))
+                | (
+                    CollectionPhase::Failed,
+                    None,
+                    Some(CollectionDrainReason::Failed { .. })
+                )
+                | (
+                    CollectionPhase::Cancelled,
+                    None,
+                    Some(CollectionDrainReason::Cancelled)
+                )
+        );
         if max_items == 0
             || max_items > max_cardinality
             || item_count > max_items
             || !(1..=256).contains(&max_concurrency)
             || active > usize::from(max_concurrency)
             || admitted.len() > usize::try_from(item_count).unwrap_or(usize::MAX)
-            || !matches!(phase, CollectionPhase::Open | CollectionPhase::Succeeded)
-            || (phase == CollectionPhase::Open && result_digest.is_some())
-            || (phase == CollectionPhase::Succeeded && result_digest.is_none())
+            || (has_drained && drain_reason.is_none())
+            || !lifecycle_matches
         {
             return Err(ExecutionError::InvalidCollectionLimits { collection });
         }
@@ -1271,8 +1444,21 @@ impl RunState {
             CollectionPhase::Succeeded => {
                 owner.status == StepStatus::Succeeded && owner.waiting_on().is_none()
             }
-            CollectionPhase::Draining | CollectionPhase::Failed | CollectionPhase::Cancelled => {
-                false
+            CollectionPhase::Draining => {
+                owner.status == StepStatus::Waiting
+                    && matches!(owner.waiting_on(), Some(WaitingOn::Collection))
+            }
+            CollectionPhase::Failed => {
+                let expected = match &drain_reason {
+                    Some(CollectionDrainReason::Failed { code, .. }) => Some(code),
+                    _ => None,
+                };
+                owner.status == StepStatus::Failed
+                    && owner.waiting_on().is_none()
+                    && owner.failure() == expected
+            }
+            CollectionPhase::Cancelled => {
+                owner.status == StepStatus::Cancelled && owner.waiting_on().is_none()
             }
         };
         if !owner_matches {
@@ -1293,6 +1479,7 @@ impl RunState {
                 entry,
                 item_digest,
                 returned,
+                drained,
             } = restored;
             let expected =
                 u32::try_from(position).map_err(|_| ExecutionError::InvalidCollectionLimits {
@@ -1309,32 +1496,64 @@ impl RunState {
             if !self.steps.contains_key(&entry) {
                 return Err(ExecutionError::UnknownInstance(entry));
             }
-            let iteration = match returned {
-                None => CollectionIterationState::Admitted,
-                Some((return_instance, result_digest)) => {
-                    Self::validate_collection_instance(&collection, index, &return_instance)?;
-                    let returned_step = self
-                        .steps
-                        .get(&return_instance)
-                        .ok_or_else(|| ExecutionError::UnknownInstance(return_instance.clone()))?;
-                    if returned_step.status != StepStatus::Succeeded || !returned_step.routed {
-                        return Err(ExecutionError::IllegalInstanceTransition {
-                            instance: return_instance,
-                            status: returned_step.status,
-                            event: "collection.restore",
-                        });
-                    }
-                    match result_digest {
-                        None => CollectionIterationState::Returned { return_instance },
-                        Some(digest) => {
-                            results.insert(
-                                index,
-                                CollectionResult {
-                                    return_instance: return_instance.clone(),
-                                    digest,
-                                },
-                            );
-                            CollectionIterationState::Checkpointed
+            let iteration = if drained {
+                if returned.is_some() {
+                    return Err(ExecutionError::IllegalCollectionTransition {
+                        collection,
+                        event: "collection.restore",
+                    });
+                }
+                let path = entry.path();
+                let mut scoped = self
+                    .steps
+                    .iter()
+                    .filter(|(instance, _)| instance.path() == path);
+                if !scoped.any(|(instance, step)| {
+                    step.status.is_terminal()
+                        && (!instance.node().is_derived()
+                            || matches!(step.status, StepStatus::Succeeded | StepStatus::Skipped))
+                }) || self.steps.iter().any(|(instance, step)| {
+                    instance.path() == path
+                        && (!step.status.is_terminal()
+                            || (instance.node().is_derived()
+                                && !matches!(
+                                    step.status,
+                                    StepStatus::Succeeded | StepStatus::Skipped
+                                )))
+                }) {
+                    return Err(ExecutionError::IllegalCollectionTransition {
+                        collection,
+                        event: "collection.restore",
+                    });
+                }
+                CollectionIterationState::Drained
+            } else {
+                match returned {
+                    None => CollectionIterationState::Admitted,
+                    Some((return_instance, result_digest)) => {
+                        Self::validate_collection_instance(&collection, index, &return_instance)?;
+                        let returned_step = self.steps.get(&return_instance).ok_or_else(|| {
+                            ExecutionError::UnknownInstance(return_instance.clone())
+                        })?;
+                        if returned_step.status != StepStatus::Succeeded || !returned_step.routed {
+                            return Err(ExecutionError::IllegalInstanceTransition {
+                                instance: return_instance,
+                                status: returned_step.status,
+                                event: "collection.restore",
+                            });
+                        }
+                        match result_digest {
+                            None => CollectionIterationState::Returned { return_instance },
+                            Some(digest) => {
+                                results.insert(
+                                    index,
+                                    CollectionResult {
+                                        return_instance: return_instance.clone(),
+                                        digest,
+                                    },
+                                );
+                                CollectionIterationState::Checkpointed
+                            }
                         }
                     }
                 }
@@ -1354,6 +1573,26 @@ impl RunState {
                 event: "collection.restore",
             });
         }
+        let all_settled = iterations
+            .values()
+            .all(CollectionIterationState::is_settled);
+        if matches!(phase, CollectionPhase::Failed | CollectionPhase::Cancelled) && !all_settled {
+            return Err(ExecutionError::IllegalCollectionTransition {
+                collection,
+                event: "collection.restore",
+            });
+        }
+        if let Some(CollectionDrainReason::Failed { iteration, .. }) = &drain_reason
+            && !matches!(
+                iterations.get(iteration),
+                Some(CollectionIterationState::Admitted | CollectionIterationState::Drained)
+            )
+        {
+            return Err(ExecutionError::IllegalCollectionTransition {
+                collection,
+                event: "collection.restore",
+            });
+        }
         self.collections.insert(
             collection,
             CollectionState {
@@ -1368,7 +1607,7 @@ impl RunState {
                 iterations,
                 results,
                 result_digest,
-                drain_reason: None,
+                drain_reason,
             },
         );
         Ok(())
@@ -1878,11 +2117,13 @@ impl RunState {
                     },
                 )?;
                 let mut found = false;
-                for (_, step) in self.steps.iter().filter(|(id, _)| id.path() == &path) {
+                for (instance, step) in self.steps.iter().filter(|(id, _)| id.path() == &path) {
                     found = true;
+                    let unresolved_derived = instance.node().is_derived()
+                        && !matches!(step.status, StepStatus::Succeeded | StepStatus::Skipped);
                     let safe_to_stop = step.attempt == 0
                         && matches!(step.status, StepStatus::Pending | StepStatus::Ready);
-                    if !step.status.is_terminal() && !safe_to_stop {
+                    if unresolved_derived || (!step.status.is_terminal() && !safe_to_stop) {
                         return Err(ExecutionError::IllegalCollectionTransition {
                             collection: collection.clone(),
                             event: name,
@@ -3161,6 +3402,41 @@ impl RunState {
                 chain.completion_kind = Some(SegmentCompletionKind::Continued);
                 chain.transfer = Some(ContinuationTransfer::new(*input_digest, *state_digest));
             }
+            RunEvent::ContinuationSelected {
+                node,
+                successor,
+                input_digest,
+                state_digest,
+            } => {
+                let boundary = ExecutionInstanceId::root(node.clone());
+                if self.stop.is_some()
+                    || self.paused
+                    || self.steps.iter().any(|(instance, step)| {
+                        instance != &boundary && (step.status != Succeeded || !step.routed)
+                    })
+                {
+                    return Err(ExecutionError::Invariant(
+                        "a continuation requires every other obligation to be quiescent",
+                    ));
+                }
+                let step = self.step_mut(node, name, &[Pending])?;
+                step.status = Succeeded;
+                step.routed = true;
+                let chain = self.chain.as_mut().ok_or(ExecutionError::Invariant(
+                    "a run must belong to a chain before it continues",
+                ))?;
+                if chain.completion_kind.is_some()
+                    || *successor == self.run_id
+                    || chain.segment_index.get() + 1 >= chain.max_segments
+                {
+                    return Err(ExecutionError::Invariant(
+                        "a chain segment can continue exactly once within its bound",
+                    ));
+                }
+                chain.successor = Some(*successor);
+                chain.completion_kind = Some(SegmentCompletionKind::Continued);
+                chain.transfer = Some(ContinuationTransfer::new(*input_digest, *state_digest));
+            }
             RunEvent::RunPaused => {
                 if self.paused {
                     return Err(ExecutionError::AlreadyPaused);
@@ -3409,7 +3685,7 @@ impl RunState {
                 self.status = *status;
                 return;
             }
-            RunEvent::RunContinued { .. } => {
+            RunEvent::RunContinued { .. } | RunEvent::ContinuationSelected { .. } => {
                 self.status = RunStatus::Succeeded;
                 return;
             }

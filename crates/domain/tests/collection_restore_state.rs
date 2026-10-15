@@ -4,8 +4,8 @@
 use std::collections::BTreeMap;
 
 use sagat_domain::execution::{
-    AddressedRunEvent, CollectionIterationRestore, CollectionOutcome, CollectionPhase,
-    ExecutionInstanceId, InstancePath, RunEvent, RunId, RunState,
+    AddressedRunEvent, CollectionDrainReason, CollectionIterationRestore, CollectionOutcome,
+    CollectionPhase, ExecutionInstanceId, FailureCode, InstancePath, RunEvent, RunId, RunState,
 };
 use sagat_domain::workflow::{Digest, NodeId};
 
@@ -83,6 +83,35 @@ fn checkpointed_events() -> Vec<AddressedRunEvent> {
     ]
 }
 
+fn drained_events(reason: CollectionDrainReason) -> Vec<AddressedRunEvent> {
+    vec![
+        AddressedRunEvent::root(RunEvent::RunStarted {
+            entrypoint: node("items"),
+        }),
+        AddressedRunEvent::root(RunEvent::CollectionEntered {
+            node: node("items"),
+            item_count: 1,
+            max_items: 1,
+            max_concurrency: 1,
+            snapshot_digest: Digest::new([1; 32]),
+        }),
+        AddressedRunEvent::root(RunEvent::CollectionIterationAdmitted {
+            node: node("items"),
+            index: 0,
+            entry: member("work"),
+            item_digest: Digest::new([2; 32]),
+        }),
+        AddressedRunEvent::root(RunEvent::CollectionDrainStarted {
+            node: node("items"),
+            reason,
+        }),
+        AddressedRunEvent::root(RunEvent::CollectionIterationDrained {
+            node: node("items"),
+            index: 0,
+        }),
+    ]
+}
+
 fn restore_from_steps(
     replayed: &RunState,
     phase: CollectionPhase,
@@ -121,6 +150,45 @@ fn restore_from_steps(
     restored
 }
 
+fn restore_drained_from_steps(
+    replayed: &RunState,
+    phase: CollectionPhase,
+    reason: CollectionDrainReason,
+) -> RunState {
+    let mut restored = RunState::restore_instances(
+        replayed.run_id(),
+        replayed.status(),
+        replayed
+            .stop_reason()
+            .map(|stop| (stop, replayed.stop_code().cloned())),
+        replayed.is_paused(),
+        replayed
+            .instances()
+            .map(|(instance, step)| (instance.clone(), step.clone()))
+            .collect::<BTreeMap<_, _>>(),
+        BTreeMap::new(),
+        replayed.version(),
+    );
+    restored
+        .restore_collection_progress(
+            owner(),
+            phase,
+            1,
+            1,
+            1,
+            Digest::new([1; 32]),
+            None,
+            Some(reason),
+            vec![CollectionIterationRestore::drained(
+                0,
+                member("work"),
+                Digest::new([2; 32]),
+            )],
+        )
+        .expect("drained collection projection restores");
+    restored
+}
+
 #[test]
 fn checkpointed_open_projection_equals_its_addressed_journal() {
     let run = RunId::generate();
@@ -145,5 +213,52 @@ fn succeeded_projection_equals_its_addressed_journal() {
         CollectionPhase::Succeeded,
         Some(Digest::new([4; 32])),
     );
+    assert_eq!(restored, replayed);
+}
+
+#[test]
+fn draining_projection_equals_its_addressed_journal() {
+    let run = RunId::generate();
+    let reason = CollectionDrainReason::Failed {
+        iteration: 0,
+        code: FailureCode::worker_error(),
+    };
+    let replayed = RunState::replay_addressed(run, &drained_events(reason.clone()))
+        .expect("draining journal replays");
+    let restored = restore_drained_from_steps(&replayed, CollectionPhase::Draining, reason);
+    assert_eq!(restored, replayed);
+}
+
+#[test]
+fn failed_projection_equals_its_addressed_journal() {
+    let run = RunId::generate();
+    let code = FailureCode::worker_error();
+    let reason = CollectionDrainReason::Failed {
+        iteration: 0,
+        code: code.clone(),
+    };
+    let mut events = drained_events(reason.clone());
+    events.push(AddressedRunEvent::root(RunEvent::CollectionFinished {
+        node: node("items"),
+        outcome: CollectionOutcome::Failed(code),
+        result_digest: None,
+    }));
+    let replayed = RunState::replay_addressed(run, &events).expect("failed journal replays");
+    let restored = restore_drained_from_steps(&replayed, CollectionPhase::Failed, reason);
+    assert_eq!(restored, replayed);
+}
+
+#[test]
+fn cancelled_projection_equals_its_addressed_journal() {
+    let run = RunId::generate();
+    let reason = CollectionDrainReason::Cancelled;
+    let mut events = drained_events(reason.clone());
+    events.push(AddressedRunEvent::root(RunEvent::CollectionFinished {
+        node: node("items"),
+        outcome: CollectionOutcome::Cancelled,
+        result_digest: None,
+    }));
+    let replayed = RunState::replay_addressed(run, &events).expect("cancelled journal replays");
+    let restored = restore_drained_from_steps(&replayed, CollectionPhase::Cancelled, reason);
     assert_eq!(restored, replayed);
 }

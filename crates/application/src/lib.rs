@@ -5,6 +5,7 @@
 
 pub mod api_admission;
 pub mod approval_progress;
+pub mod approval_scheduler;
 pub mod authz;
 pub mod bindings;
 pub mod chain_progress;

@@ -4,6 +4,13 @@ use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
 use futures_util::stream;
+use sagat_application::approval_scheduler::{
+    ApprovalAdvance, ApprovalAdvanceError, ApprovalScheduler, ApprovalSchedulerStore, DueApproval,
+};
+use sagat_application::chain_progress::{
+    ChainCommandStore, ChainHandoffCommand, ChainHandoffWrite, ChainProgressError,
+    ChainProgressStore, ChainRunTx, ContinuationPreparationError, ContinuationSelection,
+};
 use sagat_application::definitions::{Applied, DefinitionStore, Idempotency};
 use sagat_application::entropy::Entropy;
 use sagat_application::error::StoreError;
@@ -28,10 +35,9 @@ use sagat_domain::execution::{
     self, AddressedProgress, ChildOutcome, ExecutionError, ExecutionInstanceId, Expiry,
     FailureCode, Progress, RunStatus, StopReason,
 };
-use sagat_domain::identity::Subject;
-use sagat_domain::identity::TenantId;
+use sagat_domain::identity::{NamespaceId, Subject, TenantId};
 use sagat_domain::sharding::{Shard, ShardSet};
-use sagat_domain::workflow::{NodeKind, WorkflowDefinition};
+use sagat_domain::workflow::{NodeId, NodeKind, WorkflowDefinition};
 use time::OffsetDateTime;
 use tracing::Instrument;
 
@@ -89,6 +95,8 @@ impl Default for SchedulerSettings {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Report {
     pub collections_advanced: u32,
+    pub approvals_opened: u32,
+    pub approvals_expired: u32,
     pub timers_fired: u32,
     pub waits_timed_out: u32,
     pub retries_released: u32,
@@ -140,12 +148,33 @@ pub enum CollectionAdvanceError {
     Expression,
 }
 
+/// A prepared continuation could not be committed without weakening its serialized snapshot.
+#[derive(Debug, thiserror::Error)]
+pub enum ContinuationAdvanceError {
+    #[error("the execution chain does not exist")]
+    MissingChain,
+    #[error("the scheduler does not hold the current head shard")]
+    FenceUnavailable,
+    #[error("the requested node is not a pending continuation boundary")]
+    NotContinuation,
+    #[error("continuation expression evaluation failed")]
+    Expression,
+    #[error(transparent)]
+    Preparation(#[from] ContinuationPreparationError),
+    #[error(transparent)]
+    Progress(#[from] ChainProgressError),
+    #[error(transparent)]
+    Store(#[from] StoreError),
+}
+
 impl Report {
     /// Whether anything at all changed.
     #[must_use]
     pub const fn did_work(&self) -> bool {
         self.timers_fired
             + self.collections_advanced
+            + self.approvals_opened
+            + self.approvals_expired
             + self.waits_timed_out
             + self.retries_released
             + self.leases_expired
@@ -305,7 +334,7 @@ impl<S, E, R> std::fmt::Debug for Scheduler<S, E, R> {
 
 impl<S, E, R> Scheduler<S, E, R>
 where
-    S: RunStore + MaintenanceStore + DefinitionStore + CollectionStore,
+    S: RunStore + MaintenanceStore + DefinitionStore + CollectionStore + ApprovalSchedulerStore,
     E: ExpressionEvaluator,
     R: Entropy,
 {
@@ -368,6 +397,8 @@ where
         // leases the keeper has renewed since, not keep acting on the snapshot it began with until
         // that runs out (every later action would be counted as fenced and the later passes starved).
         self.collections(&self.view(), &mut report).await;
+        self.approvals_expire(&self.view(), &mut report).await;
+        self.approvals_open(&self.view(), &mut report).await;
         self.timers(&self.view(), &mut report).await;
         self.wait_deadlines(&self.view(), &mut report).await;
         self.retries(&self.view(), &mut report).await;
@@ -399,6 +430,107 @@ where
         let view = self.view();
         self.advance_collection_in_view(&view, tenant, run, owner)
             .await
+    }
+
+    /// Evaluates one pending continuation against a locked snapshot, then commits it only if the
+    /// chain, journal and declared-state revisions still match when the write locks are reacquired.
+    ///
+    /// # Errors
+    /// Returns a typed error when the chain is missing, this replica lost its fence, the boundary
+    /// is no longer pending, expression evaluation fails, or the atomic write rejects the snapshot.
+    pub async fn advance_continuation(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        chain_id: RunId,
+        boundary: &NodeId,
+    ) -> Result<ChainHandoffWrite, ContinuationAdvanceError>
+    where
+        S: ChainCommandStore + ChainProgressStore,
+        S::Tx: ChainRunTx,
+    {
+        let view = self.view();
+        let scope = execution::ChainScope::new(tenant, namespace);
+        let Some(mut tx) = self.store.begin_chain_head(scope, chain_id).await? else {
+            return Err(ContinuationAdvanceError::MissingChain);
+        };
+        let chain = *tx.locked_chain()?;
+        let lease = match view.hold_for(chain.head()) {
+            Hold::Lease(lease) => lease,
+            Hold::Nothing | Hold::Lost => {
+                return Err(ContinuationAdvanceError::FenceUnavailable);
+            }
+        };
+        let info = tx.info().clone();
+        let occurred_at = tx.now();
+        let data = tx.data().await?.clone();
+        let (input_expression, state_expression, expected_run_version) = {
+            let (definition, state) = tx.parts();
+            let step = state
+                .step(boundary)
+                .ok_or(ContinuationAdvanceError::NotContinuation)?;
+            let Some(NodeKind::ContinueAsNew { input, state: next }) =
+                definition.node(boundary).map(|node| node.kind())
+            else {
+                return Err(ContinuationAdvanceError::NotContinuation);
+            };
+            if step.status() != execution::StepStatus::Pending {
+                return Err(ContinuationAdvanceError::NotContinuation);
+            }
+            (input.clone(), next.clone(), state.version())
+        };
+        tx.commit().await?;
+
+        let input = self
+            .engine
+            .evaluator()
+            .child_input(Some(&input_expression), &data)
+            .map_err(|_| ContinuationAdvanceError::Expression)?;
+        let state = state_expression
+            .as_ref()
+            .map(|expression| {
+                self.engine
+                    .evaluator()
+                    .continuation_value(expression, &data)
+                    .map_err(|_| ContinuationAdvanceError::Expression)
+            })
+            .transpose()?;
+        if state.is_some() != data.state_revision.is_some() {
+            return Err(ContinuationAdvanceError::NotContinuation);
+        }
+        let selection =
+            ContinuationSelection::new(boundary.clone(), input, state, data.state_revision)?;
+        let transfer = selection.transfer();
+        let successor = RunId::generate();
+        let audit = AuditRecord::engine(
+            tenant,
+            AuditAction::RunContinued,
+            ResourceType::Run,
+            chain.head().to_string(),
+            "continuation selected",
+            info.trace_id.clone(),
+            occurred_at,
+        );
+        let handoff = ChainHandoffCommand::new(
+            scope,
+            chain_id,
+            chain.head(),
+            chain.revision(),
+            expected_run_version,
+            successor,
+            transfer,
+            SchedulerAuthority::new(view.owner, lease),
+            Subject::engine(),
+            info.trace_id,
+            occurred_at,
+            audit,
+            uuid::Uuid::now_v7(),
+            uuid::Uuid::now_v7(),
+        );
+        self.store
+            .continue_evaluated(&selection.into_command(handoff)?)
+            .await
+            .map_err(ContinuationAdvanceError::from)
     }
 
     async fn advance_collection_in_view(
@@ -1235,6 +1367,122 @@ where
             .await;
         for outcome in outcomes {
             Self::tally(report, outcome, |value| value.collections_advanced += 1);
+        }
+    }
+
+    async fn approvals_open(&self, view: &View, report: &mut Report) {
+        if view.snapshot.is_none() {
+            return;
+        }
+        let candidates = self
+            .pick(
+                view,
+                "approval_open",
+                report,
+                |step: &StepRef| step.tenant_id,
+                |step| (step.run_id, step.instance()),
+                |store, window| async move { store.approval_candidates(&window).await },
+            )
+            .await;
+        let outcomes = self
+            .each(candidates, |candidate| {
+                let approvals = ApprovalScheduler::new(&self.store);
+                async move {
+                    let run = candidate.run_id;
+                    let instance = candidate.instance();
+                    let outcome = match view.hold_for(run) {
+                        Hold::Lease(lease) => {
+                            let authority = SchedulerAuthority::new(view.owner.clone(), lease);
+                            match approvals
+                                .open(candidate.tenant_id, run, &instance, authority)
+                                .await
+                            {
+                                Ok(ApprovalAdvance::Opened { .. }) => Outcome::Done,
+                                Ok(ApprovalAdvance::Skipped) | Err(ApprovalAdvanceError::NotApproval) => {
+                                    Outcome::Skipped
+                                }
+                                Ok(ApprovalAdvance::Expired) => Outcome::Failed,
+                                Err(error) if error.scheduler_fence_lost() => Outcome::Fenced,
+                                Err(error) => {
+                                    tracing::error!(%error, %run, ?instance, "an approval open action failed");
+                                    Outcome::Failed
+                                }
+                            }
+                        }
+                        Hold::Lost => Outcome::Fenced,
+                        Hold::Nothing => Outcome::Skipped,
+                    };
+                    metrics::counter!(
+                        "scheduler_actions_total",
+                        "kind" => "approval_open",
+                        "outcome" => outcome.label()
+                    )
+                    .increment(1);
+                    if outcome == Outcome::Fenced {
+                        metrics::counter!("scheduler_fenced_total", "kind" => "approval_open")
+                            .increment(1);
+                    }
+                    outcome
+                }
+            })
+            .await;
+        for outcome in outcomes {
+            Self::tally(report, outcome, |value| value.approvals_opened += 1);
+        }
+    }
+
+    async fn approvals_expire(&self, view: &View, report: &mut Report) {
+        if view.snapshot.is_none() {
+            return;
+        }
+        let candidates = self
+            .pick(
+                view,
+                "approval_expire",
+                report,
+                |approval: &DueApproval| approval.address().tenant_id(),
+                |approval| (approval.run_id(), approval.address().request_id()),
+                |store, window| async move { store.due_approvals(&window).await },
+            )
+            .await;
+        let outcomes = self
+            .each(candidates, |candidate| {
+                let approvals = ApprovalScheduler::new(&self.store);
+                async move {
+                    let run = candidate.run_id();
+                    let outcome = match view.hold_for(run) {
+                        Hold::Lease(lease) => {
+                            let authority = SchedulerAuthority::new(view.owner.clone(), lease);
+                            match approvals.expire(&candidate, authority).await {
+                                Ok(ApprovalAdvance::Expired) => Outcome::Done,
+                                Ok(ApprovalAdvance::Skipped) => Outcome::Skipped,
+                                Ok(ApprovalAdvance::Opened { .. }) => Outcome::Failed,
+                                Err(error) if error.scheduler_fence_lost() => Outcome::Fenced,
+                                Err(error) => {
+                                    tracing::error!(%error, %run, "an approval expiry action failed");
+                                    Outcome::Failed
+                                }
+                            }
+                        }
+                        Hold::Lost => Outcome::Fenced,
+                        Hold::Nothing => Outcome::Skipped,
+                    };
+                    metrics::counter!(
+                        "scheduler_actions_total",
+                        "kind" => "approval_expire",
+                        "outcome" => outcome.label()
+                    )
+                    .increment(1);
+                    if outcome == Outcome::Fenced {
+                        metrics::counter!("scheduler_fenced_total", "kind" => "approval_expire")
+                            .increment(1);
+                    }
+                    outcome
+                }
+            })
+            .await;
+        for outcome in outcomes {
+            Self::tally(report, outcome, |value| value.approvals_expired += 1);
         }
     }
 

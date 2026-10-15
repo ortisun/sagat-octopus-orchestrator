@@ -8,6 +8,7 @@ use sqlx::migrate::Migrator;
 
 mod api_admission;
 mod approval_progress;
+mod approval_scheduler;
 mod bindings;
 mod breaker;
 mod chain_progress;

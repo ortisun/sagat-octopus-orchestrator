@@ -38,6 +38,22 @@ fn root_task_context_remains_byte_identical_when_scoped_outputs_exist() {
 }
 
 #[test]
+fn continuation_value_uses_the_locked_run_snapshot() {
+    let data = RunData {
+        input: br#"{"next":{"segment":2}}"#.to_vec(),
+        ..RunData::default()
+    };
+    let expression = Expression::parse("input.next").expect("expression");
+
+    assert_eq!(
+        JsonEvaluator
+            .continuation_value(&expression, &data)
+            .expect("selected continuation input"),
+        br#"{"segment":2}"#
+    );
+}
+
+#[test]
 fn collection_instances_receive_only_their_item_and_local_outputs() {
     let first_path = InstancePath::root()
         .child(node("items"), 0)
@@ -50,6 +66,7 @@ fn collection_instances_receive_only_their_item_and_local_outputs() {
     let mut data = RunData {
         input: br#"{"order":7}"#.to_vec(),
         state: Some(br#"{"region":"south"}"#.to_vec()),
+        state_revision: Some(0),
         ..RunData::default()
     };
     data.scope_inputs.insert(

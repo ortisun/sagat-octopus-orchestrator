@@ -4,7 +4,7 @@ use sagat_infra_ir::JsonIrCodec;
 use serde_json::Value;
 
 #[test]
-fn approval_golden_maps_to_structured_v1_but_cannot_be_published() {
+fn approval_golden_maps_to_the_public_structured_v1_definition() {
     let path = super::repository_root()
         .join("tests/contract/sdk-conformance/expected/approval-builders.workflows.json");
     let golden: Value = serde_json::from_slice(&std::fs::read(path).expect("reviewed SDK golden"))
@@ -22,7 +22,7 @@ fn approval_golden_maps_to_structured_v1_but_cannot_be_published() {
             .expect("approval maps to structured v1");
         assert!(parsed.definition.is_structured());
         assert_eq!(
-            String::from_utf8(parsed.canonical).expect("canonical UTF-8"),
+            std::str::from_utf8(&parsed.canonical).expect("canonical UTF-8"),
             canonical[name].as_str().expect("reviewed canonical text")
         );
         let review = parsed
@@ -34,9 +34,11 @@ fn approval_golden_maps_to_structured_v1_but_cannot_be_published() {
             panic!("review must be approval")
         };
         assert_eq!(policy.excludes_initiator(), name == "default-exclusion");
-        assert!(
-            JsonIrCodec.parse(&bytes).is_err(),
-            "publication remains gated"
-        );
+        let published = JsonIrCodec
+            .parse(&bytes)
+            .expect("native approval is publishable");
+        assert!(published.definition.is_structured());
+        assert_eq!(published.canonical, parsed.canonical);
+        assert_eq!(published.digest, parsed.digest);
     }
 }

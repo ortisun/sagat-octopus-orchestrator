@@ -756,6 +756,13 @@ pub enum RunEvent {
         input_digest: Digest,
         state_digest: Option<Digest>,
     },
+    /// Selects a typed continuation terminal and closes the segment in one replayable transition.
+    ContinuationSelected {
+        node: NodeId,
+        successor: RunId,
+        input_digest: Digest,
+        state_digest: Option<Digest>,
+    },
     RunPaused,
     RunResumed,
     RunStopRequested {
@@ -924,6 +931,7 @@ impl RunEvent {
             Self::StepResolved { .. } => "step.resolved",
             Self::StateUpdated { .. } => "state.updated",
             Self::RunContinued { .. } => "run.continued",
+            Self::ContinuationSelected { .. } => "continuation.selected",
             Self::RunPaused => "run.paused",
             Self::RunResumed => "run.resumed",
             Self::RunStopRequested { .. } => "run.stop_requested",
@@ -985,7 +993,8 @@ impl RunEvent {
             | Self::StepNeedsReview { node, .. }
             | Self::StepRetryRequested { node }
             | Self::StepSkipped { node }
-            | Self::StepResolved { node, .. } => Some(node),
+            | Self::StepResolved { node, .. }
+            | Self::ContinuationSelected { node, .. } => Some(node),
             Self::RunStarted { .. }
             | Self::ExecutionChainStarted { .. }
             | Self::ExecutionChainSuccessorLinked { .. }

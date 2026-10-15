@@ -59,8 +59,9 @@ default route wins. A missing `amount` fails evaluation; no later case or defaul
 switch integration target exercises these outcomes against PostgreSQL and checks journal/replay.
 
 The five SDKs can construct additive v1 collection, bounded-loop, approval and continuation
-documents. These shared fixtures check authoring only; the server still refuses publication of
-their runtime nodes. Run the current builder parity checks with:
+documents. These builder fixtures check authoring only. The server accepts a bounded root
+approval with basic nodes; collection, loop and continuation nodes still fail publication. Run
+the current builder parity checks with:
 
 ```sh
 SAGAT_SDK_SCENARIO=collection-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
@@ -76,11 +77,15 @@ five SDKs:
 
 ```sh
 SAGAT_SDK_SCENARIO=state-operations cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
+SAGAT_SDK_SCENARIO=approval-decisions cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
 ```
 
-See [`workflow-primitives.md`](../../docs/runbooks/workflow-primitives.md) for the current API
-paths, idempotency and recovery checks. A declaration combined with a collection, loop, approval
-or continuation node is still rejected at publication.
+The `approval-decisions` scenario also publishes and starts a root approval workflow, discovers
+the pending request and checks authorized approve/reject, replay, conflicting keys and tenant
+opacity in all five SDKs. See
+[`workflow-primitives.md`](../../docs/runbooks/workflow-primitives.md) for the current API paths,
+idempotency and recovery checks. A declared state document combined with a collection, loop,
+approval or continuation node is still rejected at publication.
 
 The PostgreSQL integration target now verifies atomic collection checkpoint/finish,
 addressed journal restoration, declared-operation receipts, loop delay checkpoints and chain
