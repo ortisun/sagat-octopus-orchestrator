@@ -216,7 +216,7 @@ fn the_duration_of_an_attempt_is_from_its_lease_to_its_end() {
         .iter()
         .filter_map(|o| match o {
             Observation::AttemptEnded { seconds, .. } => Some(*seconds),
-            Observation::RunFinished { .. } => None,
+            Observation::RunFinished { .. } | Observation::PrimitiveTransition { .. } => None,
         })
         .collect();
     assert_eq!(measured.len(), 3);
@@ -237,7 +237,7 @@ fn the_wait_between_ready_and_leased_is_the_schedule_latency_of_each_attempt() {
             Observation::AttemptEnded {
                 schedule_latency, ..
             } => Some(*schedule_latency),
-            Observation::RunFinished { .. } => None,
+            Observation::RunFinished { .. } | Observation::PrimitiveTransition { .. } => None,
         })
         .collect();
     // The first: released 5 ms after the start, leased 20 ms later. The others: from retry_due.
@@ -624,7 +624,7 @@ fn a_run_finished_is_counted_with_its_duration() {
         .iter()
         .filter_map(|o| match o {
             Observation::RunFinished { status, seconds } => Some((*status, *seconds)),
-            Observation::AttemptEnded { .. } => None,
+            Observation::AttemptEnded { .. } | Observation::PrimitiveTransition { .. } => None,
         })
         .collect();
     assert_eq!(finished.len(), 1);

@@ -13,7 +13,7 @@ use time::OffsetDateTime;
 use super::error::ExecutionError;
 use super::event::{
     ChildOutcome, CorrelationKey, FailureCode, Fence, ReconcileResult, ReviewOutcome, RunEvent,
-    StopReason,
+    StopReason, SwitchSelection,
 };
 use super::plan::{Evaluation, Plan, after, plan};
 use super::sagas::policies;
@@ -36,6 +36,10 @@ pub enum Resolution {
     Condition {
         node: NodeId,
         outcome: Result<bool, ()>,
+    },
+    Switch {
+        node: NodeId,
+        selection: Result<SwitchSelection, ()>,
     },
     Correlation {
         node: NodeId,
@@ -703,6 +707,25 @@ pub fn resolve(
     let event = match resolution {
         Resolution::Condition { node, outcome } => match outcome {
             Ok(outcome) => RunEvent::ConditionEvaluated { node, outcome },
+            Err(()) => fail(node),
+        },
+        Resolution::Switch { node, selection } => match selection {
+            Ok(selection) => {
+                let Some(declared) = def.node(&node) else {
+                    return Err(ExecutionError::UnknownStep(node));
+                };
+                let NodeKind::Switch { cases, .. } = declared.kind() else {
+                    return Err(ExecutionError::Invariant(
+                        "a switch result targeted a different node kind",
+                    ));
+                };
+                if let SwitchSelection::Case(id) = &selection
+                    && !cases.iter().any(|case| case.id() == id)
+                {
+                    return Err(ExecutionError::Invariant("switch selected an unknown case"));
+                }
+                RunEvent::SwitchEvaluated { node, selection }
+            }
             Err(()) => fail(node),
         },
         Resolution::Correlation { node, key } => match key {

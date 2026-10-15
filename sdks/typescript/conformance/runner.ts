@@ -34,6 +34,7 @@ function apply(target: Flow, ops: Obj[]): void {
       case 'waitForEvent': target.waitForEvent(op['id'], op['options']); break;
       case 'invokeChild': target.invokeChild(op['id'], op['workflow'], op['options']); break;
       case 'condition': target.condition(op['id'], op['expression'], op['ifTrue'], op['ifFalse']); break;
+      case 'switch': target.switch(op['id'], op['cases'], op['default']); break;
       case 'parallel': {
         const branches = (op['branches'] as Obj[][]).map((ops) => {
           const branch = flow();

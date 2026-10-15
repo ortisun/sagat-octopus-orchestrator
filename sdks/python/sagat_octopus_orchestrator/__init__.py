@@ -50,7 +50,7 @@ from .worker import (
     WorkerTransport,
     run_blocking,
 )
-from .workflow import Flow, RetryOptions, WorkflowBuilder, flow, workflow
+from .workflow import Flow, RetryOptions, SwitchCase, WorkflowBuilder, flow, workflow
 
 __version__ = SDK_VERSION
 
@@ -86,6 +86,7 @@ __all__ = [
     "SagatError",
     "Secrets",
     "SignalResult",
+    "SwitchCase",
     "SyncSagatClient",
     "TaskKind",
     "TlsOptions",

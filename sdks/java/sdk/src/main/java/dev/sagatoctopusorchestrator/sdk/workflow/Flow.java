@@ -326,6 +326,41 @@ public final class Flow {
         return push(node);
     }
 
+    /** Tries cases in order and follows the first matching target, or the default. It has no next node. */
+    public Flow switchCase(String id, List<SwitchCase> cases, String defaultTarget) {
+        if (cases == null || cases.isEmpty() || cases.size() > 32) {
+            throw SagatException.invalid("switch " + id + " needs between 1 and 32 cases");
+        }
+        if (defaultTarget == null || defaultTarget.isEmpty()) {
+            throw SagatException.invalid("switch " + id + " needs a default target");
+        }
+        Set<String> caseIds = new HashSet<>();
+        ObjectNode node = F.objectNode();
+        node.put("id", id);
+        node.put("type", "switch");
+        ArrayNode copied = node.putArray("cases");
+        for (SwitchCase item : cases) {
+            if (item == null || item.id() == null || item.id().isEmpty()) {
+                throw SagatException.invalid("switch " + id + " has a case without an id");
+            }
+            if (!caseIds.add(item.id())) {
+                throw SagatException.invalid("switch " + id + " uses case id " + quoted(item.id()) + " twice");
+            }
+            if (item.when() == null || item.when().isEmpty()) {
+                throw SagatException.invalid("switch " + id + " case " + quoted(item.id()) + " needs a when expression");
+            }
+            if (item.target() == null || item.target().isEmpty()) {
+                throw SagatException.invalid("switch " + id + " case " + quoted(item.id()) + " needs a target");
+            }
+            ObjectNode copiedCase = copied.addObject();
+            copiedCase.put("id", item.id());
+            copiedCase.put("when", item.when());
+            copiedCase.put("target", item.target());
+        }
+        node.put("default", defaultTarget);
+        return push(node);
+    }
+
     /** Runs branches at once; {@code ALL} waits for every one, {@code ANY} for the first. At least two, none empty. */
     public Flow parallel(String id, Join join, List<Flow> branches) {
         if (branches.size() < 2) {
@@ -417,7 +452,7 @@ public final class Flow {
             ObjectNode linked = nodes.get(i).deepCopy();
             String type = linked.path("type").textValue();
             // A decision names both of its branches and an end ends: neither has a next node.
-            boolean terminal = "condition".equals(type) || "end".equals(type);
+            boolean terminal = "condition".equals(type) || "switch".equals(type) || "end".equals(type);
             if (i + 1 < nodes.size() && !terminal && !linked.has("next")) {
                 linked.put("next", nodes.get(i + 1).path("id").textValue());
             }

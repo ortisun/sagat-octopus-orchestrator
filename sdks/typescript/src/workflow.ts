@@ -43,6 +43,13 @@ export interface ChildOptions {
   cancelPolicy?: 'propagate' | 'detach' | 'request_cancel';
 }
 
+/** One ordered branch of a switch decision. */
+export interface SwitchCase {
+  readonly id: string;
+  readonly when: string;
+  readonly target: string;
+}
+
 export interface SagaOptions {
   onCompensationFailure?: 'manual_review' | 'fail';
   cancelPolicy?: 'compensate_completed' | 'abort_no_compensation' | 'wait_in_flight_then_compensate';
@@ -122,6 +129,22 @@ export class Flow {
     return this.push({ id, type: 'condition', expression, ifTrue, ifFalse });
   }
 
+  /** Tries cases in order and follows the first matching target, or the default. */
+  switch(id: string, cases: readonly SwitchCase[], defaultTarget: string): this {
+    if (cases.length < 1 || cases.length > 32) throw invalid(`switch ${id} needs between 1 and 32 cases`);
+    if (!defaultTarget) throw invalid(`switch ${id} needs a default target`);
+    const caseIds = new Set<string>();
+    const copied = cases.map((item) => {
+      if (!item.id) throw invalid(`switch ${id} has a case without an id`);
+      if (caseIds.has(item.id)) throw invalid(`switch ${id} uses case id ${JSON.stringify(item.id)} twice`);
+      if (!item.when) throw invalid(`switch ${id} case ${JSON.stringify(item.id)} needs a when expression`);
+      if (!item.target) throw invalid(`switch ${id} case ${JSON.stringify(item.id)} needs a target`);
+      caseIds.add(item.id);
+      return { id: item.id, when: item.when, target: item.target };
+    });
+    return this.push({ id, type: 'switch', cases: copied, default: defaultTarget });
+  }
+
   /** Parallel: runs branches at once; `all` waits for every one, `any` for the first. */
   parallel(id: string, join: 'all' | 'any', branches: Flow[]): this {
     if (branches.length < 2) throw invalid(`parallel ${id} needs at least two branches`);
@@ -164,7 +187,7 @@ export class Flow {
       const linked: Node = { ...node };
       const next = this.nodes[i + 1];
       // A decision names both of its branches and an end ends: neither has a next node.
-      const branches = linked['type'] === 'condition' || linked['type'] === 'end';
+      const branches = linked['type'] === 'condition' || linked['type'] === 'switch' || linked['type'] === 'end';
       if (next && !branches && linked['next'] === undefined) linked['next'] = next['id'] as string;
       out.push(linked);
     });
@@ -230,6 +253,12 @@ export class WorkflowBuilder extends Flow {
       const id = node['id'] as string;
       for (const field of ['next', 'onError', 'onTimeout', 'ifTrue', 'ifFalse', 'begin']) reference(id, field, node[field]);
       if (Array.isArray(node['branches'])) node['branches'].forEach((branch) => reference(id, 'branches', branch));
+      if (Array.isArray(node['cases'])) {
+        node['cases'].forEach((item) => {
+          if (item !== null && typeof item === 'object' && !Array.isArray(item)) reference(id, 'cases', item['target']);
+        });
+      }
+      reference(id, 'default', node['default']);
     }
     const metadata: Record<string, Json> = { name: this.name };
     if (this.descriptionText !== undefined) metadata['description'] = this.descriptionText;

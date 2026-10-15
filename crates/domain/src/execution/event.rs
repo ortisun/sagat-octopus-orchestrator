@@ -361,6 +361,13 @@ pub enum JoinOutcome {
     Failed,
 }
 
+/// The one recorded branch chosen by an ordered switch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitchSelection {
+    Case(NodeId),
+    Default,
+}
+
 /// How a child run ended, as the step of the parent that waited for it sees it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChildOutcome {
@@ -437,6 +444,10 @@ pub enum RunEvent {
     ConditionEvaluated {
         node: NodeId,
         outcome: bool,
+    },
+    SwitchEvaluated {
+        node: NodeId,
+        selection: SwitchSelection,
     },
     TimerStarted {
         node: NodeId,
@@ -574,6 +585,7 @@ impl RunEvent {
             Self::StepRetryDue { .. } => "step.retry_due",
             Self::StepFailed { .. } => "step.failed",
             Self::ConditionEvaluated { .. } => "condition.evaluated",
+            Self::SwitchEvaluated { .. } => "switch.evaluated",
             Self::TimerStarted { .. } => "timer.started",
             Self::TimerFired { .. } => "timer.fired",
             Self::WaitStarted { .. } => "wait.started",
@@ -617,6 +629,7 @@ impl RunEvent {
             | Self::StepRetryDue { node }
             | Self::StepFailed { node, .. }
             | Self::ConditionEvaluated { node, .. }
+            | Self::SwitchEvaluated { node, .. }
             | Self::TimerStarted { node, .. }
             | Self::TimerFired { node }
             | Self::WaitStarted { node, .. }

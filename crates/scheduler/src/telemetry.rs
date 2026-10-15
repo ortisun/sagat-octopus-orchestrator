@@ -348,6 +348,54 @@ fn record(observations: &[Observation]) {
                 metrics::counter!("runs_terminal_total", "status" => *status).increment(1);
                 metrics::histogram!("run_duration_seconds", "status" => *status).record(*seconds);
             }
+            Observation::PrimitiveTransition { kind, outcome } => {
+                metrics::counter!(
+                    "workflow_primitive_transitions_total",
+                    "kind" => kind.as_str(),
+                    "outcome" => outcome.as_str(),
+                )
+                .increment(1);
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use sagat_application::telemetry::Observation;
+    use sagat_telemetry::{Metrics, WorkflowPrimitiveKind, WorkflowPrimitiveOutcome};
+
+    use super::record;
+
+    #[test]
+    fn primitive_transition_metric_has_only_closed_kind_and_outcome_labels() {
+        let (metrics, recorder) = Metrics::detached(Duration::from_secs(60));
+        metrics::with_local_recorder(&recorder, || {
+            record(&[
+                Observation::PrimitiveTransition {
+                    kind: WorkflowPrimitiveKind::Switch,
+                    outcome: WorkflowPrimitiveOutcome::Case,
+                },
+                Observation::PrimitiveTransition {
+                    kind: WorkflowPrimitiveKind::Switch,
+                    outcome: WorkflowPrimitiveOutcome::Default,
+                },
+            ]);
+        });
+
+        let page = metrics.render();
+        assert!(
+            page.contains(
+                "workflow_primitive_transitions_total{kind=\"switch\",outcome=\"case\"} 1"
+            )
+        );
+        assert!(page.contains(
+            "workflow_primitive_transitions_total{kind=\"switch\",outcome=\"default\"} 1"
+        ));
+        assert!(!page.contains("node="));
+        assert!(!page.contains("case_id="));
+        assert!(!page.contains("tenant="));
     }
 }

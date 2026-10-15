@@ -97,6 +97,50 @@ fn additive_declarations_remain_unpublishable_until_the_runtime_supports_them() 
     ));
 }
 
+#[test]
+fn switch_cases_keep_declaration_order_and_reject_an_undefined_target() {
+    let mut document = minimal(
+        json!([
+            {"id": "choose", "type": "switch", "cases": [
+                {"id": "first", "when": "input.amount > 0", "target": "accept"},
+                {"id": "second", "when": "input.amount >= 0", "target": "review"}
+            ], "default": "reject"},
+            {"id": "accept", "type": "end"},
+            {"id": "review", "type": "end"},
+            {"id": "reject", "type": "end"}
+        ]),
+        "choose",
+    );
+    let parsed = parse(&document).expect("switch parses");
+    let node = parsed
+        .definition
+        .node(&NodeId::parse("choose").unwrap())
+        .unwrap();
+    let NodeKind::Switch { cases, default } = node.kind() else {
+        panic!("switch kind");
+    };
+    assert_eq!(
+        cases
+            .iter()
+            .map(|case| case.id().as_str())
+            .collect::<Vec<_>>(),
+        ["first", "second"]
+    );
+    assert_eq!(default.as_str(), "reject");
+
+    document["nodes"][0]["cases"][1]["target"] = json!("missing");
+    assert!(matches!(
+        parse(&document),
+        Err(IrError::Invalid(WorkflowError::UnknownTarget { .. }))
+    ));
+    document["nodes"][0]["cases"][1]["target"] = json!("review");
+    document["nodes"][0]["cases"][1]["when"] = json!("input.amount >");
+    assert!(matches!(
+        parse(&document),
+        Err(IrError::Expression { field: "when", .. })
+    ));
+}
+
 // ------------------------------------------------------------------ the shipped example
 
 #[test]

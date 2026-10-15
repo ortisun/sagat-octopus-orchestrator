@@ -30,11 +30,37 @@ activity/journal order and traces for all five cases; inspect the harness's asse
 schema validation or language compilation alone is insufficient. The second command checks the
 existing developer-experience contracts/docs; it does not prove future runtime primitives.
 
-## Proposed primitives — implementation required
+## Additive v1 capabilities
 
-Do not paste the proposed node names or endpoints from `contracts/README.md` into a v1 workflow.
-They are not available. T014-003 will register the future test targets below; until then these
-commands intentionally describe future validation, not commands reported as runnable or passing:
+The workflow document stays at `sagat-octopus-orchestrator.io/v1`. A bounded `switch` has ordered
+`cases` and a mandatory `default`; predicate errors fail the run with `EXPRESSION_ERROR`. A case
+selection is recorded in the journal and projected into the runtime graph. For example:
+
+```json
+{
+  "apiVersion": "sagat-octopus-orchestrator.io/v1",
+  "kind": "Workflow",
+  "metadata": {"name": "route-order"},
+  "entrypoint": "choose",
+  "nodes": [
+    {"id": "choose", "type": "switch", "cases": [
+      {"id": "priority", "when": "input.amount >= 100", "target": "priority"},
+      {"id": "positive", "when": "input.amount > 0", "target": "accepted"}
+    ], "default": "rejected"},
+    {"id": "priority", "type": "end"},
+    {"id": "accepted", "type": "end"},
+    {"id": "rejected", "type": "end"}
+  ]
+}
+```
+
+With `amount: 100`, both predicates are true and the `priority` case wins. With `amount: -1`, the
+default route wins. A missing `amount` fails evaluation; no later case or default is tried. The
+switch integration target exercises these outcomes against PostgreSQL and checks journal/replay.
+
+The other proposed node names and endpoints in `contracts/README.md` remain unavailable until their
+runtime, fault and security gates pass. These targets are registered, but their presence does not
+mean every primitive is implemented:
 
 ```sh
 cargo test -p sagat-tests --test contract_workflow_primitives --locked
@@ -43,7 +69,7 @@ cargo test -p sagat-tests --test fault_workflow_primitives --locked
 cargo test -p sagat-tests --test e2e_workflow_primitives --locked
 ```
 
-The release operator follows these scenarios after implementing the relevant unchecked tasks:
+The release operator follows the remaining scenarios after implementing the relevant unchecked tasks:
 
 1. **Collection**: process 17 items with concurrency 3; release worker completions in reverse order;
    expect ordered results, exactly 17 logical iteration records and never more than 3 active slots.

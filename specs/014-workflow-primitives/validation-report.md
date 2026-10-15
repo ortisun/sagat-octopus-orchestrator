@@ -1,8 +1,8 @@
 # Validation report — feature 014
 
-Date: 2026-10-14. The original report below covers specification of future primitives and
-executable examples of current v1 behavior. The later foundation increment is recorded at the
-end; it adds storage and identity compatibility without enabling a new runtime primitive.
+Original report: 2026-10-14. It covers specification of future primitives and executable examples
+of current v1 behavior. Later sections record the additive identity foundation and the bounded
+switch implementation separately.
 
 ## Executed by the integrating agent
 
@@ -107,7 +107,35 @@ operation endpoint is enabled.
 | `cargo clippy -p sagat-domain -p sagat-application -p sagat-infra-ir -p sagat-infra-postgres -p sagat-api-grpc -p sagat-api-http -p sagat-tests --all-targets --locked -- -D warnings` | Passed |
 | `cargo fmt --all --check` and `git diff --check` | Passed |
 
-These checks cover the compatibility foundation only. Collection scheduling, loops, approvals,
-switch, state operations and continuation remain disabled; their transaction, fault, tenant,
+These checks cover the compatibility foundation only. At that checkpoint collection scheduling,
+loops, approvals, switch, state operations and continuation were disabled; their transaction, fault, tenant,
 observability and five-SDK conformance tests are still required. The registered fault and end-to-end
 targets contain no runtime scenario yet and are not counted as passing feature evidence.
+
+## Bounded switch increment (2026-10-15)
+
+The same workflow IR v1 now accepts a root `switch` with one to 32 ordered cases, unique local case
+IDs and a required default. The first true predicate wins; a predicate error fails with
+`EXPRESSION_ERROR`. The selected case ID or default is committed in the journal and step projection
+with successor scheduling and outbox. Reload restores the decision without reevaluation. The
+runtime graph exposes the selected route, and a committed event produces a stable trace span and a
+metric with only closed kind/outcome labels. The schema disallows `onError` on switch, so a predicate
+error cannot be disguised as a fallback route.
+
+| Check | Result |
+|---|---|
+| `cargo test -p sagat-domain -p sagat-application -p sagat-infra-ir -p sagat-infra-postgres -p sagat-api-http -p sagat-scheduler -p sagat-telemetry --locked -q` | Passed across all selected packages and targets, including new switch reducer, codec, graph and telemetry tests |
+| `cargo test -p sagat-tests --test contract_workflow_primitives --locked -q` | Passed: 10 schema, version and contract tests |
+| `cargo test -p sagat-tests --test contract_grpc_sdk_multilanguage --locked -q` | Passed: 7 worker-protocol compatibility tests after synchronizing the five SDK proto copies |
+| `cargo test -p sagat-tests --test integration_workflow_primitives --locked -q` with real PostgreSQL | Passed: 8 tests, including case/default, first match, predicate failure, duplicate start, replay/projection, outbox rollback/retry, legacy NULL upgrade and guarded migration rollback |
+| Full TypeScript, Go, Python, .NET and Java SDK unit suites | Passed: TypeScript 112, Python 243, .NET 429, Java 216; Go `go test ./...` passed (supporting agent execution) |
+| Shared five-language switch builder fixture | Passed: identical normalized v1 output hash `a3d1fd0a4dfd23e9a4dd87ce1942eb259353b14443eddc584439ae31d2237d9f` (supporting agent execution) |
+| `cargo check --workspace --all-targets --locked -q` | Passed |
+| `cargo clippy -p sagat-domain -p sagat-application -p sagat-infra-ir -p sagat-infra-postgres -p sagat-api-http -p sagat-scheduler -p sagat-telemetry -p sagat-tests --all-targets --locked -- -D warnings` | Passed after fixing test-only lint findings |
+| `cargo test -p sagat-tests --test contract_developer_experience --locked -q` | Passed: 8 tests after regenerating the schema-derived workflow reference with a capability warning |
+
+The switch-specific fault target and full worker/client runtime conformance golden are still open.
+The builder fixture remains `.pending` by design and is not counted as server runtime parity. The
+other proposed primitives remain rejected at publication. The server still advertises worker
+protocol 1.4 and rejects scoped work; additive 1.5 fields in the canonical and SDK copies do not
+enable collection execution. No workflow IR v2 is introduced.

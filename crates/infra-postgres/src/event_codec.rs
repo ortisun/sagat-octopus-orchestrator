@@ -6,7 +6,7 @@
 
 use sagat_domain::execution::{
     ChildOutcome, CorrelationKey, FailureCode, Fence, JoinOutcome, PlannedEntry, ReconcileResult,
-    ReviewOutcome, RunEvent, RunId, RunStatus, StopReason,
+    ReviewOutcome, RunEvent, RunId, RunStatus, StopReason, SwitchSelection,
 };
 use sagat_domain::saga::{ReconcileVerdict, SagaOutcome};
 use sagat_domain::workflow::NodeId;
@@ -72,6 +72,12 @@ pub(crate) fn encode(event: &RunEvent) -> Encoded {
             "fence": fence.map(|f| json!({ "attempt": f.attempt, "generation": f.generation })),
         }),
         RunEvent::ConditionEvaluated { outcome, .. } => json!({ "outcome": outcome }),
+        RunEvent::SwitchEvaluated { selection, .. } => json!({
+            "case_id": match selection {
+                SwitchSelection::Case(id) => Some(id.as_str()),
+                SwitchSelection::Default => None,
+            }
+        }),
         RunEvent::TimerStarted { due_at, .. } => json!({ "due_at_us": micros(*due_at) }),
         RunEvent::WaitStarted {
             correlation_key,
@@ -259,6 +265,16 @@ pub(crate) fn decode(event_type: &str, node: Option<&str>, detail: &Value) -> Op
             node: node_id()?,
             outcome: d.get("outcome")?.as_bool()?,
         },
+        "switch.evaluated" => RunEvent::SwitchEvaluated {
+            node: node_id()?,
+            selection: match d.get("case_id")? {
+                Value::Null => SwitchSelection::Default,
+                Value::String(id) if !id.is_empty() => {
+                    SwitchSelection::Case(NodeId::parse(id).ok()?)
+                }
+                _ => return None,
+            },
+        },
         "timer.started" => RunEvent::TimerStarted {
             node: node_id()?,
             due_at: time_of(d, "due_at_us")?,
@@ -400,4 +416,53 @@ pub(crate) fn decode(event_type: &str, node: Option<&str>, detail: &Value) -> Op
         },
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use sagat_domain::execution::{RunEvent, SwitchSelection};
+    use sagat_domain::workflow::NodeId;
+    use serde_json::json;
+
+    use super::{decode, encode};
+
+    fn node(value: &str) -> NodeId {
+        NodeId::parse(value).expect("test node")
+    }
+
+    #[test]
+    fn switch_case_and_default_are_exact_codec_inverses() {
+        for (selection, detail) in [
+            (
+                SwitchSelection::Case(node("priority")),
+                json!({"case_id": "priority"}),
+            ),
+            (SwitchSelection::Default, json!({"case_id": null})),
+        ] {
+            let event = RunEvent::SwitchEvaluated {
+                node: node("choose"),
+                selection,
+            };
+            let encoded = encode(&event);
+            assert_eq!(encoded.event_type, "switch.evaluated");
+            assert_eq!(encoded.node.as_deref(), Some("choose"));
+            assert_eq!(encoded.detail, detail);
+            assert_eq!(
+                decode(encoded.event_type, encoded.node.as_deref(), &encoded.detail),
+                Some(event)
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_switch_selections_are_not_replayed() {
+        for detail in [
+            json!({}),
+            json!({"case_id": 1}),
+            json!({"case_id": ""}),
+            json!({"case_id": "invalid/case"}),
+        ] {
+            assert_eq!(decode("switch.evaluated", Some("choose"), &detail), None);
+        }
+    }
 }

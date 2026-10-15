@@ -50,8 +50,24 @@ class PollTasksRequest(_message.Message):
     max_tasks: int
     def __init__(self, worker_id: _Optional[str] = ..., session_token: _Optional[str] = ..., max_tasks: _Optional[int] = ...) -> None: ...
 
+class ScopePathSegment(_message.Message):
+    __slots__ = ("scope_node_id", "iteration_index")
+    SCOPE_NODE_ID_FIELD_NUMBER: _ClassVar[int]
+    ITERATION_INDEX_FIELD_NUMBER: _ClassVar[int]
+    scope_node_id: str
+    iteration_index: int
+    def __init__(self, scope_node_id: _Optional[str] = ..., iteration_index: _Optional[int] = ...) -> None: ...
+
+class ExecutionInstanceIdentity(_message.Message):
+    __slots__ = ("instance_path", "definition_node_id")
+    INSTANCE_PATH_FIELD_NUMBER: _ClassVar[int]
+    DEFINITION_NODE_ID_FIELD_NUMBER: _ClassVar[int]
+    instance_path: _containers.RepeatedCompositeFieldContainer[ScopePathSegment]
+    definition_node_id: str
+    def __init__(self, instance_path: _Optional[_Iterable[_Union[ScopePathSegment, _Mapping]]] = ..., definition_node_id: _Optional[str] = ...) -> None: ...
+
 class TaskLease(_message.Message):
-    __slots__ = ("task_id", "run_id", "step_id", "attempt", "generation", "lease_token", "expires_at_epoch_ms", "activity_name", "input_json", "input_blob_ref", "traceparent", "tenant_alias", "idempotency_key", "task_kind", "target_node", "target_idempotency_key")
+    __slots__ = ("task_id", "run_id", "step_id", "attempt", "generation", "lease_token", "expires_at_epoch_ms", "activity_name", "input_json", "input_blob_ref", "traceparent", "tenant_alias", "idempotency_key", "task_kind", "target_node", "target_idempotency_key", "instance", "target_instance")
     TASK_ID_FIELD_NUMBER: _ClassVar[int]
     RUN_ID_FIELD_NUMBER: _ClassVar[int]
     STEP_ID_FIELD_NUMBER: _ClassVar[int]
@@ -68,6 +84,8 @@ class TaskLease(_message.Message):
     TASK_KIND_FIELD_NUMBER: _ClassVar[int]
     TARGET_NODE_FIELD_NUMBER: _ClassVar[int]
     TARGET_IDEMPOTENCY_KEY_FIELD_NUMBER: _ClassVar[int]
+    INSTANCE_FIELD_NUMBER: _ClassVar[int]
+    TARGET_INSTANCE_FIELD_NUMBER: _ClassVar[int]
     task_id: str
     run_id: str
     step_id: str
@@ -84,7 +102,9 @@ class TaskLease(_message.Message):
     task_kind: str
     target_node: str
     target_idempotency_key: str
-    def __init__(self, task_id: _Optional[str] = ..., run_id: _Optional[str] = ..., step_id: _Optional[str] = ..., attempt: _Optional[int] = ..., generation: _Optional[int] = ..., lease_token: _Optional[str] = ..., expires_at_epoch_ms: _Optional[int] = ..., activity_name: _Optional[str] = ..., input_json: _Optional[str] = ..., input_blob_ref: _Optional[str] = ..., traceparent: _Optional[str] = ..., tenant_alias: _Optional[str] = ..., idempotency_key: _Optional[str] = ..., task_kind: _Optional[str] = ..., target_node: _Optional[str] = ..., target_idempotency_key: _Optional[str] = ...) -> None: ...
+    instance: ExecutionInstanceIdentity
+    target_instance: ExecutionInstanceIdentity
+    def __init__(self, task_id: _Optional[str] = ..., run_id: _Optional[str] = ..., step_id: _Optional[str] = ..., attempt: _Optional[int] = ..., generation: _Optional[int] = ..., lease_token: _Optional[str] = ..., expires_at_epoch_ms: _Optional[int] = ..., activity_name: _Optional[str] = ..., input_json: _Optional[str] = ..., input_blob_ref: _Optional[str] = ..., traceparent: _Optional[str] = ..., tenant_alias: _Optional[str] = ..., idempotency_key: _Optional[str] = ..., task_kind: _Optional[str] = ..., target_node: _Optional[str] = ..., target_idempotency_key: _Optional[str] = ..., instance: _Optional[_Union[ExecutionInstanceIdentity, _Mapping]] = ..., target_instance: _Optional[_Union[ExecutionInstanceIdentity, _Mapping]] = ...) -> None: ...
 
 class PollTasksResponse(_message.Message):
     __slots__ = ("tasks", "retry_after_ms")
@@ -95,7 +115,7 @@ class PollTasksResponse(_message.Message):
     def __init__(self, tasks: _Optional[_Iterable[_Union[TaskLease, _Mapping]]] = ..., retry_after_ms: _Optional[int] = ...) -> None: ...
 
 class HeartbeatRequest(_message.Message):
-    __slots__ = ("task_id", "worker_id", "generation", "lease_token", "run_id", "step_id", "attempt")
+    __slots__ = ("task_id", "worker_id", "generation", "lease_token", "run_id", "step_id", "attempt", "instance")
     TASK_ID_FIELD_NUMBER: _ClassVar[int]
     WORKER_ID_FIELD_NUMBER: _ClassVar[int]
     GENERATION_FIELD_NUMBER: _ClassVar[int]
@@ -103,6 +123,7 @@ class HeartbeatRequest(_message.Message):
     RUN_ID_FIELD_NUMBER: _ClassVar[int]
     STEP_ID_FIELD_NUMBER: _ClassVar[int]
     ATTEMPT_FIELD_NUMBER: _ClassVar[int]
+    INSTANCE_FIELD_NUMBER: _ClassVar[int]
     task_id: str
     worker_id: str
     generation: int
@@ -110,7 +131,8 @@ class HeartbeatRequest(_message.Message):
     run_id: str
     step_id: str
     attempt: int
-    def __init__(self, task_id: _Optional[str] = ..., worker_id: _Optional[str] = ..., generation: _Optional[int] = ..., lease_token: _Optional[str] = ..., run_id: _Optional[str] = ..., step_id: _Optional[str] = ..., attempt: _Optional[int] = ...) -> None: ...
+    instance: ExecutionInstanceIdentity
+    def __init__(self, task_id: _Optional[str] = ..., worker_id: _Optional[str] = ..., generation: _Optional[int] = ..., lease_token: _Optional[str] = ..., run_id: _Optional[str] = ..., step_id: _Optional[str] = ..., attempt: _Optional[int] = ..., instance: _Optional[_Union[ExecutionInstanceIdentity, _Mapping]] = ...) -> None: ...
 
 class HeartbeatResponse(_message.Message):
     __slots__ = ("lease_expires_at_epoch_ms", "cancel_requested")
@@ -121,7 +143,7 @@ class HeartbeatResponse(_message.Message):
     def __init__(self, lease_expires_at_epoch_ms: _Optional[int] = ..., cancel_requested: _Optional[bool] = ...) -> None: ...
 
 class CompleteStepRequest(_message.Message):
-    __slots__ = ("task_id", "run_id", "step_id", "attempt", "generation", "lease_token", "idempotency_key", "output_json", "output_blob_ref", "output_sha256", "traceparent")
+    __slots__ = ("task_id", "run_id", "step_id", "attempt", "generation", "lease_token", "idempotency_key", "output_json", "output_blob_ref", "output_sha256", "traceparent", "instance")
     TASK_ID_FIELD_NUMBER: _ClassVar[int]
     RUN_ID_FIELD_NUMBER: _ClassVar[int]
     STEP_ID_FIELD_NUMBER: _ClassVar[int]
@@ -133,6 +155,7 @@ class CompleteStepRequest(_message.Message):
     OUTPUT_BLOB_REF_FIELD_NUMBER: _ClassVar[int]
     OUTPUT_SHA256_FIELD_NUMBER: _ClassVar[int]
     TRACEPARENT_FIELD_NUMBER: _ClassVar[int]
+    INSTANCE_FIELD_NUMBER: _ClassVar[int]
     task_id: str
     run_id: str
     step_id: str
@@ -144,10 +167,11 @@ class CompleteStepRequest(_message.Message):
     output_blob_ref: str
     output_sha256: str
     traceparent: str
-    def __init__(self, task_id: _Optional[str] = ..., run_id: _Optional[str] = ..., step_id: _Optional[str] = ..., attempt: _Optional[int] = ..., generation: _Optional[int] = ..., lease_token: _Optional[str] = ..., idempotency_key: _Optional[str] = ..., output_json: _Optional[str] = ..., output_blob_ref: _Optional[str] = ..., output_sha256: _Optional[str] = ..., traceparent: _Optional[str] = ...) -> None: ...
+    instance: ExecutionInstanceIdentity
+    def __init__(self, task_id: _Optional[str] = ..., run_id: _Optional[str] = ..., step_id: _Optional[str] = ..., attempt: _Optional[int] = ..., generation: _Optional[int] = ..., lease_token: _Optional[str] = ..., idempotency_key: _Optional[str] = ..., output_json: _Optional[str] = ..., output_blob_ref: _Optional[str] = ..., output_sha256: _Optional[str] = ..., traceparent: _Optional[str] = ..., instance: _Optional[_Union[ExecutionInstanceIdentity, _Mapping]] = ...) -> None: ...
 
 class FailStepRequest(_message.Message):
-    __slots__ = ("task_id", "run_id", "step_id", "attempt", "generation", "lease_token", "idempotency_key", "error_code", "safe_message", "retryable", "traceparent")
+    __slots__ = ("task_id", "run_id", "step_id", "attempt", "generation", "lease_token", "idempotency_key", "error_code", "safe_message", "retryable", "traceparent", "instance")
     TASK_ID_FIELD_NUMBER: _ClassVar[int]
     RUN_ID_FIELD_NUMBER: _ClassVar[int]
     STEP_ID_FIELD_NUMBER: _ClassVar[int]
@@ -159,6 +183,7 @@ class FailStepRequest(_message.Message):
     SAFE_MESSAGE_FIELD_NUMBER: _ClassVar[int]
     RETRYABLE_FIELD_NUMBER: _ClassVar[int]
     TRACEPARENT_FIELD_NUMBER: _ClassVar[int]
+    INSTANCE_FIELD_NUMBER: _ClassVar[int]
     task_id: str
     run_id: str
     step_id: str
@@ -170,10 +195,11 @@ class FailStepRequest(_message.Message):
     safe_message: str
     retryable: bool
     traceparent: str
-    def __init__(self, task_id: _Optional[str] = ..., run_id: _Optional[str] = ..., step_id: _Optional[str] = ..., attempt: _Optional[int] = ..., generation: _Optional[int] = ..., lease_token: _Optional[str] = ..., idempotency_key: _Optional[str] = ..., error_code: _Optional[str] = ..., safe_message: _Optional[str] = ..., retryable: _Optional[bool] = ..., traceparent: _Optional[str] = ...) -> None: ...
+    instance: ExecutionInstanceIdentity
+    def __init__(self, task_id: _Optional[str] = ..., run_id: _Optional[str] = ..., step_id: _Optional[str] = ..., attempt: _Optional[int] = ..., generation: _Optional[int] = ..., lease_token: _Optional[str] = ..., idempotency_key: _Optional[str] = ..., error_code: _Optional[str] = ..., safe_message: _Optional[str] = ..., retryable: _Optional[bool] = ..., traceparent: _Optional[str] = ..., instance: _Optional[_Union[ExecutionInstanceIdentity, _Mapping]] = ...) -> None: ...
 
 class ResolveSecretsRequest(_message.Message):
-    __slots__ = ("task_id", "run_id", "step_id", "attempt", "generation", "lease_token", "traceparent")
+    __slots__ = ("task_id", "run_id", "step_id", "attempt", "generation", "lease_token", "traceparent", "instance")
     TASK_ID_FIELD_NUMBER: _ClassVar[int]
     RUN_ID_FIELD_NUMBER: _ClassVar[int]
     STEP_ID_FIELD_NUMBER: _ClassVar[int]
@@ -181,6 +207,7 @@ class ResolveSecretsRequest(_message.Message):
     GENERATION_FIELD_NUMBER: _ClassVar[int]
     LEASE_TOKEN_FIELD_NUMBER: _ClassVar[int]
     TRACEPARENT_FIELD_NUMBER: _ClassVar[int]
+    INSTANCE_FIELD_NUMBER: _ClassVar[int]
     task_id: str
     run_id: str
     step_id: str
@@ -188,7 +215,8 @@ class ResolveSecretsRequest(_message.Message):
     generation: int
     lease_token: str
     traceparent: str
-    def __init__(self, task_id: _Optional[str] = ..., run_id: _Optional[str] = ..., step_id: _Optional[str] = ..., attempt: _Optional[int] = ..., generation: _Optional[int] = ..., lease_token: _Optional[str] = ..., traceparent: _Optional[str] = ...) -> None: ...
+    instance: ExecutionInstanceIdentity
+    def __init__(self, task_id: _Optional[str] = ..., run_id: _Optional[str] = ..., step_id: _Optional[str] = ..., attempt: _Optional[int] = ..., generation: _Optional[int] = ..., lease_token: _Optional[str] = ..., traceparent: _Optional[str] = ..., instance: _Optional[_Union[ExecutionInstanceIdentity, _Mapping]] = ...) -> None: ...
 
 class ResolvedSecret(_message.Message):
     __slots__ = ("name", "value", "version")
@@ -215,7 +243,7 @@ class WriteBlobRequest(_message.Message):
     def __init__(self, header: _Optional[_Union[WriteBlobHeader, _Mapping]] = ..., chunk: _Optional[bytes] = ...) -> None: ...
 
 class WriteBlobHeader(_message.Message):
-    __slots__ = ("task_id", "run_id", "step_id", "attempt", "generation", "lease_token", "content_type", "expected_size", "expected_sha256")
+    __slots__ = ("task_id", "run_id", "step_id", "attempt", "generation", "lease_token", "content_type", "expected_size", "expected_sha256", "instance")
     TASK_ID_FIELD_NUMBER: _ClassVar[int]
     RUN_ID_FIELD_NUMBER: _ClassVar[int]
     STEP_ID_FIELD_NUMBER: _ClassVar[int]
@@ -225,6 +253,7 @@ class WriteBlobHeader(_message.Message):
     CONTENT_TYPE_FIELD_NUMBER: _ClassVar[int]
     EXPECTED_SIZE_FIELD_NUMBER: _ClassVar[int]
     EXPECTED_SHA256_FIELD_NUMBER: _ClassVar[int]
+    INSTANCE_FIELD_NUMBER: _ClassVar[int]
     task_id: str
     run_id: str
     step_id: str
@@ -234,7 +263,8 @@ class WriteBlobHeader(_message.Message):
     content_type: str
     expected_size: int
     expected_sha256: str
-    def __init__(self, task_id: _Optional[str] = ..., run_id: _Optional[str] = ..., step_id: _Optional[str] = ..., attempt: _Optional[int] = ..., generation: _Optional[int] = ..., lease_token: _Optional[str] = ..., content_type: _Optional[str] = ..., expected_size: _Optional[int] = ..., expected_sha256: _Optional[str] = ...) -> None: ...
+    instance: ExecutionInstanceIdentity
+    def __init__(self, task_id: _Optional[str] = ..., run_id: _Optional[str] = ..., step_id: _Optional[str] = ..., attempt: _Optional[int] = ..., generation: _Optional[int] = ..., lease_token: _Optional[str] = ..., content_type: _Optional[str] = ..., expected_size: _Optional[int] = ..., expected_sha256: _Optional[str] = ..., instance: _Optional[_Union[ExecutionInstanceIdentity, _Mapping]] = ...) -> None: ...
 
 class WriteBlobResponse(_message.Message):
     __slots__ = ("blob_id", "size", "sha256", "content_type")
@@ -249,7 +279,7 @@ class WriteBlobResponse(_message.Message):
     def __init__(self, blob_id: _Optional[str] = ..., size: _Optional[int] = ..., sha256: _Optional[str] = ..., content_type: _Optional[str] = ...) -> None: ...
 
 class ReadBlobRequest(_message.Message):
-    __slots__ = ("task_id", "run_id", "step_id", "attempt", "generation", "lease_token", "blob_id")
+    __slots__ = ("task_id", "run_id", "step_id", "attempt", "generation", "lease_token", "blob_id", "instance")
     TASK_ID_FIELD_NUMBER: _ClassVar[int]
     RUN_ID_FIELD_NUMBER: _ClassVar[int]
     STEP_ID_FIELD_NUMBER: _ClassVar[int]
@@ -257,6 +287,7 @@ class ReadBlobRequest(_message.Message):
     GENERATION_FIELD_NUMBER: _ClassVar[int]
     LEASE_TOKEN_FIELD_NUMBER: _ClassVar[int]
     BLOB_ID_FIELD_NUMBER: _ClassVar[int]
+    INSTANCE_FIELD_NUMBER: _ClassVar[int]
     task_id: str
     run_id: str
     step_id: str
@@ -264,7 +295,8 @@ class ReadBlobRequest(_message.Message):
     generation: int
     lease_token: str
     blob_id: str
-    def __init__(self, task_id: _Optional[str] = ..., run_id: _Optional[str] = ..., step_id: _Optional[str] = ..., attempt: _Optional[int] = ..., generation: _Optional[int] = ..., lease_token: _Optional[str] = ..., blob_id: _Optional[str] = ...) -> None: ...
+    instance: ExecutionInstanceIdentity
+    def __init__(self, task_id: _Optional[str] = ..., run_id: _Optional[str] = ..., step_id: _Optional[str] = ..., attempt: _Optional[int] = ..., generation: _Optional[int] = ..., lease_token: _Optional[str] = ..., blob_id: _Optional[str] = ..., instance: _Optional[_Union[ExecutionInstanceIdentity, _Mapping]] = ...) -> None: ...
 
 class ReadBlobResponse(_message.Message):
     __slots__ = ("header", "chunk")

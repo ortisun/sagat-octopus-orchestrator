@@ -47,13 +47,19 @@ Schema `maxLength` counts characters, so its bound is not proof of the evaluator
 | `while` | `condition`, `body`, `initial`, `carry`, `maxIterations`, `timeoutMs`, `next` | Pre-test; false initially returns initial carry; each body computes new carry before next test. |
 | `repeatUntil` | Same as `while` | Post-test; execute at least once, stop when condition becomes true. |
 | `approval` | `policy`, `timeoutMs`, `onApprove`, `onReject`, `onExpire` | Single eligible decision or expiry; all three routes declared; no activity runs while waiting. |
-| `switch` | ordered `cases[{id,when,target}]`, `default` | First boolean true wins; evaluated predicate error fails; recorded decision is replayed. |
+| `switch` | ordered `cases[{id,when,target}]`, `default` | First boolean true wins; evaluated predicate error fails; recorded decision is replayed. The shape has no `onError` route. |
 | `state` | `schema`, `initial`, optional `queries`/`updates` maps | Initialize typed business state with run creation; operation schemas and bounded expressions are pinned. |
 | query entry | `argsSchema`, `resultSchema`, `expression`, `disclosure: declared-business-result-v1` | Read only; snapshot of input/state/completed outputs/args, with authorized projection. |
 | update entry | `argsSchema`, optional `validate`, `state`, `result`, `resultSchema`, `disclosure: declared-business-result-v1` | Atomic validator/state reducer/result; no I/O, activity, wait or child invocation. |
 | `continueAsNew` | `input`, `state` (if state exists) | Top-level terminal boundary; same-version successor, quiescence and chain policy required; no `next`. |
 | `return` | `result` | Body-only terminal boundary; exactly one per body, no successor. |
 | `chainPolicy` | `maxSegments`, `timeoutMs` | Required if continuation is present; count includes initial run; original chain timeout never resets. |
+
+The runtime graph exposes `switchSelection` as CASE with local `caseId` and pinned target, DEFAULT
+with its pinned target, or null before evaluation. Its ordered edges use `kind: case` with `caseId`
+and `kind: default`. The journal records `switch.evaluated` once; telemetry derives
+`workflow.switch.evaluate` and a bounded `workflow_primitive_transitions_total` observation from
+that committed event. Case IDs never become metric labels.
 
 Loops may also specify `delayMs` in 1..31622400000, applied only between needed iterations. Absence
 means no delay. Shared run `maxInstances` and nesting limits are enforced even when individual node

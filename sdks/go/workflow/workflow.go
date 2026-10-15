@@ -27,6 +27,13 @@ import (
 
 type node = map[string]any
 
+// SwitchCase is one ordered branch of a switch decision.
+type SwitchCase struct {
+	ID     string
+	When   string
+	Target string
+}
+
 var namePattern = regexp.MustCompile(`^[a-z][a-z0-9-]{2,63}$`)
 
 // Builder builds a workflow, or a nested flow (see Flow).
@@ -208,6 +215,39 @@ func (b *Builder) Condition(id, expression, ifTrue, ifFalse string) *Builder {
 	return b.push(node{"id": id, "type": "condition", "expression": expression, "ifTrue": ifTrue, "ifFalse": ifFalse})
 }
 
+// Switch adds an ordered decision that follows the first matching case, or its default target. It
+// has no next node.
+func (b *Builder) Switch(id string, cases []SwitchCase, defaultTarget string) *Builder {
+	if b.err != nil {
+		return b
+	}
+	if len(cases) < 1 || len(cases) > 32 {
+		return b.fail(sagat.Invalid("switch %s needs between 1 and 32 cases", id))
+	}
+	if defaultTarget == "" {
+		return b.fail(sagat.Invalid("switch %s needs a default target", id))
+	}
+	caseIDs := make(map[string]struct{}, len(cases))
+	copied := make([]any, 0, len(cases))
+	for _, item := range cases {
+		if item.ID == "" {
+			return b.fail(sagat.Invalid("switch %s has a case without an id", id))
+		}
+		if _, exists := caseIDs[item.ID]; exists {
+			return b.fail(sagat.Invalid("switch %s uses case id %q twice", id, item.ID))
+		}
+		if item.When == "" {
+			return b.fail(sagat.Invalid("switch %s case %q needs a when expression", id, item.ID))
+		}
+		if item.Target == "" {
+			return b.fail(sagat.Invalid("switch %s case %q needs a target", id, item.ID))
+		}
+		caseIDs[item.ID] = struct{}{}
+		copied = append(copied, map[string]any{"id": item.ID, "when": item.When, "target": item.Target})
+	}
+	return b.push(node{"id": id, "type": "switch", "cases": copied, "default": defaultTarget})
+}
+
 // Parallel adds branches that run at once: JoinAll waits for every one, JoinAny for the first. There
 // are at least two, none empty.
 func (b *Builder) Parallel(id string, join Join, branches ...*Builder) *Builder {
@@ -284,7 +324,7 @@ func (b *Builder) End(id string, opts ...EndOption) *Builder {
 // ---- the document
 
 // flatten returns every node of the flow and of the flows inside it, in order, with next set: node i
-// gets next = id of node i+1, except a condition (it names its two branches) and an end (it ends);
+// gets next = id of node i+1, except a condition or switch (it names its branches) and an end (it ends);
 // the last node of a flow has none.
 func (b *Builder) flatten() []node {
 	out := make([]node, 0, len(b.nodes))
@@ -293,7 +333,7 @@ func (b *Builder) flatten() []node {
 		for key, value := range n {
 			linked[key] = value
 		}
-		if i+1 < len(b.nodes) && linked["type"] != "condition" && linked["type"] != "end" {
+		if i+1 < len(b.nodes) && linked["type"] != "condition" && linked["type"] != "switch" && linked["type"] != "end" {
 			if _, set := linked["next"]; !set {
 				linked["next"] = b.nodes[i+1]["id"]
 			}
@@ -350,6 +390,16 @@ func (b *Builder) Build() (map[string]any, error) {
 					return nil, err
 				}
 			}
+		}
+		if cases, ok := n["cases"].([]any); ok {
+			for _, item := range cases {
+				if err := reference(id, "cases", item.(map[string]any)["target"]); err != nil {
+					return nil, err
+				}
+			}
+		}
+		if err := reference(id, "default", n["default"]); err != nil {
+			return nil, err
 		}
 	}
 	metadata := map[string]any{"name": b.name}

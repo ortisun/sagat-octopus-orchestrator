@@ -8,3 +8,4 @@ mod support;
 
 mod identity_storage;
 mod journal_identity;
+mod switch_storage;

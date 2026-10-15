@@ -9,12 +9,12 @@
 use time::OffsetDateTime;
 
 use super::error::ExecutionError;
-use super::event::{JoinOutcome, RunEvent, StopReason};
+use super::event::{JoinOutcome, RunEvent, StopReason, SwitchSelection};
 use super::sagas;
 use super::state::{RunState, SagaPhase, StepState, StepStatus, WaitingOn};
 use crate::saga::{NodeOrigin, SagaOutcome};
 use crate::workflow::{
-    CancelPolicy, Expression, JoinPolicy, NodeId, NodeKind, Scope, WorkflowDefinition,
+    CancelPolicy, Expression, JoinPolicy, NodeId, NodeKind, Scope, SwitchCase, WorkflowDefinition,
 };
 
 /// What the engine needs to know before it can continue.
@@ -24,6 +24,11 @@ pub enum Evaluation {
     Condition {
         node: NodeId,
         expression: Expression,
+    },
+    /// Evaluate ordered predicates until one is true, or choose the default.
+    Switch {
+        node: NodeId,
+        cases: Vec<SwitchCase>,
     },
     /// Evaluate the correlation expression of a `waitEvent` node to a string key.
     Correlation {
@@ -215,6 +220,10 @@ fn start_pending(
                 node: node.clone(),
                 expression: expression.clone(),
             }),
+            NodeKind::Switch { cases, .. } => Plan::Evaluate(Evaluation::Switch {
+                node: node.clone(),
+                cases: cases.clone(),
+            }),
             NodeKind::Parallel { branches, .. } => Plan::Emit(RunEvent::ParallelForked {
                 node: node.clone(),
                 branches: branches.clone(),
@@ -377,6 +386,23 @@ fn successors_after(
         } else {
             if_false.clone()
         }],
+        NodeKind::Switch { cases, default } => match step.switch_selection() {
+            Some(SwitchSelection::Case(id)) => {
+                let target = cases
+                    .iter()
+                    .find(|case| case.id() == id)
+                    .ok_or(ExecutionError::Invariant("switch selected an unknown case"))?
+                    .target()
+                    .clone();
+                vec![target]
+            }
+            Some(SwitchSelection::Default) => vec![default.clone()],
+            None => {
+                return Err(ExecutionError::Invariant(
+                    "switch has no recorded selection",
+                ));
+            }
+        },
         NodeKind::WaitEvent { on_timeout, .. } if step.timed_out() => {
             on_timeout.iter().cloned().collect()
         }

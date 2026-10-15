@@ -22,6 +22,11 @@ Files ending in `.json.pending` are reviewed contracts for behavior that the ser
 cannot execute yet. The harness deliberately ignores them, so they are never counted as passing evidence
 and have no golden result.
 
+`switch-builders.json.pending` exercises only the public builders. It keeps the workflow document at
+`sagat-octopus-orchestrator.io/v1`, preserves case order and deliberately has no reviewed golden or runtime
+steps. To compare the five builder outputs while keeping the scenario red until review, copy it to the
+enabled suffix and run `SAGAT_SDK_SCENARIO=switch-builders` with the command above, then remove the copy.
+
 The scoped-identity fixture extends the existing `sagat-octopus-orchestrator.io/v1` document shape
 additively. Worker protocol 1.5 is negotiated independently and does not imply a new workflow IR revision.
 To expose the current failure, copy it to the enabled suffix, run only that scenario, then remove the copy:
@@ -109,6 +114,7 @@ the server without an SDK API: `expireLease {run, node}`, `elapseRetryDelay {run
 | `waitForEvent` | `id`, `options` (`eventType`, `correlationExpr`, `timeoutMs`, `onTimeout?`, `lookbackMs?`) | `waitForEvent` |
 | `invokeChild` | `id`, `workflow`, `options?` | `invokeChild` |
 | `condition` | `id`, `expression`, `ifTrue`, `ifFalse` | `condition` |
+| `switch` | `id`, ordered `cases` (`id`, `when`, `target`), `default` | `switch` (`switchCase` in Java) |
 | `parallel` | `id`, `join`, `branches` (array of op arrays) | `parallel` |
 | `saga` | `id`, `options?`, `body` (op array) | `saga` |
 | `end` | `id`, `options?` | `end` |

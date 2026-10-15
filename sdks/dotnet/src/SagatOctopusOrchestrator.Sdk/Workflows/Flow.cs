@@ -142,6 +142,51 @@ public abstract partial class FlowBase<TSelf>
         return Push(new JsonObject { ["id"] = id, ["type"] = "condition", ["expression"] = expression, ["ifTrue"] = ifTrue, ["ifFalse"] = ifFalse });
     }
 
+    /// <summary>Tries cases in order and follows the first matching target, or the default. It has no next node.</summary>
+    public TSelf Switch(string id, IEnumerable<SwitchCase> cases, string defaultTarget)
+    {
+        ArgumentNullException.ThrowIfNull(cases);
+        var list = cases.ToList();
+        if (list.Count is < 1 or > 32)
+        {
+            throw Invalid($"switch {id} needs between 1 and 32 cases");
+        }
+
+        if (string.IsNullOrEmpty(defaultTarget))
+        {
+            throw Invalid($"switch {id} needs a default target");
+        }
+
+        var caseIds = new HashSet<string>(StringComparer.Ordinal);
+        var copied = new JsonArray();
+        foreach (var item in list)
+        {
+            if (item is null || string.IsNullOrEmpty(item.Id))
+            {
+                throw Invalid($"switch {id} has a case without an id");
+            }
+
+            if (!caseIds.Add(item.Id))
+            {
+                throw Invalid($"switch {id} uses case id {Quote(item.Id)} twice");
+            }
+
+            if (string.IsNullOrEmpty(item.When))
+            {
+                throw Invalid($"switch {id} case {Quote(item.Id)} needs a when expression");
+            }
+
+            if (string.IsNullOrEmpty(item.Target))
+            {
+                throw Invalid($"switch {id} case {Quote(item.Id)} needs a target");
+            }
+
+            copied.Add(new JsonObject { ["id"] = item.Id, ["when"] = item.When, ["target"] = item.Target });
+        }
+
+        return Push(new JsonObject { ["id"] = id, ["type"] = "switch", ["cases"] = copied, ["default"] = defaultTarget });
+    }
+
     /// <summary>Parallel: runs branches at once; <see cref="JoinMode.All"/> waits for every one, <see cref="JoinMode.Any"/> for the first.</summary>
     public TSelf Parallel(string id, JoinMode join, params Flow[] branches) => Parallel(id, join, (IEnumerable<Flow>)branches);
 
@@ -234,7 +279,7 @@ public abstract partial class FlowBase<TSelf>
         {
             var linked = (JsonObject)nodes[i].DeepClone();
             var type = (string?)linked["type"];
-            if (i + 1 < nodes.Count && type is not ("condition" or "end") && !linked.ContainsKey("next"))
+            if (i + 1 < nodes.Count && type is not ("condition" or "switch" or "end") && !linked.ContainsKey("next"))
             {
                 linked["next"] = (string)nodes[i + 1]["id"]!;
             }
@@ -481,6 +526,16 @@ public sealed partial class WorkflowBuilder : FlowBase<WorkflowBuilder>
                     Reference(id, "branches", branch);
                 }
             }
+
+            if (node["cases"] is JsonArray cases)
+            {
+                foreach (var item in cases)
+                {
+                    Reference(id, "cases", item?["target"]);
+                }
+            }
+
+            Reference(id, "default", node["default"]);
         }
 
         var metadata = new JsonObject { ["name"] = name };

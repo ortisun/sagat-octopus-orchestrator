@@ -85,6 +85,12 @@ fn check_expressions(definition: &WorkflowDefinition) -> Result<(), IrError> {
                 Compiled::compile(expression.as_str())
                     .map_err(|e| expression_error(id, "expression", e))?;
             }
+            NodeKind::Switch { cases, .. } => {
+                for case in cases {
+                    Compiled::compile(case.when().as_str())
+                        .map_err(|e| expression_error(id, "when", e))?;
+                }
+            }
             NodeKind::WaitEvent { correlation, .. } => {
                 Compiled::compile(correlation.as_str())
                     .map_err(|e| expression_error(id, "correlationExpr", e))?;

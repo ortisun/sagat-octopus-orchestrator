@@ -14,7 +14,7 @@ use sagat_domain::secrets::{MAX_SECRETS_PER_ACTIVITY, SecretName};
 use sagat_domain::triggers::{CronSpec, Trigger, TriggerKind};
 use sagat_domain::workflow::{
     ActivityName, BackoffStrategy, CancelPolicy, EventType, Expression, JoinPolicy, Node, NodeId,
-    NodeKind, RetryPolicy, WorkflowDefinition, WorkflowError,
+    NodeKind, RetryPolicy, SwitchCase, WorkflowDefinition, WorkflowError,
 };
 use serde_json::{Map, Value};
 
@@ -74,8 +74,9 @@ fn unsupported(kind: &str) -> Option<&'static str> {
     Some(match kind {
         "foreach" => "legacy collection placeholder has no executable definition",
         "humanApproval" => "legacy approval placeholder has no executable definition",
-        "forEach" | "while" | "repeatUntil" | "approval" | "switch" | "return"
-        | "continueAsNew" => "this workflow capability is not enabled by the runtime",
+        "forEach" | "while" | "repeatUntil" | "approval" | "return" | "continueAsNew" => {
+            "this workflow capability is not enabled by the runtime"
+        }
         _ => return None,
     })
 }
@@ -262,6 +263,30 @@ fn kind_of(node: &Map<String, Value>, kind: &str, at: &str) -> Result<NodeKind, 
             if_true: node_id(text(node, "ifTrue", at)?, &format!("{at}/ifTrue"))?,
             if_false: node_id(text(node, "ifFalse", at)?, &format!("{at}/ifFalse"))?,
         },
+        "switch" => {
+            let cases = node
+                .get("cases")
+                .and_then(Value::as_array)
+                .ok_or_else(|| issue(format!("{at}/cases"), "expected an array"))?
+                .iter()
+                .enumerate()
+                .map(|(index, raw)| {
+                    let path = format!("{at}/cases/{index}");
+                    let case = raw
+                        .as_object()
+                        .ok_or_else(|| issue(path.clone(), "expected an object"))?;
+                    Ok(SwitchCase::new(
+                        node_id(text(case, "id", &path)?, &format!("{path}/id"))?,
+                        expression(text(case, "when", &path)?, &format!("{path}/when"))?,
+                        node_id(text(case, "target", &path)?, &format!("{path}/target"))?,
+                    ))
+                })
+                .collect::<Result<Vec<_>, IrError>>()?;
+            NodeKind::Switch {
+                cases,
+                default: node_id(text(node, "default", at)?, &format!("{at}/default"))?,
+            }
+        }
         "parallel" => {
             let branches = node
                 .get("branches")

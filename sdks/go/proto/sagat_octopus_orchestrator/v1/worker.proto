@@ -70,6 +70,19 @@ message WorkerCapabilities {
 message RegisterWorkerRequest { string worker_name = 1; string namespace = 2; WorkerCapabilities capabilities = 3; }
 message RegisterWorkerResponse { string worker_id = 1; string session_token = 2; string accepted_protocol_version = 3; }
 message PollTasksRequest { string worker_id = 1; string session_token = 2; int32 max_tasks = 3; }
+// One ordered scope in a logical execution path. The path is structural: node names are never
+// flattened together with indices, so equal definition nodes in different iterations stay distinct.
+message ScopePathSegment {
+  string scope_node_id = 1;
+  uint32 iteration_index = 2;
+}
+// Added in protocol 1.5. Tenant, namespace and run remain in the authenticated session and the
+// retained request fields. This message identifies the logical definition-node execution within
+// that run. Root work has an empty instance_path. Attempt and generation remain separate fences.
+message ExecutionInstanceIdentity {
+  repeated ScopePathSegment instance_path = 1;
+  string definition_node_id = 2;
+}
 message TaskLease {
   string task_id = 1;
   string run_id = 2;
@@ -98,12 +111,17 @@ message TaskLease {
   // this lookup, and must be sent to the provider so that asking again never repeats the effect.
   string target_node = 15;
   string target_idempotency_key = 16;
+  // A root lease may include it; older workers ignore the additive field. Scoped leases require 1.5.
+  ExecutionInstanceIdentity instance = 17;
+  // For compensation and reconciliation, the exact forward instance. Empty for ordinary work.
+  ExecutionInstanceIdentity target_instance = 18;
 }
 message PollTasksResponse { repeated TaskLease tasks = 1; int32 retry_after_ms = 2; }
 message HeartbeatRequest {
   string task_id = 1; string worker_id = 2; int64 generation = 3; string lease_token = 4;
   // Added in 1.1 (additive): identify the step exactly, as CompleteStep and FailStep do.
   string run_id = 5; string step_id = 6; int32 attempt = 7;
+  ExecutionInstanceIdentity instance = 8;
 }
 message HeartbeatResponse { int64 lease_expires_at_epoch_ms = 1; bool cancel_requested = 2; }
 // Exactly one of `output_json` (at most 256 KiB) and `output_blob_ref` (the id WriteBlob returned,
@@ -114,17 +132,20 @@ message CompleteStepRequest {
   int32 attempt = 4; int64 generation = 5; string lease_token = 6;
   string idempotency_key = 7; string output_json = 8; string output_blob_ref = 9;
   string output_sha256 = 10; string traceparent = 11;
+  ExecutionInstanceIdentity instance = 12;
 }
 message FailStepRequest {
   string task_id = 1; string run_id = 2; string step_id = 3;
   int32 attempt = 4; int64 generation = 5; string lease_token = 6;
   string idempotency_key = 7; string error_code = 8; string safe_message = 9;
   bool retryable = 10; string traceparent = 11;
+  ExecutionInstanceIdentity instance = 12;
 }
 message ResolveSecretsRequest {
   string task_id = 1; string run_id = 2; string step_id = 3;
   int32 attempt = 4; int64 generation = 5; string lease_token = 6;
   string traceparent = 7;
+  ExecutionInstanceIdentity instance = 8;
 }
 message ResolvedSecret { string name = 1; bytes value = 2; uint32 version = 3; }
 message ResolveSecretsResponse { repeated ResolvedSecret secrets = 1; }
@@ -144,12 +165,14 @@ message WriteBlobHeader {
   // this many bytes and this SHA-256 (lower-case hex).
   int64 expected_size = 8;
   string expected_sha256 = 9;
+  ExecutionInstanceIdentity instance = 10;
 }
 message WriteBlobResponse { string blob_id = 1; int64 size = 2; string sha256 = 3; string content_type = 4; }
 message ReadBlobRequest {
   string task_id = 1; string run_id = 2; string step_id = 3;
   int32 attempt = 4; int64 generation = 5; string lease_token = 6;
   string blob_id = 7;
+  ExecutionInstanceIdentity instance = 8;
 }
 // ReadBlob: `header` first, then `chunk`s.
 message ReadBlobResponse {

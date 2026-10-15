@@ -149,6 +149,41 @@ func TestWaitForAnEventInvokeAChildDecideAndEnd(t *testing.T) {
 	}
 }
 
+func TestASwitchKeepsCaseOrderCopiesItsCasesAndHasNoImplicitNext(t *testing.T) {
+	cases := []workflow.SwitchCase{
+		{ID: "nonnegative", When: "input.amount >= 0", Target: "positive"},
+		{ID: "one", When: "input.amount == 1", Target: "also-positive"},
+	}
+	b := workflow.New("switch-flow").
+		Switch("route", cases, "fallback").
+		Step("positive", "amount.positive").
+		Step("also-positive", "amount.also-positive").
+		Step("fallback", "amount.fallback")
+	cases[0].Target = "tampered"
+	d, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := doc{
+		"id": "route", "type": "switch",
+		"cases": []any{
+			doc{"id": "nonnegative", "when": "input.amount >= 0", "target": "positive"},
+			doc{"id": "one", "when": "input.amount == 1", "target": "also-positive"},
+		},
+		"default": "fallback",
+	}
+	same(t, nodes(t, d)[0], want)
+	if _, has := nodes(t, d)[0].(doc)["next"]; has {
+		t.Error("a switch names its targets and has no next")
+	}
+	if _, err := workflow.New("local-case-ids").
+		Switch("first", []workflow.SwitchCase{{ID: "same", When: "true", Target: "done"}}, "done").
+		Switch("second", []workflow.SwitchCase{{ID: "same", When: "false", Target: "done"}}, "done").
+		End("done").Build(); err != nil {
+		t.Errorf("case ids are local to their switch: %v", err)
+	}
+}
+
 func TestTriggersLabelsAndSchemasGoWhereTheDocumentKeepsThem(t *testing.T) {
 	d, err := workflow.New("with-meta").
 		Label("team", "payments").
@@ -206,6 +241,37 @@ func TestWhatTheServerWouldRefuseAndTheBuilderCanSeeIsRefusedHere(t *testing.T) 
 		{"condition without an expression", func() (doc, error) { return workflow.New("no-expr").Condition("c", "", "a", "b").Build() }, "expression"},
 		{"dangling condition", func() (doc, error) {
 			return workflow.New("dangling").Condition("c", "true", "nowhere", "a").Step("a", "x").Build()
+		}, "not a node"},
+		{"switch without cases", func() (doc, error) {
+			return workflow.New("no-switch-cases").Switch("s", nil, "a").Build()
+		}, "between 1 and 32 cases"},
+		{"switch with too many cases", func() (doc, error) {
+			items := make([]workflow.SwitchCase, 33)
+			for i := range items {
+				items[i] = workflow.SwitchCase{ID: fmt.Sprintf("case-%d", i), When: "true", Target: "a"}
+			}
+			return workflow.New("too-many-cases").Switch("s", items, "a").Build()
+		}, "between 1 and 32 cases"},
+		{"duplicate switch case ids", func() (doc, error) {
+			return workflow.New("duplicate-cases").Switch("s", []workflow.SwitchCase{{ID: "same", When: "true", Target: "a"}, {ID: "same", When: "false", Target: "b"}}, "a").Build()
+		}, "case id"},
+		{"switch case without an id", func() (doc, error) {
+			return workflow.New("empty-case-id").Switch("s", []workflow.SwitchCase{{When: "true", Target: "a"}}, "a").Build()
+		}, "without an id"},
+		{"switch case without an expression", func() (doc, error) {
+			return workflow.New("empty-case-when").Switch("s", []workflow.SwitchCase{{ID: "one", Target: "a"}}, "a").Build()
+		}, "when expression"},
+		{"switch case without a target", func() (doc, error) {
+			return workflow.New("empty-case-target").Switch("s", []workflow.SwitchCase{{ID: "one", When: "true"}}, "a").Build()
+		}, "needs a target"},
+		{"switch without a default", func() (doc, error) {
+			return workflow.New("empty-switch-default").Switch("s", []workflow.SwitchCase{{ID: "one", When: "true", Target: "a"}}, "").Build()
+		}, "default target"},
+		{"dangling switch case", func() (doc, error) {
+			return workflow.New("dangling-switch-case").Switch("s", []workflow.SwitchCase{{ID: "one", When: "true", Target: "nowhere"}}, "a").Step("a", "x").Build()
+		}, "not a node"},
+		{"dangling switch default", func() (doc, error) {
+			return workflow.New("dangling-switch-default").Switch("s", []workflow.SwitchCase{{ID: "one", When: "true", Target: "a"}}, "nowhere").Step("a", "x").Build()
 		}, "not a node"},
 		{"dangling timeout", func() (doc, error) {
 			return workflow.New("dangling-timeout").WaitForEvent("w", "e", "x", time.Millisecond, workflow.OnTimeout("nowhere")).Build()

@@ -94,6 +94,8 @@ pub struct StepView {
     pub waiting_on: Option<&'static str>,
     /// The child run a `child` step reserved.
     pub child_run: Option<RunId>,
+    /// The recorded case or default for a switch step.
+    pub switch_selection: Option<sagat_domain::execution::SwitchSelection>,
 }
 
 /// What a run knows about one of its sagas.

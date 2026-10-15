@@ -123,6 +123,15 @@ internal static class BuildMode
                 case "condition":
                     target.Condition(id, (string)op["expression"]!, (string)op["ifTrue"]!, (string)op["ifFalse"]!);
                     break;
+                case "switch":
+                    target.Switch(
+                        id,
+                        op["cases"]!.AsArray().Select(item => new SwitchCase(
+                            (string)item!["id"]!,
+                            (string)item["when"]!,
+                            (string)item["target"]!)),
+                        (string)op["default"]!);
+                    break;
                 case "parallel":
                     target.Parallel(
                         id,

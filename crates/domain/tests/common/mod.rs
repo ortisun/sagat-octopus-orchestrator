@@ -1,5 +1,5 @@
 //! Shared fixtures for the execution tests: definition builders and a journaling driver.
-#![allow(dead_code, clippy::expect_used)]
+#![allow(dead_code, clippy::expect_used, clippy::panic)]
 
 use std::time::Duration;
 
@@ -460,6 +460,7 @@ impl Harness {
                 node,
                 outcome: Ok(truth),
             },
+            Evaluation::Switch { .. } => panic!("resolve switches with an explicit selection"),
             Evaluation::Correlation { node, .. } => Resolution::Correlation {
                 node,
                 key: Ok(execution::CorrelationKey::parse(key).expect("key")),

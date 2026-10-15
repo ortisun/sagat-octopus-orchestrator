@@ -36,6 +36,7 @@ import dev.sagatoctopusorchestrator.sdk.workflow.Flow;
 import dev.sagatoctopusorchestrator.sdk.workflow.RetryOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.SagaOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.StepOptions;
+import dev.sagatoctopusorchestrator.sdk.workflow.SwitchCase;
 import dev.sagatoctopusorchestrator.sdk.workflow.Trigger;
 import dev.sagatoctopusorchestrator.sdk.workflow.WaitForEventOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.WorkflowBuilder;
@@ -211,6 +212,16 @@ public final class Runner {
                 }
                 case "condition" -> target.condition(
                         id, op.path("expression").asText(null), op.path("ifTrue").asText(null), op.path("ifFalse").asText(null));
+                case "switch" -> {
+                    List<SwitchCase> cases = new ArrayList<>();
+                    for (JsonNode item : op.path("cases")) {
+                        cases.add(new SwitchCase(
+                                item.path("id").asText(null),
+                                item.path("when").asText(null),
+                                item.path("target").asText(null)));
+                    }
+                    target.switchCase(id, cases, op.path("default").asText(null));
+                }
                 case "parallel" -> {
                     List<Flow> branches = new ArrayList<>();
                     for (JsonNode branchOps : op.path("branches")) {

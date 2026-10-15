@@ -19,6 +19,41 @@ use metrics_exporter_prometheus::{
 };
 use metrics_util::MetricKindMask;
 
+/// Primitive families allowed as the `kind` label of workflow primitive metrics.
+///
+/// This enum is intentionally closed so a definition-supplied node kind cannot create a metric
+/// series. Add a variant only when its runtime telemetry is implemented.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkflowPrimitiveKind {
+    Switch,
+}
+
+impl WorkflowPrimitiveKind {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Switch => "switch",
+        }
+    }
+}
+
+/// Persisted outcomes allowed as the `outcome` label of workflow primitive metrics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkflowPrimitiveOutcome {
+    Case,
+    Default,
+}
+
+impl WorkflowPrimitiveOutcome {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Case => "case",
+            Self::Default => "default",
+        }
+    }
+}
+
 /// Bucket boundaries (seconds) for every `*_seconds` histogram: a request, an attempt, a lag. From a
 /// millisecond to an hour, because the same rule serves the time a request takes and the time a
 /// delivery has waited. A histogram with no rule is rendered as a summary, whose quantiles cannot

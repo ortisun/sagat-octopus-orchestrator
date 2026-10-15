@@ -14,7 +14,7 @@ use time::OffsetDateTime;
 use super::error::ExecutionError;
 use super::event::{
     ChildOutcome, CorrelationKey, FailureCode, JoinOutcome, ReconcileResult, ReviewOutcome,
-    RunEvent, StopReason,
+    RunEvent, StopReason, SwitchSelection,
 };
 use super::instance::ExecutionInstanceId;
 use crate::identity::IdentityError;
@@ -369,6 +369,7 @@ pub struct StepState {
     waiting: Option<WaitingOn>,
     failure: Option<FailureCode>,
     condition: Option<bool>,
+    switch_selection: Option<SwitchSelection>,
     timed_out: bool,
 }
 
@@ -384,6 +385,7 @@ impl StepState {
             waiting: None,
             failure: None,
             condition: None,
+            switch_selection: None,
             timed_out: false,
         }
     }
@@ -438,6 +440,12 @@ impl StepState {
         self.condition
     }
 
+    /// The case or default branch recorded for a completed switch.
+    #[must_use]
+    pub const fn switch_selection(&self) -> Option<&SwitchSelection> {
+        self.switch_selection.as_ref()
+    }
+
     /// A wait that ended by deadline rather than by its event.
     #[must_use]
     pub const fn timed_out(&self) -> bool {
@@ -471,8 +479,16 @@ impl StepState {
             waiting,
             failure,
             condition,
+            switch_selection: None,
             timed_out,
         }
+    }
+
+    /// Restores a switch choice from its journal-derived projection.
+    #[must_use]
+    pub fn with_restored_switch_selection(mut self, selection: Option<SwitchSelection>) -> Self {
+        self.switch_selection = selection;
+        self
     }
 
     const fn fenced_by(&self, attempt: u32, generation: u64) -> bool {
@@ -856,6 +872,11 @@ impl RunState {
                 let step = self.step_mut(node, name, &[Pending])?;
                 step.status = Succeeded;
                 step.condition = Some(*outcome);
+            }
+            RunEvent::SwitchEvaluated { node, selection } => {
+                let step = self.step_mut(node, name, &[Pending])?;
+                step.status = Succeeded;
+                step.switch_selection = Some(selection.clone());
             }
             RunEvent::TimerStarted { node, due_at } => {
                 let step = self.step_mut(node, name, &[Pending])?;

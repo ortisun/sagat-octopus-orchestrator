@@ -27,7 +27,7 @@ use sagat_domain::audit::AuditRecord;
 use sagat_domain::definition::{Workflow, WorkflowId, WorkflowVersion, WorkflowVersionId};
 use sagat_domain::execution::{
     CorrelationKey, ExecutionInstanceId, FailureCode, RunEvent, RunId, RunState, RunStatus,
-    SagaPhase, SagaState, StepState, StepStatus, StopReason, WaitingOn,
+    SagaPhase, SagaState, StepState, StepStatus, StopReason, SwitchSelection, WaitingOn,
 };
 use sagat_domain::identity::{Namespace, NamespaceId, Principal, Slug, TenantId};
 use sagat_domain::saga::{NodeOrigin, SagaOutcome};
@@ -376,7 +376,7 @@ impl RunStore for PgRunStore {
         let now: OffsetDateTime = col(&row, "db_now")?;
         let input_digest: Vec<u8> = col(&row, "input_digest")?;
         let step_rows = sqlx::query(
-            "SELECT node, status, attempt, generation, cancel_requested, routed, condition, \
+            "SELECT node, status, attempt, generation, cancel_requested, routed, condition, switch_case_id, \
                     timed_out, failure_code, next_attempt_at, waiting_kind, due_at, correlation_key, \
                     child_run_id \
              FROM steps WHERE tenant_id = $1 AND run_id = $2",
@@ -612,7 +612,7 @@ impl RunStore for PgRunStore {
         let record = run_record(&row)?;
         let step_rows = sqlx::query(
             "SELECT node, status, attempt, generation, cancel_requested, failure_code, \
-                    next_attempt_at, due_at, waiting_kind, child_run_id \
+                    next_attempt_at, due_at, waiting_kind, child_run_id, switch_case_id \
              FROM steps WHERE tenant_id = $1 AND run_id = $2 ORDER BY node",
         )
         .bind(tenant.as_uuid())
@@ -675,6 +675,7 @@ impl RunStore for PgRunStore {
                         _ => None,
                     },
                     child_run: col::<Option<Uuid>>(row, "child_run_id")?.map(RunId::new),
+                    switch_selection: switch_selection(row)?,
                 })
             })
             .collect::<Result<Vec<_>, StoreError>>()?;
@@ -895,7 +896,19 @@ fn step_state(row: &PgRow) -> Result<StepState, StoreError> {
             .map_err(|_| corrupt("failure code"))?,
         col(row, "condition")?,
         col(row, "timed_out")?,
-    ))
+    )
+    .with_restored_switch_selection(switch_selection(row)?))
+}
+
+fn switch_selection(row: &PgRow) -> Result<Option<SwitchSelection>, StoreError> {
+    match col::<Option<String>>(row, "switch_case_id")? {
+        None => Ok(None),
+        Some(case) if case.is_empty() => Ok(Some(SwitchSelection::Default)),
+        Some(case) => NodeId::parse(&case)
+            .map(SwitchSelection::Case)
+            .map(Some)
+            .map_err(|_| corrupt("switch case id")),
+    }
 }
 
 /// The sagas of a run, rebuilt from their rows.
@@ -2121,6 +2134,10 @@ impl PgRunTx {
         let instance = ExecutionInstanceId::root(node.clone());
         let step_uuid = instance_step_id(self.info.version_id, self.info.run_id, &instance);
         let status = step.status().as_str();
+        let switch_case_id = step.switch_selection().map(|selection| match selection {
+            SwitchSelection::Case(id) => id.as_str(),
+            SwitchSelection::Default => "",
+        });
         let attempt = i32::try_from(step.attempt()).map_err(|_| corrupt("attempt"))?;
         let generation = i64::try_from(step.generation()).map_err(|_| corrupt("generation"))?;
         let inserted = !self.stored.contains(node);
@@ -2136,11 +2153,11 @@ impl PgRunTx {
                   cancel_requested, routed, condition, timed_out, failure_code, next_attempt_at, \
                   waiting_kind, due_at, event_type, correlation_key, activity, ready_at, \
                   last_hinted_at, output_digest, child_run_id, child_input, updated_at, kind, \
-                  event_since) \
+                  event_since, switch_case_id) \
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, \
                          $18, $19, CASE WHEN $6 = 'READY' THEN $20 END, CASE WHEN $21 THEN $20 END, \
                          $22, $23, $24, $20, $25, \
-                         CASE WHEN $15 = 'EVENT' THEN $20 - $26 * interval '1 microsecond' END)",
+                         CASE WHEN $15 = 'EVENT' THEN $20 - $26 * interval '1 microsecond' END, $27)",
             )
             .bind(self.info.tenant_id.as_uuid())
             .bind(self.info.run_id.as_uuid())
@@ -2168,6 +2185,7 @@ impl PgRunTx {
             .bind(child_input)
             .bind(kind)
             .bind(lookback)
+            .bind(switch_case_id)
             .execute(&mut *self.tx)
             .await
             .map_err(store_error)?;
@@ -2210,7 +2228,7 @@ impl PgRunTx {
                                                  $20 - $31 * interval '1 microsecond') END, \
                 event_scanned_at = CASE WHEN $15 = 'EVENT' AND waiting_kind = 'EVENT' \
                                         THEN event_scanned_at END, \
-                updated_at = $20 \
+                updated_at = $20, switch_case_id = $32 \
              WHERE tenant_id = $1 AND run_id = $2 AND node = $3",
         )
         .bind(self.info.tenant_id.as_uuid())
@@ -2244,6 +2262,7 @@ impl PgRunTx {
         .bind(child_input)
         .bind(rehinted)
         .bind(lookback)
+        .bind(switch_case_id)
         .execute(&mut *self.tx)
         .await
         .map_err(store_error)?;

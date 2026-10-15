@@ -3506,6 +3506,14 @@ components:
         dueAt: {type: [string, 'null'], format: date-time}
         waitingOn: {type: [string, 'null'], enum: [timer, event, branches, child, saga, reconciliation, operator, null], description: '`saga`: a saga node while its body works, compensates or waits. `reconciliation`: the lookup `<id>~r` is finding out whether the effect happened. `operator`: a person has to decide (RETRY_STEP, RETRY_COMPENSATION, SKIP_COMPENSATION or RESOLVE_STEP).'}
         childRunId: {type: [string, 'null'], format: uuid, description: 'The child run a `child` node reserved.'}
+        switchSelection:
+          type: [object, 'null']
+          description: 'The persisted route chosen for a switch node; null until evaluation. An unknown case indicates inconsistent historical data.'
+          required: [kind, target]
+          properties:
+            kind: {type: string, enum: [CASE, DEFAULT, UNKNOWN]}
+            caseId: {type: string, description: 'The selected case identifier for CASE, or the unknown identifier for UNKNOWN.'}
+            target: {type: [string, 'null'], description: 'The target in the pinned workflow definition, or null for UNKNOWN.'}
         kind: {type: string, enum: [FORWARD, COMPENSATION, RECONCILIATION], description: 'Forward work, the compensation `<id>~c` of a node, or the lookup `<id>~r` that finds out whether it happened.'}
         forward: {type: [string, 'null'], description: 'For a compensation or a reconciliation: the forward node it is about.'}
         saga:
@@ -3523,7 +3531,8 @@ components:
       properties:
         from: {type: string}
         to: {type: string}
-        kind: {type: string, enum: [next, error, 'true', 'false', branch, timeout, begin, compensation, reconcile], description: '`begin`: the first step of the body of a saga. `compensation`: the compensation at `to` waits for the one at `from`. `reconcile`: `to` finds out whether `from` happened.'}
+        kind: {type: string, enum: [next, error, 'true', 'false', case, default, branch, timeout, begin, compensation, reconcile], description: '`case` and `default`: switch routes. `begin`: the first step of the body of a saga. `compensation`: the compensation at `to` waits for the one at `from`. `reconcile`: `to` finds out whether `from` happened.'}
+        caseId: {type: string, description: 'The local switch case identifier when kind is case.'}
     RuntimeGraph:
       type: object
       required: [runId, projectionSeq, nodes, edges]

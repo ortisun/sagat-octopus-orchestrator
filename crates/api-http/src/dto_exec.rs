@@ -4,6 +4,7 @@ use sagat_application::definitions::{StoredPlan, VersionRecord, WorkflowRecord};
 use sagat_application::execution::RunRecord;
 use sagat_application::runs::{GraphChanges, GraphSnapshot, JournalEntry};
 use sagat_domain::definition::WorkflowVersion;
+use sagat_domain::execution::SwitchSelection;
 use sagat_domain::workflow::{Node, NodeKind};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -482,6 +483,8 @@ fn runtime_nodes(graph: &GraphSnapshot, wanted: impl Fn(&NodeView<'_>) -> bool) 
             continue;
         }
         let origin = node.origin();
+        let switch_selection =
+            switch_selection_body(node.kind(), step.and_then(|s| s.switch_selection.as_ref()));
         nodes.push(json!({
             "id": id,
             "type": node.kind().label(),
@@ -508,9 +511,26 @@ fn runtime_nodes(graph: &GraphSnapshot, wanted: impl Fn(&NodeView<'_>) -> bool) 
             "dueAt": step.and_then(|s| s.due_at).map(rfc3339),
             "waitingOn": step.and_then(|s| s.waiting_on),
             "childRunId": step.and_then(|s| s.child_run).map(|r| r.to_string()),
+            "switchSelection": switch_selection,
         }));
     }
     nodes
+}
+
+fn switch_selection_body(kind: &NodeKind, selection: Option<&SwitchSelection>) -> Value {
+    match (kind, selection) {
+        (NodeKind::Switch { cases, .. }, Some(SwitchSelection::Case(case_id))) => cases
+            .iter()
+            .find(|case| case.id() == case_id)
+            .map_or_else(
+                || json!({ "kind": "UNKNOWN", "caseId": case_id.as_str(), "target": null }),
+                |case| json!({ "kind": "CASE", "caseId": case_id.as_str(), "target": case.target().as_str() }),
+            ),
+        (NodeKind::Switch { default, .. }, Some(SwitchSelection::Default)) => {
+            json!({ "kind": "DEFAULT", "target": default.as_str() })
+        }
+        _ => Value::Null,
+    }
 }
 
 /// What a filter over the nodes of a runtime graph can look at.
@@ -601,33 +621,46 @@ fn rfc3339(at: OffsetDateTime) -> String {
 
 fn edges_of(node: &Node, out: &mut Vec<Value>) {
     let from = node.id().as_str();
-    let mut edge = |to: &str, kind: &str| out.push(json!({ "from": from, "to": to, "kind": kind }));
+    let edge = |out: &mut Vec<Value>, to: &str, kind: &str| {
+        out.push(json!({ "from": from, "to": to, "kind": kind }));
+    };
     match node.kind() {
         NodeKind::Condition {
             if_true, if_false, ..
         } => {
-            edge(if_true.as_str(), "true");
-            edge(if_false.as_str(), "false");
+            edge(out, if_true.as_str(), "true");
+            edge(out, if_false.as_str(), "false");
+        }
+        NodeKind::Switch { cases, default } => {
+            for case in cases {
+                out.push(json!({
+                    "from": from,
+                    "to": case.target().as_str(),
+                    "kind": "case",
+                    "caseId": case.id().as_str(),
+                }));
+            }
+            edge(out, default.as_str(), "default");
         }
         NodeKind::Parallel { branches, .. } => {
             for branch in branches {
-                edge(branch.as_str(), "branch");
+                edge(out, branch.as_str(), "branch");
             }
         }
         NodeKind::WaitEvent {
             on_timeout: Some(target),
             ..
-        } => edge(target.as_str(), "timeout"),
+        } => edge(out, target.as_str(), "timeout"),
         // The body of a saga starts where it says: without this edge the steps inside a saga look
         // like separate graphs.
-        NodeKind::Saga { begin, .. } => edge(begin.as_str(), "begin"),
+        NodeKind::Saga { begin, .. } => edge(out, begin.as_str(), "begin"),
         _ => {}
     }
     if let Some(next) = node.next() {
-        edge(next.as_str(), "next");
+        edge(out, next.as_str(), "next");
     }
     if let Some(target) = node.on_error() {
-        edge(target.as_str(), "error");
+        edge(out, target.as_str(), "error");
     }
 }
 
@@ -650,4 +683,52 @@ pub fn compensation_plans_body(plans: &[StoredPlan]) -> Value {
             })).collect::<Vec<_>>(),
         })).collect::<Vec<_>>(),
     })
+}
+
+#[cfg(test)]
+mod switch_graph_tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used)]
+    use super::*;
+    use sagat_domain::workflow::{Expression, NodeId, SwitchCase};
+
+    fn id(value: &str) -> NodeId {
+        NodeId::parse(value).expect("valid node id")
+    }
+
+    #[test]
+    fn switch_graph_exposes_persisted_selection_and_ordered_routes() {
+        let node = Node::new(
+            id("choose"),
+            NodeKind::Switch {
+                cases: vec![
+                    SwitchCase::new(id("first"), Expression::parse("true").unwrap(), id("left")),
+                    SwitchCase::new(
+                        id("second"),
+                        Expression::parse("true").unwrap(),
+                        id("right"),
+                    ),
+                ],
+                default: id("fallback"),
+            },
+        );
+        let mut edges = Vec::new();
+        edges_of(&node, &mut edges);
+        assert_eq!(
+            edges,
+            vec![
+                json!({"from":"choose","to":"left","kind":"case","caseId":"first"}),
+                json!({"from":"choose","to":"right","kind":"case","caseId":"second"}),
+                json!({"from":"choose","to":"fallback","kind":"default"}),
+            ]
+        );
+        assert_eq!(
+            switch_selection_body(node.kind(), Some(&SwitchSelection::Case(id("second")))),
+            json!({"kind":"CASE","caseId":"second","target":"right"})
+        );
+        assert_eq!(
+            switch_selection_body(node.kind(), Some(&SwitchSelection::Default)),
+            json!({"kind":"DEFAULT","target":"fallback"})
+        );
+        assert_eq!(switch_selection_body(node.kind(), None), Value::Null);
+    }
 }

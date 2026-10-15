@@ -18,7 +18,7 @@ mod trace;
 
 pub use json_log::{LogLayer, Style};
 pub use logging::{LogFormat, Telemetry, TelemetryConfig, init, init_logging};
-pub use metrics::Metrics;
+pub use metrics::{Metrics, WorkflowPrimitiveKind, WorkflowPrimitiveOutcome};
 pub use otlp::{
     AttrValue, ExportError, GaugeData, LogData, OtlpClient, OtlpConfig, OtlpConfigError, OtlpLayer,
     SpanData, SpanEvent, SpanKind, SpanLink, SpanSink, SpanStatus, start,

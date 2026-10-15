@@ -691,6 +691,32 @@ impl<E: ExpressionEvaluator> Engine<E> {
                 },
                 None,
             ),
+            Evaluation::Switch { node, cases } => {
+                let mut selection = Ok(sagat_domain::execution::SwitchSelection::Default);
+                for case in cases {
+                    match self.evaluator.condition(case.when(), data) {
+                        Ok(true) => {
+                            selection = Ok(sagat_domain::execution::SwitchSelection::Case(
+                                case.id().clone(),
+                            ));
+                            break;
+                        }
+                        Ok(false) => {}
+                        Err(error) => {
+                            log_failure(node)(error);
+                            selection = Err(());
+                            break;
+                        }
+                    }
+                }
+                (
+                    Resolution::Switch {
+                        node: node.clone(),
+                        selection,
+                    },
+                    None,
+                )
+            }
             Evaluation::Correlation { node, expression } => (
                 Resolution::Correlation {
                     node: node.clone(),

@@ -1,7 +1,7 @@
 # Tasks: Durable workflow primitives and practical SDK examples
 
 **Input**: `spec.md`, `plan.md`, `research.md`, `data-model.md`, `contracts/`, `quickstart.md`.
-**Scope**: T014-001 and US01 document/deliver current behavior. Architecture is accepted in T014-002; every task implementing a primitive
+**Scope**: T014-001 and US01 document/deliver current behavior. Architecture is accepted in T014-002; the bounded switch definition and reducer are implemented, while its fault and all-language runtime gates remain open. Every task implementing another primitive
 or claiming its release evidence remains unchecked until its named tests pass. Tests precede implementation within each
 pending slice. IDs are feature-scoped per the constitution, overriding generic template numbering.
 T014-045 was added by the validation of 2026-10-14; it sits in Phase 2 by dependency, so the IDs
@@ -75,8 +75,10 @@ valid response/expiry/cancel races produce one persisted outcome and matching ro
 **Independent test**: Overlapping true cases select the first, no match selects default, errors fail
 without fallthrough and replay preserves the recorded case.
 
-- [ ] T014-026 [P] [US05] Add failing switch definition/evaluation fixtures in `crates/domain/tests/primitive_switch.rs` and `tests/contract/workflow-primitives/switch.rs`; enforce “1..32 ordered cases; case ids unique within switch; mandatory default” and the existing expression bound. Refs: FR-014-003,009.
-- [ ] T014-027 [US05] Implement switch validation, typed decision and recorded routing in `crates/domain/src/workflow.rs`, `crates/domain/src/execution/{plan.rs,state.rs,event.rs}` and `crates/infra-ir/src/`; retain binary condition semantics. Refs: FR-014-009,014.
+- [x] T014-026 [P] [US05] Add failing switch definition/evaluation fixtures in `crates/domain/tests/{switch.rs,switch_execution.rs}` and `tests/contract/workflow-primitives/revision.rs`; enforce “1..32 ordered cases; case ids unique within switch; mandatory default” and the existing expression bound. Refs: FR-014-003,009.
+  _Evidence: domain switch tests, schema contract, codec validation and the real PostgreSQL first-match/default/error tests in `tests/integration/workflow-primitives/switch_storage.rs`._
+- [x] T014-027 [US05] Implement switch validation, typed decision and recorded routing in `crates/domain/src/workflow.rs`, `crates/domain/src/execution/{plan.rs,state.rs,event.rs}` and `crates/infra-ir/src/`; retain binary condition semantics. Refs: FR-014-009,014.
+  _Evidence: selected local case or default is journaled and projected atomically; domain replay, IR codec and real PostgreSQL integration tests pass. This does not close fault or all-language runtime parity._
 - [ ] T014-028 [US05] Add all-five switch builders in `sdks/{typescript,go,python,dotnet,java}/`, run WP-07 golden parity and persist/restart/fault evidence in `tests/fault/workflow-primitives/switch.rs`; document typed predicate failure and telemetry. Refs: FR-014-009,016–017, SC-014-002–003.
 
 ## Phase 8 — US06: declared Query/Update (P2, pending)

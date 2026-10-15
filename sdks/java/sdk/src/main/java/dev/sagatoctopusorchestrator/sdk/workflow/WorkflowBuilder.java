@@ -130,6 +130,11 @@ public final class WorkflowBuilder {
         return this;
     }
 
+    public WorkflowBuilder switchCase(String id, List<SwitchCase> cases, String defaultTarget) {
+        body.switchCase(id, cases, defaultTarget);
+        return this;
+    }
+
     public WorkflowBuilder parallel(String id, Flow.Join join, List<Flow> branches) {
         body.parallel(id, join, branches);
         return this;
@@ -177,6 +182,11 @@ public final class WorkflowBuilder {
             if (branches != null && branches.isArray()) {
                 branches.forEach(branch -> reference(ids, id, "branches", branch));
             }
+            JsonNode cases = node.get("cases");
+            if (cases != null && cases.isArray()) {
+                cases.forEach(item -> reference(ids, id, "cases", item.get("target")));
+            }
+            reference(ids, id, "default", node.get("default"));
         }
         ObjectNode metadata = F.objectNode();
         metadata.put("name", name);

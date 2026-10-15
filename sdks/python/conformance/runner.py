@@ -36,6 +36,7 @@ from sagat_octopus_orchestrator import (
     Run,
     SagatClient,
     SagatError,
+    SwitchCase,
     Verdict,
     WorkerConfig,
     WorkerHost,
@@ -89,6 +90,12 @@ def apply(target: Flow, ops: list[Obj]) -> None:
             target.invoke_child(op["id"], op["workflow"], **snake(op.get("options")))
         elif kind == "condition":
             target.condition(op["id"], op["expression"], op["ifTrue"], op["ifFalse"])
+        elif kind == "switch":
+            target.switch(
+                op["id"],
+                [SwitchCase(id=item["id"], when=item["when"], target=item["target"]) for item in op["cases"]],
+                op["default"],
+            )
         elif kind == "parallel":
             branches = []
             for branch_ops in op["branches"]:

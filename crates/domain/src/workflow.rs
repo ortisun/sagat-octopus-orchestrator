@@ -33,6 +33,8 @@ use crate::triggers::{MAX_TRIGGERS, Trigger};
 pub const MAX_NODES: usize = 10_000;
 /// A `parallel` node may fan out to at most this many branches.
 pub const MAX_BRANCHES: usize = 256;
+/// A switch evaluates no more than this many predicates in declaration order.
+pub const MAX_SWITCH_CASES: usize = 32;
 /// A workflow may contain at most this many `parallel` nodes. Validating one costs time and memory
 /// proportional to its size, so this bounds the cost of a definition to this many times the size of
 /// the graph (a document of 650 KB with 5000 nested parallels once cost 17 s and 1.1 GB).
@@ -140,6 +142,8 @@ pub enum WorkflowError {
     BodyDepthExceeded(u8),
     #[error("invalid workflow limit: {0}")]
     InvalidWorkflowLimit(&'static str),
+    #[error("switch node '{node}': {reason}")]
+    InvalidSwitch { node: NodeId, reason: &'static str },
 }
 
 /// Why an expression was rejected.
@@ -579,7 +583,37 @@ impl std::str::FromStr for CancelPolicy {
     }
 }
 
-/// What a definition node does. Structured kinds require a structured definition and runtime support.
+/// A named, ordered predicate and its target within one switch node.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitchCase {
+    id: NodeId,
+    when: Expression,
+    target: NodeId,
+}
+
+impl SwitchCase {
+    #[must_use]
+    pub const fn new(id: NodeId, when: Expression, target: NodeId) -> Self {
+        Self { id, when, target }
+    }
+
+    #[must_use]
+    pub const fn id(&self) -> &NodeId {
+        &self.id
+    }
+
+    #[must_use]
+    pub const fn when(&self) -> &Expression {
+        &self.when
+    }
+
+    #[must_use]
+    pub const fn target(&self) -> &NodeId {
+        &self.target
+    }
+}
+
+/// What a definition node does. Some kinds require a closed body and runtime support.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NodeKind {
     /// Durable external task executed by a worker.
@@ -614,6 +648,11 @@ pub enum NodeKind {
         expression: Expression,
         if_true: NodeId,
         if_false: NodeId,
+    },
+    /// Chooses the first true case or its mandatory default.
+    Switch {
+        cases: Vec<SwitchCase>,
+        default: NodeId,
     },
     /// Fans out to `branches` and joins them according to `join`.
     Parallel {
@@ -664,6 +703,7 @@ impl NodeKind {
             Self::Timer { .. } => "timer",
             Self::WaitEvent { .. } => "waitEvent",
             Self::Condition { .. } => "condition",
+            Self::Switch { .. } => "switch",
             Self::Parallel { .. } => "parallel",
             Self::Child { .. } => "child",
             Self::Saga { .. } => "saga",
@@ -794,6 +834,10 @@ impl Node {
             } => {
                 out.push(if_true);
                 out.push(if_false);
+            }
+            NodeKind::Switch { cases, default } => {
+                out.extend(cases.iter().map(SwitchCase::target));
+                out.push(default);
             }
             NodeKind::Parallel { branches, .. } => out.extend(branches.iter()),
             NodeKind::Saga { begin, .. } => out.push(begin),
@@ -1387,6 +1431,30 @@ fn scope_error(node: &NodeId, reason: &'static str) -> WorkflowError {
 
 fn check_graph_kind(node: &Node, kind: GraphKind) -> Result<(), WorkflowError> {
     match node.kind() {
+        NodeKind::Switch { cases, .. } => {
+            let invalid = |reason| WorkflowError::InvalidSwitch {
+                node: node.id().clone(),
+                reason,
+            };
+            if cases.is_empty() || cases.len() > MAX_SWITCH_CASES {
+                return Err(invalid("case count must be in 1..=32"));
+            }
+            if cases
+                .iter()
+                .map(SwitchCase::id)
+                .collect::<BTreeSet<_>>()
+                .len()
+                != cases.len()
+            {
+                return Err(invalid("case ids must be unique"));
+            }
+            if node.next().is_some() || node.on_error().is_some() || node.timeout().is_some() {
+                return Err(invalid("switch cannot declare next, onError or timeout"));
+            }
+            if cases.iter().any(|case| case.when().as_str().len() > 1024) {
+                return Err(invalid("predicate exceeds the supported byte limit"));
+            }
+        }
         NodeKind::ForEach {
             max_items,
             max_concurrency,
@@ -1438,6 +1506,7 @@ fn check_graph_kind(node: &Node, kind: GraphKind) -> Result<(), WorkflowError> {
             } => idempotency_template.iter().collect(),
             NodeKind::WaitEvent { correlation, .. } => vec![correlation],
             NodeKind::Condition { expression, .. } => vec![expression],
+            NodeKind::Switch { cases, .. } => cases.iter().map(SwitchCase::when).collect(),
             NodeKind::Child { input, .. } => input.iter().collect(),
             NodeKind::End { output } => output.iter().collect(),
             NodeKind::ForEach { items, result, .. } => vec![items, result],

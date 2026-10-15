@@ -22,7 +22,7 @@ pub use command::{
 pub use error::ExecutionError;
 pub use event::{
     Cause, ChildOutcome, CorrelationKey, FailureCode, Fence, JoinOutcome, PlannedEntry,
-    ReconcileResult, ReviewOutcome, RunEvent, StopReason,
+    ReconcileResult, ReviewOutcome, RunEvent, StopReason, SwitchSelection,
 };
 pub use instance::{
     ExecutionInstanceId, InstanceIdentityError, InstancePath, MAX_ITERATION_INDEX, MAX_SCOPE_DEPTH,

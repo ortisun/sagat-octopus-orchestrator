@@ -131,6 +131,33 @@ public class WorkflowBuilderTests
     }
 
     [Fact]
+    public void ASwitchKeepsCaseOrderCopiesItsCasesAndHasNoImplicitNext()
+    {
+        var cases = new List<SwitchCase>
+        {
+            new("nonnegative", "input.amount >= 0", "positive"),
+            new("one", "input.amount == 1", "also-positive"),
+        };
+        var builder = Workflow.Create("switch-flow")
+            .Switch("route", cases, "fallback")
+            .Step("positive", "amount.positive")
+            .Step("also-positive", "amount.also-positive")
+            .Step("fallback", "amount.fallback");
+        cases[0] = new SwitchCase("tampered", "false", "tampered");
+
+        var node = builder.Build()["nodes"]!.AsArray()[0]!;
+        Assert.Equal(
+            """{"cases":[{"id":"nonnegative","target":"positive","when":"input.amount >= 0"},{"id":"one","target":"also-positive","when":"input.amount == 1"}],"default":"fallback","id":"route","type":"switch"}""",
+            Canon(node));
+        Assert.Null(node["next"]);
+        Workflow.Create("local-case-ids")
+            .Switch("first", [new SwitchCase("same", "true", "done")], "done")
+            .Switch("second", [new SwitchCase("same", "false", "done")], "done")
+            .End("done")
+            .Build();
+    }
+
+    [Fact]
     public void ALookbackOfZeroIsWrittenAndAnAbsentOneIsNot()
     {
         var zero = Workflow.Create("zero-look").WaitForEvent("w", new WaitForEventOptions { EventType = "e", CorrelationExpr = "x", Timeout = TimeSpan.FromSeconds(1), Lookback = TimeSpan.Zero }).Build();
@@ -184,6 +211,15 @@ public class WorkflowBuilderTests
         { "duration", () => Workflow.Create("bad-timer").Sleep("t", TimeSpan.Zero) },
         { "timeout", () => Workflow.Create("bad-timeout").WaitForEvent("w", new WaitForEventOptions { EventType = "e", CorrelationExpr = "x", Timeout = TimeSpan.Zero }) },
         { "not a node", () => Workflow.Create("dangling").Condition("c", "true", "nowhere", "a").Step("a", "x").Build() },
+        { "between 1 and 32 cases", () => Workflow.Create("no-switch-cases").Switch("s", [], "a") },
+        { "between 1 and 32 cases", () => Workflow.Create("too-many-cases").Switch("s", Enumerable.Range(0, 33).Select(i => new SwitchCase($"case-{i}", "true", "a")), "a") },
+        { "case id", () => Workflow.Create("duplicate-cases").Switch("s", [new SwitchCase("same", "true", "a"), new SwitchCase("same", "false", "b")], "a") },
+        { "without an id", () => Workflow.Create("empty-case-id").Switch("s", [new SwitchCase(string.Empty, "true", "a")], "a") },
+        { "when expression", () => Workflow.Create("empty-case-when").Switch("s", [new SwitchCase("one", string.Empty, "a")], "a") },
+        { "needs a target", () => Workflow.Create("empty-case-target").Switch("s", [new SwitchCase("one", "true", string.Empty)], "a") },
+        { "default target", () => Workflow.Create("empty-switch-default").Switch("s", [new SwitchCase("one", "true", "a")], string.Empty) },
+        { "not a node", () => Workflow.Create("dangling-switch-case").Switch("s", [new SwitchCase("one", "true", "nowhere")], "a").Step("a", "x").Build() },
+        { "not a node", () => Workflow.Create("dangling-switch-default").Switch("s", [new SwitchCase("one", "true", "a")], "nowhere").Step("a", "x").Build() },
         { "not a node", () => Workflow.Create("dangling-timeout").WaitForEvent("w", new WaitForEventOptions { EventType = "e", CorrelationExpr = "x", Timeout = TimeSpan.FromMilliseconds(1), OnTimeout = "nowhere" }).Build() },
         { "activity name", () => Workflow.Create("no-activity").Step("a", string.Empty) },
         { "needs an id", () => Workflow.Create("no-id").Step(string.Empty, "x") },

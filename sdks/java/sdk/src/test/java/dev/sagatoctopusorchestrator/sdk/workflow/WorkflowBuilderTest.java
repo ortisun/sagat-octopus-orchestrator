@@ -125,6 +125,32 @@ class WorkflowBuilderTest {
     }
 
     @Test
+    void aSwitchKeepsCaseOrderCopiesItsCasesAndHasNoImplicitNext() {
+        List<SwitchCase> cases = new java.util.ArrayList<>(List.of(
+                new SwitchCase("nonnegative", "input.amount >= 0", "positive"),
+                new SwitchCase("one", "input.amount == 1", "also-positive")));
+        WorkflowBuilder builder = workflow("switch-flow")
+                .switchCase("route", cases, "fallback")
+                .step("positive", "amount.positive")
+                .step("also-positive", "amount.also-positive")
+                .step("fallback", "amount.fallback");
+        cases.set(0, new SwitchCase("tampered", "false", "tampered"));
+
+        JsonNode node = builder.build().path("nodes").get(0);
+        same(json("{" +
+                        "\"id\":\"route\",\"type\":\"switch\",\"cases\":[" +
+                        "{\"id\":\"nonnegative\",\"when\":\"input.amount >= 0\",\"target\":\"positive\"}," +
+                        "{\"id\":\"one\",\"when\":\"input.amount == 1\",\"target\":\"also-positive\"}]," +
+                        "\"default\":\"fallback\"}"), node);
+        assertFalse(node.has("next"));
+        workflow("local-case-ids")
+                .switchCase("first", List.of(new SwitchCase("same", "true", "done")), "done")
+                .switchCase("second", List.of(new SwitchCase("same", "false", "done")), "done")
+                .end("done")
+                .build();
+    }
+
+    @Test
     void theNodeBeforeAnEndLinksToItAndTheEndNeverLinksOn() {
         JsonNode doc = workflow("ending-flow").step("a", "act.a").end("done").step("b", "act.b").build();
         assertEquals("done", doc.get("nodes").get(0).get("next").textValue());
@@ -179,6 +205,19 @@ class WorkflowBuilderTest {
         refused(() -> workflow("bad-timer").sleepMs("t", 0), "duration");
         refused(() -> workflow("bad-timer-2").sleep("t", Duration.ofNanos(1500)), "whole number of milliseconds");
         refused(() -> workflow("dangling").condition("c", "true", "nowhere", "a").step("a", "x").build(), "not a node");
+        refused(() -> workflow("no-switch-cases").switchCase("s", List.of(), "a"), "between 1 and 32 cases");
+        refused(() -> workflow("too-many-cases").switchCase("s", java.util.stream.IntStream.range(0, 33)
+                .mapToObj(i -> new SwitchCase("case-" + i, "true", "a")).toList(), "a"), "between 1 and 32 cases");
+        refused(() -> workflow("duplicate-cases").switchCase("s", List.of(
+                new SwitchCase("same", "true", "a"), new SwitchCase("same", "false", "b")), "a"), "case id");
+        refused(() -> workflow("empty-case-id").switchCase("s", List.of(new SwitchCase("", "true", "a")), "a"), "without an id");
+        refused(() -> workflow("empty-case-when").switchCase("s", List.of(new SwitchCase("one", "", "a")), "a"), "when expression");
+        refused(() -> workflow("empty-case-target").switchCase("s", List.of(new SwitchCase("one", "true", "")), "a"), "needs a target");
+        refused(() -> workflow("empty-switch-default").switchCase("s", List.of(new SwitchCase("one", "true", "a")), ""), "default target");
+        refused(() -> workflow("dangling-switch-case").switchCase("s", List.of(
+                new SwitchCase("one", "true", "nowhere")), "a").step("a", "x").build(), "not a node");
+        refused(() -> workflow("dangling-switch-default").switchCase("s", List.of(
+                new SwitchCase("one", "true", "a")), "nowhere").step("a", "x").build(), "not a node");
         refused(() -> workflow("dangling-timeout").waitForEvent("w", WaitForEventOptions.of("e", "x", 1).onTimeout("nowhere")).build(), "not a node");
         refused(() -> workflow("no-activity").step("a", ""), "activity name");
         refused(() -> workflow("no-id").step("", "x"), "needs an id");

@@ -205,7 +205,9 @@ pub fn workflow_reference(schema: &Value, source: &str) -> String {
         "Made from `{source}`. A workflow is one JSON (or YAML) object: this page lists its fields and the \
          fields of each kind of node. The schema checks the shape; the platform's codec checks more \
          (the graph, the expressions, the references between nodes), and `sagat workflow validate` runs \
-         the codec: [errors.md](../quickstarts/errors.md) says what each of its findings means.\n"
+         the codec: [errors.md](../quickstarts/errors.md) says what each of its findings means. \
+         Some shapes are reserved for capabilities still under development; schema acceptance alone \
+         does not make a node runnable. See the [capability validation report](../../specs/014-workflow-primitives/validation-report.md).\n"
     );
     let defs = schema["$defs"].as_object();
     let kinds: Vec<&str> = schema["$defs"]["node"]["oneOf"]

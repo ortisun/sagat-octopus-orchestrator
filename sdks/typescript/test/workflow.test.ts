@@ -81,6 +81,36 @@ test('wait for an event, invoke a child, decide and end', () => {
   assert.deepEqual(nodes[5], { id: 'done', type: 'end', outputExpr: 'steps.ship.output' });
 });
 
+test('a switch keeps case order, copies its cases and has no implicit next', () => {
+  const cases = [
+    { id: 'nonnegative', when: 'input.amount >= 0', target: 'positive' },
+    { id: 'one', when: 'input.amount == 1', target: 'also-positive' },
+  ];
+  const builder = workflow('switch-flow')
+    .switch('route', cases, 'fallback')
+    .step('positive', 'amount.positive')
+    .step('also-positive', 'amount.also-positive')
+    .step('fallback', 'amount.fallback');
+  cases[0]!.target = 'tampered';
+
+  const nodes = builder.build()['nodes'] as Array<Record<string, unknown>>;
+  assert.equal(nodes[0]?.['next'], undefined);
+  assert.deepEqual(nodes[0], {
+    id: 'route',
+    type: 'switch',
+    cases: [
+      { id: 'nonnegative', when: 'input.amount >= 0', target: 'positive' },
+      { id: 'one', when: 'input.amount == 1', target: 'also-positive' },
+    ],
+    default: 'fallback',
+  });
+  assert.doesNotThrow(() => workflow('local-case-ids')
+    .switch('first', [{ id: 'same', when: 'true', target: 'done' }], 'done')
+    .switch('second', [{ id: 'same', when: 'false', target: 'done' }], 'done')
+    .end('done')
+    .build());
+});
+
 test('triggers, labels and schemas go where the document keeps them', () => {
   const doc = workflow('with-meta')
     .label('team', 'payments')
@@ -111,6 +141,15 @@ test('what the server would refuse and the builder can see is refused here', () 
   refused(() => workflow('bad-secret').step('a', 'x', { secrets: ['Bad Secret'] }), /secret/);
   refused(() => workflow('bad-timer').sleep('t', 0), /duration/);
   refused(() => workflow('dangling').condition('c', 'true', 'nowhere', 'a').step('a', 'x').build(), /not a node/);
+  refused(() => workflow('no-switch-cases').switch('s', [], 'a'), /between 1 and 32 cases/);
+  refused(() => workflow('too-many-cases').switch('s', Array.from({ length: 33 }, (_, i) => ({ id: `case-${i}`, when: 'true', target: 'a' })), 'a'), /between 1 and 32 cases/);
+  refused(() => workflow('duplicate-cases').switch('s', [{ id: 'same', when: 'true', target: 'a' }, { id: 'same', when: 'false', target: 'b' }], 'a'), /case id/);
+  refused(() => workflow('empty-case-id').switch('s', [{ id: '', when: 'true', target: 'a' }], 'a'), /without an id/);
+  refused(() => workflow('empty-case-when').switch('s', [{ id: 'one', when: '', target: 'a' }], 'a'), /when expression/);
+  refused(() => workflow('empty-case-target').switch('s', [{ id: 'one', when: 'true', target: '' }], 'a'), /needs a target/);
+  refused(() => workflow('empty-switch-default').switch('s', [{ id: 'one', when: 'true', target: 'a' }], ''), /default target/);
+  refused(() => workflow('dangling-switch-case').switch('s', [{ id: 'one', when: 'true', target: 'nowhere' }], 'a').step('a', 'x').build(), /not a node/);
+  refused(() => workflow('dangling-switch-default').switch('s', [{ id: 'one', when: 'true', target: 'a' }], 'nowhere').step('a', 'x').build(), /not a node/);
   refused(() => workflow('dangling-timeout').waitForEvent('w', { eventType: 'e', correlationExpr: 'x', timeoutMs: 1, onTimeout: 'nowhere' }).build(), /not a node/);
 });
 

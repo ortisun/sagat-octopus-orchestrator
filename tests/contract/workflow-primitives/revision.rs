@@ -212,6 +212,10 @@ fn loops_switches_and_approvals_require_their_bounded_configuration() {
     switch["nodes"][0]["cases"] =
         json!(vec![json!({"id": "x", "when": "true", "target": "ok"}); 33]);
     assert!(!validator().is_valid(&switch));
+    switch["nodes"][0]["cases"] =
+        json!([{"id": "positive", "when": "input.amount > 0", "target": "ok"}]);
+    switch["nodes"][0]["onError"] = json!("fallback");
+    assert!(!validator().is_valid(&switch));
     let mut approval = minimal();
     approval["nodes"][0] = json!({"id": "done", "type": "approval", "timeoutMs": 1,
         "policy": {"subjects": ["approver"], "roles": ["operator"], "excludeInitiator": true},

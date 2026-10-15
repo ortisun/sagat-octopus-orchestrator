@@ -43,6 +43,15 @@ class RetryOptions:
         return {key: value for key, value in pairs.items() if value is not None}
 
 
+@dataclass(frozen=True)
+class SwitchCase:
+    """One ordered branch of a switch decision."""
+
+    id: str
+    when: str
+    target: str
+
+
 RetrySpec = RetryOptions | Mapping[str, Any]
 """A ``RetryOptions``, or a mapping already in the IR's own keys (for a field a newer schema adds)."""
 
@@ -209,6 +218,28 @@ class Flow:
         )
         return self
 
+    def switch(self: _F, node_id: str, cases: Sequence[SwitchCase], default_target: str) -> _F:
+        """Tries cases in order and follows the first matching target, or the default."""
+        if not 1 <= len(cases) <= 32:
+            raise invalid(f"switch {node_id} needs between 1 and 32 cases")
+        if not default_target:
+            raise invalid(f"switch {node_id} needs a default target")
+        case_ids: set[str] = set()
+        copied: list[Node] = []
+        for item in cases:
+            if not item.id:
+                raise invalid(f"switch {node_id} has a case without an id")
+            if item.id in case_ids:
+                raise invalid(f"switch {node_id} uses case id {item.id!r} twice")
+            if not item.when:
+                raise invalid(f"switch {node_id} case {item.id!r} needs a when expression")
+            if not item.target:
+                raise invalid(f"switch {node_id} case {item.id!r} needs a target")
+            case_ids.add(item.id)
+            copied.append({"id": item.id, "when": item.when, "target": item.target})
+        self._push({"id": node_id, "type": "switch", "cases": copied, "default": default_target})
+        return self
+
     def parallel(self: _F, node_id: str, join: Literal["all", "any"], branches: Sequence[Flow]) -> _F:
         """Runs branches at once; ``all`` waits for every one, ``any`` for the first."""
         if len(branches) < 2:
@@ -256,7 +287,7 @@ class Flow:
         for index, node in enumerate(self._nodes):
             linked = dict(node)
             # A decision names both of its branches and an end ends: neither has a next node.
-            if index + 1 < len(self._nodes) and linked["type"] not in ("condition", "end"):
+            if index + 1 < len(self._nodes) and linked["type"] not in ("condition", "switch", "end"):
                 linked["next"] = self._nodes[index + 1]["id"]
             out.append(linked)
         for inner in self._embedded:
@@ -341,6 +372,9 @@ class WorkflowBuilder(Flow):
                 reference(node["id"], field, node.get(field))
             for branch in node.get("branches", ()):
                 reference(node["id"], "branches", branch)
+            for item in node.get("cases", ()):
+                reference(node["id"], "cases", item.get("target"))
+            reference(node["id"], "default", node.get("default"))
         metadata: dict[str, Any] = {"name": self._name}
         if self._description is not None:
             metadata["description"] = self._description

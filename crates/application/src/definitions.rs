@@ -271,6 +271,7 @@ fn graph_rule(error: &WorkflowError) -> (&'static str, Option<String>) {
         E::RecursiveBody(body) => ("RECURSIVE_BODY", Some(body.to_string())),
         E::BodyDepthExceeded(_) => ("BODY_DEPTH_EXCEEDED", None),
         E::InvalidWorkflowLimit(_) => ("INVALID_WORKFLOW_LIMIT", None),
+        E::InvalidSwitch { node, .. } => ("INVALID_SWITCH", Some(node.to_string())),
     }
 }
 

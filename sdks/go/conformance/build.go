@@ -160,6 +160,14 @@ func apply(b *workflow.Builder, ops []any) {
 			b.InvokeChild(id, asString(op["workflow"]), opts...)
 		case "condition":
 			b.Condition(id, asString(op["expression"]), asString(op["ifTrue"]), asString(op["ifFalse"]))
+		case "switch":
+			items := asList(op["cases"])
+			cases := make([]workflow.SwitchCase, 0, len(items))
+			for _, item := range items {
+				caseObject := asObject(item)
+				cases = append(cases, workflow.SwitchCase{ID: asString(caseObject["id"]), When: asString(caseObject["when"]), Target: asString(caseObject["target"])})
+			}
+			b.Switch(id, cases, asString(op["default"]))
 		case "parallel":
 			var branches []*workflow.Builder
 			for _, branch := range asList(op["branches"]) {

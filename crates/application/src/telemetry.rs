@@ -15,8 +15,8 @@ use std::time::Duration;
 use sagat_domain::execution::{RunEvent, RunId, RunStatus};
 use sagat_domain::identity::{NamespaceId, TenantId};
 use sagat_telemetry::{
-    AttrValue, SpanData, SpanEvent, SpanId, SpanKind, SpanStatus, TraceId, attempt_span_id,
-    event_span_id, run_span_id,
+    AttrValue, SpanData, SpanEvent, SpanId, SpanKind, SpanStatus, TraceId, WorkflowPrimitiveKind,
+    WorkflowPrimitiveOutcome, attempt_span_id, event_span_id, run_span_id,
 };
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -123,6 +123,11 @@ pub enum Observation {
     },
     /// A run reached a terminal status.
     RunFinished { status: &'static str, seconds: f64 },
+    /// A durable workflow primitive transition. Both fields are closed metric-label enums.
+    PrimitiveTransition {
+        kind: WorkflowPrimitiveKind,
+        outcome: WorkflowPrimitiveOutcome,
+    },
 }
 
 /// What [`derive`] made of the entries beyond the ones already projected.
@@ -462,6 +467,59 @@ pub fn derive(facts: &RunFacts, entries: &[JournalEntry], applied_seq: u64) -> D
         });
     }
 
+    // Primitive decisions are instantaneous spans derived from their durable journal entry. Their
+    // ids survive projector retries, while definition identifiers stay out of metric labels.
+    for entry in entries {
+        if entry.seq <= applied_seq {
+            continue;
+        }
+        let RunEvent::SwitchEvaluated { node, selection } = &entry.event else {
+            continue;
+        };
+        let (outcome, selected_case) = match selection {
+            sagat_domain::execution::SwitchSelection::Case(selected) => {
+                (WorkflowPrimitiveOutcome::Case, Some(selected))
+            }
+            sagat_domain::execution::SwitchSelection::Default => {
+                (WorkflowPrimitiveOutcome::Default, None)
+            }
+        };
+        let mut attributes = base_attributes(facts);
+        attributes.push(("sagat.node".to_owned(), AttrValue::from(node.as_str())));
+        attributes.push((
+            "sagat.primitive.kind".to_owned(),
+            AttrValue::from(WorkflowPrimitiveKind::Switch.as_str()),
+        ));
+        attributes.push((
+            "sagat.outcome".to_owned(),
+            AttrValue::from(outcome.as_str()),
+        ));
+        if let Some(selected) = selected_case {
+            attributes.push((
+                "sagat.switch.case".to_owned(),
+                AttrValue::from(selected.as_str()),
+            ));
+        }
+        let at = nanos(entry.occurred_at);
+        out.spans.push(SpanData {
+            trace_id: facts.trace_id,
+            span_id: event_span_id(run_uuid, entry.seq),
+            parent: Some(run_span),
+            name: "workflow.switch.evaluate".to_owned(),
+            kind: SpanKind::Internal,
+            start_unix_nano: at,
+            end_unix_nano: at,
+            attributes,
+            events: Vec::new(),
+            links: Vec::new(),
+            status: SpanStatus::Ok,
+        });
+        out.observations.push(Observation::PrimitiveTransition {
+            kind: WorkflowPrimitiveKind::Switch,
+            outcome,
+        });
+    }
+
     // Timers and waits: where the time of a run goes when no worker holds it.
     let mut timers: HashMap<String, (u64, OffsetDateTime)> = HashMap::new();
     let mut waits: HashMap<String, (u64, OffsetDateTime)> = HashMap::new();
@@ -751,4 +809,112 @@ pub trait TelemetryStore: Send + Sync {
 
     /// How far behind the projection is.
     fn backlog(&self) -> impl Future<Output = Result<Backlog, StoreError>> + Send;
+}
+
+#[cfg(test)]
+mod switch_tests {
+    use super::*;
+    use sagat_domain::execution::SwitchSelection;
+    use sagat_domain::workflow::NodeId;
+    use sagat_telemetry::{WorkflowPrimitiveKind, WorkflowPrimitiveOutcome};
+
+    fn node(value: &str) -> NodeId {
+        NodeId::parse(value).expect("valid node id")
+    }
+
+    fn facts() -> RunFacts {
+        RunFacts {
+            tenant_id: TenantId::new(Uuid::new_v4()),
+            namespace_id: NamespaceId::new(Uuid::new_v4()),
+            run_id: RunId::generate(),
+            workflow: "routing".to_owned(),
+            version: 1,
+            trace_id: TraceId::generate(),
+            parent_span: None,
+            parent_run: None,
+            created_at: OffsetDateTime::from_unix_timestamp(1_800_000_000).expect("time"),
+            steps: HashMap::new(),
+        }
+    }
+
+    fn attribute<'a>(span: &'a SpanData, key: &str) -> Option<&'a AttrValue> {
+        span.attributes
+            .iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value)
+    }
+
+    #[test]
+    fn switch_case_is_a_stable_span_and_bounded_observation() {
+        let facts = facts();
+        let entry = JournalEntry {
+            seq: 7,
+            event: RunEvent::SwitchEvaluated {
+                node: node("route"),
+                selection: SwitchSelection::Case(node("priority")),
+            },
+            actor: "Bearer secret-marker".to_owned(),
+            occurred_at: facts.created_at + time::Duration::milliseconds(2),
+        };
+
+        let first = derive(&facts, std::slice::from_ref(&entry), 0);
+        let replay = derive(&facts, &[entry], 0);
+
+        assert_eq!(first, replay);
+        assert_eq!(first.spans.len(), 1);
+        let span = &first.spans[0];
+        assert_eq!(span.name, "workflow.switch.evaluate");
+        assert_eq!(span.span_id, event_span_id(facts.run_id.as_uuid(), 7));
+        assert_eq!(span.parent, Some(run_span_id(facts.run_id.as_uuid())));
+        assert_eq!(
+            attribute(span, "sagat.node"),
+            Some(&AttrValue::from("route"))
+        );
+        assert_eq!(
+            attribute(span, "sagat.primitive.kind"),
+            Some(&AttrValue::from("switch"))
+        );
+        assert_eq!(
+            attribute(span, "sagat.outcome"),
+            Some(&AttrValue::from("case"))
+        );
+        assert_eq!(
+            attribute(span, "sagat.switch.case"),
+            Some(&AttrValue::from("priority"))
+        );
+        assert_eq!(
+            first.observations,
+            [Observation::PrimitiveTransition {
+                kind: WorkflowPrimitiveKind::Switch,
+                outcome: WorkflowPrimitiveOutcome::Case,
+            }]
+        );
+        assert!(!format!("{span:?}").contains("secret-marker"));
+    }
+
+    #[test]
+    fn switch_default_has_no_case_identifier_and_is_not_reprojected() {
+        let facts = facts();
+        let entry = JournalEntry {
+            seq: 3,
+            event: RunEvent::SwitchEvaluated {
+                node: node("route"),
+                selection: SwitchSelection::Default,
+            },
+            actor: "system:engine".to_owned(),
+            occurred_at: facts.created_at,
+        };
+
+        let derived = derive(&facts, std::slice::from_ref(&entry), 0);
+        assert_eq!(derived.spans.len(), 1);
+        assert_eq!(attribute(&derived.spans[0], "sagat.switch.case"), None);
+        assert_eq!(
+            derived.observations,
+            [Observation::PrimitiveTransition {
+                kind: WorkflowPrimitiveKind::Switch,
+                outcome: WorkflowPrimitiveOutcome::Default,
+            }]
+        );
+        assert_eq!(derive(&facts, &[entry], 3), Derived::default());
+    }
 }
