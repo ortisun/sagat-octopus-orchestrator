@@ -126,7 +126,9 @@ and have no golden result.
 
 `chain-commands.json` publishes `activity -> waitEvent -> continueAsNew` and exercises chain
 inspection, signal and cancellation in all five SDKs. The golden requires exact signal/cancel
-replay, tenant opacity, successor head change, stale-head rejection and final cancellation.
+replay, including signal replay after rollover, changed-body key rejection, no buffering on a
+head without a matching wait, tenant opacity, successor head change, stale-head rejection and
+final cancellation.
 `chain-root-wait.json.pending` retains the separate direct-root-wait shape: successor creation
 still assumes an activity entrypoint, so that publication path is closed.
 

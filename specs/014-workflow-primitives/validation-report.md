@@ -1201,7 +1201,13 @@ tenant sees `404`. No worker executes the successor before cancellation.
 | `cargo fmt --all -- --check`, focused Clippy with `-D warnings`, `git diff --check` | Passed |
 
 Reviewed normalized runtime golden SHA-256:
-`1c34eb1731cdc23722bb156469f93c4a0bb0a2bb36cea8f9a62ef68073bd4af0`.
+`e30141d6d49b2460ccd0b91324fd0614346da4735354f105d5247c75ad18de9c`.
 Reviewed workflow golden SHA-256:
 `489c5f7f15a36d450d5af4e6472ec63d99b0f7620770c47c11ca884ab8dc0176`.
 These checks do not close the broader chain fault, parent/child or direct root-wait gates.
+
+The runtime golden was extended and rerun in all five SDKs: an exact signal-key replay still
+returns its original delivery after head rollover; a changed body under that key returns
+`IDEMPOTENCY_KEY_REUSED`; a new signal to the activity-ready successor returns `STATE_CONFLICT`
+without buffering. The worker is stopped before the first signal so the successor cannot race
+into another wait. The reviewed SHA-256 above covers these added observations.

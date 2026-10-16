@@ -133,7 +133,9 @@ The restricted conditional graph can now transfer the exact declared state and f
 the `chain-state-final-success` scenario passes all five SDKs and a PostgreSQL integration test.
 An activity followed by a signal-controlled `waitEvent` can now continue after the signal.
 The shared `chain-commands` scenario passes all five SDKs for signal replay, head fencing,
-successor cancellation and tenant opacity. A direct `waitEvent` entrypoint remains closed.
+successor cancellation and tenant opacity. It also verifies replay after rollover, key-body
+conflict and rejection of a signal to a head without a matching wait. A direct `waitEvent`
+entrypoint remains closed.
 
 **Independent test**: Three segments have one current head and unique successors; crash around each
 handoff and race commands; segment wait and chain wait differ intentionally; child parent waits FINAL.

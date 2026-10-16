@@ -123,6 +123,46 @@
       }
     },
     {
+      "id": "signal-replay-after-handoff",
+      "ok": true,
+      "op": "signalChain",
+      "result": {
+        "deliveredTo": [
+          "release"
+        ]
+      }
+    },
+    {
+      "error": {
+        "code": "CONFLICT",
+        "message": "<text>",
+        "reason": "IDEMPOTENCY_KEY_REUSED",
+        "remediation": "The request conflicts with the current state: read the resource again and decide; do not repeat it unchanged.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 409,
+        "traceId": "<trace:3>"
+      },
+      "id": "signal-reused-key",
+      "ok": false,
+      "op": "signalChain"
+    },
+    {
+      "error": {
+        "code": "CONFLICT",
+        "message": "<text>",
+        "reason": "STATE_CONFLICT",
+        "remediation": "The request conflicts with the current state: read the resource again and decide; do not repeat it unchanged.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 409,
+        "traceId": "<trace:4>"
+      },
+      "id": "new-head-no-wait",
+      "ok": false,
+      "op": "signalChain"
+    },
+    {
       "error": {
         "code": "CONFLICT",
         "message": "<text>",
@@ -131,7 +171,7 @@
         "retryAfterMs": null,
         "retryable": false,
         "status": 409,
-        "traceId": "<trace:3>"
+        "traceId": "<trace:5>"
       },
       "id": "stale-signal",
       "ok": false,
@@ -146,7 +186,7 @@
         "retryAfterMs": null,
         "retryable": false,
         "status": 409,
-        "traceId": "<trace:4>"
+        "traceId": "<trace:6>"
       },
       "id": "stale-cancel",
       "ok": false,
