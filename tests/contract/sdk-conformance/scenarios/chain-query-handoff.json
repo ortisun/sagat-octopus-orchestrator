@@ -1,0 +1,78 @@
+{
+  "name": "chain-query-handoff",
+  "description": "A public stateful chain hands off once; all SDKs query the successor snapshot and reject the predecessor as an expected head.",
+  "workflows": {
+    "chain": {
+      "name": "chain-query-handoff-runtime",
+      "chainPolicy": { "maxSegments": 3, "timeoutMs": 86400000 },
+      "state": {
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": { "amount": { "type": "string", "maxLength": 64 } },
+          "required": ["amount"]
+        },
+        "initial": "input.account",
+        "queries": {
+          "amount.read": {
+            "argsSchema": { "type": "object", "additionalProperties": false },
+            "resultSchema": { "type": "string", "maxLength": 64 },
+            "expression": "state.amount",
+            "disclosure": "declared-business-result-v1"
+          }
+        },
+        "updates": {
+          "amount.replace": {
+            "argsSchema": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "nextState": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": { "amount": { "type": "string", "maxLength": 64 } },
+                  "required": ["amount"]
+                }
+              },
+              "required": ["nextState"]
+            },
+            "validate": "true",
+            "state": "args.nextState",
+            "result": "newState.amount",
+            "resultSchema": { "type": "string", "maxLength": 64 },
+            "disclosure": "declared-business-result-v1"
+          }
+        }
+      },
+      "program": [
+        { "op": "step", "id": "work", "activity": "chain.work" },
+        { "op": "continueAsNew", "id": "rollover", "input": "input.next", "state": "state" }
+      ]
+    }
+  },
+  "workers": {
+    "current": {
+      "workerName": "chain-query-worker",
+      "protocolVersion": "1.5",
+      "transport": "poll",
+      "maxInflight": 1,
+      "autostart": false,
+      "activities": {
+        "chain.work": { "behavior": { "sleepMs": 2500, "returns": { "ok": true } } }
+      }
+    }
+  },
+  "steps": [
+    { "id": "start", "op": "start", "workflow": "chain", "input": { "account": { "amount": "19.99" }, "next": { "account": { "amount": "0.00" } } } },
+    { "id": "initial", "op": "inspectChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}" },
+    { "id": "start-worker", "op": "startWorker", "worker": "current" },
+    { "id": "head", "op": "inspectChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "waitForHeadChange": "{{currentRunId:initial}}" },
+    { "id": "query", "op": "queryChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "expectedRunId": "{{currentRunId:head}}", "name": "amount.read", "args": {} },
+    { "id": "update", "op": "updateChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "expectedRunId": "{{currentRunId:head}}", "name": "amount.replace", "args": { "nextState": { "amount": "24.99" } }, "updateKey": "chain-amount-{{unique}}", "expectedStateRevision": 0 },
+    { "id": "replay", "op": "updateChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "expectedRunId": "{{currentRunId:head}}", "name": "amount.replace", "args": { "nextState": { "amount": "24.99" } }, "updateKey": "chain-amount-{{unique}}", "expectedStateRevision": 0 },
+    { "id": "updated", "op": "queryChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "expectedRunId": "{{currentRunId:head}}", "name": "amount.read", "args": {} },
+    { "id": "stale-update", "op": "updateChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "expectedRunId": "{{currentRunId:initial}}", "name": "amount.replace", "args": { "nextState": { "amount": "99.99" } }, "updateKey": "stale-amount-{{unique}}", "expectedStateRevision": 1 },
+    { "id": "stale", "op": "queryChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "expectedRunId": "{{currentRunId:initial}}", "name": "amount.read", "args": {} },
+    { "id": "stop-worker", "op": "stopWorker", "worker": "current" }
+  ]
+}

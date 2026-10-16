@@ -660,6 +660,46 @@ public final class SagatClient implements AutoCloseable {
         return async(() -> update(runId, name, args, options));
     }
 
+    /** Applies or replays a declared update against the chain's current head. */
+    public UpdateReceipt updateChain(
+            String namespaceId, String chainId, String name, Object args, ChainUpdateOptions options) {
+        if (name == null || !DECLARED_OPERATION_NAME.matcher(name).matches()) {
+            throw SagatException.invalid("an operation name is 1 to 128 permitted characters and starts with a letter or digit");
+        }
+        if (options == null || options.updateKey() == null || !UPDATE_KEY.matcher(options.updateKey()).matches()) {
+            throw SagatException.invalid("an update key is 1 to 128 printable ASCII characters");
+        }
+        if (options.expectedStateRevision() != null && options.expectedStateRevision() < 0) {
+            throw SagatException.invalid("expected state revision is non-negative");
+        }
+        ObjectNode body = JsonNodeFactory.instance.objectNode();
+        body.put("updateKey", options.updateKey());
+        body.set("args", Json.toTree(args));
+        if (options.expectedRunId() != null) {
+            body.put("expectedRunId", runId(options.expectedRunId()));
+        }
+        if (options.expectedStateRevision() != null) {
+            body.put("expectedStateRevision", options.expectedStateRevision());
+        }
+        JsonNode raw = object(http.request(new RestClient.Request(
+                "POST", chainPath(namespaceId, chainId) + "/updates/" + Endpoints.encodeComponent(name),
+                null, body, null, trace(options.traceparent()), true)).body(), "an update receipt");
+        if (!"APPLIED".equals(str(raw, "status"))) {
+            throw SagatException.of(ErrorCode.PROTOCOL, "status is invalid in the answer");
+        }
+        if (!raw.has("result")) {
+            throw SagatException.of(ErrorCode.PROTOCOL, "result is missing from the answer");
+        }
+        return new UpdateReceipt(str(raw, "runId"), str(raw, "operation"), str(raw, "updateKey"), "APPLIED",
+                raw.get("result"), revision(raw, "beforeStateRevision", 0), revision(raw, "afterStateRevision", 1),
+                revision(raw, "runVersion", 1), raw.path("replayed").isBoolean() && raw.path("replayed").booleanValue(), raw);
+    }
+
+    public CompletableFuture<UpdateReceipt> updateChainAsync(
+            String namespaceId, String chainId, String name, Object args, ChainUpdateOptions options) {
+        return async(() -> updateChain(namespaceId, chainId, name, args, options));
+    }
+
     /** Sends a signal to the steps of a run that wait for it; a signal nobody waits for is a {@code CONFLICT}. */
     public SignalResult signal(String runId, String name, Object payload, CallOptions options) {
         CallOptions opts = options == null ? CallOptions.create() : options;

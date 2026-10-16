@@ -730,6 +730,28 @@ async def run(scenario: Obj, config: Obj) -> Obj:
                         "stateRevision": queried.state_revision,
                         "result": queried.result,
                     }
+                elif op == "updateChain":
+                    updated = await client.update_chain(
+                        chain_ref(step["namespaceId"]),
+                        chain_ref(step["chainId"]),
+                        step["name"],
+                        step.get("args"),
+                        update_key=step["updateKey"],
+                        expected_run_id=(chain_ref(step["expectedRunId"]) if step.get("expectedRunId") else None),
+                        expected_state_revision=step.get("expectedStateRevision"),
+                        traceparent=step.get("traceparent"),
+                    )
+                    result = {
+                        "runId": updated.run_id,
+                        "operation": updated.operation,
+                        "updateKey": updated.update_key,
+                        "status": updated.status,
+                        "result": updated.result,
+                        "beforeStateRevision": updated.before_state_revision,
+                        "afterStateRevision": updated.after_state_revision,
+                        "runVersion": updated.run_version,
+                        "replayed": updated.replayed,
+                    }
                 elif op == "inspectChain":
                     chain = await client.inspect_chain(
                         chain_ref(step["namespaceId"]), chain_ref(step["chainId"]), traceparent=step.get("traceparent")

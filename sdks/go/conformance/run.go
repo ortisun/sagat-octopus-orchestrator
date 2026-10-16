@@ -481,6 +481,40 @@ func playStep(ctx context.Context, step object, op string, c *client.Client, con
 			"beforeStateRevision": result.BeforeStateRevision, "afterStateRevision": result.AfterStateRevision,
 			"runVersion": result.RunVersion, "replayed": result.Replayed,
 		}, nil
+	case "updateChain":
+		namespaceID, err := chainRef(step["namespaceId"])
+		if err != nil {
+			return nil, broken("%v", err)
+		}
+		chainID, err := chainRef(step["chainId"])
+		if err != nil {
+			return nil, broken("%v", err)
+		}
+		request := client.ChainUpdateRequest{UpdateKey: asString(step["updateKey"]), Args: payloadOf(step["args"])}
+		if value := asString(step["expectedRunId"]); value != "" {
+			request.ExpectedRunID, err = chainRef(value)
+			if err != nil {
+				return nil, broken("%v", err)
+			}
+		}
+		if value, ok := step["expectedStateRevision"]; ok {
+			revision := int64(asInt(value))
+			request.ExpectedStateRevision = &revision
+		}
+		opts := callOpts
+		if value := asString(step["traceparent"]); value != "" {
+			opts = append(opts, client.WithTraceparent(value))
+		}
+		result, err := c.UpdateChain(ctx, namespaceID, chainID, asString(step["name"]), request, opts...)
+		if err != nil {
+			return nil, err
+		}
+		return object{
+			"runId": result.RunID, "operation": result.Operation, "updateKey": result.UpdateKey,
+			"status": result.Status, "result": result.Result,
+			"beforeStateRevision": result.BeforeStateRevision, "afterStateRevision": result.AfterStateRevision,
+			"runVersion": result.RunVersion, "replayed": result.Replayed,
+		}, nil
 	case "inspectChain":
 		namespaceID, err := chainRef(step["namespaceId"])
 		if err != nil {

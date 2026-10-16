@@ -467,6 +467,22 @@ async function run(scenario: Obj, config: Obj): Promise<Obj> {
           };
           break;
         }
+        case 'updateChain': {
+          const r = await client.updateChain(
+            chainRef(step['namespaceId']), chainRef(step['chainId']), step['name'], step['args'] ?? null,
+            {
+              updateKey: step['updateKey'],
+              expectedRunId: step['expectedRunId'] ? chainRef(step['expectedRunId']) : undefined,
+              expectedStateRevision: step['expectedStateRevision'], traceparent: step['traceparent'],
+            },
+          );
+          result = {
+            runId: r.runId, operation: r.operation, updateKey: r.updateKey, status: r.status, result: r.result,
+            beforeStateRevision: r.beforeStateRevision, afterStateRevision: r.afterStateRevision,
+            runVersion: r.runVersion, replayed: r.replayed,
+          };
+          break;
+        }
         case 'inspectChain': {
           let r = await client.inspectChain(chainRef(step['namespaceId']), chainRef(step['chainId']), { traceparent: step['traceparent'] });
           for (let attempt = 0; step['waitForHeadChange'] && r.currentRunId === chainRef(step['waitForHeadChange']) && attempt < 100; attempt++) {

@@ -497,6 +497,29 @@ internal sealed class RunMode : IAsyncDisposable
                     };
                 }
 
+            case "updateChain":
+                {
+                    var updated = await client.UpdateChainAsync(
+                        ChainRef(step["namespaceId"]), ChainRef(step["chainId"]),
+                        (string)step["name"]!, step["args"]?.DeepClone(),
+                        new ChainUpdateOptions
+                        {
+                            UpdateKey = (string)step["updateKey"]!,
+                            ExpectedRunId = step["expectedRunId"] is null ? null : ChainRef(step["expectedRunId"]),
+                            ExpectedStateRevision = (long?)step["expectedStateRevision"],
+                            Traceparent = (string?)step["traceparent"],
+                        }, cancellationToken).ConfigureAwait(false);
+                    return new JsonObject
+                    {
+                        ["runId"] = updated.RunId, ["operation"] = updated.Operation,
+                        ["updateKey"] = updated.UpdateKey, ["status"] = updated.Status,
+                        ["result"] = JsonNode.Parse(updated.Result.GetRawText()),
+                        ["beforeStateRevision"] = updated.BeforeStateRevision,
+                        ["afterStateRevision"] = updated.AfterStateRevision,
+                        ["runVersion"] = updated.RunVersion, ["replayed"] = updated.Replayed,
+                    };
+                }
+
             case "inspectChain":
                 {
                     var namespaceId = ChainRef(step["namespaceId"]);

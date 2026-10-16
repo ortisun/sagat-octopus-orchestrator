@@ -1,0 +1,97 @@
+{
+  "canonical": {
+    "chain": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"chainPolicy\":{\"maxSegments\":3,\"timeoutMs\":86400000},\"entrypoint\":\"work\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"chain-query-handoff-runtime\"},\"nodes\":[{\"activity\":\"chain.work\",\"id\":\"work\",\"next\":\"rollover\",\"type\":\"activity\"},{\"id\":\"rollover\",\"input\":\"input.next\",\"state\":\"state\",\"type\":\"continueAsNew\"}],\"state\":{\"initial\":\"input.account\",\"queries\":{\"amount.read\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"expression\":\"state.amount\",\"resultSchema\":{\"maxLength\":64,\"type\":\"string\"}}},\"schema\":{\"additionalProperties\":false,\"properties\":{\"amount\":{\"maxLength\":64,\"type\":\"string\"}},\"required\":[\"amount\"],\"type\":\"object\"},\"updates\":{\"amount.replace\":{\"argsSchema\":{\"additionalProperties\":false,\"properties\":{\"nextState\":{\"additionalProperties\":false,\"properties\":{\"amount\":{\"maxLength\":64,\"type\":\"string\"}},\"required\":[\"amount\"],\"type\":\"object\"}},\"required\":[\"nextState\"],\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"result\":\"newState.amount\",\"resultSchema\":{\"maxLength\":64,\"type\":\"string\"},\"state\":\"args.nextState\",\"validate\":\"true\"}}}}"
+  },
+  "workflows": {
+    "chain": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "chainPolicy": {
+        "maxSegments": 3,
+        "timeoutMs": 86400000
+      },
+      "entrypoint": "work",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "chain-query-handoff-runtime"
+      },
+      "nodes": [
+        {
+          "activity": "chain.work",
+          "id": "work",
+          "next": "rollover",
+          "type": "activity"
+        },
+        {
+          "id": "rollover",
+          "input": "input.next",
+          "state": "state",
+          "type": "continueAsNew"
+        }
+      ],
+      "state": {
+        "initial": "input.account",
+        "queries": {
+          "amount.read": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "expression": "state.amount",
+            "resultSchema": {
+              "maxLength": 64,
+              "type": "string"
+            }
+          }
+        },
+        "schema": {
+          "additionalProperties": false,
+          "properties": {
+            "amount": {
+              "maxLength": 64,
+              "type": "string"
+            }
+          },
+          "required": [
+            "amount"
+          ],
+          "type": "object"
+        },
+        "updates": {
+          "amount.replace": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "nextState": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "amount": {
+                      "maxLength": 64,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "amount"
+                  ],
+                  "type": "object"
+                }
+              },
+              "required": [
+                "nextState"
+              ],
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "result": "newState.amount",
+            "resultSchema": {
+              "maxLength": 64,
+              "type": "string"
+            },
+            "state": "args.nextState",
+            "validate": "true"
+          }
+        }
+      }
+    }
+  }
+}

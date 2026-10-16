@@ -539,6 +539,62 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
     }
 
     /// <inheritdoc/>
+    public async Task<UpdateReceipt> UpdateChainAsync<TArgs>(
+        string namespaceId,
+        string chainId,
+        string name,
+        TArgs args,
+        ChainUpdateOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        var path = name is not null && DeclaredOperationNamePattern().IsMatch(name)
+            ? ChainPath(namespaceId, chainId) + "/updates/" + Uri.EscapeDataString(name)
+            : throw SagatException.Invalid("an operation name is 1 to 128 permitted characters and starts with a letter or digit");
+        if (string.IsNullOrEmpty(options.UpdateKey) || !UpdateKeyPattern().IsMatch(options.UpdateKey))
+        {
+            throw SagatException.Invalid("an update key is 1 to 128 printable ASCII characters");
+        }
+        if (options.ExpectedStateRevision is < 0)
+        {
+            throw SagatException.Invalid("expected state revision is non-negative");
+        }
+        var body = Wire.Write(writer =>
+        {
+            writer.WriteStartObject();
+            writer.WriteString("updateKey", options.UpdateKey);
+            writer.WritePropertyName("args");
+            Wire.WritePayload(writer, args, json);
+            if (options.ExpectedRunId is { } expectedRunId)
+            {
+                writer.WriteString("expectedRunId", ExpectedRunId(expectedRunId));
+            }
+            if (options.ExpectedStateRevision is { } revision)
+            {
+                writer.WriteNumber("expectedStateRevision", revision);
+            }
+            writer.WriteEndObject();
+        });
+        var answer = await transport.SendAsync(
+            new HttpCall("update chain", HttpMethod.Post, path, "/namespaces/{namespaceId}/chains/{chainId}/updates/{name}", [], body, null, TraceOf(options.Traceparent), SafeToRepeat: true),
+            cancellationToken).ConfigureAwait(false);
+        var raw = Object(answer.Body, "an update receipt");
+        if (Str(raw, "status") != "APPLIED")
+        {
+            throw new SagatException(SagatErrorCode.Protocol, "status is invalid in the answer");
+        }
+        if (!raw.TryGetProperty("result", out var result))
+        {
+            throw new SagatException(SagatErrorCode.Protocol, "result is missing from the answer");
+        }
+        return new UpdateReceipt(
+            Str(raw, "runId"), Str(raw, "operation"), Str(raw, "updateKey"), "APPLIED", result,
+            Revision(raw, "beforeStateRevision", 0), Revision(raw, "afterStateRevision", 1),
+            Revision(raw, "runVersion", 1),
+            raw.TryGetProperty("replayed", out var replayed) && replayed.ValueKind == JsonValueKind.True, raw);
+    }
+
+    /// <inheritdoc/>
     public async Task<SignalResult> SignalAsync<TPayload>(string runId, string name, TPayload payload, RequestOptions? options = null, CancellationToken cancellationToken = default)
     {
         options ??= new RequestOptions();

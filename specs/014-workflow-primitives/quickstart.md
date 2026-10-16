@@ -88,12 +88,16 @@ SAGAT_SDK_SCENARIO=loop-runtime cargo test -p sagat-tests --test sdk_conformance
 SAGAT_SDK_SCENARIO=approval-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
 SAGAT_SDK_SCENARIO=continuation-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
 SAGAT_SDK_SCENARIO=chain-query cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
+SAGAT_SDK_SCENARIO=chain-query-handoff cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
 ```
 
 The `collection-runtime` and `loop-runtime` scenarios execute their restricted public shapes
 through PostgreSQL, the scheduler and worker protocol 1.5 in every language. `chain-query` starts
-a public stateful chain and queries its initial head in every language. The builder commands
-compare authored documents only.
+a public stateful chain and queries its initial head in every language. `chain-query-handoff`
+completes the predecessor through worker protocol 1.5, queries the successor's transferred state,
+updates that state, replays the update key and rejects stale predecessor fences for both commands
+in every language.
+The builder commands compare authored documents only.
 
 The real PostgreSQL continuation checks publish through the normal codec, start through the public
 run service, complete activities through the worker boundary and let a fenced scheduler tick move
@@ -111,9 +115,9 @@ the reviewed server shapes; signal has only its negative no-matching-wait path t
 fixture is not runtime proof.
 
 The chain Query REST route resolves declared state on an existing chain. The five-SDK `chain-query`
-scenario exercises this on a public initial head. A PostgreSQL handoff test resolves and evaluates
-Query on the successor; HTTP/SDK Query after handoff and chain Update runtime parity still need
-coverage.
+scenario exercises this on a public initial head. The five-SDK `chain-query-handoff` scenario
+exercises Query and Update on the public successor after stateful handoff, including exact Update
+replay and a stale expected-head Query. Broader race and fault combinations remain open.
 For a chain with declared state, the request shape is:
 
 ```sh

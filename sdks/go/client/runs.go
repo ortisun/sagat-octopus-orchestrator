@@ -802,6 +802,55 @@ func (c *Client) Update(ctx context.Context, runID, name string, update UpdateRe
 	if err != nil {
 		return nil, err
 	}
+	return updateReceipt(raw)
+}
+
+// UpdateChain applies or replays a declared state update against the chain's current head.
+func (c *Client) UpdateChain(ctx context.Context, namespaceID, chainID, name string, update ChainUpdateRequest, opts ...CallOption) (*UpdateReceipt, error) {
+	path, err := chainPath(namespaceID, chainID)
+	if err != nil {
+		return nil, err
+	}
+	if !declaredOperationNamePattern.MatchString(name) {
+		return nil, sagat.Invalid("an operation name is 1 to 128 permitted characters and starts with a letter or digit")
+	}
+	if !updateKeyPattern.MatchString(update.UpdateKey) {
+		return nil, sagat.Invalid("an update key is 1 to 128 visible ASCII characters")
+	}
+	if update.ExpectedStateRevision != nil && *update.ExpectedStateRevision < 0 {
+		return nil, sagat.Invalid("expected state revision is non-negative")
+	}
+	body := map[string]any{"updateKey": update.UpdateKey, "args": update.Args}
+	if update.ExpectedRunID != "" {
+		if !uuidPattern.MatchString(update.ExpectedRunID) {
+			return nil, sagat.Invalid("an expected run id is a UUID")
+		}
+		body["expectedRunId"] = lower(update.ExpectedRunID)
+	}
+	if update.ExpectedStateRevision != nil {
+		body["expectedStateRevision"] = *update.ExpectedStateRevision
+	}
+	o := callOptionsOf(opts)
+	traceparent, err := c.trace(ctx, o.traceparent)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.do(ctx, request{
+		method: "POST", path: path + "/updates/" + url.PathEscape(name), body: body, hasBody: true,
+		traceparent: traceparent, repeatable: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	raw, err := object(resp.body, "an update receipt")
+	if err != nil {
+		return nil, err
+	}
+	return updateReceipt(raw)
+}
+
+func updateReceipt(raw map[string]json.RawMessage) (*UpdateReceipt, error) {
+	var err error
 	receipt := &UpdateReceipt{Raw: raw}
 	if receipt.RunID, err = requiredString(raw, "runId"); err != nil {
 		return nil, err

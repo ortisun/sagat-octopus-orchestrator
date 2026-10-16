@@ -181,6 +181,14 @@ type UpdateRequest struct {
 	ExpectedStateRevision *int64
 }
 
+// ChainUpdateRequest identifies one update across the chain and can fence its current head.
+type ChainUpdateRequest struct {
+	UpdateKey             string
+	Args                  any
+	ExpectedRunID         string
+	ExpectedStateRevision *int64
+}
+
 // UpdateReceipt is the durable applied result of a declared update.
 type UpdateReceipt struct {
 	RunID               string

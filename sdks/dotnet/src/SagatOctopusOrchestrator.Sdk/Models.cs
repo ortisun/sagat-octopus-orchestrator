@@ -249,6 +249,22 @@ public sealed record UpdateOptions
     public string? Traceparent { get; init; }
 }
 
+/// <summary>Options that identify one chain-scoped durable state update.</summary>
+public sealed record ChainUpdateOptions
+{
+    /// <summary>One to 128 printable ASCII characters, preserved across retries.</summary>
+    public required string UpdateKey { get; init; }
+
+    /// <summary>Require this run to remain the current head for a new update.</summary>
+    public string? ExpectedRunId { get; init; }
+
+    /// <summary>Apply only at this committed state revision.</summary>
+    public long? ExpectedStateRevision { get; init; }
+
+    /// <summary>An explicit W3C <c>traceparent</c>.</summary>
+    public string? Traceparent { get; init; }
+}
+
 /// <summary>The durable result of an applied or replayed declared update.</summary>
 public sealed record UpdateReceipt(
     string RunId,

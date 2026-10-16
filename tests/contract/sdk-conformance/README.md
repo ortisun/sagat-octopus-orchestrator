@@ -112,6 +112,7 @@ SAGAT_SDK_SCENARIO=approval-decisions cargo test -p sagat-tests --test sdk_confo
 SAGAT_SDK_SCENARIO=chain-inspect-cancel cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=scoped-identity cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=collection-runtime cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=chain-query-handoff cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 ```
 
 ## Pending scenarios
@@ -128,7 +129,10 @@ responses. Do not seed the private chain store or substitute the namespace slug.
 
 `chain-query.json` exercises the typed chain Query call and expected-head fence against a public
 stateful chain in all five SDK runners. Its activity remains unserved, so the observation covers
-the initial head; Query after handoff and chain Update remain separate runtime work.
+the initial head. `chain-query-handoff.json` completes that activity through worker protocol 1.5,
+observes the successor head, queries transferred state, updates it through the chain address,
+replays the update key and queries revision 1. An Update and a Query fenced to the predecessor
+return `CHAIN_HEAD_CHANGED`. The shared runtime and workflow goldens pass in all five SDKs.
 
 ## What each SDK ships
 
@@ -272,6 +276,7 @@ stop the scenario.
 | `query` | `run`, `name`, `args`, `traceparent?`, `token?` | `query` | `{runVersion, stateRevision, result}` |
 | `queryChain` | `namespaceId`, `chainId`, `name`, `args`, `expectedRunId?`, `traceparent?`, `token?` | `queryChain` | `{runId, runVersion, stateRevision, result}` |
 | `update` | `run`, `name`, `args`, `updateKey`, `expectedStateRevision?`, `traceparent?`, `token?` | `update` | the normalized durable receipt |
+| `updateChain` | `namespaceId`, `chainId`, `name`, `args`, `updateKey`, `expectedRunId?`, `expectedStateRevision?`, `traceparent?`, `token?` | `updateChain` | the normalized durable receipt, including the resolved `runId` and `replayed` flag |
 | `inspectChain` | `namespaceId`, `chainId`, `traceparent?`, `token?` | `inspectChain` | current head and ordered segments |
 | `signalChain` | `namespaceId`, `chainId`, `expectedRunId`, `name`, `payload`, `idempotencyKey?`, `traceparent?`, `token?` | `signalChain` | `{deliveredTo}` |
 | `cancelChain` | `namespaceId`, `chainId`, `expectedRunId`, `reason`, `idempotencyKey?`, `traceparent?`, `token?` | `cancelChain` | `{accepted: true}` |

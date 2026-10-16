@@ -103,9 +103,9 @@ or actor identity from the request body. The implemented run Query/Update, chain
 decision and chain inspect/signal/cancel shapes are mirrored in the canonical OpenAPI. The reviewed
 workflow shapes above create chains and hand off through the scheduler. The direct stateful shape
 also preserves the declared state digest, schema, size and revision in the successor transaction.
-Chain Query/Update have seeded PostgreSQL/HTTP evidence, and initial-head chain Query runs on all
-five SDKs. A public handoff test evaluates the successor Query snapshot; HTTP/SDK Query after
-handoff and public chain Update runtime parity remain pending. Paged segment
+Chain Query/Update have seeded PostgreSQL/HTTP evidence. Shared conformance in all five SDKs
+covers initial-head Query plus public Query and Update after stateful handoff, exact Update replay
+and a stale expected-head Query. Broader command races and faults remain open. Paged segment
 operations and wider continuation graphs remain gated.
 
 | Method/path | Body/query | Success result / authorization |

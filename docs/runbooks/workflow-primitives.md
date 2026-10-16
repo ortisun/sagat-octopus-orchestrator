@@ -142,9 +142,9 @@ reads either the complete old-head snapshot or the complete successor snapshot, 
 It appends no workflow event and schedules no task. Operation arguments and results remain limited
 to 256 KiB each, retained run data to 4 MiB and task context to 8 MiB. The immutable declaration's
 closed argument/result schemas and disclosure mode still apply; Query cannot read secrets or make
-network calls. The shared `chain-query` scenario publishes a direct stateful continuation and
-reads its initial head through all five SDKs. A public PostgreSQL handoff test resolves and
-evaluates Query on the successor; HTTP/SDK Query after a handoff still needs combined coverage.
+network calls. The shared `chain-query` scenario reads the initial head through all five SDKs;
+`chain-query-handoff` completes the predecessor and reads the successor's transferred snapshot
+through each public SDK. It also applies and replays a chain Update, then reads revision 1.
 
 A declared Update may address the chain with
 `POST /namespaces/{namespaceId}/chains/{chainId}/updates/{operationName}`. Keep one stable

@@ -874,6 +874,29 @@ public final class Runner {
                 result.put("runVersion", updated.runVersion()); result.put("replayed", updated.replayed());
                 return result;
             }
+            case "updateChain": {
+                dev.sagatoctopusorchestrator.sdk.ChainUpdateOptions options =
+                        dev.sagatoctopusorchestrator.sdk.ChainUpdateOptions.create(step.get("updateKey").asText());
+                if (step.has("expectedRunId")) {
+                    options.expectedRunId(chainRef(step.get("expectedRunId"), config, results));
+                }
+                if (step.has("expectedStateRevision")) {
+                    options.expectedStateRevision(step.get("expectedStateRevision").longValue());
+                }
+                if (step.has("traceparent")) options.traceparent(step.get("traceparent").asText());
+                dev.sagatoctopusorchestrator.sdk.UpdateReceipt updated = client.updateChain(
+                        chainRef(step.get("namespaceId"), config, results),
+                        chainRef(step.get("chainId"), config, results),
+                        step.get("name").asText(), step.get("args"), options);
+                ObjectNode result = F.objectNode();
+                result.put("runId", updated.runId()); result.put("operation", updated.operation());
+                result.put("updateKey", updated.updateKey()); result.put("status", updated.status());
+                result.set("result", updated.result());
+                result.put("beforeStateRevision", updated.beforeStateRevision());
+                result.put("afterStateRevision", updated.afterStateRevision());
+                result.put("runVersion", updated.runVersion()); result.put("replayed", updated.replayed());
+                return result;
+            }
             case "inspectChain": {
                 CallOptions options = CallOptions.create();
                 if (step.has("traceparent")) options.traceparent(step.get("traceparent").asText());

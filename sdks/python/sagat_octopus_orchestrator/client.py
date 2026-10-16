@@ -985,6 +985,55 @@ class SagatClient:
             raw=raw,
         )
 
+    async def update_chain(
+        self,
+        namespace_id: str,
+        chain_id: str,
+        name: str,
+        args: Any,
+        *,
+        update_key: str,
+        expected_run_id: str | None = None,
+        expected_state_revision: int | None = None,
+        traceparent: str | None = None,
+    ) -> UpdateReceipt:
+        """Applies or replays a declared update against the chain's current head."""
+        path = (
+            f"/namespaces/{quote(_namespace_id(namespace_id), safe='')}/chains/{quote(_run_id(chain_id), safe='')}"
+            f"/updates/{quote(_declared_operation_name(name), safe='')}"
+        )
+        if not isinstance(update_key, str) or not _UPDATE_KEY.fullmatch(update_key):
+            raise invalid("an update key is 1 to 128 printable ASCII characters")
+        if expected_state_revision is not None and (
+            not isinstance(expected_state_revision, int)
+            or isinstance(expected_state_revision, bool)
+            or not 0 <= expected_state_revision <= _MAX_I64
+        ):
+            raise invalid("expected state revision is non-negative")
+        body: dict[str, Any] = {"updateKey": update_key, "args": args}
+        if expected_run_id is not None:
+            body["expectedRunId"] = _run_id(expected_run_id)
+        if expected_state_revision is not None:
+            body["expectedStateRevision"] = expected_state_revision
+        response = await self._http.request(HttpRequest("POST", path, body=body, traceparent=self._trace(traceparent)))
+        raw = _object(response.body, "an update receipt")
+        if raw.get("status") != "APPLIED":
+            raise SagatError("PROTOCOL", "status is invalid in the answer")
+        if "result" not in raw:
+            raise SagatError("PROTOCOL", "result is missing from the answer")
+        return UpdateReceipt(
+            run_id=_str(raw, "runId"),
+            operation=_str(raw, "operation"),
+            update_key=_str(raw, "updateKey"),
+            status="APPLIED",
+            result=raw["result"],
+            before_state_revision=_revision(raw, "beforeStateRevision", 0),
+            after_state_revision=_revision(raw, "afterStateRevision", 1),
+            run_version=_revision(raw, "runVersion", 1),
+            replayed=raw.get("replayed") is True,
+            raw=raw,
+        )
+
     async def publish_event(
         self,
         event_type: str,

@@ -1083,3 +1083,30 @@ validation for this increment is recorded below.
 | `cargo clippy --workspace --all-targets --locked -- -D warnings`; `python3 scripts/check-architecture.py`; `git diff --check` | Passed |
 | `cargo fmt --all -- --check`; `cargo test -p sagat-tests --test contract_developer_experience --locked` | Passed after regenerating the schema-derived workflow reference; 8/8 documentation contract tests |
 | Focused public stateful handoff after the operation-reader change | Passed: 1/1 with real PostgreSQL, fenced scheduler and Query evaluation against the successor snapshot |
+
+## Public chain Query and Update after handoff (2026-10-15)
+
+The shared `chain-query-handoff` scenario publishes a direct stateful continuation through each
+SDK. A protocol 1.5 worker completes the predecessor, and the fenced scheduler commits the
+successor. The successor input contains `0.00`, but its declared state Query returns the
+transferred `19.99`. Chain Update changes that state to `24.99` at revision 1; an exact retry of
+the same key returns the original receipt with `replayed: true` and no second revision. Query
+then returns `24.99` at revision 1, while an Update and a Query fenced to the predecessor each
+return `409 CHAIN_HEAD_CHANGED`. The TypeScript runtime and workflow goldens were inspected before
+running the same scenario without blessing in all five SDKs against real PostgreSQL.
+
+| Check | Result |
+|---|---|
+| `SAGAT_SDK_SCENARIO=chain-query-handoff cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture` with Colima `DOCKER_HOST` and `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE` | Passed: five SDKs, 35.78 seconds; no golden blessing |
+| Runtime golden SHA-256 | `ea2e0d6f095a1a47a9975854acdb47bb1f001581d2176c0fe6be0eedd59c503d` |
+| Workflow golden SHA-256 | `da48fc543b51697127b6d6c301df18d4615570ab82a22be9a238a48ea42c0b60` |
+
+This establishes the public successor happy path, replay and stale Query/Update fences. It does not
+close the remaining crash, concurrent command and fault-order matrix or the broader workflow
+shapes still listed in `tasks.md`.
+
+Go `go test ./...`, Python `pytest` (255 tests), Ruff and Mypy, C# `dotnet test` (444 tests),
+Java `mvn test`, Rust formatting/Clippy/architecture and the eight documentation contract tests
+passed. TypeScript `npm test` twice timed out in the pre-existing worker cancellation test while
+other suites ran concurrently; the isolated test passed, and `node --test --test-concurrency=1`
+passed 124/124. No chain client test or conformance assertion failed.

@@ -157,6 +157,10 @@ export interface UpdateOptions {
   signal?: AbortSignal;
 }
 
+export interface ChainUpdateOptions extends UpdateOptions {
+  expectedRunId?: string;
+}
+
 export interface UpdateReceipt<TResult = unknown> {
   runId: string;
   operation: string;
@@ -685,6 +689,42 @@ export class SagatClient {
     if (raw['status'] !== 'APPLIED') {
       throw new SagatError({ code: 'PROTOCOL', message: 'status is invalid in the answer' });
     }
+    if (!Object.prototype.hasOwnProperty.call(raw, 'result')) {
+      throw new SagatError({ code: 'PROTOCOL', message: 'result is missing from the answer' });
+    }
+    return {
+      runId: str(raw, 'runId'), operation: str(raw, 'operation'), updateKey: str(raw, 'updateKey'),
+      status: 'APPLIED', result: raw['result'] as TResult,
+      beforeStateRevision: revision(raw, 'beforeStateRevision'),
+      afterStateRevision: revision(raw, 'afterStateRevision', 1),
+      runVersion: revision(raw, 'runVersion', 1), replayed: raw['replayed'] === true, raw,
+    };
+  }
+
+  /** Applies or replays a declared update against a chain's current head. */
+  async updateChain<TResult = unknown>(
+    namespaceId: string, chainId: string, name: string, args: unknown, options: ChainUpdateOptions,
+  ): Promise<UpdateReceipt<TResult>> {
+    if (!options || typeof options.updateKey !== 'string' || !UPDATE_KEY.test(options.updateKey)) {
+      throw invalid('an update key is 1 to 128 printable ASCII characters');
+    }
+    if (options.expectedStateRevision !== undefined
+      && (!Number.isSafeInteger(options.expectedStateRevision) || options.expectedStateRevision < 0)) {
+      throw invalid('expectedStateRevision is a non-negative safe integer');
+    }
+    const body: Record<string, unknown> = { updateKey: options.updateKey, args };
+    if (options.expectedRunId !== undefined) body['expectedRunId'] = runIdOf(options.expectedRunId);
+    if (options.expectedStateRevision !== undefined) body['expectedStateRevision'] = options.expectedStateRevision;
+    const response = await this.#http.request({
+      method: 'POST',
+      path: `/namespaces/${encodeURIComponent(namespaceIdOf(namespaceId))}/chains/${encodeURIComponent(runIdOf(chainId))}/updates/${encodeURIComponent(operationName(name))}`,
+      body,
+      traceparent: this.trace(options.traceparent),
+      signal: options.signal,
+      safeToRepeat: true,
+    });
+    const raw = object(response.body, 'an update receipt');
+    if (raw['status'] !== 'APPLIED') throw new SagatError({ code: 'PROTOCOL', message: 'status is invalid in the answer' });
     if (!Object.prototype.hasOwnProperty.call(raw, 'result')) {
       throw new SagatError({ code: 'PROTOCOL', message: 'result is missing from the answer' });
     }

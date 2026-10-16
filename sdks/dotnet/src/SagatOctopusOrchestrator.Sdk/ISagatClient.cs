@@ -54,6 +54,9 @@ public interface ISagatClient
     /// <summary>Applies or replays a declared durable state update.</summary>
     Task<UpdateReceipt> UpdateAsync<TArgs>(string runId, string name, TArgs args, UpdateOptions options, CancellationToken cancellationToken = default);
 
+    /// <summary>Applies or replays a declared update against the chain's current head.</summary>
+    Task<UpdateReceipt> UpdateChainAsync<TArgs>(string namespaceId, string chainId, string name, TArgs args, ChainUpdateOptions options, CancellationToken cancellationToken = default);
+
     /// <summary>Sends a signal to the steps of a run that wait for it; a signal nobody waits for is a <see cref="SagatErrorCode.Conflict"/>.</summary>
     Task<SignalResult> SignalAsync<TPayload>(string runId, string name, TPayload payload, RequestOptions? options = null, CancellationToken cancellationToken = default);
 
