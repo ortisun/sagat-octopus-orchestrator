@@ -1242,3 +1242,20 @@ reviewed runtime golden changed only by these two observation steps; its SHA-256
 `adc566af7ba7df74b4f73c407ba6e184f21e8c011551684ef9c8c7724158db87`.
 The adjusted scenario passed twice on its own across all five SDKs and again in the final
 complete matrix. This is active-scenario parity, not the still-open full WP-02–14 release gate.
+
+## Telemetry projection compatibility (2026-10-16)
+
+A newer journal event kind exposed a projection watermark defect: the decoder skipped the event,
+but the watermark stopped at the preceding known event. The scheduler would clear the backlog in
+an extra round by treating the remaining note as inconsistent, emitting a false warning and error
+metric. A real-PostgreSQL regression failed with watermark 4 instead of 5 before the fix. The
+projector now advances to the last persisted sequence in each bounded batch while deriving spans
+only from recognized events. The regression confirms that an unknown event leaves no decoded entry
+and the backlog clears in one projector round.
+
+The focused regression passed after the fix, and the full
+`integration_workflow_primitives` target passed 139/139 with `--test-threads=2`. Studio's
+unknown-node card tests passed 76/76 across `RunNodeCard` and `RunDetailPage`. The broader
+projection task remains open: this evidence covers unknown journal events, but does not prove
+that every future definition node kind has an explicit unsupported representation in telemetry.
+Rust formatting, focused Clippy with denied warnings and `git diff --check` passed.

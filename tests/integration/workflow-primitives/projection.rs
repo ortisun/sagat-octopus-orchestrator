@@ -12,7 +12,10 @@ use sagat_domain::quota::QuotaResource;
 use sagat_domain::workflow::NodeId;
 use sagat_infra_ir::JsonEvaluator;
 use sagat_infra_postgres::PgRunStore;
-use sagat_scheduler::{Keeper, KeeperSettings, Placement, Scheduler, SchedulerSettings};
+use sagat_scheduler::{
+    Keeper, KeeperSettings, Placement, ProjectorSettings, Scheduler, SchedulerSettings,
+    TelemetryProjector,
+};
 use sagat_telemetry::{AttrValue, WorkflowPrimitiveSpan, run_span_id};
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -386,4 +389,71 @@ async fn selected_route_is_visible_in_the_journal_delta() {
             )][..]
         )
     );
+}
+
+#[tokio::test]
+async fn telemetry_advances_past_an_unknown_journal_event() {
+    let w = world().await;
+    let name = format!("projection-future-event-{}", Uuid::now_v7());
+    let (workflow, _) = w.publish(switch_document(&name)).await;
+    let run = w.start(workflow, &json!({"amount": 7})).await;
+    let tenant = w.admin.tenant_id();
+    let last: i64 =
+        sqlx::query_scalar("SELECT max(seq) FROM run_events WHERE tenant_id=$1 AND run_id=$2")
+            .bind(tenant.as_uuid())
+            .bind(run.as_uuid())
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("last journal sequence");
+    let future = last + 1;
+    let mut tx = w.db.pool.begin().await.expect("begin future journal write");
+    sqlx::query(
+        "INSERT INTO run_events \
+         (tenant_id,run_id,seq,event_type,detail,actor,occurred_at) \
+         VALUES ($1,$2,$3,'future.node.observed','{}','system:projector-test',clock_timestamp())",
+    )
+    .bind(tenant.as_uuid())
+    .bind(run.as_uuid())
+    .bind(future)
+    .execute(&mut *tx)
+    .await
+    .expect("append newer event kind");
+    sqlx::query(
+        "UPDATE telemetry_pending SET head_seq=$3,behind_since=coalesce(behind_since,clock_timestamp()) \
+         WHERE tenant_id=$1 AND run_id=$2",
+    )
+    .bind(tenant.as_uuid())
+    .bind(run.as_uuid())
+    .bind(future)
+    .execute(&mut *tx)
+    .await
+    .expect("note new journal head");
+    tx.commit().await.expect("commit newer event");
+
+    let pending = w
+        .store
+        .pending_runs(100)
+        .await
+        .expect("pending telemetry")
+        .into_iter()
+        .find(|pending| pending.run_id == run)
+        .expect("run pending telemetry");
+    let projected = w
+        .store
+        .load_for_projection(&pending)
+        .await
+        .expect("load newer journal")
+        .expect("traceable run");
+    assert_eq!(projected.head_seq, future as u64);
+    assert!(
+        projected
+            .entries
+            .iter()
+            .all(|entry| entry.seq != future as u64)
+    );
+    let projector = TelemetryProjector::new(w.store.clone(), None, ProjectorSettings::default());
+    let round = projector.run_once().await;
+    assert!(!round.failed, "{round:?}");
+    assert_eq!(round.runs, 1);
+    assert_eq!(w.store.backlog().await.expect("projection backlog").runs, 0);
 }

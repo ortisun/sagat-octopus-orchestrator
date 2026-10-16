@@ -193,13 +193,9 @@ impl TelemetryStore for PgRunStore {
         .collect::<Result<_, StoreError>>()?;
 
         let applied = i64::try_from(pending.applied_seq).map_err(|_| corrupt("sequence"))?;
-        let new = journal_rows(self, tenant, run, "seq > $3", applied, Some(BATCH_ENTRIES)).await?;
-        let mut head = pending.applied_seq;
-        let mut entries = Vec::with_capacity(new.len());
-        for entry in new {
-            head = head.max(entry.seq);
-            entries.push(entry);
-        }
+        let (entries, last_seen) =
+            journal_rows(self, tenant, run, "seq > $3", applied, Some(BATCH_ENTRIES)).await?;
+        let head = last_seen.unwrap_or(pending.applied_seq);
         let finishes = entries.iter().any(|e| {
             matches!(
                 e.event,
@@ -209,7 +205,9 @@ impl TelemetryStore for PgRunStore {
         // What the new entries need from the part already projected: the leases they close and,
         // when the run is over, the whole journal for the run's own span.
         let context = if finishes {
-            journal_rows(self, tenant, run, "seq <= $3", applied, None).await?
+            journal_rows(self, tenant, run, "seq <= $3", applied, None)
+                .await?
+                .0
         } else {
             let types: Vec<String> = CONTEXT_EVENTS.iter().map(|t| (*t).to_owned()).collect();
             sqlx::query(JOURNAL_CONTEXT)
@@ -337,23 +335,26 @@ async fn journal_rows(
     condition: &str,
     applied: i64,
     limit: Option<i64>,
-) -> Result<Vec<JournalEntry>, StoreError> {
+) -> Result<(Vec<JournalEntry>, Option<u64>), StoreError> {
     let sql = format!(
         "SELECT seq, event_type, node, detail, actor, occurred_at, \
          instance_path_nodes, instance_path_indices FROM run_events \
          WHERE tenant_id = $1 AND run_id = $2 AND {condition} ORDER BY seq LIMIT $4"
     );
-    sqlx::query(sqlx::AssertSqlSafe(sql))
+    let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
         .bind(tenant)
         .bind(run)
         .bind(applied)
         .bind(limit.unwrap_or(i64::MAX))
         .fetch_all(store.pool())
         .await
-        .map_err(store_error)?
+        .map_err(store_error)?;
+    let last_seen = rows.last().map(|row| seq(col(row, "seq")?)).transpose()?;
+    let entries = rows
         .iter()
         .filter_map(|r| entry_from_row(r).transpose())
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((entries, last_seen))
 }
 
 /// One journal row as an entry; `None` for an event this version does not know (a journal written
