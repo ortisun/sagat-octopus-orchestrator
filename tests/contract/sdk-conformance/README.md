@@ -113,6 +113,7 @@ SAGAT_SDK_SCENARIO=chain-inspect-cancel cargo test -p sagat-tests --test sdk_con
 SAGAT_SDK_SCENARIO=scoped-identity cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=collection-runtime cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=chain-query-handoff cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=chain-final-success cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 ```
 
 ## Pending scenarios
@@ -135,6 +136,11 @@ replays the update key and queries revision 1. An Update and a Query fenced to t
 return `CHAIN_HEAD_CHANGED`. The segment wait returns the predecessor; an early chain wait times
 out without changing it, and a later chain wait returns the committed `CANCELLED` final outcome
 after public chain cancellation. The shared runtime and workflow goldens pass in all five SDKs.
+
+`chain-final-success.json` publishes a conditional input-only continuation, completes both
+segments through worker protocol 1.5 and the scheduler, and requires `waitForChainCompletion`
+to return the successor's `SUCCEEDED` final outcome. The predecessor's segment wait still returns
+that predecessor. The reviewed runtime and workflow goldens pass in all five SDKs.
 
 ## What each SDK ships
 

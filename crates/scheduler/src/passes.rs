@@ -10,6 +10,7 @@ use sagat_application::approval_scheduler::{
 use sagat_application::chain_progress::{
     ChainCommandStore, ChainHandoffCommand, ChainHandoffWrite, ChainProgressError,
     ChainProgressStore, ChainRunTx, ContinuationPreparationError, ContinuationSelection,
+    LockedChainHead,
 };
 use sagat_application::definitions::{Applied, DefinitionStore, Idempotency};
 use sagat_application::entropy::Entropy;
@@ -226,6 +227,8 @@ pub enum ContinuationAdvanceError {
     NotContinuation,
     #[error("continuation expression evaluation failed")]
     Expression,
+    #[error("the continuation expression failed and finalized the chain")]
+    ExpressionFinalized,
     #[error("the continuation boundary exhausted its segment limit and finalized the chain")]
     ChainLimitFinalized,
     #[error(transparent)]
@@ -618,20 +621,38 @@ where
         };
         tx.commit().await?;
 
-        let input = self
-            .engine
-            .evaluator()
-            .child_input(Some(&input_expression), &data)
-            .map_err(|_| ContinuationAdvanceError::Expression)?;
-        let state = state_expression
-            .as_ref()
-            .map(|expression| {
-                self.engine
-                    .evaluator()
-                    .continuation_value(expression, &data)
-                    .map_err(|_| ContinuationAdvanceError::Expression)
-            })
-            .transpose()?;
+        let evaluated = (|| {
+            let input = self
+                .engine
+                .evaluator()
+                .child_input(Some(&input_expression), &data)
+                .map_err(|_| ContinuationAdvanceError::Expression)?;
+            let state = state_expression
+                .as_ref()
+                .map(|expression| {
+                    self.engine
+                        .evaluator()
+                        .continuation_value(expression, &data)
+                        .map_err(|_| ContinuationAdvanceError::Expression)
+                })
+                .transpose()?;
+            Ok::<_, ContinuationAdvanceError>((input, state))
+        })();
+        let (input, state) = match evaluated {
+            Ok(values) => values,
+            Err(ContinuationAdvanceError::Expression) => {
+                self.finalize_continuation_expression(
+                    view,
+                    chain,
+                    lease,
+                    expected_run_version,
+                    &info,
+                )
+                .await?;
+                return Err(ContinuationAdvanceError::ExpressionFinalized);
+            }
+            Err(error) => return Err(error),
+        };
         if state.is_some() != data.state_revision.is_some() {
             return Err(ContinuationAdvanceError::NotContinuation);
         }
@@ -713,6 +734,64 @@ where
             }
             Err(error) => Err(error.into()),
         }
+    }
+
+    async fn finalize_continuation_expression(
+        &self,
+        view: &View,
+        observed: LockedChainHead,
+        lease: Lease,
+        expected_run_version: u64,
+        info: &RunInfo,
+    ) -> Result<(), ContinuationAdvanceError>
+    where
+        S: ChainCommandStore + ChainProgressStore,
+        S::Tx: ChainRunTx,
+    {
+        let Some(mut tx) = self
+            .store
+            .begin_chain_head(observed.scope(), observed.chain_id())
+            .await?
+        else {
+            return Err(ContinuationAdvanceError::MissingChain);
+        };
+        let current = *tx.locked_chain()?;
+        if current.head() != observed.head()
+            || current.revision() != observed.revision()
+            || tx.parts().1.version() != expected_run_version
+        {
+            return Err(ContinuationAdvanceError::NotContinuation);
+        }
+        if !view.holds(&mut tx, &Hold::Lease(lease)).await? {
+            return Err(ContinuationAdvanceError::FenceUnavailable);
+        }
+        let mut effects = Effects::by(Actor::System("continuation"), info.trace_id.clone());
+        effects.audit = Some(AuditRecord::engine(
+            observed.scope().tenant_id(),
+            AuditAction::RunFinished,
+            ResourceType::Run,
+            observed.head().to_string(),
+            "continuation expression failed",
+            info.trace_id.clone(),
+            tx.now(),
+        ));
+        self.engine
+            .run(&mut tx, effects, |definition, state, now| {
+                Ok((
+                    (),
+                    execution::stop_run(
+                        definition,
+                        state,
+                        StopReason::Failed,
+                        Some(FailureCode::expression_error()),
+                        now,
+                    )?,
+                ))
+            })
+            .await?;
+        tx.commit().await?;
+        metrics::counter!("scheduler_continuation_expression_failures_total").increment(1);
+        Ok(())
     }
 
     async fn advance_collection_in_view(
@@ -2325,7 +2404,11 @@ where
                     )
                     .await
                 {
-                    Ok(_) | Err(ContinuationAdvanceError::ChainLimitFinalized) => Outcome::Done,
+                    Ok(_)
+                    | Err(
+                        ContinuationAdvanceError::ChainLimitFinalized
+                        | ContinuationAdvanceError::ExpressionFinalized,
+                    ) => Outcome::Done,
                     Err(
                         ContinuationAdvanceError::MissingChain
                         | ContinuationAdvanceError::NotContinuation

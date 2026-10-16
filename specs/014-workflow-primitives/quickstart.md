@@ -89,6 +89,7 @@ SAGAT_SDK_SCENARIO=approval-builders cargo test -p sagat-tests --test sdk_confor
 SAGAT_SDK_SCENARIO=continuation-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
 SAGAT_SDK_SCENARIO=chain-query cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
 SAGAT_SDK_SCENARIO=chain-query-handoff cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
+SAGAT_SDK_SCENARIO=chain-final-success cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
 ```
 
 The `collection-runtime` and `loop-runtime` scenarios execute their restricted public shapes
@@ -98,6 +99,8 @@ completes the predecessor through worker protocol 1.5, queries the successor's t
 updates that state, replays the update key and rejects stale predecessor fences for both commands
 in every language. It distinguishes the predecessor's segment wait from a chain wait, verifies
 the latter times out without mutating state, then cancels the chain and receives its final outcome.
+`chain-final-success` demonstrates a normal two-segment chain that ends `SUCCEEDED` without a
+cancel command or another continuation.
 The builder commands compare authored documents only.
 
 The real PostgreSQL continuation checks publish through the normal codec, start through the public

@@ -1114,3 +1114,37 @@ Java `mvn test`, Rust formatting/Clippy/architecture and the eight documentation
 passed. TypeScript `npm test` twice timed out in the pre-existing worker cancellation test while
 other suites ran concurrently; the isolated test passed, and `node --test --test-concurrency=1`
 passed 124/124. No chain client test or conformance assertion failed.
+
+## Final chain outcome and transfer expression failure (2026-10-15)
+
+The `chain-final-success` scenario publishes the supported input-only conditional chain, completes
+two activity segments through worker protocol 1.5 and the fenced scheduler, and receives
+`SUCCEEDED` from `waitForChainCompletion` with a two-link lineage. The old run's
+`waitForCompletion` still returns its own terminal segment. The reviewed TypeScript golden matched
+Go, Python, C# and Java without blessing.
+
+Investigation of a continued segment left at `PENDING` found a deterministic transfer-expression
+failure: the sample successor had no `input.next` for its next unconditional handoff. Before the
+fix, a real PostgreSQL regression test recorded `failed: 1` on the scheduler tick while the chain
+remained running and the boundary stayed eligible for rediscovery. The scheduler now reacquires
+the chain and run locks, verifies the head, revision, run version and shard fence, then commits
+`EXPRESSION_ERROR`, `FAILED`/`FINAL`,
+audit and journal in one transaction. The test now passes and a second tick rediscovers nothing.
+The counter `scheduler_continuation_expression_failures_total` has no tenant, input or secret
+label; the audit reason contains no expression value.
+
+| Check | Result |
+|---|---|
+| `SAGAT_SDK_SCENARIO=chain-final-success cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture` with Colima Docker | Passed: five SDKs, 26.00 seconds before and 25.13 seconds after the scheduler fix; no golden blessing |
+| Runtime golden SHA-256 | `1078065be1da0a3d5e5962cbc553a6a23b9daa55e66eff169c16defef82290cb` |
+| Workflow golden SHA-256 | `0a78ece6f78b1824d987d9237dcfff7bdc468f0b14a6f834c91ab324a7ecd63e` |
+| Focused real-PostgreSQL `invalid_continuation_input_fails_the_chain_once` | Failed before the fix; passed after, including one typed failure event, one audit and no rediscovery |
+| Full real-PostgreSQL `integration_workflow_primitives` target | Passed: 137/137, 232.18 seconds after the scheduler fix |
+| Focused real-PostgreSQL `continuation_expression_failure_rolls_back_and_retry_finalizes_once` | Passed: injected `chain.finished` outbox failure rolled back run, journal and audit; retry finalized once |
+| Full real-PostgreSQL `fault_workflow_primitives` target | Passed: 24/24, 53.19 seconds after the scheduler fix |
+| Workflow-primitive and documentation contract targets | Passed: 26/26 and 8/8 after the fix |
+| Rust formatting, workspace Clippy with denied warnings, architecture and diff checks | Passed after the fix |
+
+The active shape still excludes declared state combined with a conditional graph, child chains,
+named bodies and other combinations listed in `tasks.md`. This validation does not close their
+fault/race or performance gates.

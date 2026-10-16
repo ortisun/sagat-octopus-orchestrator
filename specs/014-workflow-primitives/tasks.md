@@ -127,6 +127,8 @@ Update on a stateful successor, exact Update replay and stale expected-head Quer
 SDK conformance. Child continuation and the rest of the shared fault matrix remain open.
 Explicit chain-completion waits now run in all five SDKs against a continued predecessor,
 non-final timeout and final cancelled successor; the broader WP-10/11 matrix remains open.
+The shared `chain-final-success` scenario also reaches `SUCCEEDED` after two segments in all five
+SDKs. An invalid continuation input now has a durable `EXPRESSION_ERROR` regression test.
 
 **Independent test**: Three segments have one current head and unique successors; crash around each
 handoff and race commands; segment wait and chain wait differ intentionally; child parent waits FINAL.

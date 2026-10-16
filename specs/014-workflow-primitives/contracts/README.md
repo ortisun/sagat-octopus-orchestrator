@@ -31,6 +31,9 @@ creation writes the initial chain membership atomically. The scheduler evaluates
 commits the predecessor, successor, chain head, journal, audit and outbox under the chain and run
 compare-and-swap guards. Reaching `maxSegments` stops the current run with durable `CHAIN_LIMIT`,
 marks the segment `FINAL` and latches the chain outcome so another tick cannot repeat the boundary.
+An input/state transfer expression that fails evaluation stops the same current run with durable
+`EXPRESSION_ERROR`, audit and `FINAL` in one fenced transaction; a stale evaluated snapshot cannot
+fail a newer run version.
 Declared state transfer, bodies, top-level limits, triggers, `onError`, non-activity entrypoints and
 all wider graph combinations remain rejected at publication.
 

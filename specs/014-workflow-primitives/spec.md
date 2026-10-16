@@ -225,6 +225,9 @@ verify one successor per segment, one current chain member and independently ins
    no effect on either run.
 5. **Given** a parent awaiting a child that continues, **when** the old child segment ends, **then**
    the parent waits for the chain's final outcome instead of treating the handoff as child success.
+6. **Given** a continuation transfer expression that cannot be evaluated on a committed run
+   snapshot, **when** the scheduler advances it, **then** the current segment and chain finish once
+   with durable `EXPRESSION_ERROR`, journal, audit and outbox in the same fenced transaction.
 
 ### Edge Cases
 

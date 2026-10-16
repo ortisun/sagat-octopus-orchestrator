@@ -325,6 +325,98 @@ async fn chain_limit_outbox_failure_rolls_back_and_retry_finalizes_once() {
 }
 
 #[tokio::test]
+async fn continuation_expression_failure_rolls_back_and_retry_finalizes_once() {
+    let world = world().await;
+    let name = format!("chain-expression-rollback-{}", Uuid::now_v7());
+    let mut definition = continuation(&name, "chain.expression", 2);
+    definition["nodes"][1]["input"] = json!("input.next.value");
+    let (workflow, _) = world.publish(definition).await;
+    let chain = world.start(workflow, &json!({"next": {}})).await;
+    let session = world.session(&["chain.expression"]).await;
+    let scheduler = scheduler(&world, placement(&world, "expression").await);
+    let task = world.one_task(&session).await;
+    world
+        .complete(&session, &task, &json!({"done": true}))
+        .await
+        .expect("complete activity");
+
+    sqlx::raw_sql(
+        "CREATE FUNCTION reject_chain_expression_outbox() RETURNS trigger LANGUAGE plpgsql AS $$ \
+         BEGIN RAISE EXCEPTION 'injected chain expression outbox failure'; END $$; \
+         CREATE TRIGGER reject_chain_expression_outbox BEFORE INSERT ON event_outbox \
+         FOR EACH ROW WHEN (NEW.event_type='chain.finished') \
+         EXECUTE FUNCTION reject_chain_expression_outbox()",
+    )
+    .execute(&world.db.pool)
+    .await
+    .expect("install expression fault");
+    let rejected = scheduler.tick().await;
+    assert_eq!(rejected.continuations_advanced, 0, "{rejected:?}");
+    assert_eq!(rejected.failed, 1, "{rejected:?}");
+    let rolled_back: (Option<String>, String, Option<String>, String, i64, i64) = sqlx::query_as(
+        "SELECT chain.final_outcome,run.status,run.stop_code,step.status, \
+                (SELECT count(*) FROM run_events event WHERE event.tenant_id=run.tenant_id \
+                   AND event.run_id=run.id AND event.event_type='run.stop_requested'), \
+                (SELECT count(*) FROM audit_records audit WHERE audit.tenant_id=run.tenant_id \
+                   AND audit.resource_id=run.id::text AND audit.reason='continuation expression failed') \
+         FROM execution_chains chain \
+         JOIN runs run ON run.tenant_id=chain.tenant_id AND run.id=chain.current_run_id \
+         JOIN steps step ON step.tenant_id=run.tenant_id AND step.run_id=run.id \
+              AND step.node='rollover' AND cardinality(step.instance_path_nodes)=0 \
+         WHERE chain.tenant_id=$1 AND chain.chain_id=$2",
+    )
+    .bind(world.admin.tenant_id().as_uuid())
+    .bind(chain.as_uuid())
+    .fetch_one(&world.db.pool)
+    .await
+    .expect("rolled back expression failure");
+    assert_eq!(
+        rolled_back,
+        (None, "RUNNING".into(), None, "PENDING".into(), 0, 0)
+    );
+    sqlx::raw_sql(
+        "DROP TRIGGER reject_chain_expression_outbox ON event_outbox; \
+         DROP FUNCTION reject_chain_expression_outbox()",
+    )
+    .execute(&world.db.pool)
+    .await
+    .expect("remove expression fault");
+
+    let retried = scheduler.tick().await;
+    assert_eq!(retried.continuations_advanced, 1, "{retried:?}");
+    assert_eq!(retried.failed, 0, "{retried:?}");
+    let terminal: (Option<String>, String, Option<String>, i64, i64) = sqlx::query_as(
+        "SELECT chain.final_outcome,run.status,run.stop_code, \
+                (SELECT count(*) FROM run_events event WHERE event.tenant_id=run.tenant_id \
+                   AND event.run_id=run.id AND event.event_type='run.stop_requested' \
+                   AND event.detail->>'code'='EXPRESSION_ERROR'), \
+                (SELECT count(*) FROM audit_records audit WHERE audit.tenant_id=run.tenant_id \
+                   AND audit.resource_id=run.id::text AND audit.reason='continuation expression failed') \
+         FROM execution_chains chain \
+         JOIN runs run ON run.tenant_id=chain.tenant_id AND run.id=chain.current_run_id \
+         WHERE chain.tenant_id=$1 AND chain.chain_id=$2",
+    )
+    .bind(world.admin.tenant_id().as_uuid())
+    .bind(chain.as_uuid())
+    .fetch_one(&world.db.pool)
+    .await
+    .expect("terminal expression failure");
+    assert_eq!(
+        terminal,
+        (
+            Some("FAILED".into()),
+            "FAILED".into(),
+            Some("EXPRESSION_ERROR".into()),
+            1,
+            1
+        )
+    );
+    let repeated = scheduler.tick().await;
+    assert_eq!(repeated.continuations_advanced, 0, "{repeated:?}");
+    assert_eq!(repeated.failed, 0, "{repeated:?}");
+}
+
+#[tokio::test]
 async fn handoff_keeps_the_started_definition_version_after_a_new_publish() {
     let world = world().await;
     let name = format!("chain-version-pin-{}", Uuid::now_v7());

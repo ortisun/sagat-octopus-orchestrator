@@ -147,6 +147,9 @@ network calls. The shared `chain-query` scenario reads the initial head through 
 through each public SDK. It also applies and replays a chain Update, then reads revision 1.
 `waitForCompletion` ends at the continued predecessor; `waitForChainCompletion` polls the chain's
 authorized snapshot until `finalOutcome` is set. A client timeout leaves the chain running.
+The shared `chain-final-success` scenario also proves a conditional continuation reaches a
+`SUCCEEDED` final outcome after the second segment. A transfer expression failure ends its current
+head with durable `EXPRESSION_ERROR`; the scheduler does not keep retrying the same input.
 
 A declared Update may address the chain with
 `POST /namespaces/{namespaceId}/chains/{chainId}/updates/{operationName}`. Keep one stable

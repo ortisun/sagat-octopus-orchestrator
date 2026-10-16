@@ -483,6 +483,89 @@ async fn segment_limit_finalizes_once_and_is_not_rediscovered() {
     assert_eq!(audits, 1);
 }
 
+#[tokio::test]
+async fn invalid_continuation_input_fails_the_chain_once() {
+    let world = world().await;
+    let name = format!("public-chain-expression-{}", Uuid::now_v7());
+    let document = json!({
+        "apiVersion": "sagat-octopus-orchestrator.io/v1",
+        "kind": "Workflow",
+        "metadata": {"name": name},
+        "entrypoint": "work",
+        "nodes": [
+            {"id": "work", "type": "activity", "activity": "segment.work", "next": "rollover"},
+            {"id": "rollover", "type": "continueAsNew", "input": "input.next.value"}
+        ],
+        "chainPolicy": {"maxSegments": 2, "timeoutMs": 3_600_000}
+    });
+    let (workflow, _) = world.publish(document).await;
+    let chain = world.start(workflow, &json!({"next": {}})).await;
+    let session = world.session(&["segment.work"]).await;
+    let task = world.one_task(&session).await;
+    world
+        .complete(&session, &task, &json!({"ok": true}))
+        .await
+        .expect("complete activity");
+
+    let placement = Placement::new(format!("public-chain-expression-scheduler-{name}"));
+    Keeper::new(
+        world.store.clone(),
+        placement.clone(),
+        KeeperSettings {
+            ttl: StdDuration::from_secs(60),
+        },
+    )
+    .round()
+    .await
+    .expect("acquire scheduler shards");
+    let scheduler = Scheduler::new(
+        world.store.clone(),
+        Engine::new(JsonEvaluator),
+        SystemEntropy,
+        SchedulerSettings::default(),
+    )
+    .with_placement(placement);
+    let first = scheduler.tick().await;
+    assert_eq!(first.continuations_advanced, 1, "{first:?}");
+    assert_eq!(first.failed, 0, "{first:?}");
+    let second = scheduler.tick().await;
+    assert_eq!(second.continuations_advanced, 0, "{second:?}");
+    assert_eq!(second.failed, 0, "{second:?}");
+
+    let result: (String, Option<String>, i32) = sqlx::query_as(
+        "SELECT run.status,chain.final_outcome,chain.segment_count \
+         FROM execution_chains chain JOIN runs run \
+           ON run.tenant_id=chain.tenant_id AND run.id=chain.current_run_id \
+         WHERE chain.tenant_id=$1 AND chain.chain_id=$2",
+    )
+    .bind(world.admin.tenant_id().as_uuid())
+    .bind(chain.as_uuid())
+    .fetch_one(&world.db.pool)
+    .await
+    .expect("chain outcome");
+    assert_eq!(result, ("FAILED".to_owned(), Some("FAILED".to_owned()), 1));
+    let failures: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM run_events WHERE tenant_id=$1 AND run_id=$2 \
+           AND event_type='run.stop_requested' AND detail->>'code'='EXPRESSION_ERROR'",
+    )
+    .bind(world.admin.tenant_id().as_uuid())
+    .bind(chain.as_uuid())
+    .fetch_one(&world.db.pool)
+    .await
+    .expect("durable failure");
+    assert_eq!(failures, 1);
+    let audits: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_records WHERE tenant_id=$1 AND action='run.finished' \
+           AND resource_id=$2 AND reason='continuation expression failed'",
+    )
+    .bind(world.admin.tenant_id().as_uuid())
+    .bind(chain.to_string())
+    .fetch_one(&world.db.pool)
+    .await
+    .expect("failure audit");
+    assert_eq!(audits, 1);
+}
+
 fn digest(bytes: &[u8]) -> Digest {
     Digest::new(Sha256::digest(bytes).into())
 }
