@@ -1092,16 +1092,20 @@ successor. The successor input contains `0.00`, but its declared state Query ret
 transferred `19.99`. Chain Update changes that state to `24.99` at revision 1; an exact retry of
 the same key returns the original receipt with `replayed: true` and no second revision. Query
 then returns `24.99` at revision 1, while an Update and a Query fenced to the predecessor each
-return `409 CHAIN_HEAD_CHANGED`. The TypeScript runtime and workflow goldens were inspected before
+return `409 CHAIN_HEAD_CHANGED`. `waitForCompletion` returns the terminal predecessor segment;
+an early `waitForChainCompletion` returns `WAIT_TIMEOUT` without changing the chain. A public
+`cancelChain` then latches `CANCELLED`, which a second chain wait returns with the successor head.
+The TypeScript runtime and workflow goldens were inspected before
 running the same scenario without blessing in all five SDKs against real PostgreSQL.
 
 | Check | Result |
 |---|---|
-| `SAGAT_SDK_SCENARIO=chain-query-handoff cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture` with Colima `DOCKER_HOST` and `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE` | Passed: five SDKs, 35.78 seconds; no golden blessing |
-| Runtime golden SHA-256 | `ea2e0d6f095a1a47a9975854acdb47bb1f001581d2176c0fe6be0eedd59c503d` |
+| `SAGAT_SDK_SCENARIO=chain-query-handoff cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture` with Colima `DOCKER_HOST` and `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE` | Passed: five SDKs, 35.60 seconds; no golden blessing |
+| Runtime golden SHA-256 | `6874f91ffaf39e1a4972a7caea7e7129bcf7be4660f76dc1407867fab732461b` |
 | Workflow golden SHA-256 | `da48fc543b51697127b6d6c301df18d4615570ab82a22be9a238a48ea42c0b60` |
 
-This establishes the public successor happy path, replay and stale Query/Update fences. It does not
+This establishes the public successor happy path, replay, stale Query/Update fences and the
+segment-versus-chain completion distinction. It does not
 close the remaining crash, concurrent command and fault-order matrix or the broader workflow
 shapes still listed in `tasks.md`.
 

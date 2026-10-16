@@ -77,4 +77,5 @@ public interface ISagatClient
 
     /// <summary>Polls <see cref="GetAsync"/> until the run is in a terminal status or the timeout of <paramref name="options"/> passes.</summary>
     Task<Run> WaitForCompletionAsync(string runId, WaitOptions? options = null, CancellationToken cancellationToken = default);
+    Task<ChainInspection> WaitForChainCompletionAsync(string namespaceId, string chainId, WaitOptions? options = null, CancellationToken cancellationToken = default);
 }

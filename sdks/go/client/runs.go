@@ -1180,7 +1180,7 @@ func (c *Client) Events(ctx context.Context, runID string, options EventsOptions
 	return page, nil
 }
 
-// WaitOption adjusts WaitForCompletion.
+// WaitOption adjusts run and chain completion waits.
 type WaitOption func(*waitOptions)
 
 type waitOptions struct {
@@ -1213,6 +1213,33 @@ func (c *Client) WaitForCompletion(ctx context.Context, runID string, opts ...Wa
 		}
 		if !time.Now().Before(end) {
 			e := sagat.Errorf(sagat.CodeTransport, "the run did not finish within %d ms", o.timeout.Milliseconds())
+			e.Reason = "WAIT_TIMEOUT"
+			return nil, e
+		}
+		wait := time.Duration(float64(o.pollInterval) * (0.8 + rand.Float64()*0.4))
+		if err := backoff.Sleep(ctx, wait); err != nil {
+			return nil, sagat.NewError(sagat.CodeCancelled, "cancelled while waiting").WithCause(err)
+		}
+	}
+}
+
+// WaitForChainCompletion polls authorized chain snapshots until the final outcome commits.
+func (c *Client) WaitForChainCompletion(ctx context.Context, namespaceID, chainID string, opts ...WaitOption) (*ChainInspection, error) {
+	o := waitOptions{timeout: 60 * time.Second, pollInterval: 500 * time.Millisecond}
+	for _, opt := range opts {
+		opt(&o)
+	}
+	end := time.Now().Add(o.timeout)
+	for {
+		chain, err := c.InspectChain(ctx, namespaceID, chainID)
+		if err != nil {
+			return nil, err
+		}
+		if chain.FinalOutcome != "" {
+			return chain, nil
+		}
+		if !time.Now().Before(end) {
+			e := sagat.Errorf(sagat.CodeTransport, "the chain did not finish within %d ms", o.timeout.Milliseconds())
 			e.Reason = "WAIT_TIMEOUT"
 			return nil, e
 		}

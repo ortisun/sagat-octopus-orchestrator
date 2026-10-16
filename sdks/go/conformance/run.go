@@ -49,6 +49,14 @@ func runJSON(run *client.Run) object {
 	}
 }
 
+func chainJSON(chain *client.ChainInspection) object {
+	segments := make([]any, 0, len(chain.Segments))
+	for _, item := range chain.Segments {
+		segments = append(segments, object{"index": item.Index, "runId": item.RunID, "predecessorRunId": orNull(item.PredecessorRunID), "successorRunId": orNull(item.SuccessorRunID)})
+	}
+	return object{"chainId": chain.ChainID, "currentRunId": chain.CurrentRunID, "revision": chain.Revision, "cancelRequested": chain.CancelRequested, "finalOutcome": orNull(chain.FinalOutcome), "segments": segments}
+}
+
 func errorJSON(err error) object {
 	var se *sagat.Error
 	if !errors.As(err, &se) {
@@ -545,11 +553,7 @@ func playStep(ctx context.Context, step object, op string, c *client.Client, con
 				}
 			}
 		}
-		segments := make([]any, 0, len(result.Segments))
-		for _, item := range result.Segments {
-			segments = append(segments, object{"index": item.Index, "runId": item.RunID, "predecessorRunId": orNull(item.PredecessorRunID), "successorRunId": orNull(item.SuccessorRunID)})
-		}
-		return object{"chainId": result.ChainID, "currentRunId": result.CurrentRunID, "revision": result.Revision, "cancelRequested": result.CancelRequested, "finalOutcome": orNull(result.FinalOutcome), "segments": segments}, nil
+		return chainJSON(result), nil
 	case "signalChain":
 		namespaceID, err := chainRef(step["namespaceId"])
 		if err != nil {
@@ -634,6 +638,24 @@ func playStep(ctx context.Context, step object, op string, c *client.Client, con
 			return nil, err
 		}
 		return runJSON(run), nil
+	case "waitForChainCompletion":
+		namespaceID, err := chainRef(step["namespaceId"])
+		if err != nil {
+			return nil, err
+		}
+		chainID, err := chainRef(step["chainId"])
+		if err != nil {
+			return nil, err
+		}
+		timeout := 60 * time.Second
+		if v, ok := step["timeoutMs"]; ok {
+			timeout = asMillis(v)
+		}
+		chain, err := c.WaitForChainCompletion(ctx, namespaceID, chainID, client.WaitTimeout(timeout), client.PollInterval(100*time.Millisecond))
+		if err != nil {
+			return nil, err
+		}
+		return chainJSON(chain), nil
 	case "events":
 		id, err := runOf(step)
 		if err != nil {

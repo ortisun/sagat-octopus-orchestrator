@@ -125,6 +125,8 @@ PostgreSQL, fault and five-SDK checks. The direct stateful continuation now has 
 handoff evidence. Chain Query/Update have seeded-state transaction/HTTP checks. Public Query and
 Update on a stateful successor, exact Update replay and stale expected-head Query pass all-five
 SDK conformance. Child continuation and the rest of the shared fault matrix remain open.
+Explicit chain-completion waits now run in all five SDKs against a continued predecessor,
+non-final timeout and final cancelled successor; the broader WP-10/11 matrix remains open.
 
 **Independent test**: Three segments have one current head and unique successors; crash around each
 handoff and race commands; segment wait and chain wait differ intentionally; child parent waits FINAL.

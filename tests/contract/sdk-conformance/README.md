@@ -132,7 +132,9 @@ stateful chain in all five SDK runners. Its activity remains unserved, so the ob
 the initial head. `chain-query-handoff.json` completes that activity through worker protocol 1.5,
 observes the successor head, queries transferred state, updates it through the chain address,
 replays the update key and queries revision 1. An Update and a Query fenced to the predecessor
-return `CHAIN_HEAD_CHANGED`. The shared runtime and workflow goldens pass in all five SDKs.
+return `CHAIN_HEAD_CHANGED`. The segment wait returns the predecessor; an early chain wait times
+out without changing it, and a later chain wait returns the committed `CANCELLED` final outcome
+after public chain cancellation. The shared runtime and workflow goldens pass in all five SDKs.
 
 ## What each SDK ships
 
@@ -283,6 +285,7 @@ stop the scenario.
 | `signal` | `run`, `name`, `payload` | `signal` | `{deliveredTo}` |
 | `publishEvent` | `type`, `data`, `eventId?`, `correlationKey?` | `publishEvent` | `{eventId, status}` |
 | `waitForCompletion` | `run`, `timeoutMs` | `waitForCompletion` | the Run |
+| `waitForChainCompletion` | `namespaceId`, `chainId`, `timeoutMs` | `waitForChainCompletion` | final chain inspection; timeout records `TRANSPORT`/`WAIT_TIMEOUT` without changing the chain |
 | `events` | `run` | `events` | `{events: [{type, stepId, attempt}…]}` in order |
 | `sleep` | `ms` | — | none |
 | `control` | `action`, `run?`, `node?` | the control endpoint | none |

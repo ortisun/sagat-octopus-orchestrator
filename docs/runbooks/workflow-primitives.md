@@ -145,6 +145,8 @@ closed argument/result schemas and disclosure mode still apply; Query cannot rea
 network calls. The shared `chain-query` scenario reads the initial head through all five SDKs;
 `chain-query-handoff` completes the predecessor and reads the successor's transferred snapshot
 through each public SDK. It also applies and replays a chain Update, then reads revision 1.
+`waitForCompletion` ends at the continued predecessor; `waitForChainCompletion` polls the chain's
+authorized snapshot until `finalOutcome` is set. A client timeout leaves the chain running.
 
 A declared Update may address the chain with
 `POST /namespaces/{namespaceId}/chains/{chainId}/updates/{operationName}`. Keep one stable

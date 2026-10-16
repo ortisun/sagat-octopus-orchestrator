@@ -869,6 +869,31 @@ public final class SagatClient implements AutoCloseable {
         return async(() -> waitForCompletion(runId, options));
     }
 
+    /** Waits for the chain's final outcome, following committed head changes. */
+    public ChainInspection waitForChainCompletion(String namespaceId, String chainId, WaitOptions options) {
+        WaitOptions opts = options == null ? WaitOptions.create() : options;
+        long start = System.nanoTime();
+        long timeoutNanos = opts.timeout().toNanos();
+        long interval = opts.pollInterval().toMillis();
+        for (;;) {
+            ChainInspection chain = inspectChain(namespaceId, chainId, null);
+            if (chain.finalOutcome() != null) {
+                return chain;
+            }
+            if (System.nanoTime() - start >= timeoutNanos) {
+                throw SagatException.builder(ErrorCode.TRANSPORT, "the chain did not finish within " + opts.timeout().toMillis() + " ms")
+                        .reason("WAIT_TIMEOUT")
+                        .build();
+            }
+            RestClient.pause(Math.round(interval * (0.8 + ThreadLocalRandom.current().nextDouble() * 0.4)));
+        }
+    }
+
+    public CompletableFuture<ChainInspection> waitForChainCompletionAsync(
+            String namespaceId, String chainId, WaitOptions options) {
+        return async(() -> waitForChainCompletion(namespaceId, chainId, options));
+    }
+
     // ------------------------------------------------------------------------------------------ parsing
 
     private static JsonNode object(JsonNode value, String what) {

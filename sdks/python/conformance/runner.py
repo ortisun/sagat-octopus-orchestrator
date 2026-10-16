@@ -821,6 +821,20 @@ async def run(scenario: Obj, config: Obj) -> Obj:
                             run_of(step), timeout=step.get("timeoutMs", 60_000) / 1000, poll_interval=0.1
                         )
                     )
+                elif op == "waitForChainCompletion":
+                    chain = await client.wait_for_chain_completion(
+                        chain_ref(step["namespaceId"]), chain_ref(step["chainId"]),
+                        timeout=step.get("timeoutMs", 60_000) / 1000, poll_interval=0.1,
+                    )
+                    result = {
+                        "chainId": chain.chain_id, "currentRunId": chain.current_run_id, "revision": chain.revision,
+                        "cancelRequested": chain.cancel_requested, "finalOutcome": chain.final_outcome,
+                        "segments": [
+                            {"index": segment.index, "runId": segment.run_id,
+                             "predecessorRunId": segment.predecessor_run_id, "successorRunId": segment.successor_run_id}
+                            for segment in chain.segments
+                        ],
+                    }
                 elif op == "events":
                     journal = await client.events(run_of(step), limit=200)
                     result = {

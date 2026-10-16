@@ -858,4 +858,19 @@ export class SagatClient {
       await sleep(Math.round(interval * (0.8 + Math.random() * 0.4)), options.signal);
     }
   }
+
+  /** Waits for the chain's final outcome, following committed head changes. */
+  async waitForChainCompletion(namespaceId: string, chainId: string, options: WaitOptions = {}): Promise<ChainInspection> {
+    const timeout = options.timeoutMs ?? 60_000;
+    const deadline = Date.now() + timeout;
+    const interval = options.pollIntervalMs ?? 500;
+    for (;;) {
+      const chain = await this.inspectChain(namespaceId, chainId, { signal: options.signal });
+      if (chain.finalOutcome !== null) return chain;
+      if (Date.now() >= deadline) {
+        throw new SagatError({ code: 'TRANSPORT', message: `the chain did not finish within ${timeout} ms`, reason: 'WAIT_TIMEOUT' });
+      }
+      await sleep(Math.round(interval * (0.8 + Math.random() * 0.4)), options.signal);
+    }
+  }
 }

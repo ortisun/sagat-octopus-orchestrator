@@ -78,6 +78,28 @@
       }
     },
     {
+      "id": "segment-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": "<createdAt+86400s>",
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "SUCCEEDED",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
       "id": "query",
       "ok": true,
       "op": "queryChain",
@@ -162,6 +184,55 @@
       "op": "queryChain"
     },
     {
+      "error": {
+        "code": "TRANSPORT",
+        "message": "<text>",
+        "reason": "WAIT_TIMEOUT",
+        "remediation": "No answer from the server: check the URL, the network and the TLS settings; the call is retried when it is safe.",
+        "retryAfterMs": null,
+        "retryable": true,
+        "status": null,
+        "traceId": ""
+      },
+      "id": "early-wait",
+      "ok": false,
+      "op": "waitForChainCompletion"
+    },
+    {
+      "id": "cancel-chain",
+      "ok": true,
+      "op": "cancelChain",
+      "result": {
+        "accepted": true
+      }
+    },
+    {
+      "id": "chain-done",
+      "ok": true,
+      "op": "waitForChainCompletion",
+      "result": {
+        "cancelRequested": true,
+        "chainId": "<uuid:1>",
+        "currentRunId": "<uuid:4>",
+        "finalOutcome": "CANCELLED",
+        "revision": 3,
+        "segments": [
+          {
+            "index": 0,
+            "predecessorRunId": null,
+            "runId": "<uuid:1>",
+            "successorRunId": "<uuid:4>"
+          },
+          {
+            "index": 1,
+            "predecessorRunId": "<uuid:1>",
+            "runId": "<uuid:4>",
+            "successorRunId": null
+          }
+        ]
+      }
+    },
+    {
       "id": "stop-worker",
       "ok": true,
       "op": "stopWorker"
@@ -188,14 +259,14 @@
           "forward": null,
           "id": "work",
           "kind": "FORWARD",
-          "status": "READY",
+          "status": "CANCELLED",
           "type": "activity",
           "waitingOn": null
         }
       ],
       "paused": false,
       "runId": "<uuid:4>",
-      "status": "RUNNING"
+      "status": "CANCELLED"
     },
     {
       "nodes": [

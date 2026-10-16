@@ -1101,3 +1101,16 @@ class SagatClient:
             if time.monotonic() >= end:
                 raise SagatError("TRANSPORT", f"the run did not finish within {timeout:g} s", reason="WAIT_TIMEOUT")
             await asyncio.sleep(poll_interval * (0.8 + random.random() * 0.4))
+
+    async def wait_for_chain_completion(
+        self, namespace_id: str, chain_id: str, *, timeout: float = 60.0, poll_interval: float = 0.5
+    ) -> ChainInspection:
+        """Polls authorized chain snapshots until the final outcome commits."""
+        end = time.monotonic() + timeout
+        while True:
+            chain = await self.inspect_chain(namespace_id, chain_id)
+            if chain.final_outcome is not None:
+                return chain
+            if time.monotonic() >= end:
+                raise SagatError("TRANSPORT", f"the chain did not finish within {timeout:g} s", reason="WAIT_TIMEOUT")
+            await asyncio.sleep(poll_interval * (0.8 + random.random() * 0.4))

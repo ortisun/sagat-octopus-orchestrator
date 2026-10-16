@@ -506,6 +506,13 @@ async function run(scenario: Obj, config: Obj): Promise<Obj> {
           break;
         }
         case 'waitForCompletion': result = runJson(await client.waitForCompletion(runOf(step), { timeoutMs: step['timeoutMs'] ?? 60_000, pollIntervalMs: 100 })); break;
+        case 'waitForChainCompletion': {
+          const r = await client.waitForChainCompletion(chainRef(step['namespaceId']), chainRef(step['chainId']),
+            { timeoutMs: step['timeoutMs'] ?? 60_000, pollIntervalMs: 100 });
+          result = { chainId: r.chainId, currentRunId: r.currentRunId, revision: r.revision, cancelRequested: r.cancelRequested,
+            finalOutcome: r.finalOutcome, segments: r.segments };
+          break;
+        }
         case 'events': {
           const page = await client.events(runOf(step), { limit: 200 });
           result = { events: page.items.map((e) => ({ type: e.raw['eventType'], stepId: e.raw['stepId'] ?? null, attempt: e.raw['attempt'] ?? null })) };

@@ -96,7 +96,8 @@ through PostgreSQL, the scheduler and worker protocol 1.5 in every language. `ch
 a public stateful chain and queries its initial head in every language. `chain-query-handoff`
 completes the predecessor through worker protocol 1.5, queries the successor's transferred state,
 updates that state, replays the update key and rejects stale predecessor fences for both commands
-in every language.
+in every language. It distinguishes the predecessor's segment wait from a chain wait, verifies
+the latter times out without mutating state, then cancels the chain and receives its final outcome.
 The builder commands compare authored documents only.
 
 The real PostgreSQL continuation checks publish through the normal codec, start through the public

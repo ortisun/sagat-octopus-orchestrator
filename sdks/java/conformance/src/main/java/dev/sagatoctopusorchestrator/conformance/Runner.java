@@ -462,6 +462,20 @@ public final class Runner {
         return out;
     }
 
+    private static ObjectNode chainJson(dev.sagatoctopusorchestrator.sdk.ChainInspection chain) {
+        ObjectNode result = F.objectNode();
+        result.put("chainId", chain.chainId()); result.put("currentRunId", chain.currentRunId());
+        result.put("revision", chain.revision()); result.put("cancelRequested", chain.cancelRequested());
+        if (chain.finalOutcome() == null) result.putNull("finalOutcome"); else result.put("finalOutcome", chain.finalOutcome());
+        ArrayNode segments = result.putArray("segments");
+        chain.segments().forEach(item -> {
+            ObjectNode value = segments.addObject(); value.put("index", item.index()); value.put("runId", item.runId());
+            if (item.predecessorRunId() == null) value.putNull("predecessorRunId"); else value.put("predecessorRunId", item.predecessorRunId());
+            if (item.successorRunId() == null) value.putNull("successorRunId"); else value.put("successorRunId", item.successorRunId());
+        });
+        return result;
+    }
+
     private static ObjectNode errorJson(Throwable error) {
         ObjectNode out = F.objectNode();
         if (error instanceof SagatException e) {
@@ -911,17 +925,7 @@ public final class Runner {
                         chain = client.inspectChain(namespaceId, chainId, options);
                     }
                 }
-                ObjectNode result = F.objectNode();
-                result.put("chainId", chain.chainId()); result.put("currentRunId", chain.currentRunId());
-                result.put("revision", chain.revision()); result.put("cancelRequested", chain.cancelRequested());
-                if (chain.finalOutcome() == null) result.putNull("finalOutcome"); else result.put("finalOutcome", chain.finalOutcome());
-                ArrayNode segments = result.putArray("segments");
-                chain.segments().forEach(item -> {
-                    ObjectNode value = segments.addObject(); value.put("index", item.index()); value.put("runId", item.runId());
-                    if (item.predecessorRunId() == null) value.putNull("predecessorRunId"); else value.put("predecessorRunId", item.predecessorRunId());
-                    if (item.successorRunId() == null) value.putNull("successorRunId"); else value.put("successorRunId", item.successorRunId());
-                });
-                return result;
+                return chainJson(chain);
             }
             case "signalChain": {
                 dev.sagatoctopusorchestrator.sdk.ChainCommandOptions options =
@@ -969,6 +973,13 @@ public final class Runner {
                         WaitOptions.create()
                                 .timeout(Duration.ofMillis(step.has("timeoutMs") ? step.get("timeoutMs").asLong() : 60_000))
                                 .pollInterval(Duration.ofMillis(100))));
+            case "waitForChainCompletion": {
+                var chain = client.waitForChainCompletion(
+                        chainRef(step.get("namespaceId"), config, results), chainRef(step.get("chainId"), config, results),
+                        WaitOptions.create().timeout(Duration.ofMillis(step.has("timeoutMs") ? step.get("timeoutMs").asLong() : 60_000))
+                                .pollInterval(Duration.ofMillis(100)));
+                return chainJson(chain);
+            }
             case "events": {
                 JournalPage page = client.events(runOf(step, results), null, 200);
                 ObjectNode result = F.objectNode();

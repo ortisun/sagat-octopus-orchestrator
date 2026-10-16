@@ -535,16 +535,7 @@ internal sealed class RunMode : IAsyncDisposable
                             chain = await client.InspectChainAsync(namespaceId, chainId, options, cancellationToken).ConfigureAwait(false);
                         }
                     }
-                    return new JsonObject
-                    {
-                        ["chainId"] = chain.ChainId, ["currentRunId"] = chain.CurrentRunId, ["revision"] = chain.Revision,
-                        ["cancelRequested"] = chain.CancelRequested, ["finalOutcome"] = chain.FinalOutcome,
-                        ["segments"] = new JsonArray([.. chain.Segments.Select(item => (JsonNode?)new JsonObject
-                        {
-                            ["index"] = item.Index, ["runId"] = item.RunId, ["predecessorRunId"] = item.PredecessorRunId,
-                            ["successorRunId"] = item.SuccessorRunId,
-                        })]),
-                    };
+                    return ChainJson(chain);
                 }
 
             case "signalChain":
@@ -589,6 +580,14 @@ internal sealed class RunMode : IAsyncDisposable
                     RunOf(step),
                     new WaitOptions { Timeout = TimeSpan.FromMilliseconds((long?)step["timeoutMs"] ?? 60_000), PollInterval = TimeSpan.FromMilliseconds(100) },
                     cancellationToken).ConfigureAwait(false));
+            case "waitForChainCompletion":
+                {
+                    var chain = await client.WaitForChainCompletionAsync(
+                        ChainRef(step["namespaceId"]), ChainRef(step["chainId"]),
+                        new WaitOptions { Timeout = TimeSpan.FromMilliseconds((long?)step["timeoutMs"] ?? 60_000), PollInterval = TimeSpan.FromMilliseconds(100) },
+                        cancellationToken).ConfigureAwait(false);
+                    return ChainJson(chain);
+                }
             case "events":
                 {
                     var page = await client.EventsAsync(RunOf(step), limit: 200, cancellationToken: cancellationToken).ConfigureAwait(false);
@@ -747,6 +746,17 @@ internal sealed class RunMode : IAsyncDisposable
         ["correlationId"] = run.CorrelationId,
         ["depth"] = run.Depth,
         ["parent"] = run.Parent is { } parent ? new JsonObject { ["runId"] = parent.RunId, ["node"] = parent.Node, ["cancelPolicy"] = parent.CancelPolicy } : null,
+    };
+
+    private static JsonObject ChainJson(ChainInspection chain) => new()
+    {
+        ["chainId"] = chain.ChainId, ["currentRunId"] = chain.CurrentRunId, ["revision"] = chain.Revision,
+        ["cancelRequested"] = chain.CancelRequested, ["finalOutcome"] = chain.FinalOutcome,
+        ["segments"] = new JsonArray([.. chain.Segments.Select(item => (JsonNode?)new JsonObject
+        {
+            ["index"] = item.Index, ["runId"] = item.RunId, ["predecessorRunId"] = item.PredecessorRunId,
+            ["successorRunId"] = item.SuccessorRunId,
+        })]),
     };
 
     /// <summary>An instant as the harness requires it: UTC, with a Z, whatever the time zone of the process.</summary>

@@ -416,7 +416,7 @@ public sealed record OperateOptions
     public long? ExpectedRunVersion { get; init; }
 }
 
-/// <summary>Options of <see cref="ISagatClient.WaitForCompletionAsync"/>.</summary>
+/// <summary>Options of run and chain completion waits.</summary>
 public sealed record WaitOptions
 {
     /// <summary>How long to wait for a terminal status. 60 s by default.</summary>

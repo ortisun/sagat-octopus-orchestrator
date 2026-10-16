@@ -769,6 +769,32 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
         }
     }
 
+    /// <inheritdoc/>
+    public async Task<ChainInspection> WaitForChainCompletionAsync(string namespaceId, string chainId, WaitOptions? options = null, CancellationToken cancellationToken = default)
+    {
+        options ??= new WaitOptions();
+        var clock = Stopwatch.StartNew();
+        for (; ; )
+        {
+            var chain = await InspectChainAsync(namespaceId, chainId, cancellationToken: cancellationToken).ConfigureAwait(false);
+            if (chain.FinalOutcome is not null)
+            {
+                return chain;
+            }
+
+            if (clock.Elapsed >= options.Timeout)
+            {
+                throw new SagatException(
+                    SagatErrorCode.Transport,
+                    $"the chain did not finish within {((long)options.Timeout.TotalMilliseconds).ToString(CultureInfo.InvariantCulture)} ms",
+                    reason: "WAIT_TIMEOUT");
+            }
+
+            var pause = TimeSpan.FromMilliseconds(Math.Round(options.PollInterval.TotalMilliseconds * (0.8 + (Random.Shared.NextDouble() * 0.4))));
+            await Task.Delay(pause, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
     // ------------------------------------------------------------------------------------------ helpers
 
     /// <summary>The path of a run: its id is a UUID (SPEC section 10), so nothing in it can be a dot segment, a slash or a query.</summary>

@@ -183,8 +183,9 @@ not caller timestamps. The server supplies all outcome timestamps.
 | Cancel | Cancels only that nonterminal run; a terminal old segment is unchanged | Sets chain cancel latch and cancels current run; no later continuation can pass the latch. |
 | Child completion | Parent's child instance follows its child chain | Intermediate continued segments emit no parent completion; final outcome is applied once. |
 
-`waitForChainCompletion` is a planned language-idiomatic addition; existing `waitForCompletion`
-behavior (where provided) and polling helpers remain segment waits. Documentation must not label
+`waitForChainCompletion` is available in all five SDKs and polls authorized chain snapshots until
+`finalOutcome` is present; its timeout only stops the client wait. Existing `waitForCompletion`
+behavior and polling helpers remain segment waits. Documentation must not label
 an old run's SUCCEEDED as final chain success. No automatic redirect on a 409 or hidden retry with a
 new key. Signal and cancel require `expectedRunId`, so a delayed caller never applies its command
 to a replacement head. Chain Query and Update make the precondition optional because each locks the
