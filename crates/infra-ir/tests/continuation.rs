@@ -94,6 +94,78 @@ fn conditional_document() -> Value {
     })
 }
 
+fn waiting_document() -> Value {
+    json!({
+        "apiVersion": "sagat-octopus-orchestrator.io/v1",
+        "kind": "Workflow",
+        "metadata": {"name": "waiting-continuation-published"},
+        "entrypoint": "prepare",
+        "nodes": [
+            {"id": "prepare", "type": "activity", "activity": "chain.prepare", "next": "release"},
+            {
+                "id": "release", "type": "waitEvent", "eventType": "chain.release",
+                "correlationExpr": "input.key", "timeoutMs": 600000, "next": "rollover"
+            },
+            {"id": "rollover", "type": "continueAsNew", "input": "input"}
+        ],
+        "chainPolicy": {"maxSegments": 3, "timeoutMs": 86_400_000}
+    })
+}
+
+#[test]
+fn publishes_an_event_wait_after_an_activity_followed_by_continuation() {
+    let parsed = JsonIrCodec
+        .parse(waiting_document().to_string().as_bytes())
+        .expect("waiting continuation is publishable");
+    assert!(matches!(
+        parsed
+            .definition
+            .node(&NodeId::parse("release").expect("node"))
+            .expect("wait")
+            .kind(),
+        NodeKind::WaitEvent { .. }
+    ));
+    assert!(matches!(
+        parsed
+            .definition
+            .node(&NodeId::parse("rollover").expect("node"))
+            .expect("continuation")
+            .kind(),
+        NodeKind::ContinueAsNew { state: None, .. }
+    ));
+}
+
+#[test]
+fn publication_keeps_other_waiting_continuation_shapes_closed() {
+    let mut timeout_route = waiting_document();
+    timeout_route["nodes"][1]["onTimeout"] = json!("rollover");
+    assert!(
+        JsonIrCodec
+            .parse(timeout_route.to_string().as_bytes())
+            .is_err()
+    );
+
+    let mut lookback = waiting_document();
+    lookback["nodes"][1]["lookbackMs"] = json!(1);
+    assert!(JsonIrCodec.parse(lookback.to_string().as_bytes()).is_err());
+
+    let mut stateful = waiting_document();
+    stateful["state"] = json!({"schema": {"type": "integer"}, "initial": "input.initial"});
+    stateful["nodes"][2]["state"] = json!("state");
+    assert!(JsonIrCodec.parse(stateful.to_string().as_bytes()).is_err());
+
+    let mut extra_node = waiting_document();
+    extra_node["nodes"]
+        .as_array_mut()
+        .expect("nodes")
+        .push(json!({"id": "done", "type": "end"}));
+    assert!(
+        JsonIrCodec
+            .parse(extra_node.to_string().as_bytes())
+            .is_err()
+    );
+}
+
 #[test]
 fn publishes_only_the_proven_activity_to_continuation_shape() {
     let document = published_document();

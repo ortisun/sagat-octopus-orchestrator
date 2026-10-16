@@ -74,9 +74,10 @@ The setting is audited, ceiling checked and shared by collection and loop iterat
 namespace in the tenant. Its default operator ceiling is 1,024 active iterations; raising that
 ceiling is a separate operator action.
 
-The server also accepts a bounded root approval with basic nodes and two closed continuation graphs: `activity -> continueAsNew`, and
-`activity -> condition -> (continueAsNew | end)`. The direct form may transfer the exact declared
-`state` snapshot with its input. The conditional form remains input-only; bodies, top-level limits,
+The server also accepts a bounded root approval with basic nodes and three closed continuation graphs: `activity -> continueAsNew`,
+`activity -> condition -> (continueAsNew | end)`, and `activity -> waitEvent -> continueAsNew`.
+The direct and conditional forms may transfer the exact declared `state` snapshot with their input.
+The wait form transfers input only; bodies, top-level limits,
 triggers and wider graphs fail publication. Run the current builder
 parity checks with:
 
@@ -91,6 +92,7 @@ SAGAT_SDK_SCENARIO=chain-query cargo test -p sagat-tests --test sdk_conformance 
 SAGAT_SDK_SCENARIO=chain-query-handoff cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
 SAGAT_SDK_SCENARIO=chain-final-success cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
 SAGAT_SDK_SCENARIO=chain-state-final-success cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
+SAGAT_SDK_SCENARIO=chain-commands cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
 ```
 
 The `collection-runtime` and `loop-runtime` scenarios execute their restricted public shapes
@@ -116,10 +118,10 @@ cargo test -p sagat-tests --test integration_workflow_primitives --locked chain_
 cargo test -p sagat-tests --test integration_workflow_primitives --locked chains_http -- --nocapture
 ```
 
-The five-SDK chain command scenario remains pending because its signal-controlled wait graph is
-outside the published continuation subset. Typed inspect and cancel can address chains created by
-the reviewed server shapes; signal has only its negative no-matching-wait path there. The pending
-fixture is not runtime proof.
+`chain-commands` runs a worker activity, waits for a signal, replays the same signal receipt,
+observes the committed successor head, rejects commands fenced to the predecessor, and cancels
+the successor. Its runtime golden passes in all five SDKs. A continuation whose entrypoint is
+itself `waitEvent` remains closed because successor scheduling assumes an activity entrypoint.
 
 The chain Query REST route resolves declared state on an existing chain. The five-SDK `chain-query`
 scenario exercises this on a public initial head. The five-SDK `chain-query-handoff` scenario

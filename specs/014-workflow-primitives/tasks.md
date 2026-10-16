@@ -131,6 +131,9 @@ The shared `chain-final-success` scenario also reaches `SUCCEEDED` after two seg
 SDKs. An invalid continuation input now has a durable `EXPRESSION_ERROR` regression test.
 The restricted conditional graph can now transfer the exact declared state and finish normally;
 the `chain-state-final-success` scenario passes all five SDKs and a PostgreSQL integration test.
+An activity followed by a signal-controlled `waitEvent` can now continue after the signal.
+The shared `chain-commands` scenario passes all five SDKs for signal replay, head fencing,
+successor cancellation and tenant opacity. A direct `waitEvent` entrypoint remains closed.
 
 **Independent test**: Three segments have one current head and unique successors; crash around each
 handoff and race commands; segment wait and chain wait differ intentionally; child parent waits FINAL.

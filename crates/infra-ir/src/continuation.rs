@@ -322,6 +322,22 @@ pub(crate) fn parse_published(document: &Value) -> Result<ParsedContinuation, Ir
                 node.get("state").is_none()
             }
         });
+    let waiting = successor
+        .and_then(find_node)
+        .filter(|node| node.get("type").and_then(Value::as_str) == Some("waitEvent"))
+        .is_some_and(|wait| {
+            let continuation = wait.get("next").and_then(Value::as_str).and_then(find_node);
+            !has_declared_state
+                && nodes.len() == 3
+                && wait.get("onTimeout").is_none()
+                && wait
+                    .get("lookbackMs")
+                    .is_none_or(|value| value.as_u64() == Some(0))
+                && continuation.is_some_and(|node| {
+                    node.get("type").and_then(Value::as_str) == Some("continueAsNew")
+                        && node.get("state").is_none()
+                })
+        });
     let conditional = successor
         .and_then(find_node)
         .filter(|node| node.get("type").and_then(Value::as_str) == Some("condition"))
@@ -353,11 +369,11 @@ pub(crate) fn parse_published(document: &Value) -> Result<ParsedContinuation, Ir
                 && (continuation_and_end(true_node, false_node)
                     || continuation_and_end(false_node, true_node))
         });
-    if entry.get("onError").is_some() || (!direct && !conditional) {
+    if entry.get("onError").is_some() || (!direct && !waiting && !conditional) {
         return Err(IrError::Unsupported {
             node: entrypoint.chars().take(64).collect(),
             kind: "continuation".to_owned(),
-            reason: "the runtime supports an activity followed by a continuation that transfers input and, when declared, the exact state snapshot; one condition may select that continuation or an end",
+            reason: "the runtime supports an activity followed by a continuation that transfers input and, when declared, the exact state snapshot; one condition may select that continuation or an end; an input-only waitEvent after the entry activity may continue after its signal",
         });
     }
     parse(document)

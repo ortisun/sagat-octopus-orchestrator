@@ -716,8 +716,9 @@ second segment reaches `SUCCEEDED` and latches the chain outcome without another
 | `cargo test -p sagat-tests --test integration_workflow_primitives --locked chains_http -- --nocapture` with real PostgreSQL | Passed: 3/3 for atomic public start, tenant-scoped inspect/signal replay and cancellation CAS/replay |
 | `cargo clippy -p sagat-infra-ir -p sagat-scheduler -p sagat-infra-postgres --all-targets --locked -- -D warnings` | Passed |
 
-The five-SDK chain-command fixture stays pending because it needs a signal-controlled `waitEvent`
-graph, which is outside this publication subset. State transfer, child-chain creation, chain-level
+At this checkpoint the five-SDK chain-command fixture stayed pending because it needed a
+signal-controlled `waitEvent` graph. A later checkpoint below enables the activity-entry form.
+State transfer, child-chain creation, chain-level
 Query/Update and all other continuation graph combinations remain closed until their own runtime
 and conformance evidence exists.
 
@@ -1175,3 +1176,32 @@ also reached a final head and queried `19.99` from it despite `0.00` in the succ
 The earlier direct-only release gates above record the state at their dates; this section adds
 the conditional stateful shape. Child chains, bodies, triggers, broader graphs and their fault
 matrix remain open.
+
+## Signal-controlled continuation checkpoint (2026-10-16)
+
+The published v1 continuation subset now also accepts exactly
+`activity -> waitEvent -> continueAsNew`, with input transfer only. The wait has no timeout route or positive lookback.
+The entry activity remains necessary because the successor handoff transaction plans an activity
+task. Publication still rejects a direct `waitEvent` entrypoint and wider combinations.
+
+The shared `chain-commands` scenario uses the public workflow, worker, scheduler and chain HTTP
+routes. After a committed `wait.started`, the first signal and its exact-key replay both report
+delivery to `release`. The predecessor finishes `SUCCEEDED`, the new head differs, and fresh
+signal/cancel commands using the old expected run return `409 CHAIN_HEAD_CHANGED`. Cancelling the
+successor and replaying that key both succeed; the chain wait returns final `CANCELLED`. A foreign
+tenant sees `404`. No worker executes the successor before cancellation.
+
+| Check | Result |
+|---|---|
+| `cargo test -p sagat-infra-ir --test continuation --locked` | Passed: 11/11, including the accepted wait graph and rejected timeout route, lookback, state transfer and extra node |
+| `SAGAT_SDK_SCENARIO=chain-commands cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture` with real PostgreSQL and five SDKs | Passed: 1 aggregate scenario, five languages; the worker stops before signalling so the successor cannot execute |
+| `cargo test -p sagat-tests --test integration_workflow_primitives --locked chain_handoff -- --nocapture` with real PostgreSQL | Passed: 7/7 handoff regressions |
+| `cargo test -p sagat-tests --test contract_workflow_primitives --locked` | Passed: 26/26 |
+| `cargo test -p sagat-tests --test contract_developer_experience --locked` | Passed: 8/8 |
+| `cargo fmt --all -- --check`, focused Clippy with `-D warnings`, `git diff --check` | Passed |
+
+Reviewed normalized runtime golden SHA-256:
+`1c34eb1731cdc23722bb156469f93c4a0bb0a2bb36cea8f9a62ef68073bd4af0`.
+Reviewed workflow golden SHA-256:
+`489c5f7f15a36d450d5af4e6472ec63d99b0f7620770c47c11ca884ab8dc0176`.
+These checks do not close the broader chain fault, parent/child or direct root-wait gates.

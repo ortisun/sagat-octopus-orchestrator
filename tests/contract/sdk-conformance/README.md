@@ -115,6 +115,7 @@ SAGAT_SDK_SCENARIO=collection-runtime cargo test -p sagat-tests --test sdk_confo
 SAGAT_SDK_SCENARIO=chain-query-handoff cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=chain-final-success cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=chain-state-final-success cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=chain-commands cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 ```
 
 ## Pending scenarios
@@ -123,11 +124,11 @@ Files ending in `.json.pending` are reviewed contracts for behavior that the ser
 cannot execute yet. The harness deliberately ignores them, so they are never counted as passing evidence
 and have no golden result.
 
-`chain-commands.json.pending` exercises typed chain inspection, root-signal and cancellation calls
-implemented by all five SDKs, including expected-head fencing, exact command replay and tenant opacity.
-It remains pending because its signal-controlled `waitEvent` continuation graph is outside the
-published chain subset. The runner now resolves the namespace UUID and current head from public
-responses. Do not seed the private chain store or substitute the namespace slug.
+`chain-commands.json` publishes `activity -> waitEvent -> continueAsNew` and exercises chain
+inspection, signal and cancellation in all five SDKs. The golden requires exact signal/cancel
+replay, tenant opacity, successor head change, stale-head rejection and final cancellation.
+`chain-root-wait.json.pending` retains the separate direct-root-wait shape: successor creation
+still assumes an activity entrypoint, so that publication path is closed.
 
 `chain-query.json` exercises the typed chain Query call and expected-head fence against a public
 stateful chain in all five SDK runners. Its activity remains unserved, so the observation covers

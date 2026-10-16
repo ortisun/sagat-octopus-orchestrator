@@ -170,7 +170,10 @@ choosing whether to retry against the new head. Replaying the same command key a
 same receipt; a different body is a conflict. A published workflow in the restricted continuation
 subset creates the chain on start and hands off under a scheduler fence. At the segment limit, the
 run fails with `CHAIN_LIMIT` and the chain records `FINAL` once. Direct declared-state transfer is
-available; body-local continuation, triggers and broader graphs remain disabled. Exact-run commands remain bound to their
+available. The shared `chain-commands` scenario uses `activity -> waitEvent -> continueAsNew`:
+wait for `wait.started` before signalling, retain one command key for exact replay, inspect the
+new head after delivery, and send subsequent commands with that run ID. A direct `waitEvent`
+entrypoint, body-local continuation, triggers and broader graphs remain disabled. Exact-run commands remain bound to their
 segment and do not forward silently.
 
 ## Rollback and compatibility

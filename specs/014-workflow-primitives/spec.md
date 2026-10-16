@@ -14,8 +14,10 @@ continue a long-lived process without an ever-growing individual run.
 
 The accepted implementation scope includes US01–US07. US01 supplies practical examples of
 **existing** behavior. Bounded switch, run-addressed declared Query/Update and root approval have
-public runtime evidence. Continuation has a restricted public input-only path with an activity
-followed by continuation, or an activity and condition choosing continuation or a terminal end.
+public runtime evidence. Continuation has restricted public paths with an activity followed by
+continuation, an activity and condition choosing continuation or a terminal end, or an activity
+and signal-controlled `waitEvent` followed by input-only continuation. Direct and conditional
+continuation may transfer the exact declared state snapshot; direct-root waits remain closed.
 Collections have a restricted public path: one or more root `forEach` nodes ending at `end`, with
 each referenced body containing exactly one activity followed by one `return`. Admission remains
 disabled until an administrator sets the tenant-wide iteration-concurrency quota. A restricted
