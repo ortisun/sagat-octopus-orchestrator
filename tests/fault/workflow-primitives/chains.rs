@@ -227,6 +227,120 @@ async fn restart_recovers_the_successor_when_the_handoff_hint_is_lost() {
 }
 
 #[tokio::test]
+async fn signalled_wait_handoff_rolls_back_with_outbox_and_retries_once() {
+    let world = world().await;
+    let name = format!("chain-wait-rollback-{}", Uuid::now_v7());
+    let mut definition = continuation(&name, "chain.prepare", 3);
+    definition["nodes"][0]["next"] = json!("release");
+    definition["nodes"].as_array_mut().expect("nodes").insert(
+        1,
+        json!({
+            "id": "release", "type": "waitEvent", "eventType": "chain.release",
+            "correlationExpr": "input.key", "timeoutMs": 300_000, "next": "rollover"
+        }),
+    );
+    let (workflow, _) = world.publish(definition).await;
+    let chain = world
+        .start(
+            workflow,
+            &json!({"key": "order-1", "next": {"key": "order-2"}}),
+        )
+        .await;
+    let session = world.session(&["chain.prepare"]).await;
+    let task = world.one_task(&session).await;
+    world
+        .complete(&session, &task, &json!({"done": true}))
+        .await
+        .expect("complete entry activity");
+    let commands =
+        ChainCommandService::new(world.store.clone(), SystemClock, Engine::new(JsonEvaluator));
+    let delivered = commands
+        .signal(
+            &world.admin,
+            world.namespace.id(),
+            chain,
+            Some(chain),
+            "chain.release",
+            br#"{"released":true}"#,
+            "chain-wait-rollback-signal",
+            &ctx(),
+        )
+        .await
+        .expect("deliver signal");
+    assert_eq!(delivered.len(), 1);
+    assert_eq!(delivered[0].as_str(), "release");
+
+    sqlx::raw_sql(
+        "CREATE FUNCTION reject_signalled_handoff_outbox() RETURNS trigger LANGUAGE plpgsql AS $$ \
+         BEGIN RAISE EXCEPTION 'injected handoff outbox failure'; END $$; \
+         CREATE TRIGGER reject_signalled_handoff_outbox BEFORE INSERT ON event_outbox \
+         FOR EACH ROW WHEN (NEW.event_type='run.continued') \
+         EXECUTE FUNCTION reject_signalled_handoff_outbox()",
+    )
+    .execute(&world.db.pool)
+    .await
+    .expect("install handoff fault");
+    let scheduler = scheduler(&world, placement(&world, "wait-rollback").await);
+    let boundary = NodeId::parse("rollover").expect("continuation node");
+    assert!(
+        scheduler
+            .advance_continuation(
+                world.admin.tenant_id(),
+                world.namespace.id(),
+                chain,
+                &boundary
+            )
+            .await
+            .is_err()
+    );
+    let rolled_back: (Uuid, i32, i64) = sqlx::query_as(
+        "SELECT current_run_id,segment_count, \
+                (SELECT count(*) FROM run_events WHERE tenant_id=$1 AND run_id=$2 \
+                   AND event_type='continuation.selected') \
+         FROM execution_chains WHERE tenant_id=$1 AND chain_id=$2",
+    )
+    .bind(world.admin.tenant_id().as_uuid())
+    .bind(chain.as_uuid())
+    .fetch_one(&world.db.pool)
+    .await
+    .expect("rolled back handoff");
+    assert_eq!(rolled_back, (chain.as_uuid(), 1, 0));
+
+    sqlx::raw_sql(
+        "DROP TRIGGER reject_signalled_handoff_outbox ON event_outbox; \
+         DROP FUNCTION reject_signalled_handoff_outbox()",
+    )
+    .execute(&world.db.pool)
+    .await
+    .expect("remove handoff fault");
+    let advanced = scheduler
+        .advance_continuation(
+            world.admin.tenant_id(),
+            world.namespace.id(),
+            chain,
+            &boundary,
+        )
+        .await
+        .expect("retry handoff");
+    assert_eq!(advanced.predecessor(), chain);
+    assert!(!advanced.replayed());
+    let committed: (Uuid, i32, i64) = sqlx::query_as(
+        "SELECT current_run_id,segment_count, \
+                (SELECT count(*) FROM run_events WHERE tenant_id=$1 AND run_id=$2 \
+                   AND event_type='continuation.selected') \
+         FROM execution_chains WHERE tenant_id=$1 AND chain_id=$2",
+    )
+    .bind(world.admin.tenant_id().as_uuid())
+    .bind(chain.as_uuid())
+    .fetch_one(&world.db.pool)
+    .await
+    .expect("committed handoff");
+    assert_ne!(committed.0, chain.as_uuid());
+    assert_eq!((committed.1, committed.2), (2, 1));
+    world.assert_consistent(chain).await;
+}
+
+#[tokio::test]
 async fn chain_limit_outbox_failure_rolls_back_and_retry_finalizes_once() {
     let world = world().await;
     let name = format!("chain-limit-rollback-{}", Uuid::now_v7());

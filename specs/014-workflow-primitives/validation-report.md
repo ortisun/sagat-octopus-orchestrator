@@ -1211,3 +1211,12 @@ returns its original delivery after head rollover; a changed body under that key
 `IDEMPOTENCY_KEY_REUSED`; a new signal to the activity-ready successor returns `STATE_CONFLICT`
 without buffering. The worker is stopped before the first signal so the successor cannot race
 into another wait. The reviewed SHA-256 above covers these added observations.
+
+A real PostgreSQL fault test now injects failure at the `run.continued` outbox insert after the
+signal has committed. The whole handoff rolls back, leaving one original head, one segment and no
+`continuation.selected` event; removing the fault lets a retry commit exactly one successor.
+The full integration target passed 138/138 with `--test-threads=2`, and the fault target passed
+25/25 with the same setting. The first full integration runs stopped at 116/138 and 130/138
+because the 30 GiB Colima Docker volume ran out of space while creating disposable PostgreSQL
+databases; those interrupted runs are not counted as passing. Unused Docker images were removed
+before the successful rerun. This environmental limit does not replace missing capacity tests.

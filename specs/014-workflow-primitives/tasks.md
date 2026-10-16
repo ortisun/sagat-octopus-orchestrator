@@ -135,7 +135,8 @@ An activity followed by a signal-controlled `waitEvent` can now continue after t
 The shared `chain-commands` scenario passes all five SDKs for signal replay, head fencing,
 successor cancellation and tenant opacity. It also verifies replay after rollover, key-body
 conflict and rejection of a signal to a head without a matching wait. A direct `waitEvent`
-entrypoint remains closed.
+entrypoint remains closed. A real PostgreSQL fault test now proves rollback and one retry when
+the outbox insert fails after a signal-controlled wait has released the continuation boundary.
 
 **Independent test**: Three segments have one current head and unique successors; crash around each
 handoff and race commands; segment wait and chain wait differ intentionally; child parent waits FINAL.
