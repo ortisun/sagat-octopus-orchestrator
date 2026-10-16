@@ -1220,3 +1220,25 @@ The full integration target passed 138/138 with `--test-threads=2`, and the faul
 because the 30 GiB Colima Docker volume ran out of space while creating disposable PostgreSQL
 databases; those interrupted runs are not counted as passing. Unused Docker images were removed
 before the successful rerun. This environmental limit does not replace missing capacity tests.
+
+## Five-SDK compatibility checkpoint (2026-10-16)
+
+The complete active SDK conformance matrix passed: 36 shared scenarios, each executed by
+TypeScript, Go, Python, C# and Java against the real API, scheduler, worker service and
+PostgreSQL. The final command was
+`cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture`
+with the Colima Docker socket; it passed its one aggregate test in 510.47 seconds.
+
+The first matrix run exposed 17 historical root-work scenarios with implicit worker versions:
+their goldens required protocol 1.4, while the current SDK default negotiated 1.5 and reported
+root instance identity. Each historical fixture now explicitly offers 1.4. The separate
+`protocol-negotiation` scenario still exercises 1, 1.4 and 1.5, and the primitive scenarios
+exercise 1.5. No historical golden was reblessed for this version change.
+
+The second matrix run found an independent race in `chain-query-handoff`: a still-running worker
+could lease the successor before cancellation in some languages. The scenario now observes the
+predecessor's committed `step.completed`, stops that worker, then waits for the new head. The
+reviewed runtime golden changed only by these two observation steps; its SHA-256 is
+`adc566af7ba7df74b4f73c407ba6e184f21e8c011551684ef9c8c7724158db87`.
+The adjusted scenario passed twice on its own across all five SDKs and again in the final
+complete matrix. This is active-scenario parity, not the still-open full WP-02–14 release gate.

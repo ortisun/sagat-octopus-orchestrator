@@ -35,6 +35,7 @@
   "workers": {
     "w1": {
       "workerName": "events-worker",
+      "protocolVersion": "1.4",
       "maxInflight": 1,
       "autostart": false,
       "heartbeatIntervalMs": 200,

@@ -55,6 +55,11 @@ is asymmetric:
    to a worker negotiated below `1.5`.
 4. Production negotiation of `1.5` does not itself open structured workflow publication.
 
+The shared conformance fixtures for established root-only behavior pin protocol `1.4` explicitly.
+Their reviewed worker logs intentionally lack an instance field. Primitive runtime fixtures use
+`1.5` where they test scoped identity, while `protocol-negotiation` exercises both versions in one
+scenario. This keeps old-worker compatibility observable after the SDK default advances.
+
 The shared `protocol-negotiation` scenario probes offers `1`, `1.0` through `1.5`, `1.9`, malformed
 text and incompatible majors in every SDK. It also runs one root workflow through a current `1.4`
 worker and through a worker offering `1.5`; both complete under the production adapter, with the

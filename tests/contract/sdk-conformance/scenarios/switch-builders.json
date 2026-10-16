@@ -88,6 +88,7 @@
   "workers": {
     "w1": {
       "workerName": "switch-worker",
+      "protocolVersion": "1.4",
       "maxInflight": 3,
       "heartbeatIntervalMs": 200,
       "activities": {

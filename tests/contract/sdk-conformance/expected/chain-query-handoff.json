@@ -52,6 +52,16 @@
       }
     },
     {
+      "id": "entry-complete",
+      "ok": true,
+      "op": "awaitJournal"
+    },
+    {
+      "id": "stop-worker",
+      "ok": true,
+      "op": "stopWorker"
+    },
+    {
       "id": "head",
       "ok": true,
       "op": "inspectChain",
@@ -231,11 +241,6 @@
           }
         ]
       }
-    },
-    {
-      "id": "stop-worker",
-      "ok": true,
-      "op": "stopWorker"
     }
   ],
   "serverState": [

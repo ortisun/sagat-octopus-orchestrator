@@ -66,6 +66,8 @@
     { "id": "start", "op": "start", "workflow": "chain", "input": { "account": { "amount": "19.99" }, "next": { "account": { "amount": "0.00" } } } },
     { "id": "initial", "op": "inspectChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}" },
     { "id": "start-worker", "op": "startWorker", "worker": "current" },
+    { "id": "entry-complete", "op": "awaitJournal", "run": "start", "eventType": "step.completed", "stepId": "work", "timeoutMs": 10000 },
+    { "id": "stop-worker", "op": "stopWorker", "worker": "current" },
     { "id": "head", "op": "inspectChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "waitForHeadChange": "{{currentRunId:initial}}" },
     { "id": "segment-done", "op": "waitForCompletion", "run": "start", "timeoutMs": 10000 },
     { "id": "query", "op": "queryChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "expectedRunId": "{{currentRunId:head}}", "name": "amount.read", "args": {} },
@@ -76,7 +78,6 @@
     { "id": "stale", "op": "queryChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "expectedRunId": "{{currentRunId:initial}}", "name": "amount.read", "args": {} },
     { "id": "early-wait", "op": "waitForChainCompletion", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "timeoutMs": 100 },
     { "id": "cancel-chain", "op": "cancelChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "expectedRunId": "{{currentRunId:head}}", "reason": "completed verification", "idempotencyKey": "cancel-{{unique}}" },
-    { "id": "chain-done", "op": "waitForChainCompletion", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "timeoutMs": 10000 },
-    { "id": "stop-worker", "op": "stopWorker", "worker": "current" }
+    { "id": "chain-done", "op": "waitForChainCompletion", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "timeoutMs": 10000 }
   ]
 }

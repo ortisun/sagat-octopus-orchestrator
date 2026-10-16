@@ -23,6 +23,10 @@ all five SDKs. It probes the accepted 1.x minors, malformed input and incompatib
 runs the same root activity through protocol 1, a retained 1.4 worker and the current 1.5 worker.
 The production adapter accepts 1.5 while a worker that offers 1.4 remains at 1.4. This scenario
 exercises additive negotiation and root compatibility; scoped identity has its own runtime scenario.
+The older root-work scenarios explicitly offer worker 1.4 so their reviewed goldens retain the
+pre-identity task/log shape. New primitive scenarios explicitly offer 1.5 where scoped identity
+is required. An omitted version uses the current SDK default and must not silently change the
+meaning of a historical golden when the SDK advances.
 
 ## Workflow-primitives scenarios
 
