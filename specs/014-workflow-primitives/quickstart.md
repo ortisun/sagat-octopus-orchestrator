@@ -90,6 +90,7 @@ SAGAT_SDK_SCENARIO=continuation-builders cargo test -p sagat-tests --test sdk_co
 SAGAT_SDK_SCENARIO=chain-query cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
 SAGAT_SDK_SCENARIO=chain-query-handoff cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
 SAGAT_SDK_SCENARIO=chain-final-success cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
+SAGAT_SDK_SCENARIO=chain-state-final-success cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
 ```
 
 The `collection-runtime` and `loop-runtime` scenarios execute their restricted public shapes
@@ -101,6 +102,8 @@ in every language. It distinguishes the predecessor's segment wait from a chain 
 the latter times out without mutating state, then cancels the chain and receives its final outcome.
 `chain-final-success` demonstrates a normal two-segment chain that ends `SUCCEEDED` without a
 cancel command or another continuation.
+`chain-state-final-success` adds declared state to that conditional shape. The successor input
+holds `0.00`, while its final Query returns the transferred `19.99` in all five SDKs.
 The builder commands compare authored documents only.
 
 The real PostgreSQL continuation checks publish through the normal codec, start through the public

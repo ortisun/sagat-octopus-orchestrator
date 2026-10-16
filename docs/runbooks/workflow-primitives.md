@@ -7,8 +7,8 @@ ends at `end`; every referenced body contains exactly one activity followed by o
 The restricted public loop shape uses an activity followed by a return in its body. Nested
 collections, triggers, structured-primitive combinations and broader body graphs remain closed.
 The public continuation subset accepts an activity followed by `continueAsNew`, including exact
-declared-state transfer, or an activity and condition that select an input-only continuation or
-`end`. Approval documents cannot combine
+declared-state transfer, or an activity and condition that select the same continuation or `end`.
+Approval documents cannot combine
 approval with parallel execution, declared state or another structured primitive yet.
 
 Collection admission has no implicit capacity. An administrator must configure the tenant-wide

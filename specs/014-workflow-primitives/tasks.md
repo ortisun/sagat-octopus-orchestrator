@@ -129,6 +129,8 @@ Explicit chain-completion waits now run in all five SDKs against a continued pre
 non-final timeout and final cancelled successor; the broader WP-10/11 matrix remains open.
 The shared `chain-final-success` scenario also reaches `SUCCEEDED` after two segments in all five
 SDKs. An invalid continuation input now has a durable `EXPRESSION_ERROR` regression test.
+The restricted conditional graph can now transfer the exact declared state and finish normally;
+the `chain-state-final-success` scenario passes all five SDKs and a PostgreSQL integration test.
 
 **Independent test**: Three segments have one current head and unique successors; crash around each
 handoff and race commands; segment wait and chain wait differ intentionally; child parent waits FINAL.

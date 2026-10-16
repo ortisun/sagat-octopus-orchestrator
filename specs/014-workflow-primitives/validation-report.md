@@ -1145,6 +1145,33 @@ label; the audit reason contains no expression value.
 | Workflow-primitive and documentation contract targets | Passed: 26/26 and 8/8 after the fix |
 | Rust formatting, workspace Clippy with denied warnings, architecture and diff checks | Passed after the fix |
 
-The active shape still excludes declared state combined with a conditional graph, child chains,
+At that checkpoint, the active shape still excluded declared state combined with a conditional
+graph, child chains,
 named bodies and other combinations listed in `tasks.md`. This validation does not close their
 fault/race or performance gates.
+
+## Conditional declared-state continuation (2026-10-15)
+
+The public parser now accepts the closed four-node graph `activity -> condition ->
+continueAsNew | end` when the continuation transfers the exact declared `state` snapshot. It
+still rejects a missing or alternate state expression, extra nodes, bodies, triggers and other
+unproven combinations. A real PostgreSQL test published the workflow, handed off from the first
+segment, proved the successor retained state `19` although its input declared `0`, then completed
+the successor with `SUCCEEDED`/`FINAL` and no further handoff. The reviewed shared SDK scenario
+also reached a final head and queried `19.99` from it despite `0.00` in the successor input.
+
+| Check | Result |
+|---|---|
+| `cargo test -p sagat-infra-ir --test continuation --locked` | Passed: 9/9, including conditional state transfer accepted and missing/alternate transfer rejected |
+| Focused real-PostgreSQL `conditional_stateful_continuation_transfers_state_and_finishes` | Passed: one handoff, exact state transfer, one final outcome and no rediscovery |
+| Full real-PostgreSQL `integration_workflow_primitives` target | Passed: 138/138, 230.07 seconds after conditional state transfer |
+| Full real-PostgreSQL `fault_workflow_primitives` target | Passed: 24/24, 51.62 seconds after conditional state transfer |
+| `SAGAT_SDK_SCENARIO=chain-state-final-success cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture` with Colima Docker | Passed: TypeScript, Go, Python, C# and Java without golden blessing, 25.42 seconds |
+| Runtime golden SHA-256 | `06f0247f38d0ec44df760b0c740b94f11c820ade9c4a26eb2046ccc92780ae40` |
+| Workflow golden SHA-256 | `79e8b0983c27c6c63787d6c2b1b5364b082d73bffe90738a2a6976aa979c73f3` |
+| Workflow-primitive and documentation contract targets | Passed: 26/26 and 8/8 |
+| Rust formatting, workspace Clippy with denied warnings, architecture and diff checks | Passed |
+
+The earlier direct-only release gates above record the state at their dates; this section adds
+the conditional stateful shape. Child chains, bodies, triggers, broader graphs and their fault
+matrix remain open.

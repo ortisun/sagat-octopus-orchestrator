@@ -25,8 +25,8 @@ rejected. The one combined continuation form described below is available.
 The continuation parser retains `chainPolicy` as a bounded domain policy and `continueAsNew` as a
 typed terminal with its input and optional state expressions. The public runtime accepts two closed
 root shapes: an activity followed directly by a continuation transferring input and, when declared,
-the exact `state` snapshot; or an activity followed by one condition that selects between an
-input-only continuation and an `end` without output. Run
+the exact `state` snapshot; or an activity followed by one condition that selects between the
+same continuation and an `end` without output. Run
 creation writes the initial chain membership atomically. The scheduler evaluates the transfer and
 commits the predecessor, successor, chain head, journal, audit and outbox under the chain and run
 compare-and-swap guards. Reaching `maxSegments` stops the current run with durable `CHAIN_LIMIT`,
@@ -34,7 +34,7 @@ marks the segment `FINAL` and latches the chain outcome so another tick cannot r
 An input/state transfer expression that fails evaluation stops the same current run with durable
 `EXPRESSION_ERROR`, audit and `FINAL` in one fenced transaction; a stale evaluated snapshot cannot
 fail a newer run version.
-Declared state transfer, bodies, top-level limits, triggers, `onError`, non-activity entrypoints and
+Arbitrary state transfer, bodies, top-level limits, triggers, `onError`, non-activity entrypoints and
 all wider graph combinations remain rejected at publication.
 
 The document adds a `bodies` map, optional `state` declarations, `chainPolicy` and optional
@@ -104,8 +104,8 @@ All paths are relative to the existing `/v1` REST base. New operations use exist
 namespace resolution, canonical error envelope and request/trace headers. They never accept tenant
 or actor identity from the request body. The implemented run Query/Update, chain Query/Update, approval
 decision and chain inspect/signal/cancel shapes are mirrored in the canonical OpenAPI. The reviewed
-workflow shapes above create chains and hand off through the scheduler. The direct stateful shape
-also preserves the declared state digest, schema, size and revision in the successor transaction.
+workflow shapes above create chains and hand off through the scheduler. Both stateful shapes
+preserve the declared state digest, schema, size and revision in the successor transaction.
 Chain Query/Update have seeded PostgreSQL/HTTP evidence. Shared conformance in all five SDKs
 covers initial-head Query plus public Query and Update after stateful handoff, exact Update replay
 and a stale expected-head Query. Broader command races and faults remain open. Paged segment

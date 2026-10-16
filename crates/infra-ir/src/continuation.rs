@@ -322,38 +322,42 @@ pub(crate) fn parse_published(document: &Value) -> Result<ParsedContinuation, Ir
                 node.get("state").is_none()
             }
         });
-    let conditional = !has_declared_state
-        && successor
-            .and_then(find_node)
-            .filter(|node| node.get("type").and_then(Value::as_str) == Some("condition"))
-            .is_some_and(|condition| {
-                let Some(if_true) = condition.get("ifTrue").and_then(Value::as_str) else {
-                    return false;
+    let conditional = successor
+        .and_then(find_node)
+        .filter(|node| node.get("type").and_then(Value::as_str) == Some("condition"))
+        .is_some_and(|condition| {
+            let Some(if_true) = condition.get("ifTrue").and_then(Value::as_str) else {
+                return false;
+            };
+            let Some(if_false) = condition.get("ifFalse").and_then(Value::as_str) else {
+                return false;
+            };
+            let Some(true_node) = find_node(if_true) else {
+                return false;
+            };
+            let Some(false_node) = find_node(if_false) else {
+                return false;
+            };
+            let continuation_and_end = |continuation: &Value, end: &Value| {
+                let transfers_declared_state = if has_declared_state {
+                    continuation.get("state").and_then(Value::as_str) == Some("state")
+                } else {
+                    continuation.get("state").is_none()
                 };
-                let Some(if_false) = condition.get("ifFalse").and_then(Value::as_str) else {
-                    return false;
-                };
-                let Some(true_node) = find_node(if_true) else {
-                    return false;
-                };
-                let Some(false_node) = find_node(if_false) else {
-                    return false;
-                };
-                let continuation_and_end = |continuation: &Value, end: &Value| {
-                    continuation.get("type").and_then(Value::as_str) == Some("continueAsNew")
-                        && continuation.get("state").is_none()
-                        && end.get("type").and_then(Value::as_str) == Some("end")
-                        && end.get("output").is_none()
-                };
-                nodes.len() == 4
-                    && (continuation_and_end(true_node, false_node)
-                        || continuation_and_end(false_node, true_node))
-            });
+                continuation.get("type").and_then(Value::as_str) == Some("continueAsNew")
+                    && transfers_declared_state
+                    && end.get("type").and_then(Value::as_str) == Some("end")
+                    && end.get("output").is_none()
+            };
+            nodes.len() == 4
+                && (continuation_and_end(true_node, false_node)
+                    || continuation_and_end(false_node, true_node))
+        });
     if entry.get("onError").is_some() || (!direct && !conditional) {
         return Err(IrError::Unsupported {
             node: entrypoint.chars().take(64).collect(),
             kind: "continuation".to_owned(),
-            reason: "the runtime supports an activity followed by a continuation that transfers input and, when declared, the exact state snapshot; input-only continuation may also be selected by one condition",
+            reason: "the runtime supports an activity followed by a continuation that transfers input and, when declared, the exact state snapshot; one condition may select that continuation or an end",
         });
     }
     parse(document)

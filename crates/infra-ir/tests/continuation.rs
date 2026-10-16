@@ -163,6 +163,25 @@ fn publishes_direct_continuation_with_exact_declared_state_transfer() {
 }
 
 #[test]
+fn publishes_conditional_continuation_with_exact_declared_state_transfer() {
+    let mut document = conditional_document();
+    document["state"] = json!({"schema": {"type": "integer"}, "initial": "input.initial"});
+    document["nodes"][2]["state"] = json!("state");
+    let bytes = document.to_string();
+    let parsed = JsonIrCodec
+        .parse(bytes.as_bytes())
+        .expect("conditional stateful continuation");
+    let operation_view = JsonIrCodec
+        .parse_declared_state(bytes.as_bytes())
+        .expect("operations read conditional continuation state");
+    assert_eq!(operation_view.parsed().digest, parsed.digest);
+    assert!(matches!(
+        parsed.definition.node(&NodeId::parse("rollover").expect("node")).expect("continuation").kind(),
+        NodeKind::ContinueAsNew { state: Some(state), .. } if state.as_str() == "state"
+    ));
+}
+
+#[test]
 fn publication_rejects_unproven_continuation_combinations() {
     let mut entrypoint = published_document();
     entrypoint["entrypoint"] = json!("rollover");
@@ -191,11 +210,22 @@ fn publication_rejects_unproven_continuation_combinations() {
 
     let mut conditional_state = conditional_document();
     conditional_state["state"] = json!({"schema": {"type": "integer"}, "initial": "0"});
-    conditional_state["nodes"][2]["state"] = json!("state");
-    assert!(matches!(
-        JsonIrCodec.parse(conditional_state.to_string().as_bytes()),
-        Err(IrError::Unsupported { .. })
-    ));
+    conditional_state["nodes"][2]["state"] = json!("input.initial");
+    assert!(
+        JsonIrCodec
+            .parse(conditional_state.to_string().as_bytes())
+            .is_err()
+    );
+
+    conditional_state["nodes"][2]
+        .as_object_mut()
+        .expect("conditional continuation")
+        .remove("state");
+    assert!(
+        JsonIrCodec
+            .parse(conditional_state.to_string().as_bytes())
+            .is_err()
+    );
 
     let mut extra_node = published_document();
     extra_node["nodes"]

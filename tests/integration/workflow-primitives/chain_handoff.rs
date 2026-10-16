@@ -381,6 +381,117 @@ async fn public_conditional_continuation_reaches_a_successful_final_outcome() {
 }
 
 #[tokio::test]
+async fn conditional_stateful_continuation_transfers_state_and_finishes() {
+    let world = world().await;
+    let name = format!("public-state-final-{}", Uuid::now_v7());
+    let document = json!({
+        "apiVersion": "sagat-octopus-orchestrator.io/v1",
+        "kind": "Workflow",
+        "metadata": {"name": name},
+        "entrypoint": "work",
+        "nodes": [
+            {"id": "work", "type": "activity", "activity": "segment.work", "next": "again"},
+            {"id": "again", "type": "condition", "expression": "input.continue", "ifTrue": "rollover", "ifFalse": "done"},
+            {"id": "rollover", "type": "continueAsNew", "input": "input.next", "state": "state"},
+            {"id": "done", "type": "end"}
+        ],
+        "chainPolicy": {"maxSegments": 3, "timeoutMs": 3_600_000},
+        "state": {"schema": {"type": "integer"}, "initial": "input.initial"}
+    });
+    let (workflow, _) = world.publish(document).await;
+    let chain = world
+        .start(
+            workflow,
+            &json!({
+                "initial": 19, "continue": true,
+                "next": {"initial": 0, "continue": false}
+            }),
+        )
+        .await;
+    let session = world.session(&["segment.work"]).await;
+    let first = world.one_task(&session).await;
+    world
+        .complete(&session, &first, &json!({"processed": true}))
+        .await
+        .expect("first segment");
+
+    let placement = Placement::new(format!("public-state-final-scheduler-{name}"));
+    Keeper::new(
+        world.store.clone(),
+        placement.clone(),
+        KeeperSettings {
+            ttl: StdDuration::from_secs(60),
+        },
+    )
+    .round()
+    .await
+    .expect("acquire scheduler shards");
+    let scheduler = Scheduler::new(
+        world.store.clone(),
+        Engine::new(JsonEvaluator),
+        SystemEntropy,
+        SchedulerSettings::default(),
+    )
+    .with_placement(placement);
+    let handoff = scheduler.tick().await;
+    assert_eq!(handoff.continuations_advanced, 1, "{handoff:?}");
+    assert_eq!(handoff.failed, 0, "{handoff:?}");
+
+    let successor: Uuid = sqlx::query_scalar(
+        "SELECT current_run_id FROM execution_chains WHERE tenant_id=$1 AND chain_id=$2",
+    )
+    .bind(world.admin.tenant_id().as_uuid())
+    .bind(chain.as_uuid())
+    .fetch_one(&world.db.pool)
+    .await
+    .expect("successor head");
+    assert_ne!(successor, chain.as_uuid());
+    let transferred: (i64, serde_json::Value) = sqlx::query_as(
+        "SELECT operation.state_revision,convert_from(payload.content,'UTF8')::jsonb \
+         FROM workflow_operation_states operation JOIN payloads payload \
+           ON payload.tenant_id=operation.tenant_id AND payload.digest=operation.state_digest \
+         WHERE operation.tenant_id=$1 AND operation.run_id=$2",
+    )
+    .bind(world.admin.tenant_id().as_uuid())
+    .bind(successor)
+    .fetch_one(&world.db.pool)
+    .await
+    .expect("transferred state");
+    assert_eq!(transferred, (0, json!(19)));
+
+    let final_task = world.one_task(&session).await;
+    world
+        .complete(&session, &final_task, &json!({"processed": true}))
+        .await
+        .expect("final segment");
+    let finality: (i32, Option<String>, String, Option<String>) = sqlx::query_as(
+        "SELECT chain.segment_count,chain.final_outcome,run.status,segment.completion_kind \
+         FROM execution_chains chain \
+         JOIN runs run ON run.tenant_id=chain.tenant_id AND run.id=chain.current_run_id \
+         JOIN chain_segments segment ON segment.tenant_id=chain.tenant_id \
+              AND segment.chain_id=chain.chain_id AND segment.run_id=chain.current_run_id \
+         WHERE chain.tenant_id=$1 AND chain.chain_id=$2",
+    )
+    .bind(world.admin.tenant_id().as_uuid())
+    .bind(chain.as_uuid())
+    .fetch_one(&world.db.pool)
+    .await
+    .expect("final chain projection");
+    assert_eq!(
+        finality,
+        (
+            2,
+            Some("SUCCEEDED".into()),
+            "SUCCEEDED".into(),
+            Some("FINAL".into())
+        )
+    );
+    let repeated = scheduler.tick().await;
+    assert_eq!(repeated.continuations_advanced, 0, "{repeated:?}");
+    assert_eq!(repeated.failed, 0, "{repeated:?}");
+}
+
+#[tokio::test]
 async fn segment_limit_finalizes_once_and_is_not_rediscovered() {
     let world = world().await;
     let name = format!("public-chain-limit-{}", Uuid::now_v7());

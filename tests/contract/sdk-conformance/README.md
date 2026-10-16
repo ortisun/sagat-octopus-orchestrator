@@ -114,6 +114,7 @@ SAGAT_SDK_SCENARIO=scoped-identity cargo test -p sagat-tests --test sdk_conforma
 SAGAT_SDK_SCENARIO=collection-runtime cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=chain-query-handoff cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=chain-final-success cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=chain-state-final-success cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 ```
 
 ## Pending scenarios
@@ -141,6 +142,10 @@ after public chain cancellation. The shared runtime and workflow goldens pass in
 segments through worker protocol 1.5 and the scheduler, and requires `waitForChainCompletion`
 to return the successor's `SUCCEEDED` final outcome. The predecessor's segment wait still returns
 that predecessor. The reviewed runtime and workflow goldens pass in all five SDKs.
+
+`chain-state-final-success.json` adds exact declared-state transfer to that conditional graph.
+After both segments finish, chain Query on the final head returns `19.99`, although the successor
+input contains `0.00`. The reviewed goldens pass in all five SDKs.
 
 ## What each SDK ships
 
