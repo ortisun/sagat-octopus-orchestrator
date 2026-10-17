@@ -121,6 +121,18 @@ where
     ) -> Result<sagat_application::identity::Session, AppError> {
         self.core.authenticate(tenant, subject).await
     }
+
+    async fn record_access_denied(
+        &self,
+        principal: &sagat_domain::identity::Principal,
+        call: &str,
+        denial: sagat_application::error::AccessDenial,
+        ctx: &sagat_application::identity::RequestContext,
+    ) -> Result<(), sagat_application::error::StoreError> {
+        self.core
+            .record_access_denied(principal, call, denial, ctx)
+            .await
+    }
 }
 
 impl<S, C, P, O, E> Admission for DeclaredOperationApiState<S, C, P, O, E>

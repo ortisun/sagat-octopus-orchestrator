@@ -107,6 +107,9 @@ impl<St: Core> FromRequestParts<St> for Caller {
                 .get::<crate::context::IngressSpan>()
                 .map(|ingress| ingress.0.to_string()),
         };
+        if let Some(slot) = parts.extensions.get::<crate::denial::DenialSlot>() {
+            slot.bind(state, &session.principal, &ctx);
+        }
         Ok(Self {
             session,
             ctx,

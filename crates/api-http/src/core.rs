@@ -9,8 +9,9 @@ use std::future::Future;
 use std::sync::Arc;
 
 use sagat_application::clock::Clock;
-use sagat_application::error::AppError;
-use sagat_application::identity::{IdentityStore, Session};
+use sagat_application::error::{AccessDenial, AppError, StoreError};
+use sagat_application::identity::{IdentityStore, RequestContext, Session};
+use sagat_domain::identity::Principal;
 
 use crate::concurrency::TenantConcurrency;
 use crate::limits::RateLimiter;
@@ -33,6 +34,16 @@ pub trait Core: Clone + Send + Sync + 'static {
         tenant: &str,
         subject: &str,
     ) -> impl Future<Output = Result<Session, AppError>> + Send;
+
+    /// Writes the audit record of a `403` (gap G9). Callers go through
+    /// [`crate::denial::audit_access_denied`], which owns the failure policy.
+    fn record_access_denied(
+        &self,
+        principal: &Principal,
+        call: &str,
+        denial: AccessDenial,
+        ctx: &RequestContext,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send;
 }
 
 impl<S, C> Core for AppState<S, C>
@@ -58,5 +69,17 @@ where
 
     async fn authenticate(&self, tenant: &str, subject: &str) -> Result<Session, AppError> {
         self.identity.authenticate(tenant, subject).await
+    }
+
+    async fn record_access_denied(
+        &self,
+        principal: &Principal,
+        call: &str,
+        denial: AccessDenial,
+        ctx: &RequestContext,
+    ) -> Result<(), StoreError> {
+        self.identity
+            .audit_access_denied(principal, call, denial, ctx)
+            .await
     }
 }

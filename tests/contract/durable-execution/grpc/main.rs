@@ -8,6 +8,7 @@ mod support;
 
 mod limits;
 mod protocol;
+mod run_result;
 mod stream_security;
 mod stream_telemetry;
 

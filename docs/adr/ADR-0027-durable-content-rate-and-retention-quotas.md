@@ -1,6 +1,6 @@
 # ADR-0027: Durable content, log, rate and retention quotas
 
-**Status:** Accepted; engineering baseline implemented and verified. Product tier values and customer/regulatory retention classification remain pending under G42.
+**Status:** Accepted; engineering baseline implemented and verified. On 2026-10-16 the owner ratified the values below as the single default tier (G42); payload classification is decided separately in ADR-0033.
 
 **Traces:** FR-009-006, NFR-009-PERF, FR-004-008; G37, G80, G117. G42 remains a product decision about tier values and customer/regulatory retention classification.
 
@@ -137,7 +137,7 @@ The first implementer owns the new core modules/migration/manifest and the narro
 | `event_retention_seconds` | 0, or 60 through 2,592,000 | 2,592,000 (existing 30-day maximum) |
 | `script_retention_days` | 0 through 365 | 365 (existing maximum) |
 
-These defaults are engineering bounds, not approved product tiers. Existing count resources retain their current ranges/defaults. Zero means disabled new admission; a zero rate returns the non-retryable hard quota verdict, while temporary token depletion returns a retryable rate verdict. A zero log limit stores no new log bytes. Existing over-limit content is not erased. Retention resource `used` and rate resource `used` are absent in the existing quota response: they are admission policies, not misleading live-object counts. Byte resources expose exact charged bytes via `used`; the fixed two-second rate burst is part of the contract and does not need another tenant setting.
+These defaults were engineering bounds and are now the ratified single default tier (owner, 2026-10-16); commercial tiers wait for a billing model. Existing count resources retain their current ranges/defaults. Zero means disabled new admission; a zero rate returns the non-retryable hard quota verdict, while temporary token depletion returns a retryable rate verdict. A zero log limit stores no new log bytes. Existing over-limit content is not erased. Retention resource `used` and rate resource `used` are absent in the existing quota response: they are admission policies, not misleading live-object counts. Byte resources expose exact charged bytes via `used`; the fixed two-second rate burst is part of the contract and does not need another tenant setting.
 
 Minimal public application types/ports (names may follow local style; semantics and ownership must remain):
 

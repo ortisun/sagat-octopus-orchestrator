@@ -476,6 +476,7 @@ async fn old_worker_candidate_query_does_not_offer_scoped_ready_steps() {
         .bind(vec!["act.a".to_owned()])
         .bind(8_i64)
         .bind(4_i32)
+        .bind("worker")
         .fetch_all(&w.db.pool)
         .await
         .expect("root-only candidates");

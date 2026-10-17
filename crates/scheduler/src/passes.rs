@@ -294,9 +294,22 @@ enum Condition<'a> {
         instance: &'a ExecutionInstanceId,
         cause: LeaseLoss,
     },
+    /// The run can keep `bytes` more of step output within what a run may retain (every lease
+    /// carries it), checked under the run's lock.
+    RetainedFits {
+        bytes: usize,
+    },
 }
 
 impl Condition<'_> {
+    /// What a pass reports when the condition does not hold.
+    const fn refused(&self) -> Outcome {
+        match self {
+            Self::RetainedFits { .. } => Outcome::DoesNotFit,
+            Self::Always | Self::LeaseLost { .. } => Outcome::Skipped,
+        }
+    }
+
     async fn holds<Tx: RunTx>(&self, tx: &mut Tx) -> Result<bool, StoreError> {
         match self {
             Self::Always => Ok(true),
@@ -309,6 +322,11 @@ impl Condition<'_> {
                         LeaseLoss::Expired => d.expires_at <= now,
                         LeaseLoss::TimedOut => d.attempt_deadline_at.is_some_and(|at| at <= now),
                     }))
+            }
+            Self::RetainedFits { bytes } => {
+                let retained: usize = tx.data().await?.outputs.values().map(Vec::len).sum();
+                Ok(retained.saturating_add(*bytes)
+                    <= sagat_application::execution::MAX_RUN_OUTPUT_BYTES)
             }
         }
     }
@@ -323,6 +341,8 @@ enum Outcome {
     Fenced,
     /// The attempted transition rolled back and the same run was stopped for retained storage.
     QuotaStopped,
+    /// The run cannot keep the output this transition would give it (`RetainedFits`).
+    DoesNotFit,
 }
 
 impl Outcome {
@@ -333,6 +353,7 @@ impl Outcome {
             Self::Failed => "failed",
             Self::Fenced => "fenced",
             Self::QuotaStopped => "quota_stopped",
+            Self::DoesNotFit => "does_not_fit",
         }
     }
 }
@@ -984,7 +1005,7 @@ where
                         .await?
                     {
                         Outcome::QuotaStopped => Ok(CollectionAdvance::QuotaStopped),
-                        Outcome::Skipped => Ok(CollectionAdvance::Waiting),
+                        Outcome::Skipped | Outcome::DoesNotFit => Ok(CollectionAdvance::Waiting),
                         Outcome::Fenced => Err(CollectionAdvanceError::FenceUnavailable),
                         Outcome::Done | Outcome::Failed => Err(CollectionAdvanceError::Engine(
                             EngineError::Store(StoreError::Internal {
@@ -1462,7 +1483,7 @@ where
             .await?
         {
             Outcome::Done => Ok(CollectionAdvance::LimitStopped),
-            Outcome::Skipped => Ok(CollectionAdvance::Waiting),
+            Outcome::Skipped | Outcome::DoesNotFit => Ok(CollectionAdvance::Waiting),
             Outcome::Fenced => Err(CollectionAdvanceError::FenceUnavailable),
             Outcome::Failed | Outcome::QuotaStopped => Err(CollectionAdvanceError::Engine(
                 EngineError::Store(StoreError::Internal {
@@ -1643,7 +1664,7 @@ where
                         .await?
                     {
                         Outcome::Done => Ok(LoopAdvance::ExpressionStopped),
-                        Outcome::Skipped => Ok(LoopAdvance::Waiting),
+                        Outcome::Skipped | Outcome::DoesNotFit => Ok(LoopAdvance::Waiting),
                         Outcome::Fenced => Err(LoopAdvanceError::FenceUnavailable),
                         Outcome::Failed | Outcome::QuotaStopped => {
                             Err(LoopAdvanceError::Expression)
@@ -1668,7 +1689,7 @@ where
                     .await?
                 {
                     Outcome::Done => Ok(LoopAdvance::LimitStopped),
-                    Outcome::Skipped => Ok(LoopAdvance::Waiting),
+                    Outcome::Skipped | Outcome::DoesNotFit => Ok(LoopAdvance::Waiting),
                     Outcome::Fenced => Err(LoopAdvanceError::FenceUnavailable),
                     Outcome::Failed | Outcome::QuotaStopped => Err(LoopAdvanceError::Engine(
                         EngineError::Store(StoreError::Internal {
@@ -1709,7 +1730,7 @@ where
                         .await?
                     {
                         Outcome::Done => Ok(LoopAdvance::LimitStopped),
-                        Outcome::Skipped => Ok(LoopAdvance::Waiting),
+                        Outcome::Skipped | Outcome::DoesNotFit => Ok(LoopAdvance::Waiting),
                         Outcome::Fenced => Err(LoopAdvanceError::FenceUnavailable),
                         Outcome::Failed | Outcome::QuotaStopped => Err(LoopAdvanceError::Engine(
                             EngineError::Store(StoreError::Internal {
@@ -1734,7 +1755,7 @@ where
                         .await?
                     {
                         Outcome::QuotaStopped => Ok(LoopAdvance::QuotaStopped),
-                        Outcome::Skipped => Ok(LoopAdvance::Waiting),
+                        Outcome::Skipped | Outcome::DoesNotFit => Ok(LoopAdvance::Waiting),
                         Outcome::Fenced => Err(LoopAdvanceError::FenceUnavailable),
                         Outcome::Done | Outcome::Failed => Err(LoopAdvanceError::Engine(
                             EngineError::Store(StoreError::Internal {
@@ -2060,7 +2081,7 @@ where
                     .await?
                 {
                     Outcome::QuotaStopped => Ok(LoopAdvance::QuotaStopped),
-                    Outcome::Skipped => Ok(LoopAdvance::Waiting),
+                    Outcome::Skipped | Outcome::DoesNotFit => Ok(LoopAdvance::Waiting),
                     Outcome::Fenced => Err(LoopAdvanceError::FenceUnavailable),
                     Outcome::Done | Outcome::Failed => Err(LoopAdvanceError::Engine(
                         EngineError::Store(StoreError::Internal {
@@ -2197,7 +2218,7 @@ where
                     return Ok(Outcome::Fenced);
                 }
                 if !condition.holds(&mut tx).await.map_err(EngineError::Store)? {
-                    return Ok(Outcome::Skipped);
+                    return Ok(condition.refused());
                 }
                 let version = tx.parts().1.version();
                 match self.engine.run(&mut tx, effects, command).await {
@@ -2403,7 +2424,7 @@ where
             return Ok(outcome);
         }
         if !condition.holds(&mut tx).await.map_err(EngineError::Store)? {
-            return Ok(Outcome::Skipped);
+            return Ok(condition.refused());
         }
         let mut effects = self.effects();
         if tx.parts().1.stop_reason().is_none() {
@@ -2575,7 +2596,7 @@ where
     fn tally(report: &mut Report, outcome: Outcome, done: impl FnOnce(&mut Report)) {
         match outcome {
             Outcome::Done => done(report),
-            Outcome::Skipped => report.skipped += 1,
+            Outcome::Skipped | Outcome::DoesNotFit => report.skipped += 1,
             Outcome::Failed => report.failed += 1,
             Outcome::Fenced => report.fenced += 1,
             Outcome::QuotaStopped => report.quota_stops += 1,
@@ -3729,6 +3750,60 @@ where
         .await
     }
 
+    /// Reports a child that succeeded with a result (G21): the parent step's output is the child's
+    /// result. A parent that cannot keep it fails that step with `RUN_DATA_LIMIT` instead.
+    async fn finish_with_result(
+        &self,
+        view: &View,
+        tenant: TenantId,
+        parent: RunId,
+        node: sagat_domain::workflow::NodeId,
+        child: RunId,
+        result: Vec<u8>,
+    ) -> Outcome {
+        let bytes = result.len();
+        let mut effects = self.effects();
+        effects.outputs = vec![(node.clone(), result)];
+        let target = node.clone();
+        let outcome = self
+            .apply_if(
+                view,
+                RunRef {
+                    tenant_id: tenant,
+                    run_id: parent,
+                },
+                "child_finish",
+                Condition::RetainedFits { bytes },
+                effects,
+                move |def, state, now| {
+                    Ok((
+                        (),
+                        execution::finish_child(
+                            def,
+                            state,
+                            &target,
+                            child,
+                            ChildOutcome::Succeeded,
+                            now,
+                        )?,
+                    ))
+                },
+            )
+            .await;
+        if outcome != Outcome::DoesNotFit {
+            return outcome;
+        }
+        self.finish_with(
+            view,
+            tenant,
+            parent,
+            node,
+            child,
+            ChildOutcome::Failed(FailureCode::run_data_limit()),
+        )
+        .await
+    }
+
     /// Tells parents that the child they wait for has ended.
     async fn children_finish(&self, view: &View, report: &mut Report) {
         let ended = self
@@ -3777,9 +3852,32 @@ where
                         | RunStatus::Compensating
                         | RunStatus::ManualReview => return None,
                     };
-                    let result = self
-                        .finish_with(view, tenant_id, parent, node.clone(), child, outcome)
-                        .await;
+                    let result = if outcome == ChildOutcome::Succeeded {
+                        match self.store.run_result(tenant_id, child).await {
+                            Ok(Some(result)) => {
+                                self.finish_with_result(
+                                    view,
+                                    tenant_id,
+                                    parent,
+                                    node.clone(),
+                                    child,
+                                    result,
+                                )
+                                .await
+                            }
+                            Ok(None) => {
+                                self.finish_with(view, tenant_id, parent, node.clone(), child, outcome)
+                                    .await
+                            }
+                            Err(error) => {
+                                tracing::warn!(%parent, %child, %error, "the result of an ended child could not be read");
+                                Outcome::Failed
+                            }
+                        }
+                    } else {
+                        self.finish_with(view, tenant_id, parent, node.clone(), child, outcome)
+                            .await
+                    };
                     if result == Outcome::Skipped {
                         tracing::warn!(%parent, %node, %child, "an ended child could not be reported to its parent step");
                     }

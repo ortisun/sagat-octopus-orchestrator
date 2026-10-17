@@ -153,7 +153,7 @@ Every node has the fields below; each kind adds its own. The kinds: [`activity`]
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `outputExpr` | string |  |  |
+| `outputExpr` | string |  | Expression over the run's data whose value (any JSON, at most 256 KiB) is the run's result: kept as this step's output when the run reaches this end, and given to the parent of a child run as steps.<child>.output. A failing expression fails the run with EXPRESSION_ERROR, an oversized value with RUN_DATA_LIMIT. The API does not disclose it (ADR-0033). |
 | `type` | `"end"` | yes |  |
 
 ### forEach

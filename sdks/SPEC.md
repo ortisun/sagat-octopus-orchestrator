@@ -296,6 +296,11 @@ A handler's input type that cannot be built from the document is not a crash: th
   interval is then counted on the SDK's monotonic clock.
 - `Heartbeat` carries `task_id, worker_id, generation, lease_token, run_id, step_id, attempt` (the last
   three only from protocol 1.1). The answer's `lease_expires_at_epoch_ms` becomes the context's new deadline.
+- A beat that was already on its way when **the same lease** reported (`CompleteStep` or `FailStep`) is answered
+  without an error: `lease_expires_at_epoch_ms = 0` and `cancel_requested = false` (G141). A live lease never
+  has `0`, which is why a host only takes the deadline when it is positive; there is nothing more to do, the
+  host has already stopped beating for that task. Any other lease that is no longer current, lost or forged,
+  is still `ABORTED` / `STALE_ATTEMPT`.
 - `cancel_requested = true` → the cancellation token of the activity is cancelled with the reason
   `run-cancelled`. The handler decides what to do; when it ends, the host reports whatever it returned
   or raised (a handler that raises its cancellation error is reported as `FailStep(error_code =

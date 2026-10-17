@@ -686,3 +686,19 @@ Taken while closing US07 (T014-034..039). D296, D298, D299 and D301 are the owne
   existing response and was left alone.
 - **G376 — Studio has the generated types, not a screen.** `frontend/apps/studio/src/api/schema.d.ts` follows
   the OpenAPI; no component lists a chain's runs.
+
+### Merge of `develop` (owner decisions) into this branch, 2026-10-17
+
+- **G377 — The pool check of G48 took a row lock the runtime role cannot take.** The privilege audit
+  (`runtime_privileges`, G294) found `SELECT ... FOR SHARE` on `worker_binding_pools` in
+  `crates/infra-postgres/src/secrets.rs`: row locks need UPDATE, which `sagat_app` does not hold, so
+  a secret delivery to a worker would have answered `permission denied`. The grants are now held by
+  `pg_advisory_xact_lock_shared` on the key that replacing or revoking a binding already takes
+  exclusively (`binding:{tenant}:{namespace}:{subject}`), which has the same effect. The audit's
+  extractor now expands a `macro_rules!` that takes no argument (`pool_refused!()`), so the claim query
+  is audited instead of reported as unresolved.
+- The reported-lease record (G141) and the declared secrets of a step (G48) are now addressed by
+  execution instance, so a step inside a loop or a collection has both (`ReportedLease.instance`,
+  `reported_by(instance, ...)`, the scoped step insert writes `secrets`).
+- `Core` gained `record_access_denied` (G9) for the two 014 API states; `Outcome::DoesNotFit` is
+  treated as a skip wherever the scheduler only handles `Condition::Always`.

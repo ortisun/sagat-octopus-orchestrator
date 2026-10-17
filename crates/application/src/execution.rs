@@ -328,7 +328,19 @@ pub trait ExpressionEvaluator: Send + Sync {
         data: &RunData,
     ) -> Result<Vec<u8>, ExpressionFailure>;
 
-    /// Evaluates an expression as a canonical JSON value selected for continuation.
+    /// The result of a run: the `outputExpr` of the `end` node that finishes it, evaluated over the
+    /// run's data (G21). Any JSON value.
+    ///
+    /// # Errors
+    /// [`ExpressionFailure`] when the expression fails.
+    fn run_result(
+        &self,
+        expression: &Expression,
+        data: &RunData,
+    ) -> Result<Vec<u8>, ExpressionFailure>;
+
+    /// Evaluates an expression as a canonical JSON value selected for continuation: the same
+    /// evaluation as [`Self::run_result`].
     ///
     /// # Errors
     /// [`ExpressionFailure`] when the expression cannot be evaluated or serialized.
@@ -548,6 +560,9 @@ pub struct Effects {
     pub children: Vec<ChildSpawn>,
     /// Blobs the outputs above are descriptors of: committed with them, or the transaction fails.
     pub blobs: Vec<BlobCommit>,
+    /// The lease whose holder reports its attempt in this transaction (G141): kept so that a
+    /// heartbeat of that same lease arriving after the report can be told apart from a lost lease.
+    pub reported: Option<ReportedLease>,
 }
 
 impl Effects {
@@ -565,6 +580,7 @@ impl Effects {
             rehint_instances: Vec::new(),
             children: Vec::new(),
             blobs: Vec::new(),
+            reported: None,
         }
     }
 }
@@ -590,11 +606,28 @@ pub struct LeaseGrant {
     pub attempt_timeout: Option<std::time::Duration>,
 }
 
+/// The lease that reported the attempt of `instance`: the hash of its token, never the token.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReportedLease {
+    pub instance: ExecutionInstanceId,
+    pub token_hash: Vec<u8>,
+}
+
 /// A heartbeat: push the lease expiry out by `ttl` (capped by the attempt deadline).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LeaseRenewal {
     pub instance: ExecutionInstanceId,
     pub ttl: std::time::Duration,
+}
+
+/// What a pool check is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PoolCheck {
+    /// Choosing what to lease: a stale answer costs nothing, because the value is judged again when
+    /// it is asked for. Takes no locks.
+    Hint,
+    /// Deciding to hand a value over, in the transaction that reads it.
+    Delivery,
 }
 
 /// One locked run, mutated in memory and written back in a single transaction.
@@ -700,6 +733,23 @@ pub trait RunTx: Send {
         names: &[SecretName],
     ) -> impl Future<Output = Result<SecretInputs, StoreError>> + Send;
 
+    /// The first of the declared `names` (in the order given) that lists worker pools none of
+    /// which has been granted to the worker identity `subject` in this run's namespace; `None`
+    /// when every one may be delivered to it (a secret that lists no pool, or that no longer
+    /// exists, never refuses). Read on the transaction's own connection, from the stored grants at
+    /// this moment (G48).
+    ///
+    /// With [`PoolCheck::Delivery`] the rows the answer rests on (the secrets, and the identity's
+    /// grants) are locked in share mode until the transaction ends: a change to either that is
+    /// committing waits for this transaction, and one that has committed is seen, so a value read
+    /// afterwards in the same transaction cannot have passed a check that was already out of date.
+    fn secret_pool_refusal(
+        &mut self,
+        names: &[SecretName],
+        subject: &str,
+        check: PoolCheck,
+    ) -> impl Future<Output = Result<Option<SecretName>, StoreError>> + Send;
+
     /// Every stored version of the declared `names` (a handful each), newest first, with the
     /// secrets that no longer exist simply absent: what an output is searched for. A value handed
     /// out earlier in the attempt may have been replaced since, so the current one is not enough.
@@ -794,6 +844,14 @@ pub trait RunTx: Send {
             self.lease_matches(instance.node(), token_hash).await
         }
     }
+
+    /// Whether `token_hash` is the hash of the lease that reported the attempt of `instance` and
+    /// the step has not been leased again since (G141).
+    fn reported_by(
+        &mut self,
+        instance: &ExecutionInstanceId,
+        token_hash: &[u8],
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 
     /// The result stored by an earlier command with the same idempotency key, if any. A different
     /// request under the same key is [`StoreError::IdempotencyKeyReused`].
@@ -975,8 +1033,10 @@ impl<E: ExpressionEvaluator> Engine<E> {
             if rounds > limit {
                 return Err(ExecutionError::Invariant("evaluations did not settle").into());
             }
-            let (resolution, spawn) = self.resolve(tx, &evaluation).await?;
+            let (resolution, spawn, output) = self.resolve(tx, &evaluation).await?;
             effects.children.extend(spawn);
+            // A run result is the output of its `end` step, written with the step in `persist`.
+            effects.outputs.extend(output);
             progress = {
                 let (def, state) = tx.parts();
                 sagat_domain::execution::resolve(def, state, resolution, now)?
@@ -1023,11 +1083,11 @@ impl<E: ExpressionEvaluator> Engine<E> {
         &self,
         tx: &mut Tx,
         evaluation: &Evaluation,
-    ) -> Result<(Resolution, Option<ChildSpawn>), EngineError> {
+    ) -> Result<(Resolution, Option<ChildSpawn>, Option<(NodeId, Vec<u8>)>), EngineError> {
         let depth = tx.info().depth;
         let parent = tx.info().run_id;
         let data = tx.data().await?;
-        Ok(match evaluation {
+        let (resolution, spawn) = match evaluation {
             Evaluation::Condition { node, expression } => (
                 Resolution::Condition {
                     node: node.clone(),
@@ -1116,7 +1176,45 @@ impl<E: ExpressionEvaluator> Engine<E> {
                     ),
                 }
             }
-        })
+            Evaluation::Output { node, expression } => {
+                let outcome = self
+                    .evaluator
+                    .run_result(expression, data)
+                    .map_err(log_failure(node))
+                    .map_err(|()| FailureCode::expression_error())
+                    .and_then(|bytes| {
+                        // The result is kept like any step output: within one payload, and within
+                        // what a run may retain (every lease carries it).
+                        let retained: usize = data.outputs.values().map(Vec::len).sum();
+                        if bytes.len() > MAX_PAYLOAD_BYTES
+                            || retained.saturating_add(bytes.len()) > MAX_RUN_OUTPUT_BYTES
+                        {
+                            Err(FailureCode::run_data_limit())
+                        } else {
+                            Ok(bytes)
+                        }
+                    });
+                return Ok(match outcome {
+                    Ok(bytes) => (
+                        Resolution::Output {
+                            node: node.clone(),
+                            outcome: Ok(()),
+                        },
+                        None,
+                        Some((node.clone(), bytes)),
+                    ),
+                    Err(code) => (
+                        Resolution::Output {
+                            node: node.clone(),
+                            outcome: Err(code),
+                        },
+                        None,
+                        None,
+                    ),
+                });
+            }
+        };
+        Ok((resolution, spawn, None))
     }
 }
 

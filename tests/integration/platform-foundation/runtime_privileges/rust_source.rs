@@ -202,7 +202,8 @@ fn take_macros(tokens: Vec<Tok>) -> (BTreeMap<String, String>, Vec<Tok>) {
             let from = body
                 .iter()
                 .position(|t| matches!(t, Tok::Ident(word) if word == "concat"))
-                .unwrap_or(body.len());
+                // A macro without `concat!` is a fixed fragment: `() => { "text" }`.
+                .unwrap_or(0);
             for token in &body[from..] {
                 match token {
                     Tok::Str(text, _) => prefix.push_str(text),
@@ -273,14 +274,32 @@ fn expand(
                 i = close + 1;
                 continue;
             }
+            if let (Some(text), true) = (macros.get(name), inner.is_empty()) {
+                // A macro taking no argument expands to its fixed text.
+                out.push(Tok::Str(text.clone(), 0));
+                i = close + 1;
+                continue;
+            }
             if name == "concat" {
                 let mut text = String::new();
                 let mut line = 0;
-                for token in inner {
-                    match token {
+                let mut at_token = 0;
+                while at_token < inner.len() {
+                    match &inner[at_token] {
                         Tok::Str(part, at) => {
                             line = *at;
                             text.push_str(part);
+                        }
+                        // `name!()` of a macro that takes no argument: its fixed text.
+                        Tok::Ident(fixed)
+                            if macros.contains_key(fixed)
+                                && matches!(
+                                    inner.get(at_token + 1..at_token + 4),
+                                    Some([Tok::Punct('!'), Tok::Punct('('), Tok::Punct(')')])
+                                ) =>
+                        {
+                            text.push_str(&macros[fixed]);
+                            at_token += 3;
                         }
                         Tok::Ident(constant) => match consts.get(constant) {
                             Some(value) => text.push_str(value),
@@ -288,6 +307,7 @@ fn expand(
                         },
                         _ => {}
                     }
+                    at_token += 1;
                 }
                 out.push(Tok::Str(text, line));
                 i = close + 1;
@@ -476,6 +496,22 @@ mod tests {
         assert!(
             found.fragments.is_empty(),
             "the tail was consumed by the expansion"
+        );
+    }
+
+    #[test]
+    fn a_macro_without_an_argument_is_expanded_to_its_text() {
+        let found = extract(
+            "macro_rules! fixed { () => { \"AND NOT archived\" }; }\n\
+             fn f() { q(concat!(\"SELECT id FROM steps WHERE \", fixed!(), \" ORDER BY id\")); }",
+        );
+        assert_eq!(
+            found
+                .statements
+                .iter()
+                .map(|s| s.text.as_str())
+                .collect::<Vec<_>>(),
+            ["SELECT id FROM steps WHERE AND NOT archived ORDER BY id"]
         );
     }
 

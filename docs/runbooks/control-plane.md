@@ -168,6 +168,7 @@ even when nothing scrapes it (the recorder only expires series while rendering).
 | `auth_failures_total{reason}` | counter | Spikes of a single reason (e.g. unknown key) |
 | `jwks_refresh_total{outcome}` | counter | `error` or `no_usable_keys` means the provider or network is failing |
 | `audit_denials_total{outcome}` | counter | `dropped` or `failed` means cross-tenant attempts were not recorded |
+| `access_denial_audits_total{outcome}` | counter | `failed` means a `403` / `PERMISSION_DENIED` was answered but its audit record was not written (the caller still got the refusal) |
 | `http_rate_limited_total{scope}` | counter | Throttling, by `tenant` or `subject` budget |
 | `http_tenant_concurrency_rejected_total` | counter | A tenant hit its in-flight cap (stalled or slow requests) |
 | `http_load_shed_total` | counter | Overload |

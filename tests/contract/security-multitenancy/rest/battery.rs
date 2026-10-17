@@ -40,7 +40,8 @@ fn body_of(operation: &str) -> Option<Value> {
         "inspectRunPayload" => json!({"source": "input"}),
         "signalRun" => json!({"paid": true}),
         "setTenantQuota" | "setNamespaceQuota" | "setActivityQuota" => json!({"limit": 1}),
-        "bindWorker" => json!({"activities": ["*"]}),
+        "bindWorker" => json!({"activities": ["*"], "pools": ["attacker-pool"]}),
+        "setSecretPools" => json!({"pools": ["attacker-pool"]}),
         "putSecret" => json!({"value": "attacker-supplied-value-0001"}),
         "setEgressPolicy" => json!({"rules": ["attacker.example.net"]}),
         // Feature 004: what an attacker would send to take over the victim's event plumbing.
@@ -224,6 +225,7 @@ async fn snapshot(api: &TestApi, victim: &Victim) -> Value {
         format!("/namespaces/{ns}/worker-bindings"),
         format!("/namespaces/{ns}/secrets"),
         format!("/namespaces/{ns}/secrets/stripe-key/access"),
+        format!("/namespaces/{ns}/secrets/stripe-key/pools"),
         format!("/namespaces/{ns}/egress-policy"),
         format!("/namespaces/{ns}/scripts"),
         format!(
@@ -335,8 +337,13 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
         ),
         (
             "PUT",
+            format!("/namespaces/{ns}/secrets/stripe-key/pools"),
+            Some(json!({"pools": ["victim-pool"]})),
+        ),
+        (
+            "PUT",
             format!("/namespaces/{ns}/worker-bindings/worker-7"),
-            Some(json!({"activities": ["payments.*"]})),
+            Some(json!({"activities": ["payments.*"], "pools": ["victim-pool"]})),
         ),
         (
             "PUT",
@@ -513,6 +520,7 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
                 "victim-secret-value",
                 "partner.example.com",
                 "worker-7",
+                "victim-pool",
                 "victim-script",
                 "victim-source",
             ] {

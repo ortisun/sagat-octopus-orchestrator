@@ -88,7 +88,7 @@ Diagnose and operate runs, steps, external integration, resources and Sagas from
 
 ## Success Criteria (measurable)
 
-- **SC-008-001:** Operator diagnoses a failure in fewer than N interactions during a UX test, with run journal and trace correlated.
+- **SC-008-001:** Operator diagnoses a failure in fewer than N interactions during a UX test, with run journal and trace correlated. **N = 10** (owner decision 2026-10-16; about twice the shortest path), so a pass needs at most 9 counted interactions.
 - **SC-008-002:** 100% of scenarios US01..US04 pass in a reproducible automated suite.
 - **SC-008-003:** no violation of the Constitution's gates and no silent loss of persisted state.
 - **SC-008-004:** critical errors expose `code`, `trace_id` and remediation without leaking payload/secrets.

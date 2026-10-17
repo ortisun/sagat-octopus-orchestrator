@@ -181,6 +181,98 @@ pub(crate) async fn newest_versions(
     rows.iter().map(stored_from).collect()
 }
 
+/// The first of `names` that lists worker pools and whose pools `subject` has none of in the
+/// namespace (G48). Pool grants and a secret's pools are both scoped by tenant, and the grants by
+/// namespace, so a pool name means nothing outside the namespace that granted it.
+pub(crate) async fn pool_refusal(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    namespace: NamespaceId,
+    names: &[SecretName],
+    subject: &str,
+    lock: bool,
+) -> Result<Option<SecretName>, StoreError> {
+    let texts: Vec<&str> = names.iter().map(SecretName::as_str).collect();
+    if lock {
+        // The rows the answer rests on, locked until the caller's transaction ends. Changing a
+        // secret's pools takes the secret's row for update, and taking a grant away deletes its
+        // row, so either waits for this transaction (and is seen by the next one) instead of
+        // committing between this check and the read of the value. A grant that is *added* is not
+        // waited for: it can only widen who is entitled. The order, secret rows and then grant
+        // rows, is the order nothing else takes in reverse.
+        sqlx::query(
+            "SELECT id FROM secrets \
+             WHERE tenant_id = $1 AND namespace_id = $2 AND name = ANY($3) ORDER BY id FOR SHARE",
+        )
+        .bind(tenant.as_uuid())
+        .bind(namespace.as_uuid())
+        .bind(&texts)
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(store_error)?;
+        // The grants are not row-locked: a row lock needs UPDATE, which the runtime role does not
+        // hold. Replacing or revoking a binding takes this advisory lock exclusively before it
+        // touches the grants, so holding it shared has the same effect (G48, G294).
+        sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))")
+            .bind(format!("binding:{tenant}:{namespace}:{subject}"))
+            .execute(&mut *conn)
+            .await
+            .map_err(store_error)?;
+    }
+    let refused: Vec<String> = sqlx::query_scalar(
+        "SELECT s.name FROM secrets s \
+         WHERE s.tenant_id = $1 AND s.namespace_id = $2 AND s.name = ANY($3) \
+           AND EXISTS (SELECT 1 FROM secret_pools p \
+                       WHERE p.tenant_id = s.tenant_id AND p.secret_id = s.id) \
+           AND NOT EXISTS (SELECT 1 FROM secret_pools p \
+                           JOIN worker_binding_pools g \
+                             ON g.tenant_id = p.tenant_id AND g.pool = p.pool \
+                            AND g.namespace_id = s.namespace_id AND g.subject = $4 \
+                           WHERE p.tenant_id = s.tenant_id AND p.secret_id = s.id)",
+    )
+    .bind(tenant.as_uuid())
+    .bind(namespace.as_uuid())
+    .bind(&texts)
+    .bind(subject)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(store_error)?;
+    Ok(names
+        .iter()
+        .find(|name| refused.iter().any(|r| r == name.as_str()))
+        .cloned())
+}
+
+/// Replaces the pools of a secret on the caller's transaction (which holds the secret's row lock).
+async fn replace_pools(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    secret: Uuid,
+    pools: &[String],
+    changed_by: &str,
+) -> Result<(), StoreError> {
+    sqlx::query("DELETE FROM secret_pools WHERE tenant_id = $1 AND secret_id = $2")
+        .bind(tenant.as_uuid())
+        .bind(secret)
+        .execute(&mut *conn)
+        .await
+        .map_err(store_error)?;
+    if !pools.is_empty() {
+        sqlx::query(
+            "INSERT INTO secret_pools (tenant_id, secret_id, pool, granted_by) \
+             SELECT $1, $2, p, $4 FROM unnest($3::text[]) AS t(p)",
+        )
+        .bind(tenant.as_uuid())
+        .bind(secret)
+        .bind(pools)
+        .bind(changed_by)
+        .execute(&mut *conn)
+        .await
+        .map_err(store_error)?;
+    }
+    Ok(())
+}
+
 /// What a step's declared secrets resolve to, read on the caller's transaction.
 pub(crate) async fn inputs(
     conn: &mut PgConnection,
@@ -323,6 +415,9 @@ impl SecretStore for PgRunStore {
             .execute(&mut *tx)
             .await
             .map_err(store_error)?;
+        if let Some(pools) = &version.pools {
+            replace_pools(&mut tx, tenant, secret_id, pools, &version.created_by).await?;
+        }
         insert_audit(&mut tx, audit).await?;
         tx.commit().await.map_err(store_error)?;
         Ok(SecretMeta {
@@ -494,6 +589,82 @@ impl SecretStore for PgRunStore {
         .await
         .map_err(store_error)?;
         Ok(Some(subjects))
+    }
+
+    async fn secret_pools(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        name: &SecretName,
+    ) -> Result<Option<Vec<String>>, StoreError> {
+        let id: Option<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM secrets WHERE tenant_id = $1 AND namespace_id = $2 AND name = $3",
+        )
+        .bind(tenant.as_uuid())
+        .bind(namespace.as_uuid())
+        .bind(name.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(store_error)?;
+        let Some(id) = id else {
+            return Ok(None);
+        };
+        sqlx::query_scalar(
+            "SELECT pool FROM secret_pools WHERE tenant_id = $1 AND secret_id = $2 ORDER BY pool",
+        )
+        .bind(tenant.as_uuid())
+        .bind(id)
+        .fetch_all(&self.pool)
+        .await
+        .map(Some)
+        .map_err(store_error)
+    }
+
+    async fn restricted_secrets(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+    ) -> Result<Vec<(String, Vec<String>)>, StoreError> {
+        sqlx::query_as(
+            "SELECT s.name, array_agg(p.pool ORDER BY p.pool) FROM secrets s \
+             JOIN secret_pools p ON p.tenant_id = s.tenant_id AND p.secret_id = s.id \
+             WHERE s.tenant_id = $1 AND s.namespace_id = $2 GROUP BY s.name",
+        )
+        .bind(tenant.as_uuid())
+        .bind(namespace.as_uuid())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_error)
+    }
+
+    async fn replace_secret_pools(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        name: &SecretName,
+        pools: &[String],
+        changed_by: &str,
+        audit: &AuditRecord,
+    ) -> Result<bool, StoreError> {
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        // The row lock orders two replacements of one secret's list and a rotation or deletion.
+        let id: Option<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM secrets WHERE tenant_id = $1 AND namespace_id = $2 AND name = $3 \
+             FOR UPDATE",
+        )
+        .bind(tenant.as_uuid())
+        .bind(namespace.as_uuid())
+        .bind(name.as_str())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        let Some(id) = id else {
+            return Ok(false);
+        };
+        replace_pools(&mut tx, tenant, id, pools, changed_by).await?;
+        insert_audit(&mut tx, audit).await?;
+        tx.commit().await.map_err(store_error)?;
+        Ok(true)
     }
 
     async fn versions_not_sealed_under(

@@ -209,6 +209,10 @@ impl IdentityStore for CountingStore {
         self.inner.record_denial(audit).await
     }
 
+    async fn record_permission_denial(&self, audit: &AuditRecord) -> Result<(), StoreError> {
+        self.inner.record_permission_denial(audit).await
+    }
+
     async fn ping(&self) -> Result<(), StoreError> {
         self.pings.fetch_add(1, Ordering::SeqCst);
         if !self.ping_delay.is_zero() {

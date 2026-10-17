@@ -59,6 +59,11 @@ pub enum AuditAction {
     /// The caller asked for a resource that exists only in another tenant. The record carries the
     /// identifier the caller supplied and nothing about the other tenant.
     CrossTenantAccessDenied,
+    /// A known caller of the tenant was refused with a `403` / `PERMISSION_DENIED`: the role lacks
+    /// a permission, or the identity is not allowed this work. One record per denial, bounded by
+    /// the per-subject request budget that every call is charged to first. It names the call by its
+    /// route template or RPC name, never by the path, the query or the body (G9).
+    PermissionDenied,
     /// A secret was created, or a new version of it was stored (rotation). Never carries a value.
     SecretStored,
     SecretDeleted,
@@ -70,6 +75,12 @@ pub enum AuditAction {
     /// A workflow referenced a secret its publisher may not use, or a lease asked for one it was
     /// not given.
     SecretDenied,
+    /// The worker pools allowed to receive a secret were replaced (G48).
+    SecretPoolsChanged,
+    /// A worker outside the pools of a secret was not handed a step that declares it, or asked for
+    /// its value with a lease it holds. Written once per worker identity, run, node and attempt:
+    /// a worker polls as often as it likes and the step stays available to others (G48).
+    SecretDeliveryRefused,
     QuotaChanged,
     /// The egress policy of a namespace was replaced.
     EgressPolicyChanged,
@@ -181,6 +192,7 @@ impl AuditAction {
             Self::BlobRead
                 | Self::SecretResolved
                 | Self::SecretDenied
+                | Self::SecretDeliveryRefused
                 | Self::EventRejected
                 | Self::ScriptViolation
                 | Self::AuditRead
@@ -215,7 +227,7 @@ impl AuditAction {
     #[must_use]
     pub const fn distinct_cap(self) -> Option<u32> {
         match self {
-            Self::ScriptViolation => Some(100),
+            Self::ScriptViolation | Self::SecretDeliveryRefused => Some(100),
             _ => None,
         }
     }
@@ -248,12 +260,15 @@ impl AuditAction {
             Self::PayloadInspectionDenied => "payload.inspection_denied",
             Self::RunSignalled => "run.signalled",
             Self::CrossTenantAccessDenied => "access.denied.cross_tenant",
+            Self::PermissionDenied => "access.denied.permission",
             Self::SecretStored => "secret.stored",
             Self::SecretDeleted => "secret.deleted",
             Self::SecretAccessGranted => "secret.access_granted",
             Self::SecretAccessRevoked => "secret.access_revoked",
             Self::SecretResolved => "secret.resolved",
             Self::SecretDenied => "secret.denied",
+            Self::SecretPoolsChanged => "secret.pools_changed",
+            Self::SecretDeliveryRefused => "secret.delivery_refused",
             Self::QuotaChanged => "quota.changed",
             Self::EgressPolicyChanged => "egress.policy_changed",
             Self::EgressDenied => "egress.denied",
@@ -346,6 +361,9 @@ pub enum ResourceType {
     PublicationRequest,
     /// A durable human decision request owned by one workflow step instance.
     ApprovalRequest,
+    /// A call of the API, as `METHOD /route/{template}` or `grpc Service/Method`: a fixed set of the
+    /// server's own names, never something the caller wrote.
+    Endpoint,
 }
 
 impl ResourceType {
@@ -374,6 +392,7 @@ impl ResourceType {
             Self::ScriptVersion => "script_version",
             Self::PublicationRequest => "publication_request",
             Self::ApprovalRequest => "approval_request",
+            Self::Endpoint => "endpoint",
         }
     }
 }

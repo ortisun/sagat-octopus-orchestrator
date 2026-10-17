@@ -356,6 +356,13 @@ fn perform(h: &mut Harness, action: &Action) -> Result<(), ExecutionError> {
                         _ => Ok(RunId::generate()),
                     },
                 },
+                Evaluation::Output { node, .. } => Resolution::Output {
+                    node,
+                    outcome: match mode {
+                        2 => Err(FailureCode::run_data_limit()),
+                        _ => Ok(()),
+                    },
+                },
             };
             h.resolve(resolution)
         }

@@ -22,6 +22,7 @@ pub mod blobs;
 mod concurrency;
 mod context;
 mod core;
+pub mod denial;
 mod dto;
 mod dto_chains;
 mod dto_declared_operations;
@@ -462,6 +463,10 @@ where
             .route(
                 "/namespaces/{namespace_id}/secrets/{name}/access",
                 get(gov::list_secret_access::<B<S, C, G>>),
+            )
+            .route(
+                "/namespaces/{namespace_id}/secrets/{name}/pools",
+                get(gov::list_secret_pools::<B<S, C, G>>).put(gov::set_secret_pools::<B<S, C, G>>),
             )
             .route(
                 "/namespaces/{namespace_id}/secrets/{name}/access/{subject}",

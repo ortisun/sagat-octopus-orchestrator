@@ -45,6 +45,12 @@ pub enum Evaluation {
         node: NodeId,
         input: Option<Expression>,
     },
+    /// Evaluate the `outputExpr` of the `end` node that finishes the run: its value is the run's
+    /// result (G21), kept as the output of that step.
+    Output {
+        node: NodeId,
+        expression: Expression,
+    },
 }
 
 /// One planning decision.
@@ -376,7 +382,15 @@ fn start_pending(
                 node: node.clone(),
                 input: input.clone(),
             }),
-            NodeKind::End { .. } => Plan::Emit(RunEvent::EndReached { node: node.clone() }),
+            NodeKind::End { output: None } => {
+                Plan::Emit(RunEvent::EndReached { node: node.clone() })
+            }
+            NodeKind::End {
+                output: Some(expression),
+            } => Plan::Evaluate(Evaluation::Output {
+                node: node.clone(),
+                expression: expression.clone(),
+            }),
             NodeKind::Approval { .. }
             | NodeKind::ContinueAsNew { .. }
             | NodeKind::ForEach { .. }

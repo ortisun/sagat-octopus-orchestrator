@@ -78,6 +78,24 @@ async fn events_webhooks_and_dispatches_are_counted_without_naming_anyone() {
         (runs_of(&p, &workflow).await.len() == 1).then_some(())
     })
     .await;
+    // The run commits inside the dispatch; the event is marked dispatched and counted only after,
+    // so the run can be visible before the counter moves.
+    let dispatched = || {
+        counted(
+            &metrics.render(),
+            "events_dispatched_total",
+            &[("outcome", "dispatched")],
+        )
+    };
+    let dispatched_before = counted(
+        &before,
+        "events_dispatched_total",
+        &[("outcome", "dispatched")],
+    );
+    within("the dispatch count", 30, || async {
+        (dispatched() >= dispatched_before + 1.0).then_some(())
+    })
+    .await;
 
     let after = metrics.render();
     let delta = |name: &str, labels: &[(&str, &str)]| {

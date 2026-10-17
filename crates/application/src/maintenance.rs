@@ -186,6 +186,14 @@ pub trait MaintenanceStore: Send + Sync {
         window: &Window,
     ) -> impl Future<Output = Result<Vec<EndedChild>, StoreError>> + Send;
 
+    /// The result of a run that ended (G21): the output of the `end` step that finished it, or
+    /// `None` when that `end` declares no `outputExpr`.
+    fn run_result(
+        &self,
+        tenant: TenantId,
+        run: RunId,
+    ) -> impl Future<Output = Result<Option<Vec<u8>>, StoreError>> + Send;
+
     /// Running child runs whose parent was stopped under a policy that cancels them and that have
     /// not been asked to stop yet.
     fn children_to_cancel(

@@ -5,8 +5,8 @@
 //! counted data. Rate admission uses durable database-time token buckets. Retention quotas bound new
 //! policy choices rather than reporting a scalar current usage.
 //!
-//! The defaults below are **provisional**: the specification leaves "capacity and quota values per
-//! tier" to be defined after benchmark and security testing (spec.md, open design questions). They
+//! The defaults below are the platform's **single default tier**, ratified by the owner on
+//! 2026-10-16 (G42, `docs/owner-decisions.md`); commercial tiers wait for a billing model. They
 //! are generous enough not to get in the way of a single tenant and small enough to bound what a
 //! hostile one can make the database hold.
 //!
@@ -211,7 +211,7 @@ impl QuotaResource {
     }
 
     /// What applies when nobody has set anything, and the ceiling of a tenant nobody has granted
-    /// more. Provisional (see the module documentation).
+    /// more. The ratified single default tier (see the module documentation).
     #[must_use]
     pub const fn default_limit(self) -> u64 {
         match self {

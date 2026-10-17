@@ -188,6 +188,16 @@ pub fn end(node: &str) -> Node {
     Node::new(id(node), NodeKind::End { output: None })
 }
 
+/// An `end` whose `outputExpr` is the run's result (G21).
+pub fn end_with(node: &str, output: &str) -> Node {
+    Node::new(
+        id(node),
+        NodeKind::End {
+            output: Some(expr(output)),
+        },
+    )
+}
+
 pub fn build(entry: &str, nodes: Vec<Node>) -> WorkflowDefinition {
     WorkflowDefinition::new(Slug::parse("demo-flow").expect("slug"), id(entry), nodes)
         .expect("valid definition")
@@ -468,6 +478,10 @@ impl Harness {
             Evaluation::Child { node, .. } => Resolution::Child {
                 node,
                 child: Ok(RunId::generate()),
+            },
+            Evaluation::Output { node, .. } => Resolution::Output {
+                node,
+                outcome: Ok(()),
             },
         };
         self.resolve(resolution).expect("resolution applies");
