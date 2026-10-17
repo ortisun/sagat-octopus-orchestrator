@@ -1058,17 +1058,17 @@ public sealed partial class WorkerHost : IWorkerHost
                     {
                         await Task.Delay(interval, stop).ConfigureAwait(false);
                         var request = new HeartbeatRequest
-                            {
-                                TaskId = lease.TaskId,
-                                WorkerId = workerId,
-                                Generation = lease.Generation,
-                                LeaseToken = lease.LeaseToken,
+                        {
+                            TaskId = lease.TaskId,
+                            WorkerId = workerId,
+                            Generation = lease.Generation,
+                            LeaseToken = lease.LeaseToken,
 
-                                // The step identity came with 1.1.
-                                RunId = identity ? lease.RunId : string.Empty,
-                                StepId = identity ? lease.StepId : string.Empty,
-                                Attempt = identity ? lease.Attempt : 0,
-                            };
+                            // The step identity came with 1.1.
+                            RunId = identity ? lease.RunId : string.Empty,
+                            StepId = identity ? lease.StepId : string.Empty,
+                            Attempt = identity ? lease.Attempt : 0,
+                        };
                         if (protocolMinor >= 5 && lease.Instance is not null)
                         {
                             request.Instance = lease.Instance;
@@ -1167,19 +1167,19 @@ public sealed partial class WorkerHost : IWorkerHost
         try
         {
             var request = new CompleteStepRequest
-                {
-                    TaskId = lease.TaskId,
-                    RunId = lease.RunId,
-                    StepId = lease.StepId,
-                    Attempt = lease.Attempt,
-                    Generation = lease.Generation,
-                    LeaseToken = lease.LeaseToken,
-                    IdempotencyKey = "done-" + lease.TaskId,
-                    OutputJson = output,
-                    OutputBlobRef = blob?.Id ?? string.Empty,
-                    OutputSha256 = blob?.Sha256 ?? string.Empty,
-                    Traceparent = lease.Traceparent,
-                };
+            {
+                TaskId = lease.TaskId,
+                RunId = lease.RunId,
+                StepId = lease.StepId,
+                Attempt = lease.Attempt,
+                Generation = lease.Generation,
+                LeaseToken = lease.LeaseToken,
+                IdempotencyKey = "done-" + lease.TaskId,
+                OutputJson = output,
+                OutputBlobRef = blob?.Id ?? string.Empty,
+                OutputSha256 = blob?.Sha256 ?? string.Empty,
+                Traceparent = lease.Traceparent,
+            };
             if (protocolMinor >= 5 && lease.Instance is not null)
             {
                 request.Instance = lease.Instance;
@@ -1218,19 +1218,19 @@ public sealed partial class WorkerHost : IWorkerHost
         try
         {
             var request = new FailStepRequest
-                {
-                    TaskId = lease.TaskId,
-                    RunId = lease.RunId,
-                    StepId = lease.StepId,
-                    Attempt = lease.Attempt,
-                    Generation = lease.Generation,
-                    LeaseToken = lease.LeaseToken,
-                    IdempotencyKey = "failed-" + lease.TaskId,
-                    ErrorCode = safeCode,
-                    SafeMessage = Cut(message),
-                    Retryable = retryable,
-                    Traceparent = lease.Traceparent,
-                };
+            {
+                TaskId = lease.TaskId,
+                RunId = lease.RunId,
+                StepId = lease.StepId,
+                Attempt = lease.Attempt,
+                Generation = lease.Generation,
+                LeaseToken = lease.LeaseToken,
+                IdempotencyKey = "failed-" + lease.TaskId,
+                ErrorCode = safeCode,
+                SafeMessage = Cut(message),
+                Retryable = retryable,
+                Traceparent = lease.Traceparent,
+            };
             if (protocolMinor >= 5 && lease.Instance is not null)
             {
                 request.Instance = lease.Instance;
@@ -1304,15 +1304,15 @@ public sealed partial class WorkerHost : IWorkerHost
         }
 
         var request = new ResolveSecretsRequest
-            {
-                TaskId = lease.TaskId,
-                RunId = lease.RunId,
-                StepId = lease.StepId,
-                Attempt = lease.Attempt,
-                Generation = lease.Generation,
-                LeaseToken = lease.LeaseToken,
-                Traceparent = lease.Traceparent,
-            };
+        {
+            TaskId = lease.TaskId,
+            RunId = lease.RunId,
+            StepId = lease.StepId,
+            Attempt = lease.Attempt,
+            Generation = lease.Generation,
+            LeaseToken = lease.LeaseToken,
+            Traceparent = lease.Traceparent,
+        };
         if (protocolMinor >= 5 && lease.Instance is not null)
         {
             request.Instance = lease.Instance;

@@ -202,7 +202,11 @@ jobs:
         run: npx --yes --ignore-scripts @asyncapi/cli@3.6.0 validate specs/001-platform-foundation/contracts/events.asyncapi.yaml
       - name: Workflow example validates against the IR schema
         run: |
-          npx --yes -p ajv-cli@5 -p ajv-formats@3 ajv validate --spec=draft2020 -c ajv-formats \
+          # `--strict=false`: the schema carries `x-maxUtf8Bytes`, which documents the byte bound that
+          # `maxLength` (characters) cannot express; the platform's own codec enforces it
+          # (`contract_workflow_primitives::identity_limits`). ajv's strict mode rejects any keyword it
+          # was not told about.
+          npx --yes -p ajv-cli@5 -p ajv-formats@3 ajv validate --spec=draft2020 -c ajv-formats --strict=false \
             -s specs/001-platform-foundation/contracts/workflow.schema.json \
             -d examples/payment-saga.workflow.json
 
