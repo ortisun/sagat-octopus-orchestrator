@@ -18,3 +18,42 @@ fn every_sdk_conforms_to_every_scenario() {
             .assert_conforms()
     });
 }
+
+/// Catch incomplete scenario registration without first booting five language/platform stacks.
+/// Builder-only contracts have a canonical document; every runtime scenario also needs its
+/// separately reviewed result golden. A synthetic authoring artifact is never silently executed.
+#[test]
+fn every_scenario_declares_phases_with_reviewed_expected_documents() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("contract/sdk-conformance");
+    let mut count = 0;
+    for entry in std::fs::read_dir(root.join("scenarios")).expect("scenario directory") {
+        let path = entry.expect("scenario entry").path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
+            continue;
+        }
+        let scenario: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).expect("scenario bytes"))
+                .expect("scenario JSON");
+        let name = scenario["name"].as_str().expect("scenario name");
+        assert_eq!(path.file_stem().and_then(|stem| stem.to_str()), Some(name));
+        let build_only = scenario
+            .get("buildOnly")
+            .map(|value| value.as_bool().expect("buildOnly must be a boolean"))
+            .unwrap_or(false);
+        let mut expected = vec![format!("{name}.workflows.json")];
+        if !build_only {
+            expected.push(format!("{name}.json"));
+        }
+        for filename in expected {
+            let bytes =
+                std::fs::read(root.join("expected").join(&filename)).unwrap_or_else(|error| {
+                    panic!("{name}: missing reviewed phase evidence {filename}: {error}")
+                });
+            let _: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_else(|error| {
+                panic!("{name}: invalid reviewed phase evidence {filename}: {error}")
+            });
+        }
+        count += 1;
+    }
+    assert!(count > 0, "the registry must not be empty");
+}

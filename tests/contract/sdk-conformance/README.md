@@ -557,3 +557,11 @@ read fail with UNAVAILABLE. It must not cancel task handlers or silently discard
 Its plan is counted once when the matching stream is opened, with the same `times`/`after` rules
 as unary faults. A scenario must contain queued work so the nonempty frame is actually reached.
 The runner must not manufacture a task or substitute a unary poll for this operation.
+
+`classification.json` is explicitly builder-only. It proves byte-identical workflow and node
+carrier schemas across all five public builders, including the synthetic script digest and child
+reference, against `expected/classification.workflows.json`. It never publishes those synthetic
+references. Actual script/child/worker/wait outputs and disclosure have their separately executed
+classification integration, CLI and browser scenarios. The fast registry test requires a reviewed
+canonical document for every scenario and a reviewed runtime result for each runtime scenario,
+so a missing phase marker is caught without a full language/platform run.

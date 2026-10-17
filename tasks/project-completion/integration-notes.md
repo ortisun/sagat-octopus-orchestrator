@@ -689,3 +689,20 @@ Final strict Clippy of the complete workspace/all targets passed in 1m57s
 architecture check passed. These are the static gates for this checkpoint. The next full
 workspace execution will use a fresh task-owned target directory with debug symbols disabled,
 keeping assertions and the test profile enabled, to limit additional disk usage.
+
+
+### Conformance fixture phase correction
+
+The complete five-SDK suite reached classification, then failed after 433.28 s because its
+synthetic script digest was correctly refused by publication (422 UNKNOWN_SCRIPT)
+(`/tmp/sagat-completion-current-sdk-conformance.log`). Classification's task/golden are authoring
+only: T016-042 requires identical canonical documents, and only classification.workflows.json
+exists. Added the missing buildOnly marker without changing its reviewed canonical output or
+relaxing publication. A fast test now checks all 55 scenario registrations for the expected
+canonical document and, for runtime scenarios, their separate reviewed runtime golden.
+The focused classification run across all five SDKs and both harness tests passed **3/3**, 1.64 s
+(`/tmp/sagat-completion-sdk-classification-phase.log`). This is builder parity; the whole SDK
+runtime gate is rerun separately. The failed complete run is retained, not claimed successful.
+
+The complete Studio gate passed on this checkpoint: lint/types, **1149/1149** unit tests,
+production build and generated API comparison (`/tmp/sagat-completion-final-studio-*.log`).
