@@ -1993,6 +1993,24 @@
     },
     {
       "table": "runs",
+      "column": "result_digest",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed cryptographic digest/token representation (normally 32 bytes, or a bounded hexadecimal rendering). Writer/source: `crates/infra-postgres/src/execution.rs`. Database CHECK `runs_result_digest_size` limits it to exactly 32 bytes; the content it names is the `end` step's payload, already charged as that step's output."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "runs",
       "column": "parent_node",
       "sql_type": "text",
       "class": "protected_system",

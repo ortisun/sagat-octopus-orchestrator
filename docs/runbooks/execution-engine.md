@@ -166,7 +166,7 @@ error message is dropped (decision D31); the journal holds a bounded failure cod
   and the database pool is shared by everything in a process. Quotas per queue (per activity) do not
   exist (G245).
 - Certificate-bound tokens, that is, tying a client certificate to the worker identity in the token (G44 of feature 009).
-- Run-input and worker-output blob transport is described below; five-SDK conformance is tracked by T002-040. Run results (G21), `foreach` and `humanApproval` nodes (G20) retain their documented limits.
+- Run-input and worker-output blob transport is described below; five-SDK conformance is tracked by T002-040. `foreach` and `humanApproval` nodes (G20) retain their documented limits. A run's result is the value of the `outputExpr` of the `end` that finishes it (G21): at most 256 KiB, kept as that step's output, and the output of the parent's `child` step when the child succeeds; a parent without room in its 4 MiB of retained output fails that step with `RUN_DATA_LIMIT`. The API does not disclose results yet (ADR-0033). **Before upgrading:** versions published earlier that declare `outputExpr` now evaluate it at `end`; one that fails or is too large ends the run `FAILED` instead of being ignored. List them with `SELECT w.name, v.version_number FROM workflow_versions v JOIN workflows w ON w.id = v.workflow_id WHERE convert_from(v.document, 'UTF8') LIKE '%"outputExpr"%'` and test them first.
 - Partitioning and retention of `run_events` (G28) are not built: the journal grows with the runs
   (feature 010 measured the cost of a wait and of a transition, `tests/performance/reports/scalability-ha.md`,
   and left the partitioning for evidence, G241).

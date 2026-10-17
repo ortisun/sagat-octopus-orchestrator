@@ -173,12 +173,29 @@ impl PgRunStore {
             .map_err(|e| e.to_string())?
             .ok_or("the run does not exist")?;
         let stored = tx.parts().1.clone();
-        if replayed == stored {
+        if replayed != stored {
+            return Err(format!(
+                "projection differs from the journal:\n  replayed: {replayed:?}\n  stored:   {stored:?}"
+            ));
+        }
+        drop(tx);
+        // The run's result (G21) is the payload its `end.reached` event names.
+        let result_agrees: bool = sqlx::query_scalar(
+            "SELECT r.result_digest IS NOT DISTINCT FROM \
+                    (SELECT e.payload_digest FROM run_events e \
+                      WHERE e.tenant_id = r.tenant_id AND e.run_id = r.id \
+                        AND e.event_type = 'end.reached' ORDER BY e.seq DESC LIMIT 1) \
+             FROM runs r WHERE r.tenant_id = $1 AND r.id = $2",
+        )
+        .bind(tenant.as_uuid())
+        .bind(run.as_uuid())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| e.to_string())?;
+        if result_agrees {
             Ok(())
         } else {
-            Err(format!(
-                "projection differs from the journal:\n  replayed: {replayed:?}\n  stored:   {stored:?}"
-            ))
+            Err("the run's result is not the payload its end.reached event names".into())
         }
     }
 }
@@ -1529,6 +1546,10 @@ impl RunTx for PgRunTx {
                         RunEvent::StepCompleted { .. }
                             | RunEvent::WaitSatisfied { .. }
                             | RunEvent::ReconciliationConcluded { .. }
+                            // A run's result (G21) and the result a child hands its parent: the
+                            // journal names the payload, not only the step projection.
+                            | RunEvent::EndReached { .. }
+                            | RunEvent::ChildFinished { .. }
                     )
                 })
                 .and_then(|n| output_digest.get(n));
@@ -1654,11 +1675,17 @@ impl RunTx for PgRunTx {
             (Some(reason), code) => (Some(reason.as_str()), code.map(FailureCode::as_str)),
             (None, _) => (None, None),
         };
+        // The run's result (G21): the output its `end` step was given in this transaction.
+        let result = events.iter().find_map(|event| match event {
+            RunEvent::EndReached { node } => output_digest.get(node).cloned(),
+            _ => None,
+        });
         if written > 0 {
             let updated = sqlx::query(
                 "UPDATE runs SET status = $4, run_version = $5, stop_reason = $6, stop_code = $7, \
                         paused = $8, updated_at = $9, \
-                        finished_at = CASE WHEN $10 THEN COALESCE(finished_at, $9) ELSE NULL END \
+                        finished_at = CASE WHEN $10 THEN COALESCE(finished_at, $9) ELSE NULL END, \
+                        result_digest = COALESCE($11, result_digest) \
                  WHERE tenant_id = $1 AND id = $2 AND run_version = $3",
             )
             .bind(tenant.as_uuid())
@@ -1671,6 +1698,7 @@ impl RunTx for PgRunTx {
             .bind(self.state.is_paused())
             .bind(self.now)
             .bind(self.state.status().is_terminal())
+            .bind(result)
             .execute(&mut *self.tx)
             .await
             .map_err(store_error)?

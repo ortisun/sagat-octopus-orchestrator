@@ -48,6 +48,13 @@ pub enum Resolution {
         node: NodeId,
         child: Result<RunId, FailureCode>,
     },
+    /// The result of an `end` node was evaluated and kept (`Ok`), or could not be: the code is
+    /// `EXPRESSION_ERROR` for an expression that does not evaluate and `RUN_DATA_LIMIT` for a value
+    /// too large to keep.
+    Output {
+        node: NodeId,
+        outcome: Result<(), FailureCode>,
+    },
 }
 
 /// What a heartbeat tells the worker.
@@ -726,6 +733,14 @@ pub fn resolve(
         },
         Resolution::Child { node, child } => match child {
             Ok(child) => RunEvent::ChildStarted { node, child },
+            Err(code) => RunEvent::StepFailed {
+                node,
+                code,
+                fence: None,
+            },
+        },
+        Resolution::Output { node, outcome } => match outcome {
+            Ok(()) => RunEvent::EndReached { node },
             Err(code) => RunEvent::StepFailed {
                 node,
                 code,
