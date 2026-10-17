@@ -16,7 +16,8 @@ use super::event::{
     ReviewOutcome, RunEvent, StopReason, SwitchSelection,
 };
 use super::instance::ExecutionInstanceId;
-use super::plan::{AddressedPlan, Evaluation, Plan, after, plan, plan_addressed};
+use super::path_state::PathExecutionState;
+use super::plan::{AddressedPlan, Evaluation, Plan, after, plan, plan_addressed, plan_path};
 use super::sagas::policies;
 use super::state::{RunId, RunState, SagaPhase, StepState, StepStatus, WaitingOn};
 use crate::saga::{NodeOrigin, OnCompensationFailure, ReconcileVerdict};
@@ -156,6 +157,26 @@ fn settle_addressed(
     ))
 }
 
+fn settle_path(
+    def: &WorkflowDefinition,
+    state: &mut PathExecutionState,
+    mut events: Vec<AddressedRunEvent>,
+) -> Result<AddressedProgress, ExecutionError> {
+    let budget = 8 + def.total_len();
+    for _ in 0..budget {
+        match plan_path(def, state)? {
+            AddressedPlan::Emit(event) => {
+                state.apply_addressed(&event)?;
+                events.push(event);
+            }
+            AddressedPlan::Idle => return Ok(AddressedProgress { events }),
+        }
+    }
+    Err(ExecutionError::Invariant(
+        "the bounded path planner did not settle",
+    ))
+}
+
 /// Looks a step up. A finished run answers "finished" before anything about the step: it is the
 /// more useful thing to tell a late caller.
 fn require_step<'a>(state: &'a RunState, node: &NodeId) -> Result<&'a StepState, ExecutionError> {
@@ -165,6 +186,42 @@ fn require_step<'a>(state: &'a RunState, node: &NodeId) -> Result<&'a StepState,
     state
         .step(node)
         .ok_or_else(|| ExecutionError::UnknownStep(node.clone()))
+}
+
+fn require_path_instance<'a>(
+    state: &'a PathExecutionState,
+    instance: &ExecutionInstanceId,
+) -> Result<&'a StepState, ExecutionError> {
+    if instance.path() != state.path() {
+        return Err(ExecutionError::UnknownInstance(instance.clone()));
+    }
+    if state.global().status().is_terminal() {
+        return Err(ExecutionError::RunFinished(state.global().status()));
+    }
+    state
+        .local_instance(instance.node())
+        .ok_or_else(|| ExecutionError::UnknownInstance(instance.clone()))
+}
+
+fn require_path_lease<'a>(
+    state: &'a PathExecutionState,
+    instance: &ExecutionInstanceId,
+    fence: Fence,
+) -> Result<&'a StepState, ExecutionError> {
+    let step = require_path_instance(state, instance)?;
+    if !step.status().is_leased() {
+        return Err(ExecutionError::IllegalInstanceTransition {
+            instance: instance.clone(),
+            status: step.status(),
+            event: "lease check",
+        });
+    }
+    if step.attempt() != fence.attempt || step.generation() != fence.generation {
+        return Err(ExecutionError::StaleInstanceAttempt {
+            instance: instance.clone(),
+        });
+    }
+    Ok(step)
 }
 
 /// The step must be leased to exactly this attempt and generation.
@@ -312,6 +369,46 @@ pub fn lease_instance(
     Ok((fence, event))
 }
 
+/// Grants a lease from one complete bounded path snapshot.
+///
+/// # Errors
+/// Returns the same typed instance errors as [`lease_instance`], and refuses forward work when a
+/// global or ancestor fence has stopped the path.
+pub fn lease_path_instance(
+    state: &mut PathExecutionState,
+    instance: &ExecutionInstanceId,
+) -> Result<(Fence, AddressedRunEvent), ExecutionError> {
+    if instance.path() != state.path() {
+        return Err(ExecutionError::UnknownInstance(instance.clone()));
+    }
+    if !state.allows_forward_progress() && !instance.node().is_derived() {
+        return Err(ExecutionError::RunNotRunnable(state.global().status()));
+    }
+    let step = require_path_instance(state, instance)?;
+    if step.status() != StepStatus::Ready {
+        return Err(ExecutionError::IllegalInstanceTransition {
+            instance: instance.clone(),
+            status: step.status(),
+            event: "step.leased",
+        });
+    }
+    let fence = Fence {
+        attempt: step.attempt() + 1,
+        generation: step.generation() + 1,
+    };
+    let event = AddressedRunEvent::in_path(
+        instance.path().clone(),
+        RunEvent::StepLeased {
+            node: instance.node().clone(),
+            attempt: fence.attempt,
+            generation: fence.generation,
+        },
+    )
+    .map_err(|_| ExecutionError::Invariant("a bounded lease lost its instance address"))?;
+    state.apply_addressed(&event)?;
+    Ok((fence, event))
+}
+
 /// Records a heartbeat. The first one of an attempt marks the step as started.
 ///
 /// # Errors
@@ -369,6 +466,38 @@ pub fn heartbeat_instance(
             },
         )
         .map_err(|_| ExecutionError::Invariant("a step event lost its instance address"))?;
+        state.apply_addressed(&started)?;
+        Some(started)
+    } else {
+        None
+    };
+    Ok(InstanceHeartbeat {
+        cancel_requested,
+        event,
+    })
+}
+
+/// Records a heartbeat against one bounded path snapshot.
+///
+/// # Errors
+/// Returns a typed instance error for a stale fence or illegal state.
+pub fn heartbeat_path_instance(
+    state: &mut PathExecutionState,
+    instance: &ExecutionInstanceId,
+    fence: Fence,
+) -> Result<InstanceHeartbeat, ExecutionError> {
+    let step = require_path_lease(state, instance, fence)?;
+    let cancel_requested = step.cancel_requested();
+    let event = if step.status() == StepStatus::Leased {
+        let started = AddressedRunEvent::in_path(
+            instance.path().clone(),
+            RunEvent::StepStarted {
+                node: instance.node().clone(),
+                attempt: fence.attempt,
+                generation: fence.generation,
+            },
+        )
+        .map_err(|_| ExecutionError::Invariant("a bounded heartbeat lost its instance address"))?;
         state.apply_addressed(&started)?;
         Some(started)
     } else {
@@ -439,6 +568,33 @@ pub fn complete_instance(
     .map_err(|_| ExecutionError::Invariant("a completion lost its instance path"))?;
     state.apply_addressed(&primary)?;
     settle_addressed(def, state, instance.path(), vec![primary])
+}
+
+/// Records success and settles routing within one complete bounded path snapshot.
+///
+/// # Errors
+/// Returns the same typed stale-fence and local-planning errors as [`complete_instance`].
+pub fn complete_path_instance(
+    def: &WorkflowDefinition,
+    state: &mut PathExecutionState,
+    instance: &ExecutionInstanceId,
+    fence: Fence,
+) -> Result<AddressedProgress, ExecutionError> {
+    if instance.node().is_reconciliation() {
+        return Err(ExecutionError::NeedsVerdict(instance.node().clone()));
+    }
+    require_path_lease(state, instance, fence)?;
+    let primary = AddressedRunEvent::in_path(
+        instance.path().clone(),
+        RunEvent::StepCompleted {
+            node: instance.node().clone(),
+            attempt: fence.attempt,
+            generation: fence.generation,
+        },
+    )
+    .map_err(|_| ExecutionError::Invariant("a bounded completion lost its instance path"))?;
+    state.apply_addressed(&primary)?;
+    settle_path(def, state, vec![primary])
 }
 
 /// A failed attempt as reported by a worker or inferred by the engine.
