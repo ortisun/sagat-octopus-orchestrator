@@ -78,6 +78,14 @@ pub trait ApprovalSchedulerStore: RunStore + ApprovalProgressStore {
         &self,
         window: &Window,
     ) -> impl Future<Output = Result<Vec<DueApproval>, StoreError>> + Send;
+
+    /// Root steps that a settled approval activated and nobody has released yet. The outcome
+    /// transaction (decision, expiry) only records the chosen route; the scheduler continues the run
+    /// from there, so a crash between the two leaves a step the next pass finds again.
+    fn approval_routes(
+        &self,
+        window: &Window,
+    ) -> impl Future<Output = Result<Vec<StepRef>, StoreError>> + Send;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

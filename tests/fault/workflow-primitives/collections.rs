@@ -23,7 +23,7 @@ use uuid::Uuid;
 use crate::support;
 use crate::support::api::{TestApi, json_of};
 
-fn collection(name: &str) -> Value {
+fn collection(name: &str, result: &str, max_concurrency: u16) -> Value {
     json!({
         "apiVersion": "sagat-octopus-orchestrator.io/v1",
         "kind": "Workflow",
@@ -53,9 +53,9 @@ fn collection(name: &str) -> Value {
                 "type": "forEach",
                 "items": "input.lines",
                 "body": "line",
-                "result": "bodyResult",
+                "result": result,
                 "maxItems": 17,
-                "maxConcurrency": 3,
+                "maxConcurrency": max_concurrency,
                 "next": "done"
             },
             {"id": "done", "type": "end", "outputExpr": "steps.lines.output"}
@@ -117,6 +117,16 @@ async fn active_count(api: &TestApi, run: RunId) -> i32 {
 }
 
 async fn public_run() -> (TestApi, TenantId, String, RunId) {
+    public_run_with("bodyResult", 17, 3).await
+}
+
+/// A published collection run over `count` positions, `max_concurrency` at a time, whose aggregate is the
+/// `result` expression applied to each iteration.
+async fn public_run_with(
+    result: &str,
+    count: u32,
+    max_concurrency: u16,
+) -> (TestApi, TenantId, String, RunId) {
     let api = support::api::start_with(support::api::Options {
         runtime_role: true,
         ..support::api::Options::default()
@@ -132,7 +142,7 @@ async fn public_run() -> (TestApi, TenantId, String, RunId) {
         .as_user(Method::POST, "/workflows", "alice", "acme")
         .header("x-octopus-namespace", "payments")
         .header("idempotency-key", Uuid::now_v7().to_string())
-        .json(&json!({"name": name, "ir": collection(&name)}))
+        .json(&json!({"name": name, "ir": collection(&name, result, max_concurrency)}))
         .send()
         .await
         .expect("create collection workflow");
@@ -168,12 +178,12 @@ async fn public_run() -> (TestApi, TenantId, String, RunId) {
             "alice",
             "acme",
         )
-        .json(&json!({"limit": 3}))
+        .json(&json!({"limit": max_concurrency}))
         .send()
         .await
         .expect("set iteration capacity");
     assert_eq!(capacity.status(), StatusCode::OK);
-    let lines = (0..17)
+    let lines = (0..count)
         .map(|position| json!({"position": position}))
         .collect::<Vec<_>>();
     let started = api
@@ -454,4 +464,152 @@ async fn bounded_public_collection_finishes_in_input_order_after_restart_and_los
         .verify_run(tenant, run)
         .await
         .expect("collection journal and projection agree");
+}
+
+/// Serves every task of the run with a worker that answers `{"position": index}` and ticks the
+/// scheduler between waves, until the run ends or `rounds` ran out.
+async fn serve_until_finished(
+    api: &TestApi,
+    tenant: TenantId,
+    namespace: &str,
+    run: RunId,
+    scheduler: &Scheduler<PgRunStore, JsonEvaluator, SystemEntropy>,
+    rounds: usize,
+) -> String {
+    api.owner_store
+        .insert_membership(&Membership::restore(
+            tenant,
+            Subject::parse("collection-worker").expect("worker subject"),
+            Role::Worker,
+            support::now(),
+        ))
+        .await
+        .expect("worker membership");
+    let binding = api
+        .as_user(
+            Method::PUT,
+            &format!("/namespaces/{namespace}/worker-bindings/collection-worker"),
+            "alice",
+            "acme",
+        )
+        .json(&json!({"activities": ["line.process"]}))
+        .send()
+        .await
+        .expect("worker binding");
+    assert_eq!(binding.status(), StatusCode::OK);
+    let mut worker = WorkerServiceClient::connect(api.grpc_url.clone())
+        .await
+        .expect("connect collection worker");
+    let registration = worker
+        .register_worker(worker_request(
+            api,
+            RegisterWorkerRequest {
+                worker_name: format!("collection-result-worker-{}", Uuid::now_v7()),
+                namespace: "payments".into(),
+                capabilities: Some(WorkerCapabilities {
+                    languages: vec!["rust".into()],
+                    activities: vec!["line.process".into()],
+                    pools: Vec::new(),
+                    max_inflight: 8,
+                    protocol_version: "1.5".into(),
+                }),
+            },
+        ))
+        .await
+        .expect("register collection worker")
+        .into_inner();
+    let mut status = String::new();
+    for _ in 0..rounds {
+        scheduler.tick().await;
+        let tasks = worker
+            .poll_tasks(worker_request(
+                api,
+                PollTasksRequest {
+                    worker_id: registration.worker_id.clone(),
+                    session_token: registration.session_token.clone(),
+                    max_tasks: 8,
+                },
+            ))
+            .await
+            .expect("poll collection tasks")
+            .into_inner()
+            .tasks;
+        for task in &tasks {
+            let index = task
+                .instance
+                .as_ref()
+                .and_then(|instance| instance.instance_path.first())
+                .map(|segment| segment.iteration_index)
+                .expect("collection iteration index");
+            worker
+                .complete_step(worker_request(
+                    api,
+                    CompleteStepRequest {
+                        task_id: task.task_id.clone(),
+                        run_id: task.run_id.clone(),
+                        step_id: task.step_id.clone(),
+                        attempt: task.attempt,
+                        generation: task.generation,
+                        lease_token: task.lease_token.clone(),
+                        idempotency_key: format!("complete-collection-{index}"),
+                        output_json: json!({"position": index}).to_string(),
+                        output_blob_ref: String::new(),
+                        output_sha256: String::new(),
+                        traceparent: String::new(),
+                        instance: task.instance.clone(),
+                    },
+                ))
+                .await
+                .expect("complete collection member");
+        }
+        status = sqlx::query_scalar("SELECT status FROM runs WHERE tenant_id=$1 AND id=$2")
+            .bind(tenant.as_uuid())
+            .bind(run.as_uuid())
+            .fetch_one(&api.db.pool)
+            .await
+            .expect("run status");
+        if status == "SUCCEEDED" {
+            break;
+        }
+    }
+    status
+}
+
+#[tokio::test]
+async fn a_result_expression_reads_the_item_and_index_of_every_iteration() {
+    // The contract lets a collection's `result` read `bodyResult`, `item` and `index`; the iterations
+    // have ended by the time the aggregate is built, so their inputs must come from the snapshot.
+    for (result, expected) in [
+        ("item.position", json!([0, 1, 2])),
+        ("index", json!([0, 1, 2])),
+        ("bodyResult.position", json!([0, 1, 2])),
+    ] {
+        let (api, tenant, namespace, run) = public_run_with(result, 3, 2).await;
+        let placement = acquire_scheduler(&api, "result").await;
+        let scheduler = scheduler(&api, placement);
+        let status = serve_until_finished(&api, tenant, &namespace, run, &scheduler, 60).await;
+        let stop: (Option<String>, Option<String>) =
+            sqlx::query_as("SELECT stop_reason, stop_code FROM runs WHERE tenant_id=$1 AND id=$2")
+                .bind(tenant.as_uuid())
+                .bind(run.as_uuid())
+                .fetch_one(&api.db.pool)
+                .await
+                .expect("stop evidence");
+        assert_eq!(
+            status, "SUCCEEDED",
+            "result expression {result}: stopped with {stop:?}"
+        );
+        let aggregate: Vec<u8> = sqlx::query_scalar(
+            "SELECT payload.content FROM iteration_scopes scope JOIN payloads payload \
+               ON payload.tenant_id=scope.tenant_id AND payload.digest=scope.result_digest \
+              WHERE scope.tenant_id=$1 AND scope.run_id=$2 AND scope.owner_node='lines'",
+        )
+        .bind(tenant.as_uuid())
+        .bind(run.as_uuid())
+        .fetch_one(&api.db.pool)
+        .await
+        .expect("collection aggregate");
+        let aggregate: Value = serde_json::from_slice(&aggregate).expect("aggregate JSON");
+        assert_eq!(aggregate, expected, "result expression {result}");
+    }
 }

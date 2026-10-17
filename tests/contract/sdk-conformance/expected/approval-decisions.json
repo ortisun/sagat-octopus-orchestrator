@@ -169,6 +169,28 @@
       }
     },
     {
+      "id": "approve-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "SUCCEEDED",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
       "id": "reject-run",
       "ok": true,
       "op": "start",
@@ -243,6 +265,28 @@
         ],
         "nextCursor": null
       }
+    },
+    {
+      "id": "reject-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:6>",
+        "startedBy": "alice",
+        "status": "SUCCEEDED",
+        "traceId": "<trace:7>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
     }
   ],
   "serverState": [
@@ -277,7 +321,7 @@
           "forward": null,
           "id": "rejected",
           "kind": "FORWARD",
-          "status": "PENDING",
+          "status": "SUCCEEDED",
           "type": "end",
           "waitingOn": null
         },
@@ -295,7 +339,7 @@
       ],
       "paused": false,
       "runId": "<uuid:6>",
-      "status": "RUNNING"
+      "status": "SUCCEEDED"
     },
     {
       "nodes": [
@@ -306,7 +350,7 @@
           "forward": null,
           "id": "approved",
           "kind": "FORWARD",
-          "status": "PENDING",
+          "status": "SUCCEEDED",
           "type": "end",
           "waitingOn": null
         },
@@ -346,7 +390,7 @@
       ],
       "paused": false,
       "runId": "<uuid:1>",
-      "status": "RUNNING"
+      "status": "SUCCEEDED"
     }
   ],
   "workerLog": {}

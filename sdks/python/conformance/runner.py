@@ -310,6 +310,17 @@ def behavior_handler(name: str, kind: str, behavior: Obj, log: list[Obj], measur
         )
         outcome = "returned"
         try:
+            # `holdUntilLogged`: a scoped instance waits until the worker has logged that many finished
+            # attempts, which orders completions by what happened rather than by how long anything took.
+            holds = behavior.get("holdUntilLogged")
+            hold_until = holds[ctx.index or 0] if holds else 0
+            while len(log) < hold_until:
+                try:
+                    await asyncio.wait_for(ctx.cancellation.wait(), timeout=0.01)
+                except asyncio.TimeoutError:
+                    continue
+                outcome = "cancelled"
+                return None
             until = behavior.get("failsUntilAttempt")
             if (until is not None and ctx.attempt < until) or (until is None and behavior.get("fails")):
                 outcome = "failed"
@@ -506,6 +517,12 @@ async def run(scenario: Obj, config: Obj) -> Obj:
         "default": client_for(config["clientToken"]),
         "bad": client_for(config["badToken"]),
         "other": client_for(config["otherTenantToken"]),
+        # Members of the tenant with one role each, the worker identity, and an operator the scenario revokes.
+        "worker": client_for(config["workerToken"]),
+        "operator": client_for(config["operatorToken"]),
+        "viewer": client_for(config["viewerToken"]),
+        "runner": client_for(config["runnerToken"]),
+        "revoked": client_for(config["revokedToken"]),
     }
     logs: dict[str, list[Obj]] = {}
     measurements: dict[str, Obj] = {}

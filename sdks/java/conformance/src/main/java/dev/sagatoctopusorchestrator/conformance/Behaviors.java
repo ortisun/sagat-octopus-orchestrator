@@ -45,6 +45,17 @@ final class Behaviors {
             measurements.enter(ctx);
             String outcome = "returned";
             try {
+                // holdUntilLogged: a scoped instance waits until the worker has logged that many finished
+                // attempts, which orders completions by what happened rather than by how long anything took.
+                if (behavior.has("holdUntilLogged")) {
+                    int holdUntil = behavior.get("holdUntilLogged").get(ctx.index() == null ? 0 : ctx.index()).asInt();
+                    while (log.size() < holdUntil) {
+                        if (ctx.cancellation().await(Duration.ofMillis(10))) {
+                            outcome = "cancelled";
+                            return F.nullNode();
+                        }
+                    }
+                }
                 if (behavior.has("failsUntilAttempt") && ctx.attempt() < behavior.get("failsUntilAttempt").asInt()) {
                     outcome = "failed";
                     throw failure(behavior.get("fails"));

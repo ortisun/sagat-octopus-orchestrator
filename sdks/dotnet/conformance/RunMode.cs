@@ -79,7 +79,18 @@ internal sealed class RunMode : IAsyncDisposable
         {
             ApiUrl = (string)config["apiUrl"]!,
             Namespace = (string)config["namespace"]!,
-            Token = (string)config[token switch { "bad" => "badToken", "other" => "otherTenantToken", _ => "clientToken" }]!,
+            Token = (string)config[token switch
+            {
+                "bad" => "badToken",
+                "other" => "otherTenantToken",
+                // Members of the tenant with one role each, the worker identity, and an operator the scenario revokes.
+                "worker" => "workerToken",
+                "operator" => "operatorToken",
+                "viewer" => "viewerToken",
+                "runner" => "runnerToken",
+                "revoked" => "revokedToken",
+                _ => "clientToken",
+            }]!,
             HttpMessageHandler = new FaultHandler(plan, apiPath, new SocketsHttpHandler { AllowAutoRedirect = false }),
         };
         options.Retry.InitialDelay = TimeSpan.FromMilliseconds(20);

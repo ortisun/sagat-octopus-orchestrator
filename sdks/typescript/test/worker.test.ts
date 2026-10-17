@@ -205,6 +205,32 @@ test('the asynchronous waiter does not spend its budget while the event loop can
   await until(() => ready, 'the later timer', 50);
 });
 
+test('scoped instances that share a legacy task id are counted one by one against maxInflight', async () => {
+  // The legacy task id is run/node/generation, so two iterations of one scope leased together carry the
+  // same one: when the quick one ends, the slow one still holds its slot.
+  const instanceOf = (index: number) => ({ instance_path: [{ scope_node_id: 'lines', iteration_index: index }], definition_node_id: 'charge' });
+  const scoped = (index: number): TaskLease => lease({
+    instance: instanceOf(index), input_json: JSON.stringify({ input: {}, item: { n: index }, index, steps: {} }),
+  });
+  fake.acceptedVersion = '1.5';
+  fake.leases = [scoped(0), scoped(1)];
+  let release: () => void = () => undefined;
+  const slow = new Promise<void>((resolve) => { release = resolve; });
+  const h = host({ maxInflight: 2, transport: 'poll' });
+  h.registerActivity('charge', async (_input, context) => {
+    if (context.index === 0) await slow;
+    return { ok: true };
+  });
+  await h.start();
+  await until(() => fake.of('completeStep').length === 1, 'the quick iteration to complete');
+  const completedAt = fake.calls.findIndex((call) => call.method === 'completeStep');
+  await until(() => fake.calls.slice(completedAt).some((call) => call.method === 'pollTasks' || call.method === 'streamTasks'), 'the next receive');
+  const next = fake.calls.slice(completedAt).find((call) => call.method === 'pollTasks' || call.method === 'streamTasks');
+  assert.equal(next?.request['max_tasks'], 1, 'one slot is still held by the slow iteration');
+  release();
+  await until(() => fake.of('completeStep').length === 2, 'the slow iteration to complete');
+});
+
 test('a worker registers its activities and the newest protocol it speaks, with the token as metadata', async () => {
   const h = host({ languages: ['typescript'], maxInflight: 7 });
   h.registerActivity('b.second', () => 1).registerCompensation('a.undo', () => 1).registerReconciler('c.lookup', () => reconcile.unknown());

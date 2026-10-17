@@ -372,6 +372,33 @@ impl MaintenanceStore for PgRunStore {
         .collect()
     }
 
+    async fn stopped_runs(&self, window: &Window) -> Result<Vec<RunRef>, StoreError> {
+        let (limit, shards, exclude) = window_params(window);
+        sqlx::query(
+            "SELECT t.tenant_id, t.id FROM unnest($2::smallint[]) AS sh(s) \
+             CROSS JOIN LATERAL ( \
+                 SELECT run.tenant_id, run.id, run.updated_at FROM runs run \
+                 WHERE run_shard(run.id) = sh.s AND run.status = 'CANCELLING' \
+                   AND run.finished_at IS NULL AND run.stop_reason IS NOT NULL AND NOT run.paused \
+                   AND run.tenant_id <> ALL($3::uuid[]) \
+                   AND NOT EXISTS ( \
+                     SELECT 1 FROM steps held \
+                     WHERE held.tenant_id = run.tenant_id AND held.run_id = run.id \
+                       AND held.status IN ('LEASED','RUNNING')) \
+                 ORDER BY run.updated_at LIMIT $1) t \
+             ORDER BY t.updated_at LIMIT $1",
+        )
+        .bind(limit)
+        .bind(shards)
+        .bind(exclude)
+        .fetch_all(self.pool())
+        .await
+        .map_err(store_error)?
+        .iter()
+        .map(run_ref)
+        .collect()
+    }
+
     async fn stale_hints(
         &self,
         older_than: Duration,

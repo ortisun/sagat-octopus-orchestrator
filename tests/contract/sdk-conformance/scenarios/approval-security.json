@@ -1,0 +1,194 @@
+{
+  "name": "approval-security",
+  "description": "Who may decide an approval is the same in the five SDKs: the initiator is excluded by default, a viewer, a worker and a runner are refused, a member whose role is revoked is refused from then on, an eligible operator decides, every refusal carries the trace of its call and is audited, and a secret-shaped value in the run's input never comes back in an answer, an error or the audit trail.",
+  "auditEvidence": true,
+  "mustNotLeak": [
+    "sagat_secret_marker_7f3a9c1d2b4e6a80"
+  ],
+  "mustNotAppear": [
+    "sagat_secret_marker_7f3a9c1d2b4e6a80"
+  ],
+  "workflows": {
+    "guarded": {
+      "name": "approval-security-runtime",
+      "program": [
+        {
+          "op": "approval",
+          "id": "review",
+          "policy": {
+            "roles": [
+              "admin",
+              "operator"
+            ]
+          },
+          "timeoutMs": 86400000,
+          "onApprove": "approved",
+          "onReject": "rejected",
+          "onExpire": "expired"
+        },
+        {
+          "op": "end",
+          "id": "approved",
+          "options": {
+            "outputExpr": "'approved'"
+          }
+        },
+        {
+          "op": "end",
+          "id": "rejected",
+          "options": {
+            "outputExpr": "'rejected'"
+          }
+        },
+        {
+          "op": "end",
+          "id": "expired",
+          "options": {
+            "outputExpr": "'expired'"
+          }
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "id": "run",
+      "op": "start",
+      "workflow": "guarded",
+      "input": {
+        "apiKey": "sagat_secret_marker_7f3a9c1d2b4e6a80"
+      },
+      "idempotencyKey": "security-{{unique}}"
+    },
+    {
+      "id": "opened",
+      "op": "listApprovals",
+      "run": "run",
+      "limit": 1,
+      "waitForItem": true
+    },
+    {
+      "id": "initiator-decides",
+      "op": "decideApproval",
+      "approval": "opened",
+      "decisionKey": "security-initiator-{{unique}}",
+      "decision": "APPROVE",
+      "reasonCode": "SELF_APPROVAL",
+      "traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203301-01"
+    },
+    {
+      "id": "viewer-lists",
+      "op": "listApprovals",
+      "token": "viewer",
+      "run": "run",
+      "limit": 1,
+      "traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203302-01"
+    },
+    {
+      "id": "viewer-decides",
+      "op": "decideApproval",
+      "token": "viewer",
+      "approval": "opened",
+      "decisionKey": "security-viewer-{{unique}}",
+      "decision": "APPROVE",
+      "reasonCode": "READ_ONLY",
+      "traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203303-01"
+    },
+    {
+      "id": "worker-lists",
+      "op": "listApprovals",
+      "token": "worker",
+      "run": "run",
+      "limit": 1,
+      "traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203304-01"
+    },
+    {
+      "id": "worker-decides",
+      "op": "decideApproval",
+      "token": "worker",
+      "approval": "opened",
+      "decisionKey": "security-worker-{{unique}}",
+      "decision": "APPROVE",
+      "reasonCode": "WORKER",
+      "traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203305-01"
+    },
+    {
+      "id": "runner-lists",
+      "op": "listApprovals",
+      "token": "runner",
+      "run": "run",
+      "limit": 1,
+      "traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203306-01"
+    },
+    {
+      "id": "runner-decides",
+      "op": "decideApproval",
+      "token": "runner",
+      "approval": "opened",
+      "decisionKey": "security-runner-{{unique}}",
+      "decision": "APPROVE",
+      "reasonCode": "RUNNER",
+      "traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203307-01"
+    },
+    {
+      "id": "revoked-lists",
+      "op": "listApprovals",
+      "token": "revoked",
+      "run": "run",
+      "limit": 1,
+      "traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203308-01"
+    },
+    {
+      "id": "revoke",
+      "op": "control",
+      "action": "revokeMembership",
+      "node": "conformance-revoked"
+    },
+    {
+      "id": "revoked-decides",
+      "op": "decideApproval",
+      "token": "revoked",
+      "approval": "opened",
+      "decisionKey": "security-revoked-{{unique}}",
+      "decision": "APPROVE",
+      "reasonCode": "REVOKED",
+      "traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203309-01"
+    },
+    {
+      "id": "revoked-lists-again",
+      "op": "listApprovals",
+      "token": "revoked",
+      "run": "run",
+      "limit": 1,
+      "traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203310-01"
+    },
+    {
+      "id": "still-pending",
+      "op": "listApprovals",
+      "run": "run",
+      "limit": 1
+    },
+    {
+      "id": "operator-decides",
+      "op": "decideApproval",
+      "token": "operator",
+      "approval": "opened",
+      "decisionKey": "security-operator-{{unique}}",
+      "decision": "APPROVE",
+      "reasonCode": "POLICY_OK",
+      "traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203311-01"
+    },
+    {
+      "id": "done",
+      "op": "waitForCompletion",
+      "run": "run",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "settled",
+      "op": "listApprovals",
+      "run": "run",
+      "limit": 1
+    }
+  ]
+}

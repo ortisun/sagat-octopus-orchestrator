@@ -1022,6 +1022,42 @@ fn routing_cannot_activate_a_step_twice() {
 }
 
 #[test]
+fn release_pending_continues_a_step_that_a_durable_transaction_activated() {
+    // A transaction outside the planner (an approval outcome) completed `a` and activated `b`,
+    // then committed: the next owner of the run finds `b` pending and releases it, once.
+    let mut run = Harness::start(build(
+        "a",
+        vec![activity("a").with_next(id("b")), activity("b")],
+    ));
+    let fence = run.lease("a");
+    run.state
+        .apply(&RunEvent::StepCompleted {
+            node: id("a"),
+            attempt: fence.attempt,
+            generation: fence.generation,
+        })
+        .expect("complete");
+    run.state
+        .apply(&RunEvent::StepRouted {
+            node: id("a"),
+            activated: vec![id("b")],
+        })
+        .expect("route");
+    assert_eq!(run.status("b"), StepStatus::Pending);
+
+    let progress = execution::release_pending(&run.def, &mut run.state, T0).expect("release");
+    assert_eq!(
+        progress.events,
+        vec![RunEvent::StepReleased { node: id("b") }]
+    );
+    assert!(progress.pending.is_none());
+    assert_eq!(run.status("b"), StepStatus::Ready);
+
+    let again = execution::release_pending(&run.def, &mut run.state, T0).expect("nothing left");
+    assert!(again.events.is_empty() && again.pending.is_none());
+}
+
+#[test]
 fn a_run_cannot_finish_while_work_remains() {
     let run = Harness::start(build("a", vec![activity("a")]));
     let mut state = run.state;

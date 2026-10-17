@@ -30,6 +30,7 @@ use sagat_domain::quota::QuotaResource;
 use sagat_domain::workflow::{ActivityName, Digest, NodeId};
 use sagat_infra_ir::{JsonEvaluator, JsonIrCodec};
 use sagat_infra_postgres::{MIGRATOR, PgLoopProgressStore, PgRunStore, migrate};
+use sagat_scheduler::{Keeper, KeeperSettings, Placement, Scheduler, SchedulerSettings};
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
 use sqlx::Row;
@@ -1952,6 +1953,86 @@ async fn iteration_limit_stops_the_run_without_routing_a_successor() {
     let published =
         crate::hint_contract::assert_outbox_matches_the_contract(&fixture.db.pool).await;
     crate::hint_contract::assert_published(&published, &["loop.iteration_limit"]);
+}
+
+#[tokio::test]
+async fn a_loop_that_hit_its_iteration_limit_ends_the_run_failed_through_the_scheduler() {
+    // The checkpoint only stops the run (CANCELLING with the loop's code); the scheduler takes the
+    // stopped run from there, so a run nobody else touches still reaches a terminal status.
+    let fixture = seed_running_loop_with_limit("loop-limit-settles", 1).await;
+    let store = PgLoopProgressStore::new(fixture.db.pool.clone(), fixture.definitions.clone());
+    store
+        .checkpoint(
+            &LoopCheckpointCommand::new(
+                transition(
+                    &fixture,
+                    8,
+                    fixture.authority.clone(),
+                    audit(&fixture),
+                    crate::support::now(),
+                ),
+                0,
+                fixture.returned.clone(),
+                fixture.initial_carry,
+                fixture.initial_carry,
+                true,
+                crate::support::now(),
+                LoopContinuation::IterationLimit,
+                None,
+                None,
+                Uuid::now_v7(),
+            )
+            .expect("iteration-limit checkpoint"),
+        )
+        .await
+        .expect("stop exhausted loop");
+
+    let runs = PgRunStore::new(fixture.db.pool.clone(), fixture.definitions.clone());
+    // The shards are held by the fixture's scheduler: this replica is that scheduler after a restart.
+    let placement = Placement::new(fixture.authority.owner().to_owned());
+    Keeper::new(
+        runs.clone(),
+        placement.clone(),
+        KeeperSettings {
+            ttl: std::time::Duration::from_secs(60),
+        },
+    )
+    .round()
+    .await
+    .expect("acquire scheduler shards");
+    let scheduler = Scheduler::new(
+        runs,
+        Engine::new(JsonEvaluator),
+        SystemEntropy,
+        SchedulerSettings::default(),
+    )
+    .with_placement(placement);
+    let settled = scheduler.tick().await;
+    assert_eq!(settled.failed, 0, "{settled:?}");
+    let ended: (String, Option<String>, i64) = sqlx::query_as(
+        "SELECT run.status, run.stop_code, \
+                (SELECT count(*) FROM run_events WHERE tenant_id=run.tenant_id AND run_id=run.id \
+                   AND event_type='run.finished') \
+         FROM runs run WHERE run.tenant_id=$1 AND run.id=$2",
+    )
+    .bind(fixture.tenant)
+    .bind(fixture.run.as_uuid())
+    .fetch_one(&fixture.db.pool)
+    .await
+    .expect("run after the scheduler pass");
+    assert_eq!(ended, ("FAILED".into(), Some("ITERATION_LIMIT".into()), 1));
+
+    let again = scheduler.tick().await;
+    assert_eq!(again.failed, 0, "{again:?}");
+    let finished: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM run_events WHERE tenant_id=$1 AND run_id=$2 AND event_type='run.finished'",
+    )
+    .bind(fixture.tenant)
+    .bind(fixture.run.as_uuid())
+    .fetch_one(&fixture.db.pool)
+    .await
+    .expect("run.finished count");
+    assert_eq!(finished, 1, "the run finishes once");
 }
 
 #[tokio::test]

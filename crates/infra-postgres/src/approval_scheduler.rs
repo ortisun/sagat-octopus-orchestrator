@@ -142,6 +142,39 @@ impl ApprovalSchedulerStore for PgRunStore {
         .collect()
     }
 
+    async fn approval_routes(&self, window: &Window) -> Result<Vec<StepRef>, StoreError> {
+        let (limit, shards, exclude) = window_params(window);
+        sqlx::query(
+            "SELECT candidate.tenant_id,candidate.run_id,candidate.node, \
+                    candidate.instance_path_nodes,candidate.instance_path_indices \
+             FROM unnest($2::smallint[]) AS sh(s) \
+             CROSS JOIN LATERAL ( \
+               SELECT step.tenant_id,step.run_id,step.node,step.instance_path_nodes, \
+                      step.instance_path_indices,step.updated_at \
+               FROM steps step \
+               JOIN runs run ON run.tenant_id=step.tenant_id AND run.id=step.run_id \
+               WHERE run_shard(step.run_id)=sh.s AND run.status='RUNNING' AND NOT run.paused \
+                 AND step.status='PENDING' AND step.tenant_id <> ALL($3::uuid[]) \
+                 AND cardinality(step.instance_path_nodes)=0 \
+                 AND EXISTS ( \
+                   SELECT 1 FROM approval_requests request \
+                   WHERE request.tenant_id=step.tenant_id AND request.run_id=step.run_id \
+                     AND request.routed_node=step.node \
+                     AND request.status IN ('APPROVED','REJECTED','EXPIRED')) \
+               ORDER BY step.updated_at LIMIT $1 \
+             ) candidate ORDER BY candidate.updated_at LIMIT $1",
+        )
+        .bind(limit)
+        .bind(shards)
+        .bind(exclude)
+        .fetch_all(self.pool())
+        .await
+        .map_err(store_error)?
+        .iter()
+        .map(step_ref)
+        .collect()
+    }
+
     async fn due_approvals(&self, window: &Window) -> Result<Vec<DueApproval>, StoreError> {
         let (limit, shards, exclude) = window_params(window);
         sqlx::query(

@@ -46,6 +46,8 @@ impl PgApprovalProgressStore {
 struct LockedRun {
     version: u64,
     workflow_version: WorkflowVersionId,
+    /// The run is terminal. Only a caller that can still answer from a settled request may proceed.
+    ended: bool,
 }
 
 struct ApprovalCommitContext<'a> {
@@ -157,7 +159,22 @@ fn check_audit(
     Ok(())
 }
 
+/// Locks the run for a transition that needs it to be alive.
 async fn lock_run(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: TenantId,
+    namespace: sagat_domain::identity::NamespaceId,
+    run: RunId,
+) -> Result<LockedRun, ApprovalProgressError> {
+    let locked = lock_run_whatever_its_state(tx, tenant, namespace, run).await?;
+    if locked.ended {
+        return Err(ApprovalProgressError::RuntimeUnavailable);
+    }
+    Ok(locked)
+}
+
+/// Locks the run and reports whether it ended, for callers that may still read a settled outcome.
+async fn lock_run_whatever_its_state(
     tx: &mut Transaction<'_, Postgres>,
     tenant: TenantId,
     namespace: sagat_domain::identity::NamespaceId,
@@ -177,7 +194,7 @@ async fn lock_run(
         return Err(ApprovalProgressError::NotFound);
     }
     let run_status: String = col(&row, "status")?;
-    if matches!(
+    let ended = matches!(
         run_status.as_str(),
         "SUCCEEDED"
             | "FAILED"
@@ -186,12 +203,11 @@ async fn lock_run(
             | "COMPENSATED"
             | "PARTIAL"
             | "COMPENSATION_FAILED"
-    ) {
-        return Err(ApprovalProgressError::RuntimeUnavailable);
-    }
+    );
     Ok(LockedRun {
         version: stored_u64(&row, "run_version")?,
         workflow_version: WorkflowVersionId::new(col(&row, "workflow_version_id")?),
+        ended,
     })
 }
 
@@ -932,8 +948,20 @@ impl ApprovalProgressStore for PgApprovalProgressStore {
             }
             Err(error) => return Err(error),
         };
-        let run = lock_run(&mut tx, address.tenant_id(), address.namespace_id(), run_id).await?;
+        let run = lock_run_whatever_its_state(
+            &mut tx,
+            address.tenant_id(),
+            address.namespace_id(),
+            run_id,
+        )
+        .await?;
         let mut stored = load_request(&mut tx, address, true).await?;
+        // A request that already has its outcome answers from it (the receipt again, or the
+        // conflict) whether or not the run went on to end; only a request still open on an ended
+        // run has nothing left to decide.
+        if run.ended && stored.request.status() == ApprovalStatus::Pending {
+            return Err(ApprovalProgressError::RuntimeUnavailable);
+        }
         let principal =
             match current_principal(&mut tx, address.tenant_id(), attempt.actor()).await? {
                 Some(principal) => principal,

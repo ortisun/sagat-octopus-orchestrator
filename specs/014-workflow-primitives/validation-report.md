@@ -1355,3 +1355,28 @@ are in `research.md`.
 | `contract_workflow_primitives` | 30/30 |
 | `integration_security_multitenancy` | 95/95 |
 | `integration_durable_execution` | 178/178 |
+
+## Five-SDK scenarios for approvals, collections and loops (2026-10-17)
+
+New shared scenarios, each equal to its reviewed golden in TypeScript, Go, Python, C# and Java
+without bless: `approval-settlement` and `approval-security` (WP-06, WP-14), `collection-ordering`
+(WP-03: 17 items at concurrency 3, completion order 2,3…16,1,0, input-order aggregate, duplicates,
+an empty list) and `loop-semantics` (WP-05: a false `while` runs no body, `repeatUntil` runs one,
+three carry checkpoints, `maxIterations: 1` ends `FAILED`/`ITERATION_LIMIT`, a four-second durable
+delay elapses with no worker). The `approval-decisions` golden was corrected: it had recorded the
+stuck state of a routed `end` as PENDING. Harness additions: evidence blocks (`scopeEvidence`,
+`auditEvidence`, `mustNotAppear`), `revokeMembership`, role tokens, and a `holdUntilLogged` runner
+behaviour (completion order from counts, not sleeps).
+
+Defects the scenarios exposed, each fixed test-first: approval routes never ran in a served engine
+(new `approval_routes` scheduler pass); a decision or replay after the run ended returned 503; a
+collection `result` reading `item` or `index` stalled (the snapshot now restores them, also in the
+aggregate-size check added by the byte-ceiling work: found when the two branches met); a loop at its
+iteration limit left the run CANCELLING (new `stopped_runs` pass); the Java and TypeScript worker
+hosts dropped concurrent iterations of one scope that share the legacy `task_id`.
+
+After the merge: clippy clean workspace-wide; `integration_workflow_primitives` 207, `fault_workflow_primitives`
+37, `contract_workflow_primitives` 30, `integration_platform_foundation` 88 (includes the runtime-role
+privilege audit), `integration_security_multitenancy` 96, `integration_durable_execution` 178,
+`contract_grpc_durable_execution` 63. The compatibility test expected protocol 1.4; the server has
+negotiated 1.5 since the scoped protocol was enabled, and the test now says so.

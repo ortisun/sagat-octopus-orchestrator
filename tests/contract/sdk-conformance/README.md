@@ -93,6 +93,48 @@ of the body decision key. No private store is seeded; the scheduler creates ever
 published workflow path. The SDK unit suites separately cover multi-page cursor traversal and strict
 response parsing.
 
+`approval-settlement.json` is the WP-06 settlement contract. Every run is created through the published
+workflow path and settled through the public calls; no private store is seeded and the control endpoint is
+not used. An approval that nobody decides expires on its own deadline (six seconds in the `short`
+workflow) and takes the `expired` route; a decision that beat the deadline of an earlier run is still
+`APPROVED` after a later run, started after it, has expired. The decision is made on a run that finished
+afterwards, so the exact replay, the same key with another body (`CONFLICT`/`IDEMPOTENCY_KEY_REUSED`) and a
+second key (`CONFLICT`/`ALREADY_DECIDED`) are all read from the settled outcome. A decision after the expiry
+or after a cancellation is `ALREADY_DECIDED`, and a cancel after the decision is refused because the run
+already ended. Raw signals named like a decision are `STATE_CONFLICT` and leave the request `PENDING` and the
+run `WAITING`. The commit order of a decision and an expiry that race is not observable from outside; the
+Rust fault tests (`tests/fault/workflow-primitives/approvals.rs`) drive both orders and the race with barriers.
+The deadline cannot be moved by the control endpoint: it is part of the journal's `approval.opened` event.
+
+`collection-ordering.json` is the WP-03 contract: a `map` over 17 items, three at a time, whose first window
+finishes in reverse. Iteration 2 completes first, then the fourteen after it one at a time (the two held slots
+stay held), then 1 and 0, through `holdUntilLogged`, so the order comes from counts of finished attempts and not
+from sleeps. Equal values stay at separate indices, the aggregate the journal records is in input order, the
+journal never shows more than three iterations active, every attempt is the first, and an empty list succeeds
+with an empty aggregate without calling the worker.
+
+`loop-semantics.json` is the WP-05 contract, with `scopeEvidence: "ordered"` so that the journal, not only the
+SDK, shows each iteration. A `while` whose condition is false at entry runs no body (no worker attempt, no
+iteration event); a `repeatUntil` runs one body before it checks, whatever the condition says; a `while` that
+counts to three commits three checkpoints whose carries are 1, 2 and 3; `maxIterations: 1` on a loop that
+would go on stops it after the first checkpoint with `ITERATION_LIMIT` and the run ends `FAILED`. The delay
+case stops its worker after the first body, waits (by the journal, not by sleeping) for the engine to record
+`loop.delay_elapsed`, and only then starts a second worker for the next body: the delay was the engine's timer
+and held no worker.
+
+`approval-security.json` is the WP-14 contract for approvals. The workflow's policy admits `admin` and `operator`
+and keeps the default exclusion of the initiator, and the run's input carries a secret-shaped value that the
+scenario lists under `mustNotLeak` and `mustNotAppear`: it must not come back in any error, observation, the
+server state or the audit evidence. The initiator (`alice`, an admin) is refused with
+`FORBIDDEN`/`INITIATOR_CANNOT_DECIDE`; a viewer, the worker identity and a runner are refused with
+`FORBIDDEN`/`NOT_ELIGIBLE` (the viewer may still list, the worker and the runner may not); an operator whose
+membership the control endpoint revokes is `UNAUTHENTICATED` from then on, for listing as well as deciding;
+the request is still `PENDING` after all of them, and an eligible operator then decides it. Each call carries a
+`traceparent` and every error reports that trace. `auditEvidence: true` adds the approval audit rows, read from
+the audit trail: the opening by the engine, one `approval.denied` for each refusal that reached the approval
+(with its reason and the caller's trace) and the decision. A revoked member never reaches the approval, so
+authentication refuses it and no approval row exists for it.
+
 `chain-inspect-cancel.json` starts a public chain with an initial activity waiting for a worker,
 then inspects and cancels it through all five SDKs. The reviewed runtime golden requires opaque
 cross-tenant lookup, exact cancel replay and a terminal `CANCELLED` chain and run. It does not
@@ -120,6 +162,10 @@ SAGAT_SDK_SCENARIO=continuation-builders cargo test -p sagat-tests --test sdk_co
 SAGAT_SDK_SCENARIO=state-operation-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=state-operations cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=approval-decisions cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=approval-settlement cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=collection-ordering cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=loop-semantics cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=approval-security cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=chain-inspect-cancel cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=scoped-identity cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=collection-runtime cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
@@ -193,6 +239,8 @@ server run or runtime golden is implied.
   "clientToken": "<jwt of an admin>", "workerToken": "<jwt of a worker bound to every activity>",
   "otherTenantToken": "<jwt of an admin of another tenant>", "badToken": "not-a-jwt",
   "unboundWorkerToken": "<jwt of a worker identity with no binding>",
+  "operatorToken": "<jwt of an operator>", "viewerToken": "<jwt of a viewer>", "runnerToken": "<jwt of a runner>",
+  "revokedToken": "<jwt of an operator the scenario revokes>",
   "controlUrl": "http://127.0.0.1:41002", "unique": "go-7f3a9c",
   "workflows": { "<key>": { "workflowId": "<uuid>", "versionId": "<uuid>", "name": "<name>" } },
   "leaseTtlSeconds": 3
@@ -205,7 +253,7 @@ other's data). The harness puts `{{unique}}` back in the results before it compa
 
 **Control endpoint.** `POST <controlUrl>/control` with `{"action": …}` (JSON) is how a scenario step acts on
 the server without an SDK API: `expireLease {run, node}`, `elapseRetryDelay {run, node}`,
-`elapseTimer {run, node}`. It answers `{"ok": true}`. A run is addressed by the **id the step returned**.
+`elapseTimer {run, node}`, `revokeMembership {node}` (`node` names the subject, here `conformance-revoked`, whose role the tenant takes away). It answers `{"ok": true}`. A run is addressed by the **id the step returned**.
 
 ## Scenario files (`scenarios/<name>.json`)
 
@@ -268,6 +316,7 @@ A worker definition may carry `"token": "unbound"` to use `unboundWorkerToken` i
 | `{"throws": "text"}` | raises an ordinary error of the language (reported as `ACTIVITY_ERROR`) |
 | `{"outcomeUnknown": "text"}` | raises `ActivityFailure.outcomeUnknown` |
 | `{"sleepMs": N, "returns": V, "onCancel": {"returns": W}}` | waits `N` ms (or until cancelled: then returns `W`, or raises the SDK's cancellation error if `onCancel` is `{"raises": true}`) |
+| `{"holdUntilLogged": [n0, n1, …], …}` | a scoped instance waits until the worker's log holds at least `n[iterationIndex]` finished attempts (`0` or an index past the array: no wait), then behaves as the rest of the entry says. It orders completions by what happened, never by how long anything took |
 | `{"hang": true}` | waits until cancelled or the host stops, then returns nothing useful |
 | `{"hang": true, "onCancel": {"raises": true}}` | the same, then ends by raising the SDK's cancellation error (what a handler does that is cancelled and says so) |
 | `{"sleepMs": N, "ignoresCancel": true, "returns": V}` | a handler that **never looks at its token**: it waits `N` ms whatever happens and returns `V`; the host must not interrupt it and what it returned is reported |
@@ -292,7 +341,7 @@ stop the scenario.
 
 | `op` | Fields | Calls | Result |
 |---|---|---|---|
-| `start` | `workflow` (key), `input`, `idempotencyKey?`, `correlationId?`, `traceparent?`, `deadlineInMs?`, `token?` (`bad`\|`other`) | `start` | the Run |
+| `start` | `workflow` (key), `input`, `idempotencyKey?`, `correlationId?`, `traceparent?`, `deadlineInMs?`, `token?` (`bad`\|`other`\|`worker`\|`operator`\|`viewer`\|`runner`\|`revoked`) | `start` | the Run |
 | `startWithBlob` | `workflow` (key), `inputBlobBytes`, `idempotencyKey?`, `correlationId?`, `traceparent?`, `deadlineInMs?` | `uploadRunInput` then `startWithBlob` | the Run; a successful upload response is refused unless the one-pass source reached EOF |
 | `get` | `run`, `token?` | `get` | the Run |
 | `list` | `status?`, `limit?`, `all?` | `list` / `listAll` | `{items: [runId…]}` in the order the server gave (newest first), also across pages |
@@ -358,6 +407,21 @@ it must be non-empty and free of tokens) and `version` **of a Run** (a journal c
 into `<createdAt+Ns>`, the seconds between its creation and its deadline (an SDK that sends the deadline in
 the wrong unit shows). It sorts nothing: **order is part of the result**. Where a scenario would be racy it is written so that it is not (a worker started after the
 run, a wait that nothing wakes, `control` to move time).
+
+**Audit evidence and values that must not appear.** `"auditEvidence": true` adds the approval rows of the audit
+trail (action, actor, resource type, reason and trace), read from the table. `"mustNotLeak"` lists texts that no
+error may repeat; `"mustNotAppear"` lists texts (a secret-shaped value a scenario puts into a run's input) that
+no observation, server state or evidence may contain. The worker's log is not searched: a handler is meant to
+see its input.
+
+**Scope evidence.** A scenario with `"scopeEvidence": "ordered"` or `"summary"` adds `scopeEvidence` to the
+compared result: for every run, read from the journal and the payload store and not from what an SDK reports,
+the collection and loop events, the most iterations active at once (`peakActive`), and the payloads that
+matter (the aggregate a collection finished with, the carry of each loop checkpoint). `ordered` lists every
+event in journal order, for scopes that run one iteration at a time. `summary` lists the admission order, the
+sorted checkpoints and the entry and finish, for concurrent iterations: the order in which the scheduler
+looks at completions that arrive together is not part of the contract, the worker's log is what carries the
+completion order there.
 
 ## Optional modes
 

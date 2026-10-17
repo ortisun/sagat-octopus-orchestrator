@@ -17,7 +17,7 @@ use sagat_application::entropy::Entropy;
 use sagat_application::error::StoreError;
 use sagat_application::execution::{
     Actor, DefinitionCache, Effects, Engine, EngineError, ExpressionEvaluator, MAX_PAYLOAD_BYTES,
-    MAX_RUN_OUTPUT_BYTES, ParentLink, RunInfo, RunTx,
+    MAX_RUN_OUTPUT_BYTES, ParentLink, RunInfo, RunTx, ScopeInput,
 };
 use sagat_application::loop_progress::{
     LoopCandidate, LoopCheckpointCommand, LoopDelayElapsedCommand, LoopDrainCommand,
@@ -110,6 +110,8 @@ pub struct Report {
     pub continuations_advanced: u32,
     pub approvals_opened: u32,
     pub approvals_expired: u32,
+    pub approval_routes_released: u32,
+    pub stopped_runs_settled: u32,
     pub timers_fired: u32,
     pub waits_timed_out: u32,
     pub retries_released: u32,
@@ -260,6 +262,8 @@ impl Report {
             + self.continuations_advanced
             + self.approvals_opened
             + self.approvals_expired
+            + self.approval_routes_released
+            + self.stopped_runs_settled
             + self.waits_timed_out
             + self.retries_released
             + self.leases_expired
@@ -512,11 +516,13 @@ where
         self.continuations(&self.view(), &mut report).await;
         self.approvals_expire(&self.view(), &mut report).await;
         self.approvals_open(&self.view(), &mut report).await;
+        self.approval_routes(&self.view(), &mut report).await;
         self.timers(&self.view(), &mut report).await;
         self.wait_deadlines(&self.view(), &mut report).await;
         self.retries(&self.view(), &mut report).await;
         self.leases(&self.view(), &mut report).await;
         self.deadlines(&self.view(), &mut report).await;
+        self.stopped_runs(&self.view(), &mut report).await;
         self.hints(&self.view(), &mut report).await;
         self.children_start(&self.view(), &mut report).await;
         self.children_finish(&self.view(), &mut report).await;
@@ -825,7 +831,7 @@ where
             .ok_or(CollectionAdvanceError::MissingRun)?;
         let info = tx.info().clone();
         let occurred_at = tx.now();
-        let data = tx.data().await?.clone();
+        let mut data = tx.data().await?.clone();
         let (definition, state) = tx.parts();
         let definition = definition.clone();
         let state = state.clone();
@@ -1139,6 +1145,7 @@ where
                 self.aggregate_refusal(
                     result,
                     &data,
+                    &progress.items,
                     collection
                         .ordered_results()
                         .map(|(position, reference)| (position, reference.return_instance()))
@@ -1261,6 +1268,22 @@ where
                 if *stored_index != index {
                     return Err(CollectionAdvanceError::InvalidProgress);
                 }
+                // The iteration ended, so the run data no longer carries its input; the snapshot does.
+                // The result expression reads `item` and `index` as the body did.
+                let item = progress
+                    .items
+                    .get(
+                        usize::try_from(index)
+                            .map_err(|_| CollectionAdvanceError::InvalidProgress)?,
+                    )
+                    .ok_or(CollectionAdvanceError::InvalidProgress)?;
+                data.scope_inputs.insert(
+                    return_ref.return_instance().path().clone(),
+                    ScopeInput::Collection {
+                        index,
+                        item: item.clone(),
+                    },
+                );
                 let value = self
                     .engine
                     .evaluator()
@@ -1340,18 +1363,39 @@ where
         &self,
         result: &sagat_domain::workflow::Expression,
         data: &sagat_application::execution::RunData,
+        items: &[Vec<u8>],
         stored: impl Iterator<Item = (u32, &'a ExecutionInstanceId, &'a [u8])>,
         current: (u32, &'a ExecutionInstanceId, &'a [u8]),
     ) -> Option<FailureCode> {
         let mut members: Vec<_> = stored.collect();
         members.push(current);
         members.sort_by_key(|(position, _, _)| *position);
+        // The iterations that already ended no longer carry their input in the run data; the
+        // snapshot does, and the result expression reads `item` and `index` as the body did.
+        let mut data = data.clone();
+        for (position, instance, _) in &members {
+            // A position the snapshot does not hold is an inconsistent progress record: refuse it
+            // as an expression error instead of letting the aggregate pass unchecked.
+            let Some(item) = usize::try_from(*position)
+                .ok()
+                .and_then(|position| items.get(position))
+            else {
+                return Some(FailureCode::expression_error());
+            };
+            data.scope_inputs.insert(
+                instance.path().clone(),
+                ScopeInput::Collection {
+                    index: *position,
+                    item: item.clone(),
+                },
+            );
+        }
         let mut mapped = Vec::with_capacity(members.len());
         for (_, instance, body_result) in members {
             let value = self
                 .engine
                 .evaluator()
-                .collection_member_result(result, data, instance, body_result)
+                .collection_member_result(result, &data, instance, body_result)
                 .ok()
                 .and_then(|value| serde_json::from_slice::<serde_json::Value>(&value).ok());
             let Some(value) = value else {
@@ -2943,6 +2987,44 @@ where
         }
     }
 
+    /// Continues the runs whose approval has an outcome: the transaction that settled the request
+    /// activated the chosen route and committed; this pass releases it, once, under the shard lease.
+    async fn approval_routes(&self, view: &View, report: &mut Report) {
+        if view.snapshot.is_none() {
+            return;
+        }
+        let pending = self
+            .pick(
+                view,
+                "approval_routes",
+                report,
+                |step: &StepRef| step.tenant_id,
+                |step| (step.run_id, step.instance()),
+                |store, window| async move { store.approval_routes(&window).await },
+            )
+            .await;
+        let outcomes = self
+            .each(
+                pending,
+                |StepRef {
+                     tenant_id, run_id, ..
+                 }| {
+                    self.apply(
+                        view,
+                        tenant_id,
+                        run_id,
+                        "approval_route",
+                        self.effects(),
+                        |def, state, now| Ok(((), execution::release_pending(def, state, now)?)),
+                    )
+                },
+            )
+            .await;
+        for outcome in outcomes {
+            Self::tally(report, outcome, |r| r.approval_routes_released += 1);
+        }
+    }
+
     async fn timers(&self, view: &View, report: &mut Report) {
         let due = self
             .pick(
@@ -3194,6 +3276,36 @@ where
             .await;
         for outcome in outcomes {
             Self::tally(report, outcome, |r| r.deadlines_enforced += 1);
+        }
+    }
+
+    /// Ends the runs that a transaction of their own stopped (a loop at its iteration limit): the
+    /// planner drains what is left and finishes them, which no worker report or timer would do.
+    async fn stopped_runs(&self, view: &View, report: &mut Report) {
+        let stopped = self
+            .pick(
+                view,
+                "stopped_runs",
+                report,
+                |r: &RunRef| r.tenant_id,
+                |r| r.run_id,
+                |store, window| async move { store.stopped_runs(&window).await },
+            )
+            .await;
+        let outcomes = self
+            .each(stopped, |RunRef { tenant_id, run_id }| {
+                self.apply(
+                    view,
+                    tenant_id,
+                    run_id,
+                    "stopped_run",
+                    self.effects(),
+                    |def, state, now| Ok(((), execution::release_pending(def, state, now)?)),
+                )
+            })
+            .await;
+        for outcome in outcomes {
+            Self::tally(report, outcome, |r| r.stopped_runs_settled += 1);
         }
     }
 

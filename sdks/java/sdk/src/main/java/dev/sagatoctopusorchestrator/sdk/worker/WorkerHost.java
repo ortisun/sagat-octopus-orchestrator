@@ -554,7 +554,7 @@ public final class WorkerHost implements AutoCloseable {
     private void dispatch(Worker.TaskLease lease) {
         WorkerRpc channel = rpc;
         Inflight task = new Inflight();
-        if (inflight.putIfAbsent(lease.getTaskId(), task) != null) {
+        if (inflight.putIfAbsent(inflightKey(lease), task) != null) {
             Hooks.log(log, System.Logger.Level.WARNING, "a task that is in flight was leased again, ignored task=" + lease.getTaskId());
             return;
         }
@@ -567,15 +567,30 @@ public final class WorkerHost implements AutoCloseable {
                     Hooks.log(log, System.Logger.Level.ERROR, "a task failed outside its handler task=" + lease.getTaskId() + " (" + t.getClass().getSimpleName() + ")");
                     Hooks.rethrowIfFatal(t);
                 } finally {
-                    inflight.remove(lease.getTaskId());
+                    inflight.remove(inflightKey(lease));
                     task.done.complete(null);
                     wake();
                 }
             });
         } catch (RejectedExecutionException e) {
-            inflight.remove(lease.getTaskId());
+            inflight.remove(inflightKey(lease));
             task.done.complete(null);
         }
+    }
+
+    /**
+     * What identifies a task while it runs. The legacy task id is {@code run/node/generation}, so two iterations of one
+     * scope that are leased together share it: the instance identity (protocol 1.5) is what tells them apart.
+     */
+    static String inflightKey(Worker.TaskLease lease) {
+        if (!lease.hasInstance()) {
+            return lease.getTaskId();
+        }
+        StringBuilder key = new StringBuilder(lease.getTaskId());
+        for (Worker.ScopePathSegment segment : lease.getInstance().getInstancePathList()) {
+            key.append('/').append(segment.getScopeNodeId()).append('[').append(segment.getIterationIndex()).append(']');
+        }
+        return key.toString();
     }
 
     /** A pause with a jitter of 20 % either way, never longer than the cap (applied after the jitter, not before it). */

@@ -558,7 +558,11 @@ public final class Runner {
         String apiPath = URI.create(config.get("apiUrl").asText()).getPath().replaceAll("/$", "");
 
         Map<String, SagatClient> clients = new LinkedHashMap<>();
-        for (Map.Entry<String, String> token : Map.of("default", "clientToken", "bad", "badToken", "other", "otherTenantToken").entrySet()) {
+        for (Map.Entry<String, String> token : Map.of(
+                "default", "clientToken", "bad", "badToken", "other", "otherTenantToken",
+                // Members of the tenant with one role each, the worker identity, and an operator the scenario revokes.
+                "worker", "workerToken", "operator", "operatorToken", "viewer", "viewerToken",
+                "runner", "runnerToken", "revoked", "revokedToken").entrySet()) {
             clients.put(token.getKey(), SagatClient.create(ClientConfig.builder()
                     .apiUrl(config.get("apiUrl").asText())
                     .namespace(config.get("namespace").asText())
