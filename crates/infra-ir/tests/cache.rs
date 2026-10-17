@@ -86,11 +86,16 @@ fn stored_legacy_schema_extensions_do_not_change_execution_restore() {
     let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/contract/payload-classification/fixtures");
     // Exact release v0.1.0 contract at 6ede1c7849c4ac5a209c08da8ad25294fbdd7795.
-    let old_schema: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(fixtures.join("v0.1.0-workflow.schema.json"))
-            .expect("frozen release schema"),
-    )
-    .expect("release schema JSON");
+    let old_schema_bytes =
+        std::fs::read(fixtures.join("v0.1.0-workflow.schema.json")).expect("frozen release schema");
+    use sha2::{Digest as _, Sha256};
+    assert_eq!(
+        format!("{:x}", Sha256::digest(&old_schema_bytes)),
+        "5035e781a2a531da0317594cd8b082fb9291d8e3f0a7b0322625c2260d89bff4",
+        "the frozen release contract must not drift"
+    );
+    let old_schema: serde_json::Value =
+        serde_json::from_slice(&old_schema_bytes).expect("release schema JSON");
     let bytes = std::fs::read(fixtures.join("legacy-annotation-extension.workflow.json"))
         .expect("legacy document");
     let doc: serde_json::Value = serde_json::from_slice(&bytes).expect("legacy JSON");

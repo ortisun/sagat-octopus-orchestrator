@@ -1079,6 +1079,32 @@ async fn actual_v0_1_0_processes_survive_the_additive_upgrade() {
     assert_eq!(legacy["reason"], "LEGACY_VERSION");
     assert!(!legacy_wire.contains(VALUE_CANARY));
 
+    // Mutations must cold-restore the released executable definition, not just read run metadata.
+    // This exercises the current process's DefinitionCache with the inert legacy annotation.
+    for (action, paused) in [("PAUSE", true), ("RESUME", false)] {
+        let (status, body, wire) = api(
+            &client,
+            &current_base,
+            &token,
+            Method::POST,
+            &format!("/runs/{old_run}/operations"),
+            None,
+            Some(&json!({"action":action,"reason":"legacy restore compatibility"})),
+        )
+        .await;
+        assert_status(status, StatusCode::ACCEPTED, &body);
+        assert!(!wire.contains(VALUE_CANARY));
+        assert_eq!(
+            sqlx::query_scalar::<_, bool>("SELECT paused FROM runs WHERE tenant_id=$1 AND id=$2")
+                .bind(tenant_id)
+                .bind(old_run)
+                .fetch_one(&db.pool)
+                .await
+                .expect("legacy pause projection"),
+            paused
+        );
+    }
+
     let (status, current_event, current_event_wire) = api(
         &client,
         &current_base,

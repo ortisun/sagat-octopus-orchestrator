@@ -25,7 +25,8 @@ current process binaries. This list describes the gate; executed results are rec
 
 1. The v0.1.0 migrator creates the release schema and the v0.1.0 control plane seeds identity data.
 2. The v0.1.0 execution engine reaches readiness on that schema.
-3. The v0.1.0 HTTP process publishes a document containing the inert classification annotation,
+3. The v0.1.0 HTTP process publishes a document containing an inert classification extension whose
+   value (`pre-016-note`) is invalid under the new authoring rules,
    starts an in-flight run, publishes an event, and reads event and connector dead-letter values.
 4. The test records the exact published document bytes, digest and run version pin.
 5. The current migrator upgrades the same database. The retained version becomes rules `0` without
@@ -34,7 +35,8 @@ current process binaries. This list describes the gate; executed results are rec
    read the upgraded database.
 7. The current control plane serves the old Studio assets, returns `LEGACY_VERSION` without the
    retained input value, and returns structure-only event and dead-letter answers without data,
-   body or headers.
+   body or headers. The current process pauses and resumes the retained run, exercising cold
+   executable restoration through a real mutation; the persisted pause projection is checked.
 8. A publication through the current HTTP process stores rules `1`. A new run discloses its public
    input while the in-flight release run remains pinned to rules `0` and opaque.
 
@@ -130,3 +132,31 @@ harness. A direct retry passed 1/1 in 5.68 s before the full script was rerun su
 The script keeps its detached source read-only and removes only that clean source on exit;
 artifacts and logs remain. This extra gate complements the separate actual v0.1.0 release upgrade,
 released-five-SDK and old Studio/browser evidence; it is not an arbitrary old-server writer claim.
+
+
+## Stored extension regression on the combined branch
+
+The frozen v0.1.0 schema accepts arbitrary extension values inside a JSON Schema. A cold cache
+restore now distinguishes immutable executable validation from new-publication classification
+validation. A unit regression first failed on ClassificationInvalidLevel; the exact frozen schema
+has SHA256 5035e781a2a531da0317594cd8b082fb9291d8e3f0a7b0322625c2260d89bff4,
+and its digest is asserted by the test. New publication still rejects the invalid annotation.
+
+The strengthened actual-process test was then run against both preserved current binaries, reusing
+SHA256-verified old release binaries and every archived Studio asset with a newly detached, clean,
+read-only source at the exact release commit. The old artifacts were not rebuilt for this repeat:
+
+- Pre-fix current binary 2108d08cd117f26847b605c92c8abeb95a3dc5ea: **failed**, 21.30 s
+  (`/tmp/sagat-completion-legacy-restore-process-red.log`). The old Studio could not render the run:
+  current GET graph returned 500 after the executable parser rejected the older inert extension.
+  This failed before the later pause/resume checks.
+- Fixed current binary b05e3d59: **passed 1/1**, 6.23 s, no ignored
+  (`/tmp/sagat-completion-legacy-restore-process-green.log`). This includes old processes before/after
+  migration, actual old Studio in Chromium, current-process pause/resume and persisted state checks,
+  immutable bytes/digest/version pin, legacy opacity and a strict new rules-1 publication.
+
+Fresh manifest and separate stage logs:
+`/Users/marcelo/Documents/Projects/sagat-octopus-compat016-artifacts/run.restore-20261017-b05e3d59/artifacts/SHA256SUMS`.
+The pre-fix attempt has its own manifest and logs; the successful manifest was not overwritten.
+This gate's current binary predates the independent compensation-routing fix; it proves the
+immutable-definition restoration boundary and is not claimed as a complete feature-014 runtime gate.

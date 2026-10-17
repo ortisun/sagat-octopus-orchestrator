@@ -762,3 +762,15 @@ full planners share this behavior. **39/39** focused planning/compensation tests
 (`/tmp/sagat-completion-compensation-routing-green.log`); the reviewed SDK golden is unchanged.
 The runner harnesses now locate a sibling binary of the actual test executable, retaining the
 explicit override. SDK runtime repeats are recorded separately when complete.
+
+
+The strengthened immutable-extension binary gate passed **1/1**, no ignored, 6.23 s
+(`/tmp/sagat-completion-legacy-restore-process-green.log`), using copied current control plane
+b05e3d59 and verified retained v0.1.0 binaries/Studio. Real current-process pause/resume mutations
+and persisted projections now exercise cold restore, alongside old Studio rendering, unchanged
+bytes/digest/version pins and rules-0 opacity. The same fixture against retained pre-fix current
+2108d08c genuinely failed at old Studio graph rendering (500 after invalid annotation at restore),
+21.30 s (`/tmp/sagat-completion-legacy-restore-process-red.log`). Full provenance, manifest and
+scope are in `tests/integration/payload-classification/compatibility-report.md`. The frozen schema
+checksum is now asserted too. This is actual process evidence; it does not claim the later routing
+fix or the whole combined release was exercised by that copied control plane.
