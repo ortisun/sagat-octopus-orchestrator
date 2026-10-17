@@ -1071,7 +1071,8 @@ fn has_numeric_constraints(schema: &Value) -> bool {
             matches!(
                 keyword.as_str(),
                 "minimum" | "maximum" | "exclusiveMinimum" | "exclusiveMaximum" | "multipleOf"
-            ) || (matches!(keyword.as_str(), "const" | "enum") && contains_number(value))
+            ) || (keyword == "uniqueItems" && value.as_bool() == Some(true))
+                || (matches!(keyword.as_str(), "const" | "enum") && contains_number(value))
                 || has_numeric_constraints(value)
         }),
         Value::Array(values) => values.iter().any(has_numeric_constraints),
@@ -1083,7 +1084,12 @@ fn numeric_constraints_exact(schema: &Value) -> bool {
     match schema {
         Value::Object(object) => object.iter().all(|(keyword, value)| {
             let local = match keyword.as_str() {
-                "minimum" | "maximum" | "exclusiveMinimum" | "exclusiveMaximum" | "multipleOf" => {
+                // The dependency compiles an integer divisor through f64. Keep it in the
+                // exact integer-modulo branch; larger divisors would validate a rounded schema.
+                "multipleOf" => value
+                    .as_u64()
+                    .is_some_and(|divisor| divisor > 0 && divisor <= 9_007_199_254_740_991),
+                "minimum" | "maximum" | "exclusiveMinimum" | "exclusiveMaximum" => {
                     exact_stored_numbers(value)
                 }
                 "const" | "enum" => exact_stored_numbers(value),

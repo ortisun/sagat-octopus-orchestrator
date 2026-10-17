@@ -737,3 +737,66 @@ fn unsupported_pattern_governance_keeps_unknown_properties_at_least_pii() {
     assert_eq!(children[0].name, None);
     assert!(!format!("{result:?}").contains("pii-canary"));
 }
+
+#[test]
+fn unique_items_under_boolean_applicators_cannot_compare_rounded_numbers() {
+    let classifier = Classifier::default();
+    for condition in [
+        json!({"not":{"uniqueItems":true}}),
+        json!({"if":{"uniqueItems":true},"then":false,"else":true}),
+    ] {
+        let mut schema =
+            json!({"type":"array","x-sagat-classification":"public","items":{"type":"number"}});
+        schema
+            .as_object_mut()
+            .expect("schema")
+            .extend(condition.as_object().expect("condition").clone());
+        let doc = document(schema);
+        assert!(
+            classifier
+                .project(request(
+                    &doc,
+                    b"[1.0000000000000000000000000001,1.0]",
+                    Audience::new(false, false, false)
+                ))
+                .is_err(),
+            "numeric equality in any subschema must not use rounded values"
+        );
+        assert!(
+            classifier
+                .project(request(&doc, b"[1,1]", Audience::new(false, false, false)))
+                .is_ok(),
+            "exact integer comparisons remain supported"
+        );
+    }
+}
+
+#[test]
+fn multiple_of_schema_divisors_must_not_be_rounded_during_compilation() {
+    let classifier = Classifier::default();
+    let doc = document(
+        json!({"type":"integer","x-sagat-classification":"public","multipleOf":9_007_199_254_740_993_u64}),
+    );
+    assert!(
+        classifier
+            .project(request(
+                &doc,
+                b"9007199254740992",
+                Audience::new(false, false, false)
+            ))
+            .is_err(),
+        "a rounded schema divisor must never validate a different integer"
+    );
+    let exact =
+        document(json!({"type":"integer","x-sagat-classification":"public","multipleOf":3}));
+    assert!(
+        classifier
+            .project(request(
+                &exact,
+                b"9007199254740993",
+                Audience::new(false, false, false)
+            ))
+            .is_ok(),
+        "a supported small divisor retains exact large integer modulo"
+    );
+}

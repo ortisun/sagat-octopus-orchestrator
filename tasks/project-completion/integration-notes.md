@@ -74,3 +74,15 @@ Seven disclosure component tests, Studio typecheck and focused ESLint passed
 (`/tmp/sagat-completion-ui-precision-{red,green,typecheck,lint}.log`). The server keeps its exact
 numeric encoder. Final classifier review still has pending numeric-applicator and hidden-child
 budget regressions; the production disclosure service remains unwired until these are corrected.
+
+### Numeric validation and hidden-child budget checkpoint
+
+The second security review closed indirect integer restrictions and hidden-child projection
+budgets in `e5145923` (18 focused tests / 32 schema package tests). Two further exact repros
+were added: `not`/`if` with `uniqueItems`, and an integer `multipleOf` divisor above the
+dependency's exact compilation range. Both reproduced disclosure of mathematically invalid
+values before the guards. All 20 focused classifier tests then passed
+(`/tmp/sagat-completion-{unique-items,multiple-of}-{red,green}.log`). Numeric comparisons fail
+closed when exact validation cannot be established; large integer values remain supported with
+proven exact small divisors. This conservative boundary and the final service composition still
+require the final integrated security/contract gates.
