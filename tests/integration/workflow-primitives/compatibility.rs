@@ -16,7 +16,7 @@
 use std::sync::Arc;
 
 use sagat_application::clock::SystemClock;
-use sagat_application::definitions::{IrCodec, IrError, ParsedDefinition};
+use sagat_application::definitions::{IrCodec, IrError, IrIssue, ParsedDefinition};
 use sagat_application::entropy::SystemEntropy;
 use sagat_application::error::AppError;
 use sagat_application::execution::{DefinitionCache, Engine};
@@ -637,10 +637,10 @@ async fn combinations_the_reader_does_not_enable_are_refused_with_a_typed_reason
     }
 }
 
-/// A reader of an earlier release: it publishes and reads what that release knew and refuses the
-/// capability fields and node kinds that came later, with the same typed error the production reader
-/// uses for a closed capability. It is injected where production injects its codec, the definition
-/// cache of the store.
+/// A reader of an earlier release. A pre-014 schema has `additionalProperties: false` at the top
+/// level and no node type for the primitives, so it refuses the capability fields as a schema
+/// violation. That was observed by running the build at commit `07d673f` on the nine builder-golden
+/// documents (see `docs/sdk-compatibility.md`); this type reproduces the answer, it is not that build. It is injected where production injects its codec, the definition cache of the store.
 #[derive(Debug)]
 struct ReaderWithoutPrimitives;
 
@@ -651,19 +651,21 @@ impl IrCodec for ReaderWithoutPrimitives {
 
     fn parse(&self, document: &[u8]) -> Result<ParsedDefinition, IrError> {
         let value: Value = serde_json::from_slice(document).map_err(|_| IrError::Malformed)?;
-        for field in ["bodies", "state", "chainPolicy"] {
-            if value.get(field).is_some() {
-                return Err(IrError::UnsupportedDeclaration {
-                    field: match field {
-                        "bodies" => "bodies",
-                        "state" => "state",
-                        _ => "chainPolicy",
-                    },
-                    reason: "this workflow capability is not enabled by the runtime",
-                });
-            }
+        let unexpected: Vec<IrIssue> = ["bodies", "state", "chainPolicy", "limits"]
+            .into_iter()
+            .filter(|field| value.get(*field).is_some())
+            .map(|field| IrIssue {
+                path: String::new(),
+                message: format!(
+                    "Additional properties are not allowed ('{field}' was unexpected)"
+                ),
+            })
+            .collect();
+        if unexpected.is_empty() {
+            JsonIrCodec.parse(document)
+        } else {
+            Err(IrError::Schema(unexpected))
         }
-        JsonIrCodec.parse(document)
     }
 
     fn diff(
@@ -728,10 +730,7 @@ async fn a_reader_without_the_capability_leaves_an_active_structured_run_untouch
     assert!(
         matches!(
             ReaderWithoutPrimitives.parse(&pinned),
-            Err(IrError::UnsupportedDeclaration {
-                field: "bodies",
-                ..
-            })
+            Err(IrError::Schema(_))
         ),
         "the rolled-back reader must really refuse the pinned definition"
     );
