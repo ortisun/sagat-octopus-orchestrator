@@ -254,6 +254,7 @@ failover() { # $1 label, $2 synchronous_standby_names ('' = asynchronous), $3 po
   done
   local mode; mode=$(psqlc -p "$pp" -c "SELECT sync_state FROM pg_stat_replication LIMIT 1")
   log "2/2 failover, standby $label (the primary reports it as: $mode)"
+  echo "$mode" > "$WORK/mode-$label"
   export SAGAT_TEST_DATABASE_URL="postgres://postgres:$PASSWORD@127.0.0.1:$pp/postgres"
   export SAGAT_DR_DIR="$WORK/signals-$label"; mkdir -p "$SAGAT_DR_DIR"
   run_test dr_acked_workload > "$WORK/acked-$label.log" 2>&1 &
@@ -298,6 +299,9 @@ add "- The asynchronous standby lost nothing *here*, on a loopback where it is n
 add "- The time to promote is the database's (the kill until the promoted standby answers). The platform's own recovery after it is the keeper's: another replica takes the dead replica's shards when its lease ends (15 s by default) and the passes are idempotent (docs/runbooks/scaling.md); the engine reconnects by itself."
 add ""
 case "$sync_out" in *"lost=0"*) ;; *) echo "A SYNCHRONOUS STANDBY LOST ACKNOWLEDGED RUNS: $sync_out" >&2; echo "$SUMMARY" >> "$REPORT"; exit 1;; esac
+# "Nothing lost" proves RPO 0 only if the platform acknowledged runs and the standby was synchronous.
+case "$sync_out" in *"acknowledged=0 "*|*"acknowledged=0") echo "THE SYNCHRONOUS FAILOVER ACKNOWLEDGED NO RUN: $sync_out" >&2; exit 1;; *"acknowledged="[1-9]*) ;; *) echo "THE SYNCHRONOUS FAILOVER REPORTED NO ACKNOWLEDGED COUNT: $sync_out" >&2; exit 1;; esac
+[ "$(cat "$WORK/mode-synchronous" 2>/dev/null)" = sync ] || { echo "THE STANDBY WAS NOT SYNCHRONOUS WHEN THE PRIMARY WAS KILLED (mode: $(cat "$WORK/mode-synchronous" 2>/dev/null))" >&2; exit 1; }
 case "$sync_out" in *"failed=0"*) ;; *) echo "THE PROMOTED RUNS DO NOT REPLAY: $sync_out" >&2; exit 1;; esac
 promote_seconds=$(cat "$WORK/promote-synchronous")
 perl -e "exit($promote_seconds + $SHARD_TAKEOVER <= $RTO_FAILOVER ? 0 : 1)" || { echo "THE FAILOVER TOOK ${promote_seconds} s + ${SHARD_TAKEOVER} s OF SHARD TAKEOVER, OVER THE ${RTO_FAILOVER} s OBJECTIVE" >&2; exit 1; }
