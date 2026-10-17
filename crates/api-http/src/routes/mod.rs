@@ -11,6 +11,7 @@ pub mod health;
 pub mod identity;
 pub mod operations;
 pub mod outbound;
+pub mod payload_disclosure;
 pub mod payload_inspection;
 pub mod primitives;
 pub mod runner;
