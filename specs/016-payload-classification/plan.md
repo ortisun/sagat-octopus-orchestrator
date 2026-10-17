@@ -181,6 +181,13 @@ event or payload is rewritten. Old Studios and clients keep working: they never 
 reads of US08, whose response changes for every client that read the values (G292); that change is
 announced in the release notes and has no switch.
 
+Immutable execution restoration uses the codec's `parse_stored` entry point, not publication
+validation. Both share structural and executable conversion checks; only new publications apply
+classification and carrier-schema authoring checks. Declared Query/Update snapshots use the same
+stored-version distinction. Stored document bytes and classification pins are unchanged; disclosure
+continues to fail closed independently. The frozen v0.1.0 IR contract accepts unknown schema
+extensions, including annotations whose values are invalid under the new authoring rules.
+
 ## Risks and mitigations
 
 | Risk | Mitigation / evidence required |

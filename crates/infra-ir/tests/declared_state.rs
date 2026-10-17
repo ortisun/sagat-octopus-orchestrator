@@ -219,3 +219,27 @@ fn rejects_uncompiled_oversized_deep_referenced_or_incoherent_schemas() {
         Err(IrError::Schema(issues)) if issues[0].path == "/state/schema"
     ));
 }
+
+#[test]
+fn stored_state_operations_ignore_new_classification_metadata_but_keep_business_checks() {
+    let mut source = document();
+    source["inputSchema"] = json!({"type":"object","x-sagat-classification":"pre-016-note"});
+    let bytes = serde_json::to_vec(&source).expect("legacy state bytes");
+    assert!(matches!(
+        JsonIrCodec.parse(&bytes),
+        Err(IrError::Classification(_))
+    ));
+    let stored = JsonIrCodec
+        .parse_stored_declared_state(&bytes)
+        .expect("stored state declaration");
+    assert_eq!(stored.state().queries().count(), 1);
+    source["state"]["queries"]["balance.read"]["disclosure"] = json!("implicit");
+    assert!(
+        JsonIrCodec
+            .parse_stored_declared_state(
+                &serde_json::to_vec(&source).expect("invalid disclosure bytes")
+            )
+            .is_err(),
+        "the explicit business-result disclosure policy remains mandatory"
+    );
+}

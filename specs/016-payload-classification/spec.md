@@ -436,6 +436,9 @@ viewer, an operator, a developer without a grant and a developer with a grant, w
 - **FR-016-021**: Existing published versions MUST keep today's behaviour (no value disclosed), existing
   runs MUST keep running unchanged, the OpenAPI and IR changes MUST be additive, and a client or Studio
   built before this feature MUST keep working.
+  Restoration of immutable versions MUST NOT reapply newer classification authoring checks.
+  An extension accepted by an older publisher remains inert for business execution; rules `0`
+  stays opaque. Syntax, graph, expression and execution capability checks remain mandatory.
 - **FR-016-022**: Errors MUST reuse the closed `Error.code` set and add only `details.reason` values:
   `PII_REVEAL_NOT_GRANTED`, `CLASSIFICATION`, `UNKNOWN_SUBJECT`, `ROLE_CANNOT_REVEAL`, `GRANT_LIMIT`. Result states
   (`structure-only`, `unavailable`, `external` and their reasons) are not errors.

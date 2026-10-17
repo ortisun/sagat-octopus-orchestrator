@@ -706,3 +706,31 @@ runtime gate is rerun separately. The failed complete run is retained, not claim
 
 The complete Studio gate passed on this checkpoint: lint/types, **1149/1149** unit tests,
 production build and generated API comparison (`/tmp/sagat-completion-final-studio-*.log`).
+
+
+### Immutable definition restoration and integration fixtures
+
+A new frozen-contract regression genuinely failed before the fix: an `inputSchema` extension
+`x-sagat-classification: "pre-016-note"`, accepted by the v0.1.0 schema, was reinterpreted by the
+new authoring parser during a cold execution-cache restore (ClassificationInvalidLevel).
+The failed test is retained in `/tmp/sagat-completion-legacy-annotations-red.log`.
+The frozen schema is copied byte-for-byte from 6ede1c7849c4ac5a209c08da8ad25294fbdd7795,
+SHA256 5035e781a2a531da0317594cd8b082fb9291d8e3f0a7b0322625c2260d89bff4.
+This proves old contract acceptance, not by itself an old binary execution.
+
+IrCodec now separates publication from immutable restoration, sharing executable conversion and
+syntax/graph/expression/capability checks. Execution cache and declared-operation snapshots restore
+stored definitions without retroactively applying classification/carrier-schema authoring checks.
+New publications remain strict; stored bytes and disclosure pins remain unchanged. Focused IR
+checks passed **81/81** across six targets (`/tmp/sagat-completion-legacy-annotations-green-2.log`),
+then cache/continuation/declared-state/operation evaluator passed **31/31**
+(`/tmp/sagat-completion-legacy-state-green-2.log`). The real prior-release process fixture now also
+publishes the older extension; its expanded binary gate is executed separately.
+
+The fresh workspace checkpoint exposed duplicated primitive CLI help entries and duplicated docs;
+removing the first duplicate block restores exact code/help/doc correspondence. Diagnostics passed
+**7/7** (`/tmp/sagat-completion-diagnostics-deduplicated.log`). Two integration fixtures also needed
+the combined profile: an offered protocol 1.999 negotiates the current 1.6 ceiling, and the new
+cross-tenant disclosure POST needs its valid JSON body before testing opaque resource resolution.
+Their actual PostgreSQL rerun is recorded when complete. The broad checkpoint is retained as
+failed evidence and is not described as a final current-tree pass.

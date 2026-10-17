@@ -520,7 +520,7 @@ fn snapshot_declaration(
     snapshot: &DeclaredOperationSnapshot,
 ) -> Result<ParsedDeclaredState, OperationEvaluationError> {
     let parsed = JsonIrCodec
-        .parse_declared_state(snapshot.definition().content())
+        .parse_stored_declared_state(snapshot.definition().content())
         .map_err(|_| OperationEvaluationError::DeclarationMismatch)?;
     if parsed.parsed().digest != snapshot.definition().digest() {
         return Err(OperationEvaluationError::DeclarationMismatch);

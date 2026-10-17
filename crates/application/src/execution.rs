@@ -1633,7 +1633,7 @@ impl DefinitionCache {
             }
         }
         // Parse outside the lock: it can take milliseconds and other versions must not wait.
-        let parsed = Arc::new(self.codec.parse(document)?.definition);
+        let parsed = Arc::new(self.codec.parse_stored(document)?.definition);
         let mut guard = self
             .entries
             .lock()

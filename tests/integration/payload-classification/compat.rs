@@ -746,7 +746,12 @@ async fn actual_v0_1_0_processes_survive_the_additive_upgrade() {
     .await;
     let client = Client::new();
     let token = idp.token(ADMIN, TENANT).build();
-    let first_document = workflow_document("published by v0.1.0");
+    let mut first_document = workflow_document("published by v0.1.0");
+    // The released parser accepted extension metadata without assigning classification meaning.
+    // An upgrade must not retroactively reject its pinned executable definition. A new publication
+    // still uses the strict current annotation rules (the second document below is valid).
+    first_document["inputSchema"]["properties"]["visible"]["x-sagat-classification"] =
+        json!("pre-016-note");
     let (status, created, _) = api(
         &client,
         &old_base,

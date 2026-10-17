@@ -357,6 +357,17 @@ pub trait IrCodec: Send + Sync {
     /// An [`IrError`] describing why the document cannot be published.
     fn parse(&self, document: &[u8]) -> Result<ParsedDefinition, IrError>;
 
+    /// Restores the executable IR of an already persisted immutable version. Publication-time
+    /// metadata checks must not reinterpret an older version's business execution. Syntax,
+    /// structural limits, expressions and supported execution capabilities still fail closed.
+    /// A codec with no distinct authoring-only rules uses its ordinary parser.
+    ///
+    /// # Errors
+    /// An [`IrError`] for an unreadable/unsupported execution definition.
+    fn parse_stored(&self, document: &[u8]) -> Result<ParsedDefinition, IrError> {
+        self.parse(document)
+    }
+
     /// Bounded authoring report, independent of tenant data and persistence.
     fn classification_analysis(
         &self,
