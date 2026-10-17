@@ -1119,3 +1119,9 @@ poll of up to 256 tasks in reverse order.
 pass. Suites on the final tree are listed in the delivery report; two tests failed once while the 10,000-iteration
 run and the SDK suite were loading the machine (`fault scope_compensation::a_scheduler_replica_that_takes_over_mid_compensation_finishes_it`,
 `integration operations_http::outbox_failure_rolls_back_the_http_update_and_the_same_key_can_retry`) and passed on rerun alone.
+
+- **G428 — `scope_compensation::a_scheduler_replica_that_takes_over_mid_compensation_finishes_it` is flaky when its
+  module runs in parallel.** It failed in 3 of 4 runs of `scope_compensation` (7 of 8 tests passing, the run still
+  `COMPENSATING` after the test's 40 ticks) and also on the base commit `a49b228` (1 of 2 runs, before any change of
+  this increment); alone it passes. It is not caused by the blob source or by D427. Probable cause: the loop ticks
+  without waiting for the 100 ms compensation back-off. Not fixed here.
