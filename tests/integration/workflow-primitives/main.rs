@@ -17,6 +17,7 @@ mod chains;
 mod chains_http;
 mod collection_restore;
 mod collections_http;
+mod compatibility;
 mod hint_contract;
 mod identity_storage;
 mod journal_identity;
