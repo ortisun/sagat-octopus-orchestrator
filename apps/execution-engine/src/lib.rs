@@ -159,16 +159,20 @@ pub async fn serve(
         );
         scheduler_settings.concurrency = room.max(1);
     }
-    let scheduler: Arc<EngineScheduler> = Arc::new(
-        Scheduler::new(
-            store.clone(),
-            Engine::new(JsonEvaluator),
-            SystemEntropy,
-            scheduler_settings,
-        )
-        .with_children(cache.clone())
-        .with_placement(placement.clone()),
-    );
+    let mut scheduler = Scheduler::new(
+        store.clone(),
+        Engine::new(JsonEvaluator),
+        SystemEntropy,
+        scheduler_settings,
+    )
+    .with_children(cache.clone())
+    .with_placement(placement.clone());
+    // A collection whose items live in a blob (T014-016) is read through the same store; without
+    // a blob store configured no blob can exist, so the scheduler needs no source.
+    if let Some(blobs) = &blobs {
+        scheduler = scheduler.with_item_source(Arc::new(blobs.clone()));
+    }
+    let scheduler: Arc<EngineScheduler> = Arc::new(scheduler);
     let events: Arc<EngineEvents> = Arc::new(
         EventDispatcher::new(
             store.clone(),

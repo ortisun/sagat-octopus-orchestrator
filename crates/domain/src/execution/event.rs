@@ -237,6 +237,19 @@ impl FailureCode {
         Self::system("INSTANCE_LIMIT")
     }
 
+    /// The blob a collection reads its items from is not available to the run: missing, in another
+    /// tenant or namespace, not the run's own, or without bytes in the store.
+    #[must_use]
+    pub fn blob_unavailable() -> Self {
+        Self::system("BLOB_UNAVAILABLE")
+    }
+
+    /// The bytes of a blob are not the bytes that were stored (size or digest differ).
+    #[must_use]
+    pub fn blob_corrupt() -> Self {
+        Self::system("BLOB_CORRUPT")
+    }
+
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0

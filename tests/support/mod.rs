@@ -12,6 +12,7 @@
 
 pub mod api;
 pub mod approval_flow;
+pub mod blob_collections;
 pub mod brokers;
 pub mod collector;
 pub mod contract;

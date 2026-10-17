@@ -1136,3 +1136,193 @@ Task clauses of T014-024 and the tests that prove them (the storage is `approval
   (`state`)?** It would turn G442 into a typed error at publication.
 - **O443 — Is anything outside this repository reading `workflow_approval_http_*`?** Nothing in the repository
   does (D446); restore them under a declared name if something does.
+
+## Decisions of the collection sources increment (blob item sources, ceilings, audit)
+
+Taken while closing the rest of T014-016 (captured arrays and blob references), T014-004 (ceilings and
+the 10,000-item reference test) and the audit of T014-014/015/017. Numbering: D420-D429, G420-G429,
+O420-O421 (D410+ and G410+ are free for the peer increments).
+
+- **D420 — The item source of a collection may be a blob; the membership is read once at entry.** When
+  the `items` expression yields `{"$blob": {id,size,sha256,contentType}}` (the run's bound input, e.g.
+  `items: "input"` after `inputBlobRef`, or a committed step output) the scheduler asks a
+  `CollectionItemSource` (`BlobService` in production, wired in `apps/execution-engine` only when a
+  blob store is configured) for the array, once, in the transaction-less step before the entry
+  transaction. Elements are stored as canonical compact JSON under their own digests exactly as for an
+  inline array; nothing reads the blob again for that scope (tested: the bytes may leave the store
+  after entry and the collection finishes on the same items).
+- **D421 — A descriptor in a value is not a capability.** The reader accepts a blob only if the catalog
+  says it is `COMMITTED`, in the run's own tenant **and** namespace, the run's bound input
+  (`RunData.input_blob`, which rerun and child inheritance also set) or the committed output of a step of
+  this run, and the descriptor's id, size and digest equal the catalog's. Anything else (another tenant,
+  another namespace, another run's blob, an unbound upload, an unknown id, a wrong size or digest) is the
+  same `NotFound` and fails the run `BLOB_UNAVAILABLE`; it cannot tell a client whether the blob exists
+  elsewhere.
+- **D422 — Byte ceilings of a blob source.** Blob at most 8 MiB (`MAX_SOURCE_BLOB_BYTES`), each element
+  at most 256 KiB (a payload), canonical elements together at most 4 MiB (the retained-run-data
+  ceiling), count at most `maxItems`. Reasons: an element is a payload; the whole membership is retained
+  data of the run; 8 MiB leaves room for pretty-printing. Not derived from a benchmark (G422).
+- **D423 — The snapshot payload of a blob-backed scope is a manifest.** `{"$collectionSource":
+  {blob, count, itemsSha256}}`: the descriptor read, the number of elements and the digest of the
+  canonical array. An array of 10,000 references (1.8 MiB) does not fit the 256 KiB payload that the
+  inline snapshot is. `collection_progress` verifies count and digest of the stored items against it on
+  every full load. `iteration_scopes.source_blob_id` (migration `20261121000000`) is a restricted
+  foreign key to `blobs` in the same tenant and namespace: a live membership keeps its blob, whatever
+  retention or sweep is added later. Today nothing deletes a committed blob (D298, ADR-0023).
+- **D424 — Typed failures, and what only waits.** Run failure codes: `BLOB_UNAVAILABLE` (not visible to
+  the run, or the store lost the bytes), `BLOB_CORRUPT` (size/digest mismatch while reading),
+  `ITERATION_LIMIT` (more elements than `maxItems`), `RUN_DATA_LIMIT` (a byte ceiling),
+  `EXPRESSION_ERROR` (not a JSON array). They are run failure codes (an open set), not `Error.code`
+  values. A store or catalog outage, or a replica without a source, only leaves the run waiting
+  (`CollectionAdvanceError::SourceUnavailable`, retried every pass), never fails it.
+- **D425 — A non-array inline value now fails the run.** An `items` expression that did not yield an
+  array used to be retried by the scheduler for ever (counted as a failed action each pass); it now
+  stops the run with `EXPRESSION_ERROR` at entry, like the blob cases. Behavior change.
+- **D426 — The engine's read is audited in the entry transaction.** `blob.read` on the blob (actor: the
+  engine) commits with the scope, so a rolled-back entry leaves no audit and a replayed entry adds none
+  (tested). `scheduler_collection_source_failures_total{reason}` counts the refusals (reasons:
+  `expression`, `unavailable`, `corrupt`, `not_an_array`, `too_many_items`, `too_large`).
+- **D427 — A transition reads one item, not the membership.** The scheduler read and digested every item
+  and result of the scope on every transition and scanned all instances once per admitted iteration. It
+  now reads the scope identity, one item to admit it, the full progress only for the last result and the
+  finish, and indexes failed steps and pending returns in one pass (`collection_scope`,
+  `collection_item` on `CollectionStore`). See G421 for what remains linear.
+- **D428 — The SDK runners can upload exact bytes.** `inputBlobText` on `startWithBlob` (all five
+  runners) and an opt-in `sourceEvidence` in the harness (run status, stop code, whether the collection
+  came from a blob, number of audited reads). Scenarios `collection-blob-source` and `collection-limits`.
+- **D429 — The 10,000-iteration end-to-end run is `#[ignore]`.** It takes tens of minutes (G421), so it
+  runs on request; the entry of 10,000 references, the count and content of the membership, `maxItems`
+  + 1 and the byte ceilings run with the suite.
+
+### Gaps recorded by this increment
+
+- **G420 — A step output cannot yet be a published source.** The public path starts at the collection
+  owner (D300 note in the spec), so no published workflow puts an activity before a collection. The
+  reader's rule for a step output (committed, same run) is tested against a real committed output
+  (`a_step_output_blob_is_a_source_of_its_own_run_only`), but no end-to-end run uses it. A collection after
+  a collection reads `steps.<c>.output`, which is an inline array of at most 256 KiB.
+- **G421 — A transition is still linear in the size of the run.** Each transition restores the run's
+  whole `RunState` (two instances per admitted iteration) and re-reads its data, and one transition
+  admits or checkpoints one iteration. After D427 the 10,000-iteration run still slows as iterations
+  accumulate; measurements are in "Evidence" below. Batching admissions and checkpoints per transaction,
+  or restoring only the live instances, are the fixes; neither is attempted here.
+- **G422 — The source ceilings (8 MiB, 4 MiB) have no benchmark behind them,** and the read and JSON parse
+  of up to 8 MiB run on the scheduler's async task without `spawn_blocking`. Entry of the 1.8 MiB array of
+  10,000 references took about 4 s in a debug build including the 10,000-row insert.
+- **G423 — Unused reservations of a drained iteration are returned.** `data-model.md` says reservations
+  are "not reused even if the derived work is never needed"; the store hands back the reservations the
+  drain does not keep for compensation (`reserved_instances - (remaining - kept)`, D380). The test
+  (`collection_budgets`) pins "never more than accepted", not equality. Either the sentence or the code is
+  to be aligned (O421).
+- **G424 — No retention for committed blobs.** The foreign key protects a live membership; a retention
+  policy for finished runs (D298) must still decide when `iteration_scopes` rows, and with them the
+  reference, go.
+- **G425 — The SDK builders cannot set the top-level `limits`.** A scenario's `limits` key is ignored by
+  all five runners, so WP-12's instance budget, depth and node ceilings are not exercised through the
+  SDKs (`loop-runtime.json` carries a `limits` that has no effect). Rust covers them (`limits.rs`,
+  `ceilings.rs`).
+- **G426 — WP-02 server-side rejection and WP-13 object-literal rejection are not SDK-visible.** Publishing a
+  document is not an SDK operation (the harness publishes), so rejection of invalid, cyclic or escaping bodies
+  and of unsupported expressions is proven by the Rust contract suites, not by the five SDKs.
+- **G427 — Nested descendants at low capacity are not exercised** because nested scopes are closed (O383); the
+  low-quota case covers the iteration's own instances (a capacity of one runs four iterations to the end).
+
+### Open questions for the owner
+
+- **O420 — Raise or lower the blob-source ceilings?** *Options:* (a) keep 8 MiB / 256 KiB / 4 MiB; (b) allow
+  a larger membership by retaining it outside `payloads`. *Recommendation:* (a) until G421 is fixed: a bigger
+  membership only makes each transition slower.
+- **O421 — Reservations returned at drain: align the data model or the code?** *Recommendation:* the code
+  (it returns budget the run can no longer use); amend the sentence in `data-model.md`.
+
+### Evidence by clause: T014-014, T014-015, T014-017 (audit of 2026-10-17)
+
+Paths are under `crates/domain/tests` (domain), `crates/application/src` (unit), `tests/integration/workflow-primitives`
+(int), `tests/fault/workflow-primitives` (fault), `tests/contract/workflow-primitives` (contract) and
+`tests/contract/sdk-conformance/scenarios` (scenario). "new" marks a test written by this increment; "no red"
+means the behavior already existed and the test only proves it (stated, not hidden). D300: the tasks name
+`primitive_collections.rs`, `collections.rs` and `fault/.../collections.rs`; the evidence lives in the files below.
+
+**T014-014 (failing cases, limits, contention)**
+
+| Clause | Tests |
+| --- | --- |
+| `maxItems` and `maxIterations` are integers in 1..10000 | domain `primitive_collections::{max_items_is_an_integer_from_one_to_ten_thousand, max_iterations_is_an_integer_from_one_to_ten_thousand}` (new, no red); `structured_workflow::collection_limits_and_effective_expression_bytes_are_validated`; contract `ceilings::item_and_iteration_limits_are_one_to_ten_thousand_and_concurrency_one_to_256` (new, no red) and `revision::publication_shape_enforces_hard_limits_and_rejects_unknown_fields`; runtime int `limits::more_items_than_the_collection_limit_fail_the_run_with_iteration_limit`, `limits::a_loop_that_needs_more_than_its_iteration_limit_fails_with_iteration_limit`, `collection_10k::entry_of_ten_thousand_items_is_one_exact_membership` (10,000 accepted, 10,001 refused) |
+| `maxConcurrency` is 1..256 | domain `primitive_collections::max_concurrency_is_an_integer_from_one_to_256` (new, no red); contract `ceilings::item_and_iteration_limits_…` (same test); never exceeded at run time: domain `collection_reducer::concurrency_one_requires_a_durable_checkpoint_before_next_admission`, int `collection_budgets::a_tenant_capacity_of_one_runs_every_iteration_to_the_end` (new), `scope_compensation_http::a_collection_undoes_no_more_iterations_at_once_than_it_may_run`, ignored `collection_10k::ten_thousand_items_are_admitted_concurrently_aggregated_in_order_and_bounded` (peak active at 256) |
+| Snapshot immutability | int `primitive_transactions::a_collection_entered_once_keeps_its_membership_against_any_later_entry` (new, no red: exact replay is a no-op, another array or scope is `DuplicateMismatch`, no journal event), `primitive_transactions::collection_payloads_require_same_tenant_and_matching_content_digests`, `collection_sources::the_membership_is_fixed_at_entry_and_the_blob_behind_it_is_protected` (new, red first), fault `collection_sources::two_attempts_to_enter_the_same_collection_leave_one_membership` (new), `collections::bounded_public_collection_finishes_in_input_order_after_restart_and_lost_hints`; domain `collection_restore_state::*` |
+| Shared run and tenant budgets | int `limits::a_collection_that_cannot_be_admitted_within_the_instance_limit_fails_before_it_starts`, `limits::a_tenant_ceiling_below_the_authors_limit_is_never_raised`, `primitive_transactions::persisted_tenant_capacity_serializes_admission_across_runs`, `security::tenant_collection_capacity_serializes_admission_across_runs`, `scoped_worker::automatic_collection_progress_rechecks_the_tenant_capacity`, `collections_http::iteration_capacity_is_tenant_scoped_authorized_audited_and_reducible` |
+| Descendant admission with low quotas | int `collection_budgets::a_tenant_capacity_of_one_runs_every_iteration_to_the_end` (new, no red: four iterations of two activities run one at a time, no slot cycle), `security::collection_admission_derives_its_reservation_from_the_pinned_definition`. Nested scopes are closed (O383), so descendants are the iteration's own instances (G427) |
+| Derived-instance reservations survive policy reduction | int `collection_budgets::a_budget_reduced_to_what_is_accepted_still_lets_the_accepted_failure_be_undone` (new, no red), `limits::a_policy_reduction_midway_pauses_admission_without_failing_or_killing_accepted_work`, `scoped_worker::failed_derived_obligations_keep_member_capacity_reserved` |
+
+**T014-015 (implementation)**
+
+| Clause | Tests |
+| --- | --- |
+| Typed entry | domain `collection_reducer::starting_a_collection_parks_the_owner_for_its_transactional_scheduler`; int `primitive_transactions::collection_admission_writes_expected_journal_projection_and_usage_atomically`, `collection_sources::a_run_input_blob_array_is_the_membership_and_each_item_reaches_its_iteration` (new, red first) |
+| Admission | domain `collection_reducer::{replay_uses_only_admitted_instances_and_recorded_checkpoints, duplicate_admission_is_rejected_without_changing_state}`; int `primitive_transactions::admission_owner_must_match_the_stored_scope_owner` |
+| Ordered aggregation | domain `collection_reducer::checkpoint_results_remain_in_input_order_after_reverse_completion`; fault `collections::bounded_public_collection_finishes_in_input_order_after_restart_and_lost_hints`; scenario `collection-ordering`; ignored int `collection_10k::ten_thousand_items_…` (10,000 results in input order, completed in reverse poll order) |
+| Fail-fast drain | domain `collection_reducer::permanent_failure_stops_admission_and_finishes_only_after_drain`; int `scoped_worker::exhausted_member_failure_starts_fail_fast_drain_and_survives_restart` |
+| Each admitted logical instance is charged once | int `collection_budgets::a_retried_iteration_is_charged_once_and_a_derived_activation_uses_its_reservation` (new, no red), `primitive_transactions::failed_outbox_insert_rolls_back_admission_and_every_counter` |
+| Slots released only after terminal or reconciled drain | domain `collection_reducer::{drain_refuses_to_hide_an_attempt_that_is_still_in_flight, drain_refuses_to_hide_failed_derived_obligations}`; int `scoped_worker::{failed_derived_obligations_keep_member_capacity_reserved, cancellation_drains_members_atomically_and_finishes_after_restart}` |
+
+**T014-017 (faults and compensation)**
+
+| Clause | Tests |
+| --- | --- |
+| Crash and restart recovery | fault `collections::bounded_public_collection_finishes_in_input_order_after_restart_and_lost_hints`, `scope_compensation::{a_connection_that_dies_inside_each_transaction_of_the_compensation_loses_nothing, the_scheduler_cut_at_every_await_point_of_the_compensation_resumes_to_the_same_end, a_scheduler_replica_that_takes_over_mid_compensation_finishes_it}`, `collection_sources::a_failure_after_the_read_and_before_the_commit_leaves_nothing_and_the_retry_enters_once` (new); int `scoped_worker::{a_scoped_lost_lease_rolls_back_then_recovers_after_restart, a_late_journal_failure_rolls_back_the_whole_scoped_report}` |
+| Duplicate reports and deliveries | fault `scope_compensation::a_compensation_reported_twice_is_applied_once_and_a_stale_report_is_refused`, `collection_sources::two_attempts_to_enter_the_same_collection_leave_one_membership` (new); domain `collection_reducer::duplicate_admission_is_rejected_without_changing_state` |
+| Stale fence | int `primitive_transactions::stale_scheduler_fence_rejects_entry_and_admission`, `scoped_worker::a_scoped_failure_retries_after_restart_and_rejects_the_old_fence`; fault `collection_sources::{a_scheduler_that_loses_its_shard_after_reading_commits_nothing, a_replica_without_a_current_lease_does_not_even_read_the_blob}` (new) |
+| Lost broker reconciliation | int `scoped_worker::stale_hints_are_renewed_for_each_scoped_instance`; fault `collections::bounded_public_…_lost_hints`, `scope_compensation::a_compensation_whose_hint_never_arrived_is_leased_from_the_database` |
+| Cancellation | int `scoped_worker::{cancellation_drains_members_atomically_and_finishes_after_restart, a_scoped_lease_observes_cancellation_and_acknowledges_it_before_restart}`, `scope_compensation_http::a_cancelled_collection_undoes_what_completed_and_ends_cancelled`; domain `collection_reducer::cancellation_drains_only_admitted_work_before_finishing`; fault `scope_compensation::a_cancellation_racing_the_scheduler_that_stops_the_scope_for_a_failure_ends_consistently`, `collection_sources::a_run_cancelled_before_entry_never_reads_the_blob` (new) |
+| Unknown and failed compensation | int `scope_compensation_http::{an_effect_of_unknown_outcome_is_looked_up_and_found_applied_before_anything_repeats, an_effect_found_not_applied_is_tried_again_with_the_same_key, a_lookup_that_cannot_say_waits_for_a_person_who_declares_what_happened, a_compensation_that_keeps_failing_waits_for_a_person_who_can_retry_it, a_person_can_skip_a_compensation_and_the_run_ends_partial, a_person_can_declare_a_compensation_failed_and_the_run_ends_compensation_failed}`; scenario `collection-compensation` |
+| Compensation order (FR-003-002) | domain `scoped_compensation::{compensation_in_one_iteration_runs_in_reverse_topological_order, iterations_of_a_collection_are_independent_branches, compensation_fan_out_is_bounded_by_the_scope_concurrency}`; int `scope_compensation_http::a_failed_collection_undoes_what_its_iterations_completed_in_reverse_order` |
+| All-five WP-03/04 | scenarios `collection-ordering`, `collection-compensation`, plus `collection-runtime`, `scoped-identity`, `collection-blob-source` and `collection-limits`, all matching reviewed goldens in the five SDKs |
+
+**T014-004 remainder.** Ceilings: `ceilings.rs` (6 tests) at the schema and at the publication codec; the
+4096-element constructed list stays in `identity_limits::effective_expression_limits_remain_bounded_for_additive_v1`.
+Shared cases: WP-02 `scoped-identity` (+ `collection-builders`); WP-03 `collection-ordering`, `collection-runtime`,
+`collection-blob-source`; WP-04 `collection-compensation`; WP-05 `loop-semantics`, `loop-compensation`, `loop-runtime`;
+WP-06 `approval-decisions`, `approval-settlement`; WP-07 `switch-builders`; WP-08/09 `state-operations`;
+WP-10 `chain-three-segments`, `chain-final-success`, `chain-state-final-success`; WP-11 `chain-commands`,
+`chain-inspect-cancel`, `chain-child`, `chain-query-handoff`; WP-12 `collection-limits` (item limit only, G425);
+WP-13 `protocol-negotiation`; WP-14 `approval-security` and the opaque-descriptor case of `collection-blob-source`.
+Added here: `collection-blob-source`, `collection-limits`. Not coverable through the SDKs: WP-02 server rejection of
+invalid bodies and WP-13 unsupported object literals (publishing is not an SDK operation, G426), WP-12 instance
+budget, depth, node, case and operation ceilings (no builder for `limits`, G425; Rust covers them).
+
+### Evidence: the 10,000-item collection (T014-004, D429)
+
+`collection_10k::ten_thousand_items_are_admitted_concurrently_aggregated_in_order_and_bounded` (ignored by default),
+2026-10-17, macOS arm64, **debug build**, one PostgreSQL 16 container, the machine shared with the other agents' builds
+and with the SDK and gate suites for most of the run (so times are an upper bound, not a benchmark). The source is
+a run-input blob of 10,000 blob references (1,834 KiB), `maxItems` 10000, `maxConcurrency` 256, tenant iteration
+capacity 256; the worker is in process (`WorkerService` over the platform's store, protocol 1.5) and completes each
+poll of up to 256 tasks in reverse order.
+
+- Entry (read of the blob, parse, 10,000 payload rows, scope, audit): about 4 s (`entry_of_ten_thousand_items_is_one_exact_membership`,
+  which runs with the suite and also checks the content of every index and the refusal of 10,001).
+- Whole run: **7,926 s (2 h 12 min)**, 10,000 completions, 20,002 collection transitions (10,000 admissions, 10,000
+  checkpoints, entry and finish): 1.3 iterations/s on average. Peak active iterations 256, never more.
+  Aggregate of 10,000 results in input order (position *i* holds *i*) and `verify_run` agree.
+- Peak resident set of the test process (it hosts the API, the scheduler and the worker side): 117 MiB.
+- The cost of one transition is not flat: 0.07 s for the first 250 transitions, 0.4 s around 8,000,
+  0.7 s near 18,000 (rows of the table in the log: 250 -> 18 s, 2,250 -> 203 s, 8,250 -> 1,665 s,
+  14,250 -> 4,231 s, 18,250 -> 6,645 s). Before D427 the same run took 275 s for its first 1,500 transitions
+  (0.18 s each, growing 0.0001 s per transition); after it 119 s. What is left is the restore of the run's
+  state (G421). **A collection of 10,000 items therefore completes, correct and in order, but not quickly,
+  and no throughput claim follows from it.**
+- Ceilings that ran for real in that run: the 256 KiB result and the 4 MiB retained-output checks of the last
+  checkpoint (`aggregate_refusal`, 10,000 results of up to 5 digits), the 256 concurrent iterations, and the
+  tenant capacity; the negative cases (element over 256 KiB, elements over 4 MiB, blob over 8 MiB, aggregate over
+  256 KiB) are in `collection_sources` and `byte_ceilings` and do not need 10,000 iterations.
+
+### Verification of this increment (2026-10-17)
+
+`cargo fmt --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `scripts/check-architecture.py`
+pass. On the final tree: contract 44, integration 263 (+1 ignored: the 10,000-iteration run), platform_foundation 89, durable_execution 178, sagas_compensations 74 pass, and fault 69 of 70 (the failure is G428, pre-existing). `operations_http::outbox_failure_rolls_back_the_http_update_and_the_same_key_can_retry` failed once under load and passed alone and in the final full run.
+
+- **G428 — `scope_compensation::a_scheduler_replica_that_takes_over_mid_compensation_finishes_it` is flaky when its
+  module runs in parallel.** It failed in 3 of 4 runs of `scope_compensation` (7 of 8 tests passing, the run still
+  `COMPENSATING` after the test's 40 ticks) and also on the base commit `a49b228` (1 of 2 runs, before any change of
+  this increment); alone it passes. It is not caused by the blob source or by D427. Probable cause: the loop ticks
+  without waiting for the 100 ms compensation back-off. Not fixed here.
