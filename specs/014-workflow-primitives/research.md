@@ -1017,6 +1017,15 @@ Written 2026-10-17 for T014-041 and T014-042. The coordinator ticks the tasks; n
 - **G466 — Matrix cells without a test.** `docs/sdk-compatibility.md` marks them "not tested": loops,
   approvals, `switch` at `1.5`, declared Query/Update and chains with an old or `1.5` worker, the root-only
   adapter at `1.0`–`1.3`, task streaming at `1.1`–`1.3` and `1.5`.
+- **G468 — An idle scheduler tick costs work proportional to the pending waits, and it grew with
+  feature 014.** 26 ms with no waits, 42 / 75 / 142 / 186 ms with 500 / 2,000 / 5,000 / 10,000 pending
+  approvals (about 16 to 30 microseconds per pending approval per tick). Built from the harness commit
+  `42375f3` and from this branch and run alternately on the same container, the idle tick over 10,000
+  approvals and 1,000 timers took 118.7 and 118.1 ms before and 198.0 and 197.6 ms now (+67 percent) while
+  run creation did not change (194 and 203 against 191 and 191 runs/s). The new collection, loop and
+  continuation passes each add a discovery read; which dominates was not isolated. At the default 500 ms
+  idle pause a replica would be busy for a whole interval at roughly 20,000 to 30,000 pending approvals if
+  the growth stays linear (extrapolated, not measured).
 - **G467 — Three conformance scenarios failed once under host load and passed alone.** In the first full
   run (host load 30–47) `run-input-blobs` (java, deadline `+59s` against `+60s`), `scoped-identity` (go
   `the worker log has 3 entries, not 6`; python `RUNNING` against `WAITING`) and `secrets` (typescript
@@ -1035,3 +1044,6 @@ Written 2026-10-17 for T014-041 and T014-042. The coordinator ticks the tasks; n
   A typed per-run skip with an alert would keep rollback safe.
 - **O462 — Should long chains be supported beyond 127 segments?** Needs an object-free way to carry
   per-segment data (for example the declared state), or a documented ceiling of 127 for conditional chains.
+- **O463 — Is the idle tick cost an accepted ceiling on pending waits per replica?** G468 puts it near
+  20,000 to 30,000 approvals per replica at the default interval. Either publish that as the ceiling, or
+  make the discovery passes index-only and cheaper, or both.
