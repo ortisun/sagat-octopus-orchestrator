@@ -8,9 +8,9 @@ remain supporting evidence; they do not replace these sessions. Copy
 and preserve every completed, aborted and invalid session.
 
 No human session has been run merely because this protocol exists. Do not update either criterion to
-done until completed records have been reviewed. The numeric interaction threshold `N` in SC-008-001
-is still an owner decision. Record the raw interaction count, but report the criterion as **not
-evaluable** until the owner records `N` in the specification.
+done until completed records have been reviewed. The owner set the threshold of SC-008-001 to
+`N = 10` on 2026-10-16: a session passes with **at most 9** counted interactions. Record the raw
+interaction count as well as the verdict.
 
 ## Rules shared by both evaluations
 
@@ -102,8 +102,8 @@ Count participant-initiated actions from the start signal until the final diagno
   rules above.
 
 If an ambiguous action occurs, record it and the counting decision. Do not change the rule after seeing
-the total. The recorded total is compared with `N` only after `N` is approved; the specification says
-**fewer than** `N`, so equality will not satisfy it.
+the total. The recorded total is compared with `N = 10`; the specification says **fewer than** `N`, so 10
+interactions do not satisfy it.
 
 ### Observer checklist and successful diagnosis
 
@@ -123,7 +123,7 @@ not rescue an incorrect diagnosis. Keep the diagnosis outcome separate from the 
 
 - `diagnosis: successful|unsuccessful`
 - `interactions: <raw count>`
-- `SC-008-001 threshold: PENDING OWNER DECISION (N unset)` until the specification changes
+- `SC-008-001 threshold: N = 10 (pass: at most 9 interactions)`
 
 ## Evaluation B: first TypeScript and C# runs (SC-012-001)
 

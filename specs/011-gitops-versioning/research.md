@@ -184,6 +184,7 @@ how to operate it is `docs/runbooks/gitops.md`; the data is in `data-model.md`; 
   completes the rest.
 - **G203 — `sagat` is not packaged.** It builds with the workspace (`cargo build -p sagat-cli --release`); there is
   no release workflow for the binary, no installer, no checksums or signature, no shell completion.
+  **Decided 2026-10-16 (owner): `sagat` binaries ship as GitHub Release assets with checksums and signatures; no package-manager channel for now. Not built yet.**
 - **G204 — The tool authenticates with a bearer token only.** A token exchange for a pipeline's own identity
   (OIDC workload identity) is not built, and the token file's permissions are not checked.
 - **G205 — Paths of the plan that were not used.** The task list names `tools/cli/`, `crates/script-registry/` and

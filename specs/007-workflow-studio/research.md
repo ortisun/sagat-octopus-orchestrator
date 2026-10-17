@@ -248,6 +248,7 @@ Offer intuitive authoring and operation of complex processes with a faithful dep
   Settings are other features' pages (no link to a page that does not exist); the counts beside the navigation and the filters
   need a count the API does not give (it pages by cursor); the sidebar's active workers and queue backlog have no read API. **Scripts
   is a page of the Studio that the prototype's navigation does not list**: it keeps an item, and where it sits is the owner's call.
+  **Decided 2026-10-16 (owner): Scripts follows Workflows (Workflows · Scripts · Runs · Operations · Integrations · Namespaces), grouping what an author creates before what an operator follows; built with `Shell.test.tsx`. G162 (logo) stays open: the provisional `S` remains until the owner picks one of the three geometric options.**
 - **G164 — A run has no queue, no worker and no trigger kind.** `Run` carries `startedBy`, not the way it was started; the strip of
   facts shows what exists (*Started*, *Duration*, *Started by*, and what the Studio already shows) and omits the rest. Adding them is
   a contract change for the features that own the run.

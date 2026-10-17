@@ -85,6 +85,7 @@ how to operate it is `docs/runbooks/sdks.md`; the behaviour of the SDKs is `sdks
   every feature's contracts for no gain.
 - **G122 — Resolved as a product decision: MIT.** The owner selected the MIT License on 2026-10-11. The root licence and all five SDK package licences/metadata are aligned, and clean-consumer package tests pass. Registry publication remains G123.
 - **G123 — Local distribution is verified; registry release remains open.** `scripts/package-sdks.sh` builds eight artifacts with checksums, verifies embedded MIT licences and installs all five SDKs into clean consumers. Paired builds with a fixed source revision matched hashes. `.github/workflows/sdk-packages.yml` runs this credential-free and stores CI artifacts. The candidate includes release notes and Maven sources/Javadocs (T006-037). Actual npm/PyPI/NuGet/Maven/Go-proxy publication, release signing and durable release retention remain open; see `docs/runbooks/sdk-packaging.md`.
+  **Decided 2026-10-16 (owner): release through GitHub Releases only (packages and binaries with checksums and signatures); no npm, PyPI, NuGet or Maven publication for now. Go is consumed from the GitHub module path. The release workflow is not built yet.**
 - **G124 — A server restart is not in the conformance suite.** The scenarios fail the transport and the session
   (`worker-transport-faults`: a registration that never leaves, refused polls, an UNAUTHENTICATED poll, refused
   heartbeats and completions) but do not stop the engine; the engine would come back on another port. Each SDK's
@@ -179,4 +180,5 @@ how to operate it is `docs/runbooks/sdks.md`; the behaviour of the SDKs is `sdks
   report attempt is in flight and resumes only if it fails; (b) the server answers a beat for an attempt that the same
   worker already completed with a distinct, non-error status; (c) feature 008 excludes `Heartbeat:aborted` from error
   rates. Why the SDKs differ (2.0 against 1.3 beats per task) was not investigated.
+  **Decided 2026-10-16 (owner): option (b). The server answers a heartbeat for an attempt the same worker already completed with a distinct non-error status; the five SDKs do not change. Not built yet.**
 
