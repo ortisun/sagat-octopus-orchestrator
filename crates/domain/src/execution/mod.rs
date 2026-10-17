@@ -11,6 +11,7 @@ mod error;
 mod event;
 mod instance;
 mod operations;
+mod path_state;
 mod plan;
 mod sagas;
 mod scoped_sagas;
@@ -56,7 +57,11 @@ pub use operations::{
     QueryResponse, QuerySnapshot, ResultDisclosure, UpdateEvaluation, UpdateKey, UpdateReceipt,
     UpdateReceiptStatus, UpdateRejection, UpdateRequest, UpdateResolution,
 };
-pub use plan::{AddressedPlan, Evaluation, Plan, plan, plan_addressed};
+pub use path_state::{
+    AncestorExecutionFence, GlobalExecutionFence, PathCollectionState, PathExecutionState,
+    PathLoopState,
+};
+pub use plan::{AddressedPlan, Evaluation, Plan, plan, plan_addressed, plan_path};
 pub use scoped_sagas::plan_scope_compensation;
 pub use state::{
     CollectionIterationRestore, CollectionPhase, CollectionResult, CollectionState, LoopCheckpoint,

@@ -23,9 +23,9 @@ use sagat_application::definitions::{
 };
 use sagat_application::error::StoreError;
 use sagat_application::execution::{
-    BreakerPolicy, DefinitionCache, Effects, LeaseDeadlines, ParentLink, RunData, RunInfo,
-    RunRecord, RunSegment, RunTx, ScopeInput, compensation_id, instance_compensation_id,
-    instance_step_id,
+    BreakerPolicy, DefinitionCache, Effects, LeaseDeadlines, MAX_RUN_OUTPUT_BYTES, ParentLink,
+    PathExecutionSnapshot, PathExecutionStore, RunData, RunInfo, RunRecord, RunSegment, RunTx,
+    ScopeInput, compensation_id, instance_compensation_id, instance_step_id,
 };
 use sagat_application::runs::{
     ApprovalView, ChainView, GraphSnapshot, JournalEntry, Lock, NewRun, RunFilter, RunStore,
@@ -34,10 +34,11 @@ use sagat_application::runs::{
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::definition::{Workflow, WorkflowId, WorkflowVersion, WorkflowVersionId};
 use sagat_domain::execution::{
-    AddressedRunEvent, ApprovalRequestId, ChainFinalOutcome, ChainPolicy, ChainScope,
-    CollectionDrainReason, CollectionIterationRestore, CollectionPhase, ContinuationTransfer,
-    CorrelationKey, ExecutionInstanceId, FailureCode, InstancePath, LoopContinuation,
-    LoopDrainReason, LoopIterationRestore, LoopKind, LoopPhase, RunChainState, RunEvent, RunId,
+    AddressedRunEvent, AncestorExecutionFence, ApprovalRequestId, ChainFinalOutcome, ChainPolicy,
+    ChainScope, CollectionDrainReason, CollectionIterationRestore, CollectionPhase,
+    ContinuationTransfer, CorrelationKey, ExecutionInstanceId, FailureCode, GlobalExecutionFence,
+    InstancePath, LoopContinuation, LoopDrainReason, LoopIterationRestore, LoopKind, LoopPhase,
+    PathCollectionState, PathExecutionState, PathLoopState, RunChainState, RunEvent, RunId,
     RunState, RunStatus, SagaPhase, SagaState, ScopeSagaState, SegmentCompletionKind, SegmentIndex,
     StepState, StepStatus, StopReason, SwitchSelection, WaitingOn,
 };
@@ -436,6 +437,355 @@ fn restore_chain_outcome(value: Option<&str>) -> Result<Option<ChainFinalOutcome
             _ => Err(corrupt("chain final outcome")),
         })
         .transpose()
+}
+
+impl PathExecutionStore for PgRunStore {
+    async fn load_path(
+        &self,
+        tenant: TenantId,
+        run: RunId,
+        path: InstancePath,
+    ) -> Result<Option<PathExecutionSnapshot>, StoreError> {
+        if path.is_root() {
+            return Err(StoreError::Internal {
+                detail: "bounded path reads require a scoped path".into(),
+            });
+        }
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        let row = sqlx::query(
+            "SELECT id,tenant_id,namespace_id,workflow_id,workflow_version_id,status,run_version, \
+                    stop_reason,stop_code,paused,correlation_id,started_by,trace_id,deadline_at, \
+                    created_at,updated_at,finished_at,parent_run_id,root_run_id,parent_node, \
+                    cancel_policy,depth,trace_parent_span,rerun_of \
+             FROM runs WHERE tenant_id=$1 AND id=$2 FOR SHARE",
+        )
+        .bind(tenant.as_uuid())
+        .bind(run.as_uuid())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        let Some(row) = row else {
+            tx.rollback().await.map_err(store_error)?;
+            return Ok(None);
+        };
+        let record = run_record(&row)?;
+        let stop_code = col::<Option<String>>(&row, "stop_code")?
+            .map(|code| FailureCode::parse(&code))
+            .transpose()
+            .map_err(|_| corrupt("stop code"))?;
+        let (path_nodes, path_indices) = stored_path_parts(&path);
+        let rows = sqlx::query(
+            "SELECT node,status,attempt,generation,cancel_requested,routed,condition,switch_case_id, \
+                    timed_out,failure_code,next_attempt_at,waiting_kind,due_at,correlation_key, \
+                    child_run_id,approval_request_id \
+             FROM steps WHERE tenant_id=$1 AND run_id=$2 \
+               AND instance_path_nodes=$3 AND instance_path_indices=$4 ORDER BY node",
+        )
+        .bind(tenant.as_uuid())
+        .bind(run.as_uuid())
+        .bind(&path_nodes)
+        .bind(&path_indices)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        let mut steps = BTreeMap::new();
+        for row in &rows {
+            let node = NodeId::parse_stored(&col::<String>(row, "node")?)
+                .map_err(|_| corrupt("step node"))?;
+            steps.insert(node, step_state(row)?);
+        }
+
+        let collection_rows = sqlx::query(
+            "SELECT owner_node,kind,lifecycle,snapshot_digest,item_count,max_items, \
+                    max_concurrency,next_admission_index,admitted_count,completed_count, \
+                    active_count,result_digest,drain_kind,drain_iteration,drain_failure_code \
+             FROM iteration_scopes WHERE tenant_id=$1 AND run_id=$2 \
+               AND owner_path_nodes=$3 AND owner_path_indices=$4 ORDER BY owner_node",
+        )
+        .bind(tenant.as_uuid())
+        .bind(run.as_uuid())
+        .bind(&path_nodes)
+        .bind(&path_indices)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        let mut collections = BTreeMap::new();
+        for row in &collection_rows {
+            if col::<String>(row, "kind")? != "COLLECTION" {
+                return Err(corrupt("bounded collection kind"));
+            }
+            let node = NodeId::parse_stored(&col::<String>(row, "owner_node")?)
+                .map_err(|_| corrupt("bounded collection owner"))?;
+            if !steps.contains_key(&node) {
+                return Err(corrupt("bounded collection owner"));
+            }
+            let phase = match col::<String>(row, "lifecycle")?.as_str() {
+                "OPEN" => CollectionPhase::Open,
+                "DRAINING" => CollectionPhase::Draining,
+                "SUCCEEDED" => CollectionPhase::Succeeded,
+                "FAILED" => CollectionPhase::Failed,
+                "CANCELLED" => CollectionPhase::Cancelled,
+                _ => return Err(corrupt("bounded collection lifecycle")),
+            };
+            let drain_reason = match (
+                col::<Option<String>>(row, "drain_kind")?.as_deref(),
+                col::<Option<i32>>(row, "drain_iteration")?,
+                col::<Option<String>>(row, "drain_failure_code")?,
+            ) {
+                (None, None, None) => None,
+                (Some("FAILED"), Some(iteration), Some(code)) => {
+                    Some(CollectionDrainReason::Failed {
+                        iteration: u32::try_from(iteration)
+                            .map_err(|_| corrupt("bounded collection drain iteration"))?,
+                        code: FailureCode::parse(&code)
+                            .map_err(|_| corrupt("bounded collection drain code"))?,
+                    })
+                }
+                (Some("STORAGE_QUOTA"), None, Some(code))
+                    if code == FailureCode::storage_quota_exceeded().as_str() =>
+                {
+                    Some(CollectionDrainReason::StorageQuotaExceeded)
+                }
+                (Some("CANCELLED"), None, None) => Some(CollectionDrainReason::Cancelled),
+                _ => return Err(corrupt("bounded collection drain reason")),
+            };
+            let next_admission = u32::try_from(col::<i32>(row, "next_admission_index")?)
+                .map_err(|_| corrupt("bounded collection next admission"))?;
+            if col::<i32>(row, "admitted_count")?
+                != i32::try_from(next_admission).unwrap_or(i32::MAX)
+            {
+                return Err(corrupt("bounded collection admitted count"));
+            }
+            let scope = PathCollectionState::restore(
+                phase,
+                u32::try_from(col::<i32>(row, "item_count")?)
+                    .map_err(|_| corrupt("bounded collection item count"))?,
+                u32::try_from(col::<i32>(row, "max_items")?)
+                    .map_err(|_| corrupt("bounded collection item limit"))?,
+                u16::try_from(col::<i32>(row, "max_concurrency")?)
+                    .map_err(|_| corrupt("bounded collection concurrency"))?,
+                stored_digest(col(row, "snapshot_digest")?, "bounded collection snapshot")?,
+                next_admission,
+                u32::try_from(col::<i32>(row, "completed_count")?)
+                    .map_err(|_| corrupt("bounded collection completed count"))?,
+                u16::try_from(col::<i32>(row, "active_count")?)
+                    .map_err(|_| corrupt("bounded collection active count"))?,
+                col::<Option<Vec<u8>>>(row, "result_digest")?
+                    .map(|digest| stored_digest(digest, "bounded collection result"))
+                    .transpose()?,
+                drain_reason,
+            )
+            .map_err(|_| corrupt("bounded collection scalar progress"))?;
+            if collections.insert(node, scope).is_some() {
+                return Err(corrupt("bounded collection owner"));
+            }
+        }
+
+        let loop_rows = sqlx::query(
+            "SELECT owner_node,kind,lifecycle,max_iterations,created_at,deadline_at, \
+                    initial_carry_digest,current_carry_digest,next_iteration,active_iteration, \
+                    delay_due_at,drain_kind,drain_iteration,drain_failure_code \
+             FROM loop_scopes WHERE tenant_id=$1 AND run_id=$2 \
+               AND owner_path_nodes=$3 AND owner_path_indices=$4 ORDER BY owner_node",
+        )
+        .bind(tenant.as_uuid())
+        .bind(run.as_uuid())
+        .bind(&path_nodes)
+        .bind(&path_indices)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        let mut loops = BTreeMap::new();
+        for row in &loop_rows {
+            let node = NodeId::parse_stored(&col::<String>(row, "owner_node")?)
+                .map_err(|_| corrupt("bounded loop owner"))?;
+            let owner = steps
+                .get(&node)
+                .ok_or_else(|| corrupt("bounded loop owner"))?;
+            let kind = match col::<String>(row, "kind")?.as_str() {
+                "WHILE" => LoopKind::While,
+                "REPEAT_UNTIL" => LoopKind::RepeatUntil,
+                _ => return Err(corrupt("bounded loop kind")),
+            };
+            let phase = match col::<String>(row, "lifecycle")?.as_str() {
+                "READY" => LoopPhase::Ready,
+                "RUNNING" => LoopPhase::Running,
+                "DELAYING" => LoopPhase::Delaying,
+                "DRAINING" => LoopPhase::Draining,
+                "SUCCEEDED" => LoopPhase::Succeeded,
+                "FAILED" => LoopPhase::Failed,
+                "CANCELLED" => LoopPhase::Cancelled,
+                _ => return Err(corrupt("bounded loop lifecycle")),
+            };
+            let drain_reason = match (
+                col::<Option<String>>(row, "drain_kind")?.as_deref(),
+                col::<Option<i32>>(row, "drain_iteration")?,
+                col::<Option<String>>(row, "drain_failure_code")?,
+            ) {
+                (None, None, None) => None,
+                (Some("FAILED"), Some(iteration), Some(code)) => Some(LoopDrainReason::Failed {
+                    iteration: u32::try_from(iteration)
+                        .map_err(|_| corrupt("bounded loop drain iteration"))?,
+                    code: FailureCode::parse(&code)
+                        .map_err(|_| corrupt("bounded loop drain code"))?,
+                }),
+                (Some("TIMED_OUT"), None, Some(code)) if code == "RUN_TIMED_OUT" => {
+                    Some(LoopDrainReason::TimedOut)
+                }
+                (Some("CANCELLED"), None, None) => Some(LoopDrainReason::Cancelled),
+                _ => return Err(corrupt("bounded loop drain reason")),
+            };
+            let scope = PathLoopState::restore(
+                kind,
+                phase,
+                u32::try_from(col::<i32>(row, "max_iterations")?)
+                    .map_err(|_| corrupt("bounded loop iteration limit"))?,
+                col(row, "created_at")?,
+                col(row, "deadline_at")?,
+                stored_digest(
+                    col(row, "initial_carry_digest")?,
+                    "bounded loop initial carry",
+                )?,
+                stored_digest(
+                    col(row, "current_carry_digest")?,
+                    "bounded loop current carry",
+                )?,
+                u32::try_from(col::<i32>(row, "next_iteration")?)
+                    .map_err(|_| corrupt("bounded loop next iteration"))?,
+                col::<Option<i32>>(row, "active_iteration")?
+                    .map(|index| {
+                        u32::try_from(index).map_err(|_| corrupt("bounded loop active iteration"))
+                    })
+                    .transpose()?,
+                col(row, "delay_due_at")?,
+                drain_reason,
+                owner.failure().cloned(),
+            )
+            .map_err(|_| corrupt("bounded loop scalar progress"))?;
+            if loops.insert(node, scope).is_some() {
+                return Err(corrupt("bounded loop owner"));
+            }
+        }
+
+        let mut ancestors = Vec::with_capacity(path.depth());
+        let mut owner_nodes = Vec::<String>::new();
+        let mut owner_indices = Vec::<i32>::new();
+        for segment in path.segments() {
+            let index =
+                i32::try_from(segment.iteration_index()).map_err(|_| corrupt("iteration index"))?;
+            let mut scopes = sqlx::query(
+                "SELECT 'COLLECTION' AS family,scope.lifecycle,member.slot_held AS active \
+                 FROM iteration_scopes scope JOIN collection_iterations member \
+                   ON member.tenant_id=scope.tenant_id AND member.run_id=scope.run_id \
+                  AND member.scope_id=scope.scope_id AND member.iteration_index=$6 \
+                 WHERE scope.tenant_id=$1 AND scope.run_id=$2 \
+                   AND scope.owner_path_nodes=$3 AND scope.owner_path_indices=$4 \
+                   AND scope.owner_node=$5 \
+                 UNION ALL \
+                 SELECT 'LOOP',scope.lifecycle,scope.active_iteration=$6 \
+                 FROM loop_scopes scope WHERE scope.tenant_id=$1 AND scope.run_id=$2 \
+                   AND scope.owner_path_nodes=$3 AND scope.owner_path_indices=$4 \
+                   AND scope.owner_node=$5",
+            )
+            .bind(tenant.as_uuid())
+            .bind(run.as_uuid())
+            .bind(&owner_nodes)
+            .bind(&owner_indices)
+            .bind(segment.scope_node().as_str())
+            .bind(index)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(store_error)?;
+            if scopes.len() != 1 {
+                return Err(corrupt("path ancestor scope"));
+            }
+            let scope = scopes.remove(0);
+            let owner = ExecutionInstanceId::in_path(
+                instance_path(owner_nodes.clone(), owner_indices.clone(), "ancestor path")?,
+                segment.scope_node().clone(),
+            );
+            let lifecycle = col::<String>(&scope, "lifecycle")?;
+            let active = col::<bool>(&scope, "active")?;
+            ancestors.push(match col::<String>(&scope, "family")?.as_str() {
+                "COLLECTION" => AncestorExecutionFence::Collection {
+                    owner,
+                    iteration_index: segment.iteration_index(),
+                    phase: match lifecycle.as_str() {
+                        "OPEN" => CollectionPhase::Open,
+                        "DRAINING" => CollectionPhase::Draining,
+                        "SUCCEEDED" => CollectionPhase::Succeeded,
+                        "FAILED" => CollectionPhase::Failed,
+                        "CANCELLED" => CollectionPhase::Cancelled,
+                        _ => return Err(corrupt("collection lifecycle")),
+                    },
+                    active,
+                },
+                "LOOP" => AncestorExecutionFence::Loop {
+                    owner,
+                    iteration_index: segment.iteration_index(),
+                    phase: match lifecycle.as_str() {
+                        "READY" => LoopPhase::Ready,
+                        "RUNNING" => LoopPhase::Running,
+                        "DELAYING" => LoopPhase::Delaying,
+                        "DRAINING" => LoopPhase::Draining,
+                        "SUCCEEDED" => LoopPhase::Succeeded,
+                        "FAILED" => LoopPhase::Failed,
+                        "CANCELLED" => LoopPhase::Cancelled,
+                        _ => return Err(corrupt("loop lifecycle")),
+                    },
+                    active,
+                },
+                _ => return Err(corrupt("ancestor scope kind")),
+            });
+            owner_nodes.push(segment.scope_node().as_str().to_owned());
+            owner_indices.push(index);
+        }
+        let definition = self
+            .definition(&mut tx, tenant, record.info.version_id)
+            .await?;
+        for node in collections.keys() {
+            let owner = ExecutionInstanceId::in_path(path.clone(), node.clone());
+            if !matches!(
+                definition.node_for_instance(&owner).map(Node::kind),
+                Some(NodeKind::ForEach { .. })
+            ) {
+                return Err(corrupt("bounded collection definition"));
+            }
+        }
+        for node in loops.keys() {
+            let owner = ExecutionInstanceId::in_path(path.clone(), node.clone());
+            if !matches!(
+                definition.node_for_instance(&owner).map(Node::kind),
+                Some(NodeKind::While { .. } | NodeKind::RepeatUntil { .. })
+            ) {
+                return Err(corrupt("bounded loop definition"));
+            }
+        }
+        let state = PathExecutionState::restore(
+            GlobalExecutionFence::restore(
+                run,
+                record.status,
+                record.stop_reason.map(|reason| (reason, stop_code)),
+                record.paused,
+                record.version,
+            ),
+            path,
+            ancestors,
+            steps,
+            collections,
+            loops,
+            BTreeMap::new(),
+        )
+        .map_err(|error| StoreError::Internal {
+            detail: error.to_string(),
+        })?;
+        tx.commit().await.map_err(store_error)?;
+        Ok(Some(PathExecutionSnapshot {
+            info: record.info,
+            definition,
+            state,
+        }))
+    }
 }
 
 impl RunStore for PgRunStore {
@@ -2638,6 +2988,95 @@ impl std::fmt::Debug for PgRunTx {
     }
 }
 
+impl PgRunTx {
+    async fn ensure_node_kind(
+        &mut self,
+        instance: &ExecutionInstanceId,
+        node_kind: &str,
+    ) -> Result<(), StoreError> {
+        let (path_nodes, path_indices) = stored_path_parts(instance.path());
+        let updated = sqlx::query(
+            "UPDATE steps SET node_kind=$6 \
+             WHERE tenant_id=$1 AND run_id=$2 AND instance_path_nodes=$3 \
+               AND instance_path_indices=$4 AND node=$5 \
+               AND node_kind IN ('legacyControl',$6)",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.run_id.as_uuid())
+        .bind(path_nodes)
+        .bind(path_indices)
+        .bind(instance.node().as_str())
+        .bind(node_kind)
+        .execute(&mut *self.tx)
+        .await
+        .map_err(store_error)?;
+        if updated.rows_affected() != 1 {
+            return Err(corrupt("immutable step node kind"));
+        }
+        Ok(())
+    }
+
+    async fn charge_logical_output_bytes(
+        &mut self,
+        outputs: &[(ExecutionInstanceId, usize)],
+    ) -> Result<(), StoreError> {
+        let mut seen = BTreeSet::new();
+        let mut charge = 0_i64;
+        for (instance, bytes) in outputs {
+            if !seen.insert(instance) {
+                return Err(StoreError::Internal {
+                    detail: "one logical step staged more than one output".into(),
+                });
+            }
+            let (path_nodes, path_indices) = stored_path_parts(instance.path());
+            let retained: Option<bool> = sqlx::query_scalar(
+                "SELECT output_digest IS NOT NULL FROM steps \
+                 WHERE tenant_id=$1 AND run_id=$2 AND instance_path_nodes=$3 \
+                   AND instance_path_indices=$4 AND node=$5 FOR UPDATE",
+            )
+            .bind(self.info.tenant_id.as_uuid())
+            .bind(self.info.run_id.as_uuid())
+            .bind(path_nodes)
+            .bind(path_indices)
+            .bind(instance.node().as_str())
+            .fetch_optional(&mut *self.tx)
+            .await
+            .map_err(store_error)?;
+            match retained {
+                Some(true) => {}
+                Some(false) => {
+                    charge = charge
+                        .checked_add(i64::try_from(*bytes).map_err(|_| corrupt("output bytes"))?)
+                        .ok_or_else(|| corrupt("output byte ledger"))?;
+                }
+                None => return Err(corrupt("output step projection")),
+            }
+        }
+        if charge == 0 {
+            return Ok(());
+        }
+        let updated = sqlx::query(
+            "UPDATE run_instance_usage \
+             SET logical_output_bytes=logical_output_bytes+$3 \
+             WHERE tenant_id=$1 AND run_id=$2 \
+               AND logical_output_bytes+$3 <= $4",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.run_id.as_uuid())
+        .bind(charge)
+        .bind(i64::try_from(MAX_RUN_OUTPUT_BYTES).map_err(|_| corrupt("run output limit"))?)
+        .execute(&mut *self.tx)
+        .await
+        .map_err(store_error)?;
+        if updated.rows_affected() != 1 {
+            return Err(StoreError::Internal {
+                detail: "the logical run output byte limit was exceeded".into(),
+            });
+        }
+        Ok(())
+    }
+}
+
 fn micros(duration: Duration) -> i64 {
     i64::try_from(duration.as_micros()).unwrap_or(i64::MAX)
 }
@@ -3418,6 +3857,12 @@ impl RunTx for PgRunTx {
         let run = self.info.run_id;
 
         // 1. Outputs: content-addressed payloads, remembered per root node.
+        let output_charges = effects
+            .outputs
+            .iter()
+            .map(|(node, bytes)| (ExecutionInstanceId::root(node.clone()), bytes.len()))
+            .collect::<Vec<_>>();
+        self.charge_logical_output_bytes(&output_charges).await?;
         let mut output_digest: BTreeMap<&NodeId, Vec<u8>> = BTreeMap::new();
         for (node, bytes) in &effects.outputs {
             let digest = Sha256::digest(bytes).to_vec();
@@ -4164,6 +4609,17 @@ impl PgRunTx {
                 .flatten()
             })
             .collect::<BTreeSet<_>>();
+        let mut output_charges = Vec::with_capacity(outputs.len());
+        let mut charged_instances = BTreeSet::new();
+        for (instance, bytes) in outputs {
+            if !completed.contains(instance) || !charged_instances.insert(instance) {
+                return Err(StoreError::Internal {
+                    detail: "a scoped output has no unique completion event".into(),
+                });
+            }
+            output_charges.push((instance.clone(), bytes.len()));
+        }
+        self.charge_logical_output_bytes(&output_charges).await?;
         let mut output_digest = BTreeMap::new();
         for (instance, bytes) in outputs {
             if !completed.contains(instance) || output_digest.contains_key(instance) {
@@ -4975,6 +5431,10 @@ impl PgRunTx {
             .def
             .node_for_instance(instance)
             .map_or("FORWARD", |node| node.origin().label());
+        let node_kind = self
+            .def
+            .node_for_instance(instance)
+            .map_or("activity", |node| node.kind().label());
         let status = step.status().as_str();
         let attempt = i32::try_from(step.attempt()).map_err(|_| corrupt("attempt"))?;
         let generation = i64::try_from(step.generation()).map_err(|_| corrupt("generation"))?;
@@ -5034,10 +5494,10 @@ impl PgRunTx {
                  (tenant_id, run_id, node, step_id, namespace_id, status, attempt, generation, \
                   cancel_requested, routed, timed_out, failure_code, next_attempt_at, activity, \
                   ready_at, last_hinted_at, output_digest, updated_at, kind, \
-                  instance_path_nodes, instance_path_indices, waiting_kind, secrets) \
+                  instance_path_nodes, instance_path_indices, waiting_kind, secrets, node_kind) \
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, \
                          CASE WHEN $6 = 'READY' THEN $15 END, CASE WHEN $16 THEN $15 END, $17, \
-                         $15, $20, $18, $19, $21, $22)",
+                         $15, $20, $18, $19, $21, $22, $23)",
             )
             .bind(self.info.tenant_id.as_uuid())
             .bind(self.info.run_id.as_uuid())
@@ -5061,12 +5521,15 @@ impl PgRunTx {
             .bind(kind)
             .bind(waiting_kind)
             .bind(declared)
+            .bind(node_kind)
             .execute(&mut *self.tx)
             .await
             .map_err(store_error)?;
             self.stored.insert(instance.clone());
             return Ok(());
         }
+
+        self.ensure_node_kind(instance, node_kind).await?;
 
         let updated = sqlx::query(
             "UPDATE steps SET status = $6, attempt = $7, generation = $8, \
@@ -5203,16 +5666,16 @@ impl PgRunTx {
         rehinted: bool,
         output: Option<&Vec<u8>>,
     ) -> Result<(), StoreError> {
-        let Some(step) = self.state.step(node) else {
+        let Some(step) = self.state.step(node).cloned() else {
             return Ok(());
         };
         let def_node = self.def.node(node);
         let activity = match def_node.map(sagat_domain::workflow::Node::kind) {
-            Some(NodeKind::Activity { activity, .. }) => Some(activity.as_str()),
+            Some(NodeKind::Activity { activity, .. }) => Some(activity.as_str().to_owned()),
             _ => None,
         };
         let event_type = match def_node.map(sagat_domain::workflow::Node::kind) {
-            Some(NodeKind::WaitEvent { event_type, .. }) => Some(event_type.as_str()),
+            Some(NodeKind::WaitEvent { event_type, .. }) => Some(event_type.as_str().to_owned()),
             _ => None,
         };
         let (waiting_kind, due_at, correlation_key) = match step.waiting_on() {
@@ -5254,6 +5717,7 @@ impl PgRunTx {
             _ => 0,
         };
         let kind = def_node.map_or("FORWARD", |n| n.origin().label());
+        let node_kind = def_node.map_or("legacyControl", |node| node.kind().label());
         // A `child` step reserved in this transaction: the run id, and the input it starts with.
         let spawn = effects.children.iter().find(|c| &c.node == node);
         let child_run = match step.waiting_on() {
@@ -5307,11 +5771,11 @@ impl PgRunTx {
                   cancel_requested, routed, condition, timed_out, failure_code, next_attempt_at, \
                   waiting_kind, due_at, event_type, correlation_key, activity, ready_at, \
                   last_hinted_at, output_digest, child_run_id, child_input, updated_at, kind, \
-                  event_since, switch_case_id, secrets) \
+                  event_since, switch_case_id, secrets, node_kind) \
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, \
                          $18, $19, CASE WHEN $6 = 'READY' THEN $20 END, CASE WHEN $21 THEN $20 END, \
                          $22, $23, $24, $20, $25, \
-                         CASE WHEN $15 = 'EVENT' THEN $20 - $26 * interval '1 microsecond' END, $27, $28)",
+                         CASE WHEN $15 = 'EVENT' THEN $20 - $26 * interval '1 microsecond' END, $27, $28, $29)",
             )
             .bind(self.info.tenant_id.as_uuid())
             .bind(self.info.run_id.as_uuid())
@@ -5329,9 +5793,13 @@ impl PgRunTx {
             .bind(step.next_attempt_at())
             .bind(waiting_kind)
             .bind(due_at)
-            .bind(if waiting_kind == Some("EVENT") { event_type } else { None })
+            .bind(if waiting_kind == Some("EVENT") {
+                event_type.as_deref()
+            } else {
+                None
+            })
             .bind(correlation_key)
-            .bind(activity)
+            .bind(activity.as_deref())
             .bind(self.now)
             .bind(hinted)
             .bind(output.cloned())
@@ -5341,12 +5809,14 @@ impl PgRunTx {
             .bind(lookback)
             .bind(switch_case_id)
             .bind(declared)
+            .bind(node_kind)
             .execute(&mut *self.tx)
             .await
             .map_err(store_error)?;
             self.stored.insert(instance);
             return Ok(());
         }
+        self.ensure_node_kind(&instance, node_kind).await?;
         sqlx::query(
             "UPDATE steps SET \
                 status = $6, attempt = $7, generation = $8, cancel_requested = $9, routed = $10, \
@@ -5408,9 +5878,13 @@ impl PgRunTx {
         .bind(step.next_attempt_at())
         .bind(waiting_kind)
         .bind(due_at)
-        .bind(if waiting_kind == Some("EVENT") { event_type } else { None })
+        .bind(if waiting_kind == Some("EVENT") {
+            event_type.as_deref()
+        } else {
+            None
+        })
         .bind(correlation_key)
-        .bind(activity)
+        .bind(activity.as_deref())
         .bind(self.now)
         .bind(hinted)
         .bind(fresh_grant.map(|g| g.token_hash.clone()))
