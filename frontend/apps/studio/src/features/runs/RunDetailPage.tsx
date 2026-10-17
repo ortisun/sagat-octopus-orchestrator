@@ -21,6 +21,7 @@ import { NowProvider, Relative } from './Now';
 import { OperationDialog } from './OperationDialog';
 import type { Decision } from './OperationDialog';
 import { PayloadInspector } from './PayloadInspection';
+import { PayloadDisclosureView } from './PayloadDisclosure';
 import { runOperations, stepOperations } from './ops';
 import type { Operation, RunFacts } from './ops';
 import { useVersions, versionLabel } from './queries';
@@ -271,7 +272,9 @@ function RunDetail({ runId }: { runId: string }) {
 
         <div className="rn-run-context">
           <SendSignal runId={runId} status={status} onSent={refresh} />
+          <PayloadDisclosureView runId={runId} selector={{ source: 'input' }} label="View permitted run input values" />
           <PayloadInspector runId={runId} selector={{ source: 'input' }} label="Inspect redacted run input" />
+          {finished ? <PayloadDisclosureView runId={runId} selector={{ source: 'result' }} label="View permitted run result values" /> : null}
           {finished ? (
             <p className="hint">
               {run.data.finishedAt ? <>The run finished <Relative at={run.data.finishedAt} past />.</> : 'The run is over.'} Its graph and journal stay as they were.
