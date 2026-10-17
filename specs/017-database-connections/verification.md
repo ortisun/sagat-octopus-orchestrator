@@ -388,3 +388,42 @@ coverage above; full deployment/SDK/crash gates remain T017-023/024/025.
 - `cargo test -p sagat-tests --test integration_events_webhooks_messaging --locked`: 111 passed (18.64 s).
 - Final combined database-connections and sagas-compensations integration run: all passed (3 feature tests and 74 saga tests; saga suite 9.63 s). Application/scheduler clippy with warnings denied, formatting and diff whitespace passed.
 - Existing ordinary raw/JSON-escaped UTF-8 scanning scope is unchanged; managed result scanning/pins remain separate. Deployment and remaining recovery/final gates are still open.
+
+
+## Deployment and workload identities — T017-023
+
+- Built actual control-plane, execution-engine, development IdP and database-runner Docker
+  targets. The runner image contains its executable, CA roots and non-root account; deployment
+  mounts only its OIDC identity, engine trust and bounded configuration.
+- The development overlay runs persistent OpenBao 2.7.1 with verified TLS, declarative audit,
+  one-hour scoped application tokens and a separate restricted TLS PostgreSQL target. The
+  preparation directory is private and excluded from source/build contexts. Sandbox runner
+  transport also switches to verified engine TLS, preserving the combined profile.
+- `python3 tests/e2e/database-connections/compose.py`: passed with these built images,
+  runtime-role API, real secret provisioning, probe, typed retained result, idempotent admission
+  and controlled provider outage. The fixture tears down only its own Compose project.
+- Official OpenBao chart 0.30.0 and server/agent 2.7.1 are pinned by verified archive/image
+  digests. Production values use three TLS Raft voters, retained data/audit volumes, finite
+  resources and declarative audit. The bootstrap sets exact SA/namespace/audience roles,
+  30-minute tokens with a one-hour maximum, and separate management/runtime/cleanup policies.
+- Real Kubernetes proof passed on kind 0.33.0 / Kubernetes 1.35.8, three nodes and Calico
+  3.31.4: all three Raft members healthy; actual projected JWT login; short-lived token
+  renewal/re-authentication; wrong audience/SA denied; scoped credential/create/destroy ACLs;
+  target PostgreSQL and engine sockets allowed; platform PostgreSQL, OpenBao, Kubernetes API
+  and metadata sockets refused from the runner. TokenReview still works after default-deny.
+  Auth/network probes reuse rendered application templates with test containers. This is
+  separate from the built-image SQL execution proof above. The temporary cluster was deleted.
+- Initial live deployment attempts exposed fixture CA key-usage, Raft unseal startup timing,
+  named-volume ownership and Docker internal-network port-publication issues. These were
+  corrected and the complete proofs rerun. No failed attempt is represented as a pass.
+- Helm supplies distinct backend SAs and memory token sinks, projected JWTs mounted only by
+  agents, checksummed agent configuration, bounded cleanup CronJob, stable runner StatefulSet
+  identities, explicit egress, TLS and resource validation. Optional OTLP requires HTTPS and
+  explicit collector egress. No provider/platform credential is mounted in the runner.
+- Chart contract suite: **23 passed**. Runner config unit tests: **4 passed**. Runner clippy
+  with all targets and warnings denied passed; Python compilation, shell syntax and formatting
+  passed. Independent review found the sandbox TLS compatibility issue above; it is fixed,
+  with no remaining Required/Critical findings in this deployment slice.
+- Reproduction and operator responsibilities: `docs/runbooks/openbao.md`,
+  `tests/e2e/database-connections/kubernetes.sh`. Production image publication, real issuer,
+  cluster certificates, storage class and private CIDRs remain deployment-specific inputs.

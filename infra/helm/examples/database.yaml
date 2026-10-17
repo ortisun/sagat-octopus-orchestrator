@@ -1,0 +1,46 @@
+# Overlay on ha.yaml. Replace image digest, namespace identity, TLS Secrets and private ranges.
+# No credentials belong in this file. OIDC and OpenBao identities are separate.
+openbao:
+  enabled: true
+  caSecret: openbao-ca
+  intentKeySecret: openbao-intent
+  network:
+    to:
+      - namespaceSelector:
+          matchLabels: {kubernetes.io/metadata.name: openbao}
+        podSelector:
+          matchLabels: {app.kubernetes.io/name: openbao}
+databaseRunner:
+  enabled: true
+  # Mandatory operator input. Keep blank until the locally built image has been published.
+  image: ""
+  tokenSecret: sagat-database-runner-identity
+  caSecret: sagat-engine-ca
+  config:
+    grpcUrl: https://sagat-octopus-orchestrator-engine:9000
+    maxConcurrent: 4
+    pollIntervalMs: 250
+    rpcTimeoutMs: 5000
+    deployment:
+      allowCidrs: [10.32.4.0/24]
+      allowPorts: [5432]
+      denyCidrs: [10.16.0.0/16]
+      limits: &limits
+        maxStatementBytes: 16384
+        maxParameters: 64
+        maxParameterBytes: 65536
+        maxRows: 1000
+        maxResultBytes: 1048576
+        timeoutMs: 10000
+        connectTimeoutMs: 5000
+        poolSize: 4
+        idleTimeoutMs: 30000
+    namespaces:
+      - id: 00000000-0000-0000-0000-000000000001
+        slug: payments
+        allowCidrs: [10.32.4.0/24]
+        allowPorts: [5432]
+        limits: *limits
+  targetEgress:
+    - ports: [{port: 5432, protocol: TCP}]
+      to: [{ipBlock: {cidr: 10.32.4.0/24}}]

@@ -80,6 +80,11 @@ impl Config {
         let bytes = bounded_file(path, 256 * 1024).await?;
         Self::parse(&bytes)
     }
+    pub(crate) fn with_name(mut self, name: String) -> Result<Self, RunnerError> {
+        self.name = name;
+        self.validate()?;
+        Ok(self)
+    }
     pub fn parse(bytes: &[u8]) -> Result<Self, RunnerError> {
         if bytes.len() > 256 * 1024 {
             return Err(RunnerError::Configuration);
@@ -219,6 +224,10 @@ mod tests {
     #[test]
     fn configuration_requires_verified_transport_and_intersected_bounded_policy() {
         let config = Config::parse(&serde_json::to_vec(&document()).unwrap()).unwrap();
+        assert!(config.clone().with_name("database-runner-0".into()).is_ok());
+        for name in [String::new(), "x".repeat(65), "pod\nname".into()] {
+            assert!(config.clone().with_name(name).is_err());
+        }
         let network = config.network().unwrap();
         let ns = config.namespaces[0].scope().unwrap();
         assert!(

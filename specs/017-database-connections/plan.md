@@ -172,3 +172,34 @@ results retain their dedicated scanner/pins. HMAC consumers fail the entire oper
 resolution failure, including mixed local/remote migration grace, so provider outages cannot
 reactivate local authority. Exercise heartbeat/cancellation during blocked reads, snapshot rotation,
 durable receipt replay during provider outages and secret-bearing saga recovery.
+
+## Deployment and recovery profiles (T017-023/024)
+
+- Add the managed runner as its own Docker build target: nonroot, read-only root filesystem,
+  dropped capabilities, finite memory/CPU/PID budgets and no platform/provider credentials.
+- The production OpenBao reference uses the official Helm chart 0.30.0 with OpenBao 2.7.1
+  pinned by digest, three Raft replicas, verified TLS, persistent data and an explicit
+  bootstrap/unseal procedure. Never distribute bootstrap root/unseal material to application pods.
+- Sagat's Helm profile opts in to separate control-plane, engine and cleanup service accounts.
+  OpenBao Agent authenticates with a projected short-lived Kubernetes token (explicit audience),
+  renews a scoped provider token and writes it into a memory-backed volume. Only the agent mounts
+  the Kubernetes JWT. Only the control plane mounts the shared 32-byte intent-binding key.
+  Cleanup uses its own no-read provider policy and a bounded CronJob; the runner gets neither.
+- Runner egress is separately default-denied, permitting only DNS, the engine, approved database
+  peers/ports and explicitly configured telemetry. Platform state exclusions remain mandatory in
+  the process policy; real network tests must prove packet-level separation independently.
+- A local Compose overlay uses a persistent, TLS-enabled OpenBao and separate demo PostgreSQL,
+  runtime identities and bounded runner configuration. Bootstrap material is generated into an
+  ignored private directory. The demo is explicit development-only and must not modify another
+  stack or use its secrets. Production uses workload authentication rather than demo credentials.
+- Restore rehearsal uses a real Raft snapshot and PostgreSQL backup from quiesced writers/cleanup.
+  Preserve the intent-binding key and every OpenBao tombstone. Reconciliation must refuse missing
+  remote evidence, and cleanup remains stopped until references are checked. Document unsupported
+  arbitrary-point cross-store recovery; never silently fall back to local credentials.
+
+Official sources: [OpenBao chart releases](https://github.com/openbao/openbao-helm/releases),
+[Raft and TLS](https://openbao.org/docs/platform/k8s/helm/examples/ha-tls/),
+[Kubernetes authentication](https://openbao.org/docs/auth/kubernetes/),
+[Agent auto-auth](https://openbao.org/docs/agent-and-proxy/autoauth/),
+[projected token path](https://openbao.org/docs/agent-and-proxy/autoauth/methods/kubernetes/).
+The profile is implementation work; rendering alone is not proof of network/auth enforcement.

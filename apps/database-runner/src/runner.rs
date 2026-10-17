@@ -26,6 +26,12 @@ struct Session {
 impl Runner {
     pub async fn start(path: PathBuf) -> Result<Self, RunnerError> {
         let config = Config::read(&path).await?;
+        // Stable pod identity avoids replicas invalidating each other's worker sessions.
+        let config = match std::env::var("SAGAT_DATABASE_RUNNER_NAME") {
+            Ok(name) => config.with_name(name)?,
+            Err(std::env::VarError::NotPresent) => config,
+            Err(_) => return Err(RunnerError::Configuration),
+        };
         let rpc = Rpc::connect(&config).await?;
         Ok(Self {
             config,

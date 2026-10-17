@@ -62,8 +62,10 @@ operator policy to avoid leasing tasks that a narrower runner limit will refuse.
 
 For local fixtures only, `developmentLoopback=true` permits numeric loopback HTTP
 to the engine and an explicitly configured plaintext loopback target. Production
-TLS remains verified. Container/network manifests and workload-auth bootstrap are
-tracked by T017-023 and are not supplied by this executable checkpoint.
+TLS remains verified. The Docker target, development overlay, production Helm profile
+and workload-auth bootstrap are documented in [OpenBao deployment](openbao.md).
+`SAGAT_DATABASE_RUNNER_NAME` can override the configured name with the stable pod name;
+the same length/character and namespace constraints apply.
 
 ## Observe and recover
 

@@ -38,6 +38,6 @@ Status: Implementing after user approval on 2026-10-16. Check a task only after 
 
 ## E. Delivery evidence
 
-- [ ] T017-023 Pinned development/production OpenBao and runner profiles, workload auth/bootstrap/network policies and demo. FR-017-006,013,022.
+- [x] T017-023 Pinned development/production OpenBao and runner profiles, workload auth/bootstrap/network policies and demo. FR-017-006,013,022. Evidence: built images and full Compose success/outage demo; real three-member TLS Raft, projected-JWT auth/reauth, scoped ACLs and Calico socket refusals; rendered chart contracts. See verification.md.
 - [ ] T017-024 Fault/recovery/restore/rotation/migration tests and runbooks; update dependent specs and ADRs. SC-017-002,005..011.
 - [ ] T017-025 Run required regression, architecture, five SDK and browser gates; review diff and record actual evidence/remaining gaps. All requirements.

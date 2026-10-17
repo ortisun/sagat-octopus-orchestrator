@@ -1,0 +1,131 @@
+# Development overlay: persistent TLS OpenBao and a separate TLS PostgreSQL target.
+# Prepare private files and scoped tokens with docs/runbooks/openbao.md before starting apps.
+services:
+  openbao-volume-init:
+    image: docker.io/openbao/openbao:2.7.1@sha256:6d2b93856e3fcf7b18ad855a0b51eaba474dc8b79cf554379ea32034797d2acf
+    user: "0:0"
+    entrypoint: [sh, -ec]
+    command: ["chmod 700 /openbao/data; chown 100:1000 /openbao/data"]
+    read_only: true
+    network_mode: none
+    cap_drop: [ALL]
+    cap_add: [CHOWN, FOWNER]
+    security_opt: [no-new-privileges:true]
+    volumes: ["bao-data:/openbao/data"]
+    mem_limit: 32m
+    pids_limit: 16
+  openbao:
+    image: docker.io/openbao/openbao:2.7.1@sha256:6d2b93856e3fcf7b18ad855a0b51eaba474dc8b79cf554379ea32034797d2acf
+    user: "100:1000"
+    entrypoint: [bao]
+    command: [server, -config=/openbao/config/server.hcl]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 512m
+    cpus: 1
+    pids_limit: 128
+    tmpfs: [/tmp]
+    volumes:
+      - bao-data:/openbao/data
+      - ${SAGAT_DATABASE_DEV_DIR:?prepare the database development directory}/bao:/openbao/config:ro
+      - ${SAGAT_DATABASE_DEV_DIR}/tls/ca.crt:/openbao/tls/ca.crt:ro
+      - ${SAGAT_DATABASE_DEV_DIR}/tls/bao.crt:/openbao/tls/bao.crt:ro
+      - ${SAGAT_DATABASE_DEV_DIR}/tls/bao.key:/openbao/tls/bao.key:ro
+    ports: ["127.0.0.1:${SAGAT_BAO_PORT:-18200}:8200"]
+    networks: [credentials]
+    depends_on:
+      openbao-volume-init: {condition: service_completed_successfully}
+    environment:
+      BAO_ADDR: https://127.0.0.1:8200
+      BAO_CACERT: /openbao/tls/ca.crt
+    healthcheck:
+      test: [CMD, bao, status]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  control-plane:
+    networks: [default, credentials]
+    environment:
+      SAGAT_OPENBAO_ADDRESS: https://openbao:8200
+      SAGAT_OPENBAO_TOKEN_FILE: /run/openbao/token
+      SAGAT_OPENBAO_CA_FILE: /etc/database-tls/ca.crt
+      SAGAT_OPENBAO_INTENT_KEY_FILE: /run/openbao-intent/intent-key
+    volumes:
+      - ${SAGAT_DATABASE_DEV_DIR}/management:/run/openbao:ro
+      - ${SAGAT_DATABASE_DEV_DIR}/intent:/run/openbao-intent:ro
+      - ${SAGAT_DATABASE_DEV_DIR}/tls/ca.crt:/etc/database-tls/ca.crt:ro
+  execution-engine:
+    networks: [default, credentials, database-engine]
+    environment:
+      SAGAT_OPENBAO_ADDRESS: https://openbao:8200
+      SAGAT_OPENBAO_TOKEN_FILE: /run/openbao/token
+      SAGAT_OPENBAO_CA_FILE: /etc/database-tls/ca.crt
+      SAGAT_GRPC_TLS_CERT_FILE: /etc/database-tls/engine.crt
+      SAGAT_GRPC_TLS_KEY_FILE: /etc/database-tls/engine.key
+    volumes:
+      - ${SAGAT_DATABASE_DEV_DIR}/runtime:/run/openbao:ro
+      - ${SAGAT_DATABASE_DEV_DIR}/tls/ca.crt:/etc/database-tls/ca.crt:ro
+      - ${SAGAT_DATABASE_DEV_DIR}/tls/engine.crt:/etc/database-tls/engine.crt:ro
+      - ${SAGAT_DATABASE_DEV_DIR}/tls/engine.key:/etc/database-tls/engine.key:ro
+  target-postgres:
+    image: ${SAGAT_DATABASE_POSTGRES_IMAGE:?use the pinned PostgreSQL image from prepare-development.py}
+    env_file: ["${SAGAT_DATABASE_DEV_DIR}/target.env"]
+    # Development only: copy the fixture key to a postgres-owned private file before dropping root.
+    entrypoint: [sh, -ec]
+    command:
+      - cp /tls/target.key /tmp/server.key; chown postgres:postgres /tmp/server.key; chmod 600 /tmp/server.key; exec docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/tls/target.crt -c ssl_key_file=/tmp/server.key
+    volumes:
+      - target-data:/var/lib/postgresql/data
+      - ${SAGAT_DATABASE_DEV_DIR}/tls/target.crt:/tls/target.crt:ro
+      - ${SAGAT_DATABASE_DEV_DIR}/tls/target.key:/tls/target.key:ro
+      - ${SAGAT_DATABASE_DEV_DIR}/target-init:/docker-entrypoint-initdb.d:ro
+    networks: [database-target]
+    mem_limit: 256m
+    cpus: 1
+    pids_limit: 128
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U postgres]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  database-runner:
+    image: sagat-octopus-orchestrator/database-runner:dev
+    build: {context: ../.., dockerfile: infra/docker/Dockerfile, target: database-runner}
+    profiles: [database]
+    networks: [database-engine, database-target]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 512m
+    cpus: 1
+    pids_limit: 128
+    environment:
+      SAGAT_DATABASE_RUNNER_CONFIG: /etc/sagat/runner/config.json
+    volumes:
+      - ${SAGAT_DATABASE_DEV_DIR}/runner:/etc/sagat/runner:ro
+      - ${SAGAT_DATABASE_DEV_DIR}/identity:/run/sagat-identity:ro
+      - ${SAGAT_DATABASE_DEV_DIR}/tls/ca.crt:/etc/sagat/ca.crt:ro
+    depends_on:
+      target-postgres: {condition: service_healthy}
+      execution-engine: {condition: service_started}
+    stop_grace_period: 40s
+  sandbox-runner:
+    environment:
+      SAGAT_RUNNER_GRPC_URL: https://execution-engine:9000
+      SAGAT_RUNNER_CA_FILE: /etc/database-tls/ca.crt
+    volumes:
+      - ${SAGAT_DATABASE_DEV_DIR}/tls/ca.crt:/etc/database-tls/ca.crt:ro
+networks:
+  # The operator bootstraps through a loopback-published TLS port. Docker does not
+  # publish ports from an internal-only network. Runners never join this bridge.
+  credentials: {}
+  database-engine:
+    internal: true
+    ipam: {config: [{subnet: "${SAGAT_DATABASE_ENGINE_SUBNET:-10.213.16.0/24}"}]}
+  database-target:
+    internal: true
+    ipam: {config: [{subnet: "${SAGAT_DATABASE_TARGET_SUBNET:-10.213.17.0/24}"}]}
+volumes:
+  bao-data:
+  target-data:
