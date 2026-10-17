@@ -18,6 +18,8 @@ You are implementing a durable workflow platform **from specifications**, not a 
 14. Branching follows **Gitflow**: `main` holds releases and `develop` is the integration branch. Work happens on `feature/<spec-id>-<slug>`, `bugfix/<slug>`, `release/<semver>` and `hotfix/<semver>` branches; feature and bugfix branches are cut from `develop` and merged back with `--no-ff`. Never commit directly to `main` or `develop`.
 15. Commit messages follow **Conventional Commits**: `type(scope): imperative subject` (subject ≤ 72 characters), with `type` one of `feat`, `fix`, `docs`, `test`, `refactor`, `perf`, `build`, `ci`, `chore`, `revert`. Mark breaking changes with `!` and a `BREAKING CHANGE:` footer. Reference the traced items in a footer, e.g. `Refs: T001-004, FR-001-001`.
 
+16. **Infrastructure is self-contained.** Everything needed to run or test the platform is declared in this repository (`infra/docker/compose.yaml`, `compose.observability.yaml`, test fixtures that start their own disposable containers). Never rely on a container, volume or service of another project or one started by hand. A new component (for example OpenBao for feature 015) is added to the compose file with a pinned image, loopback-only ports and a healthcheck.
+
 ## Definition of Done
 
 Traced requirement → automated tests → updated contract → essential metrics → logs without sensitive data → reproducible execution → documentation and demo of the happy/failure scenario.
