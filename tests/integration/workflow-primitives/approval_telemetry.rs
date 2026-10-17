@@ -276,10 +276,11 @@ async fn refused_decisions_count_in_the_closed_rejection_series_and_nothing_else
         .zip(before)
         .map(|(after, before)| after - before)
         .collect();
-    assert_eq!(
-        grown,
-        [1.0, 1.0, 1.0, 1.0],
-        "one count per refusal, by its closed code"
+    // The metrics page is the process's and other tests refuse decisions at the same time, so each
+    // closed code grew by at least this test's own refusal.
+    assert!(
+        grown.iter().all(|grown| *grown >= 1.0),
+        "one count per refusal, by its closed code: {grown:?}"
     );
 
     // Every label of every primitive series is from a closed enum, and the approval routes invent no
