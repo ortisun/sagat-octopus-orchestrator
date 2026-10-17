@@ -156,7 +156,9 @@ impl From<&CarrierPointer> for DisclosureSchemaCarrier {
         match carrier {
             CarrierPointer::Input => Self::InputSchema,
             CarrierPointer::Result => Self::OutputSchema,
-            CarrierPointer::NodeOutput(_) => Self::NodeOutputSchema,
+            CarrierPointer::NodeOutput(_) | CarrierPointer::BodyNodeOutput { .. } => {
+                Self::NodeOutputSchema
+            }
         }
     }
 }
