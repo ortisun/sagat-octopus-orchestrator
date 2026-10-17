@@ -15,6 +15,8 @@ mod chain_progress;
 mod chain_storage;
 mod chains;
 mod chains_http;
+mod collection_10k;
+mod collection_budgets;
 mod collection_restore;
 mod collection_sources;
 mod collections_http;

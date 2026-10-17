@@ -138,17 +138,23 @@ pub async fn start_inline(p: &Platform, workflow: &str, input: &Value) -> Uuid {
 }
 
 pub async fn scheduler(p: &Platform, source: Option<Arc<dyn CollectionItemSource>>) -> Sched {
+    scheduler_with_keeper(p, source).await.0
+}
+
+/// As [`scheduler`], with the keeper that holds its shard leases (a long run must renew them).
+pub async fn scheduler_with_keeper(
+    p: &Platform,
+    source: Option<Arc<dyn CollectionItemSource>>,
+) -> (Sched, Keeper<PgRunStore>) {
     let placement = Placement::new(format!("sources-{}", Uuid::now_v7()));
-    Keeper::new(
+    let keeper = Keeper::new(
         p.api.executions.clone(),
         placement.clone(),
         KeeperSettings {
-            ttl: Duration::from_secs(60),
+            ttl: Duration::from_secs(600),
         },
-    )
-    .round()
-    .await
-    .expect("acquire shards");
+    );
+    keeper.round().await.expect("acquire shards");
     let scheduler = Scheduler::new(
         p.api.executions.clone(),
         Engine::new(JsonEvaluator),
@@ -157,10 +163,11 @@ pub async fn scheduler(p: &Platform, source: Option<Arc<dyn CollectionItemSource
     )
     .with_children(DefinitionCache::new(Arc::new(JsonIrCodec), 64))
     .with_placement(placement);
-    match source {
+    let scheduler = match source {
         Some(source) => scheduler.with_item_source(source),
         None => scheduler,
-    }
+    };
+    (scheduler, keeper)
 }
 
 pub fn blob_source(p: &Platform) -> Arc<dyn CollectionItemSource> {
