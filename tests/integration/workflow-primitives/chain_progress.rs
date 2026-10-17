@@ -1595,3 +1595,59 @@ async fn audit_insert_failure_rolls_back_runs_journal_outbox_and_lineage() {
     .expect("rollback evidence");
     assert_eq!(leaked, (false, 0));
 }
+
+/// The chain write paths run as the least-privilege runtime role (G294): handoff to a successor
+/// run, then the terminal outcome of a chain, with the fixture seeded by the owner.
+#[tokio::test]
+async fn chain_handoff_and_finalization_are_written_by_the_least_privilege_runtime_role() {
+    let fixture = seed_quiescent_chain("chain-handoff-runtime-role", Duration::hours(1)).await;
+    let runtime = PgChainProgressStore::new(
+        fixture.world.db.runtime_pool().await,
+        fixture.world.cache.clone(),
+    );
+    let successor = RunId::generate();
+    let now = crate::support::now();
+    let handoff = command(
+        &fixture,
+        successor,
+        fixture.authority.clone(),
+        now,
+        audit(&fixture, now),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+    );
+    let written = runtime
+        .continue_as_new(&handoff)
+        .await
+        .expect("the runtime role hands the chain off");
+    assert!(!written.replayed());
+    let replayed = runtime
+        .continue_as_new(&handoff)
+        .await
+        .expect("and replays the handoff");
+    assert!(replayed.replayed());
+    runtime
+        .verify_chain_journal(fixture.world.admin.tenant_id(), successor)
+        .await
+        .expect("the successor journal equals its projection");
+
+    let fixture = seed_quiescent_chain("chain-final-runtime-role", Duration::hours(1)).await;
+    let runtime = PgChainProgressStore::new(
+        fixture.world.db.runtime_pool().await,
+        fixture.world.cache.clone(),
+    );
+    let finalization = finalization(&fixture, Uuid::now_v7(), Uuid::now_v7());
+    let closed = runtime
+        .finalize_chain(&finalization)
+        .await
+        .expect("the runtime role closes the chain");
+    assert_eq!(closed.outcome(), ChainFinalOutcome::Succeeded);
+    assert!(!closed.replayed());
+    assert!(
+        runtime
+            .finalize_chain(&finalization)
+            .await
+            .expect("and replays the outcome")
+            .replayed()
+    );
+}

@@ -1016,6 +1016,18 @@ async fn collection_admission_writes_expected_journal_projection_and_usage_atomi
 
 #[tokio::test]
 async fn checkpoint_and_finish_are_atomic_replayable_and_restart_safe() {
+    checkpoint_and_finish_flow(false).await;
+}
+
+/// The same flow with the store connected as the least-privilege runtime role (G294): admission,
+/// checkpoint, finish and their replays touch the usage counters and the projections only through
+/// the grants the role holds, and the corruption checks below still run as the owner.
+#[tokio::test]
+async fn collection_admission_and_checkpoint_are_written_by_the_least_privilege_runtime_role() {
+    checkpoint_and_finish_flow(true).await;
+}
+
+async fn checkpoint_and_finish_flow(as_runtime_role: bool) {
     let w = world().await;
     let owner = ExecutionInstanceId::root(NodeId::parse("items").expect("owner node"));
     let (workflow, workflow_version, definitions) =
@@ -1025,7 +1037,14 @@ async fn checkpoint_and_finish_are_atomic_replayable_and_restart_safe() {
     let authority = scheduler_authority(&w.db.pool, run).await;
     set_tenant_collection_capacity(&w.db.pool, tenant, 1).await;
     let verifier = PgRunStore::new(w.db.pool.clone(), definitions.clone());
-    let store = PgCollectionStore::with_definition_cache(w.db.pool.clone(), definitions);
+    let store = PgCollectionStore::with_definition_cache(
+        if as_runtime_role {
+            w.db.runtime_pool().await
+        } else {
+            w.db.pool.clone()
+        },
+        definitions,
+    );
     let scope = CollectionScopeId::generate();
     let entered = store
         .enter_collection(

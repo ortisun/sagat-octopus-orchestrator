@@ -3743,3 +3743,76 @@ async fn loop_timeout_before_the_body_starts_cancels_it_and_takes_the_error_edge
     assert_eq!(member, ("CANCELLED".into(), true));
     complete_recovery_and_finish(&fixture).await;
 }
+
+/// The loop write paths run as the least-privilege runtime role (G294): the fixture is seeded by
+/// the owner, the store under test is connected as `sagat_app`, which may not lock `memberships`,
+/// may not touch the usage counters the triggers keep, and only sees the columns it was granted.
+#[tokio::test]
+async fn loop_entry_and_checkpoint_are_written_by_the_least_privilege_runtime_role() {
+    let fixture = seed_pending_loop("loop-entry-runtime-role").await;
+    let store =
+        PgLoopProgressStore::new(fixture.db.runtime_pool().await, fixture.definitions.clone());
+    let carry = b"1".to_vec();
+    let occurred_at = crate::support::now();
+    let entry = LoopEntryCommand::from_carry(
+        transition(
+            &fixture,
+            1,
+            fixture.authority.clone(),
+            audit(&fixture),
+            occurred_at,
+        ),
+        LoopKind::While,
+        3,
+        occurred_at + Duration::minutes(1),
+        carry,
+        Some(true),
+        Some(next_activity(&fixture, 0)),
+        Uuid::now_v7(),
+    )
+    .expect("loop entry command");
+    let entered = store
+        .enter_loop(&entry)
+        .await
+        .expect("the runtime role enters the loop");
+    assert!(entered.applied);
+    let replay = store
+        .enter_loop(&entry)
+        .await
+        .expect("and replays the entry");
+    assert!(!replay.applied);
+
+    let fixture = seed_running_loop("loop-checkpoint-runtime-role").await;
+    let store =
+        PgLoopProgressStore::new(fixture.db.runtime_pool().await, fixture.definitions.clone());
+    let complete = LoopCheckpointCommand::new(
+        transition(
+            &fixture,
+            8,
+            fixture.authority.clone(),
+            audit(&fixture),
+            crate::support::now(),
+        ),
+        0,
+        fixture.returned.clone(),
+        fixture.initial_carry,
+        fixture.initial_carry,
+        false,
+        crate::support::now(),
+        LoopContinuation::Complete,
+        None,
+        None,
+        Uuid::now_v7(),
+    )
+    .expect("complete checkpoint");
+    let applied = store
+        .checkpoint(&complete)
+        .await
+        .expect("the runtime role finishes the loop");
+    assert!(applied.applied);
+    let replay = store
+        .checkpoint(&complete)
+        .await
+        .expect("and replays the checkpoint");
+    assert!(!replay.applied);
+}

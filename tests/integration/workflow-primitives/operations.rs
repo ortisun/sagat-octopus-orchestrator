@@ -1773,3 +1773,71 @@ async fn a_declared_query_is_served_by_the_least_privilege_runtime_role() {
         .expect("the runtime role serves the query");
     assert_eq!(snapshot.state(), &state);
 }
+
+/// An accepted Update writes the state projection, the receipt, the journal, the outbox and the
+/// audit trail; every one of those writes is made by the least-privilege runtime role (G294).
+#[tokio::test]
+async fn an_applied_update_is_committed_by_the_least_privilege_runtime_role() {
+    let w = world().await;
+    let (workflow, version) = w.publish(chain("operation-update-runtime-role")).await;
+    let run = w.start(workflow, &serde_json::json!({})).await;
+    let state = seed_state(&w, version, run, "balance.credit", "UPDATE").await;
+    let command = DeclaredUpdate::new(
+        UpdateRequest::new(
+            scope(&w, run),
+            run,
+            ActivityName::parse("balance.credit").expect("operation"),
+            UpdateKey::parse("credit-runtime-role").expect("key"),
+            Digest::new([9; 32]),
+            Some(0),
+            w.admin.subject().clone(),
+        ),
+        operation_arguments(b"{}"),
+        audit(&w, run, AuditAction::RunUpdated),
+        Uuid::now_v7(),
+        crate::support::now(),
+    );
+    let state_write =
+        EvaluatedOperationWrite::restore(state.clone(), br#"{"balance":10}"#.to_vec())
+            .expect("evaluated state");
+    let result_bytes = b"accepted";
+    let result = EvaluatedOperationWrite::restore(
+        OperationValue::new(
+            digest(result_bytes),
+            Digest::new([202; 32]),
+            u32::try_from(result_bytes.len()).expect("result size"),
+        )
+        .expect("result"),
+        result_bytes.to_vec(),
+    )
+    .expect("evaluated result");
+
+    let store = PgDeclaredOperationStore::new(w.db.runtime_pool().await);
+    let resolution = store
+        .apply_update(
+            &command,
+            |_, _| Ok(()),
+            |_| {
+                Ok(DeclaredUpdateDecision::Applied {
+                    new_state: state_write,
+                    result,
+                })
+            },
+        )
+        .await
+        .expect("the runtime role applies the update");
+    assert_eq!(resolution.receipt().status(), UpdateReceiptStatus::Applied);
+    let replayed = store
+        .apply_update(
+            &command,
+            |_, _| -> Result<(), OperationError> {
+                panic!("receipt replay does not validate arguments")
+            },
+            |_| -> Result<DeclaredUpdateDecision, OperationError> {
+                panic!("receipt replay must not evaluate")
+            },
+        )
+        .await
+        .expect("and replays it");
+    assert!(replayed.replayed());
+}

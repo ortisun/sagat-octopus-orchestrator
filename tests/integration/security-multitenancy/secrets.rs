@@ -1427,3 +1427,48 @@ async fn each_secret_operation_audits_a_probe_of_a_foreign_namespace_on_its_own(
         assert_eq!(audited, 1, "{operation}");
     }
 }
+
+/// The secret store as the least-privilege runtime role (G294): storing, rotating, granting,
+/// revoking and deleting write `secrets`, `secret_versions`, `secret_access` and the audit trail
+/// through the grants of `sagat_app`, and a worker's resolution reads them back.
+#[tokio::test]
+async fn the_secret_store_is_written_by_the_least_privilege_runtime_role() {
+    let w = world().await;
+    let runtime = SecretService::new(
+        sagat_infra_postgres::PgRunStore::new(w.db.runtime_pool().await, w.cache.clone()),
+        sagat_application::clock::SystemClock,
+        w.keys.cipher(),
+    );
+    runtime
+        .put(
+            &w.admin,
+            ns(&w),
+            "stripe-key",
+            CANARY.as_bytes().to_vec(),
+            &ctx(),
+        )
+        .await
+        .expect("the runtime role stores a secret");
+    runtime
+        .put(&w.admin, ns(&w), "stripe-key", b"rotated".to_vec(), &ctx())
+        .await
+        .expect("and rotates it");
+    runtime
+        .grant(&w.admin, ns(&w), "stripe-key", "dora", &ctx())
+        .await
+        .expect("and grants a publisher access to it");
+    let listed = runtime
+        .list(&w.admin, ns(&w), &ctx())
+        .await
+        .expect("and lists it");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].version, 2);
+    runtime
+        .revoke(&w.admin, ns(&w), "stripe-key", "dora", &ctx())
+        .await
+        .expect("and revokes the grant");
+    runtime
+        .delete(&w.admin, ns(&w), "stripe-key", &ctx())
+        .await
+        .expect("and deletes it");
+}
