@@ -28,7 +28,7 @@ use crate::entropy::{Entropy, Token};
 use crate::error::{AppError, StoreError};
 use crate::execution::{
     Actor, Effects, Engine, EngineError, ExpressionEvaluator, LeaseGrant, LeaseRenewal,
-    MAX_PAYLOAD_BYTES, MAX_RUN_OUTPUT_BYTES, RunTx, compensation_key, step_id,
+    MAX_PAYLOAD_BYTES, MAX_RUN_OUTPUT_BYTES, ReportedLease, RunTx, compensation_key, step_id,
 };
 use crate::quotas::QuotaLookup;
 use crate::runs::{Lock, RunStore, execution_error};
@@ -365,8 +365,18 @@ pub struct StepAck {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeartbeatAck {
     pub cancel_requested: bool,
-    /// When the lease now expires (never past the attempt's own deadline).
-    pub lease_expires_at: OffsetDateTime,
+    /// When the lease now expires (never past the attempt's own deadline). `None` when this very
+    /// lease already reported the attempt (G141): the beat was late, there is nothing to renew and
+    /// the worker should stop beating.
+    pub lease_expires_at: Option<OffsetDateTime>,
+}
+
+/// The lease of `task`, recorded with the report it makes (G141).
+fn reported_lease(task: &TaskRef<'_>) -> ReportedLease {
+    ReportedLease {
+        node: task.node.clone(),
+        token_hash: Token::hash_of(task.lease_token),
+    }
 }
 
 /// The worker protocol use cases.
@@ -1046,7 +1056,20 @@ where
     ) -> Result<HeartbeatAck, AppError> {
         principal.authorize(Permission::WorkerExecute)?;
         let mut tx = self.open(principal, task, Lock::Wait).await?;
-        self.verify(&mut tx, task).await?;
+        if let Err(stale) = self.verify(&mut tx, task).await {
+            // A beat already on its way when this same lease reported (G141): not an error, and
+            // nothing to renew. Any other lease, lost or forged, stays a stale attempt.
+            if matches!(stale, AppError::StaleAttempt) && self.reported_by(&mut tx, task).await? {
+                // The same binding rule as a live beat: a worker no longer bound is refused.
+                self.ensure_bound(principal, &mut tx, task).await?;
+                metrics::counter!("worker_heartbeats_after_report_total").increment(1);
+                return Ok(HeartbeatAck {
+                    cancel_requested: false,
+                    lease_expires_at: None,
+                });
+            }
+            return Err(stale);
+        }
         self.ensure_bound(principal, &mut tx, task).await?;
         let mut effects = Effects::by(Actor::Worker(principal.subject().as_str().to_owned()), None);
         effects.renewal = Some(LeaseRenewal {
@@ -1088,7 +1111,7 @@ where
         tx.commit().await?;
         Ok(HeartbeatAck {
             cancel_requested,
-            lease_expires_at,
+            lease_expires_at: Some(lease_expires_at),
         })
     }
 
@@ -1335,6 +1358,7 @@ where
             }
         }
         let mut effects = Effects::by(Actor::Worker(principal.subject().as_str().to_owned()), None);
+        effects.reported = Some(reported_lease(task));
         // A secret the step was given must not come back in its output, where it would be stored in
         // the journal and handed to every later step: the step fails for good instead.
         if let Some(name) = self.secret_in_output(&mut tx, task, output).await? {
@@ -1496,6 +1520,7 @@ where
         let node = task.node.clone();
         let fence = task.fence;
         let mut effects = Effects::by(Actor::Worker(principal.subject().as_str().to_owned()), None);
+        effects.reported = Some(reported_lease(task));
         effects.audit = audit;
         self.engine
             .run(&mut tx, effects, move |def, state, now| {
@@ -1605,6 +1630,7 @@ where
         self.verify(&mut tx, task).await?;
         self.ensure_bound(principal, &mut tx, task).await?;
         let mut effects = Effects::by(Actor::Worker(principal.subject().as_str().to_owned()), None);
+        effects.reported = Some(reported_lease(task));
         // The code is stored in the journal and shown to everyone who reads the run, and a
         // credential fits the characters and the length it may have (`[A-Za-z0-9_.:-]`, 64): a
         // worker that reports its own secret as the reason it failed fails for good instead.
@@ -1698,6 +1724,7 @@ where
         let node = task.node.clone();
         let fence = task.fence;
         let mut effects = Effects::by(Actor::Worker(principal.subject().as_str().to_owned()), None);
+        effects.reported = Some(reported_lease(task));
         effects.audit = audit;
         self.engine
             .run(&mut tx, effects, move |def, state, now| {
@@ -2009,6 +2036,24 @@ where
             return Err(AppError::NotBound);
         }
         Ok(())
+    }
+
+    /// Whether `task` names the lease that reported the attempt of its step (G141), with the same
+    /// step-id check as [`Self::verify`].
+    async fn reported_by<Tx: RunTx>(
+        &self,
+        tx: &mut Tx,
+        task: &TaskRef<'_>,
+    ) -> Result<bool, AppError> {
+        if let Some(claimed) = task.step_id {
+            let info = tx.info();
+            if claimed != step_id(info.version_id, info.run_id, task.node) {
+                return Ok(false);
+            }
+        }
+        Ok(tx
+            .reported_by(task.node, &Token::hash_of(task.lease_token))
+            .await?)
     }
 
     /// The presented token must be the one hashed into the step's current lease.

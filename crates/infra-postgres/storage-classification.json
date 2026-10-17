@@ -3632,6 +3632,24 @@
     },
     {
       "table": "steps",
+      "column": "reported_lease_token_hash",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed cryptographic digest/token representation (normally 32 bytes, or a bounded hexadecimal rendering). Writer/source: `crates/infra-postgres/src/execution.rs`. Database CHECK `steps_reported_lease_token_hash_size` limits it to exactly 32 bytes."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "steps",
       "column": "leased_by",
       "sql_type": "text",
       "class": "protected_system",
