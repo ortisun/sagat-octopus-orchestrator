@@ -1448,3 +1448,158 @@ Written 2026-10-17 for T014-041 and T014-042. The coordinator ticks the tasks; n
 - **O463 — Is the idle tick cost an accepted ceiling on pending waits per replica?** G468 puts it near
   20,000 to 30,000 approvals per replica at the default interval. Either publish that as the ceiling, or
   make the discovery passes index-only and cheaper, or both.
+
+## Decisions of the scale increment (G461, G468, G460)
+
+Written 2026-10-17 on `feature/014-scale`. The coordinator ticks the tasks; nothing here marks one.
+The decisions below were written before the code and are amended at the end of this section where the
+implementation or a measurement changed them.
+
+### Decisions
+
+- **D520 — A collection or loop transition reads a frontier, not the run.** Today every scheduler
+  transition calls `RunStore::begin`, which restores the whole `RunState` (every step, every collection
+  iteration with its checkpoint, every loop iteration, every step output) and then discards almost all
+  of it: the decision reads the scope's counters, the iterations in flight (at most `maxConcurrency`
+  for a collection, one for a loop) and the steps of those iterations. A new port,
+  `ScopeFrontierStore`, returns exactly that: `CollectionFrontier` / `LoopFrontier`, which carry the run
+  header (version, stop reason, namespace, trace, definition, the database clock), the scope counters,
+  the active members with the steps of their paths, a flag for other open root work, and a `RunData`
+  limited to the run input, the declared state and the outputs and scope inputs of the active members.
+  The domain reducer is not restructured: the scheduler transitions never ran it (they call the
+  store's own transactions, which were already incremental), they only used `RunState` as a read model.
+  The pure domain crate is untouched; `RunState`, `CollectionState` and `LoopState` keep holding the
+  whole scope because replay, `verify_run`, the API projections and scoped compensation need it.
+- **D521 — The reference path stays and is the oracle.** The transitions that are proportional to the
+  scope by nature keep using the whole-run read: entering a collection or loop (snapshot of the items),
+  the last checkpoint of a collection (the aggregate is checked against its ceilings), the finish (the
+  aggregate is produced), and scoped compensation (the planner reads every completed iteration). Each
+  runs once per scope. The frontier path returns "needs the whole run" for them and the scheduler runs
+  the previous code unchanged, now named `advance_*_from_run`. It is public so the differential test
+  can drive the same scope through both and compare the journals.
+- **D522 — The instance charge comes from the store's own counter.** The loop's affordability check
+  used `RunState::charged_instances()` (rows of `steps` that are scoped or left `Pending`). The store
+  keeps the same number in `run_instance_usage.admitted_instances` (it is incremented by the same events:
+  an admission, a materialized reservation and the root admission trigger); `reserved_instances` is the
+  separate, not yet materialized part. The frontier reads one row. A test compares both numbers after
+  every loop transition, so a divergence is a failing test, not a silent change of limit behavior.
+- **D523 — The frontier is a snapshot read with no row lock.** `REPEATABLE READ READ ONLY`, one
+  transaction, so the counters, the members and the steps are from one snapshot. The run row is not
+  locked: every write of a transition already takes `FOR UPDATE` on the run, checks the fence and
+  compares `expected_run_version` (the frontier carries the version it read), so a concurrent change
+  makes the write return `RevisionConflict`, which the pass already counts as skipped. The previous
+  path held a lock only while it read and released it before the write, so this does not weaken the
+  protocol; it removes a lock acquisition from the read.
+- **D524 — The integrity audit of a whole-run restore is not run on these transitions.** `begin`
+  re-proves every collection and loop projection against the steps (identity, counters, checkpoints) each
+  time it runs. The frontier checks what it uses (a counter read from the scope must agree with the rows
+  fetched for the active members: `active_count` against the number of admitted rows; the member rows
+  against the steps of their path) and the writes re-check the rows they change, as they did. The full
+  audit remains available to every other reader of the run and to `verify_run`, and the tests run it
+  after the transitions. This is the one place the change gives up a continuous self-check; it is
+  recorded as G524, not hidden.
+
+#### Amendments to D520-D524 made while building
+
+- D520 as built: `CollectionFrontier` / `LoopFrontier` live in `sagat-application::scope_frontier`; the
+  adapter is `PgRunStore` (`infra-postgres/src/scope_frontier.rs`); the scheduler's `Scheduler` needs
+  the new bound `ScopeFrontierStore` (only `PgRunStore` implements it). The domain crate is untouched.
+  The frontier path decides: the open-phase failure scan, the pending-return checkpoint (except the last),
+  admission, drain of an iteration, drain finish (except a compensating scope) and, for a loop, cancel,
+  deadline, delay, failure, checkpoint and drain. The whole-run path (public `advance_collection_from_run`
+  and `advance_loop_from_run`) decides entering, the last checkpoint, the finish and compensation. The
+  loop checkpoint tail (`commit_loop_checkpoint`) is one function used by both paths, so the instance
+  limit, the delay-versus-deadline rule, the byte ceilings and the quota drain have one implementation.
+- D522 as built: the number is `run_instance_usage.admitted_instances`. `RunState::charged_instances()`
+  and that column are compared after every transition of a collection and of a loop in
+  `the_frontier_equals_the_restored_scope_at_every_step` and its loop twin; they were not run (see G525).
+- D523 as built: `SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY` as the first statement of a
+  `begin_safely` transaction; nothing is locked or written.
+
+### Decisions (continued)
+
+- **D525 — Two partial indexes make the open steps of a run cheap to find.** `finish_version` (every
+  collection and loop write) asks `EXISTS (steps ... status IN (PENDING, READY, LEASED, RUNNING,
+  RETRY_WAIT))` and then `EXISTS (... status = WAITING)`. Without an index on status that walks the run's
+  steps in primary-key order until it meets one, and the open ones are the newest, so it read every
+  finished iteration: the residual buffer growth after the frontier (210 / 237 / 262 buffer accesses at
+  160 / 320 / 640 items) disappeared with the indexes (225 / 247 / 217). The same indexes make the
+  collection and loop discovery passes read only open steps. Migration `20261122000000_steps_open_index`
+  (up and down; indexes only, so `storage-classification.json` has nothing to add). The cost is one index
+  entry per step while it is open, removed when it closes; it was not measured on the write path beyond
+  the runs above (G523).
+- **D526 — The G461 tests run in every suite and are asserted on rows and buffers, not time.** The two
+  `red_*` tests are no longer ignored and pass; `collection_transition_cost_is_flat_across_sizes` and
+  `loop_transition_cost_is_flat_across_sizes` run a scope at 160, 320 and 640 and assert that the median
+  late transition does not move (rows within 20 percent + 4, buffers within a third + 40). The shared test
+  PostgreSQL container preloads `pg_stat_statements` and the performance platform creates the extension
+  in its database, so they run on the default container; on a server that does not preload it they fail
+  with a message that says so. `SAGAT_PERF_REFERENCE_PATH=1` and `SAGAT_PERF_WITHOUT_OPEN_INDEXES=1` are
+  the controls (the whole-run path; no open-step indexes).
+- **D527 — An unreadable pinned definition is skipped for the poll, typed, counted and logged (G460).**
+  `StoreError::UnreadableDefinition` is what the definition cache returns when a stored version no longer
+  parses (it was `Internal`); every other caller still maps it to `AppError::Internal`, so no response
+  changes. The worker `claim_run` treats it as "not this poll's run": it counts
+  `worker_claim_skipped_total{reason="definition_unreadable"}` (one label value, so bounded), logs a
+  warning with the run id, leaves the run exactly as it was and does not spend the three failures a poll
+  tolerates. Status: implemented and **not compiled or run** when this was written (the disk was below
+  the build threshold); the test is `runs_a_reader_cannot_read_do_not_starve_the_ones_it_can`.
+
+### Gaps (continued)
+
+- **G520 — The worker's `complete` and `poll` (`claim`) still restore the whole run, so a large scope is
+  faster but not linear.** `claim_run` calls `RunStore::begin` and walks every instance for READY steps;
+  `complete` runs the domain reducer on the whole `RunState`. Measured after G461: in the 10,000-item
+  collection (c256) `complete` p50 78.4 ms (82.4 before; 18.5 to 21.4 ms at 1,000 items, 11.0 to 14.3 ms
+  at 100) and the 64-task `poll` 384.3 ms; 10,000 x 78.4 ms is 784 s of the 1,405 s wall. The 10,000-
+  iteration loop still did not finish in 1,800 s (8,806 iterations; `complete` 74.3 ms, `poll` 78.9 ms).
+  Unlike the scheduler transitions, these do need the reducer: completing a step derives the run's
+  status from every step. The smallest restructuring that keeps `RunState` equal to a replay is to let
+  the reducer run on a window and give it the aggregates it needs from the run (open-step count, the
+  charged instances, the settled-scope summaries) from the store, which is a change to the domain that
+  needs its own decision and its own proof; it was not attempted. A cheaper first step is a
+  ready-step index so `claim` does not walk the run.
+- **G521 — Four transitions are still proportional to the scope, once per scope each:** entering (it
+  snapshots the items, G464), the last checkpoint (the aggregate is checked against its ceilings over
+  every result), the finish (the ordered aggregate), and compensating a scope (the planner reads every
+  completed iteration). At 10,000 items the finish took 218.0 ms and enter 3,343.9 ms. A draining scope
+  with other root work open is decided from the frontier (it reads root steps only).
+- **G522 — The first 10 idle ticks after a bulk load of 10,000 approvals were slower after the change
+  (185.9 to 320.8 ms, one run each, host load 10 to 40) while the same ticks after `ANALYZE` were far
+  faster (197.6 to 11.2 ms).** The 10-tick row is taken before the tables have statistics. Not explained;
+  the harness now measures the 10 ticks before and after `ANALYZE` and `SAGAT_PERF_WITHOUT_OPEN_INDEXES=1`
+  gives the control on the same binary. Repeat on a quiet host before reading anything into the 320.8 ms.
+- **G523 — The write cost of the open-step indexes was not measured separately.** Run creation and
+  step updates were within the noise of the runs above (the wait harness created 10,000 approval runs at
+  143 runs/s at host load 10 to 40, against 191 to 203 runs/s in the earlier A/B at load 8 to 25), which is
+  not evidence either way.
+- **G524 — The continuous projection audit of a whole-run restore is not run on these transitions (D524).**
+  The frontier checks the counters it uses (active count against the rows holding a slot, the running
+  loop's active iteration against its row, the entry path against the iteration index); the writes
+  re-check what they change; `verify_run` and every other reader of the run still run the whole audit.
+  A corrupt projection of an iteration that has already ended is no longer noticed by these transitions.
+- **G525 — Verification that was not done in this session because the disk fell below the build
+  threshold (15 GB free, down to 6 GB):** the integration differential tests
+  (`scope_frontier.rs`) were compiled up to one missing import that was then fixed, and never run; the
+  G460 change was never compiled; `cargo clippy --workspace --all-targets`, the suites listed in the
+  task (integration/fault/contract workflow primitives, platform foundation with the runtime-privilege
+  audit and `SAGAT_TEST_AS_RUNTIME_ROLE=1`, durable execution, sagas, security-multitenancy) and the
+  five-SDK collection and loop scenarios were not run after the change. What was run: `cargo check
+  --workspace --all-targets` on the frontier code, the four G461 performance tests, the harness
+  measurements in the report, and the discovery queries under `EXPLAIN (ANALYZE)`.
+- **G526 — A poll that has more than 64 unreadable runs ahead of the first readable one still serves
+  nothing.** `claimable_runs` hands `claim` at most 64 candidates, oldest first. G460's skip makes each
+  unreadable run cost one failed restore instead of ending the poll, but 64 of them still fill the window.
+  A negative cache of unreadable versions consulted by `claimable_runs`, or a candidate query that
+  excludes them, would close it; both need a decision about where the "this build cannot read version V"
+  knowledge lives.
+
+### Owner questions (continued)
+
+- **O464 — Is the worker report (`complete`, `poll`) in scope of G461?** The scheduler transition is
+  linear now; the 10,000-item collection takes 23 minutes instead of 114, and the 10,000-iteration loop
+  still does not finish in 30 minutes. If a 10,000-item scope has to finish in minutes the worker path
+  (G520) is the next fix and it is a domain change. If not, the recommendation of O460 changes from
+  "cap `maxItems` at 1,000" to "10,000 is correct but takes minutes per run; 1,000 takes about one minute".
+- **O465 — May the shared test container preload `pg_stat_statements`?** It is how the G461 tests count
+  rows. It changes the server flags of every suite's default container (no data effect).

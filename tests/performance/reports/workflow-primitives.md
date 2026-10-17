@@ -11,7 +11,8 @@ support; the raw summaries follow, failures and anomalies included.
   transaction, 0 worker sessions, no lease on any wait step); a tenant's collection slot limit was never
   exceeded in 279 scheduler rounds of two tenants with 48 slots of demand against 8, checked against two
   independent figures; the `maxConcurrency` of a collection was never exceeded in any run.
-- **A real defect was found and is not fixed here:** the work of one collection or loop transition grows
+- **Update 2026-10-17: G461 is fixed for the scheduler transition, not for the worker report. See "After G461" at the end of this file; the numbers below are the measurements before the fix and are kept.**
+- **A real defect was found and is not fixed here (as measured):** the work of one collection or loop transition grows
   linearly with the progress of the scope (G461), so a scope costs quadratic database work. Two red tests
   pin it. **The 10,000-item collection did not complete in a 10-minute budget at maxConcurrency 1, 16 or
   256.** A full-length run at maxConcurrency 256 then completed correctly in **6,815 s (1 h 54 min)**: 47
@@ -1116,3 +1117,156 @@ Separate runs of the same test with `SAGAT_PRIMITIVES_APPROVALS` and `SAGAT_PRIM
 - Approval run creation: 29.4 s, 170 runs/s.
 - Approval opening: 15.2 s, 328 approvals/s across 25 scheduler ticks.
 
+
+## After G461
+
+Written 2026-10-17 on branch `feature/014-scale`, after the scheduler decides a collection or loop
+transition from a bounded frontier instead of the whole restored run (`research.md`, D520-D525). The
+sections above are the measurements before the change and are unchanged.
+
+### What changed, and what did not
+
+- A collection or loop transition now reads the scope's counters, the iterations that hold a slot and
+  the steps of those iterations (`ScopeFrontierStore`), not every step, iteration, checkpoint and output
+  of the run. Entering a scope, the last checkpoint of a collection, the finish and scoped compensation
+  still read the whole run, once per scope.
+- Two partial indexes (`steps_run_open_idx`, `steps_run_waiting_idx`, migration `20261122000000`) make
+  "is any step of this run still open" and the collection and loop discovery queries independent of the
+  number of finished or waiting steps.
+- **Not changed: the worker's `complete` and `poll` still restore the whole run** (G520). They are now
+  most of the wall time of a large scope; the 10,000-item collection is faster but is still not linear.
+
+### Environment
+
+Same host as above (Apple M3 Max, 16 logical cores, 48 GiB), PostgreSQL 16.15 in the colima VM (4 CPUs,
+5.8 GiB), container `sagat-014-scale-pg`, `postgres:16-alpine` with the flags of the earlier container plus
+`max_connections=300`, port 55443; release build of `perf_workflow_primitives` at commit `e8ccca8b`
+(the code of the change; the later commits add tests and the G460 skip). Load average (1 minute) at the
+start of each run is in its row. The host was shared with other sessions' builds and test runs the whole
+time; wall times carry that noise, rows and buffers do not.
+
+```sh
+export CARGO_TARGET_DIR=/private/tmp/claude-501/targets/014-scale CARGO_PROFILE_DEV_DEBUG=0 CARGO_BUILD_INCREMENTAL=false
+export DOCKER_HOST=unix:///Users/marcelo/.colima/sagat-remaining/docker.sock
+docker run -d --name sagat-014-scale-pg -p 127.0.0.1:55443:5432 -e POSTGRES_PASSWORD=postgres postgres:16-alpine \
+  -c shared_preload_libraries=pg_stat_statements -c pg_stat_statements.track=all -c pg_stat_statements.max=10000 -c max_connections=300
+docker exec sagat-014-scale-pg psql -U postgres -d template1 -c "CREATE EXTENSION pg_stat_statements"
+cargo test -p sagat-tests --test perf_workflow_primitives --locked --release --no-run
+export SAGAT_TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:55443/postgres
+BIN=$CARGO_TARGET_DIR/release/deps/perf_workflow_primitives-<hash>
+$BIN --nocapture red_                                  # the two tests of G461 (now passing, no longer ignored)
+$BIN --nocapture flat_across                           # 160 / 320 / 640, collection and loop
+SAGAT_PERF_COLLECTION_ITEMS=100 SAGAT_PERF_COLLECTION_CONCURRENCY=1,16,100 $BIN --ignored --nocapture measure_collection_fanout
+SAGAT_PERF_COLLECTION_ITEMS=1000 SAGAT_PERF_COLLECTION_CONCURRENCY=1,16,256 $BIN --ignored --nocapture measure_collection_fanout
+SAGAT_PERF_COLLECTION_ITEMS=10000 SAGAT_PERF_COLLECTION_CONCURRENCY=256 SAGAT_PERF_BUDGET_SECS=1800 $BIN --ignored --nocapture measure_collection_fanout
+SAGAT_PERF_LOOP_ITERATIONS=100,1000 $BIN --ignored --nocapture measure_sequential_loops
+SAGAT_PERF_LOOP_ITERATIONS=10000 SAGAT_PERF_BUDGET_SECS=1800 $BIN --ignored --nocapture measure_sequential_loops
+```
+
+### Rows and buffers of one transition, by size of the scope
+
+Median of the transitions between two thirds and 95 percent of the run (`late_cost`), concurrency 2,
+`pg_stat_statements` around each transition. The sizes were run in the same process, one after the other.
+
+| Scope | Size | Rows returned/affected | Buffer accesses | Note |
+|---|---:|---:|---:|---|
+| collection | 160 | 44 | 210 | before the open-step indexes |
+| collection | 320 | 44 | 237 | |
+| collection | 640 | 44 | 262 | buffers still grew with size: the `finish_version` probe walked the finished steps |
+| collection | 160 | 44 | 225 | with the open-step indexes |
+| collection | 320 | 44 | 247 | |
+| collection | 640 | 44 | 217 | flat |
+| loop | 160 | 65 | 317 | before the open-step indexes |
+| loop | 320 | 65 | 367 | |
+| loop | 640 | 65 | 381 | |
+
+Before the change, from the red tests of the sections above: a collection of 160 read 57 rows in the
+first ten transitions and 829 in the last ten (this run, original binary); the loop 91 to 841. The 1,000-item
+runs read 1,536 rows at transition 166 and 7,014 at 1,992; the loop 561 at iteration 100 and 5,067 at 1,000.
+After the change the 10,000-item loop reads 65 rows at iterations 1,000 to 7,000 (buffers 345 to 381) and
+the 1,000-item collection at concurrency 256 reads between 65 and 665 rows depending on how many of its 256
+iterations are in flight (the O(`maxConcurrency`) term), 49 to 55 statements, with no trend over the run.
+
+The control (`SAGAT_PERF_REFERENCE_PATH=1` drives the whole-run path that is kept as the reference) is
+reported under "Control" below.
+
+### Wall time and the p50 of a transition
+
+Before (sections 3 and 4) against after. The p50 of a transition is the admit/checkpoint transition by
+tenth of the run, first / sixth / last.
+
+| Workload | Wall before | Wall after | p50 of a transition before (first / 6th / last) | after (first / 6th / last) | Load at start (after) |
+|---|---:|---:|---|---|---:|
+| collection 100 items, c1 | 11.1 s | 8.4 s | 28.1 / 22.2 / 23.6 ms | 15.5 / 16.1 / 15.4 ms | 13.5 |
+| collection 100 items, c16 | 8.8 s | 5.9 s | 24.4 / 24.6 / 28.8 ms | 14.5 / 18.5 / 11.1 ms | 12.8 |
+| collection 100 items, c100 | 7.7 s | 5.0 s | 21.9 / 23.1 / 21.1 ms | 12.1 / 11.3 / 10.0 ms | 13.8 |
+| collection 1,000 items, c1 | 187.9 s | 94.5 s | 25.0 / 45.1 / 50.6 ms | 12.5 / 14.9 / 13.2 ms | 13.9 |
+| collection 1,000 items, c16 | 125.5 s | 61.7 s | 26.0 / 37.4 / 51.3 ms | 14.6 / 12.0 / 11.5 ms | 9.8 |
+| collection 1,000 items, c256 | 143.6 s | 53.8 s | 28.6 / 36.8 / 42.5 ms | 12.8 / 13.2 / 13.0 ms | 9.8 |
+| **collection 10,000 items, c256** | **6,814.7 s (1 h 54 min)** | **1,404.9 s (23 min 25 s)** | **44.4 / 256.7 / 678.2 ms** | **15.1 / 15.5 / 18.8 ms** | 9.8 |
+| loop 100 iterations | 8.7 s | 5.4 s | 24.6 / 26.5 / 28.6 ms | 14.8 / 14.4 / 12.9 ms | 8.7 |
+| loop 1,000 iterations | 128.7 s | 98.2 s | 25.0 / 33.0 / 38.5 ms | 13.5 / 18.8 / 16.3 ms | 8.3 |
+| loop 10,000 iterations | not completed in 900 s (3,941 iterations) | not completed in 1,800 s (8,806 iterations) | 34.2 / 54.7 / 71.9 ms | 17.6 / 25.6 / 18.7 ms | 9.7 |
+
+p50 / p95 of the 10,000-item collection transition after the change: admit 17.3 / 28.6 ms, checkpoint
+16.8 / 28.4 ms (before: 234.4 / 724.7 and 237.1 / 688.9 ms). `enter` of 10,000 items: 3,343.9 ms (before
+3,198.4 ms; by design one transaction, G464). The finish: 218.0 ms (before 750.4 ms). Journal bytes per item
+unchanged (2,334).
+
+**The scheduler's share is now flat; the wall time is not, because the worker side is not.** In the same
+10,000-item run the worker's `complete` has a p50 of 78.4 ms (p95 144.8, max 1,506.8 ms) against 82.4 ms
+before, and the `poll` that leases 64 tasks 384.3 ms against 418.3 ms: they read the whole run (G520).
+They are 10,000 x 78.4 ms = 784 s of the 1,405 s. At 1,000 items the same `complete` is 18.5 to 21.4 ms, at
+100 items 11.0 to 14.3 ms. In the 10,000-iteration loop `complete` is 74.3 ms and `poll` 78.9 ms against
+50.3 and 56.8 ms in the first 3,941 iterations before. The loop's wall time per iteration is the sum of
+these round trips, which is why it still did not finish in 30 minutes.
+
+### Idle scheduler tick (G468)
+
+The collection and loop discovery queries (`collection_candidates`, `loop_candidates`) scanned the PENDING
+root steps of every shard and read each run's stored document as JSON. With the open-step indexes they
+read the few open steps. Measured on one database (2,264 waiting steps, 8 ready, 64 shards), the same
+queries with `EXPLAIN (ANALYZE)`, three runs each:
+
+| Query | Without the indexes | With the indexes |
+|---|---:|---:|
+| collection discovery | 16.9, 17.6, 17.3 ms | 3.1, 1.3, 1.3 ms |
+| loop discovery | 16.7, 16.3, 16.3 ms | 0.67, 0.68, 0.59 ms |
+
+The wait harness (`measure_durable_waits`, the same row names as above):
+
+| Population | Row | Before (section 1 and Appendix C) | After |
+|---|---|---:|---:|
+| 2,000 approvals + 200 timers | 50 idle ticks, p50 | 58.9 ms | 18.8 ms |
+| 2,000 approvals | 10 ticks, statistics as the load left them, p50 | 75.1 ms | 36.2 ms |
+| 10,000 approvals + 1,000 timers | 50 idle ticks, p50 | 118.7 and 118.1 ms (A/B baseline), 197.6 to 198.0 ms (this branch before) | 11.2 ms |
+| 10,000 approvals | 10 ticks, statistics as the load left them, p50 | 185.9 ms | **320.8 ms (worse, see below)** |
+| none (control) | 10 ticks, p50 | 25.6 ms | 26.1 ms |
+
+The 10-tick rows are taken right after approvals are opened and before the tables have statistics
+(autovacuum has not run). At 10,000 approvals that row went from 185.9 to 320.8 ms in one run each, on a
+host at load 10 to 40; it is not explained here (G522). The 50-tick row is measured after `ANALYZE`, the
+state of a database that has been running for a minute. The harness now takes the 10 ticks twice (before
+and after `ANALYZE`) so the two states are separated in later runs.
+
+### Control: the whole-run path on the same binary
+
+`SAGAT_PERF_REFERENCE_PATH=1` drives the scheduler through `advance_collection_from_run` /
+`advance_loop_from_run`, the whole-run path that the change keeps for entering, finishing and compensating
+a scope (it is the previous implementation: same restore, same statements). Same container, same binary,
+11:40 to 11:47 at host load 12 to 27, `flat_across` and `red_`:
+
+| Scope | Size | Rows returned/affected | Buffer accesses |
+|---|---:|---:|---:|
+| collection | 160 | 689 | 277 |
+| collection | 320 | 1,337 | 359 |
+| collection | 640 | 2,629 | 491 |
+| loop | 160 | 711 | 404 |
+| loop | 320 | 1,356 | 449 |
+| loop | 640 | 2,651 | 574 |
+
+Rows double with the size, as in the sections above. Both `red_*` tests fail on this path with the numbers
+of the first report: "rows per transition grew from 57 (first ten) to 829 (last ten) over 160 items" and
+"from 91 to 841 over 160 iterations". Both `flat_across` tests fail on "rows per transition grew with the
+size: 689 at 160, 1337 at 320" and "711 at 160, 1356 at 320". On the frontier path the same four tests pass
+(44 rows for a collection and 65 for a loop at every size).
