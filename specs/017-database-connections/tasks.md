@@ -32,7 +32,7 @@ Status: Implementing after user approval on 2026-10-16. Check a task only after 
 
 - [ ] T017-018 Add TypeScript and Go builders and shared conformance scenarios. FR-017-010,016.
 - [ ] T017-019 Add Python, C# and Java builders; execute all five against shared server scenarios. FR-017-010,016.
-- [ ] T017-020 UI catalog and inline/standalone OpenBao secret create/rotate/select, with partial-save recovery. FR-017-001..009.
+- [x] T017-020 UI catalog and inline/standalone OpenBao secret create/rotate/select, with partial-save recovery. FR-017-001..009.
 - [ ] T017-021 UI database step editor, probe, ad hoc execution and permission-gated result viewer. FR-017-010,014..017,019.
 - [ ] T017-022 Real-browser happy/failure verification; accessibility and generated-client checks. SC-017-001,003,004,010.
 

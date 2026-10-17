@@ -49,7 +49,7 @@ describe('Integrations', () => {
     const writes = platform.calls.filter((call) => call.method !== 'GET');
     expect(writes.map((call) => call.method)).toEqual(['PUT', 'POST']);
     expect(writes[0]?.url).toContain('/namespaces/ns-1/secrets/integration-');
-    expect(JSON.parse(writes[0]?.init.body as string)).toMatchObject({ requestId: expect.any(String), expectedVersion: 0 });
+    expect(JSON.parse(writes[0]?.init.body as string)).toMatchObject({ requestId: expect.any(String) as unknown, expectedVersion: 0 });
     expect(JSON.parse((JSON.parse(writes[0]?.init.body as string) as { value: string }).value) as unknown).toEqual({ mechanism: 'SCRAM-SHA-256', username: 'service-user', password: canary });
     const body = JSON.parse(writes[1]?.init.body as string) as ConnectorInput;
     expect(body).toMatchObject({ kind: 'KAFKA', status: 'PAUSED', settings: { topic: 'orders', servers: ['tls://broker.example.com:9093'], startFrom: 'earliest' } });
@@ -104,7 +104,7 @@ describe('Integrations', () => {
     await screen.findByText(/Credentials could not be saved/);
     writes = platform.calls.filter((call) => call.method === 'PUT');
     expect(writes[2]?.url).not.toBe(writes[1]?.url);
-    expect(JSON.parse(writes[2]?.init.body as string).requestId).not.toBe(JSON.parse(writes[1]?.init.body as string).requestId);
+    expect((JSON.parse(writes[2]?.init.body as string) as { requestId: string }).requestId).not.toBe((JSON.parse(writes[1]?.init.body as string) as { requestId: string }).requestId);
     expect(document.body.textContent).not.toContain(canary);
   });
   it('retains only the saved reference when connector creation fails and reuses it on retry', async () => {

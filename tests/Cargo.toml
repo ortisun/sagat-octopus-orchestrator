@@ -328,3 +328,7 @@ path = "e2e/scalability-ha/main.rs"
 [[test]]
 name = "integration_database_connections"
 path = "integration/database-connections/main.rs"
+
+[[test]]
+name = "e2e_database_connections"
+path = "e2e/database-connections/main.rs"
