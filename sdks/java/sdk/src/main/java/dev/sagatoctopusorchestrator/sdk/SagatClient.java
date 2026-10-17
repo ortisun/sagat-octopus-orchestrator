@@ -746,6 +746,68 @@ public final class SagatClient implements AutoCloseable {
         return async(() -> inspectChain(namespaceId, chainId, options));
     }
 
+    /**
+     * Reads one bounded page of a chain's runs in segment order. The cursor is opaque and stable: a segment is only
+     * appended, so a page never repeats or skips one while the chain grows. A page carries lineage and lifecycle only,
+     * never an input, output or state.
+     */
+    public ChainRunPage listChainRuns(String namespaceId, String chainId, ChainRunListOptions options) {
+        ChainRunListOptions opts = options == null ? ChainRunListOptions.create() : options;
+        Map<String, String> query = new LinkedHashMap<>();
+        query.put("cursor", opts.cursor());
+        query.put("limit", opts.limit() == null ? null : Integer.toString(opts.limit()));
+        JsonNode raw = object(http.request(new RestClient.Request(
+                "GET", chainPath(namespaceId, chainId) + "/runs", query, null, null, trace(opts.traceparent()), true)).body(),
+                "a chain run page");
+        JsonNode values = raw.path("items");
+        if (!values.isArray() || values.size() > 200) {
+            throw SagatException.of(ErrorCode.PROTOCOL, "items is invalid in the answer");
+        }
+        List<ChainRun> items = new ArrayList<>(values.size());
+        for (JsonNode value : values) {
+            JsonNode item = object(value, "a chain run");
+            long index = revision(item, "index", 0);
+            if (index > 9_999) throw SagatException.of(ErrorCode.PROTOCOL, "index is invalid in the answer");
+            Instant created = optInstant(item, "createdAt");
+            if (created == null) throw SagatException.of(ErrorCode.PROTOCOL, "createdAt is missing from the answer");
+            items.add(new ChainRun((int) index, str(item, "runId"), str(item, "status"), completionKind(item),
+                    optStr(item, "predecessorRunId"), optStr(item, "successorRunId"), created, optInstant(item, "finishedAt"), item));
+        }
+        return new ChainRunPage(List.copyOf(items), optStr(raw, "nextCursor"));
+    }
+
+    public CompletableFuture<ChainRunPage> listChainRunsAsync(String namespaceId, String chainId, ChainRunListOptions options) {
+        return async(() -> listChainRuns(namespaceId, chainId, options));
+    }
+
+    /** Every run of a chain, in segment order, following opaque cursors lazily. */
+    public Stream<ChainRun> listAllChainRuns(String namespaceId, String chainId, ChainRunListOptions options) {
+        ChainRunListOptions first = options == null ? ChainRunListOptions.create() : options;
+        Iterator<ChainRun> iterator = new Iterator<>() {
+            private Iterator<ChainRun> page = List.<ChainRun>of().iterator();
+            private String cursor;
+            private boolean started;
+            private boolean done;
+
+            private void fill() {
+                while (!page.hasNext() && !done) {
+                    ChainRunPage result = listChainRuns(namespaceId, chainId, ChainRunListOptions.create()
+                            .limit(first.limit()).traceparent(first.traceparent()).cursor(started ? cursor : first.cursor()));
+                    started = true;
+                    cursor = result.nextCursor();
+                    page = result.items().iterator();
+                    if (cursor == null || cursor.isEmpty()) done = true;
+                }
+            }
+            @Override public boolean hasNext() { fill(); return page.hasNext(); }
+            @Override public ChainRun next() {
+                if (!hasNext()) throw new NoSuchElementException();
+                return page.next();
+            }
+        };
+        return StreamSupport.stream(java.util.Spliterators.spliteratorUnknownSize(iterator, java.util.Spliterator.ORDERED), false);
+    }
+
     /** Signals a root wait on the expected current chain head. */
     public SignalResult signalChain(String namespaceId, String chainId, String name, Object payload, ChainCommandOptions options) {
         requireChainOptions(options);
@@ -983,7 +1045,24 @@ public final class SagatClient implements AutoCloseable {
                 optStr(raw, "correlationId"),
                 (int) num(raw, "depth", 0),
                 parent,
+                toRunChain(raw.path("chain")),
                 raw);
+    }
+
+    private static String completionKind(JsonNode node) {
+        String kind = optStr(node, "completionKind");
+        if (kind != null && !kind.equals("CONTINUED") && !kind.equals("FINAL")) {
+            throw SagatException.of(ErrorCode.PROTOCOL, "completionKind is invalid in the answer");
+        }
+        return kind;
+    }
+
+    private static Run.ChainSegmentOfRun toRunChain(JsonNode node) {
+        if (node.isMissingNode() || node.isNull()) return null;
+        JsonNode chain = object(node, "a run chain segment");
+        long index = revision(chain, "segmentIndex", 0);
+        if (index > 9_999) throw SagatException.of(ErrorCode.PROTOCOL, "segmentIndex is invalid in the answer");
+        return new Run.ChainSegmentOfRun(str(chain, "chainId"), (int) index, completionKind(chain), optStr(chain, "successorRunId"));
     }
 
     private static RunPage toPage(JsonNode body) {

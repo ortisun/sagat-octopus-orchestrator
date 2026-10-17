@@ -684,6 +684,62 @@ class SagatClientTest {
     }
 
     @Test
+    void aRunInAChainNamesItsSegmentAndARunOutsideOneHasNone() {
+        String chain = "0190aaaa-0000-7000-8000-000000000011";
+        String successor = "0190aaaa-0000-7000-8000-000000000012";
+        server.prepare((req, reply) -> reply.send(200, run("status", "\"SUCCEEDED\"", "chain",
+                "{\"chainId\":\"" + chain + "\",\"segmentIndex\":0,\"completionKind\":\"CONTINUED\",\"successorRunId\":\"" + successor + "\"}")));
+        Run continued = client().get(RUN);
+        assertEquals("SUCCEEDED", continued.statusText());
+        assertEquals(new Run.ChainSegmentOfRun(chain, 0, "CONTINUED", successor), continued.chain());
+
+        server.prepare((req, reply) -> reply.send(200, run("chain",
+                "{\"chainId\":\"" + chain + "\",\"segmentIndex\":2,\"completionKind\":null,\"successorRunId\":null}")));
+        assertEquals(new Run.ChainSegmentOfRun(chain, 2, null, null), client().get(RUN).chain());
+
+        server.prepare((req, reply) -> reply.send(200, run()));
+        assertEquals(null, client().get(RUN).chain());
+
+        server.prepare((req, reply) -> reply.send(200, run("chain",
+                "{\"chainId\":\"" + chain + "\",\"segmentIndex\":0,\"completionKind\":\"SOMEDAY\",\"successorRunId\":null}")));
+        SagatException bad = assertThrows(SagatException.class, () -> client().get(RUN));
+        assertEquals(ErrorCode.PROTOCOL, bad.code());
+    }
+
+    @Test
+    void theRunsOfAChainArePagedInSegmentOrderFollowingTheServerCursor() {
+        String namespaceId = "0190aaaa-0000-7000-8000-000000000010";
+        String chainId = "0190aaaa-0000-7000-8000-000000000011";
+        String[] ids = {chainId, "0190aaaa-0000-7000-8000-000000000012", "0190aaaa-0000-7000-8000-000000000013"};
+        java.util.function.IntFunction<String> item = index -> "{\"index\":" + index + ",\"runId\":\"" + ids[index] + "\",\"status\":\""
+                + (index < 2 ? "SUCCEEDED" : "RUNNING") + "\",\"completionKind\":" + (index < 2 ? "\"CONTINUED\"" : "null")
+                + ",\"predecessorRunId\":" + (index == 0 ? "null" : "\"" + ids[index - 1] + "\"")
+                + ",\"successorRunId\":" + (index < 2 ? "\"" + ids[index + 1] + "\"" : "null")
+                + ",\"createdAt\":\"2026-10-10T10:00:00Z\",\"finishedAt\":" + (index < 2 ? "\"2026-10-10T10:00:01Z\"" : "null") + "}";
+        server.prepare((req, reply) -> reply.send(200, req.uri().contains("cursor=AAE")
+                ? "{\"items\":[" + item.apply(2) + "],\"nextCursor\":null}"
+                : "{\"items\":[" + item.apply(0) + "," + item.apply(1) + "],\"nextCursor\":\"AAE\"}"));
+        SagatClient c = client();
+        List<Integer> collected;
+        try (java.util.stream.Stream<ChainRun> runs = c.listAllChainRuns(namespaceId, chainId, ChainRunListOptions.create().limit(2))) {
+            collected = runs.map(ChainRun::index).toList();
+        }
+        assertEquals(List.of(0, 1, 2), collected);
+        assertEquals("/v1/namespaces/" + namespaceId + "/chains/" + chainId + "/runs?limit=2", server.seen.get(0).uri());
+        assertEquals("/v1/namespaces/" + namespaceId + "/chains/" + chainId + "/runs?cursor=AAE&limit=2", server.seen.get(1).uri());
+        ChainRunPage page = c.listChainRuns(namespaceId, chainId, null);
+        assertEquals("CONTINUED", page.items().get(0).completionKind());
+        assertEquals(ids[2], page.items().get(1).successorRunId());
+        assertEquals("AAE", page.nextCursor());
+        assertEquals(2026, page.items().get(0).createdAt().atZone(java.time.ZoneOffset.UTC).getYear());
+
+        server.prepare((req, reply) -> reply.send(200, "{\"items\":[" + item.apply(0).replace("\"index\":0", "\"index\":10000") + "],\"nextCursor\":null}"));
+        SagatException bad = assertThrows(SagatException.class, () -> c.listChainRuns(namespaceId, chainId, null));
+        assertEquals(ErrorCode.PROTOCOL, bad.code());
+        assertThrows(SagatException.class, () -> c.listChainRuns("not-an-id", chainId, null));
+    }
+
+    @Test
     void chainQueryCarriesExpectedHeadAndReturnsResolvedRevisions() {
         String namespaceId = "0190aaaa-0000-7000-8000-000000000010";
         String chainId = "0190aaaa-0000-7000-8000-000000000011";

@@ -803,3 +803,83 @@ async def test_run_input_expected_size_is_a_runtime_integer(value: object, make_
     with pytest.raises(SagatError) as caught:
         await make_client().upload_run_input([b"body"], expected_size=value)  # type: ignore[arg-type]
     assert caught.value.code == "VALIDATION_FAILED"
+
+
+async def test_a_run_in_a_chain_names_its_segment_and_a_run_outside_one_has_none(
+    http: FakeHttpServer, make_client: MakeClient
+) -> None:
+    chain = "0190aaaa-0000-7000-8000-000000000011"
+    successor = "0190aaaa-0000-7000-8000-000000000012"
+    http.serve(
+        lambda _seen: reply(
+            200,
+            run_body(
+                status="SUCCEEDED",
+                chain={"chainId": chain, "segmentIndex": 0, "completionKind": "CONTINUED", "successorRunId": successor},
+            ),
+        )
+    )
+    continued = await make_client().get(RUN)
+    assert continued.status == "SUCCEEDED"
+    assert continued.chain is not None
+    assert (continued.chain.chain_id, continued.chain.segment_index) == (chain, 0)
+    assert (continued.chain.completion_kind, continued.chain.successor_run_id) == ("CONTINUED", successor)
+    http.serve(
+        lambda _seen: reply(
+            200, run_body(chain={"chainId": chain, "segmentIndex": 2, "completionKind": None, "successorRunId": None})
+        )
+    )
+    opened = await make_client().get(RUN)
+    assert opened.chain is not None and opened.chain.completion_kind is None and opened.chain.successor_run_id is None
+    http.serve(lambda _seen: reply(200, run_body()))
+    assert (await make_client().get(RUN)).chain is None
+    http.serve(
+        lambda _seen: reply(
+            200, run_body(chain={"chainId": chain, "segmentIndex": 0, "completionKind": "SOMEDAY", "successorRunId": None})
+        )
+    )
+    with pytest.raises(SagatError) as error:
+        await make_client().get(RUN)
+    assert error.value.code == "PROTOCOL"
+
+
+async def test_the_runs_of_a_chain_are_paged_in_segment_order_following_the_server_cursor(
+    http: FakeHttpServer, make_client: MakeClient
+) -> None:
+    namespace_id = "0190aaaa-0000-7000-8000-000000000010"
+    chain_id = "0190aaaa-0000-7000-8000-000000000011"
+    ids = [chain_id, "0190aaaa-0000-7000-8000-000000000012", "0190aaaa-0000-7000-8000-000000000013"]
+
+    def item(index: int) -> dict[str, Any]:
+        return {
+            "index": index,
+            "runId": ids[index],
+            "status": "SUCCEEDED" if index < 2 else "RUNNING",
+            "completionKind": "CONTINUED" if index < 2 else None,
+            "predecessorRunId": ids[index - 1] if index else None,
+            "successorRunId": ids[index + 1] if index < 2 else None,
+            "createdAt": "2026-10-10T10:00:00Z",
+            "finishedAt": "2026-10-10T10:00:01Z" if index < 2 else None,
+        }
+
+    http.serve(
+        lambda seen: reply(200, {"items": [item(2)], "nextCursor": None})
+        if "cursor=AAE" in seen.url
+        else reply(200, {"items": [item(0), item(1)], "nextCursor": "AAE"})
+    )
+    client = make_client()
+    collected = [segment.index async for segment in client.list_all_chain_runs(namespace_id, chain_id, limit=2)]
+    assert collected == [0, 1, 2]
+    assert http.seen[0].method == "GET"
+    assert http.seen[0].url == f"/v1/namespaces/{namespace_id}/chains/{chain_id}/runs?limit=2"
+    assert http.seen[1].url == f"/v1/namespaces/{namespace_id}/chains/{chain_id}/runs?cursor=AAE&limit=2"
+    page = await client.list_chain_runs(namespace_id, chain_id)
+    assert page.items[0].completion_kind == "CONTINUED" and page.items[1].successor_run_id == ids[2]
+    assert page.next_cursor == "AAE" and page.items[0].created_at.year == 2026
+
+    http.serve(lambda _seen: reply(200, {"items": [{**item(0), "index": 10_000}], "nextCursor": None}))
+    with pytest.raises(SagatError) as error:
+        await client.list_chain_runs(namespace_id, chain_id)
+    assert error.value.code == "PROTOCOL"
+    with pytest.raises(SagatError):
+        await client.list_chain_runs("not-an-id", chain_id)

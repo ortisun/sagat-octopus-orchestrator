@@ -65,6 +65,24 @@ class RunParent:
     cancel_policy: str
 
 
+SegmentCompletionKind = Literal["CONTINUED", "FINAL"]
+
+
+@dataclass(frozen=True)
+class RunChainSegment:
+    """Where a run sits in its continuation chain.
+
+    A segment that is ``SUCCEEDED`` with ``completion_kind`` ``"CONTINUED"`` ended into its successor: it is
+    not the process outcome, which is the chain's ``final_outcome`` (``wait_for_chain_completion``).
+    """
+
+    chain_id: str
+    segment_index: int
+    completion_kind: SegmentCompletionKind | None
+    """``None`` while the segment is open."""
+    successor_run_id: str | None
+
+
 @dataclass(frozen=True)
 class Run:
     """A run as the server reports it. ``raw`` keeps the answer as sent, so a field of a newer server is reachable."""
@@ -86,6 +104,8 @@ class Run:
     correlation_id: str | None = None
     depth: int = 0
     parent: RunParent | None = None
+    chain: RunChainSegment | None = None
+    """The run's segment in its continuation chain; ``None`` for a run outside any chain."""
     raw: Mapping[str, Any] = field(default_factory=dict, repr=False, compare=False)
 
     @property
@@ -180,6 +200,26 @@ class ChainSegment:
     run_id: str
     predecessor_run_id: str | None
     successor_run_id: str | None
+
+
+@dataclass(frozen=True)
+class ChainRun:
+    """One segment as the paged list of a chain's runs gives it: lineage and lifecycle, never a payload."""
+
+    index: int
+    run_id: str
+    status: str
+    completion_kind: SegmentCompletionKind | None
+    predecessor_run_id: str | None
+    successor_run_id: str | None
+    created_at: datetime
+    finished_at: datetime | None
+
+
+@dataclass(frozen=True)
+class ChainRunPage:
+    items: tuple[ChainRun, ...]
+    next_cursor: str | None
 
 
 @dataclass(frozen=True)
@@ -281,7 +321,28 @@ def to_run(value: Any) -> Run:
             if isinstance(parent, dict)
             else None
         ),
+        chain=_to_run_chain(raw.get("chain")),
         raw=raw,
+    )
+
+
+def _completion_kind(value: Any) -> SegmentCompletionKind | None:
+    if value is None:
+        return None
+    if value in ("CONTINUED", "FINAL"):
+        return cast(SegmentCompletionKind, value)
+    raise SagatError("PROTOCOL", "completionKind is invalid in the answer")
+
+
+def _to_run_chain(value: Any) -> RunChainSegment | None:
+    if value is None:
+        return None
+    chain = _object(value, "a run chain segment")
+    index = _revision(chain, "segmentIndex", 0)
+    if index > 9_999:
+        raise SagatError("PROTOCOL", "segmentIndex is invalid in the answer")
+    return RunChainSegment(
+        _str(chain, "chainId"), index, _completion_kind(chain.get("completionKind")), _opt_str(chain, "successorRunId")
     )
 
 
@@ -710,6 +771,72 @@ class SagatClient:
             tuple(segments),
             raw,
         )
+
+    async def list_chain_runs(
+        self,
+        namespace_id: str,
+        chain_id: str,
+        *,
+        cursor: str | None = None,
+        limit: int | None = None,
+        traceparent: str | None = None,
+    ) -> ChainRunPage:
+        """One bounded page of a chain's runs in segment order.
+
+        The cursor is opaque and stable: a segment is only appended, so a page never repeats or skips one while
+        the chain grows. A page carries lineage and lifecycle only, never an input, output or state.
+        """
+        namespace = quote(_namespace_id(namespace_id), safe="")
+        chain = quote(_run_id(chain_id), safe="")
+        response = await self._http.request(
+            HttpRequest(
+                "GET",
+                f"/namespaces/{namespace}/chains/{chain}/runs",
+                query={"cursor": cursor, "limit": limit},
+                traceparent=self._trace(traceparent),
+            )
+        )
+        raw = _object(response.body, "a chain run page")
+        values = raw.get("items")
+        if not isinstance(values, list) or len(values) > 200:
+            raise SagatError("PROTOCOL", "items is invalid in the answer")
+        items: list[ChainRun] = []
+        for value in values:
+            item = _object(value, "a chain run")
+            index = _revision(item, "index", 0)
+            if index > 9_999:
+                raise SagatError("PROTOCOL", "index is invalid in the answer")
+            created = parse_instant(item.get("createdAt"))
+            if created is None:
+                raise SagatError("PROTOCOL", "createdAt is missing from the answer")
+            items.append(
+                ChainRun(
+                    index,
+                    _str(item, "runId"),
+                    _str(item, "status"),
+                    _completion_kind(item.get("completionKind")),
+                    _opt_str(item, "predecessorRunId"),
+                    _opt_str(item, "successorRunId"),
+                    created,
+                    parse_instant(item.get("finishedAt")),
+                )
+            )
+        return ChainRunPage(tuple(items), _opt_str(raw, "nextCursor"))
+
+    async def list_all_chain_runs(
+        self, namespace_id: str, chain_id: str, *, limit: int | None = None, traceparent: str | None = None
+    ) -> AsyncIterator[ChainRun]:
+        """Every run of a chain, in segment order, page after page."""
+        cursor: str | None = None
+        while True:
+            page = await self.list_chain_runs(
+                namespace_id, chain_id, cursor=cursor, limit=limit, traceparent=traceparent
+            )
+            for item in page.items:
+                yield item
+            cursor = page.next_cursor
+            if not cursor:
+                return
 
     async def signal_chain(
         self,

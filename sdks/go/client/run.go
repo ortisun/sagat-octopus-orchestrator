@@ -65,9 +65,61 @@ type Run struct {
 	CorrelationID string
 	Depth         int
 	Parent        *ParentRun
+	// Chain is the run's segment in its continuation chain, or nil for a run outside any chain.
+	// A segment that is SUCCEEDED with CompletionKind CONTINUED ended into its successor: it is
+	// not the process outcome, which is the chain's final outcome (WaitForChainCompletion).
+	Chain *RunChainSegment
 	// Raw is the answer as the server sent it, member by member, so that a field of a newer server
 	// is reachable.
 	Raw map[string]json.RawMessage
+}
+
+// SegmentCompletionKind says how a chain segment ended.
+type SegmentCompletionKind string
+
+const (
+	// SegmentContinued: the segment ended into its successor.
+	SegmentContinued SegmentCompletionKind = "CONTINUED"
+	// SegmentFinal: the segment ended the chain.
+	SegmentFinal SegmentCompletionKind = "FINAL"
+)
+
+// RunChainSegment is where a run sits in its continuation chain.
+type RunChainSegment struct {
+	ChainID      string
+	SegmentIndex int
+	// CompletionKind is empty while the segment is open.
+	CompletionKind SegmentCompletionKind
+	// SuccessorRunID is empty unless the segment was continued.
+	SuccessorRunID string
+}
+
+// ChainRun is one segment as the paged list of a chain's runs gives it: lineage and lifecycle, never
+// a payload.
+type ChainRun struct {
+	Index            int
+	RunID            string
+	Status           RunStatus
+	CompletionKind   SegmentCompletionKind
+	PredecessorRunID string
+	SuccessorRunID   string
+	CreatedAt        time.Time
+	FinishedAt       time.Time
+	Raw              map[string]json.RawMessage
+}
+
+// ChainRunPage is one bounded page of a chain's runs in segment order.
+type ChainRunPage struct {
+	Items []ChainRun
+	// NextCursor is empty on the last page.
+	NextCursor string
+	Raw        map[string]json.RawMessage
+}
+
+// ChainRunListOptions pages the runs of a chain. Limit zero uses the server default.
+type ChainRunListOptions struct {
+	Cursor string
+	Limit  int
 }
 
 // RunPage is a page of runs, newest first as the server gave them.
@@ -334,7 +386,44 @@ func runOf(m map[string]json.RawMessage) (*Run, error) {
 			run.Parent = p
 		}
 	}
+	if raw, present := m["chain"]; present && !jsonx.IsNull(raw) {
+		segment, err := chainSegmentOf(raw)
+		if err != nil {
+			return nil, err
+		}
+		run.Chain = segment
+	}
 	return run, nil
+}
+
+func completionKindOf(m map[string]json.RawMessage) (SegmentCompletionKind, error) {
+	value, _ := jsonx.String(m, "completionKind")
+	switch SegmentCompletionKind(value) {
+	case "", SegmentContinued, SegmentFinal:
+		return SegmentCompletionKind(value), nil
+	}
+	return "", protocolError("completionKind is invalid in the answer")
+}
+
+func chainSegmentOf(raw json.RawMessage) (*RunChainSegment, error) {
+	m, err := jsonx.Object(raw)
+	if err != nil {
+		return nil, protocolError("chain is invalid in the answer")
+	}
+	segment := &RunChainSegment{}
+	if segment.ChainID, err = requiredString(m, "chainId"); err != nil {
+		return nil, err
+	}
+	index, err := requiredRevision(m, "segmentIndex", 0)
+	if err != nil || index > 9_999 {
+		return nil, protocolError("segmentIndex is invalid in the answer")
+	}
+	segment.SegmentIndex = int(index)
+	if segment.CompletionKind, err = completionKindOf(m); err != nil {
+		return nil, err
+	}
+	segment.SuccessorRunID, _ = jsonx.String(m, "successorRunId")
+	return segment, nil
 }
 
 func parseRunPage(body []byte) (*RunPage, error) {

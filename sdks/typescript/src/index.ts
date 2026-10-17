@@ -1,6 +1,6 @@
 export { SagatClient, TERMINAL_STATUSES, toRun } from './client.js';
 export type {
-  ApprovalDecision, ApprovalDecisionOptions, ApprovalDecisionReceipt, ApprovalListItem, ApprovalListOptions, ApprovalPage, ApprovalScope, ApprovalStatus, CallOptions, ChainCommandOptions, ChainFinalOutcome, ChainInspection, ChainQueryOptions, ChainSegment, ChainUpdateOptions, EventAccepted, JournalEvent, ListOptions, OperationResult, PublishEventInput, QueryOptions, QueryResult, Run, RunPage,
+  ApprovalDecision, ApprovalDecisionOptions, ApprovalDecisionReceipt, ApprovalListItem, ApprovalListOptions, ApprovalPage, ApprovalScope, ApprovalStatus, CallOptions, ChainCommandOptions, ChainFinalOutcome, ChainInspection, ChainQueryOptions, ChainRun, ChainRunListOptions, ChainRunPage, ChainSegment, ChainUpdateOptions, EventAccepted, JournalEvent, ListOptions, OperationResult, PublishEventInput, QueryOptions, QueryResult, Run, RunChainSegment, RunPage, SegmentCompletionKind,
   RunStatus, SignalResult, StartOptions, UpdateOptions, UpdateReceipt, WaitOptions,
 } from './client.js';
 export { PROTOCOL_VERSION, SDK_VERSION, safeLogger, silentLogger, warnIfNotSecure } from './config.js';

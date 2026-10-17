@@ -606,6 +606,92 @@ func (c *Client) ListApprovals(ctx context.Context, runID string, options Approv
 	return page, nil
 }
 
+// ListChainRuns reads one bounded page of a chain's runs in segment order. The cursor is opaque and
+// stable: a segment is only appended, so a page never repeats or skips one while the chain grows.
+// A page carries lineage and lifecycle only, never an input, output or state.
+func (c *Client) ListChainRuns(ctx context.Context, namespaceID, chainID string, options ChainRunListOptions, opts ...CallOption) (*ChainRunPage, error) {
+	path, err := chainPath(namespaceID, chainID)
+	if err != nil {
+		return nil, err
+	}
+	o := callOptionsOf(opts)
+	traceparent, err := c.trace(ctx, o.traceparent)
+	if err != nil {
+		return nil, err
+	}
+	query := url.Values{}
+	if options.Cursor != "" {
+		query.Set("cursor", options.Cursor)
+	}
+	if options.Limit > 0 {
+		query.Set("limit", strconv.Itoa(options.Limit))
+	}
+	resp, err := c.do(ctx, request{method: "GET", path: path + "/runs", query: query, repeatable: true, traceparent: traceparent})
+	if err != nil {
+		return nil, err
+	}
+	raw, err := object(resp.body, "a chain run page")
+	if err != nil {
+		return nil, err
+	}
+	var values []map[string]json.RawMessage
+	if encoded, ok := raw["items"]; !ok || json.Unmarshal(encoded, &values) != nil || len(values) > 200 {
+		return nil, protocolError("items is invalid in the answer")
+	}
+	page := &ChainRunPage{Items: make([]ChainRun, 0, len(values)), Raw: raw}
+	page.NextCursor, _ = jsonx.String(raw, "nextCursor")
+	for _, value := range values {
+		item := ChainRun{Raw: value}
+		index, indexErr := requiredRevision(value, "index", 0)
+		if indexErr != nil || index > 9_999 {
+			return nil, protocolError("index is invalid in the answer")
+		}
+		item.Index = int(index)
+		if item.RunID, err = requiredString(value, "runId"); err != nil {
+			return nil, err
+		}
+		status, statusErr := requiredString(value, "status")
+		if statusErr != nil {
+			return nil, statusErr
+		}
+		item.Status = RunStatus(status)
+		if item.CompletionKind, err = completionKindOf(value); err != nil {
+			return nil, err
+		}
+		item.PredecessorRunID, _ = jsonx.String(value, "predecessorRunId")
+		item.SuccessorRunID, _ = jsonx.String(value, "successorRunId")
+		var ok bool
+		if item.CreatedAt, ok = jsonx.Time(value, "createdAt"); !ok {
+			return nil, protocolError("createdAt is missing from the answer")
+		}
+		item.FinishedAt, _ = jsonx.Time(value, "finishedAt")
+		page.Items = append(page.Items, item)
+	}
+	return page, nil
+}
+
+// ListAllChainRuns yields every run of a chain, in segment order, until the opaque cursor ends.
+func (c *Client) ListAllChainRuns(ctx context.Context, namespaceID, chainID string, options ChainRunListOptions, opts ...CallOption) iter.Seq2[*ChainRun, error] {
+	return func(yield func(*ChainRun, error) bool) {
+		for {
+			page, err := c.ListChainRuns(ctx, namespaceID, chainID, options, opts...)
+			if err != nil {
+				yield(nil, err)
+				return
+			}
+			for index := range page.Items {
+				if !yield(&page.Items[index], nil) {
+					return
+				}
+			}
+			if page.NextCursor == "" {
+				return
+			}
+			options.Cursor = page.NextCursor
+		}
+	}
+}
+
 // ListAllApprovals yields every approval page until the opaque cursor ends.
 func (c *Client) ListAllApprovals(ctx context.Context, runID string, options ApprovalListOptions, opts ...CallOption) iter.Seq2[*ApprovalListItem, error] {
 	return func(yield func(*ApprovalListItem, error) bool) {
