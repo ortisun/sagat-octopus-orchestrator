@@ -4571,6 +4571,1698 @@
       "owner_paths": [
         "crates/infra-postgres/src/identity.rs"
       ]
+    },
+    {
+      "table": "approval_decision_receipts",
+      "column": "actor",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Authenticated `Subject` of at most 255 bytes, taken from the verified principal, never from a request body. Writer/source: `approval_progress.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/approval_progress.rs"
+      ]
+    },
+    {
+      "table": "approval_decision_receipts",
+      "column": "decision",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed set of values the engine writes (an enumeration of the domain model), never caller text. Writer/source: `approval_progress.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/approval_progress.rs"
+      ]
+    },
+    {
+      "table": "approval_decision_receipts",
+      "column": "decision_key",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Caller key validated to 1..128 permitted ASCII characters (`DecisionKey` / `UpdateKey`) before it is written. Writer/source: `approval_progress.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/approval_progress.rs"
+      ]
+    },
+    {
+      "table": "approval_decision_receipts",
+      "column": "reason_code",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Machine code of 1..64 permitted characters (`ApprovalReasonCode`), free text refused. Writer/source: `approval_progress.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/approval_progress.rs"
+      ]
+    },
+    {
+      "table": "approval_decision_receipts",
+      "column": "request_hash",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed SHA-256 digest (32 bytes) of a payload kept in `payloads` (accounted there) or of a canonical request; the column never holds the content. Writer/source: `approval_progress.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/approval_progress.rs"
+      ]
+    },
+    {
+      "table": "approval_requests",
+      "column": "approved_node",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Node or switch-case id of the published definition, at most 64 bytes, validated by `NodeId`. Writer/source: `approval_progress.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/approval_progress.rs"
+      ]
+    },
+    {
+      "table": "approval_requests",
+      "column": "expired_node",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Node or switch-case id of the published definition, at most 64 bytes, validated by `NodeId`. Writer/source: `approval_progress.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/approval_progress.rs"
+      ]
+    },
+    {
+      "table": "approval_requests",
+      "column": "initiator",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Authenticated `Subject` of at most 255 bytes, taken from the verified principal, never from a request body. Writer/source: `approval_progress.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/approval_progress.rs"
+      ]
+    },
+    {
+      "table": "approval_requests",
+      "column": "owner_node",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Node or switch-case id of the published definition, at most 64 bytes, validated by `NodeId`. Writer/source: `approval_progress.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/approval_progress.rs"
+      ]
+    },
+    {
+      "table": "approval_requests",
+      "column": "owner_path_indices",
+      "sql_type": "_int4",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Instance path indices: at most 8 integers, each 0..9999 (MAX_ITERATION_INDEX), the same length as its node path. Writer/source: `approval_progress.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/approval_progress.rs"
+      ]
+    },
+    {
+      "table": "approval_requests",
+      "column": "owner_path_nodes",
+      "sql_type": "_text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Instance path of at most 8 entries (MAX_SCOPE_DEPTH), each a node id of at most 64 bytes validated by `NodeId` in the published definition. Writer/source: `approval_progress.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/approval_progress.rs"
+      ]
+    },
+    {
+      "table": "approval_requests",
+      "column": "policy_roles",
+      "sql_type": "_text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "At most 32 policy entries (MAX_APPROVAL_POLICY_ENTRIES), each one of the built-in role names admin, developer or operator. Writer/source: `approval_progress.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/approval_progress.rs"
+      ]
+    },
+    {
+      "table": "approval_requests",
+      "column": "policy_subjects",
+      "sql_type": "_text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "At most 32 policy entries (MAX_APPROVAL_POLICY_ENTRIES, subjects and roles together), each a `Subject` of at most 255 bytes. Writer/source: `approval_progress.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/approval_progress.rs"
+      ]
+    },
+    {
+      "table": "approval_requests",
+      "column": "rejected_node",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Node or switch-case id of the published definition, at most 64 bytes, validated by `NodeId`. Writer/source: `approval_progress.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/approval_progress.rs"
+      ]
+    },
+    {
+      "table": "approval_requests",
+      "column": "routed_node",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Node or switch-case id of the published definition, at most 64 bytes, validated by `NodeId`. Writer/source: `approval_progress.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/approval_progress.rs"
+      ]
+    },
+    {
+      "table": "approval_requests",
+      "column": "status",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed set of values the engine writes (an enumeration of the domain model), never caller text. Writer/source: `approval_progress.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/approval_progress.rs"
+      ]
+    },
+    {
+      "table": "approval_timers",
+      "column": "state",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed set of values the engine writes (an enumeration of the domain model), never caller text. Writer/source: `approval_progress.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/approval_progress.rs"
+      ]
+    },
+    {
+      "table": "chain_segments",
+      "column": "completion_kind",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed set of values the engine writes (an enumeration of the domain model), never caller text. Writer/source: `chain_progress.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/chain_progress.rs"
+      ]
+    },
+    {
+      "table": "chain_segments",
+      "column": "transfer_input_digest",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed SHA-256 digest (32 bytes) of a payload kept in `payloads` (accounted there) or of a canonical request; the column never holds the content. Writer/source: `chain_progress.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/chain_progress.rs"
+      ]
+    },
+    {
+      "table": "chain_segments",
+      "column": "transfer_state_digest",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed SHA-256 digest (32 bytes) of a payload kept in `payloads` (accounted there) or of a canonical request; the column never holds the content. Writer/source: `chain_progress.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/chain_progress.rs"
+      ]
+    },
+    {
+      "table": "child_chain_links",
+      "column": "final_outcome",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed set of values the engine writes (an enumeration of the domain model), never caller text. Writer/source: `chain_progress.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/chain_progress.rs"
+      ]
+    },
+    {
+      "table": "collection_iterations",
+      "column": "activity",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Activity or operation name of the published definition, at most 128 bytes (`ActivityName`). Writer/source: `primitives.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/primitives.rs"
+      ]
+    },
+    {
+      "table": "collection_iterations",
+      "column": "entry_node",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Node or switch-case id of the published definition, at most 64 bytes, validated by `NodeId`. Writer/source: `primitives.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/primitives.rs"
+      ]
+    },
+    {
+      "table": "collection_iterations",
+      "column": "entry_path_indices",
+      "sql_type": "_int4",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Instance path indices: at most 8 integers, each 0..9999 (MAX_ITERATION_INDEX), the same length as its node path. Writer/source: `primitives.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/primitives.rs"
+      ]
+    },
+    {
+      "table": "collection_iterations",
+      "column": "entry_path_nodes",
+      "sql_type": "_text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Instance path of at most 8 entries (MAX_SCOPE_DEPTH), each a node id of at most 64 bytes validated by `NodeId` in the published definition. Writer/source: `primitives.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/primitives.rs"
+      ]
+    },
+    {
+      "table": "collection_iterations",
+      "column": "item_digest",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed SHA-256 digest (32 bytes) of a payload kept in `payloads` (accounted there) or of a canonical request; the column never holds the content. Writer/source: `primitives.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/primitives.rs"
+      ]
+    },
+    {
+      "table": "collection_iterations",
+      "column": "lifecycle",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed set of values the engine writes (an enumeration of the domain model), never caller text. Writer/source: `primitives.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/primitives.rs"
+      ]
+    },
+    {
+      "table": "collection_iterations",
+      "column": "result_digest",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed SHA-256 digest (32 bytes) of a payload kept in `payloads` (accounted there) or of a canonical request; the column never holds the content. Writer/source: `primitives.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/primitives.rs"
+      ]
+    },
+    {
+      "table": "collection_iterations",
+      "column": "return_node",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Node or switch-case id of the published definition, at most 64 bytes, validated by `NodeId`. Writer/source: `primitives.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/primitives.rs"
+      ]
+    },
+    {
+      "table": "collection_iterations",
+      "column": "return_path_indices",
+      "sql_type": "_int4",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Instance path indices: at most 8 integers, each 0..9999 (MAX_ITERATION_INDEX), the same length as its node path. Writer/source: `primitives.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/primitives.rs"
+      ]
+    },
+    {
+      "table": "collection_iterations",
+      "column": "return_path_nodes",
+      "sql_type": "_text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Instance path of at most 8 entries (MAX_SCOPE_DEPTH), each a node id of at most 64 bytes validated by `NodeId` in the published definition. Writer/source: `primitives.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/primitives.rs"
+      ]
+    },
+    {
+      "table": "collection_scope_items",
+      "column": "item_digest",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed SHA-256 digest (32 bytes) of a payload kept in `payloads` (accounted there) or of a canonical request; the column never holds the content. Writer/source: `primitives.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/primitives.rs"
+      ]
+    },
+    {
+      "table": "declared_operation_definitions",
+      "column": "declaration_digest",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed SHA-256 digest (32 bytes) of a payload kept in `payloads` (accounted there) or of a canonical request; the column never holds the content. Writer/source: `definitions.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/definitions.rs"
+      ]
+    },
+    {
+      "table": "declared_operation_definitions",
+      "column": "disclosure",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed set of values the engine writes (an enumeration of the domain model), never caller text. Writer/source: `definitions.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/definitions.rs"
+      ]
+    },
+    {
+      "table": "declared_operation_definitions",
+      "column": "operation_kind",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed set of values the engine writes (an enumeration of the domain model), never caller text. Writer/source: `definitions.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/definitions.rs"
+      ]
+    },
+    {
+      "table": "declared_operation_definitions",
+      "column": "operation_name",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Activity or operation name of the published definition, at most 128 bytes (`ActivityName`). Writer/source: `definitions.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/definitions.rs"
+      ]
+    },
+    {
+      "table": "declared_operation_definitions",
+      "column": "result_schema_digest",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed SHA-256 digest (32 bytes) of a payload kept in `payloads` (accounted there) or of a canonical request; the column never holds the content. Writer/source: `definitions.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/definitions.rs"
+      ]
+    },
+    {
+      "table": "declared_operation_definitions",
+      "column": "state_schema_digest",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed SHA-256 digest (32 bytes) of a payload kept in `payloads` (accounted there) or of a canonical request; the column never holds the content. Writer/source: `definitions.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/definitions.rs"
+      ]
+    },
+    {
+      "table": "event_deliveries",
+      "column": "instance_path_indices",
+      "sql_type": "_int4",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Instance path indices: at most 8 integers, each 0..9999 (MAX_ITERATION_INDEX), the same length as its node path. Writer/source: `execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "event_deliveries",
+      "column": "instance_path_nodes",
+      "sql_type": "_text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Instance path of at most 8 entries (MAX_SCOPE_DEPTH), each a node id of at most 64 bytes validated by `NodeId` in the published definition. Writer/source: `execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "execution_chains",
+      "column": "final_outcome",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed set of values the engine writes (an enumeration of the domain model), never caller text. Writer/source: `chain_progress.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/chain_progress.rs"
+      ]
+    },
+    {
+      "table": "execution_chains",
+      "column": "started_by",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Authenticated `Subject` of at most 255 bytes, taken from the verified principal, never from a request body. Writer/source: `chain_progress.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/chain_progress.rs"
+      ]
+    },
+    {
+      "table": "iteration_checkpoints",
+      "column": "result_digest",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed SHA-256 digest (32 bytes) of a payload kept in `payloads` (accounted there) or of a canonical request; the column never holds the content. Writer/source: `primitives.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/primitives.rs"
+      ]
+    },
+    {
+      "table": "iteration_scopes",
+      "column": "drain_failure_code",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "`FailureCode`: at most 64 bytes of [A-Za-z0-9_.:-], from the engine's closed code set. Writer/source: `primitives.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/primitives.rs"
+      ]
+    },
+    {
+      "table": "iteration_scopes",
+      "column": "drain_kind",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed set of values the engine writes (an enumeration of the domain model), never caller text. Writer/source: `primitives.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/primitives.rs"
+      ]
+    },
+    {
+      "table": "iteration_scopes",
+      "column": "kind",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed set of values the engine writes (an enumeration of the domain model), never caller text. Writer/source: `primitives.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/primitives.rs"
+      ]
+    },
+    {
+      "table": "iteration_scopes",
+      "column": "lifecycle",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed set of values the engine writes (an enumeration of the domain model), never caller text. Writer/source: `primitives.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/primitives.rs"
+      ]
+    },
+    {
+      "table": "iteration_scopes",
+      "column": "owner_node",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Node or switch-case id of the published definition, at most 64 bytes, validated by `NodeId`. Writer/source: `primitives.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/primitives.rs"
+      ]
+    },
+    {
+      "table": "iteration_scopes",
+      "column": "owner_path_indices",
+      "sql_type": "_int4",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Instance path indices: at most 8 integers, each 0..9999 (MAX_ITERATION_INDEX), the same length as its node path. Writer/source: `primitives.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/primitives.rs"
+      ]
+    },
+    {
+      "table": "iteration_scopes",
+      "column": "owner_path_nodes",
+      "sql_type": "_text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Instance path of at most 8 entries (MAX_SCOPE_DEPTH), each a node id of at most 64 bytes validated by `NodeId` in the published definition. Writer/source: `primitives.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/primitives.rs"
+      ]
+    },
+    {
+      "table": "iteration_scopes",
+      "column": "result_digest",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed SHA-256 digest (32 bytes) of a payload kept in `payloads` (accounted there) or of a canonical request; the column never holds the content. Writer/source: `primitives.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/primitives.rs"
+      ]
+    },
+    {
+      "table": "iteration_scopes",
+      "column": "snapshot_digest",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed SHA-256 digest (32 bytes) of a payload kept in `payloads` (accounted there) or of a canonical request; the column never holds the content. Writer/source: `primitives.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/primitives.rs"
+      ]
+    },
+    {
+      "table": "loop_checkpoints",
+      "column": "carry_digest",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed SHA-256 digest (32 bytes) of a payload kept in `payloads` (accounted there) or of a canonical request; the column never holds the content. Writer/source: `loop_progress.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/loop_progress.rs"
+      ]
+    },
+    {
+      "table": "loop_checkpoints",
+      "column": "continuation",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed set of values the engine writes (an enumeration of the domain model), never caller text. Writer/source: `loop_progress.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/loop_progress.rs"
+      ]
+    },
+    {
+      "table": "loop_checkpoints",
+      "column": "result_digest",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed SHA-256 digest (32 bytes) of a payload kept in `payloads` (accounted there) or of a canonical request; the column never holds the content. Writer/source: `loop_progress.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/loop_progress.rs"
+      ]
+    },
+    {
+      "table": "loop_iterations",
+      "column": "activity",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Activity or operation name of the published definition, at most 128 bytes (`ActivityName`). Writer/source: `loop_progress.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/loop_progress.rs"
+      ]
+    },
+    {
+      "table": "loop_iterations",
+      "column": "carry_digest",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed SHA-256 digest (32 bytes) of a payload kept in `payloads` (accounted there) or of a canonical request; the column never holds the content. Writer/source: `loop_progress.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/loop_progress.rs"
+      ]
+    },
+    {
+      "table": "loop_iterations",
+      "column": "entry_node",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Node or switch-case id of the published definition, at most 64 bytes, validated by `NodeId`. Writer/source: `loop_progress.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/loop_progress.rs"
+      ]
+    },
+    {
+      "table": "loop_iterations",
+      "column": "entry_path_indices",
+      "sql_type": "_int4",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Instance path indices: at most 8 integers, each 0..9999 (MAX_ITERATION_INDEX), the same length as its node path. Writer/source: `loop_progress.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/loop_progress.rs"
+      ]
+    },
+    {
+      "table": "loop_iterations",
+      "column": "entry_path_nodes",
+      "sql_type": "_text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Instance path of at most 8 entries (MAX_SCOPE_DEPTH), each a node id of at most 64 bytes validated by `NodeId` in the published definition. Writer/source: `loop_progress.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/loop_progress.rs"
+      ]
+    },
+    {
+      "table": "loop_iterations",
+      "column": "lifecycle",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed set of values the engine writes (an enumeration of the domain model), never caller text. Writer/source: `loop_progress.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/loop_progress.rs"
+      ]
+    },
+    {
+      "table": "loop_iterations",
+      "column": "result_digest",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed SHA-256 digest (32 bytes) of a payload kept in `payloads` (accounted there) or of a canonical request; the column never holds the content. Writer/source: `loop_progress.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/loop_progress.rs"
+      ]
+    },
+    {
+      "table": "loop_iterations",
+      "column": "return_node",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Node or switch-case id of the published definition, at most 64 bytes, validated by `NodeId`. Writer/source: `loop_progress.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/loop_progress.rs"
+      ]
+    },
+    {
+      "table": "loop_scopes",
+      "column": "current_carry_digest",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed SHA-256 digest (32 bytes) of a payload kept in `payloads` (accounted there) or of a canonical request; the column never holds the content. Writer/source: `loop_progress.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/loop_progress.rs"
+      ]
+    },
+    {
+      "table": "loop_scopes",
+      "column": "drain_failure_code",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "`FailureCode`: at most 64 bytes of [A-Za-z0-9_.:-], from the engine's closed code set. Writer/source: `loop_progress.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/loop_progress.rs"
+      ]
+    },
+    {
+      "table": "loop_scopes",
+      "column": "drain_kind",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed set of values the engine writes (an enumeration of the domain model), never caller text. Writer/source: `loop_progress.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/loop_progress.rs"
+      ]
+    },
+    {
+      "table": "loop_scopes",
+      "column": "initial_carry_digest",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed SHA-256 digest (32 bytes) of a payload kept in `payloads` (accounted there) or of a canonical request; the column never holds the content. Writer/source: `loop_progress.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/loop_progress.rs"
+      ]
+    },
+    {
+      "table": "loop_scopes",
+      "column": "kind",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed set of values the engine writes (an enumeration of the domain model), never caller text. Writer/source: `loop_progress.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/loop_progress.rs"
+      ]
+    },
+    {
+      "table": "loop_scopes",
+      "column": "lifecycle",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed set of values the engine writes (an enumeration of the domain model), never caller text. Writer/source: `loop_progress.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/loop_progress.rs"
+      ]
+    },
+    {
+      "table": "loop_scopes",
+      "column": "owner_node",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Node or switch-case id of the published definition, at most 64 bytes, validated by `NodeId`. Writer/source: `loop_progress.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/loop_progress.rs"
+      ]
+    },
+    {
+      "table": "loop_scopes",
+      "column": "owner_path_indices",
+      "sql_type": "_int4",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Instance path indices: at most 8 integers, each 0..9999 (MAX_ITERATION_INDEX), the same length as its node path. Writer/source: `loop_progress.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/loop_progress.rs"
+      ]
+    },
+    {
+      "table": "loop_scopes",
+      "column": "owner_path_nodes",
+      "sql_type": "_text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Instance path of at most 8 entries (MAX_SCOPE_DEPTH), each a node id of at most 64 bytes validated by `NodeId` in the published definition. Writer/source: `loop_progress.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/loop_progress.rs"
+      ]
+    },
+    {
+      "table": "loop_timers",
+      "column": "lifecycle",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed set of values the engine writes (an enumeration of the domain model), never caller text. Writer/source: `loop_progress.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/loop_progress.rs"
+      ]
+    },
+    {
+      "table": "operation_update_receipts",
+      "column": "actor",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Authenticated `Subject` of at most 255 bytes, taken from the verified principal, never from a request body. Writer/source: `declared_operations.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/declared_operations.rs"
+      ]
+    },
+    {
+      "table": "operation_update_receipts",
+      "column": "address_scope",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed set of values the engine writes (an enumeration of the domain model), never caller text. Writer/source: `declared_operations.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/declared_operations.rs"
+      ]
+    },
+    {
+      "table": "operation_update_receipts",
+      "column": "operation_name",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Activity or operation name of the published definition, at most 128 bytes (`ActivityName`). Writer/source: `declared_operations.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/declared_operations.rs"
+      ]
+    },
+    {
+      "table": "operation_update_receipts",
+      "column": "rejection_code",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "`FailureCode`: at most 64 bytes of [A-Za-z0-9_.:-], from the engine's closed code set. Writer/source: `declared_operations.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/declared_operations.rs"
+      ]
+    },
+    {
+      "table": "operation_update_receipts",
+      "column": "request_hash",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed SHA-256 digest (32 bytes) of a payload kept in `payloads` (accounted there) or of a canonical request; the column never holds the content. Writer/source: `declared_operations.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/declared_operations.rs"
+      ]
+    },
+    {
+      "table": "operation_update_receipts",
+      "column": "result_digest",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed SHA-256 digest (32 bytes) of a payload kept in `payloads` (accounted there) or of a canonical request; the column never holds the content. Writer/source: `declared_operations.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/declared_operations.rs"
+      ]
+    },
+    {
+      "table": "operation_update_receipts",
+      "column": "result_schema_digest",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed SHA-256 digest (32 bytes) of a payload kept in `payloads` (accounted there) or of a canonical request; the column never holds the content. Writer/source: `declared_operations.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/declared_operations.rs"
+      ]
+    },
+    {
+      "table": "operation_update_receipts",
+      "column": "status",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed set of values the engine writes (an enumeration of the domain model), never caller text. Writer/source: `declared_operations.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/declared_operations.rs"
+      ]
+    },
+    {
+      "table": "operation_update_receipts",
+      "column": "update_key",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Caller key validated to 1..128 permitted ASCII characters (`DecisionKey` / `UpdateKey`) before it is written. Writer/source: `declared_operations.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/declared_operations.rs"
+      ]
+    },
+    {
+      "table": "run_events",
+      "column": "instance_path_indices",
+      "sql_type": "_int4",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Instance path indices: at most 8 integers, each 0..9999 (MAX_ITERATION_INDEX), the same length as its node path. Writer/source: `execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "run_events",
+      "column": "instance_path_nodes",
+      "sql_type": "_text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Instance path of at most 8 entries (MAX_SCOPE_DEPTH), each a node id of at most 64 bytes validated by `NodeId` in the published definition. Writer/source: `execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "run_sagas",
+      "column": "instance_path_indices",
+      "sql_type": "_int4",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Instance path indices: at most 8 integers, each 0..9999 (MAX_ITERATION_INDEX), the same length as its node path. Writer/source: `execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "run_sagas",
+      "column": "instance_path_nodes",
+      "sql_type": "_text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Instance path of at most 8 entries (MAX_SCOPE_DEPTH), each a node id of at most 64 bytes validated by `NodeId` in the published definition. Writer/source: `execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "script_executions",
+      "column": "instance_path_indices",
+      "sql_type": "_int4",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Instance path indices: at most 8 integers, each 0..9999 (MAX_ITERATION_INDEX), the same length as its node path. Writer/source: `scripts.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_executions",
+      "column": "instance_path_nodes",
+      "sql_type": "_text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Instance path of at most 8 entries (MAX_SCOPE_DEPTH), each a node id of at most 64 bytes validated by `NodeId` in the published definition. Writer/source: `scripts.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "steps",
+      "column": "instance_path_indices",
+      "sql_type": "_int4",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Instance path indices: at most 8 integers, each 0..9999 (MAX_ITERATION_INDEX), the same length as its node path. Writer/source: `execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "steps",
+      "column": "instance_path_nodes",
+      "sql_type": "_text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Instance path of at most 8 entries (MAX_SCOPE_DEPTH), each a node id of at most 64 bytes validated by `NodeId` in the published definition. Writer/source: `execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "steps",
+      "column": "switch_case_id",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Node or switch-case id of the published definition, at most 64 bytes, validated by `NodeId`. Writer/source: `execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "tenant_collection_policies",
+      "column": "updated_by",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Authenticated `Subject` of at most 255 bytes, taken from the verified principal, never from a request body. Writer/source: `quotas.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/quotas.rs"
+      ]
+    },
+    {
+      "table": "workflow_operation_states",
+      "column": "state_digest",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed SHA-256 digest (32 bytes) of a payload kept in `payloads` (accounted there) or of a canonical request; the column never holds the content. Writer/source: `declared_operations.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/declared_operations.rs"
+      ]
+    },
+    {
+      "table": "workflow_operation_states",
+      "column": "state_schema_digest",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed SHA-256 digest (32 bytes) of a payload kept in `payloads` (accounted there) or of a canonical request; the column never holds the content. Writer/source: `declared_operations.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/declared_operations.rs"
+      ]
     }
   ]
 }
