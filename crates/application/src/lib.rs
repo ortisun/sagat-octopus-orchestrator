@@ -35,6 +35,7 @@ pub mod payloads;
 pub mod primitives;
 pub mod publishing;
 pub mod quotas;
+pub mod reveal_grants;
 pub mod runs;
 pub mod sandbox;
 pub mod script_signing;
