@@ -1186,11 +1186,13 @@ impl PublicLoop {
     }
 
     async fn timer(&self) -> Option<String> {
-        sqlx::query_scalar("SELECT lifecycle FROM loop_timers WHERE run_id=$1")
-            .bind(self.run.as_uuid())
-            .fetch_optional(&self.api.db.pool)
-            .await
-            .expect("loop timer")
+        sqlx::query_scalar(
+            "SELECT lifecycle FROM loop_timers WHERE run_id=$1 ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(self.run.as_uuid())
+        .fetch_optional(&self.api.db.pool)
+        .await
+        .expect("loop timer")
     }
 }
 
@@ -1342,4 +1344,177 @@ async fn public_loop_body_failure_routes_the_error_edge_to_an_activity_that_comp
     assert_eq!(skipped, 0, "the success edge was not taken");
     assert_eq!(public.usage().await, (0, 0));
     public.verify("a loop recovered by an activity").await;
+}
+
+impl PublicLoop {
+    /// The worker session that took the first iteration is gone: nothing polls, heartbeats or holds
+    /// a lease from here on, until a new session is registered.
+    fn worker_leaves(&mut self) {
+        self.session_token.clear();
+    }
+
+    async fn worker_arrives(&mut self) {
+        let (worker, worker_id, session_token) = register_loop_worker(&self.api, "late").await;
+        self.worker = worker;
+        self.worker_id = worker_id;
+        self.session_token = session_token;
+    }
+
+    /// Steps of the run that hold or wait for a worker: leased, running or ready.
+    async fn steps_needing_a_worker(&self) -> i64 {
+        sqlx::query_scalar(
+            "SELECT count(*) FROM steps WHERE run_id=$1 AND status IN ('READY','LEASED','RUNNING')",
+        )
+        .bind(self.run.as_uuid())
+        .fetch_one(&self.api.db.pool)
+        .await
+        .expect("steps needing a worker")
+    }
+
+    async fn event_count(&self, kind: &str) -> i64 {
+        sqlx::query_scalar("SELECT count(*) FROM run_events WHERE run_id=$1 AND event_type=$2")
+            .bind(self.run.as_uuid())
+            .bind(kind)
+            .fetch_one(&self.api.db.pool)
+            .await
+            .expect("event count")
+    }
+}
+
+/// The happy demo of the zero-worker delay: the loop waits between iterations on a durable timer
+/// alone, the scheduler wakes it, and a worker that arrives only afterwards takes the next iteration.
+async fn a_delay_between_iterations_needs_no_worker(kind: &str) {
+    let mut public = start_public_loop(|name| {
+        shaped_loop_document(name, kind, Some(3_000), 120_000, ErrorTarget::None)
+    })
+    .await;
+    let placement = acquire_scheduler(&public.api, "zero-worker").await;
+    let scheduler = scheduler(&public.api, placement);
+    public.reach_the_delay(&scheduler).await;
+    public.worker_leaves();
+
+    // During the wait the engine holds a timer and nothing else: no lease, no ready task.
+    assert_eq!(public.steps_needing_a_worker().await, 0);
+    assert_eq!(public.timer().await.as_deref(), Some("WAITING"));
+    assert_eq!(public.run_state().await.0, "WAITING");
+    // Ticks before the delay elapsed change nothing.
+    let before = scheduler.tick().await;
+    assert_eq!(before.loops_advanced, 0, "{before:?}");
+    assert_eq!(public.event_count("loop.delay_elapsed").await, 0);
+
+    tokio::time::sleep(Duration::from_millis(3_200)).await;
+    let woke = scheduler.tick().await;
+    assert_eq!(woke.loops_advanced, 1, "{woke:?}");
+    assert_eq!(woke.failed, 0, "{woke:?}");
+    assert_eq!(public.event_count("loop.delay_elapsed").await, 1);
+    assert_eq!(public.timer().await.as_deref(), Some("FIRED"));
+    // The next iteration is ready for whoever comes: still no worker has been involved.
+    assert_eq!(public.steps_needing_a_worker().await, 1);
+
+    public.worker_arrives().await;
+    let second = public.poll_one("counter.increment").await;
+    assert_eq!(
+        second.instance.as_ref().expect("scoped task").instance_path[0].iteration_index,
+        1
+    );
+    public.complete(&second, "1").await;
+    public.tick_until_run(&scheduler, "SUCCEEDED").await;
+    assert_eq!(public.scope().await, "SUCCEEDED");
+    assert_eq!(public.event_count("loop.delay_elapsed").await, 1);
+    assert_eq!(public.usage().await, (0, 0));
+    public.verify("a delayed loop finished").await;
+}
+
+#[tokio::test]
+async fn a_while_loop_waits_out_its_delay_with_no_worker_connected() {
+    a_delay_between_iterations_needs_no_worker("while").await;
+}
+
+#[tokio::test]
+async fn a_repeat_until_loop_waits_out_its_delay_with_no_worker_connected() {
+    a_delay_between_iterations_needs_no_worker("repeatUntil").await;
+}
+
+/// The failure demo: the loop's time budget runs out while its delay timer is waiting. No worker is
+/// connected, so there is no iteration to drain; the timer is cancelled, the scope ends `FAILED`
+/// with the timeout code and the run follows the `onError` edge. The delay fits the budget when it
+/// is scheduled (5 s of a 9 s budget), and nothing ticks between the due time and the deadline.
+#[tokio::test]
+async fn a_loop_that_times_out_during_its_delay_follows_its_error_edge_with_no_worker() {
+    let mut public = start_public_loop(|name| {
+        shaped_loop_document(name, "while", Some(5_000), 9_000, ErrorTarget::End)
+    })
+    .await;
+    let placement = acquire_scheduler(&public.api, "delay-timeout").await;
+    let scheduler = scheduler(&public.api, placement);
+    public.reach_the_delay(&scheduler).await;
+    public.worker_leaves();
+    assert_eq!(public.steps_needing_a_worker().await, 0);
+
+    tokio::time::sleep(Duration::from_millis(9_300)).await;
+    public.tick_until_run(&scheduler, "SUCCEEDED").await;
+    assert_eq!(public.scope().await, "FAILED");
+    assert_eq!(public.timer().await.as_deref(), Some("CANCELLED"));
+    assert_eq!(public.event_count("loop.delay_elapsed").await, 0);
+    let owner: (String, Option<String>) =
+        sqlx::query_as("SELECT status,failure_code FROM steps WHERE run_id=$1 AND node='poll'")
+            .bind(public.run.as_uuid())
+            .fetch_one(&public.api.db.pool)
+            .await
+            .expect("loop owner");
+    assert_eq!(owner, ("FAILED".into(), Some("RUN_TIMED_OUT".into())));
+    assert_eq!(public.usage().await, (0, 0));
+    public.verify("a loop timed out during its delay").await;
+}
+
+/// A delay that cannot end before the loop's budget does is never scheduled: the returned iteration
+/// waits and the loop times out at its deadline (the early timeout the scheduler used to request
+/// was refused by the store on every tick, which counted as a failed action).
+#[tokio::test]
+async fn a_delay_longer_than_the_loop_budget_waits_for_the_deadline_without_a_timer() {
+    let mut public = start_public_loop(|name| {
+        shaped_loop_document(name, "while", Some(30_000), 6_000, ErrorTarget::End)
+    })
+    .await;
+    let placement = acquire_scheduler(&public.api, "delay-overrun").await;
+    let scheduler = scheduler(&public.api, placement);
+    assert_eq!(
+        scheduler.tick().await.loops_advanced,
+        1,
+        "the loop is entered"
+    );
+    let body = public.poll_one("counter.increment").await;
+    public.complete(&body, "0").await;
+    public.worker_leaves();
+    // The first tick returns the body; after that the loop only waits for its deadline.
+    for _ in 0..3 {
+        let report = scheduler.tick().await;
+        assert_eq!(report.failed, 0, "{report:?}");
+    }
+    let waiting = scheduler.tick().await;
+    assert_eq!(
+        (waiting.failed, waiting.loops_advanced),
+        (0, 0),
+        "{waiting:?}"
+    );
+    assert_eq!(
+        public.timer().await,
+        None,
+        "no delay is scheduled past the deadline"
+    );
+    assert_eq!(public.run_state().await.0, "RUNNING");
+
+    tokio::time::sleep(Duration::from_millis(6_200)).await;
+    public.tick_until_run(&scheduler, "SUCCEEDED").await;
+    assert_eq!(public.scope().await, "FAILED");
+    assert_eq!(public.timer().await, None);
+    let owner: (String, Option<String>) =
+        sqlx::query_as("SELECT status,failure_code FROM steps WHERE run_id=$1 AND node='poll'")
+            .bind(public.run.as_uuid())
+            .fetch_one(&public.api.db.pool)
+            .await
+            .expect("loop owner");
+    assert_eq!(owner, ("FAILED".into(), Some("RUN_TIMED_OUT".into())));
+    assert_eq!(public.usage().await, (0, 0));
+    public.verify("a loop timed out before its delay").await;
 }

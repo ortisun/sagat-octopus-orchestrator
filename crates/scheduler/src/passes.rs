@@ -2099,14 +2099,12 @@ where
         } else if let Some(delay) = delay {
             let due_at = occurred_at + delay;
             if due_at > loop_state.deadline() {
-                self.store
-                    .start_drain(&LoopDrainCommand::new(
-                        transition(state.version()),
-                        execution::LoopDrainReason::TimedOut,
-                        uuid::Uuid::now_v7(),
-                    )?)
-                    .await?;
-                return Ok(LoopAdvance::DrainStarted);
+                // The delay cannot end inside the loop's budget, so it is never scheduled. The
+                // timeout code means the deadline was reached, which the store insists on before it
+                // accepts a timed-out drain (it refused the early one this branch used to ask for on
+                // every tick): the returned iteration waits and the deadline check above ends the
+                // loop when it is reached.
+                return Ok(LoopAdvance::Waiting);
             }
             (
                 LoopContinuation::DelayUntil(due_at),
