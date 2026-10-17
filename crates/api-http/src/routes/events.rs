@@ -8,10 +8,11 @@ use std::time::Duration;
 
 use axum::Json;
 use axum::body::Bytes;
-use axum::extract::{Path, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::extract::{Path, Query, State};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use sagat_application::api_admission::{ApiOperation, ApiTarget};
 use sagat_application::error::AppError;
+use sagat_application::event_payloads::{EventPayloadError, EventReveal};
 use sagat_application::events::{EndpointSettings, PublishRequest, WebhookRequest};
 use sagat_application::identity::TraceLink;
 use sagat_domain::events::{
@@ -19,12 +20,13 @@ use sagat_domain::events::{
     EndpointStatus, EventId, EventKey,
 };
 use sagat_domain::execution::CorrelationKey;
+use sagat_domain::identity::Permission;
 use sagat_domain::identity::{NamespaceId, Slug};
 use sagat_domain::secrets::SecretName;
 use sagat_domain::workflow::EventType;
 use sagat_telemetry::TraceContext;
 
-use crate::admission::{admit, namespace_slug};
+use crate::admission::{admit, admit_resolved_namespace, namespace_slug};
 use crate::dto_events::{
     AcceptedBody, CreateEndpointBody, EndpointBody, EndpointListBody, EventBody, PublishEventBody,
     UpdateEndpointBody,
@@ -298,21 +300,58 @@ pub async fn publish_event<B: Governance>(
     Ok((StatusCode::ACCEPTED, Json(AcceptedBody::from(&received))))
 }
 
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct EventReadQuery {
+    reveal: Option<String>,
+}
+
+fn reveal(value: Option<&str>) -> Result<EventReveal, ApiError> {
+    match value {
+        None => Ok(EventReveal::Structure),
+        Some("pii") => Ok(EventReveal::Pii),
+        Some(_) => Err(ApiError::validation("reveal must be pii")),
+    }
+}
+
+fn event_payload_error(error: EventPayloadError) -> ApiError {
+    match error {
+        EventPayloadError::Application(error) => error.into(),
+        EventPayloadError::PiiRevealNotGranted => ApiError::from(AppError::Forbidden {
+            permission: Permission::PayloadRevealPii,
+        })
+        .with_reason("PII_REVEAL_NOT_GRANTED"),
+    }
+}
+
 pub async fn get_event<B: Governance>(
     caller: Caller,
     State(state): State<B>,
     Path((namespace, source, event_id)): Path<(String, String, String)>,
-) -> Result<Json<EventBody>, ApiError> {
+    Query(query): Query<EventReadQuery>,
+) -> Result<(HeaderMap, Json<EventBody>), ApiError> {
     let key = EventKey {
         source: Slug::parse(&source).map_err(|_| ApiError::not_found())?,
         event_id: EventId::parse(&event_id).map_err(|_| ApiError::not_found())?,
     };
-    let namespace =
-        admitted_namespace(&state, &caller, &namespace, ApiOperation::EventRead).await?;
-    let event = events(&state)?
-        .event(&caller.session.principal, namespace, &key, &caller.ctx)
+    let namespace = namespace_id(&namespace)?;
+    let service = state.event_payloads().ok_or_else(ApiError::not_found)?;
+    let prepared = service
+        .prepare_event(
+            &caller.session.principal,
+            namespace,
+            key,
+            reveal(query.reveal.as_deref())?,
+            &caller.ctx,
+        )
         .await?;
-    Ok(Json(EventBody::from(&event)))
+    admit_resolved_namespace(&state, &caller, prepared.namespace_id()).await?;
+    let event = service.event(prepared).await.map_err(event_payload_error)?;
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-store"),
+    );
+    Ok((headers, Json(EventBody::from(&event))))
 }
 
 // ------------------------------------------------------------------------------ the public URL
