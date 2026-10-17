@@ -6,4 +6,13 @@ ignore = [
   # VERIFIES signatures with public keys (jsonwebtoken, feature `rust_crypto`, for RS256 tokens), and
   # never signs or decrypts with RSA. See research.md, gap G16.
   "RUSTSEC-2023-0071",
+  # rustls 0.23.45, four advisories published 2026-10-14 and fixed in 0.23.46, which is younger than
+  # the two-week rule for dependencies until 2026-10-28. Only `ring`, `std`, `tls12` and `log` are
+  # enabled: no ECH (0347), no brotli certificate decompression (0348), no post-quantum hybrid key
+  # exchange to downgrade (0349), and no rustls session value is ever formatted with `Debug` (0346).
+  # Remove all four and upgrade on or after 2026-10-28. See research.md, gap G271.
+  "RUSTSEC-2026-0346",
+  "RUSTSEC-2026-0347",
+  "RUSTSEC-2026-0348",
+  "RUSTSEC-2026-0349",
 ]
