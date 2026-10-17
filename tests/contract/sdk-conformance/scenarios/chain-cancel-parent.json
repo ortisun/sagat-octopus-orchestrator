@@ -1,0 +1,47 @@
+{
+  "name": "chain-cancel-parent",
+  "description": "G370, D374: a parent is cancelled while the continuation chain it started is mid-chain. The chain waits for an event the scenario controls, so the segment is held open without a sleep. Cancelling the parent (propagate) cancels the chain's current head; a detached chain survives the cancel and keeps continuing.",
+  "workflows": {
+    "kid": {
+      "name": "chain-hold-kid-runtime",
+      "chainPolicy": { "maxSegments": 3, "timeoutMs": 86400000 },
+      "program": [
+        { "op": "waitForEvent", "id": "hold", "options": { "eventType": "chain.hold", "correlationExpr": "input.key", "timeoutMs": 600000 } },
+        { "op": "continueAsNew", "id": "roll", "input": "input" }
+      ]
+    },
+    "mother": {
+      "name": "chain-hold-mother-runtime",
+      "program": [
+        { "op": "invokeChild", "id": "kid", "workflow": "chain-hold-kid-runtime", "options": { "input": "input.kid" } },
+        { "op": "end", "id": "done" }
+      ]
+    },
+    "loose": {
+      "name": "chain-hold-loose-runtime",
+      "program": [
+        { "op": "invokeChild", "id": "kid", "workflow": "chain-hold-kid-runtime", "options": { "input": "input.kid", "cancelPolicy": "detach" } },
+        { "op": "end", "id": "done" }
+      ]
+    }
+  },
+  "steps": [
+    { "id": "start", "op": "start", "workflow": "mother", "input": { "kid": { "key": "hold-a-{{unique}}" } } },
+    { "id": "child-started", "op": "awaitJournal", "run": "start", "eventType": "child.started", "stepId": "kid", "timeoutMs": 10000 },
+    { "id": "child-waiting", "op": "list", "status": "WAITING", "waitForCount": 2, "countOnly": true },
+    { "id": "release", "op": "publishEvent", "type": "chain.hold", "correlationKey": "hold-a-{{unique}}", "eventId": "release-a-{{unique}}", "data": { "released": true } },
+    { "id": "first-segment-ended", "op": "list", "status": "SUCCEEDED", "waitForCount": 1, "countOnly": true },
+    { "id": "cancel-parent", "op": "cancel", "run": "start", "reason": "cancel the parent mid-chain" },
+    { "id": "parent-done", "op": "waitForCompletion", "run": "start", "timeoutMs": 20000 },
+    { "id": "cancelled", "op": "list", "status": "CANCELLED", "waitForCount": 2, "countOnly": true },
+
+    { "id": "loose-start", "op": "start", "workflow": "loose", "input": { "kid": { "key": "hold-b-{{unique}}" } } },
+    { "id": "loose-child-started", "op": "awaitJournal", "run": "loose-start", "eventType": "child.started", "stepId": "kid", "timeoutMs": 10000 },
+    { "id": "loose-child-waiting", "op": "list", "status": "WAITING", "waitForCount": 2, "countOnly": true },
+    { "id": "cancel-loose", "op": "cancel", "run": "loose-start", "reason": "cancel a parent that detached its chain" },
+    { "id": "loose-done", "op": "waitForCompletion", "run": "loose-start", "timeoutMs": 20000 },
+    { "id": "release-detached", "op": "publishEvent", "type": "chain.hold", "correlationKey": "hold-b-{{unique}}", "eventId": "release-b-{{unique}}", "data": { "released": true } },
+    { "id": "detached-continued", "op": "list", "status": "SUCCEEDED", "waitForCount": 2, "countOnly": true },
+    { "id": "detached-waiting", "op": "list", "status": "WAITING", "waitForCount": 1, "countOnly": true }
+  ]
+}

@@ -431,11 +431,26 @@ public final class SagatClient implements AutoCloseable {
                 raw.path("accepted").isBoolean() && raw.path("accepted").booleanValue(),
                 optStr(raw, "runStatus"),
                 raw.path("runVersion").isIntegralNumber() ? Long.valueOf(raw.path("runVersion").longValue()) : null,
+                optStr(raw, "newRunId"),
                 raw);
     }
 
     public CompletableFuture<OperationResult> operateAsync(String runId, OperateAction action, String reason, OperateOptions options) {
         return async(() -> operate(runId, action, reason, options));
+    }
+
+    /**
+     * Starts a new run of the same version, with the same input and correlation id, from a run that ended
+     * ({@code reason} has 8 to 2000 characters). A run that has not ended is refused with {@code CONFLICT}. The
+     * answer's {@link OperationResult#newRunId()} is the new run, which names its origin in {@link Run#rerunOf()}; a
+     * segment of a continuation chain starts a run with a chain of its own.
+     */
+    public OperationResult rerunAsNew(String runId, String reason, OperateOptions options) {
+        return operate(runId, OperateAction.RERUN_AS_NEW, reason, options);
+    }
+
+    public CompletableFuture<OperationResult> rerunAsNewAsync(String runId, String reason, OperateOptions options) {
+        return async(() -> rerunAsNew(runId, reason, options));
     }
 
     /** Cancels a run. */
@@ -1046,6 +1061,7 @@ public final class SagatClient implements AutoCloseable {
                 (int) num(raw, "depth", 0),
                 parent,
                 toRunChain(raw.path("chain")),
+                optStr(raw, "rerunOf"),
                 raw);
     }
 

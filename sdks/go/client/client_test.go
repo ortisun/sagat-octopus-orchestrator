@@ -922,6 +922,58 @@ func TestCancelAndSignalAreOperationsWithAReasonAndAPayloadAndTheResultIsTyped(t
 	}
 }
 
+func TestRerunAsNewNamesTheNewRunAndTheNewRunNamesItsOrigin(t *testing.T) {
+	const started = "0190aaaa-0000-7000-8000-000000000021"
+	f := newFake(t)
+	f.answer(func(r seen, w http.ResponseWriter) {
+		if strings.HasSuffix(r.url, "/operations") {
+			reply(w, 202, map[string]any{"operationId": "op-2", "accepted": true, "runStatus": "SUCCEEDED", "runVersion": 9, "newRunId": started})
+			return
+		}
+		reply(w, 200, run(map[string]any{"runId": started, "rerunOf": runUUID}))
+	})
+	c := newClient(t, f)
+	rerun, err := c.RerunAsNew(context.Background(), runUUID, "run it again after the fix", client.WithIdempotencyKey("rerun-key-001"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rerun.OperationID != "op-2" || !rerun.Accepted || rerun.RunStatus != client.StatusSucceeded || rerun.RunVersion != 9 || rerun.NewRunID != started {
+		t.Errorf("%+v", rerun)
+	}
+	first := f.requests()[0]
+	if first.url != "/v1/runs/"+runUUID+"/operations" || fmt.Sprint(first.json(t)) != "map[action:RERUN_AS_NEW reason:run it again after the fix]" {
+		t.Errorf("%s %s", first.url, first.body)
+	}
+	if first.headers.Get("Idempotency-Key") != "rerun-key-001" {
+		t.Errorf("%q", first.headers.Get("Idempotency-Key"))
+	}
+	again, err := c.Get(context.Background(), started)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.RerunOf != runUUID {
+		t.Errorf("RerunOf %q", again.RerunOf)
+	}
+	f.answer(func(_ seen, w http.ResponseWriter) { reply(w, 200, run(nil)) })
+	plain, err := c.Get(context.Background(), runUUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain.RerunOf != "" {
+		t.Errorf("a run that is not a rerun has no origin: %q", plain.RerunOf)
+	}
+	f.answer(func(_ seen, w http.ResponseWriter) {
+		reply(w, 202, map[string]any{"operationId": "op-3", "accepted": true, "runStatus": "CANCELLING"})
+	})
+	cancelled, err := c.Cancel(context.Background(), runUUID, "no longer needed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cancelled.NewRunID != "" {
+		t.Errorf("only a rerun starts a run: %q", cancelled.NewRunID)
+	}
+}
+
 func TestWaitingForCompletionPollsUntilTheRunIsTerminal(t *testing.T) {
 	f := newFake(t)
 	polls := 0

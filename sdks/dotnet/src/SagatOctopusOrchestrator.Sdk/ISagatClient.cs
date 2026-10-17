@@ -33,6 +33,14 @@ public interface ISagatClient
     /// <summary>Pauses, resumes, cancels or decides about a run.</summary>
     Task<OperationResult> OperateAsync(string runId, RunAction action, string reason, OperateOptions? options = null, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Starts a new run of the same version, with the same input and correlation id, from a run that ended
+    /// (the server's reason has 8 to 2000 characters). A run that has not ended is refused with <c>CONFLICT</c>. The
+    /// answer's <see cref="OperationResult.NewRunId"/> is the new run, which names its origin in <see cref="Run.RerunOf"/>;
+    /// a segment of a continuation chain starts a run with a chain of its own.
+    /// </summary>
+    Task<OperationResult> RerunAsNewAsync(string runId, string reason, OperateOptions? options = null, CancellationToken cancellationToken = default);
+
     /// <summary>Cancels a run (the server's reason has 8 to 2000 characters).</summary>
     Task<OperationResult> CancelAsync(string runId, string reason, OperateOptions? options = null, CancellationToken cancellationToken = default);
 

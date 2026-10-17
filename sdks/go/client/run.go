@@ -69,6 +69,9 @@ type Run struct {
 	// A segment that is SUCCEEDED with CompletionKind CONTINUED ended into its successor: it is
 	// not the process outcome, which is the chain's final outcome (WaitForChainCompletion).
 	Chain *RunChainSegment
+	// RerunOf is the ended run this one was started again from (ActionRerunAsNew), or empty for a
+	// run that is not a rerun.
+	RerunOf string
 	// Raw is the answer as the server sent it, member by member, so that a field of a newer server
 	// is reachable.
 	Raw map[string]json.RawMessage
@@ -137,7 +140,10 @@ type OperationResult struct {
 	// RunStatus is empty when the server did not say.
 	RunStatus  RunStatus
 	RunVersion int64
-	Raw        map[string]json.RawMessage
+	// NewRunID is, for ActionRerunAsNew, the run that was started (it names its origin in RerunOf);
+	// empty for any other action.
+	NewRunID string
+	Raw      map[string]json.RawMessage
 }
 
 // ApprovalDecision is the outcome an eligible actor records for an approval request.
@@ -375,6 +381,7 @@ func runOf(m map[string]json.RawMessage) (*Run, error) {
 	run.Deadline, _ = jsonx.Time(m, "deadline")
 	run.TraceID, _ = jsonx.String(m, "traceId")
 	run.CorrelationID, _ = jsonx.String(m, "correlationId")
+	run.RerunOf, _ = jsonx.String(m, "rerunOf")
 	depth, _ := jsonx.Int(m, "depth")
 	run.Depth = int(depth)
 	if raw, present := m["parent"]; present && !jsonx.IsNull(raw) {

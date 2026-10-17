@@ -12,7 +12,7 @@ continuation (US02–US07) through accepted dependency-ordered slices. US01, bou
 run-addressed Query/Update and root approval have public runtime evidence. Chain-addressed Query and
 Update have transaction and HTTP evidence, and public Query/Update after a stateful handoff pass the
 five-SDK conformance. Direct public continuation transfers the declared state snapshot atomically.
-Wider chain semantics (child continuation, direct-root waits) and the remaining primitive release
+Wider chain semantics (child continuation, wait-entry continuation) are built and tested; wider graphs and the remaining primitive release
 tasks stay open until their named tests pass.
 The design retains an acyclic immutable IR, adds durable scoped instance identities and reuses the
 pure reducer, PostgreSQL transaction boundary, leases, quotas and outbox.

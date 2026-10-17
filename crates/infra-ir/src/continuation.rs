@@ -291,17 +291,31 @@ pub(crate) fn parse_published(document: &Value) -> Result<ParsedContinuation, Ir
     else {
         return Err(issue("/entrypoint", "entrypoint does not name a node"));
     };
-    if entry.get("type").and_then(Value::as_str) != Some("activity") {
+    // An activity entrypoint, or an event wait whose successor is created already waiting (G372).
+    // Anything else would need the hand-off to plan more than one kind of entry.
+    let entry_type = entry.get("type").and_then(Value::as_str);
+    let wait_entry = entry_type == Some("waitEvent");
+    if entry_type != Some("activity") && !wait_entry {
         return Err(IrError::Unsupported {
             node: entrypoint.chars().take(64).collect(),
-            kind: entry
-                .get("type")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown")
-                .chars()
-                .take(32)
-                .collect(),
-            reason: "a published continuation currently requires an activity entrypoint",
+            kind: entry_type.unwrap_or("unknown").chars().take(32).collect(),
+            reason: "a published continuation starts with an activity or an event wait",
+        });
+    }
+    // The successor begins to wait in the hand-off transaction, so the wait must be the plain one:
+    // no timeout route (a timed-out wait would have to be routed by a segment that has no past), no
+    // look-back (it would re-read the event that ended the predecessor's wait) and no declared state.
+    if wait_entry
+        && (entry.get("onTimeout").is_some()
+            || entry
+                .get("lookbackMs")
+                .is_some_and(|value| value.as_u64() != Some(0))
+            || document.get("state").is_some())
+    {
+        return Err(IrError::Unsupported {
+            node: entrypoint.chars().take(64).collect(),
+            kind: "waitEvent".to_owned(),
+            reason: "a continuation that starts with an event wait supports no timeout route, no look-back and no declared state",
         });
     }
     let find_node = |id: &str| {
@@ -415,11 +429,17 @@ pub(crate) fn parse_published(document: &Value) -> Result<ParsedContinuation, Ir
                 && gate.get("onError").is_none()
                 && nodes.len() == 2 + ids(&[approve, reject, expire])
         });
-    if entry.get("onError").is_some() || (!direct && !waiting && !conditional && !approval_gated) {
+    // After an event wait only the direct continuation and the single condition are published.
+    let shape_allowed = if wait_entry {
+        direct || conditional
+    } else {
+        direct || waiting || conditional || approval_gated
+    };
+    if entry.get("onError").is_some() || !shape_allowed {
         return Err(IrError::Unsupported {
             node: entrypoint.chars().take(64).collect(),
             kind: "continuation".to_owned(),
-            reason: "the runtime supports an activity followed by a continuation that transfers input and, when declared, the exact state snapshot; one condition may select that continuation or an end; an input-only waitEvent after the entry activity may continue after its signal; an approval after the entry activity may route its approval to the continuation and its rejection and expiry to end nodes",
+            reason: "the runtime supports an activity followed by a continuation that transfers input and, when declared, the exact state snapshot; one condition may select that continuation or an end; an input-only waitEvent after the entry activity may continue after its signal; an approval after the entry activity may route its approval to the continuation and its rejection and expiry to end nodes; an entry event wait supports only an input-only continuation, or one condition choosing between it and an end",
         });
     }
     parse(document)

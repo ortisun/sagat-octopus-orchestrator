@@ -17,7 +17,9 @@ The accepted implementation scope includes US01–US07. US01 supplies practical 
 public runtime evidence. Continuation has restricted public paths with an activity followed by
 continuation, an activity and condition choosing continuation or a terminal end, or an activity
 and signal-controlled `waitEvent` followed by input-only continuation. Direct and conditional
-continuation may transfer the exact declared state snapshot; direct-root waits remain closed.
+continuation may transfer the exact declared state snapshot. A continuation may also start with a
+`waitEvent` (followed by an input-only continuation, or one condition choosing it or an `end`): the successor
+is created already waiting, in the hand-off transaction.
 Collections have a restricted public path: one or more root `forEach` nodes ending at `end`, with
 each referenced body containing a chain of one to eight activities followed by one `return`; a body
 activity may declare `compensateWith`, `reconcileWith`, `irreversible` and `highRisk`, and a failed or
