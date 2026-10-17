@@ -329,6 +329,8 @@ pub enum ProjectionFailure {
     SchemaMismatch,
     #[error("the retained payload exceeds the classification bound")]
     PayloadTooLarge,
+    #[error("the audience cannot receive the classification carrier root")]
+    NotDisclosable,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -576,6 +578,14 @@ mod tests {
             }
             .withheld_reason(),
             sagat_domain::classification::WithheldReason::LevelNotPermitted
+        );
+    }
+
+    #[test]
+    fn an_omitted_root_has_an_explicit_value_free_result() {
+        assert_eq!(
+            ProjectionFailure::NotDisclosable.to_string(),
+            "the audience cannot receive the classification carrier root"
         );
     }
 }
