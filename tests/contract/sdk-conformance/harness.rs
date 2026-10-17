@@ -561,7 +561,9 @@ async fn scope_evidence(run: &Run, state: &Value, summary: bool) -> Result<Value
 /// who was refused or allowed, with the trace of the call that caused it. A scenario asks for it with
 /// `"auditEvidence": true`.
 async fn audit_evidence(run: &Run) -> Result<Value, String> {
-    let rows: Vec<(String, String, String, Option<String>, Option<String>)> = sqlx::query_as(
+    /// Action, actor, resource type, reason and trace of one audit row.
+    type AuditRow = (String, String, String, Option<String>, Option<String>);
+    let rows: Vec<AuditRow> = sqlx::query_as(
         "SELECT action, actor, resource_type, reason, trace_id FROM audit_records \
          WHERE tenant_id = $1 AND action LIKE 'approval.%' ORDER BY created_at, id",
     )
