@@ -695,6 +695,12 @@ async fn a_scheduler_replica_that_takes_over_mid_compensation_finishes_it() {
         .execute(&flow.api.db.pool)
         .await
         .expect("the old leases lapse");
+    // Its membership lapses with it. While the dead process still counted as a live replica the new
+    // one was entitled to about half of the shards, and the run's shard was in the other half.
+    sqlx::query("UPDATE scheduler_members SET expires_at = now() - interval '1 second'")
+        .execute(&flow.api.db.pool)
+        .await
+        .expect("the old membership lapses");
     let placement = Placement::new(format!("replica-{name}"));
     Keeper::new(
         flow.api.executions.clone(),

@@ -1021,3 +1021,9 @@ zero-worker delay evidence. Evidence is in `tests/integration/workflow-primitive
   error edge. Recommendation: allow activities after the success edge too, with the same plain
   recovery rules, once the owner decides how a root activity after a loop is compensated if a later
   step fails (a loop saga boundary).
+
+- **G407 resolved (2026-10-17).** `a_scheduler_replica_that_takes_over_mid_compensation_finishes_it` failed
+  about half of its runs because the dead scheduler's membership row was still unexpired: the new replica
+  counted two live replicas, was entitled to about half of the shards, and the run's shard was in the
+  other half. The test now lapses `scheduler_members` with the shard leases, which is what a gone
+  process does. Eight repeated runs pass; before the change 3 of 6 failed.
