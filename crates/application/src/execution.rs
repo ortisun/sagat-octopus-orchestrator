@@ -640,6 +640,23 @@ pub trait PathExecutionTx: Send {
         instance: &ExecutionInstanceId,
     ) -> impl Future<Output = Result<Option<OffsetDateTime>, StoreError>> + Send;
 
+    fn worker_drained(
+        &mut self,
+        subject: &str,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    fn worker_session_room(
+        &mut self,
+        session_id: uuid::Uuid,
+        token_hash: &[u8],
+        subject: &str,
+    ) -> impl Future<Output = Result<u32, StoreError>> + Send;
+
+    fn bound_patterns(
+        &mut self,
+        subject: &str,
+    ) -> impl Future<Output = Result<Vec<String>, StoreError>> + Send;
+
     fn lease_unexpired(
         &mut self,
         instance: &ExecutionInstanceId,

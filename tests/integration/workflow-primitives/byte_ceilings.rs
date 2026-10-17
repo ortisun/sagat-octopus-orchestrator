@@ -4,6 +4,7 @@
 
 use sagat_application::clock::SystemClock;
 use sagat_application::entropy::SystemEntropy;
+use sagat_application::entropy::Token;
 use sagat_application::execution::{
     MAX_PAYLOAD_BYTES, MAX_RUN_OUTPUT_BYTES, PathExecutionStore, PathExecutionTx, ScopeInput,
 };
@@ -265,6 +266,30 @@ async fn a_member_output_over_the_value_ceiling_is_refused_and_the_lease_survive
         .expect("bounded mutation fence")
         .expect("run");
     assert_eq!(fenced.snapshot().state.path(), &path);
+    assert!(
+        !fenced
+            .worker_drained(world.worker.subject().as_str())
+            .await
+            .expect("drain fence")
+    );
+    assert!(
+        fenced
+            .worker_session_room(
+                session.0,
+                &Token::hash_of(&session.1),
+                world.worker.subject().as_str(),
+            )
+            .await
+            .expect("session room")
+            > 0
+    );
+    assert!(
+        !fenced
+            .bound_patterns(world.worker.subject().as_str())
+            .await
+            .expect("bindings")
+            .is_empty()
+    );
     let completed =
         ExecutionInstanceId::in_path(path.clone(), NodeId::parse("work").expect("activity node"));
     let reported_token = tasks[0].lease_token.hash();
