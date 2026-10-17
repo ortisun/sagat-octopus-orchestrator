@@ -14,6 +14,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from recovery import restore
 
 ROOT = pathlib.Path(__file__).resolve().parents[3]
 project = "sagat-db017-proof-" + uuid.uuid4().hex[:8]
@@ -134,6 +135,13 @@ COMMIT;"""
     result = http("GET", f"/namespaces/{ns}/runs/{admitted['runId']}/database-results/query")
     assert result["rows"] == [[{"type":"integer","value":"1"},{"type":"text","value":"ready"}]]
     print("PASS: built container runner, verified engine/target TLS, OpenBao secret, probe, retained typed result and admission replay", flush=True)
+    def verify_restored():
+        wait(lambda: http("GET", "/ready"), "restored control-plane")
+        assert http("GET", f"/namespaces/{ns}/runs/{admitted['runId']}/database-results/query") == result
+        assert http("POST", f"/namespaces/{ns}/database-executions", body, key=key, expected=201)["runId"] == admitted["runId"]
+        fresh = http("POST", f"/namespaces/{ns}/database-executions", body, expected=201)
+        finished(fresh["runId"], "SUCCEEDED")
+    restore(dc, private, "https://127.0.0.1:" + env["SAGAT_BAO_PORT"], verify_restored)
     dc("stop", "openbao")
     failed = http("POST", f"/namespaces/{ns}/database-executions", body, expected=201)
     finished(failed["runId"], "FAILED")

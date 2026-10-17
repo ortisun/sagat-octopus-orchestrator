@@ -5,6 +5,7 @@ mod cleanup;
 mod cleanup_retention;
 mod consumers;
 mod executor;
+mod key_rotation;
 mod output;
 mod output_blobs;
 mod policies;
@@ -222,6 +223,7 @@ async fn durable_provider_intents_reconcile_without_plaintext_or_duplicate_rotat
     admission::run(&w, &service).await;
     cleanup::run(provider.clone()).await;
     cleanup_retention::run(provider.clone()).await;
+    key_rotation::run(provider.clone()).await;
     consumers::run(provider.clone()).await;
     signing_consumers::run(provider.clone()).await;
     policies::run(provider.clone()).await;

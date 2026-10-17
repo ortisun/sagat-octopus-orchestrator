@@ -18,6 +18,7 @@ use tokio::{
 };
 use tokio_postgres::{Client, NoTls, types::ToSql};
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument;
 use zeroize::Zeroizing;
 
 /// Serialized bounded retained content. Debug never prints cells or column names.
@@ -115,11 +116,14 @@ impl PostgresExecutor {
             })?;
             Ok::<_, ExecutionError>((address, client, connection))
         };
+        let connect_started = Instant::now();
         let connected = tokio::select! {
             biased;
             () = cancelled.cancelled() => Err(ExecutionError::Cancelled),
-            result = timeout_at(connect_deadline,connect) => result.unwrap_or(Err(ExecutionError::Timeout)),
+            result = timeout_at(connect_deadline,connect.instrument(tracing::info_span!("database.connect"))) => result.unwrap_or(Err(ExecutionError::Timeout)),
         };
+        metrics::histogram!("database_connection_seconds", "outcome" => if connected.is_ok() { "connected" } else { "refused" })
+            .record(connect_started.elapsed().as_secs_f64());
         drop(credentials);
         let (address, mut client, mut connection) = connected?;
         // The driver's Connection Future logs untrusted server notices. Poll messages explicitly

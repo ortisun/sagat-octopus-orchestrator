@@ -1,6 +1,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod ad_hoc;
+mod crash;
 mod fairness;
+mod performance;
 mod proxy;
 #[path = "../../support/mod.rs"]
 mod support;
@@ -114,6 +116,16 @@ async fn failure(p: &Platform, run: &str, expected: &str) {
 
 #[tokio::test]
 async fn isolated_process_executes_openbao_capabilities_and_reports_bounded_results() {
+    scenario(false).await;
+}
+
+#[tokio::test]
+#[ignore = "measurement: run explicitly on a quiet machine with --ignored"]
+async fn measure_managed_database_phase_latency() {
+    scenario(true).await;
+}
+
+async fn scenario(benchmark: bool) {
     let binary = std::env::var_os("SAGAT_DATABASE_RUNNER_BIN")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
@@ -227,13 +239,19 @@ async fn isolated_process_executes_openbao_capabilities_and_reports_bounded_resu
                 "SAGAT_DATABASE_RUNNER_METRICS_ADDR",
                 metrics_addr.to_string(),
             )
-            .env("RUST_LOG", "trace")
+            .env("RUST_LOG", if benchmark { "info" } else { "trace" })
             .env("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", &collector.url)
             .stdout(Stdio::from(logs.try_clone().unwrap()))
             .stderr(Stdio::from(logs))
             .spawn()
             .unwrap(),
     );
+    if benchmark {
+        performance::run(&p, &ns, &proxy, &collector).await;
+        child.stop().await;
+        admin.close().await;
+        return;
+    }
     ad_hoc::run(&p, &ns).await;
     let run = start(
         &p,
@@ -375,6 +393,7 @@ async fn isolated_process_executes_openbao_capabilities_and_reports_bounded_resu
     assert!(metrics.contains("database_runner_attempt_seconds"));
     assert!(metrics.contains("DATABASE_CAPACITY_EXHAUSTED"));
     child.stop().await;
+    crash::run(&p, &proxy, &admin, &mut config, &binary, &config_file).await;
     let spans = collector.named("database.runner.attempt");
     let first = spans
         .iter()
@@ -383,7 +402,7 @@ async fn isolated_process_executes_openbao_capabilities_and_reports_bounded_resu
     assert_eq!(first.attr("tenant_id"), Some(p.tenant.to_string().as_str()));
     assert_eq!(first.attr("namespace_id"), Some(ns.as_str()));
     assert!(first.parent.is_some());
-    let exported = format!("{spans:?}");
+    let exported = format!("{:?}", collector.spans());
     for sensitive in [
         &jwt,
         "runner-password-canary",

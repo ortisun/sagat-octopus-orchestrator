@@ -7,9 +7,10 @@ use sagat_api_grpc::pb::{
 use std::{
     pin::Pin,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
+    time::{Duration, Instant},
 };
 use tokio_stream::{Stream, StreamExt};
 use tonic::{
@@ -23,6 +24,11 @@ pub struct Faults {
     pub wrong_namespace: AtomicBool,
     pub heartbeats: AtomicUsize,
     pub receipts: AtomicUsize,
+    pub block_complete: AtomicBool,
+    pub blocked_completions: AtomicUsize,
+    pub measure: AtomicBool,
+    pub resolutions: Mutex<Vec<Duration>>,
+    pub completions: Mutex<Vec<Duration>>,
 }
 struct Proxy {
     client: WorkerServiceClient<Channel>,
@@ -95,7 +101,19 @@ impl WorkerService for Proxy {
         &self,
         r: Request<pb::CompleteStepRequest>,
     ) -> Result<Response<pb::StepCommandResponse>, Status> {
+        if self.faults.block_complete.load(Ordering::SeqCst) {
+            self.faults
+                .blocked_completions
+                .fetch_add(1, Ordering::SeqCst);
+            return std::future::pending().await;
+        }
+        let started = Instant::now();
         let response = self.client.clone().complete_step(r).await?;
+        if self.faults.measure.load(Ordering::SeqCst) {
+            let mut samples = self.faults.completions.lock().unwrap();
+            assert!(samples.len() < 512);
+            samples.push(started.elapsed());
+        }
         if response.get_ref().already_applied {
             self.faults.receipts.fetch_add(1, Ordering::SeqCst);
         }
@@ -122,7 +140,13 @@ impl WorkerService for Proxy {
         &self,
         r: Request<pb::ResolveSecretsRequest>,
     ) -> Result<Response<pb::ResolvedDatabase>, Status> {
+        let started = Instant::now();
         let mut response = self.client.clone().resolve_database(r).await?;
+        if self.faults.measure.load(Ordering::SeqCst) {
+            let mut samples = self.faults.resolutions.lock().unwrap();
+            assert!(samples.len() < 512);
+            samples.push(started.elapsed());
+        }
         if self.faults.wrong_namespace.load(Ordering::SeqCst) {
             response.get_mut().namespace_id = uuid::Uuid::new_v4().to_string();
         }
