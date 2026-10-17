@@ -332,3 +332,80 @@ fn a_shared_reference_is_resolved_in_each_inherited_context() {
             && row.path.as_deref() == Some("/inputSchema/properties/open")
     }));
 }
+
+#[test]
+fn object_fallback_does_not_jump_past_an_explicit_ancestor() {
+    let before = json!({"inputSchema":{
+        "x-sagat-classification":"public",
+        "properties":{"a":{
+            "type":"object", "x-sagat-classification":"public"
+        }},
+        "additionalProperties":{
+            "type":"object", "x-sagat-classification":"public",
+            "properties":{"b":{"x-sagat-classification":"public"}}
+        }
+    }});
+    let mut after = before.clone();
+    after["inputSchema"]["properties"]["a"]["properties"] =
+        json!({"b":{"x-sagat-classification":"public"}});
+    let diff = JsonIrCodec
+        .diff(
+            &serde_json::to_vec(&before).expect("JSON"),
+            &serde_json::to_vec(&after).expect("JSON"),
+        )
+        .expect("diff");
+    assert!(diff.attention.iter().any(|row| {
+        row.code == "CLASSIFICATION_RELAXED"
+            && row.path.as_deref() == Some("/inputSchema/properties/a/properties/b")
+    }));
+}
+
+#[test]
+fn array_fallback_does_not_jump_past_an_explicit_ancestor() {
+    let before = json!({"inputSchema":{
+        "type":"array", "x-sagat-classification":"public",
+        "prefixItems":[{
+            "type":"array", "x-sagat-classification":"public"
+        }],
+        "items":{
+            "type":"array", "x-sagat-classification":"public",
+            "prefixItems":[{"x-sagat-classification":"public"}]
+        }
+    }});
+    let mut after = before.clone();
+    after["inputSchema"]["prefixItems"][0]["prefixItems"] =
+        json!([{"x-sagat-classification":"public"}]);
+    let diff = JsonIrCodec
+        .diff(
+            &serde_json::to_vec(&before).expect("JSON"),
+            &serde_json::to_vec(&after).expect("JSON"),
+        )
+        .expect("diff");
+    assert!(diff.attention.iter().any(|row| {
+        row.code == "CLASSIFICATION_RELAXED"
+            && row.path.as_deref() == Some("/inputSchema/prefixItems/0/prefixItems/0")
+    }));
+}
+
+#[test]
+fn missing_location_floor_keeps_a_secret_ancestor() {
+    let before = json!({"inputSchema":{
+        "x-sagat-classification":"secret",
+        "properties":{"gone":{"type":"string"}}
+    }});
+    let after = json!({"inputSchema":{
+        "x-sagat-classification":"secret"
+    }});
+    let diff = JsonIrCodec
+        .diff(
+            &serde_json::to_vec(&before).expect("JSON"),
+            &serde_json::to_vec(&after).expect("JSON"),
+        )
+        .expect("diff");
+    assert!(!diff.attention.iter().any(|row| {
+        matches!(
+            row.code,
+            "CLASSIFICATION_RELAXED" | "CLASSIFICATION_TIGHTENED"
+        )
+    }));
+}

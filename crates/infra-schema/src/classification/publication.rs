@@ -61,44 +61,69 @@ pub fn resolve_classification_location(
     carrier: &CarrierPointer,
     location: &[ClassificationSegment],
 ) -> ClassificationResolution {
-    let mut root_path = None;
-    let mut best: Option<(usize, Level, String, bool)> = None;
-    let mut seen = false;
-    let mut take = |candidate: &ClassificationLocation| {
-        if &candidate.carrier != carrier {
-            return;
-        }
-        seen = true;
-        if candidate.location.is_empty() {
-            root_path = Some(candidate.source_path.clone());
-        }
-        let Some(rank) = fallback_rank(location, &candidate.location) else {
-            return;
-        };
-        let exact = rank == 0;
-        if best.as_ref().is_none_or(|current| rank < current.0) {
-            best = Some((rank, candidate.level, candidate.source_path.clone(), exact));
-        }
-    };
-    let status = visit_one_carrier(document, carrier, &mut take);
+    let (status, root) = location_at(document, carrier, &[]);
     if let Some(failure) = status.failure(carrier) {
         return ClassificationResolution::Incomplete(failure.clone());
     }
-    if !seen {
+    let Some(mut current) = root else {
         return ClassificationResolution::AbsentCarrier;
-    }
-    if let Some((_, level, source_path, location_present)) = best {
-        return ClassificationResolution::Resolved {
-            level,
-            source_path,
-            location_present,
+    };
+    let mut selected = Vec::with_capacity(location.len());
+    let mut location_present = true;
+    for requested in location {
+        let mut exact = selected.clone();
+        exact.push(requested.clone());
+        if let (_, Some(found)) = location_at(document, carrier, &exact) {
+            selected = exact;
+            current = found;
+            continue;
+        }
+
+        let fallback = match requested {
+            ClassificationSegment::Property(_) => ClassificationSegment::AdditionalProperty,
+            ClassificationSegment::Index(_) => ClassificationSegment::RemainingItem,
+            ClassificationSegment::AdditionalProperty | ClassificationSegment::RemainingItem => {
+                return ClassificationResolution::Resolved {
+                    level: current.level.stricter(Level::UNMARKED),
+                    source_path: current.source_path,
+                    location_present: false,
+                };
+            }
         };
+        let mut fallback_path = selected.clone();
+        fallback_path.push(fallback);
+        if let (_, Some(found)) = location_at(document, carrier, &fallback_path) {
+            selected = fallback_path;
+            current = found;
+            location_present = false;
+        } else {
+            return ClassificationResolution::Resolved {
+                level: current.level.stricter(Level::UNMARKED),
+                source_path: current.source_path,
+                location_present: false,
+            };
+        }
     }
     ClassificationResolution::Resolved {
-        level: Level::UNMARKED,
-        source_path: root_path.unwrap_or_default(),
-        location_present: false,
+        level: current.level,
+        source_path: current.source_path,
+        location_present,
     }
+}
+
+fn location_at(
+    document: &Value,
+    carrier: &CarrierPointer,
+    location: &[ClassificationSegment],
+) -> (ClassificationWalkStatus, Option<ClassificationLocation>) {
+    let mut found = None;
+    let mut take = |candidate: &ClassificationLocation| {
+        if candidate.location == location {
+            found = Some(candidate.clone());
+        }
+    };
+    let status = visit_one_carrier(document, carrier, &mut take);
+    (status, found)
 }
 
 fn visit_one_carrier(
@@ -167,36 +192,6 @@ fn select_node_carrier<'a>(
             .get("outputSchema")
             .map(|schema| (schema, format!("{nodes_path}/{index}/outputSchema"), true))
     })
-}
-
-fn fallback_rank(
-    requested: &[ClassificationSegment],
-    candidate: &[ClassificationSegment],
-) -> Option<usize> {
-    if requested.len() != candidate.len() {
-        return None;
-    }
-    let mut fallbacks = 0;
-    for (requested, candidate) in requested.iter().zip(candidate) {
-        if requested == candidate {
-            continue;
-        }
-        if matches!(
-            (requested, candidate),
-            (
-                ClassificationSegment::Property(_),
-                ClassificationSegment::AdditionalProperty
-            ) | (
-                ClassificationSegment::Index(_),
-                ClassificationSegment::RemainingItem
-            )
-        ) {
-            fallbacks += 1;
-        } else {
-            return None;
-        }
-    }
-    Some(fallbacks)
 }
 
 type Visitor<'a> = Option<&'a mut dyn FnMut(&ClassificationLocation)>;
@@ -356,7 +351,7 @@ fn process_carrier(
         false,
         visitor,
     );
-    dry.scan_schema(schema, document_path, &mut HashSet::new());
+    let _ = dry.scan_schema(schema, document_path, &mut HashSet::new());
     dry.expansions = 0;
     dry.walk_location(
         vec![SchemaNode::root(schema, document_path)],
@@ -853,10 +848,11 @@ impl<'a, 'b, 'v> CarrierWalk<'a, 'b, 'v> {
         expanded
     }
 
-    fn scan_schema(&mut self, schema: &Value, path: &str, active: &mut HashSet<String>) {
+    fn scan_schema(&mut self, schema: &Value, path: &str, active: &mut HashSet<String>) -> bool {
         let Some(object) = schema.as_object() else {
-            return;
+            return false;
         };
+        let mut annotation_reachable = object.contains_key(ANNOTATION);
         if let Some(annotation) = object.get(ANNOTATION)
             && annotation
                 .as_str()
@@ -867,16 +863,6 @@ impl<'a, 'b, 'v> CarrierWalk<'a, 'b, 'v> {
                 ClassificationFindingCode::InvalidLevel,
                 &format!("{path}/{ANNOTATION}"),
             );
-        }
-        for keyword in UNSUPPORTED_APPLICATORS {
-            if let Some(value) = object.get(keyword)
-                && contains_annotation(value)
-            {
-                self.fail(
-                    ClassificationFindingCode::UnsupportedKeyword,
-                    &format!("{path}/{keyword}"),
-                );
-            }
         }
         if let Some(reference) = object.get("$ref").and_then(Value::as_str) {
             self.expansions += 1;
@@ -891,7 +877,7 @@ impl<'a, 'b, 'v> CarrierWalk<'a, 'b, 'v> {
                 self.fail(ClassificationFindingCode::TooComplex, path);
             } else if let Some(target) = self.root.pointer(&reference[1..]) {
                 let target_path = format!("{}{}", self.root_path, &reference[1..]);
-                self.scan_schema(target, &target_path, active);
+                annotation_reachable |= self.scan_schema(target, &target_path, active);
                 active.remove(reference);
             } else {
                 self.fail(
@@ -905,22 +891,32 @@ impl<'a, 'b, 'v> CarrierWalk<'a, 'b, 'v> {
             if keyword == "$ref" || keyword == ANNOTATION {
                 continue;
             }
-            match value {
+            let child_reachable = match value {
                 Value::Object(_) => {
-                    self.scan_schema(value, &format!("{path}/{}", escape(keyword)), active);
+                    self.scan_schema(value, &format!("{path}/{}", escape(keyword)), active)
                 }
                 Value::Array(values) => {
+                    let mut reachable = false;
                     for (index, value) in values.iter().enumerate() {
-                        self.scan_schema(
+                        reachable |= self.scan_schema(
                             value,
                             &format!("{path}/{}/{index}", escape(keyword)),
                             active,
                         );
                     }
+                    reachable
                 }
-                _ => {}
+                _ => false,
+            };
+            if UNSUPPORTED_APPLICATORS.contains(&keyword.as_str()) && child_reachable {
+                self.fail(
+                    ClassificationFindingCode::UnsupportedKeyword,
+                    &format!("{path}/{keyword}"),
+                );
             }
+            annotation_reachable |= child_reachable;
         }
+        annotation_reachable
     }
 }
 
