@@ -435,6 +435,7 @@ fn continuation_parts(
         LoopContinuation::Continue => ("CONTINUE", None),
         LoopContinuation::DelayUntil(due_at) => ("DELAY", Some(due_at)),
         LoopContinuation::IterationLimit => ("ITERATION_LIMIT", None),
+        LoopContinuation::InstanceLimit => ("INSTANCE_LIMIT", None),
     }
 }
 
@@ -446,6 +447,7 @@ fn continuation_json(continuation: LoopContinuation) -> Result<Value, LoopProgre
             json!({"kind": "delay", "at_us": micros(due_at)?})
         }
         LoopContinuation::IterationLimit => json!({"kind": "iteration_limit"}),
+        LoopContinuation::InstanceLimit => json!({"kind": "instance_limit"}),
     })
 }
 
@@ -831,12 +833,12 @@ async fn finish_succeeded_version(
     Ok(())
 }
 
-async fn finish_iteration_limit(
+async fn finish_limit(
     conn: &mut PgConnection,
     transition: &LoopTransition,
     version: u64,
+    failure: &FailureCode,
 ) -> Result<(), LoopProgressError> {
-    let failure = FailureCode::iteration_limit();
     let updated = sqlx::query(
         "UPDATE runs SET status='CANCELLING',stop_reason='FAILED',stop_code=$3, \
                 run_version=$4,updated_at=$5 \
@@ -1721,7 +1723,10 @@ impl LoopProgressStore for PgLoopProgressStore {
             _ => return Err(invalid_storage("loop kind")),
         };
         let continuation_valid = if !needs_another {
-            matches!(command.continuation, LoopContinuation::Complete)
+            matches!(
+                command.continuation,
+                LoopContinuation::Complete | LoopContinuation::InstanceLimit
+            )
         } else if next_index >= max_iterations {
             matches!(command.continuation, LoopContinuation::IterationLimit)
         } else {
@@ -1730,6 +1735,8 @@ impl LoopProgressStore for PgLoopProgressStore {
                 LoopContinuation::DelayUntil(due_at) => {
                     due_at > command.checked_at && due_at <= deadline
                 }
+                // Proven against the run's budget once the definition is loaded, below.
+                LoopContinuation::InstanceLimit => true,
                 LoopContinuation::Complete | LoopContinuation::IterationLimit => false,
             }
         };
@@ -1772,9 +1779,17 @@ impl LoopProgressStore for PgLoopProgressStore {
         let owner_definition = definition
             .node_for_instance(command.transition.owner())
             .ok_or(LoopProgressError::InvalidTransition)?;
-        let (definition_kind, definition_limit) = match owner_definition.kind() {
-            NodeKind::While { max_iterations, .. } => ("WHILE", *max_iterations),
-            NodeKind::RepeatUntil { max_iterations, .. } => ("REPEAT_UNTIL", *max_iterations),
+        let (definition_kind, definition_limit, body_name) = match owner_definition.kind() {
+            NodeKind::While {
+                max_iterations,
+                body,
+                ..
+            } => ("WHILE", *max_iterations, body),
+            NodeKind::RepeatUntil {
+                max_iterations,
+                body,
+                ..
+            } => ("REPEAT_UNTIL", *max_iterations, body),
             _ => return Err(LoopProgressError::InvalidTransition),
         };
         if scope.get::<String, _>("kind") != definition_kind || max_iterations != definition_limit {
@@ -1787,7 +1802,10 @@ impl LoopProgressStore for PgLoopProgressStore {
             LoopContinuation::IterationLimit => {
                 terminal_successor(&definition, command.transition.owner(), true)?
             }
-            LoopContinuation::Continue | LoopContinuation::DelayUntil(_) => None,
+            // The error route would need an instance of its own, and none is left.
+            LoopContinuation::InstanceLimit
+            | LoopContinuation::Continue
+            | LoopContinuation::DelayUntil(_) => None,
         };
         retain_payload_in_transaction(
             &mut tx,
@@ -1843,7 +1861,24 @@ impl LoopProgressStore for PgLoopProgressStore {
         if !found_return {
             return Err(LoopProgressError::InvalidTransition);
         }
-        if let Some(next) = &command.next_activity {
+        if matches!(command.continuation, LoopContinuation::InstanceLimit) {
+            // Stopping for the instance budget is only valid when the next work really cannot be
+            // admitted: the next iteration, whose body is charged up front (one instance per
+            // node), or, once the loop is done, the node that follows it.
+            let charge = if needs_another {
+                let body = definition
+                    .body(body_name)
+                    .ok_or(LoopProgressError::InvalidTransition)?;
+                i64::try_from(body.nodes().count())
+                    .map_err(|_| LoopProgressError::InvalidTransition)?
+            } else {
+                1
+            };
+            let consumed = i64::from(usage.admitted) + i64::from(usage.reserved);
+            if consumed + charge <= i64::from(usage.max_instances) {
+                return Err(LoopProgressError::InvalidTransition);
+            }
+        } else if let Some(next) = &command.next_activity {
             let charge = 1_i64 + i64::from(next.reserved_instances);
             let consumed = i64::from(usage.admitted) + i64::from(usage.reserved);
             if consumed + charge > i64::from(usage.max_instances) {
@@ -1878,7 +1913,7 @@ impl LoopProgressStore for PgLoopProgressStore {
             } else {
                 1
             };
-        } else if matches!(command.continuation, LoopContinuation::IterationLimit) {
+        } else if command.continuation.limit_failure().is_some() {
             committed_version += 1;
         }
         let completed_return = sqlx::query(
@@ -1904,9 +1939,12 @@ impl LoopProgressStore for PgLoopProgressStore {
         }
         if matches!(
             command.continuation,
-            LoopContinuation::Complete | LoopContinuation::IterationLimit
+            LoopContinuation::Complete
+                | LoopContinuation::IterationLimit
+                | LoopContinuation::InstanceLimit
         ) {
-            let failed = matches!(command.continuation, LoopContinuation::IterationLimit);
+            let limit_failure = command.continuation.limit_failure();
+            let failed = limit_failure.is_some();
             let owner_finished = sqlx::query(
                 "UPDATE steps SET status=$6,waiting_kind=NULL,routed=$7,failure_code=$8, \
                         updated_at=$9 \
@@ -1921,7 +1959,7 @@ impl LoopProgressStore for PgLoopProgressStore {
             .bind(command.transition.owner().node().as_str())
             .bind(if failed { "FAILED" } else { "SUCCEEDED" })
             .bind(terminal.is_some())
-            .bind(failed.then(|| FailureCode::iteration_limit().as_str().to_owned()))
+            .bind(limit_failure.as_ref().map(|code| code.as_str().to_owned()))
             .bind(command.transition.occurred_at())
             .execute(&mut *tx)
             .await
@@ -1997,7 +2035,7 @@ impl LoopProgressStore for PgLoopProgressStore {
             LoopContinuation::Continue => "RUNNING",
             LoopContinuation::DelayUntil(_) => "DELAYING",
             LoopContinuation::Complete => "SUCCEEDED",
-            LoopContinuation::IterationLimit => "FAILED",
+            LoopContinuation::IterationLimit | LoopContinuation::InstanceLimit => "FAILED",
         })
         .bind(command.carry_digest.as_bytes().as_slice())
         .bind(i32::try_from(next_index).unwrap_or(i32::MAX))
@@ -2154,9 +2192,8 @@ impl LoopProgressStore for PgLoopProgressStore {
                 return Err(invalid_storage("loop terminal journal sequence"));
             }
             finished
-        } else if matches!(command.continuation, LoopContinuation::IterationLimit) {
+        } else if let Some(failure) = command.continuation.limit_failure() {
             let stop_sequence = checkpoint_sequence + 1;
-            let failure = FailureCode::iteration_limit();
             append_run_event(
                 &mut tx,
                 &command.transition,
@@ -2179,10 +2216,8 @@ impl LoopProgressStore for PgLoopProgressStore {
         };
         if terminal_run {
             finish_succeeded_version(&mut tx, &command.transition, committed_version).await?;
-        } else if matches!(command.continuation, LoopContinuation::IterationLimit)
-            && terminal.is_none()
-        {
-            finish_iteration_limit(&mut tx, &command.transition, committed_version).await?;
+        } else if let (Some(failure), None) = (command.continuation.limit_failure(), &terminal) {
+            finish_limit(&mut tx, &command.transition, committed_version, &failure).await?;
         } else {
             finish_version(&mut tx, &command.transition, committed_version).await?;
         }

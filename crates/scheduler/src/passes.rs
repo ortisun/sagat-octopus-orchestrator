@@ -46,6 +46,9 @@ use sagat_domain::execution::{
 use sagat_domain::identity::{NamespaceId, Subject, TenantId};
 use sagat_domain::sharding::{Shard, ShardSet};
 use sagat_domain::workflow::{NodeId, NodeKind, WorkflowDefinition};
+use sagat_telemetry::{
+    WorkflowPrimitiveKind, WorkflowPrimitiveMetric, WorkflowPrimitiveRejectionCode,
+};
 use time::OffsetDateTime;
 use tracing::Instrument;
 
@@ -144,6 +147,9 @@ pub enum CollectionAdvance {
     Finished,
     /// The attempted transition retained no value and the run began its durable quota drain.
     QuotaStopped,
+    /// A declared hard budget (`ITERATION_LIMIT`, `INSTANCE_LIMIT`) was exceeded before the
+    /// collection was entered, and the run was stopped with that durable failure code.
+    LimitStopped,
     Waiting,
     AlreadyFinished,
 }
@@ -189,6 +195,9 @@ pub enum LoopAdvance {
     ExpressionStopped,
     /// Entry retained no value and the run was stopped for its durable-content quota.
     QuotaStopped,
+    /// The loop could not be entered within a declared hard budget and the run was stopped with
+    /// that durable failure code.
+    LimitStopped,
     Waiting,
     AlreadyFinished,
 }
@@ -873,16 +882,49 @@ where
                 definition.limits().max_instances(),
                 definition.limits().max_depth(),
             )?;
-            let entry = CollectionEntry::from_snapshot(
+            let entry = match CollectionEntry::from_snapshot(
                 transition(state.version()),
                 CollectionScopeId::generate(),
                 u32::try_from(item_values.len())
                     .map_err(|_| CollectionAdvanceError::InvalidProgress)?,
                 snapshot,
                 limits,
-            )?;
+            ) {
+                Ok(entry) => entry.with_iteration_charge(
+                    u32::try_from(body.nodes().count())
+                        .map_err(|_| CollectionAdvanceError::InvalidProgress)?,
+                ),
+                // More items than the node declared it would iterate over: a hard budget, so the
+                // run fails with a durable typed code instead of retrying an entry that cannot
+                // succeed.
+                Err(PrimitiveInputError::ItemCount) => {
+                    return self
+                        .stop_collection_for_limit(
+                            view,
+                            &hold,
+                            tenant,
+                            run,
+                            state.version(),
+                            FailureCode::iteration_limit(),
+                        )
+                        .await;
+                }
+                Err(error) => return Err(error.into()),
+            };
             match self.store.enter_collection(&entry).await {
                 Ok(_) => {}
+                Err(PrimitiveStoreError::InstanceBudgetExceeded) => {
+                    return self
+                        .stop_collection_for_limit(
+                            view,
+                            &hold,
+                            tenant,
+                            run,
+                            state.version(),
+                            FailureCode::instance_limit(),
+                        )
+                        .await;
+                }
                 Err(error) if collection_content_quota(&error) => {
                     return match self
                         .stop_for_storage_quota(
@@ -1122,6 +1164,18 @@ where
             )?;
             match self.store.admit_collection_activity(&admission).await {
                 Ok(_) => {}
+                // Entry proved the whole collection fits, so only a later reduction of the run's
+                // budget (tenant policy) or other work spending it lands here. Accepted work is
+                // kept and no further iteration is admitted until the budget allows it again.
+                Err(PrimitiveStoreError::InstanceBudgetExceeded) => {
+                    metrics::counter!(
+                        "scheduler_admission_paused_total",
+                        "kind" => "collection",
+                        "reason" => "instance_budget",
+                    )
+                    .increment(1);
+                    return Ok(CollectionAdvance::Waiting);
+                }
                 Err(error) if collection_content_quota(&error) => {
                     return self
                         .drain_collection_for_storage_quota(
@@ -1192,6 +1246,42 @@ where
         }
 
         Ok(CollectionAdvance::Waiting)
+    }
+
+    /// Stops the run before its collection starts because a declared hard budget does not allow
+    /// it: the run fails with `code`, journaled and typed, and nothing was admitted.
+    async fn stop_collection_for_limit(
+        &self,
+        view: &View,
+        hold: &Hold,
+        tenant: TenantId,
+        run: RunId,
+        version: u64,
+        code: FailureCode,
+    ) -> Result<CollectionAdvance, CollectionAdvanceError> {
+        match self
+            .stop_for_limit(
+                view,
+                hold,
+                RunRef {
+                    tenant_id: tenant,
+                    run_id: run,
+                },
+                WorkflowPrimitiveKind::Collection,
+                code,
+                version,
+            )
+            .await?
+        {
+            Outcome::Done => Ok(CollectionAdvance::LimitStopped),
+            Outcome::Skipped => Ok(CollectionAdvance::Waiting),
+            Outcome::Fenced => Err(CollectionAdvanceError::FenceUnavailable),
+            Outcome::Failed | Outcome::QuotaStopped => Err(CollectionAdvanceError::Engine(
+                EngineError::Store(StoreError::Internal {
+                    detail: "unexpected collection limit recovery outcome".to_owned(),
+                }),
+            )),
+        }
     }
 
     async fn drain_collection_for_storage_quota(
@@ -1387,6 +1477,33 @@ where
             )?;
             match self.store.enter_loop(&entry).await {
                 Ok(_) => {}
+                // The owner, the first body and what follows the loop do not fit the run's
+                // lifetime instance budget: nothing was entered, and the run fails typed.
+                Err(LoopProgressError::InstanceBudgetExceeded) => {
+                    return match self
+                        .stop_for_limit(
+                            view,
+                            &hold,
+                            RunRef {
+                                tenant_id: tenant,
+                                run_id: run,
+                            },
+                            WorkflowPrimitiveKind::Loop,
+                            FailureCode::instance_limit(),
+                            state.version(),
+                        )
+                        .await?
+                    {
+                        Outcome::Done => Ok(LoopAdvance::LimitStopped),
+                        Outcome::Skipped => Ok(LoopAdvance::Waiting),
+                        Outcome::Fenced => Err(LoopAdvanceError::FenceUnavailable),
+                        Outcome::Failed | Outcome::QuotaStopped => Err(LoopAdvanceError::Engine(
+                            EngineError::Store(StoreError::Internal {
+                                detail: "unexpected loop limit recovery outcome".to_owned(),
+                            }),
+                        )),
+                    };
+                }
                 Err(error) if loop_content_quota(&error) => {
                     return match self
                         .stop_for_storage_quota(
@@ -1502,7 +1619,8 @@ where
             }
             let timer_id = timer_id.ok_or(LoopAdvanceError::InvalidProgress)?;
             let index = loop_state.next_iteration();
-            self.store
+            match self
+                .store
                 .fire_delay(&LoopDelayElapsedCommand::new(
                     transition(state.version()),
                     timer_id,
@@ -1510,7 +1628,22 @@ where
                     next_activity(index)?,
                     uuid::Uuid::now_v7(),
                 )?)
-                .await?;
+                .await
+            {
+                Ok(_) => {}
+                // The budget was reduced while the loop waited: admission pauses, accepted work
+                // is kept, and the loop's own deadline still bounds the wait.
+                Err(LoopProgressError::InstanceBudgetExceeded) => {
+                    metrics::counter!(
+                        "scheduler_admission_paused_total",
+                        "kind" => "loop",
+                        "reason" => "instance_budget",
+                    )
+                    .increment(1);
+                    return Ok(LoopAdvance::Waiting);
+                }
+                Err(error) => return Err(error.into()),
+            }
             return Ok(LoopAdvance::DelayElapsed { index });
         }
 
@@ -1591,10 +1724,31 @@ where
             LoopKind::While => evaluated.condition,
             LoopKind::RepeatUntil => !evaluated.condition,
         };
+        // What the next body would charge: one instance per node, charged when it is admitted.
+        let budget = definition.limits().max_instances();
+        let next_charge = body.nodes().count();
+        let affordable = state
+            .charged_instances()
+            .checked_add(next_charge)
+            .and_then(|total| u32::try_from(total).ok())
+            .is_some_and(|total| total <= budget);
+        let successor_affordable = state
+            .charged_instances()
+            .checked_add(1)
+            .and_then(|total| u32::try_from(total).ok())
+            .is_some_and(|total| total <= budget);
         let (continuation, next, delay_timer) = if !continues {
-            (LoopContinuation::Complete, None, None)
+            if successor_affordable {
+                (LoopContinuation::Complete, None, None)
+            } else {
+                (LoopContinuation::InstanceLimit, None, None)
+            }
         } else if next_index >= max_iterations {
             (LoopContinuation::IterationLimit, None, None)
+        } else if !affordable {
+            // Needing another body the author's instance limit cannot pay for is a durable,
+            // typed stop, decided before any delay is scheduled for work that can never run.
+            (LoopContinuation::InstanceLimit, None, None)
         } else if let Some(delay) = delay {
             let due_at = occurred_at + delay;
             if due_at > loop_state.deadline() {
@@ -1622,15 +1776,38 @@ where
         let checkpoint = LoopCheckpointCommand::from_evaluation(
             transition(state.version()),
             index,
-            return_instance,
-            evaluated,
+            return_instance.clone(),
+            evaluated.clone(),
             occurred_at,
             continuation,
             next,
             delay_timer,
             uuid::Uuid::now_v7(),
         )?;
-        match self.store.checkpoint(&checkpoint).await {
+        let mut committed = self.store.checkpoint(&checkpoint).await;
+        // The store knows the run's real budget, which tenant policy may have lowered below the
+        // author's: when it cannot admit what the checkpoint needs next, the same checkpoint is
+        // committed as the typed stop instead, which it re-proves against that budget.
+        if matches!(committed, Err(LoopProgressError::InstanceBudgetExceeded))
+            && matches!(
+                continuation,
+                LoopContinuation::Continue | LoopContinuation::Complete
+            )
+        {
+            let refused = LoopCheckpointCommand::from_evaluation(
+                transition(state.version()),
+                index,
+                return_instance,
+                evaluated,
+                occurred_at,
+                LoopContinuation::InstanceLimit,
+                None,
+                None,
+                uuid::Uuid::now_v7(),
+            )?;
+            committed = self.store.checkpoint(&refused).await;
+        }
+        match committed {
             Ok(_) => {}
             Err(error) if loop_content_quota(&error) => {
                 return match self
@@ -2024,11 +2201,49 @@ where
         &self,
         view: &View,
         hold: &Hold,
+        run: RunRef,
+        version: u64,
+    ) -> Result<Outcome, EngineError> {
+        self.stop_with_code(view, hold, run, version, FailureCode::expression_error())
+            .await
+    }
+
+    /// Fails the run with a declared hard budget's durable code, counting the refusal under the
+    /// closed `workflow_primitive_rejections_total{kind,code}` labels.
+    async fn stop_for_limit(
+        &self,
+        view: &View,
+        hold: &Hold,
+        run: RunRef,
+        kind: WorkflowPrimitiveKind,
+        code: FailureCode,
+        version: u64,
+    ) -> Result<Outcome, EngineError> {
+        let rejection = WorkflowPrimitiveRejectionCode::from_reason(code.as_str());
+        let outcome = self.stop_with_code(view, hold, run, version, code).await?;
+        if outcome == Outcome::Done
+            && let Some(rejection) = rejection
+        {
+            metrics::counter!(
+                WorkflowPrimitiveMetric::Rejections.as_str(),
+                "kind" => kind.as_str(),
+                "code" => rejection.as_str(),
+            )
+            .increment(1);
+        }
+        Ok(outcome)
+    }
+
+    async fn stop_with_code(
+        &self,
+        view: &View,
+        hold: &Hold,
         RunRef {
             tenant_id: tenant,
             run_id: run,
         }: RunRef,
         version: u64,
+        code: FailureCode,
     ) -> Result<Outcome, EngineError> {
         let Some(mut tx) = self
             .store
@@ -2049,13 +2264,7 @@ where
             .run(&mut tx, self.effects(), |definition, state, now| {
                 Ok((
                     (),
-                    execution::stop_run(
-                        definition,
-                        state,
-                        StopReason::Failed,
-                        Some(FailureCode::expression_error()),
-                        now,
-                    )?,
+                    execution::stop_run(definition, state, StopReason::Failed, Some(code), now)?,
                 ))
             })
             .await?;
@@ -2267,6 +2476,7 @@ where
                         | CollectionAdvance::Finished,
                     ) => Outcome::Done,
                     Ok(CollectionAdvance::QuotaStopped) => Outcome::QuotaStopped,
+                    Ok(CollectionAdvance::LimitStopped) => Outcome::Done,
                     Ok(CollectionAdvance::Waiting | CollectionAdvance::AlreadyFinished)
                     | Err(CollectionAdvanceError::NotCollection)
                     | Err(CollectionAdvanceError::Primitive(
@@ -2343,6 +2553,7 @@ where
                         | LoopAdvance::ExpressionStopped,
                     ) => Outcome::Done,
                     Ok(LoopAdvance::QuotaStopped) => Outcome::QuotaStopped,
+                    Ok(LoopAdvance::LimitStopped) => Outcome::Done,
                     Ok(LoopAdvance::Waiting | LoopAdvance::AlreadyFinished)
                     | Err(LoopAdvanceError::NotLoop)
                     | Err(LoopAdvanceError::Progress(

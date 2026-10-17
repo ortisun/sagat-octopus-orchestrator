@@ -75,7 +75,7 @@ channels:
         $ref: '#/components/messages/LoopHint'
   loopIterationLimit:
     address: sagat.v1.loop.iteration_limit.{tenant}
-    description: A loop exhausted `maxIterations`; the run is stopping with ITERATION_LIMIT.
+    description: A loop exhausted `maxIterations` or the run's instance budget; the run is stopping with ITERATION_LIMIT or INSTANCE_LIMIT.
     parameters:
       tenant:
         description: Tenant id (UUID).

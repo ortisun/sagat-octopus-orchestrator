@@ -558,6 +558,13 @@ impl RunStore for PgRunStore {
             .execute(&mut *tx)
             .await
             .map_err(store_error)?;
+            capture_run_limits(
+                &mut tx,
+                tenant.as_uuid(),
+                info.run_id.as_uuid(),
+                new.definition.limits(),
+            )
+            .await?;
             if let Some(initial_state) = &initial_state {
                 sqlx::query(
                     "INSERT INTO workflow_operation_states \
@@ -994,6 +1001,35 @@ impl RunStore for PgRunStore {
         use sagat_application::identity::IdentityStore;
         self.identity.record_denial(audit).await
     }
+}
+
+/// Pins the effective instance and depth ceilings of a run that was just inserted.
+///
+/// The row of `run_instance_usage` starts at the platform ceilings (100000 and 8). The author's
+/// `limits` (D297) can only lower them, so the stored value is the smaller of the two, and a
+/// tenant policy that already lowered the row is never raised by a later, laxer definition.
+pub(crate) async fn capture_run_limits(
+    tx: &mut sqlx::PgConnection,
+    tenant: Uuid,
+    run: Uuid,
+    limits: sagat_domain::workflow::WorkflowLimits,
+) -> Result<(), StoreError> {
+    let updated = sqlx::query(
+        "UPDATE run_instance_usage SET max_instances = least(max_instances, $3), \
+                max_depth = least(max_depth, $4) \
+         WHERE tenant_id = $1 AND run_id = $2",
+    )
+    .bind(tenant)
+    .bind(run)
+    .bind(i32::try_from(limits.max_instances()).unwrap_or(i32::MAX))
+    .bind(i16::from(limits.max_depth()))
+    .execute(&mut *tx)
+    .await
+    .map_err(store_error)?;
+    if updated.rows_affected() != 1 {
+        return Err(corrupt("run instance usage"));
+    }
+    Ok(())
 }
 
 /// Creating a child run: confirms, under the parent's row lock, that the parent step still waits
@@ -1681,6 +1717,7 @@ fn stored_loop_continuation(
         ("DELAY", Some(due_at), Some(_)) => Ok(LoopContinuation::DelayUntil(due_at)),
         ("COMPLETE", None, None) => Ok(LoopContinuation::Complete),
         ("ITERATION_LIMIT", None, None) => Ok(LoopContinuation::IterationLimit),
+        ("INSTANCE_LIMIT", None, None) => Ok(LoopContinuation::InstanceLimit),
         _ => Err(corrupt("loop checkpoint continuation")),
     }
 }

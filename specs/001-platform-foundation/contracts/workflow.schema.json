@@ -707,7 +707,7 @@
         }
       },
       "required": [],
-      "description": "Lifetime admission includes reservations for declared compensation/reconciliation identities; retries reuse identity. Tenant policy may lower ceilings."
+      "description": "An author may lower the platform ceilings (maxInstances 100000, maxDepth 8), never raise them; an omitted field keeps its ceiling. Every activated node instance counts against maxInstances, the end node included, and a loop or collection iteration is charged its body's nodes when admitted. Lifetime admission includes reservations for declared compensation/reconciliation identities; retries reuse identity. Tenant policy may lower ceilings further, never raise them. The next instance beyond the budget fails the run with the durable code INSTANCE_LIMIT."
     },
     "chainPolicy": {
       "type": "object",

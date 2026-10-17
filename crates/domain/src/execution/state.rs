@@ -1726,10 +1726,19 @@ impl RunState {
             .steps
             .get(&loop_instance)
             .ok_or_else(|| ExecutionError::UnknownInstance(loop_instance.clone()))?;
+        // A loop that failed without draining failed at its last checkpoint, on the budget that
+        // checkpoint recorded.
+        let checkpoint_failure = iterations
+            .iter()
+            .rev()
+            .find_map(|restored| restored.checkpoint.as_ref())
+            .and_then(|checkpoint| checkpoint.continuation().limit_failure());
         let expected_failure = match &drain_reason {
             Some(LoopDrainReason::Failed { code, .. }) => code.clone(),
             Some(LoopDrainReason::TimedOut) => FailureCode::run_timed_out(),
-            Some(LoopDrainReason::Cancelled) | None => FailureCode::iteration_limit(),
+            Some(LoopDrainReason::Cancelled) | None => {
+                checkpoint_failure.unwrap_or_else(FailureCode::iteration_limit)
+            }
         };
         let owner_matches = match phase {
             LoopPhase::Ready | LoopPhase::Running | LoopPhase::Delaying => {
@@ -1872,7 +1881,10 @@ impl RunState {
                         None => {
                             matches!(
                                 last_checkpoint.map(LoopCheckpoint::continuation),
-                                Some(LoopContinuation::IterationLimit)
+                                Some(
+                                    LoopContinuation::IterationLimit
+                                        | LoopContinuation::InstanceLimit
+                                )
                             ) && drained.is_none()
                         }
                         Some(LoopDrainReason::Failed { .. } | LoopDrainReason::TimedOut) => true,
@@ -1939,6 +1951,20 @@ impl RunState {
     /// Every logical step, including repeated definition nodes in distinct scopes.
     pub fn instances(&self) -> impl Iterator<Item = (&ExecutionInstanceId, &StepState)> {
         self.steps.iter()
+    }
+
+    /// How many instances the run has charged against its lifetime budget: every scoped instance
+    /// (an admission charges its whole body up front) and each root instance that left `Pending`
+    /// other than by cancellation, as the store counts them.
+    #[must_use]
+    pub fn charged_instances(&self) -> usize {
+        self.steps
+            .iter()
+            .filter(|(instance, step)| {
+                !instance.path().is_root()
+                    || !matches!(step.status(), StepStatus::Pending | StepStatus::Cancelled)
+            })
+            .count()
     }
 
     /// The sagas that have started, ordered by node id.
@@ -2772,7 +2798,12 @@ impl RunState {
                             index: *index,
                         })?;
                 let valid_continuation = if !needs_another {
-                    matches!(continuation, LoopContinuation::Complete)
+                    // A finished loop whose successor the instance budget cannot pay for stops
+                    // with INSTANCE_LIMIT instead of completing.
+                    matches!(
+                        continuation,
+                        LoopContinuation::Complete | LoopContinuation::InstanceLimit
+                    )
                 } else if next_iteration >= scope.max_iterations {
                     matches!(continuation, LoopContinuation::IterationLimit)
                 } else {
@@ -2782,6 +2813,7 @@ impl RunState {
                             (*due_at - *checked_at).whole_milliseconds() >= 1
                                 && *due_at <= scope.deadline
                         }
+                        LoopContinuation::InstanceLimit => true,
                         LoopContinuation::Complete | LoopContinuation::IterationLimit => false,
                     }
                 };
@@ -2793,7 +2825,9 @@ impl RunState {
                 }
                 let terminal = matches!(
                     continuation,
-                    LoopContinuation::Complete | LoopContinuation::IterationLimit
+                    LoopContinuation::Complete
+                        | LoopContinuation::IterationLimit
+                        | LoopContinuation::InstanceLimit
                 );
                 if terminal {
                     let step = self
@@ -2834,10 +2868,12 @@ impl RunState {
                     LoopContinuation::Complete => LoopPhase::Succeeded,
                     LoopContinuation::Continue => LoopPhase::Ready,
                     LoopContinuation::DelayUntil(_) => LoopPhase::Delaying,
-                    LoopContinuation::IterationLimit => LoopPhase::Failed,
+                    LoopContinuation::IterationLimit | LoopContinuation::InstanceLimit => {
+                        LoopPhase::Failed
+                    }
                 };
-                if matches!(continuation, LoopContinuation::IterationLimit) {
-                    scope.failure = Some(FailureCode::iteration_limit());
+                if let Some(code) = continuation.limit_failure() {
+                    scope.failure = Some(code);
                 }
                 if terminal {
                     let step = self
@@ -2849,7 +2885,7 @@ impl RunState {
                         step.status = StepStatus::Succeeded;
                     } else {
                         step.status = StepStatus::Failed;
-                        step.failure = Some(FailureCode::iteration_limit());
+                        step.failure = continuation.limit_failure();
                     }
                 }
             }

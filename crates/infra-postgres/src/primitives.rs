@@ -836,7 +836,7 @@ impl CollectionStore for PgCollectionStore {
         }
 
         let usage = sqlx::query(
-            "SELECT admitted_instances, reserved_instances FROM run_instance_usage \
+            "SELECT max_instances, admitted_instances, reserved_instances FROM run_instance_usage \
              WHERE tenant_id = $1 AND run_id = $2 FOR UPDATE",
         )
         .bind(entry.transition.tenant_id().as_uuid())
@@ -844,9 +844,18 @@ impl CollectionStore for PgCollectionStore {
         .fetch_one(&mut *tx)
         .await
         .map_err(store_error)?;
-        let consumed =
-            usage.get::<i32, _>("admitted_instances") + usage.get::<i32, _>("reserved_instances");
-        if consumed > i32::try_from(entry.limits.max_instances()).unwrap_or(i32::MAX) {
+        let consumed = i64::from(usage.get::<i32, _>("admitted_instances"))
+            + i64::from(usage.get::<i32, _>("reserved_instances"));
+        // The lifetime budget is the smaller of what the run was created with (the platform
+        // ceiling lowered by the author or by tenant policy) and what the pinned definition says.
+        // Every iteration will be admitted unless the scope fails first, so a collection that
+        // cannot afford all of them is refused before it starts, not half way through.
+        let ceiling = i64::from(usage.get::<i32, _>("max_instances"))
+            .min(i64::from(entry.limits.max_instances()));
+        let demand = i64::from(entry.item_count) * i64::from(entry.iteration_charge());
+        // The owner is still pending and is charged when this transaction parks it, so it is the
+        // first of the instances the collection needs.
+        if consumed + 1 + demand > ceiling {
             return Err(PrimitiveStoreError::InstanceBudgetExceeded);
         }
         sqlx::query(

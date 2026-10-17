@@ -142,6 +142,52 @@ fn domain_and_additive_v1_schema_publish_the_same_identity_limits() {
 }
 
 #[test]
+fn publication_lets_an_author_lower_the_limits_and_never_raise_them() {
+    let document = |limits: Option<Value>| {
+        let mut document = json!({
+            "apiVersion": "sagat-octopus-orchestrator.io/v1",
+            "kind": "Workflow",
+            "metadata": {"name": "lowered-limits"},
+            "entrypoint": "work",
+            "nodes": [
+                {"id": "work", "type": "activity", "activity": "orders.work", "next": "done"},
+                {"id": "done", "type": "end"}
+            ]
+        });
+        if let Some(limits) = limits {
+            document["limits"] = limits;
+        }
+        serde_json::to_vec(&document).expect("fixture JSON")
+    };
+    let old = JsonIrCodec.parse(&document(None)).expect("old document");
+    assert_eq!(old.definition.limits(), WorkflowLimits::default());
+    assert_eq!(
+        old.digest,
+        JsonIrCodec.parse(&document(None)).expect("again").digest,
+        "a document without the block keeps its digest"
+    );
+
+    let lowered = JsonIrCodec
+        .parse(&document(Some(json!({"maxInstances": 3, "maxDepth": 1}))))
+        .expect("an author may lower both ceilings");
+    assert_eq!(lowered.definition.limits().max_instances(), 3);
+    assert_eq!(lowered.definition.limits().max_depth(), 1);
+    assert_ne!(lowered.digest, old.digest);
+
+    for raised in [
+        json!({"maxInstances": 100_001}),
+        json!({"maxDepth": 9}),
+        json!({"maxInstances": 0}),
+        json!({"maxDepth": 0}),
+    ] {
+        assert!(
+            JsonIrCodec.parse(&document(Some(raised.clone()))).is_err(),
+            "{raised} must not publish"
+        );
+    }
+}
+
+#[test]
 fn effective_expression_limits_remain_bounded_for_additive_v1() {
     let at_source_limit = format!("true{}", " ".repeat(1_020));
     let over_source_limit = format!("true{}", " ".repeat(1_021));

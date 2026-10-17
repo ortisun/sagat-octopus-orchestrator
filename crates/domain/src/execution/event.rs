@@ -230,6 +230,13 @@ impl FailureCode {
         Self::system("ITERATION_LIMIT")
     }
 
+    /// The next instance would have gone beyond the run's lifetime instance budget: the platform
+    /// ceiling lowered by the author's `limits` or by tenant policy.
+    #[must_use]
+    pub fn instance_limit() -> Self {
+        Self::system("INSTANCE_LIMIT")
+    }
+
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
@@ -416,7 +423,23 @@ pub enum LoopContinuation {
     Complete,
     Continue,
     DelayUntil(OffsetDateTime),
+    /// The loop still needed another body after spending its declared iteration budget.
     IterationLimit,
+    /// The loop needed another body the run's lifetime instance budget could not admit.
+    InstanceLimit,
+}
+
+impl LoopContinuation {
+    /// The durable failure code of a continuation that stops the loop because a declared hard
+    /// budget ran out; none for a continuation that keeps going or completes.
+    #[must_use]
+    pub fn limit_failure(&self) -> Option<FailureCode> {
+        match self {
+            Self::IterationLimit => Some(FailureCode::iteration_limit()),
+            Self::InstanceLimit => Some(FailureCode::instance_limit()),
+            Self::Complete | Self::Continue | Self::DelayUntil(_) => None,
+        }
+    }
 }
 
 /// Why a loop stops admitting work and drains its active iteration.
@@ -1097,6 +1120,10 @@ impl RunEvent {
                 continuation: LoopContinuation::IterationLimit,
                 ..
             } => cause("failure", "ITERATION_LIMIT"),
+            Self::LoopIterationCheckpointed {
+                continuation: LoopContinuation::InstanceLimit,
+                ..
+            } => cause("failure", "INSTANCE_LIMIT"),
             Self::LoopDrainStarted {
                 reason: LoopDrainReason::Failed { code, .. },
                 ..

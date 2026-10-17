@@ -1524,3 +1524,71 @@ mod children {
         );
     }
 }
+
+// ------------------------------------------------------------------ the author's instance limit
+
+fn limited(
+    entry: &str,
+    nodes: Vec<sagat_domain::workflow::Node>,
+    instances: u32,
+) -> sagat_domain::workflow::WorkflowDefinition {
+    build(entry, nodes)
+        .with_limits(sagat_domain::workflow::WorkflowLimits::new(instances, 8).expect("limits"))
+        .expect("lowered limits")
+}
+
+#[test]
+fn the_instance_that_would_pass_the_authors_limit_stops_the_run_with_instance_limit() {
+    let mut run = Harness::start(limited(
+        "a",
+        vec![
+            activity("a").with_next(id("b")),
+            activity("b").with_next(id("done")),
+            end("done"),
+        ],
+        2,
+    ));
+    let fence = run.lease("a");
+    run.complete("a", fence).expect("complete a");
+    let fence = run.lease("b");
+    run.complete("b", fence).expect("complete b");
+
+    assert_eq!(run.state.status(), RunStatus::Failed);
+    assert_eq!(run.state.stop_reason(), Some(StopReason::Failed));
+    assert_eq!(run.state.stop_code(), Some(&FailureCode::instance_limit()));
+    assert_eq!(run.status("done"), StepStatus::Cancelled);
+    assert!(run.names().contains(&"run.stop_requested"));
+    run.assert_replays();
+}
+
+#[test]
+fn a_run_that_exactly_fits_the_limit_succeeds() {
+    let mut run = Harness::start(limited(
+        "a",
+        vec![
+            activity("a").with_next(id("b")),
+            activity("b").with_next(id("done")),
+            end("done"),
+        ],
+        3,
+    ));
+    let fence = run.lease("a");
+    run.complete("a", fence).expect("complete a");
+    let fence = run.lease("b");
+    run.complete("b", fence).expect("complete b");
+    assert_eq!(run.state.status(), RunStatus::Succeeded);
+    assert_eq!(run.state.stop_reason(), None);
+    run.assert_replays();
+}
+
+#[test]
+fn a_definition_without_a_lowered_limit_never_pays_for_the_check() {
+    let mut run = Harness::start(build(
+        "a",
+        vec![activity("a").with_next(id("done")), end("done")],
+    ));
+    let fence = run.lease("a");
+    run.complete("a", fence).expect("complete a");
+    assert_eq!(run.state.status(), RunStatus::Succeeded);
+    assert!(!run.names().contains(&"run.stop_requested"));
+}

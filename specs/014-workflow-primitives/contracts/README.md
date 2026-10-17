@@ -19,8 +19,35 @@ come from that definition plus explicit stored identity/chain data, not from a s
 
 The public parser accepts a closed `state` declaration with the already enabled basic root-node
 set. This is the publication boundary for run-addressed Query/Update. A document that combines
-`state` with `bodies`, top-level `limits`, approval, collection, loop or body-return forms remains
-rejected. The one combined continuation form described below is available.
+`state` with `bodies`, approval, collection, loop or body-return forms remains rejected. The one
+combined continuation form described below is available.
+
+The optional top-level `limits` block is publishable in every shape the runtime can run (D297).
+An author may lower `maxInstances` (1..100000) and `maxDepth` (1..8) below the platform ceilings
+and never raise them: a value outside the range is refused at publication, an omitted field keeps
+its ceiling, and tenant policy can lower the run's budget further but never raise it. A document
+without the block is unchanged, byte for byte and digest for digest. A definition whose bodies
+nest deeper than its own `maxDepth` is refused. Run creation captures the smaller of the platform
+ceiling and the author's value; a chain successor captures its own, so `maxInstances` bounds each
+segment.
+
+Every activated node instance counts, the `end` node included; admitting a collection or loop
+iteration charges its body's nodes (an activity and its `return` cost two). The next work beyond
+the budget is a durable run failure, never a silent wait:
+
+| Next work | Failure code | When it is decided |
+| --- | --- | --- |
+| a root node beyond `maxInstances` | `INSTANCE_LIMIT` | by the planner, as the stop that replaces the activation |
+| a collection whose iterations cannot all be admitted | `INSTANCE_LIMIT` | before the collection enters |
+| more collection items than `maxItems` | `ITERATION_LIMIT` | before the collection enters |
+| a loop's first body or successor does not fit | `INSTANCE_LIMIT` | before the loop enters |
+| a loop's next body (or its successor once it is done) does not fit | `INSTANCE_LIMIT` | at the checkpoint, before any delay is scheduled; the completed iterations are kept |
+| a loop needs another body after `maxIterations` | `ITERATION_LIMIT` | at the checkpoint |
+
+`INSTANCE_LIMIT` is not routed to an `onError` node, which would need an instance of its own. A
+tenant policy that lowers a running run below its accepted work pauses further collection
+admission (accepted work is never killed and nothing is deleted); a loop reports the lowered
+budget as `INSTANCE_LIMIT` at its next checkpoint.
 
 The continuation parser retains `chainPolicy` as a bounded domain policy and `continueAsNew` as a
 typed terminal with its input and optional state expressions. The public runtime accepts two closed
@@ -34,8 +61,8 @@ marks the segment `FINAL` and latches the chain outcome so another tick cannot r
 An input/state transfer expression that fails evaluation stops the same current run with durable
 `EXPRESSION_ERROR`, audit and `FINAL` in one fenced transaction; a stale evaluated snapshot cannot
 fail a newer run version.
-Arbitrary state transfer, bodies, top-level limits, triggers, `onError`, non-activity entrypoints and
-all wider graph combinations remain rejected at publication.
+Arbitrary state transfer, bodies, triggers, `onError`, non-activity entrypoints and all wider graph
+combinations remain rejected at publication; top-level `limits` are accepted.
 
 The document adds a `bodies` map, optional `state` declarations, `chainPolicy` and optional
 `limits: {maxInstances,maxDepth}`. Omitted limit fields default to 100000 and 8 respectively;

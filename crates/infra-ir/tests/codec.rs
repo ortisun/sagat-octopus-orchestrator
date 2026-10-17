@@ -47,14 +47,9 @@ fn issues_of(doc: &Value) -> Vec<(String, String)> {
 #[test]
 fn unsupported_additive_declarations_remain_unpublishable() {
     let mut document = minimal(json!([{"id": "done", "type": "end"}]), "done");
+    // The block is publishable (D297); `crates/infra-ir/tests/limits.rs` covers it.
     document["limits"] = json!({"maxInstances": 100, "maxDepth": 2});
-    assert!(matches!(
-        parse(&document),
-        Err(IrError::UnsupportedDeclaration {
-            field: "limits",
-            ..
-        })
-    ));
+    parse(&document).expect("lowered limits are publishable");
 
     document.as_object_mut().expect("document").remove("limits");
     document["state"] = json!({"schema": {"type": "integer"}, "initial": "0"});

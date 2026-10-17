@@ -322,9 +322,9 @@ impl LoopCheckpointCommand {
             LoopContinuation::DelayUntil(due_at) => {
                 due_at > checked_at && timer_id.is_some() && next_activity.is_none()
             }
-            LoopContinuation::Complete | LoopContinuation::IterationLimit => {
-                timer_id.is_none() && next_activity.is_none()
-            }
+            LoopContinuation::Complete
+            | LoopContinuation::IterationLimit
+            | LoopContinuation::InstanceLimit => timer_id.is_none() && next_activity.is_none(),
         };
         if !valid_effect {
             return Err(LoopInputError::Continuation);

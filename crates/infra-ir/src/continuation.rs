@@ -269,7 +269,7 @@ pub(crate) fn parse(document: &Value) -> Result<ParsedContinuation, IrError> {
 }
 
 pub(crate) fn parse_published(document: &Value) -> Result<ParsedContinuation, IrError> {
-    for field in ["bodies", "limits", "triggers"] {
+    for field in ["bodies", "triggers"] {
         if document.get(field).is_some() {
             return Err(IrError::UnsupportedDeclaration {
                 field,

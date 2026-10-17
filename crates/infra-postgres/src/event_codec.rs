@@ -320,6 +320,7 @@ pub(crate) fn encode(event: &RunEvent) -> Encoded {
                 LoopContinuation::Continue => json!({"kind": "continue"}),
                 LoopContinuation::DelayUntil(at) => json!({"kind": "delay", "at_us": micros(*at)}),
                 LoopContinuation::IterationLimit => json!({"kind": "iteration_limit"}),
+                LoopContinuation::InstanceLimit => json!({"kind": "instance_limit"}),
             },
         }),
         RunEvent::LoopDelayElapsed { next_iteration, .. } => {
@@ -703,6 +704,7 @@ pub(crate) fn decode(event_type: &str, node: Option<&str>, detail: &Value) -> Op
                     "continue" => LoopContinuation::Continue,
                     "delay" => LoopContinuation::DelayUntil(time_of(continuation, "at_us")?),
                     "iteration_limit" => LoopContinuation::IterationLimit,
+                    "instance_limit" => LoopContinuation::InstanceLimit,
                     _ => return None,
                 },
             }

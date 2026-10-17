@@ -1221,6 +1221,20 @@ impl WorkflowDefinition {
         Ok(definition)
     }
 
+    /// The definition with the author's lowered instance and depth ceilings (`limits`).
+    ///
+    /// Both bounds are validated by [`WorkflowLimits::new`], so an author can only lower the
+    /// platform ceilings. A depth below the nesting the bodies already need is refused.
+    ///
+    /// # Errors
+    /// [`WorkflowError::BodyDepthExceeded`] when a body reference graph nests deeper than
+    /// `limits.max_depth()`.
+    pub fn with_limits(mut self, limits: WorkflowLimits) -> Result<Self, WorkflowError> {
+        check_body_references(&self.graph, &self.bodies, limits)?;
+        self.limits = limits;
+        Ok(self)
+    }
+
     #[must_use]
     pub const fn is_structured(&self) -> bool {
         self.structured

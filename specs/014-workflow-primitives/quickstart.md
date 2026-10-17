@@ -77,8 +77,8 @@ ceiling is a separate operator action.
 The server also accepts a bounded root approval with basic nodes and three closed continuation graphs: `activity -> continueAsNew`,
 `activity -> condition -> (continueAsNew | end)`, and `activity -> waitEvent -> continueAsNew`.
 The direct and conditional forms may transfer the exact declared `state` snapshot with their input.
-The wait form transfers input only; bodies, top-level limits,
-triggers and wider graphs fail publication. Run the current builder
+The wait form transfers input only; bodies, triggers and wider graphs fail publication. A top-level
+`limits` block may lower `maxInstances` and `maxDepth` in any of these shapes, never raise them. Run the current builder
 parity checks with:
 
 ```sh

@@ -357,6 +357,56 @@ fn budget_exhaustion_fails_before_a_delay_can_be_scheduled() {
 }
 
 #[test]
+fn an_instance_budget_stop_is_a_distinct_durable_failure_that_replays() {
+    // Needing another body: the run's instance budget, not the iteration budget, ran out.
+    let mut state = start(LoopKind::While, 3, Some(true));
+    admit(&mut state, 0);
+    return_body(&mut state, 0);
+    checkpoint(&mut state, 0, true, LoopContinuation::InstanceLimit);
+    let scope = state.loop_state(&loop_instance()).expect("loop state");
+    assert_eq!(scope.phase(), LoopPhase::Failed);
+    assert_eq!(scope.failure(), Some(&FailureCode::instance_limit()));
+    assert_eq!(
+        state.step(&node("poll")).and_then(|step| step.failure()),
+        Some(&FailureCode::instance_limit())
+    );
+
+    // A finished loop whose successor cannot be paid for stops the same way.
+    let mut finished = start(LoopKind::While, 3, Some(true));
+    admit(&mut finished, 0);
+    return_body(&mut finished, 0);
+    checkpoint(&mut finished, 0, false, LoopContinuation::InstanceLimit);
+    assert_eq!(
+        finished
+            .loop_state(&loop_instance())
+            .map(|scope| scope.phase()),
+        Some(LoopPhase::Failed)
+    );
+
+    // The iteration budget outranks it: a loop already at `maxIterations` fails on that.
+    let mut capped = start(LoopKind::While, 1, Some(true));
+    admit(&mut capped, 0);
+    return_body(&mut capped, 0);
+    let refused = RunEvent::LoopIterationCheckpointed {
+        node: node("poll"),
+        index: 0,
+        return_instance: body(0),
+        result_digest: Digest::new([0x20; 32]),
+        carry_digest: Digest::new([0x30; 32]),
+        condition: true,
+        checked_at: at(200),
+        continuation: LoopContinuation::InstanceLimit,
+    };
+    assert_eq!(
+        capped.apply(&refused),
+        Err(ExecutionError::InvalidLoopContinuation {
+            loop_instance: loop_instance(),
+            index: 0,
+        })
+    );
+}
+
+#[test]
 fn cancellation_stops_admission_and_finishes_after_active_work_drains() {
     let mut state = start(LoopKind::RepeatUntil, 3, None);
     admit(&mut state, 0);

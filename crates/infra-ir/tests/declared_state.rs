@@ -97,13 +97,11 @@ fn publication_rejects_unreleased_capabilities_combined_with_declared_state() {
 
     let mut with_limits = document();
     with_limits["limits"] = json!({"maxInstances": 100, "maxDepth": 2});
-    assert!(matches!(
-        JsonIrCodec.parse(with_limits.to_string().as_bytes()),
-        Err(IrError::UnsupportedDeclaration {
-            field: "limits",
-            ..
-        })
-    ));
+    let parsed = JsonIrCodec
+        .parse(with_limits.to_string().as_bytes())
+        .expect("declared state accepts lowered limits (D297)");
+    assert_eq!(parsed.definition.limits().max_instances(), 100);
+    assert_eq!(parsed.definition.limits().max_depth(), 2);
 
     let mut with_structured_node = document();
     with_structured_node["entrypoint"] = json!("review");

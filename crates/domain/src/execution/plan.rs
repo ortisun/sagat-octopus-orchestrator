@@ -9,13 +9,16 @@
 use time::OffsetDateTime;
 
 use super::error::ExecutionError;
-use super::event::{AddressedRunEvent, JoinOutcome, RunEvent, StopReason, SwitchSelection};
+use super::event::{
+    AddressedRunEvent, FailureCode, JoinOutcome, RunEvent, StopReason, SwitchSelection,
+};
 use super::instance::InstancePath;
 use super::sagas;
 use super::state::{RunState, SagaPhase, StepState, StepStatus, WaitingOn};
 use crate::saga::{NodeOrigin, SagaOutcome};
 use crate::workflow::{
     CancelPolicy, Expression, JoinPolicy, NodeId, NodeKind, Scope, SwitchCase, WorkflowDefinition,
+    WorkflowLimits,
 };
 
 /// What the engine needs to know before it can continue.
@@ -313,6 +316,13 @@ pub(super) fn waits_for_cancelled_child(
         )
 }
 
+/// The run's instance ceiling when its author lowered it; `None` while it is the platform's, which
+/// no acyclic root graph can reach and which the store alone guards.
+fn lowered_instance_limit(def: &WorkflowDefinition) -> Option<usize> {
+    let limit = usize::try_from(def.limits().max_instances()).ok()?;
+    (limit < usize::try_from(WorkflowLimits::default().max_instances()).ok()?).then_some(limit)
+}
+
 /// Gives a freshly routed step whatever it needs to make progress.
 fn start_pending(
     def: &WorkflowDefinition,
@@ -327,6 +337,14 @@ fn start_pending(
         // A compensation is released by its saga, when everything it waits for has finished.
         if matches!(declared.origin(), NodeOrigin::Compensation(_)) {
             continue;
+        }
+        // Activating this step would be one instance beyond the author's lowered ceiling: the run
+        // stops with a durable, typed failure instead of the store refusing the step at commit.
+        if lowered_instance_limit(def).is_some_and(|limit| state.charged_instances() >= limit) {
+            return Ok(Some(Plan::Emit(RunEvent::RunStopRequested {
+                reason: StopReason::Failed,
+                code: Some(FailureCode::instance_limit()),
+            })));
         }
         let action = match declared.kind() {
             NodeKind::Activity { .. } => Plan::Emit(RunEvent::StepReleased { node: node.clone() }),

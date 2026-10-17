@@ -332,6 +332,43 @@ fn shared_limits_bound_depth_and_total_definition_nodes() {
 }
 
 #[test]
+fn an_author_can_lower_the_limits_of_a_built_definition_but_not_below_its_nesting() {
+    let lowered = WorkflowLimits::new(40, 1).expect("limits");
+    let plain = WorkflowDefinition::new(
+        Slug::parse("plain-limited").expect("workflow name"),
+        id("done"),
+        vec![Node::new(id("done"), NodeKind::End { output: None })],
+    )
+    .expect("plain definition");
+    assert_eq!(plain.limits(), WorkflowLimits::default());
+    let plain = plain.with_limits(lowered).expect("lowered limits");
+    assert_eq!(plain.limits(), lowered);
+    assert!(
+        !plain.is_structured(),
+        "a limit does not turn a root-only definition into a structured one"
+    );
+
+    let nested = build(
+        root_nodes("outer"),
+        vec![nested_body("outer", "inner"), simple_body("inner")],
+        WorkflowLimits::default(),
+    )
+    .expect("nested definition");
+    assert!(matches!(
+        nested.clone().with_limits(lowered),
+        Err(WorkflowError::BodyDepthExceeded(1))
+    ));
+    assert_eq!(
+        nested
+            .with_limits(WorkflowLimits::new(40, 2).expect("limits"))
+            .expect("nesting fits")
+            .limits()
+            .max_instances(),
+        40
+    );
+}
+
+#[test]
 fn collection_limits_and_effective_expression_bytes_are_validated() {
     for (items, concurrency) in [(0, 1), (10001, 1), (1, 0), (1, 257)] {
         let mut nodes = root_nodes("line");

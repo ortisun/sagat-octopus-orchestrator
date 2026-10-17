@@ -884,7 +884,8 @@ pub fn derive(facts: &RunFacts, entries: &[JournalEntry], applied_seq: u64) -> D
                         sagat_domain::execution::LoopContinuation::Complete => {
                             WorkflowPrimitiveOutcome::Succeeded
                         }
-                        sagat_domain::execution::LoopContinuation::IterationLimit => {
+                        sagat_domain::execution::LoopContinuation::IterationLimit
+                        | sagat_domain::execution::LoopContinuation::InstanceLimit => {
                             WorkflowPrimitiveOutcome::Failed
                         }
                         sagat_domain::execution::LoopContinuation::Continue

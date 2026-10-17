@@ -18,6 +18,7 @@ mod collections_http;
 mod hint_contract;
 mod identity_storage;
 mod journal_identity;
+mod limits;
 mod loop_progress;
 mod loops_http;
 mod observability;

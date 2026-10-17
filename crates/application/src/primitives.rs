@@ -254,6 +254,7 @@ pub struct CollectionEntry {
     pub snapshot_digest: Digest,
     pub limits: CollectionLimits,
     snapshot_content: Option<Vec<u8>>,
+    iteration_charge: u32,
 }
 
 impl CollectionEntry {
@@ -276,7 +277,23 @@ impl CollectionEntry {
             snapshot_digest,
             limits,
             snapshot_content: None,
+            iteration_charge: 1,
         })
+    }
+
+    /// Declares how many instances admitting one iteration charges (its body's nodes), so entry
+    /// can refuse a collection whose iterations cannot all be admitted within the run's lifetime
+    /// instance budget. Without it each iteration is assumed to charge one.
+    #[must_use]
+    pub fn with_iteration_charge(mut self, instances_per_iteration: u32) -> Self {
+        self.iteration_charge = instances_per_iteration.max(1);
+        self
+    }
+
+    /// The instances admitting one iteration charges.
+    #[must_use]
+    pub const fn iteration_charge(&self) -> u32 {
+        self.iteration_charge
     }
 
     /// Constructs a runtime entry whose snapshot must be retained with the transition.

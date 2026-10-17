@@ -547,7 +547,7 @@ fn root_nodes(document: &Value, structured: bool) -> Result<Vec<Node>, IrError> 
 }
 
 pub(crate) fn definition(document: &Value) -> Result<WorkflowDefinition, IrError> {
-    for field in ["bodies", "limits", "state", "chainPolicy"] {
+    for field in ["bodies", "state", "chainPolicy"] {
         if document.get(field).is_some() {
             return Err(IrError::UnsupportedDeclaration {
                 field,
@@ -555,6 +555,7 @@ pub(crate) fn definition(document: &Value) -> Result<WorkflowDefinition, IrError
             });
         }
     }
+    let limits = document_limits(document)?;
     let (name, entrypoint) = identity(document)?;
     let nodes = root_nodes(document, false)?;
     let has_approval = nodes
@@ -572,15 +573,10 @@ pub(crate) fn definition(document: &Value) -> Result<WorkflowDefinition, IrError
         });
     }
     let definition = if has_approval {
-        WorkflowDefinition::new_structured(
-            name,
-            entrypoint,
-            nodes,
-            Vec::new(),
-            WorkflowLimits::default(),
-        )
+        WorkflowDefinition::new_structured(name, entrypoint, nodes, Vec::new(), limits)
     } else {
         WorkflowDefinition::new(name, entrypoint, nodes)
+            .and_then(|definition| definition.with_limits(limits))
     };
     definition
         .and_then(|definition| definition.with_triggers(triggers(document)?))
@@ -590,7 +586,7 @@ pub(crate) fn definition(document: &Value) -> Result<WorkflowDefinition, IrError
 pub(crate) fn published_declared_state_definition(
     document: &Value,
 ) -> Result<WorkflowDefinition, IrError> {
-    for field in ["bodies", "limits", "chainPolicy"] {
+    for field in ["bodies", "chainPolicy"] {
         if document.get(field).is_some() {
             return Err(IrError::UnsupportedDeclaration {
                 field,
@@ -598,6 +594,7 @@ pub(crate) fn published_declared_state_definition(
             });
         }
     }
+    let limits = document_limits(document)?;
     if let Some(node) = document
         .get("nodes")
         .and_then(Value::as_array)
@@ -622,6 +619,7 @@ pub(crate) fn published_declared_state_definition(
     let (name, entrypoint) = identity(document)?;
     let nodes = root_nodes(document, false)?;
     WorkflowDefinition::new(name, entrypoint, nodes)
+        .and_then(|definition| definition.with_limits(limits))
         .and_then(|definition| definition.with_triggers(triggers(document)?))
         .map_err(IrError::Invalid)
 }
@@ -843,6 +841,38 @@ pub(crate) fn continuation_definition(
     structured_definition_with_policy(document, Some(policy))
 }
 
+/// The author's `limits` block: each omitted field keeps its platform ceiling (100000 instances,
+/// depth 8) and a value outside `1..=100000` / `1..=8` is refused, so a document can only lower
+/// the ceilings.
+fn document_limits(document: &Value) -> Result<WorkflowLimits, IrError> {
+    let defaults = WorkflowLimits::default();
+    match document.get("limits") {
+        None => Ok(defaults),
+        Some(Value::Object(raw)) => {
+            let max_instances = match raw.get("maxInstances") {
+                None => defaults.max_instances(),
+                Some(value) => value
+                    .as_u64()
+                    .and_then(|value| u32::try_from(value).ok())
+                    .ok_or_else(|| {
+                        issue("/limits/maxInstances".into(), "expected a positive integer")
+                    })?,
+            };
+            let max_depth = match raw.get("maxDepth") {
+                None => defaults.max_depth(),
+                Some(value) => value
+                    .as_u64()
+                    .and_then(|value| u8::try_from(value).ok())
+                    .ok_or_else(|| {
+                        issue("/limits/maxDepth".into(), "expected a positive integer")
+                    })?,
+            };
+            WorkflowLimits::new(max_instances, max_depth).map_err(IrError::Invalid)
+        }
+        Some(_) => Err(issue("/limits".into(), "expected an object")),
+    }
+}
+
 fn structured_definition_with_policy(
     document: &Value,
     continuation_policy: Option<ContinuationPolicy>,
@@ -867,32 +897,7 @@ fn structured_definition_with_policy(
             bodies.push(BodyDefinition::new(name, entrypoint, nodes).map_err(IrError::Invalid)?);
         }
     }
-    let defaults = WorkflowLimits::default();
-    let limits = match document.get("limits") {
-        None => defaults,
-        Some(Value::Object(raw)) => {
-            let max_instances = match raw.get("maxInstances") {
-                None => defaults.max_instances(),
-                Some(value) => value
-                    .as_u64()
-                    .and_then(|value| u32::try_from(value).ok())
-                    .ok_or_else(|| {
-                        issue("/limits/maxInstances".into(), "expected a positive integer")
-                    })?,
-            };
-            let max_depth = match raw.get("maxDepth") {
-                None => defaults.max_depth(),
-                Some(value) => value
-                    .as_u64()
-                    .and_then(|value| u8::try_from(value).ok())
-                    .ok_or_else(|| {
-                        issue("/limits/maxDepth".into(), "expected a positive integer")
-                    })?,
-            };
-            WorkflowLimits::new(max_instances, max_depth).map_err(IrError::Invalid)?
-        }
-        Some(_) => return Err(issue("/limits".into(), "expected an object")),
-    };
+    let limits = document_limits(document)?;
     let definition = match continuation_policy {
         Some(policy) => WorkflowDefinition::new_structured_with_continuation(
             name, entrypoint, root, bodies, limits, policy,

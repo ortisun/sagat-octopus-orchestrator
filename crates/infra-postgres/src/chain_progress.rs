@@ -1125,6 +1125,13 @@ impl ChainProgressStore for PgChainProgressStore {
         .execute(&mut *tx)
         .await
         .map_err(store_error)?;
+        crate::execution::capture_run_limits(
+            &mut tx,
+            command.scope().tenant_id().as_uuid(),
+            command.successor().as_uuid(),
+            definition.limits(),
+        )
+        .await?;
         let entry_instance = ExecutionInstanceId::root(entrypoint.clone());
         sqlx::query(
             "INSERT INTO steps \
@@ -1564,6 +1571,13 @@ impl ChainProgressStore for PgChainProgressStore {
         .execute(&mut *tx)
         .await
         .map_err(store_error)?;
+        crate::execution::capture_run_limits(
+            &mut tx,
+            command.scope().tenant_id().as_uuid(),
+            command.successor().as_uuid(),
+            definition.limits(),
+        )
+        .await?;
         let entry_instance = ExecutionInstanceId::root(entrypoint.clone());
         sqlx::query(
             "INSERT INTO steps \
