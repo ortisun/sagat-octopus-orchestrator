@@ -2742,7 +2742,7 @@ export interface components {
             createdBy: string;
             /** Format: date-time */
             updatedAt: string;
-            /** @description The worker pools allowed to receive the secret; empty means every worker bound to the activity (see `setSecretPools`). */
+            /** @description The worker pools allowed to receive the secret; empty means every worker bound to the activity (see `setSecretPools`). Present only for callers who hold `secret:manage`: whoever may merely use the secret is not told which fleets are trusted with it. */
             pools?: string[];
         };
         SecretPools: {
@@ -2757,6 +2757,8 @@ export interface components {
         SetSecretRequest: {
             /** @description The secret, UTF-8 text of 1 to 16384 bytes. Never returned. */
             value: string;
+            /** @description Replaces the worker pools allowed to receive the secret in the same call (see `setSecretPools`). Absent leaves them as they are, and a new secret then has none; an empty list lifts the restriction. Deleting a secret deletes its restriction, so recreate one that must stay restricted with its pools, which makes it restricted from the first instant. */
+            pools?: string[];
         };
         EgressPolicy: {
             /** @description Exact hosts, `*.domain` rules and CIDR networks, lower-cased and masked. */

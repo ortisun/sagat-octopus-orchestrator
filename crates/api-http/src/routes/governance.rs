@@ -289,11 +289,12 @@ pub async fn put_secret<B: Governance>(
     let namespace =
         admitted_namespace(&state, &caller, &namespace, ApiOperation::SecretManage).await?;
     let view = secrets(&state)?
-        .put(
+        .put_with_pools(
             &caller.session.principal,
             namespace,
             &name,
             body.value.into_bytes(),
+            body.pools.as_deref(),
             &caller.ctx,
         )
         .await?;

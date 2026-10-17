@@ -190,8 +190,37 @@ pub(crate) async fn pool_refusal(
     namespace: NamespaceId,
     names: &[SecretName],
     subject: &str,
+    lock: bool,
 ) -> Result<Option<SecretName>, StoreError> {
     let texts: Vec<&str> = names.iter().map(SecretName::as_str).collect();
+    if lock {
+        // The rows the answer rests on, locked until the caller's transaction ends. Changing a
+        // secret's pools takes the secret's row for update, and taking a grant away deletes its
+        // row, so either waits for this transaction (and is seen by the next one) instead of
+        // committing between this check and the read of the value. A grant that is *added* is not
+        // waited for: it can only widen who is entitled. The order, secret rows and then grant
+        // rows, is the order nothing else takes in reverse.
+        sqlx::query(
+            "SELECT id FROM secrets \
+             WHERE tenant_id = $1 AND namespace_id = $2 AND name = ANY($3) ORDER BY id FOR SHARE",
+        )
+        .bind(tenant.as_uuid())
+        .bind(namespace.as_uuid())
+        .bind(&texts)
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(store_error)?;
+        sqlx::query(
+            "SELECT pool FROM worker_binding_pools \
+             WHERE tenant_id = $1 AND namespace_id = $2 AND subject = $3 ORDER BY pool FOR SHARE",
+        )
+        .bind(tenant.as_uuid())
+        .bind(namespace.as_uuid())
+        .bind(subject)
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(store_error)?;
+    }
     let refused: Vec<String> = sqlx::query_scalar(
         "SELECT s.name FROM secrets s \
          WHERE s.tenant_id = $1 AND s.namespace_id = $2 AND s.name = ANY($3) \
@@ -214,6 +243,36 @@ pub(crate) async fn pool_refusal(
         .iter()
         .find(|name| refused.iter().any(|r| r == name.as_str()))
         .cloned())
+}
+
+/// Replaces the pools of a secret on the caller's transaction (which holds the secret's row lock).
+async fn replace_pools(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    secret: Uuid,
+    pools: &[String],
+    changed_by: &str,
+) -> Result<(), StoreError> {
+    sqlx::query("DELETE FROM secret_pools WHERE tenant_id = $1 AND secret_id = $2")
+        .bind(tenant.as_uuid())
+        .bind(secret)
+        .execute(&mut *conn)
+        .await
+        .map_err(store_error)?;
+    if !pools.is_empty() {
+        sqlx::query(
+            "INSERT INTO secret_pools (tenant_id, secret_id, pool, granted_by) \
+             SELECT $1, $2, p, $4 FROM unnest($3::text[]) AS t(p)",
+        )
+        .bind(tenant.as_uuid())
+        .bind(secret)
+        .bind(pools)
+        .bind(changed_by)
+        .execute(&mut *conn)
+        .await
+        .map_err(store_error)?;
+    }
+    Ok(())
 }
 
 /// What a step's declared secrets resolve to, read on the caller's transaction.
@@ -358,6 +417,9 @@ impl SecretStore for PgRunStore {
             .execute(&mut *tx)
             .await
             .map_err(store_error)?;
+        if let Some(pools) = &version.pools {
+            replace_pools(&mut tx, tenant, secret_id, pools, &version.created_by).await?;
+        }
         insert_audit(&mut tx, audit).await?;
         tx.commit().await.map_err(store_error)?;
         Ok(SecretMeta {
@@ -601,25 +663,7 @@ impl SecretStore for PgRunStore {
         let Some(id) = id else {
             return Ok(false);
         };
-        sqlx::query("DELETE FROM secret_pools WHERE tenant_id = $1 AND secret_id = $2")
-            .bind(tenant.as_uuid())
-            .bind(id)
-            .execute(&mut *tx)
-            .await
-            .map_err(store_error)?;
-        if !pools.is_empty() {
-            sqlx::query(
-                "INSERT INTO secret_pools (tenant_id, secret_id, pool, granted_by) \
-                 SELECT $1, $2, p, $4 FROM unnest($3::text[]) AS t(p)",
-            )
-            .bind(tenant.as_uuid())
-            .bind(id)
-            .bind(pools)
-            .bind(changed_by)
-            .execute(&mut *tx)
-            .await
-            .map_err(store_error)?;
-        }
+        replace_pools(&mut tx, tenant, id, pools, changed_by).await?;
         insert_audit(&mut tx, audit).await?;
         tx.commit().await.map_err(store_error)?;
         Ok(true)

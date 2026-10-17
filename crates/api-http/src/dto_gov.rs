@@ -145,8 +145,9 @@ pub struct SecretBody {
     #[serde(with = "time::serde::rfc3339")]
     pub updated_at: time::OffsetDateTime,
     /// The worker pools allowed to receive the secret; empty means every worker bound to the
-    /// activity (G48).
-    pub pools: Vec<String>,
+    /// activity (G48). Only for callers who manage secrets.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pools: Option<Vec<String>>,
 }
 
 impl From<&SecretView> for SecretBody {
@@ -184,12 +185,17 @@ pub struct SecretPoolsBody {
 #[serde(deny_unknown_fields)]
 pub struct SetSecretBody {
     pub value: String,
+    /// Replaces the pools allowed to receive the secret in the same call; absent leaves them as
+    /// they are (none on a new secret), `[]` lifts the restriction.
+    #[serde(default)]
+    pub pools: Option<Vec<String>>,
 }
 
 impl std::fmt::Debug for SetSecretBody {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SetSecretBody")
             .field("value", &"<redacted>")
+            .field("pools", &self.pools)
             .finish()
     }
 }

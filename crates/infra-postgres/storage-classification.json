@@ -3704,6 +3704,24 @@
     },
     {
       "table": "steps",
+      "column": "secrets",
+      "sql_type": "_text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Names of the secrets the step declares, copied from the pinned workflow version when the step is created: at most 16 names of at most 64 characters (`sagat_domain::secrets::SecretName`), bounded by the database CHECK `steps_secrets_bounded` (16 entries, 1039 bytes joined). Writer/source: `crates/infra-postgres/src/execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "steps",
       "column": "status",
       "sql_type": "text",
       "class": "protected_system",

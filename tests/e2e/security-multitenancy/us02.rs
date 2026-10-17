@@ -238,6 +238,27 @@ async fn a_secret_restricted_to_a_worker_pool_is_leased_and_resolved_only_by_wor
         .rest(Method::GET, &format!("/namespaces/{ns}/secrets"), None)
         .await;
     assert_eq!(listed["items"][0]["pools"], json!(["trusted"]));
+    // Someone who may merely use the secret is not told which fleets are trusted with it.
+    p.grant(p.tenant, "dora", Role::Developer).await;
+    let (status, _) = p
+        .rest(
+            Method::PUT,
+            &format!("/namespaces/{ns}/secrets/stripe-key/access/dora"),
+            None,
+        )
+        .await;
+    assert_eq!(status, 204);
+    let (status, seen) = p
+        .rest_as(
+            "dora",
+            Method::GET,
+            &format!("/namespaces/{ns}/secrets"),
+            None,
+        )
+        .await;
+    assert_eq!(status, 200, "{seen}");
+    assert_eq!(seen["items"][0]["name"], "stripe-key");
+    assert!(seen["items"][0].get("pools").is_none(), "{seen}");
     let id = p
         .publish("charge-flow", &charge_ir("charge-flow", &["stripe-key"]))
         .await;

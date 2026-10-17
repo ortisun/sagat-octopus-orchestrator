@@ -28,7 +28,7 @@ use crate::entropy::{Entropy, Token};
 use crate::error::{AppError, StoreError};
 use crate::execution::{
     Actor, Effects, Engine, EngineError, ExpressionEvaluator, LeaseGrant, LeaseRenewal,
-    MAX_PAYLOAD_BYTES, MAX_RUN_OUTPUT_BYTES, RunTx, compensation_key, step_id,
+    MAX_PAYLOAD_BYTES, MAX_RUN_OUTPUT_BYTES, PoolCheck, RunTx, compensation_key, step_id,
 };
 use crate::quotas::QuotaLookup;
 use crate::runs::{Lock, RunStore, execution_error};
@@ -211,7 +211,9 @@ pub trait WorkerStore: QuotaLookup + Send + Sync {
         ttl: Duration,
     ) -> impl Future<Output = Result<Option<SessionRecord>, StoreError>> + Send;
 
-    /// Runs of one namespace that have a `READY` step for one of `activities`, oldest first.
+    /// Runs of one namespace that have a `READY` step for one of `activities`, oldest first. Steps
+    /// that declare a secret restricted to worker pools the identity `subject` holds none of are
+    /// left out of the window, bar a few per activity that the claim refuses and audits (G48).
     fn claimable_runs(
         &self,
         tenant: TenantId,
@@ -219,6 +221,7 @@ pub trait WorkerStore: QuotaLookup + Send + Sync {
         activities: &[String],
         limit: u32,
         accepted_protocol_minor: u32,
+        subject: &str,
     ) -> impl Future<Output = Result<Vec<RunId>, StoreError>> + Send;
 }
 
@@ -670,6 +673,7 @@ where
                 &session.activities,
                 wanted.saturating_mul(4).min(64),
                 session.accepted_protocol_minor,
+                &session.subject,
             )
             .await?;
         let mut claimed = Vec::new();
@@ -828,7 +832,9 @@ where
             // transaction, before any quota is reserved for the step.
             let declared = Self::declared_secrets_of(&mut tx, &node);
             if !declared.is_empty()
-                && let Some(withheld) = tx.secret_pool_refusal(&declared, &session.subject).await?
+                && let Some(withheld) = tx
+                    .secret_pool_refusal(&declared, &session.subject, PoolCheck::Hint)
+                    .await?
             {
                 let attempt = tx
                     .parts()
@@ -1905,7 +1911,7 @@ where
         // secret was restricted, or before the worker's grant was taken away, does not carry the
         // value (G48).
         if let Some(withheld) = tx
-            .secret_pool_refusal(&names, principal.subject().as_str())
+            .secret_pool_refusal(&names, principal.subject().as_str(), PoolCheck::Delivery)
             .await?
         {
             let effects = self.pool_refusal_effects(

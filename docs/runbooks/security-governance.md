@@ -119,7 +119,16 @@ curl -X PUT "$API/v1/namespaces/$NS/worker-bindings/payments-workers" ... \
 # only that pool may receive the secret (`[]` lifts the restriction)
 curl -X PUT "$API/v1/namespaces/$NS/secrets/stripe-key/pools" ... -d '{"pools": ["payments-trusted"]}'
 curl "$API/v1/namespaces/$NS/secrets/stripe-key/pools" ...
+# or create it restricted from the first instant: `pools` in the same call as the value
+curl -X PUT "$API/v1/namespaces/$NS/secrets/stripe-key" ... -d '{"value": "sk-live-...", "pools": ["payments-trusted"]}'
 ```
+
+**Deleting a secret deletes its restriction.** A secret you delete and create again is a new secret:
+unless the new `PUT` names `pools`, it is delivered to every worker bound to the activity. Recreate a
+restricted secret with its `pools` in the same call. (A tombstone that restored the old list would
+restrict a new secret by something nobody can see any more; creating it restricted is explicit.) A
+`PUT` of a new version that names no `pools` keeps the list. Only holders of `secret:manage` are shown
+`pools` (a developer who merely uses a secret is not told which fleets are trusted with it).
 
 A **pool** is a name an administrator grants to a worker *identity* in one namespace. The `pools` a worker
 advertises when it registers are scaling labels and are never read for this decision, so a worker cannot
@@ -136,10 +145,18 @@ most a hundred on one run. The counter `secret_delivery_refused_total{stage}` ca
 stays `READY` and nothing runs it, look for `secret.delivery_refused` rows on its run, then grant a worker
 identity the pool or add the pool to the secret.
 
-Two limits to know. Setting a pool list does not stop attempts already running: they hold the value they
-resolved before, and only their next `ResolveSecrets` is refused. And a worker outside the list still
-sees the step among its bounded candidates, so a namespace with very many refused steps ahead of the
-ones it may take can slow that worker's polls; keep restricted activities on their own bindings.
+**Revoking does not recall a value.** Changing a secret's pools, or taking a pool away from an identity,
+stops the *next* `ResolveSecrets` (a resolution that is committing waits for the change and then sees it),
+but an attempt that has **already resolved** the value keeps it until it ends: nothing on the worker
+can be taken back. If a value may have reached a worker that should not have had it, rotate the secret
+(`PUT` a new value), and remove the identity's bindings to close its sessions.
+
+Candidate selection leaves out the steps a worker is not entitled to (the names a step declares are
+copied onto its row when it is created), so refused steps do not hide unrestricted work from a general
+worker. For the audit, the oldest few refused steps per activity are still offered to the claim, which
+refuses and records them: the trail samples refusals, it does not hold one row per step per poll.
+Steps created before upgrading to this version carry no recorded names; they are still refused at the
+lease, but can take places in the window until they are leased or finish.
 
 ### Secrets
 

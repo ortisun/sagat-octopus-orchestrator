@@ -1168,6 +1168,7 @@ impl RunTx for PgRunTx {
         &mut self,
         names: &[SecretName],
         subject: &str,
+        check: sagat_application::execution::PoolCheck,
     ) -> Result<Option<SecretName>, StoreError> {
         crate::secrets::pool_refusal(
             &mut self.tx,
@@ -1175,6 +1176,7 @@ impl RunTx for PgRunTx {
             self.info.namespace_id,
             names,
             subject,
+            check == sagat_application::execution::PoolCheck::Delivery,
         )
         .await
     }
@@ -2125,6 +2127,16 @@ impl PgRunTx {
         let attempt = i32::try_from(step.attempt()).map_err(|_| corrupt("attempt"))?;
         let generation = i64::try_from(step.generation()).map_err(|_| corrupt("generation"))?;
         let inserted = !self.stored.contains(node);
+        // The secrets the step declares, copied onto its row so that the claim query can leave out
+        // the steps a worker is not entitled to receive (G48). None when it declares none.
+        let declared: Option<Vec<String>> = def_node
+            .map(|n| {
+                n.secrets()
+                    .iter()
+                    .map(|s| s.as_str().to_owned())
+                    .collect::<Vec<_>>()
+            })
+            .filter(|names| !names.is_empty());
         if inserted {
             if leased {
                 return Err(StoreError::Internal {
@@ -2137,11 +2149,11 @@ impl PgRunTx {
                   cancel_requested, routed, condition, timed_out, failure_code, next_attempt_at, \
                   waiting_kind, due_at, event_type, correlation_key, activity, ready_at, \
                   last_hinted_at, output_digest, child_run_id, child_input, updated_at, kind, \
-                  event_since) \
+                  event_since, secrets) \
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, \
                          $18, $19, CASE WHEN $6 = 'READY' THEN $20 END, CASE WHEN $21 THEN $20 END, \
                          $22, $23, $24, $20, $25, \
-                         CASE WHEN $15 = 'EVENT' THEN $20 - $26 * interval '1 microsecond' END)",
+                         CASE WHEN $15 = 'EVENT' THEN $20 - $26 * interval '1 microsecond' END, $27)",
             )
             .bind(self.info.tenant_id.as_uuid())
             .bind(self.info.run_id.as_uuid())
@@ -2169,6 +2181,7 @@ impl PgRunTx {
             .bind(child_input)
             .bind(kind)
             .bind(lookback)
+            .bind(declared)
             .execute(&mut *self.tx)
             .await
             .map_err(store_error)?;

@@ -381,6 +381,16 @@ pub struct LeaseRenewal {
     pub ttl: std::time::Duration,
 }
 
+/// What a pool check is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PoolCheck {
+    /// Choosing what to lease: a stale answer costs nothing, because the value is judged again when
+    /// it is asked for. Takes no locks.
+    Hint,
+    /// Deciding to hand a value over, in the transaction that reads it.
+    Delivery,
+}
+
 /// One locked run, mutated in memory and written back in a single transaction.
 pub trait RunTx: Send {
     fn info(&self) -> &RunInfo;
@@ -465,10 +475,16 @@ pub trait RunTx: Send {
     /// when every one may be delivered to it (a secret that lists no pool, or that no longer
     /// exists, never refuses). Read on the transaction's own connection, from the stored grants at
     /// this moment (G48).
+    ///
+    /// With [`PoolCheck::Delivery`] the rows the answer rests on (the secrets, and the identity's
+    /// grants) are locked in share mode until the transaction ends: a change to either that is
+    /// committing waits for this transaction, and one that has committed is seen, so a value read
+    /// afterwards in the same transaction cannot have passed a check that was already out of date.
     fn secret_pool_refusal(
         &mut self,
         names: &[SecretName],
         subject: &str,
+        check: PoolCheck,
     ) -> impl Future<Output = Result<Option<SecretName>, StoreError>> + Send;
 
     /// Every stored version of the declared `names` (a handful each), newest first, with the

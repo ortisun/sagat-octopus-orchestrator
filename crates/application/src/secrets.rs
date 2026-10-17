@@ -46,9 +46,10 @@ pub struct SecretView {
     pub key_id: String,
     pub created_by: String,
     pub updated_at: OffsetDateTime,
-    /// The worker pools allowed to receive the secret; empty means every worker bound to the
-    /// activity (G48).
-    pub pools: Vec<String>,
+    /// The worker pools allowed to receive the secret (empty: every worker bound to the activity,
+    /// G48). `None` when the caller may not see them: only those who manage secrets are told which
+    /// fleets are trusted with one.
+    pub pools: Option<Vec<String>>,
 }
 
 impl From<&SecretMeta> for SecretView {
@@ -59,7 +60,7 @@ impl From<&SecretMeta> for SecretView {
             key_id: meta.key_id.clone(),
             created_by: meta.created_by.clone(),
             updated_at: meta.created_at,
-            pools: Vec::new(),
+            pools: None,
         }
     }
 }
@@ -139,6 +140,9 @@ pub struct NewVersion {
     pub row_id: Uuid,
     pub sealed: SealedSecret,
     pub created_by: String,
+    /// Replaces the worker pools allowed to receive the secret in the same transaction (an empty
+    /// list lifts the restriction); `None` leaves them as they are, or none on a new secret.
+    pub pools: Option<Vec<String>>,
 }
 
 /// Storage port of the secrets. Implemented by `sagat-infra-postgres`.
@@ -305,7 +309,29 @@ where
         value: Vec<u8>,
         ctx: &RequestContext,
     ) -> Result<SecretView, AppError> {
+        self.put_with_pools(principal, namespace, name, value, None, ctx)
+            .await
+    }
+
+    /// As [`Self::put`], and sets the worker pools allowed to receive the secret in the same
+    /// transaction as the version: `Some(&[])` lifts the restriction, `None` leaves it as it is (a
+    /// new secret then has none). A secret created with `pools` is never delivered unrestricted,
+    /// not even for the instant between creating it and restricting it; deleting a secret deletes
+    /// its restriction, so recreating one that must stay restricted names the pools again.
+    ///
+    /// # Errors
+    /// As [`Self::put`], and [`AppError::NotAllowed`] for a pool name that cannot be used.
+    pub async fn put_with_pools(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+        name: &str,
+        value: Vec<u8>,
+        pools: Option<&[String]>,
+        ctx: &RequestContext,
+    ) -> Result<SecretView, AppError> {
         principal.authorize(Permission::SecretManage)?;
+        let pools = pools.map(parse_pool_texts).transpose()?;
         let name = SecretName::parse(name).map_err(|_| AppError::NotAllowed(NAME_RULE))?;
         let value = SecretValue::new(value)
             .map_err(|_| AppError::NotAllowed("a secret value is 1 to 16384 bytes"))?;
@@ -327,7 +353,7 @@ where
             .store
             .effective_limit(tenant, Some(namespace), QuotaResource::Secrets)
             .await?;
-        let audit = AuditRecord::by(
+        let mut audit = AuditRecord::by(
             principal,
             AuditAction::SecretStored,
             ResourceType::Secret,
@@ -335,6 +361,9 @@ where
             ctx.trace_id.clone(),
             self.clock.now(),
         );
+        if let Some(pools) = &pools {
+            audit = audit.with_reason(pools_reason(pools));
+        }
         let meta = self
             .store
             .put_version(
@@ -345,17 +374,19 @@ where
                     row_id,
                     sealed,
                     created_by: principal.subject().as_str().to_owned(),
+                    pools,
                 },
                 limit,
                 &audit,
             )
             .await?;
         let mut view = SecretView::from(&meta);
-        view.pools = self
-            .store
-            .secret_pools(tenant, namespace, &name)
-            .await?
-            .unwrap_or_default();
+        view.pools = Some(
+            self.store
+                .secret_pools(tenant, namespace, &name)
+                .await?
+                .unwrap_or_default(),
+        );
         Ok(view)
     }
 
@@ -377,16 +408,22 @@ where
         require_namespace(&self.store, &self.clock, principal, namespace, ctx).await?;
         let tenant = principal.tenant_id();
         let all = self.store.list_secrets(tenant, namespace).await?;
-        let restricted = self.store.restricted_secrets(tenant, namespace).await?;
-        let view = |secret: &SecretMeta| {
-            let mut view = SecretView::from(secret);
-            if let Some((_, pools)) = restricted.iter().find(|(n, _)| n == secret.name.as_str()) {
-                view.pools.clone_from(pools);
-            }
-            view
-        };
         if principal.authorize(Permission::SecretManage).is_ok() {
-            return Ok(all.iter().map(view).collect());
+            let restricted = self.store.restricted_secrets(tenant, namespace).await?;
+            return Ok(all
+                .iter()
+                .map(|secret| {
+                    let mut view = SecretView::from(secret);
+                    view.pools = Some(
+                        restricted
+                            .iter()
+                            .find(|(n, _)| n == secret.name.as_str())
+                            .map(|(_, pools)| pools.clone())
+                            .unwrap_or_default(),
+                    );
+                    view
+                })
+                .collect());
         }
         let usable = self
             .store
@@ -395,7 +432,7 @@ where
         Ok(all
             .iter()
             .filter(|secret| usable.iter().any(|name| name == secret.name.as_str()))
-            .map(view)
+            .map(SecretView::from)
             .collect())
     }
 
@@ -574,14 +611,8 @@ where
     ) -> Result<Vec<String>, AppError> {
         principal.authorize(Permission::SecretManage)?;
         let name = SecretName::parse(name).map_err(|_| AppError::NotFound)?;
-        let parsed = sagat_domain::binding::parse_pools(pools).map_err(|error| {
-            AppError::NotAllowed(match error {
-                PoolError::Count => "a secret lists at most 16 pools",
-                PoolError::InvalidName => "a pool name is 1 to 64 letters, digits or . _ - : +",
-            })
-        })?;
+        let texts = parse_pool_texts(pools)?;
         require_namespace(&self.store, &self.clock, principal, namespace, ctx).await?;
-        let texts: Vec<String> = parsed.iter().map(ToString::to_string).collect();
         let audit = self
             .audit(
                 principal,
@@ -591,11 +622,7 @@ where
                 None,
                 ctx,
             )
-            .with_reason(if texts.is_empty() {
-                "pools: none (not restricted)".to_owned()
-            } else {
-                format!("pools: {}", texts.join(", "))
-            });
+            .with_reason(pools_reason(&texts));
         if self
             .store
             .replace_secret_pools(
@@ -711,6 +738,26 @@ where
             Some(subject) => record.with_reason(format!("subject {subject}")),
             None => record,
         }
+    }
+}
+
+/// Validated, sorted and without repeats, as the canonical texts that are stored.
+fn parse_pool_texts(pools: &[String]) -> Result<Vec<String>, AppError> {
+    sagat_domain::binding::parse_pools(pools)
+        .map(|parsed| parsed.iter().map(ToString::to_string).collect())
+        .map_err(|error| {
+            AppError::NotAllowed(match error {
+                PoolError::Count => "a secret lists at most 16 pools",
+                PoolError::InvalidName => "a pool name is 1 to 64 letters, digits or . _ - : +",
+            })
+        })
+}
+
+fn pools_reason(pools: &[String]) -> String {
+    if pools.is_empty() {
+        "pools: none (not restricted)".to_owned()
+    } else {
+        format!("pools: {}", pools.join(", "))
     }
 }
 

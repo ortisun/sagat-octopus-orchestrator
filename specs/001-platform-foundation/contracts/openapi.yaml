@@ -3657,7 +3657,7 @@ components:
         keyId: {type: string, description: 'The key of the ring the current version is sealed under.'}
         createdBy: {type: string}
         updatedAt: {type: string, format: date-time}
-        pools: {type: array, items: {type: string}, description: 'The worker pools allowed to receive the secret; empty means every worker bound to the activity (see `setSecretPools`).'}
+        pools: {type: array, items: {type: string}, description: 'The worker pools allowed to receive the secret; empty means every worker bound to the activity (see `setSecretPools`). Present only for callers who hold `secret:manage`: whoever may merely use the secret is not told which fleets are trusted with it.'}
     SecretPools:
       type: object
       additionalProperties: false
@@ -3680,6 +3680,7 @@ components:
       required: [value]
       properties:
         value: {type: string, minLength: 1, maxLength: 16384, writeOnly: true, description: 'The secret, UTF-8 text of 1 to 16384 bytes. Never returned.'}
+        pools: {type: array, maxItems: 16, items: {type: string, minLength: 1, maxLength: 64, pattern: '^[A-Za-z0-9._:+-]+$'}, description: 'Replaces the worker pools allowed to receive the secret in the same call (see `setSecretPools`). Absent leaves them as they are, and a new secret then has none; an empty list lifts the restriction. Deleting a secret deletes its restriction, so recreate one that must stay restricted with its pools, which makes it restricted from the first instant.'}
     EgressPolicy:
       type: object
       required: [rules, ports, allowHttp]

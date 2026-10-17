@@ -3,6 +3,9 @@
 //! inside), the value is refused again at `ResolveSecrets`, and the refusal is audited once per
 //! worker identity, run, node and attempt. No list is today's behaviour.
 
+use std::sync::Arc;
+use std::time::Duration;
+
 use sagat_application::error::AppError;
 use sagat_application::worker::Capabilities;
 use sagat_domain::execution::RunId;
@@ -469,7 +472,7 @@ async fn pools_are_managed_by_whoever_manages_secrets_and_bindings_and_validated
         .list(&w.admin, ns(&w), &ctx())
         .await
         .expect("list");
-    assert_eq!(listed[0].pools, names(&["a", "b"]));
+    assert_eq!(listed[0].pools, Some(names(&["a", "b"])));
     let audited: Vec<String> = sqlx::query_scalar(
         "SELECT reason FROM audit_records WHERE action = 'secret.pools_changed'",
     )
@@ -534,4 +537,262 @@ async fn pool_grants_follow_the_binding_replacing_it_keeps_them_and_removing_it_
         .await
         .expect("count");
     assert_eq!(left, 0);
+}
+
+// ------------------------------------------------------------- review follow-ups
+
+/// How many runs to start ahead of the unrestricted one: more than the candidate window of a poll
+/// for eight tasks (`min(8 * 4, 64)`).
+const AHEAD_OF_THE_WINDOW: usize = 40;
+
+#[tokio::test]
+async fn refused_steps_ahead_of_the_window_do_not_starve_a_general_worker() {
+    let w = world().await;
+    w.put_secret("stripe-key", VALUE).await;
+    restrict(&w, "stripe-key", &["trusted"]).await;
+    let (restricted, _) = w.publish(flow(&["stripe-key"])).await;
+    // The older steps are all restricted; the one behind them declares nothing.
+    for _ in 0..AHEAD_OF_THE_WINDOW {
+        w.start(restricted, &json!({})).await;
+    }
+    let (free, _) = w.publish(document("free", "a", vec![activity("a")])).await;
+    let free_run = w.start(free, &json!({})).await;
+
+    let general = worker(&w, "general");
+    grant(&w, "general", &[]).await;
+    let session = w.session_as(&general, &["act.a"], 100).await;
+    let tasks = w.poll(&session, 8).await;
+    assert_eq!(
+        tasks.iter().map(|t| t.run_id).collect::<Vec<_>>(),
+        vec![free_run],
+        "the unrestricted step is not hidden behind refused ones"
+    );
+
+    // Refused steps are not written down one row per step per poll: a few are sampled.
+    for _ in 0..5 {
+        poll_len(&w, &session).await;
+    }
+    let rows = refusals(&w).await;
+    assert!(
+        !rows.is_empty() && rows.len() <= 4,
+        "the audit samples the oldest refused steps: {}",
+        rows.len()
+    );
+
+    // The entitled worker still gets the restricted work, oldest first.
+    let insider = worker(&w, "insider");
+    grant(&w, "insider", &["trusted"]).await;
+    let inside = w.session_as(&insider, &["act.a"], 100).await;
+    assert_eq!(poll_len(&w, &inside).await, 8);
+}
+
+#[tokio::test]
+async fn a_step_created_before_its_secrets_were_recorded_is_still_refused_at_the_lease() {
+    let w = world().await;
+    let run = run_declaring(&w).await;
+    restrict(&w, "stripe-key", &["trusted"]).await;
+    // What a step that predates the `secrets` column looks like.
+    sqlx::query("UPDATE steps SET secrets = NULL WHERE run_id = $1")
+        .bind(run.as_uuid())
+        .execute(&w.db.pool)
+        .await
+        .expect("legacy step");
+    let outsider = worker(&w, "outsider");
+    grant(&w, "outsider", &[]).await;
+    let session = w.session_as(&outsider, &["act.a"], 10).await;
+    assert_eq!(poll_len(&w, &session).await, 0);
+    assert_eq!(step_state(&w, run).await, ("READY".to_owned(), 0, false));
+    assert_eq!(refusals(&w).await.len(), 1);
+}
+
+#[tokio::test]
+async fn a_secret_created_with_pools_is_never_unrestricted_and_a_rotation_keeps_them() {
+    let w = world().await;
+    let made = w
+        .secrets
+        .put_with_pools(
+            &w.admin,
+            ns(&w),
+            "stripe-key",
+            VALUE.as_bytes().to_vec(),
+            Some(&names(&["trusted"])),
+            &ctx(),
+        )
+        .await
+        .expect("create restricted");
+    assert_eq!(made.pools, Some(names(&["trusted"])));
+    // The row of the version and the restriction exist together.
+    let (secrets, pools): (i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM secrets), (SELECT count(*) FROM secret_pools)",
+    )
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("count");
+    assert_eq!((secrets, pools), (1, 1));
+
+    // A rotation that names no pools keeps them; naming `[]` lifts them.
+    let rotated = w
+        .secrets
+        .put(
+            &w.admin,
+            ns(&w),
+            "stripe-key",
+            b"a-rotated-value-2".to_vec(),
+            &ctx(),
+        )
+        .await
+        .expect("rotate");
+    assert_eq!(rotated.pools, Some(names(&["trusted"])));
+    let lifted = w
+        .secrets
+        .put_with_pools(
+            &w.admin,
+            ns(&w),
+            "stripe-key",
+            b"a-rotated-value-3".to_vec(),
+            Some(&[]),
+            &ctx(),
+        )
+        .await
+        .expect("lift");
+    assert_eq!(lifted.pools, Some(Vec::new()));
+
+    // Deleting a secret deletes its restriction (documented): a recreation names the pools again.
+    restrict(&w, "stripe-key", &["trusted"]).await;
+    w.secrets
+        .delete(&w.admin, ns(&w), "stripe-key", &ctx())
+        .await
+        .expect("delete");
+    let again = w
+        .secrets
+        .put(
+            &w.admin,
+            ns(&w),
+            "stripe-key",
+            b"a-recreated-value".to_vec(),
+            &ctx(),
+        )
+        .await
+        .expect("recreate");
+    assert_eq!(again.pools, Some(Vec::new()));
+
+    // Nothing is stored when a pool name is refused, and the creation is audited with its pools.
+    let refused = w
+        .secrets
+        .put_with_pools(
+            &w.admin,
+            ns(&w),
+            "second-key",
+            b"a-second-value-1".to_vec(),
+            Some(&names(&["has space"])),
+            &ctx(),
+        )
+        .await;
+    assert!(
+        matches!(refused, Err(AppError::NotAllowed(_))),
+        "{refused:?}"
+    );
+    let exists: bool =
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM secrets WHERE name = 'second-key')")
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("exists");
+    assert!(!exists);
+    let reasons: Vec<Option<String>> = sqlx::query_scalar(
+        "SELECT reason FROM audit_records WHERE action = 'secret.stored' ORDER BY created_at",
+    )
+    .fetch_all(&w.db.pool)
+    .await
+    .expect("audit");
+    assert_eq!(reasons[0].as_deref(), Some("pools: trusted"));
+    assert_eq!(
+        reasons[1], None,
+        "a rotation that names no pools says nothing about them"
+    );
+}
+
+#[tokio::test]
+async fn only_those_who_manage_secrets_are_told_which_pools_may_receive_one() {
+    let w = world().await;
+    w.put_secret("stripe-key", VALUE).await;
+    restrict(&w, "stripe-key", &["trusted"]).await;
+    let dora = w.member("dora", Role::Developer).await;
+    w.secrets
+        .grant(&w.admin, ns(&w), "stripe-key", "dora", &ctx())
+        .await
+        .expect("grant");
+    let seen = w.secrets.list(&dora, ns(&w), &ctx()).await.expect("list");
+    assert_eq!(seen.len(), 1);
+    assert_eq!(
+        seen[0].pools, None,
+        "not disclosed, which is not the same as empty"
+    );
+    let admin = w
+        .secrets
+        .list(&w.admin, ns(&w), &ctx())
+        .await
+        .expect("list");
+    assert_eq!(admin[0].pools, Some(names(&["trusted"])));
+}
+
+/// A resolution that starts while a change to who may receive the secret is in flight waits for it
+/// and judges the result; it cannot pass the old check and read the value after the change committed.
+async fn resolution_waits_for_the_change(change: &str) {
+    let w = Arc::new(world().await);
+    run_declaring(&w).await;
+    restrict(&w, "stripe-key", &["trusted"]).await;
+    let insider = worker(&w, "insider");
+    grant(&w, "insider", &["trusted"]).await;
+    let session = w.session_as(&insider, &["act.a"], 10).await;
+    let task = w.one_task(&session).await;
+
+    // The change is made in a transaction that has not committed yet.
+    let mut tx = w.db.pool.begin().await.expect("begin");
+    sqlx::query("SELECT id FROM secrets WHERE name = 'stripe-key' FOR UPDATE")
+        .execute(&mut *tx)
+        .await
+        .expect("lock the secret like set_pools does");
+    sqlx::raw_sql(sqlx::AssertSqlSafe(change.to_owned()))
+        .execute(&mut *tx)
+        .await
+        .expect("change");
+
+    let resolver = {
+        let w = Arc::clone(&w);
+        tokio::spawn(async move {
+            w.workers
+                .resolve_secrets(&insider, &task_ref(&task), None)
+                .await
+                .map(|secrets| secrets.len())
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert!(
+        !resolver.is_finished(),
+        "the resolution went ahead of a change that was about to commit"
+    );
+    tx.commit().await.expect("commit");
+    let result = resolver.await.expect("task");
+    assert!(
+        matches!(result, Err(AppError::SecretUnavailable { .. })),
+        "{result:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_resolution_cannot_read_the_value_past_a_restriction_that_is_committing() {
+    resolution_waits_for_the_change(
+        "DELETE FROM secret_pools WHERE pool = 'trusted'; \
+         INSERT INTO secret_pools (tenant_id, secret_id, pool, granted_by) \
+         SELECT tenant_id, id, 'elsewhere', 'test' FROM secrets WHERE name = 'stripe-key'",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_resolution_cannot_read_the_value_past_a_grant_that_is_being_taken_away() {
+    resolution_waits_for_the_change(
+        "DELETE FROM worker_binding_pools WHERE subject = 'insider' AND pool = 'trusted'",
+    )
+    .await;
 }
