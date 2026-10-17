@@ -27,6 +27,7 @@ struct CompiledCarrier {
     bytes: usize,
     has_numeric_constraints: bool,
     numeric_constraints_exact: bool,
+    has_integer_types: bool,
 }
 
 #[derive(Default)]
@@ -125,12 +126,14 @@ impl Classifier {
             .map_err(|_| ProjectionFailure::SchemaUnusable)?;
         let has_numeric_constraints = has_numeric_constraints(&schema);
         let numeric_constraints_exact = numeric_constraints_exact(&schema);
+        let has_integer_types = schema_contains_integer_type(&schema);
         let compiled = Arc::new(CompiledCarrier {
             schema,
             validator,
             bytes,
             has_numeric_constraints,
             numeric_constraints_exact,
+            has_integer_types,
         });
 
         let mut cache = self
@@ -190,6 +193,13 @@ impl ClassificationInterpreter for Classifier {
             &numbers,
             &mut numeric_expansion,
         )?;
+        // The validator stores numbers as finite machine values. An integer constraint hidden
+        // behind an applicator can therefore see a rounded integer for a fractional source
+        // lexeme. The path-aware check above handles constraints it can prove directly; this
+        // carrier-wide guard closes every remaining applicator conservatively.
+        if compiled.has_integer_types && numbers.has_fractional() {
+            return Err(ProjectionFailure::UnsupportedPayload);
+        }
         if !compiled.validator.is_valid(&payload) {
             return Err(ProjectionFailure::SchemaMismatch);
         }
@@ -353,18 +363,13 @@ impl ProjectionBudget {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn project_node<'a>(
-    value: &Value,
+fn classify_node<'a>(
     schemas: &[&'a Value],
     inherited: Level,
     depth: usize,
-    path: &str,
-    numbers: &NumberLexemes,
     request: &ProjectionRequest<'_>,
     expansion: &mut Expansion<'a>,
-    budget: &mut ProjectionBudget,
-) -> Result<Option<ClassifiedNode>, ProjectionFailure> {
+) -> Result<(Vec<&'a Value>, Level, Visibility), ProjectionFailure> {
     let expanded = expansion.expand_many(schemas)?;
     let mut effective = if depth == 0 {
         expanded
@@ -386,13 +391,30 @@ fn project_node<'a>(
                 .stricter(Level::parse(text).map_err(|_| ProjectionFailure::SchemaUnusable)?);
         }
     }
-    let kind = kind_of(value);
     let decision = match visibility(effective, request.audience) {
         Visibility::Withhold(WithheldReason::LevelNotPermitted) if effective == Level::Pii => {
             Visibility::Withhold(request.reveal.withheld_reason())
         }
         other => other,
     };
+    Ok((expanded, effective, decision))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn project_node<'a>(
+    value: &Value,
+    schemas: &[&'a Value],
+    inherited: Level,
+    depth: usize,
+    path: &str,
+    numbers: &NumberLexemes,
+    request: &ProjectionRequest<'_>,
+    expansion: &mut Expansion<'a>,
+    budget: &mut ProjectionBudget,
+) -> Result<Option<ClassifiedNode>, ProjectionFailure> {
+    let (expanded, effective, decision) =
+        classify_node(schemas, inherited, depth, request, expansion)?;
+    let kind = kind_of(value);
     match decision {
         Visibility::Omit => return Ok(None),
         Visibility::Withhold(reason) => {
@@ -529,6 +551,83 @@ fn project_node<'a>(
     }
 }
 
+fn object_child_context<'a>(
+    name: &str,
+    schemas: &[&'a Value],
+    inherited: Level,
+) -> (Vec<&'a Value>, Level, bool) {
+    let mut child_schemas = Vec::new();
+    let mut named = false;
+    let mut unsupported_governance = false;
+    for schema in schemas {
+        if let Some(property) = schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .and_then(|properties| properties.get(name))
+        {
+            named = true;
+            child_schemas.push(property);
+        } else {
+            let patterns = schema
+                .get("patternProperties")
+                .and_then(Value::as_object)
+                .is_some_and(|patterns| !patterns.is_empty());
+            if patterns {
+                unsupported_governance = true;
+            } else if let Some(additional) = schema.get("additionalProperties")
+                && additional.is_object()
+            {
+                child_schemas.push(additional);
+            }
+        }
+    }
+    let child_inherited = if child_schemas.is_empty() || unsupported_governance {
+        inherited.stricter(Level::Pii)
+    } else {
+        inherited
+    };
+    (child_schemas, child_inherited, named)
+}
+
+fn array_child_context<'a>(
+    index: usize,
+    schemas: &[&'a Value],
+    inherited: Level,
+) -> (Vec<&'a Value>, Level) {
+    let mut child_schemas = Vec::new();
+    for schema in schemas {
+        if let Some(prefix) = schema.get("prefixItems").and_then(Value::as_array)
+            && let Some(item) = prefix.get(index)
+        {
+            child_schemas.push(item);
+            continue;
+        }
+        if let Some(items) = schema.get("items")
+            && items.is_object()
+        {
+            child_schemas.push(items);
+        }
+    }
+    let child_inherited = if child_schemas.is_empty() {
+        inherited.stricter(Level::Pii)
+    } else {
+        inherited
+    };
+    (child_schemas, child_inherited)
+}
+
+fn is_visible_child<'a>(
+    schemas: &[&'a Value],
+    inherited: Level,
+    depth: usize,
+    request: &ProjectionRequest<'_>,
+    root: &'a Value,
+) -> Result<bool, ProjectionFailure> {
+    let mut expansion = Expansion::new(root);
+    let (_, _, decision) = classify_node(schemas, inherited, depth, request, &mut expansion)?;
+    Ok(decision != Visibility::Omit)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn project_object<'a>(
     values: &serde_json::Map<String, Value>,
@@ -541,44 +640,23 @@ fn project_object<'a>(
     expansion: &mut Expansion<'a>,
     budget: &mut ProjectionBudget,
 ) -> Result<(Vec<ClassifiedChild>, u32), ProjectionFailure> {
-    if depth >= MAX_PROJECTION_DEPTH {
-        budget.truncated |= !values.is_empty();
-        return Ok((Vec::new(), u32::try_from(values.len()).unwrap_or(u32::MAX)));
-    }
-    let take = values.len().min(MAX_CONTAINER_CHILDREN);
-    budget.truncated |= take < values.len();
     let mut children = Vec::new();
-    for (ordinal, (name, value)) in values.iter().take(take).enumerate() {
-        let mut child_schemas = Vec::new();
-        let mut named = false;
-        let mut unsupported_governance = false;
-        for schema in schemas {
-            if let Some(property) = schema
-                .get("properties")
-                .and_then(Value::as_object)
-                .and_then(|properties| properties.get(name))
-            {
-                named = true;
-                child_schemas.push(property);
-            } else {
-                let patterns = schema
-                    .get("patternProperties")
-                    .and_then(Value::as_object)
-                    .is_some_and(|patterns| !patterns.is_empty());
-                if patterns {
-                    unsupported_governance = true;
-                } else if let Some(additional) = schema.get("additionalProperties")
-                    && additional.is_object()
-                {
-                    child_schemas.push(additional);
-                }
-            }
+    for (ordinal, (name, value)) in values.iter().enumerate() {
+        let (child_schemas, child_inherited, named) =
+            object_child_context(name, schemas, inherited);
+        if !is_visible_child(
+            &child_schemas,
+            child_inherited,
+            depth + 1,
+            request,
+            expansion.root,
+        )? {
+            continue;
         }
-        let child_inherited = if child_schemas.is_empty() || unsupported_governance {
-            inherited.stricter(Level::Pii)
-        } else {
-            inherited
-        };
+        if depth >= MAX_PROJECTION_DEPTH || children.len() >= MAX_CONTAINER_CHILDREN {
+            budget.truncated = true;
+            break;
+        }
         let checkpoint = *budget;
         if let Some(node) = project_node(
             value,
@@ -627,33 +705,22 @@ fn project_array<'a>(
     expansion: &mut Expansion<'a>,
     budget: &mut ProjectionBudget,
 ) -> Result<(Vec<ClassifiedChild>, u32), ProjectionFailure> {
-    if depth >= MAX_PROJECTION_DEPTH {
-        budget.truncated |= !values.is_empty();
-        return Ok((Vec::new(), u32::try_from(values.len()).unwrap_or(u32::MAX)));
-    }
-    let take = values.len().min(MAX_CONTAINER_CHILDREN);
-    budget.truncated |= take < values.len();
     let mut children = Vec::new();
-    for (index, value) in values.iter().take(take).enumerate() {
-        let mut child_schemas = Vec::new();
-        for schema in schemas {
-            if let Some(prefix) = schema.get("prefixItems").and_then(Value::as_array)
-                && let Some(item) = prefix.get(index)
-            {
-                child_schemas.push(item);
-                continue;
-            }
-            if let Some(items) = schema.get("items")
-                && items.is_object()
-            {
-                child_schemas.push(items);
-            }
+    for (index, value) in values.iter().enumerate() {
+        let (child_schemas, child_inherited) = array_child_context(index, schemas, inherited);
+        if !is_visible_child(
+            &child_schemas,
+            child_inherited,
+            depth + 1,
+            request,
+            expansion.root,
+        )? {
+            continue;
         }
-        let child_inherited = if child_schemas.is_empty() {
-            inherited.stricter(Level::Pii)
-        } else {
-            inherited
-        };
+        if depth >= MAX_PROJECTION_DEPTH || children.len() >= MAX_CONTAINER_CHILDREN {
+            budget.truncated = true;
+            break;
+        }
         let checkpoint = *budget;
         if let Some(node) = project_node(
             value,
@@ -672,7 +739,12 @@ fn project_array<'a>(
                 continue;
             }
             children.push(ClassifiedChild {
-                ordinal: u32::try_from(index).unwrap_or(u32::MAX),
+                ordinal: u32::try_from(if request.audience.structure {
+                    index
+                } else {
+                    children.len()
+                })
+                .unwrap_or(u32::MAX),
                 name: None,
                 node: Box::new(node),
             });
@@ -752,6 +824,12 @@ impl NumberLexemes {
         self.0
             .values()
             .any(|number| !safe_integer_comparison(number.as_str()))
+    }
+
+    fn has_fractional(&self) -> bool {
+        self.0
+            .values()
+            .any(|number| !lexical_is_integer(number.as_str()))
     }
 
     fn is_integer(&self, path: &str) -> bool {
@@ -976,6 +1054,15 @@ fn schema_requires_integer(schema: &Value) -> bool {
         Some(Value::Array(kinds)) => kinds.iter().any(|kind| kind.as_str() == Some("integer")),
         _ => false,
     }
+}
+
+fn schema_contains_integer_type(schema: &Value) -> bool {
+    schema_requires_integer(schema)
+        || match schema {
+            Value::Object(values) => values.values().any(schema_contains_integer_type),
+            Value::Array(values) => values.iter().any(schema_contains_integer_type),
+            _ => false,
+        }
 }
 
 fn has_numeric_constraints(schema: &Value) -> bool {
