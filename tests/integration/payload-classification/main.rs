@@ -4,9 +4,9 @@
 mod dead_letters;
 mod disclosure;
 mod events;
-mod grants;
 mod journal;
 mod pinning;
+mod grants;
 mod result;
 #[path = "../../support/mod.rs"]
 mod support;
