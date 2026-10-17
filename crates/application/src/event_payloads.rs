@@ -139,6 +139,7 @@ pub enum EventData {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InboxEventRead {
     pub event: SelectedInboxEvent,
+    pub data_size_bytes: usize,
     pub data: EventData,
 }
 
@@ -172,6 +173,8 @@ impl std::fmt::Debug for DeadLetterData {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeadLetterRead {
     pub letter: SelectedDeadLetter,
+    pub body_size_bytes: usize,
+    pub header_count: usize,
     pub data: DeadLetterData,
 }
 
@@ -492,42 +495,46 @@ struct Evaluator<'a, P> {
 impl<P: PayloadProjector> EventPayloadEvaluator for Evaluator<'_, P> {
     fn event(
         &self,
-        selected: SelectedInboxEvent,
+        mut selected: SelectedInboxEvent,
         role: Role,
         grant: bool,
     ) -> Result<InboxEventRead, EventPayloadFailure> {
         authorize(role, self.reveal, grant)?;
+        let payload = std::mem::replace(&mut selected.payload, StoredPayloadBytes::new(Vec::new()));
+        let data_size_bytes = payload.as_slice().len();
         let data = match self.reveal {
-            EventReveal::Pii => EventData::Revealed(selected.payload.clone()),
+            EventReveal::Pii => EventData::Revealed(payload),
             EventReveal::Structure => EventData::Structure(
                 self.projector
-                    .project(selected.payload.as_slice())
+                    .project(payload.as_slice())
                     .map_err(|_| EventPayloadFailure::EventReadNotGranted)?,
             ),
         };
         Ok(InboxEventRead {
             event: selected,
+            data_size_bytes,
             data,
         })
     }
     fn dead_letter(
         &self,
-        selected: SelectedDeadLetter,
+        mut selected: SelectedDeadLetter,
         role: Role,
         grant: bool,
     ) -> Result<DeadLetterRead, EventPayloadFailure> {
         authorize(role, self.reveal, grant)?;
+        let headers = std::mem::take(&mut selected.headers);
+        let body = std::mem::replace(&mut selected.body, StoredPayloadBytes::new(Vec::new()));
+        let body_size_bytes = body.as_slice().len();
+        let header_count = headers.len();
         let data = match self.reveal {
-            EventReveal::Pii => DeadLetterData::Revealed {
-                headers: selected.headers.clone(),
-                body: selected.body.clone(),
-            },
+            EventReveal::Pii => DeadLetterData::Revealed { headers, body },
             EventReveal::Structure => {
                 let s = if selected.truncated {
                     DeadLetterStructure::Opaque
                 } else {
                     self.projector
-                        .project(selected.body.as_slice())
+                        .project(body.as_slice())
                         .map(DeadLetterStructure::Json)
                         .unwrap_or(DeadLetterStructure::Opaque)
                 };
@@ -536,6 +543,8 @@ impl<P: PayloadProjector> EventPayloadEvaluator for Evaluator<'_, P> {
         };
         Ok(DeadLetterRead {
             letter: selected,
+            body_size_bytes,
+            header_count,
             data,
         })
     }
