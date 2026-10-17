@@ -87,6 +87,15 @@ pub struct CollectionProgress {
     pub results: Vec<(u32, Vec<u8>)>,
 }
 
+/// The identity and size of a collection's membership, without its content. Loading the content of
+/// every item and result on every transition costs a digest of all of them each time, which makes
+/// the whole of a large collection quadratic; a transition reads one item (or, at the end, all).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CollectionScopeRef {
+    pub scope_id: CollectionScopeId,
+    pub item_count: u32,
+}
+
 /// Effective definition and tenant limits pinned when a collection enters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CollectionLimits {
@@ -739,6 +748,23 @@ pub trait CollectionStore: Send + Sync {
         run_id: RunId,
         owner: &ExecutionInstanceId,
     ) -> impl Future<Output = Result<Option<CollectionProgress>, PrimitiveStoreError>> + Send;
+
+    /// The scope of a collection and its item count, nothing else.
+    fn collection_scope(
+        &self,
+        tenant_id: TenantId,
+        run_id: RunId,
+        owner: &ExecutionInstanceId,
+    ) -> impl Future<Output = Result<Option<CollectionScopeRef>, PrimitiveStoreError>> + Send;
+
+    /// One captured item, checked against its digest; `None` past the last index.
+    fn collection_item(
+        &self,
+        tenant_id: TenantId,
+        run_id: RunId,
+        scope_id: CollectionScopeId,
+        index: u32,
+    ) -> impl Future<Output = Result<Option<Vec<u8>>, PrimitiveStoreError>> + Send;
 
     fn enter_collection(
         &self,

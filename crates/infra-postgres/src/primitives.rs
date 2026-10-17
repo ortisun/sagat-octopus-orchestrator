@@ -11,7 +11,8 @@ use sagat_application::execution::{DefinitionCache, MAX_PAYLOAD_BYTES, instance_
 use sagat_application::primitives::{
     CollectionAdmission, CollectionCheckpoint, CollectionDrain, CollectionDrainFinish,
     CollectionEntry, CollectionFinish, CollectionIterationDrain, CollectionProgress,
-    CollectionScopeId, CollectionStore, CollectionTransition, PrimitiveStoreError, PrimitiveWrite,
+    CollectionScopeId, CollectionScopeRef, CollectionStore, CollectionTransition,
+    PrimitiveStoreError, PrimitiveWrite,
 };
 use sagat_domain::audit::{AuditAction, ResourceType};
 use sagat_domain::definition::WorkflowVersionId;
@@ -799,6 +800,67 @@ impl CollectionStore for PgCollectionStore {
             items,
             results,
         }))
+    }
+
+    async fn collection_scope(
+        &self,
+        tenant_id: TenantId,
+        run_id: sagat_domain::execution::RunId,
+        owner: &ExecutionInstanceId,
+    ) -> Result<Option<CollectionScopeRef>, PrimitiveStoreError> {
+        let (owner_nodes, owner_indices) = path_parts(owner);
+        let Some(row) = sqlx::query(
+            "SELECT scope_id, item_count FROM iteration_scopes \
+             WHERE tenant_id=$1 AND run_id=$2 AND owner_path_nodes=$3 \
+               AND owner_path_indices=$4 AND owner_node=$5",
+        )
+        .bind(tenant_id.as_uuid())
+        .bind(run_id.as_uuid())
+        .bind(owner_nodes)
+        .bind(owner_indices)
+        .bind(owner.node().as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(store_error)?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(CollectionScopeRef {
+            scope_id: CollectionScopeId::new(row.get("scope_id")),
+            item_count: u32::try_from(row.get::<i32, _>("item_count"))
+                .map_err(|_| invalid_storage("collection item count"))?,
+        }))
+    }
+
+    async fn collection_item(
+        &self,
+        tenant_id: TenantId,
+        run_id: sagat_domain::execution::RunId,
+        scope_id: CollectionScopeId,
+        index: u32,
+    ) -> Result<Option<Vec<u8>>, PrimitiveStoreError> {
+        let Some(row) = sqlx::query(
+            "SELECT i.item_digest, p.content \
+             FROM collection_scope_items i JOIN payloads p \
+               ON p.tenant_id=i.tenant_id AND p.digest=i.item_digest \
+             WHERE i.tenant_id=$1 AND i.run_id=$2 AND i.scope_id=$3 AND i.iteration_index=$4",
+        )
+        .bind(tenant_id.as_uuid())
+        .bind(run_id.as_uuid())
+        .bind(scope_id.as_uuid())
+        .bind(i32::try_from(index).map_err(|_| invalid_storage("collection item index"))?)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(store_error)?
+        else {
+            return Ok(None);
+        };
+        let content: Vec<u8> = row.get("content");
+        let digest: Vec<u8> = row.get("item_digest");
+        if Sha256::digest(&content).to_vec() != digest {
+            return Err(invalid_storage("collection item payload"));
+        }
+        Ok(Some(content))
     }
 
     async fn enter_collection(
@@ -2909,6 +2971,29 @@ impl CollectionStore for PgRunStore {
     ) -> Result<Option<CollectionProgress>, PrimitiveStoreError> {
         PgCollectionStore::with_definition_cache(self.pool.clone(), self.cache.clone())
             .collection_progress(tenant_id, run_id, owner)
+            .await
+    }
+
+    async fn collection_scope(
+        &self,
+        tenant_id: TenantId,
+        run_id: sagat_domain::execution::RunId,
+        owner: &ExecutionInstanceId,
+    ) -> Result<Option<CollectionScopeRef>, PrimitiveStoreError> {
+        PgCollectionStore::with_definition_cache(self.pool.clone(), self.cache.clone())
+            .collection_scope(tenant_id, run_id, owner)
+            .await
+    }
+
+    async fn collection_item(
+        &self,
+        tenant_id: TenantId,
+        run_id: sagat_domain::execution::RunId,
+        scope_id: CollectionScopeId,
+        index: u32,
+    ) -> Result<Option<Vec<u8>>, PrimitiveStoreError> {
+        PgCollectionStore::with_definition_cache(self.pool.clone(), self.cache.clone())
+            .collection_item(tenant_id, run_id, scope_id, index)
             .await
     }
 

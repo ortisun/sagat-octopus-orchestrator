@@ -1146,17 +1146,29 @@ where
             let reason = if state.stop_reason() == Some(StopReason::Cancelled) {
                 Some(execution::CollectionDrainReason::Cancelled)
             } else {
+                // One pass over the run's instances finds every failed step with a code, by the
+                // path of its iteration (the first in instance order, as a scan per iteration
+                // would); looking each active iteration up in it keeps a transition linear in the
+                // size of the run instead of quadratic in the iterations it has admitted.
+                let mut failed: std::collections::HashMap<
+                    &sagat_domain::execution::InstancePath,
+                    &FailureCode,
+                > = std::collections::HashMap::new();
+                for (instance, step) in state.instances() {
+                    if step.status() == execution::StepStatus::Failed
+                        && let Some(code) = step.failure()
+                    {
+                        failed.entry(instance.path()).or_insert(code);
+                    }
+                }
                 collection.active_iterations().find_map(|index| {
                     let path = collection.entry_instance(index)?.path();
-                    state.instances().find_map(|(instance, step)| {
-                        (instance.path() == path && step.status() == execution::StepStatus::Failed)
-                            .then(|| step.failure().cloned())
-                            .flatten()
-                            .map(|code| execution::CollectionDrainReason::Failed {
-                                iteration: index,
-                                code,
-                            })
-                    })
+                    failed
+                        .get(path)
+                        .map(|code| execution::CollectionDrainReason::Failed {
+                            iteration: index,
+                            code: (*code).clone(),
+                        })
                 })
             };
             if let Some(reason) = reason {
@@ -1164,7 +1176,7 @@ where
                     .start_collection_drain(&CollectionDrain::new(
                         transition(state.version()),
                         self.store
-                            .collection_progress(tenant, run, owner)
+                            .collection_scope(tenant, run, owner)
                             .await?
                             .ok_or(CollectionAdvanceError::InvalidProgress)?
                             .scope_id,
@@ -1177,7 +1189,7 @@ where
         } else if collection.phase() == execution::CollectionPhase::Draining {
             let progress = self
                 .store
-                .collection_progress(tenant, run, owner)
+                .collection_scope(tenant, run, owner)
                 .await?
                 .ok_or(CollectionAdvanceError::InvalidProgress)?;
             if let Some(index) = collection.active_iterations().next() {
@@ -1278,35 +1290,43 @@ where
         } else {
             return Err(CollectionAdvanceError::InvalidProgress);
         }
+        // Only the identity of the scope is read for every transition; the content of one item is
+        // read to admit it and the content of all of them only to produce the aggregate, so a large
+        // collection does not pay for its whole membership at each step.
         let progress = self
             .store
-            .collection_progress(tenant, run, owner)
+            .collection_scope(tenant, run, owner)
             .await?
             .ok_or(CollectionAdvanceError::InvalidProgress)?;
-        if progress.items.len()
-            != usize::try_from(collection.item_count())
-                .map_err(|_| CollectionAdvanceError::InvalidProgress)?
-        {
+        if progress.item_count != collection.item_count() {
             return Err(CollectionAdvanceError::InvalidProgress);
         }
 
+        // The body returns that have not been checkpointed yet, by the path of their iteration,
+        // found in one pass over the run's instances (the first in instance order for each).
+        let mut pending_returns: std::collections::HashMap<
+            &sagat_domain::execution::InstancePath,
+            &ExecutionInstanceId,
+        > = std::collections::HashMap::new();
+        for (instance, step) in state.instances() {
+            if step.status() == execution::StepStatus::Pending
+                && !instance.path().is_root()
+                && matches!(
+                    definition
+                        .node_for_instance(instance)
+                        .map(|node| node.kind()),
+                    Some(NodeKind::Return { .. })
+                )
+            {
+                pending_returns.entry(instance.path()).or_insert(instance);
+            }
+        }
         for index in 0..collection.next_admission() {
             let entry = collection
                 .entry_instance(index)
                 .ok_or(CollectionAdvanceError::InvalidProgress)?;
             let path = entry.path();
-            let pending_return = state.instances().find_map(|(instance, step)| {
-                (instance.path() == path
-                    && step.status() == execution::StepStatus::Pending
-                    && matches!(
-                        definition
-                            .node_for_instance(instance)
-                            .map(|node| node.kind()),
-                        Some(NodeKind::Return { .. })
-                    ))
-                .then_some(instance)
-            });
-            let Some(return_instance) = pending_return else {
+            let Some(return_instance) = pending_returns.get(path).copied() else {
                 continue;
             };
             let NodeKind::Return {
@@ -1344,18 +1364,23 @@ where
             // error, instead of being retried at the finish for ever.
             let refusal = if returned.len() > MAX_PAYLOAD_BYTES {
                 Some(FailureCode::run_data_limit())
-            } else if progress.results.len() + 1
+            } else if collection.ordered_results().count() + 1
                 == usize::try_from(collection.item_count())
                     .map_err(|_| CollectionAdvanceError::InvalidProgress)?
             {
+                let everything = self
+                    .store
+                    .collection_progress(tenant, run, owner)
+                    .await?
+                    .ok_or(CollectionAdvanceError::InvalidProgress)?;
                 self.aggregate_refusal(
                     result,
                     &data,
-                    &progress.items,
+                    &everything.items,
                     collection
                         .ordered_results()
                         .map(|(position, reference)| (position, reference.return_instance()))
-                        .zip(progress.results.iter().map(|(_, bytes)| bytes.as_slice()))
+                        .zip(everything.results.iter().map(|(_, bytes)| bytes.as_slice()))
                         .map(|((position, instance), bytes)| (position, instance, bytes)),
                     (index, return_instance, returned.as_slice()),
                 )
@@ -1421,9 +1446,10 @@ where
             // of its activities included, so the budget cannot stop them (D384).
             let reserved_instances = u16::try_from(body.all_nodes().count().saturating_sub(1))
                 .map_err(|_| CollectionAdvanceError::InvalidProgress)?;
-            let item = progress
-                .items
-                .get(usize::try_from(index).map_err(|_| CollectionAdvanceError::InvalidProgress)?)
+            let item = self
+                .store
+                .collection_item(tenant, run, progress.scope_id, index)
+                .await?
                 .ok_or(CollectionAdvanceError::InvalidProgress)?;
             let admission = CollectionAdmission::from_item(
                 transition(state.version()),
@@ -1431,7 +1457,7 @@ where
                 index,
                 entry,
                 activity.clone(),
-                item.clone(),
+                item,
                 reserved_instances,
                 uuid::Uuid::now_v7(),
             )?;
@@ -1464,6 +1490,11 @@ where
 
         if collection.next_admission() == collection.item_count() && collection.active_count() == 0
         {
+            let progress = self
+                .store
+                .collection_progress(tenant, run, owner)
+                .await?
+                .ok_or(CollectionAdvanceError::InvalidProgress)?;
             let mut mapped = Vec::with_capacity(progress.results.len());
             for (index, return_ref) in collection.ordered_results() {
                 let (stored_index, body_result) = progress
