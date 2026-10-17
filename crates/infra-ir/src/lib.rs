@@ -8,6 +8,7 @@
 mod payload_projection;
 pub use payload_projection::JsonPayloadProjector;
 mod canonical;
+mod carrier_schema_check;
 mod classification_check;
 mod continuation;
 mod convert;
@@ -236,6 +237,10 @@ fn validated_document(document: &[u8]) -> Result<Value, IrError> {
         return Err(IrError::Classification(classification.findings));
     }
     let issues = schema::issues(&value);
+    if !issues.is_empty() {
+        return Err(IrError::Schema(issues));
+    }
+    let issues = carrier_schema_check::issues(&value);
     if !issues.is_empty() {
         return Err(IrError::Schema(issues));
     }

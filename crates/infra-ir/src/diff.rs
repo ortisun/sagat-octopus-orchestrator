@@ -11,6 +11,10 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
+use sagat_application::classification::{
+    CarrierPointer, ClassificationCarrierStatus, ClassificationLocation, ClassificationResolution,
+    ClassificationWalkStatus,
+};
 use sagat_application::definitions::{IrError, MAX_IR_BYTES};
 use sagat_application::diff::{
     Change, DiffEdge, DiffFinding, DocumentChange, DocumentDiff, NodeChange,
@@ -179,6 +183,11 @@ pub(crate) fn diff(from: &[u8], to: &[u8]) -> Result<DocumentDiff, IrError> {
 
     let mut attention = Found::default();
     needs_preparing(&from_nodes, &to_nodes, &mut attention);
+    classification_changes(
+        &Value::Object(from.clone()),
+        &Value::Object(to.clone()),
+        &mut attention,
+    );
     let (breaking, attention) = (breaking.into_list(), attention.into_list());
 
     let identical = nodes_added.is_empty()
@@ -200,6 +209,96 @@ pub(crate) fn diff(from: &[u8], to: &[u8]) -> Result<DocumentDiff, IrError> {
         breaking,
         attention,
     })
+}
+
+fn classification_changes(from: &Value, to: &Value, out: &mut Found) {
+    let from_status = crate::classification_check::visit_locations(from, |_| {});
+    let to_status = crate::classification_check::visit_locations(to, |_| {});
+
+    let mut reported_failures = HashSet::new();
+    for status in from_status.carriers.iter().chain(&to_status.carriers) {
+        let ClassificationCarrierStatus::Failed(failure) = status else {
+            continue;
+        };
+        if reported_failures.insert((failure.carrier.clone(), failure.code)) {
+            let code = failure.code;
+            let path = failure.source_path.clone();
+            out.push(|| finding(code.as_str(), code.message().to_owned(), None, Some(path)));
+        }
+    }
+
+    let mut compare_from = |old: &ClassificationLocation| {
+        if carrier_failed(&to_status, &old.carrier) {
+            return;
+        }
+        let ClassificationResolution::Resolved {
+            level,
+            source_path,
+            location_present,
+        } = sagat_infra_schema::classification::resolve_classification_location(
+            to,
+            &old.carrier,
+            &old.location,
+        )
+        else {
+            return;
+        };
+        let path = if location_present {
+            source_path
+        } else {
+            old.source_path.clone()
+        };
+        classification_change(old.level, level, path, out);
+    };
+    let _ = crate::classification_check::visit_locations(from, &mut compare_from);
+
+    let mut compare_new = |new: &ClassificationLocation| {
+        if carrier_failed(&from_status, &new.carrier) {
+            return;
+        }
+        let ClassificationResolution::Resolved {
+            level,
+            location_present,
+            ..
+        } = sagat_infra_schema::classification::resolve_classification_location(
+            from,
+            &new.carrier,
+            &new.location,
+        )
+        else {
+            return;
+        };
+        if !location_present {
+            classification_change(level, new.level, new.source_path.clone(), out);
+        }
+    };
+    let _ = crate::classification_check::visit_locations(to, &mut compare_new);
+}
+
+fn carrier_failed(status: &ClassificationWalkStatus, carrier: &CarrierPointer) -> bool {
+    status.failure(carrier).is_some()
+}
+
+fn classification_change(
+    before: sagat_domain::classification::Level,
+    after: sagat_domain::classification::Level,
+    path: String,
+    out: &mut Found,
+) {
+    let (code, message) = if before > after {
+        (
+            "CLASSIFICATION_RELAXED",
+            format!("classification changed from {before} to {after}"),
+        )
+    } else if before < after {
+        (
+            "CLASSIFICATION_TIGHTENED",
+            format!("classification changed from {before} to {after}"),
+        )
+    } else {
+        return;
+    };
+    out.push(|| finding(code, message, None, Some(path)));
 }
 
 fn object(bytes: &[u8]) -> Result<Map<String, Value>, IrError> {

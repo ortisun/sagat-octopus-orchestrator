@@ -3,10 +3,12 @@
 use std::collections::{BTreeMap, HashSet};
 
 use sagat_application::classification::{
-    CarrierPointer, ClassificationAnalysis, ClassificationFinding, ClassificationFindingCode,
-    ClassificationPointer, ClassificationReportEntry, MAX_CARRIER_BYTES,
-    MAX_CLASSIFICATION_FINDINGS, MAX_CLASSIFICATION_REPORT_ENTRIES, MAX_REF_EXPANSIONS,
-    MAX_SCHEMA_DEPTH,
+    CarrierPointer, ClassificationAnalysis, ClassificationCarrierFailure,
+    ClassificationCarrierStatus, ClassificationFinding, ClassificationFindingCode,
+    ClassificationLocation, ClassificationPointer, ClassificationReportEntry,
+    ClassificationResolution, ClassificationSegment, ClassificationWalkStatus, FindingSeverity,
+    MAX_CARRIER_BYTES, MAX_CLASSIFICATION_FINDINGS, MAX_CLASSIFICATION_REPORT_ENTRIES,
+    MAX_REF_EXPANSIONS, MAX_SCHEMA_DEPTH,
 };
 use sagat_domain::classification::Level;
 use sagat_domain::workflow::NodeId;
@@ -37,7 +39,175 @@ pub fn analyze(document: &[u8]) -> ClassificationAnalysis {
 
 #[must_use]
 pub fn analyze_value(document: &Value) -> ClassificationAnalysis {
+    let mut visitor = None;
+    analyze_document(document, true, &mut visitor).0
+}
+
+/// Visits every effective location without applying the human-facing 500-row report cap.
+/// A failed carrier emits no locations, so callers never compare a valid prefix as a whole carrier.
+#[must_use]
+pub fn visit_classification_locations(
+    document: &Value,
+    visitor: &mut dyn FnMut(&ClassificationLocation),
+) -> ClassificationWalkStatus {
+    let mut visitor = Some(visitor);
+    analyze_document(document, false, &mut visitor).1
+}
+
+/// Resolves one semantic location using the same walk and fallback rules as publication analysis.
+#[must_use]
+pub fn resolve_classification_location(
+    document: &Value,
+    carrier: &CarrierPointer,
+    location: &[ClassificationSegment],
+) -> ClassificationResolution {
+    let mut root_path = None;
+    let mut best: Option<(usize, Level, String, bool)> = None;
+    let mut seen = false;
+    let mut take = |candidate: &ClassificationLocation| {
+        if &candidate.carrier != carrier {
+            return;
+        }
+        seen = true;
+        if candidate.location.is_empty() {
+            root_path = Some(candidate.source_path.clone());
+        }
+        let Some(rank) = fallback_rank(location, &candidate.location) else {
+            return;
+        };
+        let exact = rank == 0;
+        if best.as_ref().is_none_or(|current| rank < current.0) {
+            best = Some((rank, candidate.level, candidate.source_path.clone(), exact));
+        }
+    };
+    let status = visit_one_carrier(document, carrier, &mut take);
+    if let Some(failure) = status.failure(carrier) {
+        return ClassificationResolution::Incomplete(failure.clone());
+    }
+    if !seen {
+        return ClassificationResolution::AbsentCarrier;
+    }
+    if let Some((_, level, source_path, location_present)) = best {
+        return ClassificationResolution::Resolved {
+            level,
+            source_path,
+            location_present,
+        };
+    }
+    ClassificationResolution::Resolved {
+        level: Level::UNMARKED,
+        source_path: root_path.unwrap_or_default(),
+        location_present: false,
+    }
+}
+
+fn visit_one_carrier(
+    document: &Value,
+    wanted: &CarrierPointer,
+    visitor: &mut dyn FnMut(&ClassificationLocation),
+) -> ClassificationWalkStatus {
+    let selected = match wanted {
+        CarrierPointer::Input => document
+            .get("inputSchema")
+            .map(|schema| (schema, "/inputSchema".to_owned(), false)),
+        CarrierPointer::Result => document
+            .get("outputSchema")
+            .map(|schema| (schema, "/outputSchema".to_owned(), false)),
+        CarrierPointer::NodeOutput(wanted_node) => document
+            .get("nodes")
+            .and_then(Value::as_array)
+            .and_then(|nodes| select_node_carrier(nodes, "/nodes", wanted_node)),
+        CarrierPointer::BodyNodeOutput { body, node } => document
+            .get("bodies")
+            .and_then(Value::as_object)
+            .and_then(|bodies| bodies.get(body.as_str()))
+            .and_then(|body| body.get("nodes"))
+            .and_then(Value::as_array)
+            .and_then(|nodes| {
+                select_node_carrier(
+                    nodes,
+                    &format!("/bodies/{}/nodes", escape(body.as_str())),
+                    node,
+                )
+            }),
+    };
+    let Some((schema, path, always_check)) = selected else {
+        return ClassificationWalkStatus::default();
+    };
     let mut analysis = Analysis::default();
+    let mut status = ClassificationWalkStatus::default();
+    let mut visitor = Some(visitor);
+    process_carrier(
+        schema,
+        wanted.clone(),
+        &path,
+        always_check,
+        false,
+        &mut analysis,
+        &mut status,
+        &mut visitor,
+    );
+    status
+}
+
+fn select_node_carrier<'a>(
+    nodes: &'a [Value],
+    nodes_path: &str,
+    wanted: &NodeId,
+) -> Option<(&'a Value, String, bool)> {
+    nodes.iter().enumerate().find_map(|(index, candidate)| {
+        if !matches!(
+            candidate.get("type").and_then(Value::as_str),
+            Some("activity" | "script" | "waitEvent" | "child")
+        ) || candidate.get("id").and_then(Value::as_str) != Some(wanted.as_str())
+        {
+            return None;
+        }
+        candidate
+            .get("outputSchema")
+            .map(|schema| (schema, format!("{nodes_path}/{index}/outputSchema"), true))
+    })
+}
+
+fn fallback_rank(
+    requested: &[ClassificationSegment],
+    candidate: &[ClassificationSegment],
+) -> Option<usize> {
+    if requested.len() != candidate.len() {
+        return None;
+    }
+    let mut fallbacks = 0;
+    for (requested, candidate) in requested.iter().zip(candidate) {
+        if requested == candidate {
+            continue;
+        }
+        if matches!(
+            (requested, candidate),
+            (
+                ClassificationSegment::Property(_),
+                ClassificationSegment::AdditionalProperty
+            ) | (
+                ClassificationSegment::Index(_),
+                ClassificationSegment::RemainingItem
+            )
+        ) {
+            fallbacks += 1;
+        } else {
+            return None;
+        }
+    }
+    Some(fallbacks)
+}
+
+type Visitor<'a> = Option<&'a mut dyn FnMut(&ClassificationLocation)>;
+
+fn analyze_document(
+    document: &Value,
+    capture_analysis: bool,
+    visitor: &mut Visitor<'_>,
+) -> (ClassificationAnalysis, ClassificationWalkStatus) {
+    let mut analysis = Analysis::default();
+    let mut status = ClassificationWalkStatus::default();
     let mut carrier_prefixes = HashSet::new();
 
     for (field, carrier) in [
@@ -47,12 +217,30 @@ pub fn analyze_value(document: &Value) -> ClassificationAnalysis {
         if let Some(schema) = document.get(field) {
             let path = format!("/{field}");
             carrier_prefixes.insert(path.clone());
-            analysis.carrier(schema, carrier, &path, false);
+            process_carrier(
+                schema,
+                carrier,
+                &path,
+                false,
+                capture_analysis,
+                &mut analysis,
+                &mut status,
+                visitor,
+            );
         }
     }
 
     if let Some(nodes) = document.get("nodes").and_then(Value::as_array) {
-        discover_node_carriers(nodes, "/nodes", None, &mut analysis, &mut carrier_prefixes);
+        discover_node_carriers(
+            nodes,
+            "/nodes",
+            None,
+            capture_analysis,
+            &mut analysis,
+            &mut status,
+            visitor,
+            &mut carrier_prefixes,
+        );
     }
     if let Some(bodies) = document.get("bodies").and_then(Value::as_object) {
         for (name, body) in bodies {
@@ -66,21 +254,30 @@ pub fn analyze_value(document: &Value) -> ClassificationAnalysis {
                 nodes,
                 &format!("/bodies/{}/nodes", escape(name)),
                 Some(&body_name),
+                capture_analysis,
                 &mut analysis,
+                &mut status,
+                visitor,
                 &mut carrier_prefixes,
             );
         }
     }
 
-    scan_outside_carriers(document, "", &carrier_prefixes, &mut analysis);
-    analysis.finish()
+    if capture_analysis {
+        scan_outside_carriers(document, "", &carrier_prefixes, &mut analysis);
+    }
+    (analysis.finish(), status)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn discover_node_carriers(
     nodes: &[Value],
     nodes_path: &str,
     body: Option<&NodeId>,
+    capture_analysis: bool,
     analysis: &mut Analysis,
+    status: &mut ClassificationWalkStatus,
+    visitor: &mut Visitor<'_>,
     carrier_prefixes: &mut HashSet<String>,
 ) {
     for (index, candidate) in nodes.iter().enumerate() {
@@ -109,8 +306,93 @@ fn discover_node_carriers(
         };
         let path = format!("{nodes_path}/{index}/outputSchema");
         carrier_prefixes.insert(path.clone());
-        analysis.carrier(schema, carrier, &path, true);
+        process_carrier(
+            schema,
+            carrier,
+            &path,
+            true,
+            capture_analysis,
+            analysis,
+            status,
+            visitor,
+        );
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn process_carrier(
+    schema: &Value,
+    carrier: CarrierPointer,
+    document_path: &str,
+    always_check: bool,
+    capture_analysis: bool,
+    analysis: &mut Analysis,
+    status: &mut ClassificationWalkStatus,
+    visitor: &mut Visitor<'_>,
+) {
+    let bytes = serde_json::to_vec(schema).map_or(usize::MAX, |bytes| bytes.len());
+    if bytes > MAX_CARRIER_BYTES || value_depth(schema) > MAX_SCHEMA_DEPTH {
+        if capture_analysis {
+            analysis.finding(ClassificationFindingCode::TooComplex, document_path);
+        }
+        status.carriers.push(ClassificationCarrierStatus::Failed(
+            ClassificationCarrierFailure {
+                carrier,
+                code: ClassificationFindingCode::TooComplex,
+                source_path: document_path.to_owned(),
+            },
+        ));
+        return;
+    }
+
+    let report_findings = capture_analysis && (contains_annotation(schema) || always_check);
+    let mut dry = CarrierWalk::new(
+        schema,
+        document_path,
+        carrier.clone(),
+        analysis,
+        report_findings,
+        false,
+        false,
+        visitor,
+    );
+    dry.scan_schema(schema, document_path, &mut HashSet::new());
+    dry.expansions = 0;
+    dry.walk_location(
+        vec![SchemaNode::root(schema, document_path)],
+        &mut Vec::new(),
+        None,
+        true,
+        0,
+    );
+    if let Some(failure) = dry.failure.take() {
+        status
+            .carriers
+            .push(ClassificationCarrierStatus::Failed(failure));
+        return;
+    }
+
+    let mut emit = CarrierWalk::new(
+        schema,
+        document_path,
+        carrier.clone(),
+        analysis,
+        false,
+        true,
+        capture_analysis,
+        visitor,
+    );
+    emit.walk_location(
+        vec![SchemaNode::root(schema, document_path)],
+        &mut Vec::new(),
+        None,
+        true,
+        0,
+    );
+    debug_assert!(emit.failure.is_none());
+    status
+        .carriers
+        .push(ClassificationCarrierStatus::Complete(carrier));
 }
 
 #[derive(Default)]
@@ -120,7 +402,7 @@ struct Analysis {
 
 impl Analysis {
     fn finding(&mut self, code: ClassificationFindingCode, path: &str) {
-        let is_error = code.severity() == sagat_application::classification::FindingSeverity::Error;
+        let is_error = code.severity() == FindingSeverity::Error;
         self.result.has_errors |= is_error;
         let path = match ClassificationPointer::parse(path) {
             Ok(path) => path,
@@ -136,38 +418,43 @@ impl Analysis {
                 return;
             }
         };
-        if !self
+        if self
             .result
             .findings
             .iter()
             .any(|finding| finding.code == code && finding.path == path)
         {
-            let finding = ClassificationFinding { code, path };
-            if self.result.findings.len() < MAX_CLASSIFICATION_FINDINGS {
-                self.result.findings.push(finding);
-            } else {
-                self.result.findings_truncated = true;
-                if is_error
-                    && let Some(index) = self.result.findings.iter().rposition(|existing| {
-                        existing.code.severity()
-                            == sagat_application::classification::FindingSeverity::Warning
-                    })
-                {
-                    self.result.findings[index] = finding;
-                }
+            return;
+        }
+        let finding = ClassificationFinding { code, path };
+        if self.result.findings.len() < MAX_CLASSIFICATION_FINDINGS {
+            self.result.findings.push(finding);
+        } else {
+            self.result.findings_truncated = true;
+            if is_error
+                && let Some(index) = self
+                    .result
+                    .findings
+                    .iter()
+                    .rposition(|existing| existing.code.severity() == FindingSeverity::Warning)
+            {
+                self.result.findings[index] = finding;
             }
         }
     }
 
-    fn report(&mut self, carrier: &CarrierPointer, path: &str, level: Level, declared: bool) {
-        if self.result.report.len() == MAX_CLASSIFICATION_REPORT_ENTRIES {
+    fn report(
+        &mut self,
+        carrier: &CarrierPointer,
+        segments: &[ClassificationSegment],
+        level: Level,
+        declared: bool,
+    ) {
+        if self.result.report.len() >= MAX_CLASSIFICATION_REPORT_ENTRIES {
             self.result.report_truncated = true;
             return;
         }
-        if self.result.report.len() > MAX_CLASSIFICATION_REPORT_ENTRIES {
-            return;
-        }
-        let Ok(path) = ClassificationPointer::parse(path) else {
+        let Ok(path) = ClassificationPointer::parse(instance_path(segments)) else {
             self.result.report_truncated = true;
             return;
         };
@@ -177,33 +464,6 @@ impl Analysis {
             level,
             declared,
         });
-    }
-
-    fn carrier(
-        &mut self,
-        schema: &Value,
-        carrier: CarrierPointer,
-        document_path: &str,
-        always_check: bool,
-    ) {
-        let bytes = serde_json::to_vec(schema).map_or(usize::MAX, |bytes| bytes.len());
-        if bytes > MAX_CARRIER_BYTES || value_depth(schema) > MAX_SCHEMA_DEPTH {
-            self.finding(ClassificationFindingCode::TooComplex, document_path);
-            return;
-        }
-        let carries_annotation = contains_annotation(schema);
-        let mut walk = CarrierWalk::new(schema, document_path, carrier, self);
-        walk.walk_location(
-            vec![SchemaNode::root(schema, document_path)],
-            "",
-            None,
-            true,
-            0,
-        );
-        if carries_annotation || always_check {
-            walk.expansions = 0;
-            walk.scan_schema(schema, document_path, &mut HashSet::new());
-        }
     }
 
     fn finish(mut self) -> ClassificationAnalysis {
@@ -237,46 +497,108 @@ impl<'a> SchemaNode<'a> {
     }
 }
 
-struct CarrierWalk<'a, 'b> {
+struct CarrierWalk<'a, 'b, 'v> {
     root: &'a Value,
     root_path: &'a str,
     carrier: CarrierPointer,
     analysis: &'b mut Analysis,
+    record_findings: bool,
+    emit: bool,
+    capture_report: bool,
+    visitor: &'b mut Visitor<'v>,
     expansions: usize,
+    failure: Option<ClassificationCarrierFailure>,
 }
 
-impl<'a, 'b> CarrierWalk<'a, 'b> {
+impl<'a, 'b, 'v> CarrierWalk<'a, 'b, 'v> {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         root: &'a Value,
         root_path: &'a str,
         carrier: CarrierPointer,
         analysis: &'b mut Analysis,
+        record_findings: bool,
+        emit: bool,
+        capture_report: bool,
+        visitor: &'b mut Visitor<'v>,
     ) -> Self {
         Self {
             root,
             root_path,
             carrier,
             analysis,
+            record_findings,
+            emit,
+            capture_report,
+            visitor,
             expansions: 0,
+            failure: None,
+        }
+    }
+
+    fn fail(&mut self, code: ClassificationFindingCode, path: &str) {
+        if self.record_findings {
+            self.analysis.finding(code, path);
+        }
+        if matches!(
+            code,
+            ClassificationFindingCode::TooComplex
+                | ClassificationFindingCode::UnresolvedRef
+                | ClassificationFindingCode::UnsupportedKeyword
+        ) && self.failure.is_none()
+        {
+            self.failure = Some(ClassificationCarrierFailure {
+                carrier: self.carrier.clone(),
+                code,
+                source_path: path.to_owned(),
+            });
+        }
+    }
+
+    fn emit_location(
+        &mut self,
+        segments: &[ClassificationSegment],
+        source_path: &str,
+        level: Level,
+        declared: bool,
+    ) {
+        if !self.emit {
+            return;
+        }
+        if self.capture_report {
+            self.analysis
+                .report(&self.carrier, segments, level, declared);
+        }
+        if let Some(visitor) = self.visitor.as_deref_mut() {
+            visitor(&ClassificationLocation {
+                carrier: self.carrier.clone(),
+                location: segments.to_vec(),
+                source_path: source_path.to_owned(),
+                level,
+                declared,
+            });
         }
     }
 
     fn walk_location(
         &mut self,
         schemas: Vec<SchemaNode<'a>>,
-        instance_path: &str,
+        segments: &mut Vec<ClassificationSegment>,
         inherited: Option<Level>,
         root: bool,
         depth: usize,
     ) {
         if depth > MAX_SCHEMA_DEPTH {
-            self.analysis.finding(
+            self.fail(
                 ClassificationFindingCode::TooComplex,
                 &schemas[0].document_path,
             );
             return;
         }
         let expanded = self.expand(schemas, &mut HashSet::new());
+        if expanded.is_empty() || self.failure.is_some() {
+            return;
+        }
         let declared = expanded
             .iter()
             .any(|schema| annotation(schema.value).is_some());
@@ -292,93 +614,163 @@ impl<'a, 'b> CarrierWalk<'a, 'b> {
         for schema in &expanded {
             if let Some(level) = valid_annotation(schema.value) {
                 if !root && Some(level) < inherited {
-                    self.analysis
-                        .finding(ClassificationFindingCode::Loosened, &schema.document_path);
+                    self.fail(ClassificationFindingCode::Loosened, &schema.document_path);
                 }
                 effective = effective.stricter(level);
             }
         }
-        self.analysis
-            .report(&self.carrier, instance_path, effective, declared);
+        let source_path = expanded[0].document_path.clone();
+        self.emit_location(segments, &source_path, effective, declared);
 
-        let mut properties: BTreeMap<String, Vec<SchemaNode<'a>>> = BTreeMap::new();
+        let mut property_sources: BTreeMap<String, String> = BTreeMap::new();
         for schema in &expanded {
             if let Some(entries) = schema.value.get("properties").and_then(Value::as_object) {
-                for (name, child) in entries {
-                    properties
-                        .entry(name.clone())
-                        .or_default()
-                        .push(SchemaNode {
-                            value: child,
-                            document_path: format!(
-                                "{}/properties/{}",
-                                schema.document_path,
-                                escape(name)
-                            ),
-                        });
-                }
-            }
-        }
-        for (name, children) in properties {
-            let child_path = format!("{instance_path}/{}", escape(&name));
-            let child_declared = children
-                .iter()
-                .any(|schema| annotation(schema.value).is_some());
-            if !child_declared && matches!(effective, Level::Public | Level::Internal) {
-                self.analysis.finding(
-                    ClassificationFindingCode::InheritedOpen,
-                    &children[0].document_path,
-                );
-            }
-            self.walk_location(children, &child_path, Some(effective), false, depth + 1);
-        }
-
-        let mut positional: BTreeMap<usize, Vec<SchemaNode<'a>>> = BTreeMap::new();
-        for schema in &expanded {
-            if let Some(items) = schema.value.get("prefixItems").and_then(Value::as_array) {
-                for (index, item) in items.iter().enumerate() {
-                    positional.entry(index).or_default().push(SchemaNode {
-                        value: item,
-                        document_path: format!("{}/prefixItems/{index}", schema.document_path),
+                for name in entries.keys() {
+                    property_sources.entry(name.clone()).or_insert_with(|| {
+                        format!("{}/properties/{}", schema.document_path, escape(name))
                     });
                 }
             }
         }
-        for (index, children) in positional {
-            let child_path = format!("{instance_path}/{index}");
-            let child_declared = children
-                .iter()
-                .any(|schema| annotation(schema.value).is_some());
-            if !child_declared && matches!(effective, Level::Public | Level::Internal) {
-                self.analysis.finding(
-                    ClassificationFindingCode::InheritedOpen,
-                    &children[0].document_path,
-                );
-            }
-            self.walk_location(children, &child_path, Some(effective), false, depth + 1);
-        }
-
-        let additional: Vec<_> = expanded
-            .iter()
-            .filter_map(|schema| {
-                schema
+        for (name, first_source) in property_sources {
+            let mut children = Vec::new();
+            let mut unsupported = false;
+            for schema in &expanded {
+                if let Some(child) = schema
+                    .value
+                    .get("properties")
+                    .and_then(Value::as_object)
+                    .and_then(|properties| properties.get(&name))
+                {
+                    children.push(SchemaNode {
+                        value: child,
+                        document_path: format!(
+                            "{}/properties/{}",
+                            schema.document_path,
+                            escape(&name)
+                        ),
+                    });
+                } else if schema
+                    .value
+                    .get("patternProperties")
+                    .and_then(Value::as_object)
+                    .is_some_and(|patterns| !patterns.is_empty())
+                {
+                    unsupported = true;
+                } else if let Some(child) = schema
                     .value
                     .get("additionalProperties")
                     .filter(|value| value.is_object())
-                    .map(|value| SchemaNode {
-                        value,
+                {
+                    children.push(SchemaNode {
+                        value: child,
                         document_path: format!("{}/additionalProperties", schema.document_path),
-                    })
-            })
-            .collect();
+                    });
+                }
+            }
+            let child_declared = children
+                .iter()
+                .any(|schema| annotation(schema.value).is_some());
+            let inherited = if unsupported || children.is_empty() {
+                effective.stricter(Level::UNMARKED)
+            } else {
+                effective
+            };
+            if !child_declared && matches!(inherited, Level::Public | Level::Internal) {
+                self.fail(ClassificationFindingCode::InheritedOpen, &first_source);
+            }
+            segments.push(ClassificationSegment::Property(name));
+            self.walk_location(children, segments, Some(inherited), false, depth + 1);
+            segments.pop();
+        }
+
+        let maximum_prefix = expanded
+            .iter()
+            .filter_map(|schema| schema.value.get("prefixItems").and_then(Value::as_array))
+            .map(Vec::len)
+            .max()
+            .unwrap_or(0);
+        for index in 0..maximum_prefix {
+            let mut children = Vec::new();
+            let mut source = None;
+            for schema in &expanded {
+                if let Some(child) = schema
+                    .value
+                    .get("prefixItems")
+                    .and_then(Value::as_array)
+                    .and_then(|items| items.get(index))
+                {
+                    let path = format!("{}/prefixItems/{index}", schema.document_path);
+                    source.get_or_insert_with(|| path.clone());
+                    children.push(SchemaNode {
+                        value: child,
+                        document_path: path,
+                    });
+                } else if let Some(child) =
+                    schema.value.get("items").filter(|value| value.is_object())
+                {
+                    let path = format!("{}/items", schema.document_path);
+                    source.get_or_insert_with(|| path.clone());
+                    children.push(SchemaNode {
+                        value: child,
+                        document_path: path,
+                    });
+                }
+            }
+            let child_declared = children
+                .iter()
+                .any(|schema| annotation(schema.value).is_some());
+            let inherited = if children.is_empty() {
+                effective.stricter(Level::UNMARKED)
+            } else {
+                effective
+            };
+            if !child_declared && matches!(inherited, Level::Public | Level::Internal) {
+                self.fail(
+                    ClassificationFindingCode::InheritedOpen,
+                    source.as_deref().unwrap_or(&source_path),
+                );
+            }
+            segments.push(ClassificationSegment::Index(index));
+            self.walk_location(children, segments, Some(inherited), false, depth + 1);
+            segments.pop();
+        }
+
+        let mut additional = Vec::new();
+        let mut pattern_floor = None;
+        for schema in &expanded {
+            if schema
+                .value
+                .get("patternProperties")
+                .and_then(Value::as_object)
+                .is_some_and(|patterns| !patterns.is_empty())
+            {
+                pattern_floor
+                    .get_or_insert_with(|| format!("{}/patternProperties", schema.document_path));
+            } else if let Some(value) = schema
+                .value
+                .get("additionalProperties")
+                .filter(|value| value.is_object())
+            {
+                additional.push(SchemaNode {
+                    value,
+                    document_path: format!("{}/additionalProperties", schema.document_path),
+                });
+            }
+        }
         if !additional.is_empty() {
-            self.walk_location(
-                additional,
-                &format!("{instance_path}/*"),
-                Some(effective),
-                false,
-                depth + 1,
-            );
+            let inherited = if pattern_floor.is_some() {
+                effective.stricter(Level::UNMARKED)
+            } else {
+                effective
+            };
+            segments.push(ClassificationSegment::AdditionalProperty);
+            self.walk_location(additional, segments, Some(inherited), false, depth + 1);
+            segments.pop();
+        } else if let Some(path) = pattern_floor {
+            segments.push(ClassificationSegment::AdditionalProperty);
+            self.emit_location(segments, &path, effective.stricter(Level::UNMARKED), false);
+            segments.pop();
         }
 
         let items: Vec<_> = expanded
@@ -395,13 +787,9 @@ impl<'a, 'b> CarrierWalk<'a, 'b> {
             })
             .collect();
         if !items.is_empty() {
-            self.walk_location(
-                items,
-                &format!("{instance_path}/*"),
-                Some(effective),
-                false,
-                depth + 1,
-            );
+            segments.push(ClassificationSegment::RemainingItem);
+            self.walk_location(items, segments, Some(effective), false, depth + 1);
+            segments.pop();
         }
     }
 
@@ -419,19 +807,29 @@ impl<'a, 'b> CarrierWalk<'a, 'b> {
             if let Some(reference) = object.get("$ref").and_then(Value::as_str) {
                 self.expansions += 1;
                 if self.expansions > MAX_REF_EXPANSIONS {
-                    self.analysis
-                        .finding(ClassificationFindingCode::TooComplex, &schema.document_path);
-                } else if reference.starts_with("#/") && active.insert(reference.to_owned()) {
-                    if let Some(target) = self.root.pointer(&reference[1..]) {
-                        let target_path = format!("{}{}", self.root_path, &reference[1..]);
-                        expanded.extend(self.expand(
-                            vec![SchemaNode {
-                                value: target,
-                                document_path: target_path,
-                            }],
-                            active,
-                        ));
-                    }
+                    self.fail(ClassificationFindingCode::TooComplex, &schema.document_path);
+                } else if !reference.starts_with("#/") {
+                    self.fail(
+                        ClassificationFindingCode::UnresolvedRef,
+                        &format!("{}/$ref", schema.document_path),
+                    );
+                } else if !active.insert(reference.to_owned()) {
+                    self.fail(ClassificationFindingCode::TooComplex, &schema.document_path);
+                } else if let Some(target) = self.root.pointer(&reference[1..]) {
+                    let target_path = format!("{}{}", self.root_path, &reference[1..]);
+                    expanded.extend(self.expand(
+                        vec![SchemaNode {
+                            value: target,
+                            document_path: target_path,
+                        }],
+                        active,
+                    ));
+                    active.remove(reference);
+                } else {
+                    self.fail(
+                        ClassificationFindingCode::UnresolvedRef,
+                        &format!("{}/$ref", schema.document_path),
+                    );
                     active.remove(reference);
                 }
             }
@@ -460,12 +858,12 @@ impl<'a, 'b> CarrierWalk<'a, 'b> {
             return;
         };
         if let Some(annotation) = object.get(ANNOTATION)
-            && (annotation
+            && annotation
                 .as_str()
-                .and_then(|level| Level::parse(level).ok()))
-            .is_none()
+                .and_then(|level| Level::parse(level).ok())
+                .is_none()
         {
-            self.analysis.finding(
+            self.fail(
                 ClassificationFindingCode::InvalidLevel,
                 &format!("{path}/{ANNOTATION}"),
             );
@@ -474,7 +872,7 @@ impl<'a, 'b> CarrierWalk<'a, 'b> {
             if let Some(value) = object.get(keyword)
                 && contains_annotation(value)
             {
-                self.analysis.finding(
+                self.fail(
                     ClassificationFindingCode::UnsupportedKeyword,
                     &format!("{path}/{keyword}"),
                 );
@@ -483,22 +881,20 @@ impl<'a, 'b> CarrierWalk<'a, 'b> {
         if let Some(reference) = object.get("$ref").and_then(Value::as_str) {
             self.expansions += 1;
             if self.expansions > MAX_REF_EXPANSIONS {
-                self.analysis
-                    .finding(ClassificationFindingCode::TooComplex, path);
+                self.fail(ClassificationFindingCode::TooComplex, path);
             } else if !reference.starts_with("#/") {
-                self.analysis.finding(
+                self.fail(
                     ClassificationFindingCode::UnresolvedRef,
                     &format!("{path}/$ref"),
                 );
             } else if !active.insert(reference.to_owned()) {
-                self.analysis
-                    .finding(ClassificationFindingCode::TooComplex, path);
+                self.fail(ClassificationFindingCode::TooComplex, path);
             } else if let Some(target) = self.root.pointer(&reference[1..]) {
                 let target_path = format!("{}{}", self.root_path, &reference[1..]);
                 self.scan_schema(target, &target_path, active);
                 active.remove(reference);
             } else {
-                self.analysis.finding(
+                self.fail(
                     ClassificationFindingCode::UnresolvedRef,
                     &format!("{path}/$ref"),
                 );
@@ -511,7 +907,7 @@ impl<'a, 'b> CarrierWalk<'a, 'b> {
             }
             match value {
                 Value::Object(_) => {
-                    self.scan_schema(value, &format!("{path}/{}", escape(keyword)), active)
+                    self.scan_schema(value, &format!("{path}/{}", escape(keyword)), active);
                 }
                 Value::Array(values) => {
                     for (index, value) in values.iter().enumerate() {
@@ -594,6 +990,21 @@ fn value_depth(root: &Value) -> usize {
         }
     }
     maximum
+}
+
+fn instance_path(segments: &[ClassificationSegment]) -> String {
+    let mut path = String::new();
+    for segment in segments {
+        path.push('/');
+        match segment {
+            ClassificationSegment::Property(name) => path.push_str(&escape(name)),
+            ClassificationSegment::Index(index) => path.push_str(&index.to_string()),
+            ClassificationSegment::AdditionalProperty | ClassificationSegment::RemainingItem => {
+                path.push('*');
+            }
+        }
+    }
+    path
 }
 
 fn carrier_sort_key(carrier: &CarrierPointer) -> (u8, &str, &str) {
