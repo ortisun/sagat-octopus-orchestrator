@@ -4,9 +4,10 @@ use std::collections::BTreeMap;
 use std::num::NonZeroU64;
 
 use axum::body::Body;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Request, State};
 use axum::http::{HeaderValue, StatusCode, header};
-use axum::response::Response;
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Response};
 use sagat_application::classification::{
     ClassifiedNode, JsonNumber, MAX_RESPONSE_BYTES, ScalarValue, ValueKind,
 };
@@ -121,6 +122,21 @@ pub async fn disclose_payload<B: Exec>(
         .map_err(disclosure_error)?;
     let bytes = encode_disclosure(&disclosure)?;
     Ok(disclosure_response(bytes))
+}
+
+/// Keep every response private, including body-limit rejections produced before the handler.
+pub async fn no_store(request: Request, next: Next) -> Response {
+    let response = next.run(request).await;
+    let mut response = if response.status() == StatusCode::PAYLOAD_TOO_LARGE {
+        ApiError::from(AppError::PayloadTooLarge("payload disclosure request")).into_response()
+    } else {
+        response
+    };
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-store"),
+    );
+    response
 }
 
 fn disclosure_response(bytes: Vec<u8>) -> Response {

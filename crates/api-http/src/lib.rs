@@ -849,7 +849,7 @@ where
                 routes::payload_disclosure::DISCLOSURE_MAX_BODY_BYTES,
             ))
             .route_layer(shed())
-            .route_layer(from_fn(routes::database_results::no_store))
+            .route_layer(from_fn(routes::payload_disclosure::no_store))
             .with_state(state.clone())
     } else {
         Router::new()
