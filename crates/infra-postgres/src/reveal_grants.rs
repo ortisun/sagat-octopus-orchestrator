@@ -2,7 +2,7 @@
 
 use sagat_application::error::StoreError;
 use sagat_application::reveal_grants::{
-    GrantWrite, MAX_GRANTS_PER_NAMESPACE, RevealGrant, RevealGrantStore,
+    GrantRead, GrantRevoke, GrantWrite, MAX_GRANTS_PER_NAMESPACE, RevealGrant, RevealGrantStore,
 };
 use sagat_domain::audit::AuditRecord;
 use sagat_domain::identity::{NamespaceId, Permission, Role, Subject, TenantId};
@@ -42,22 +42,16 @@ pub async fn has_effective_payload_reveal_grant(
     namespace: NamespaceId,
     subject: &Subject,
 ) -> Result<bool, StoreError> {
-    let current_role: Option<String> =
-        sqlx::query_scalar("SELECT role FROM public.sagat_lock_memberships($1, ARRAY[$2::text])")
-            .bind(tenant.as_uuid())
-            .bind(subject.as_str())
-            .fetch_optional(&mut *conn)
-            .await
-            .map_err(store_error)?;
-    let Some(current_role) = current_role else {
+    let roles = lock_membership_roles(conn, tenant, &[subject]).await?;
+    let Some(current_role) = locked_role(&roles, subject) else {
         return Ok(false);
     };
-    let current_role = current_role
-        .parse::<Role>()
-        .map_err(|_| corrupt("membership role"))?;
     if !role_can_use_reveal_grant(current_role) {
         return Ok(false);
     }
+    // Revocation takes this namespace key exclusively. Holding it shared through the caller's
+    // transaction prevents a revoke from committing after this check but before disclosure audit.
+    lock_grant_set_shared(conn, tenant, namespace).await?;
     sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM payload_reveal_grants \
          WHERE tenant_id = $1 AND namespace_id = $2 AND subject = $3)",
@@ -88,24 +82,41 @@ async fn lock_namespace(
         .map_err(store_error)
 }
 
-async fn lock_membership_role(
+async fn lock_membership_roles(
     conn: &mut PgConnection,
     tenant: TenantId,
-    subject: &Subject,
-) -> Result<Option<Role>, StoreError> {
-    let role: Option<String> =
-        sqlx::query_scalar("SELECT role FROM public.sagat_lock_memberships($1, ARRAY[$2::text])")
+    subjects: &[&Subject],
+) -> Result<Vec<(String, Role)>, StoreError> {
+    let subjects: Vec<&str> = subjects.iter().map(|subject| subject.as_str()).collect();
+    let roles: Vec<(String, String)> =
+        sqlx::query_as("SELECT subject, role FROM public.sagat_lock_memberships($1, $2::text[])")
             .bind(tenant.as_uuid())
-            .bind(subject.as_str())
-            .fetch_optional(conn)
+            .bind(&subjects)
+            .fetch_all(conn)
             .await
             .map_err(store_error)?;
-    role.map(|value| {
-        value
-            .parse::<Role>()
-            .map_err(|_| corrupt("membership role"))
-    })
-    .transpose()
+    roles
+        .into_iter()
+        .map(|(subject, role)| {
+            role.parse::<Role>()
+                .map(|role| (subject, role))
+                .map_err(|_| corrupt("membership role"))
+        })
+        .collect()
+}
+
+fn locked_role(roles: &[(String, Role)], subject: &Subject) -> Option<Role> {
+    roles
+        .iter()
+        .find_map(|(stored, role)| (stored == subject.as_str()).then_some(*role))
+}
+
+fn actor_can_manage(roles: &[(String, Role)], actor: &Subject) -> bool {
+    locked_role(roles, actor).is_some_and(|role| role.grants(Permission::MembershipManage))
+}
+
+fn grant_lock_key(tenant: TenantId, namespace: NamespaceId) -> String {
+    format!("payload-reveal-grants:{tenant}:{namespace}")
 }
 
 async fn lock_grant_set(
@@ -113,8 +124,22 @@ async fn lock_grant_set(
     tenant: TenantId,
     namespace: NamespaceId,
 ) -> Result<(), StoreError> {
-    let lock_key = format!("payload-reveal-grants:{tenant}:{namespace}");
+    let lock_key = grant_lock_key(tenant, namespace);
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(lock_key)
+        .execute(conn)
+        .await
+        .map(|_| ())
+        .map_err(store_error)
+}
+
+async fn lock_grant_set_shared(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    namespace: NamespaceId,
+) -> Result<(), StoreError> {
+    let lock_key = grant_lock_key(tenant, namespace);
+    sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))")
         .bind(lock_key)
         .execute(conn)
         .await
@@ -127,9 +152,18 @@ impl RevealGrantStore for PgRunStore {
         &self,
         tenant: TenantId,
         namespace: NamespaceId,
+        actor: &Subject,
         after: Option<&Subject>,
         limit: u32,
-    ) -> Result<Vec<RevealGrant>, StoreError> {
+    ) -> Result<GrantRead, StoreError> {
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        if !lock_namespace(&mut tx, tenant, namespace).await? {
+            return Err(StoreError::MissingReference);
+        }
+        let roles = lock_membership_roles(&mut tx, tenant, &[actor]).await?;
+        if !actor_can_manage(&roles, actor) {
+            return Ok(GrantRead::ActorForbidden);
+        }
         let rows: Vec<GrantRow> = sqlx::query_as(
             "SELECT subject, granted_by, granted_at FROM payload_reveal_grants \
              WHERE tenant_id = $1 AND namespace_id = $2 \
@@ -140,19 +174,28 @@ impl RevealGrantStore for PgRunStore {
         .bind(namespace.as_uuid())
         .bind(after.map(Subject::as_str))
         .bind(i64::from(limit))
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await
         .map_err(store_error)?;
-        rows.into_iter().map(restore_grant).collect()
+        let grants = rows
+            .into_iter()
+            .map(restore_grant)
+            .collect::<Result<Vec<_>, _>>()?;
+        tx.commit().await.map_err(store_error)?;
+        Ok(GrantRead::Authorized(grants))
     }
 
     async fn grant_reveal(
         &self,
         tenant: TenantId,
         namespace: NamespaceId,
+        actor: &Subject,
         subject: &Subject,
         audit: &AuditRecord,
     ) -> Result<GrantWrite, StoreError> {
+        if audit.actor() != actor {
+            return Err(corrupt("reveal grant audit actor"));
+        }
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
 
         // The SECURITY DEFINER helpers supplied by feature 017 take authority read locks without
@@ -163,8 +206,11 @@ impl RevealGrantStore for PgRunStore {
             return Err(StoreError::MissingReference);
         }
 
-        let role = lock_membership_role(&mut tx, tenant, subject).await?;
-        let Some(role) = role else {
+        let roles = lock_membership_roles(&mut tx, tenant, &[actor, subject]).await?;
+        if !actor_can_manage(&roles, actor) {
+            return Ok(GrantWrite::ActorForbidden);
+        }
+        let Some(role) = locked_role(&roles, subject) else {
             return Ok(GrantWrite::UnknownSubject);
         };
         if !role.grants(Permission::PayloadReadInternal) {
@@ -222,21 +268,27 @@ impl RevealGrantStore for PgRunStore {
         &self,
         tenant: TenantId,
         namespace: NamespaceId,
+        actor: &Subject,
         subject: &Subject,
         audit: &AuditRecord,
-    ) -> Result<bool, StoreError> {
+    ) -> Result<GrantRevoke, StoreError> {
+        if audit.actor() != actor {
+            return Err(corrupt("reveal revoke audit actor"));
+        }
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         let namespace_exists = lock_namespace(&mut tx, tenant, namespace).await?;
         if !namespace_exists {
-            return Ok(false);
+            return Ok(GrantRevoke::Absent);
         }
-        // Lock an existing membership so a concurrent cascade cannot interleave with the explicit
-        // revocation audit. Missing membership is already equivalent to an absent grant.
-        if lock_membership_role(&mut tx, tenant, subject)
-            .await?
-            .is_none()
-        {
-            return Ok(false);
+        // The actor's current authority and the target membership are locked in canonical subject
+        // order by the feature-017 helper. A concurrent cascade therefore cannot interleave with
+        // an explicit revocation audit.
+        let roles = lock_membership_roles(&mut tx, tenant, &[actor, subject]).await?;
+        if !actor_can_manage(&roles, actor) {
+            return Ok(GrantRevoke::ActorForbidden);
+        }
+        if locked_role(&roles, subject).is_none() {
+            return Ok(GrantRevoke::Absent);
         }
         lock_grant_set(&mut tx, tenant, namespace).await?;
         let removed = sqlx::query(
@@ -252,11 +304,11 @@ impl RevealGrantStore for PgRunStore {
         .rows_affected()
             == 1;
         if !removed {
-            return Ok(false);
+            return Ok(GrantRevoke::Absent);
         }
         insert_audit(&mut tx, audit).await?;
         tx.commit().await.map_err(store_error)?;
-        Ok(true)
+        Ok(GrantRevoke::Removed)
     }
 }
 

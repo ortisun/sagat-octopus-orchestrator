@@ -6,7 +6,8 @@ use sagat_application::clock::Clock;
 use sagat_application::error::StoreError;
 use sagat_application::identity::RequestContext;
 use sagat_application::reveal_grants::{
-    GrantWrite, RevealGrant, RevealGrantError, RevealGrantService, RevealGrantStore,
+    GrantRead, GrantRevoke, GrantWrite, RevealGrant, RevealGrantError, RevealGrantService,
+    RevealGrantStore,
 };
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::identity::{NamespaceId, Principal, Role, Subject, TenantId};
@@ -29,7 +30,9 @@ struct FakeStore {
     namespace_exists: bool,
     outside: bool,
     grants: Arc<Mutex<Vec<RevealGrant>>>,
+    forbid_reads: bool,
     writes: Arc<Mutex<VecDeque<GrantWrite>>>,
+    revoke: Option<GrantRevoke>,
     audits: Arc<Mutex<Vec<AuditRecord>>>,
 }
 
@@ -61,24 +64,30 @@ impl RevealGrantStore for FakeStore {
         &self,
         _tenant: TenantId,
         _namespace: NamespaceId,
+        _actor: &Subject,
         after: Option<&Subject>,
         limit: u32,
-    ) -> Result<Vec<RevealGrant>, StoreError> {
-        Ok(self
-            .grants
-            .lock()
-            .expect("grants")
-            .iter()
-            .filter(|grant| after.is_none_or(|after| grant.subject > *after))
-            .take(limit as usize)
-            .cloned()
-            .collect())
+    ) -> Result<GrantRead, StoreError> {
+        if self.forbid_reads {
+            return Ok(GrantRead::ActorForbidden);
+        }
+        Ok(GrantRead::Authorized(
+            self.grants
+                .lock()
+                .expect("grants")
+                .iter()
+                .filter(|grant| after.is_none_or(|after| grant.subject > *after))
+                .take(limit as usize)
+                .cloned()
+                .collect(),
+        ))
     }
 
     async fn grant_reveal(
         &self,
         _tenant: TenantId,
         _namespace: NamespaceId,
+        _actor: &Subject,
         _subject: &Subject,
         audit: &AuditRecord,
     ) -> Result<GrantWrite, StoreError> {
@@ -95,11 +104,12 @@ impl RevealGrantStore for FakeStore {
         &self,
         _tenant: TenantId,
         _namespace: NamespaceId,
+        _actor: &Subject,
         _subject: &Subject,
         audit: &AuditRecord,
-    ) -> Result<bool, StoreError> {
+    ) -> Result<GrantRevoke, StoreError> {
         self.audits.lock().expect("audits").push(audit.clone());
-        Ok(true)
+        Ok(self.revoke.unwrap_or(GrantRevoke::Removed))
     }
 }
 
@@ -245,4 +255,53 @@ async fn revoke_is_idempotent_for_an_absent_or_malformed_subject() {
             .await
             .expect("idempotent revoke")
     );
+}
+
+#[tokio::test]
+async fn a_role_snapshot_cannot_authorize_after_the_store_sees_demotion() {
+    let admin = principal(Role::Admin, "admin");
+
+    let list_store = FakeStore {
+        namespace_exists: true,
+        forbid_reads: true,
+        ..FakeStore::default()
+    };
+    let list_service = service(list_store);
+    let list_scope = list_service
+        .prepare(&admin, NamespaceId::generate(), &RequestContext::default())
+        .await
+        .expect("snapshot prepared");
+    assert!(matches!(
+        list_service.list(&list_scope, None, 1).await,
+        Err(RevealGrantError::Application(
+            sagat_application::error::AppError::Forbidden { .. }
+        ))
+    ));
+
+    let write_store = FakeStore {
+        namespace_exists: true,
+        writes: Arc::new(Mutex::new(VecDeque::from([GrantWrite::ActorForbidden]))),
+        revoke: Some(GrantRevoke::ActorForbidden),
+        ..FakeStore::default()
+    };
+    let write_service = service(write_store);
+    let write_scope = write_service
+        .prepare(&admin, NamespaceId::generate(), &RequestContext::default())
+        .await
+        .expect("snapshot prepared");
+    for error in [
+        write_service
+            .grant(&write_scope, "developer", &RequestContext::default())
+            .await
+            .expect_err("demoted actor cannot grant"),
+        write_service
+            .revoke(&write_scope, "developer", &RequestContext::default())
+            .await
+            .expect_err("demoted actor cannot revoke"),
+    ] {
+        assert!(matches!(
+            error,
+            RevealGrantError::Application(sagat_application::error::AppError::Forbidden { .. })
+        ));
+    }
 }

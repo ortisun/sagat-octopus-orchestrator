@@ -41,6 +41,22 @@ pub enum GrantWrite {
     UnknownSubject,
     RoleCannotReveal,
     LimitReached,
+    ActorForbidden,
+}
+
+/// Result of a list transaction that revalidates the actor's current membership.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GrantRead {
+    Authorized(Vec<RevealGrant>),
+    ActorForbidden,
+}
+
+/// Result of an idempotent revoke transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GrantRevoke {
+    Removed,
+    Absent,
+    ActorForbidden,
 }
 
 /// Closed application failures of grant management.
@@ -98,9 +114,10 @@ pub trait RevealGrantStore: NamespaceDirectory {
         &self,
         tenant: TenantId,
         namespace: NamespaceId,
+        actor: &Subject,
         after: Option<&Subject>,
         limit: u32,
-    ) -> impl Future<Output = Result<Vec<RevealGrant>, StoreError>> + Send;
+    ) -> impl Future<Output = Result<GrantRead, StoreError>> + Send;
 
     /// Idempotently inserts a grant. Membership/role validation, the concurrent-safe cap and the
     /// audit insert share the transaction. `Existing` writes no second audit record.
@@ -108,6 +125,7 @@ pub trait RevealGrantStore: NamespaceDirectory {
         &self,
         tenant: TenantId,
         namespace: NamespaceId,
+        actor: &Subject,
         subject: &Subject,
         audit: &AuditRecord,
     ) -> impl Future<Output = Result<GrantWrite, StoreError>> + Send;
@@ -117,9 +135,10 @@ pub trait RevealGrantStore: NamespaceDirectory {
         &self,
         tenant: TenantId,
         namespace: NamespaceId,
+        actor: &Subject,
         subject: &Subject,
         audit: &AuditRecord,
-    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+    ) -> impl Future<Output = Result<GrantRevoke, StoreError>> + Send;
 }
 
 /// Authorizes and manages reveal grants without transport-specific types.
@@ -163,15 +182,19 @@ where
         limit: u32,
     ) -> Result<RevealGrantPage, RevealGrantError> {
         let limit = limit.clamp(1, MAX_PAGE_SIZE);
-        let mut items = self
+        let read = self
             .store
             .reveal_grants(
                 scope.tenant_id(),
                 scope.namespace_id(),
+                scope.principal.subject(),
                 after,
                 limit.saturating_add(1),
             )
             .await?;
+        let GrantRead::Authorized(mut items) = read else {
+            return Err(actor_forbidden());
+        };
         let next_after = if items.len() > limit as usize {
             items.truncate(limit as usize);
             items.last().map(|grant| grant.subject.clone())
@@ -198,7 +221,13 @@ where
         );
         match self
             .store
-            .grant_reveal(scope.tenant_id(), scope.namespace_id(), &subject, &audit)
+            .grant_reveal(
+                scope.tenant_id(),
+                scope.namespace_id(),
+                scope.principal.subject(),
+                &subject,
+                &audit,
+            )
             .await?
         {
             GrantWrite::Created(grant) => {
@@ -210,6 +239,7 @@ where
             GrantWrite::UnknownSubject => Err(RevealGrantError::UnknownSubject),
             GrantWrite::RoleCannotReveal => Err(RevealGrantError::RoleCannotReveal),
             GrantWrite::LimitReached => Err(RevealGrantError::GrantLimit),
+            GrantWrite::ActorForbidden => Err(actor_forbidden()),
         }
     }
 
@@ -230,10 +260,21 @@ where
             "revoked",
             ctx,
         );
-        let removed = self
+        let outcome = self
             .store
-            .revoke_reveal(scope.tenant_id(), scope.namespace_id(), &subject, &audit)
+            .revoke_reveal(
+                scope.tenant_id(),
+                scope.namespace_id(),
+                scope.principal.subject(),
+                &subject,
+                &audit,
+            )
             .await?;
+        let removed = match outcome {
+            GrantRevoke::Removed => true,
+            GrantRevoke::Absent => false,
+            GrantRevoke::ActorForbidden => return Err(actor_forbidden()),
+        };
         if removed {
             metrics::counter!("payload_reveal_grant_changes_total", "op" => "revoke").increment(1);
         }
@@ -258,4 +299,10 @@ where
         )
         .with_reason(reason)
     }
+}
+
+fn actor_forbidden() -> RevealGrantError {
+    RevealGrantError::Application(AppError::Forbidden {
+        permission: Permission::MembershipManage,
+    })
 }
