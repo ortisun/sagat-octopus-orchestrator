@@ -39,6 +39,11 @@ pub enum AuditAction {
     /// The caller asked for a resource that exists only in another tenant. The record carries the
     /// identifier the caller supplied and nothing about the other tenant.
     CrossTenantAccessDenied,
+    /// A known caller of the tenant was refused with a `403` / `PERMISSION_DENIED`: the role lacks
+    /// a permission, or the identity is not allowed this work. One record per denial, bounded by
+    /// the per-subject request budget that every call is charged to first. It names the call by its
+    /// route template or RPC name, never by the path, the query or the body (G9).
+    PermissionDenied,
     /// A secret was created, or a new version of it was stored (rotation). Never carries a value.
     SecretStored,
     SecretDeleted,
@@ -214,6 +219,7 @@ impl AuditAction {
             Self::PayloadInspectionDenied => "payload.inspection_denied",
             Self::RunSignalled => "run.signalled",
             Self::CrossTenantAccessDenied => "access.denied.cross_tenant",
+            Self::PermissionDenied => "access.denied.permission",
             Self::SecretStored => "secret.stored",
             Self::SecretDeleted => "secret.deleted",
             Self::SecretAccessGranted => "secret.access_granted",
@@ -310,6 +316,9 @@ pub enum ResourceType {
     ScriptVersion,
     /// A request to publish a workflow into a namespace that asks for approvals.
     PublicationRequest,
+    /// A call of the API, as `METHOD /route/{template}` or `grpc Service/Method`: a fixed set of the
+    /// server's own names, never something the caller wrote.
+    Endpoint,
 }
 
 impl ResourceType {
@@ -337,6 +346,7 @@ impl ResourceType {
             Self::Script => "script",
             Self::ScriptVersion => "script_version",
             Self::PublicationRequest => "publication_request",
+            Self::Endpoint => "endpoint",
         }
     }
 }

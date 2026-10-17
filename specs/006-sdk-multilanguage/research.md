@@ -180,5 +180,5 @@ how to operate it is `docs/runbooks/sdks.md`; the behaviour of the SDKs is `sdks
   report attempt is in flight and resumes only if it fails; (b) the server answers a beat for an attempt that the same
   worker already completed with a distinct, non-error status; (c) feature 008 excludes `Heartbeat:aborted` from error
   rates. Why the SDKs differ (2.0 against 1.3 beats per task) was not investigated.
-  **Decided 2026-10-16 (owner): option (b). The server answers a heartbeat for an attempt the same worker already completed with a distinct non-error status; the five SDKs do not change. Not built yet.**
+  **Decided 2026-10-16 (owner): option (b), built the same day.** The step keeps the hash of the lease that reported its attempt (`steps.reported_lease_token_hash`, migration `20261108000000`, cleared on every new lease); a heartbeat whose token is that lease gets OK with `lease_expires_at_epoch_ms = 0` and `cancel_requested = false`, counted in `worker_heartbeats_after_report_total`. The protocol has no new field and the five SDKs do not change (they only take a positive deadline; SPEC §6.4). A lost or forged lease stays `STALE_ATTEMPT`: `contract_grpc_durable_execution` covers both, and the reporting-lease case failed before the change.
 

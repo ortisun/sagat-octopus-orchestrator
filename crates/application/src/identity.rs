@@ -14,7 +14,7 @@ use sagat_domain::identity::{
 
 use crate::clock::Clock;
 use crate::definitions::{Applied, Idempotency, fingerprint};
-use crate::error::{AppError, StoreError};
+use crate::error::{AccessDenial, AppError, StoreError};
 
 /// Default and maximum page sizes of list operations.
 pub const DEFAULT_PAGE_SIZE: u32 = 50;
@@ -182,6 +182,14 @@ pub trait IdentityStore: Send + Sync {
     /// request must not grow the trail), and MUST bound their own resource use. A dropped event is
     /// logged. The denial itself never depends on this call.
     fn record_denial(
+        &self,
+        audit: &AuditRecord,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
+    /// Appends one record of a permission denial (`403`), always: no collapsing of repeats and no
+    /// dropping under load. The caller awaits it; its volume is bounded by the per-subject request
+    /// budget that every authenticated call is charged to before it gets this far.
+    fn record_permission_denial(
         &self,
         audit: &AuditRecord,
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
@@ -480,6 +488,31 @@ impl<S: IdentityStore, C: Clock> IdentityService<S, C> {
             .list_namespaces(principal.tenant_id(), after, limit + 1)
             .await?;
         Ok(paginate(rows, limit, |n| n.id().to_string()))
+    }
+
+    /// Records that `principal` was refused a call with a `403` / `PERMISSION_DENIED`, naming the
+    /// call by its route template or RPC name and the permission (or refusal code), never a path,
+    /// a query, a body or an identifier the caller chose (gap G9, decision of 2026-10-16).
+    ///
+    /// # Errors
+    /// A store failure. The caller is refused whatever the outcome; it logs and counts a failure.
+    pub async fn audit_access_denied(
+        &self,
+        principal: &Principal,
+        call: &str,
+        denial: AccessDenial,
+        ctx: &RequestContext,
+    ) -> Result<(), StoreError> {
+        let record = AuditRecord::by(
+            principal,
+            AuditAction::PermissionDenied,
+            ResourceType::Endpoint,
+            call,
+            ctx.trace_id.clone(),
+            self.clock.now(),
+        )
+        .with_reason(denial.reason());
+        self.store.record_permission_denial(&record).await
     }
 
     async fn missing_workspace(

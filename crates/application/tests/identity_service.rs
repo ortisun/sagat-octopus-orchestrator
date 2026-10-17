@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use sagat_application::clock::Clock;
 use sagat_application::definitions::{Applied, Idempotency};
-use sagat_application::error::{AppError, ConflictKind, StoreError};
+use sagat_application::error::{AccessDenial, AppError, ConflictKind, StoreError};
 use sagat_application::identity::{
     IdentityService, IdentityStore, MAX_PAGE_SIZE, PageRequest, RequestContext,
 };
@@ -299,6 +299,19 @@ impl IdentityStore for FakeStore {
         })
     }
 
+    async fn record_permission_denial(&self, audit: &AuditRecord) -> Result<(), StoreError> {
+        self.check()?;
+        self.with(|s| {
+            if s.fail_audit_writes {
+                return Err(StoreError::Internal {
+                    detail: "audit table unavailable".into(),
+                });
+            }
+            s.audits.push(audit.clone());
+            Ok(())
+        })
+    }
+
     async fn ping(&self) -> Result<(), StoreError> {
         self.check()
     }
@@ -356,6 +369,115 @@ fn grant(w: &World, tenant: &Tenant, who: &str, role: Role) -> Principal {
 
 fn audits(w: &World) -> Vec<AuditRecord> {
     w.store.with(|s| s.audits.clone())
+}
+
+// ------------------------------------------------------------- denials (G9)
+
+#[tokio::test]
+async fn a_denial_is_recorded_in_the_callers_tenant_with_the_permission_and_the_call() {
+    let w = world();
+    let viewer = grant(&w, &w.tenant_a, "vera", Role::Viewer);
+
+    w.svc
+        .audit_access_denied(
+            &viewer,
+            "POST /v1/workflows",
+            AccessDenial::MissingPermission(Permission::DefinitionWrite),
+            &ctx(),
+        )
+        .await
+        .expect("recorded");
+
+    let records = audits(&w);
+    assert_eq!(records.len(), 1);
+    let record = &records[0];
+    assert_eq!(record.tenant_id(), w.tenant_a.id());
+    assert_eq!(record.actor().as_str(), "vera");
+    assert_eq!(record.action(), AuditAction::PermissionDenied);
+    assert_eq!(record.resource_type(), ResourceType::Endpoint);
+    assert_eq!(record.resource_id(), "POST /v1/workflows");
+    assert_eq!(record.reason(), Some("missing permission definition:write"));
+    assert_eq!(record.trace_id(), Some("4bf92f3577b34da6a3ce929d0e0e4736"));
+}
+
+#[tokio::test]
+async fn the_same_denial_twice_is_two_records() {
+    let w = world();
+    let viewer = grant(&w, &w.tenant_a, "vera", Role::Viewer);
+    for _ in 0..2 {
+        w.svc
+            .audit_access_denied(
+                &viewer,
+                "POST /v1/workflows",
+                AccessDenial::MissingPermission(Permission::DefinitionWrite),
+                &ctx(),
+            )
+            .await
+            .expect("recorded");
+    }
+    assert_eq!(audits(&w).len(), 2);
+}
+
+#[tokio::test]
+async fn a_failed_write_is_reported_to_the_caller_of_the_use_case_and_leaves_nothing() {
+    let w = world();
+    let viewer = grant(&w, &w.tenant_a, "vera", Role::Viewer);
+    w.store.with(|s| s.fail_audit_writes = true);
+
+    let result = w
+        .svc
+        .audit_access_denied(
+            &viewer,
+            "GET /v1/runs",
+            AccessDenial::Refused("NOT_BOUND"),
+            &ctx(),
+        )
+        .await;
+
+    assert!(matches!(result, Err(StoreError::Internal { .. })));
+    assert!(audits(&w).is_empty());
+}
+
+#[test]
+fn only_403_errors_carry_a_denial_and_a_hidden_foreign_resource_does_not() {
+    assert_eq!(
+        AppError::Forbidden {
+            permission: Permission::RunOperate
+        }
+        .denial(),
+        Some(AccessDenial::MissingPermission(Permission::RunOperate))
+    );
+    assert_eq!(
+        AppError::NotBound.denial(),
+        Some(AccessDenial::Refused("NOT_BOUND"))
+    );
+    assert_eq!(
+        AppError::SecretUnavailable {
+            name: "a-name-the-caller-chose".into()
+        }
+        .denial(),
+        Some(AccessDenial::Refused("SECRET_NOT_USABLE"))
+    );
+    for hidden in [
+        AppError::NotFound,
+        AppError::Unauthenticated,
+        AppError::StaleAttempt,
+        AppError::Internal,
+    ] {
+        assert_eq!(hidden.denial(), None, "{hidden:?}");
+    }
+    assert_eq!(
+        AccessDenial::Refused("NOT_BOUND").reason(),
+        "refused: NOT_BOUND"
+    );
+    // The reason never repeats what the caller chose.
+    let secret = AppError::SecretUnavailable {
+        name: "a-name-the-caller-chose".into(),
+    }
+    .denial()
+    .expect("denial")
+    .reason();
+    assert!(!secret.contains("caller-chose"));
 }
 
 // ------------------------------------------------------------- authenticate
