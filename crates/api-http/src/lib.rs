@@ -835,6 +835,16 @@ where
         Router::new()
     };
 
+    let payload_disclosures = if state.payload_disclosures().is_some() {
+        Router::new()
+            .route("/runs/{run_id}/payload-disclosures",
+                axum::routing::post(routes::payload_disclosure::disclose_payload::<B<S, C, P, X, E>>))
+            .layer(RequestBodyLimitLayer::new(routes::payload_disclosure::DISCLOSURE_MAX_BODY_BYTES))
+            .route_layer(shed())
+            .route_layer(from_fn(routes::database_results::no_store))
+            .with_state(state.clone())
+    } else { Router::new() };
+
     let payload_inspections = if state.payload_inspections().is_some() {
         Router::new()
             .route(
@@ -1006,6 +1016,7 @@ where
         .route("/ready", get(health::ready::<S, C>))
         .merge(identity_routes)
         .merge(payload_inspections)
+        .merge(payload_disclosures)
         .merge(database_results)
         .merge(database_executions)
         .merge(exec_routes)

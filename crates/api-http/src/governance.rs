@@ -10,6 +10,7 @@ use sagat_application::connectors::{ConnectorService, ConnectorStore};
 use sagat_application::database::{ConnectionService, ConnectionStore};
 use sagat_application::egress::{EgressService, EgressStore};
 use sagat_application::events::{EventService, EventStore};
+use sagat_application::event_payloads::EventPayloadUseCase;
 use sagat_application::identity::IdentityStore;
 use sagat_application::managed_secrets::{ManagedSecretService, ManagedSecretStore};
 use sagat_application::operations::{AlertReader, AuditStore, OperationsService, WorkerAdmin};
@@ -53,6 +54,7 @@ pub trait Governance: Core + Admission {
     fn connections(&self) -> Option<&ConnectionService<Self::Store, Self::Clock>>;
     /// `None` when no reader is configured to verify webhook secrets.
     fn events(&self) -> Option<&EventService<Self::Store, Self::Clock>>;
+    fn event_payloads(&self) -> Option<&Arc<dyn EventPayloadUseCase>> { None }
     /// `None` when the instance has no key ring (deliveries are signed): the subscription routes are
     /// then not served at all.
     fn outbound(&self) -> Option<&OutboundService<Self::Store, Self::Clock>>;
@@ -81,6 +83,7 @@ pub struct GovState<S, C, G> {
     managed_secrets: Option<Arc<ManagedSecretService<G, C>>>,
     connections: Option<Arc<ConnectionService<G, C>>>,
     events: Option<Arc<EventService<G, C>>>,
+    event_payloads: Option<Arc<dyn EventPayloadUseCase>>,
     outbound: Option<Arc<OutboundService<G, C>>>,
     connectors: Option<Arc<ConnectorService<G, C>>>,
     scripts: Option<Arc<ScriptService<G, C>>>,
@@ -109,6 +112,7 @@ impl<S, C, G> GovState<S, C, G> {
             managed_secrets: None,
             connections: None,
             events: None,
+            event_payloads: None,
             outbound: None,
             connectors: None,
             scripts: None,
@@ -168,6 +172,13 @@ impl<S, C, G> GovState<S, C, G> {
         self
     }
 
+    /// Serves bounded, audited event and dead-letter payload reads.
+    #[must_use]
+    pub fn with_event_payloads(mut self, service: Arc<dyn EventPayloadUseCase>) -> Self {
+        self.event_payloads = Some(service);
+        self
+    }
+
     /// Serves the event routes (endpoints, publishing, the public webhook URL), backed by `events`.
     #[must_use]
     pub fn with_events(mut self, events: EventService<G, C>) -> Self {
@@ -189,6 +200,7 @@ impl<S, C, G> Clone for GovState<S, C, G> {
             managed_secrets: self.managed_secrets.clone(),
             connections: self.connections.clone(),
             events: self.events.clone(),
+            event_payloads: self.event_payloads.clone(),
             outbound: self.outbound.clone(),
             connectors: self.connectors.clone(),
             scripts: self.scripts.clone(),
@@ -305,6 +317,10 @@ where
 
     fn events(&self) -> Option<&EventService<G, C>> {
         self.events.as_deref()
+    }
+
+    fn event_payloads(&self) -> Option<&Arc<dyn EventPayloadUseCase>> {
+        self.event_payloads.as_ref()
     }
 
     fn outbound(&self) -> Option<&OutboundService<G, C>> {

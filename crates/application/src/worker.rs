@@ -1956,6 +1956,8 @@ where
             .unwrap_or_default()
     }
 
+    // Keep actor, execution identity and refusal stage explicit in this security audit helper.
+    #[allow(clippy::too_many_arguments)]
     fn pool_refusal_effects<Tx: RunTx>(
         &self,
         principal: &Principal,
