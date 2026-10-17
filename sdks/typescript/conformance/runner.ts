@@ -161,6 +161,15 @@ function behaviorHandler(
     measurement.deliveries.push({ runId: ctx.runId, node: ctx.node, takenAtUnixMs: Date.now() });
     let outcome = 'returned';
     try {
+      // `holdUntilLogged`: a scoped instance waits until the worker has logged that many finished attempts,
+      // which orders completions by what happened rather than by how long anything took.
+      const holdUntil = (behavior['holdUntilLogged'] as number[] | undefined)?.[ctx.index ?? 0] ?? 0;
+      while (log.length < holdUntil) {
+        if (await abortable(10, ctx.signal)) {
+          outcome = 'cancelled';
+          return null;
+        }
+      }
       if (behavior['failsUntilAttempt'] !== undefined && ctx.attempt < behavior['failsUntilAttempt']) {
         outcome = 'failed';
         const f = behavior['fails'];

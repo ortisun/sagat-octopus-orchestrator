@@ -106,6 +106,13 @@ run `WAITING`. The commit order of a decision and an expiry that race is not obs
 Rust fault tests (`tests/fault/workflow-primitives/approvals.rs`) drive both orders and the race with barriers.
 The deadline cannot be moved by the control endpoint: it is part of the journal's `approval.opened` event.
 
+`collection-ordering.json` is the WP-03 contract: a `map` over 17 items, three at a time, whose first window
+finishes in reverse. Iteration 2 completes first, then the fourteen after it one at a time (the two held slots
+stay held), then 1 and 0, through `holdUntilLogged`, so the order comes from counts of finished attempts and not
+from sleeps. Equal values stay at separate indices, the aggregate the journal records is in input order, the
+journal never shows more than three iterations active, every attempt is the first, and an empty list succeeds
+with an empty aggregate without calling the worker.
+
 `chain-inspect-cancel.json` starts a public chain with an initial activity waiting for a worker,
 then inspects and cancels it through all five SDKs. The reviewed runtime golden requires opaque
 cross-tenant lookup, exact cancel replay and a terminal `CANCELLED` chain and run. It does not
@@ -134,6 +141,7 @@ SAGAT_SDK_SCENARIO=state-operation-builders cargo test -p sagat-tests --test sdk
 SAGAT_SDK_SCENARIO=state-operations cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=approval-decisions cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=approval-settlement cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=collection-ordering cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=chain-inspect-cancel cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=scoped-identity cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=collection-runtime cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
@@ -282,6 +290,7 @@ A worker definition may carry `"token": "unbound"` to use `unboundWorkerToken` i
 | `{"throws": "text"}` | raises an ordinary error of the language (reported as `ACTIVITY_ERROR`) |
 | `{"outcomeUnknown": "text"}` | raises `ActivityFailure.outcomeUnknown` |
 | `{"sleepMs": N, "returns": V, "onCancel": {"returns": W}}` | waits `N` ms (or until cancelled: then returns `W`, or raises the SDK's cancellation error if `onCancel` is `{"raises": true}`) |
+| `{"holdUntilLogged": [n0, n1, …], …}` | a scoped instance waits until the worker's log holds at least `n[iterationIndex]` finished attempts (`0` or an index past the array: no wait), then behaves as the rest of the entry says. It orders completions by what happened, never by how long anything took |
 | `{"hang": true}` | waits until cancelled or the host stops, then returns nothing useful |
 | `{"hang": true, "onCancel": {"raises": true}}` | the same, then ends by raising the SDK's cancellation error (what a handler does that is cancelled and says so) |
 | `{"sleepMs": N, "ignoresCancel": true, "returns": V}` | a handler that **never looks at its token**: it waits `N` ms whatever happens and returns `V`; the host must not interrupt it and what it returned is reported |
@@ -372,6 +381,15 @@ it must be non-empty and free of tokens) and `version` **of a Run** (a journal c
 into `<createdAt+Ns>`, the seconds between its creation and its deadline (an SDK that sends the deadline in
 the wrong unit shows). It sorts nothing: **order is part of the result**. Where a scenario would be racy it is written so that it is not (a worker started after the
 run, a wait that nothing wakes, `control` to move time).
+
+**Scope evidence.** A scenario with `"scopeEvidence": "ordered"` or `"summary"` adds `scopeEvidence` to the
+compared result: for every run, read from the journal and the payload store and not from what an SDK reports,
+the collection and loop events, the most iterations active at once (`peakActive`), and the payloads that
+matter (the aggregate a collection finished with, the carry of each loop checkpoint). `ordered` lists every
+event in journal order, for scopes that run one iteration at a time. `summary` lists the admission order, the
+sorted checkpoints and the entry and finish, for concurrent iterations: the order in which the scheduler
+looks at completions that arrive together is not part of the contract, the worker's log is what carries the
+completion order there.
 
 ## Optional modes
 

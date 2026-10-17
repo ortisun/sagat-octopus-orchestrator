@@ -45,6 +45,26 @@ func (l *workerLog) measurements() object {
 	return object{"peakInflight": l.peakInflight, "deliveries": append([]any{}, l.deliveries...)}
 }
 
+// holdUntilLogged makes a scoped instance wait until the worker has logged as many finished attempts as the
+// scenario names for its iteration index, which orders completions by what happened rather than by how long
+// anything took. It reports false when the attempt was cancelled while waiting.
+func (l *workerLog) holdUntilLogged(ctx context.Context, behavior object) bool {
+	holds, ok := behavior["holdUntilLogged"].([]any)
+	if !ok {
+		return true
+	}
+	position := 0
+	if task := worker.TaskFrom(ctx); task.Index != nil {
+		position = int(*task.Index)
+	}
+	for asInt(holds[position]) > len(l.snapshot()) {
+		if waitOrCancelled(ctx, 10*time.Millisecond) {
+			return false
+		}
+	}
+	return true
+}
+
 func (l *workerLog) add(entry object) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -322,6 +342,10 @@ func hostOf(def object, config object, p *plan, log *workerLog) (*worker.Host, e
 				defer leave()
 				outcome := "returned"
 				defer func() { log.add(logEntry(ctx, name, kind, input, outcome)) }()
+				if !log.holdUntilLogged(ctx, behavior) {
+					outcome = "cancelled"
+					return nil, nil
+				}
 				result, _, err := behave(ctx, behavior, input, &outcome)
 				return result, err
 			}

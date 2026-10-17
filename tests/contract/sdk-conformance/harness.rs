@@ -447,6 +447,110 @@ async fn server_state(run: &Run) -> Result<Value, String> {
     Ok(Value::Array(runs))
 }
 
+/// The collection and loop events of every run, read from the journal and the payload store rather than
+/// from what an SDK reports: the order in which iterations were admitted and checkpointed, the most that
+/// were active at once, the carry of every loop checkpoint and the aggregate a collection finished with.
+/// A scenario asks for it with `"scopeEvidence": "ordered"` (every event, in journal order: for scopes that
+/// run one iteration at a time) or `"summary"` (admission order, the sorted checkpoints and the entry and
+/// finish: for scopes whose iterations complete concurrently, where the scheduler's order of looking at
+/// completions that arrive together is not part of the contract).
+async fn scope_evidence(run: &Run, state: &Value, summary: bool) -> Result<Value, String> {
+    let pool = &run.platform.api.db.pool;
+    let mut runs = Vec::new();
+    for item in state.as_array().into_iter().flatten() {
+        let id = item["runId"].as_str().ok_or("a run without an id")?;
+        let run_id = uuid::Uuid::parse_str(id).map_err(|e| format!("run id {id}: {e}"))?;
+        let rows: Vec<(String, Value)> = sqlx::query_as(
+            "SELECT event_type, detail FROM run_events WHERE run_id = $1 \
+             AND (event_type LIKE 'collection.%' OR event_type LIKE 'loop.%') ORDER BY seq",
+        )
+        .bind(run_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| format!("reading the scope events of run {id}: {e}"))?;
+        let (mut active, mut peak) = (0_i64, 0_i64);
+        let mut events = Vec::new();
+        let (mut admitted, mut checkpointed) = (Vec::new(), Vec::new());
+        for (kind, detail) in rows {
+            if kind.ends_with(".iteration_admitted") {
+                active += 1;
+                peak = peak.max(active);
+            }
+            if kind.ends_with(".iteration_checkpointed") || kind.ends_with(".iteration_drained") {
+                active -= 1;
+            }
+            if summary && kind.ends_with(".iteration_admitted") {
+                admitted.push(detail["index"].clone());
+                continue;
+            }
+            if summary && kind.ends_with(".iteration_checkpointed") {
+                checkpointed.push(detail["index"].as_u64().unwrap_or_default());
+                continue;
+            }
+            if summary
+                && (kind.ends_with(".iteration_returned") || kind.ends_with(".iteration_drained"))
+            {
+                continue;
+            }
+            let mut entry = Map::new();
+            entry.insert("event".into(), json!(kind));
+            for key in [
+                "index",
+                "kind",
+                "outcome",
+                "code",
+                "condition",
+                "next_iteration",
+                "item_count",
+                "max_items",
+                "max_concurrency",
+                "max_iterations",
+                "initial_condition",
+            ] {
+                if let Some(value) = detail.get(key).filter(|v| !v.is_null()) {
+                    entry.insert(key.into(), value.clone());
+                }
+            }
+            if let Some(kind) = detail["continuation"]["kind"].as_str() {
+                entry.insert("continuation".into(), json!(kind));
+            }
+            for (field, label) in [
+                ("item_digest", "item"),
+                ("result_digest", "result"),
+                ("carry_digest", "carry"),
+                ("initial_carry_digest", "initialCarry"),
+            ] {
+                if let Some(digest) = detail[field].as_str() {
+                    entry.insert(label.into(), payload_json(pool, digest).await?);
+                }
+            }
+            events.push(Value::Object(entry));
+        }
+        if summary {
+            checkpointed.sort_unstable();
+            runs.push(json!({
+                "runId": id, "peakActive": peak, "admitted": admitted,
+                "checkpointed": checkpointed, "events": events,
+            }));
+        } else {
+            runs.push(json!({"runId": id, "peakActive": peak, "events": events}));
+        }
+    }
+    Ok(Value::Array(runs))
+}
+
+/// The JSON payload stored under a hex SHA-256 digest.
+async fn payload_json(pool: &sqlx::PgPool, digest: &str) -> Result<Value, String> {
+    let content: Option<Vec<u8>> =
+        sqlx::query_scalar("SELECT content FROM payloads WHERE digest = decode($1, 'hex') LIMIT 1")
+            .bind(digest)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| format!("reading payload {digest}: {e}"))?;
+    let content = content.ok_or_else(|| format!("payload {digest} is not stored"))?;
+    serde_json::from_slice(&content).map_err(|e| format!("payload {digest} is not JSON: {e}"))
+}
+
 /// Durable evidence for the blob scenario. This is read independently of the SDK result so blessing
 /// cannot turn a failed transfer, a wrong digest or an accidentally auto-promoted JSON object into
 /// the expected contract.
@@ -757,7 +861,9 @@ async fn stage(scenario: &Value, built: &Value, lang: &str) -> (Run, Value, Stri
         "apiUrl": run.platform.api.base, "grpcUrl": run.engine.grpc_url, "namespace": NAMESPACE,
         "namespaceId": namespace_id,
         "clientToken": run.client_token, "workerToken": run.worker_token, "otherTenantToken": run.other_token,
-        "unboundWorkerToken": run.unbound_token, "badToken": "not-a-jwt", "controlUrl": run.control, "unique": unique, "workflows": workflows,
+        "unboundWorkerToken": run.unbound_token, "badToken": "not-a-jwt",
+        "operatorToken": run.operator_token, "viewerToken": run.viewer_token,
+        "runnerToken": run.runner_token, "revokedToken": run.revoked_token, "controlUrl": run.control, "unique": unique, "workflows": workflows,
         "leaseTtlSeconds": scenario["server"]["leaseTtlSeconds"].as_u64().unwrap_or(30),
     });
     (run, config, unique)
@@ -938,6 +1044,12 @@ async fn play(
                     match server_state(&run).await {
                         Ok(state) => out["serverState"] = state,
                         Err(e) => failures.push(format!("{name}/{lang}: {e}")),
+                    }
+                    if let Some(mode) = scenario["scopeEvidence"].as_str() {
+                        match scope_evidence(&run, &out["serverState"], mode == "summary").await {
+                            Ok(evidence) => out["scopeEvidence"] = evidence,
+                            Err(e) => failures.push(format!("{name}/{lang}: {e}")),
+                        }
                     }
                     if name == "blobs" {
                         match blob_evidence(&run).await {
