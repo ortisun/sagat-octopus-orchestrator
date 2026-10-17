@@ -266,3 +266,23 @@ case, this completes T016-050's named fault scenarios. The final integrated work
 remain separate tasks; an earlier combined command stopped at the first harness failure and did
 not execute its following migration target. That migration regression was then run explicitly and
 passed, as recorded in the compatibility report and feature 014 validation report.
+
+
+### Event port completion and actual release process gate
+
+`cargo test --locked -p sagat-application --test event_payloads` passed 6/6
+(`/tmp/sagat-completion-event-ports.log`). The fake port now records the mandatory audit before
+returning a revealed event/letter and can fail that write. Both failures return no view, successful
+reads record one audit each with the caller identity, and Debug omits body/header/data canaries.
+Unsupported list projection becomes opaque and clears retained raw fields. All three machine roles
+are refused before any scope lookup, including the approved DatabaseRunner dependency.
+
+The complete artifact-building `scripts/test-payload-classification-compat.sh` passed its actual
+prior-release process case 1/1 in 49.88 s (`/tmp/sagat-completion-compat-release-5.log`). Manifest:
+`/Users/marcelo/Documents/Projects/sagat-octopus-compat016-artifacts/run.PJb73x/artifacts/SHA256SUMS`.
+It uses the annotated v0.1.0 commit 6ede1c7849c4ac5a209c08da8ad25294fbdd7795 and current binary
+2108d08cd117f26847b605c92c8abeb95a3dc5ea. The populated migration, immutable old bytes/digest/run pin,
+legacy opacity, new rules-1 publication and documented three event-read breaks now pass. The old
+execution engine reaches readiness before/after the upgrade; this is not proof of all old-server
+writes on new scoped workflows. Old Studio was served over HTTP in that passing case. Actual
+Chromium behavior and released five-client conformance are being added and keep T016-052 open.

@@ -8,6 +8,7 @@ use sagat_application::payloads::{
     PayloadProjection, PayloadProjector, PayloadStructure, StoredPayloadBytes,
     UnsupportedPayloadFormat,
 };
+use sagat_domain::audit::{AuditAction, AuditRecord};
 use sagat_domain::connectors::{ConnectorId, DeadLetter};
 use sagat_domain::events::{EventEnvelope, EventId, EventKey, InboxStatus};
 use sagat_domain::identity::{NamespaceId, Principal, Role, Slug, Subject, TenantId};
@@ -36,10 +37,44 @@ impl PayloadProjector for Projector {
     }
 }
 
+struct OpaqueProjector;
+impl PayloadProjector for OpaqueProjector {
+    fn project(&self, _: &[u8]) -> Result<PayloadProjection, UnsupportedPayloadFormat> {
+        Err(UnsupportedPayloadFormat)
+    }
+}
+
 #[derive(Clone)]
 struct Store {
     role: Role,
     grant: bool,
+    fail_audit: bool,
+    audits: std::sync::Arc<std::sync::Mutex<Vec<AuditRecord>>>,
+    lookups: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+impl Store {
+    fn new(role: Role, grant: bool) -> Self {
+        Self {
+            role,
+            grant,
+            fail_audit: false,
+            audits: std::sync::Arc::default(),
+            lookups: std::sync::Arc::default(),
+        }
+    }
+
+    fn write_audit(&self, record: &AuditRecord) -> Result<(), StoreError> {
+        if self.fail_audit {
+            return Err(StoreError::Unavailable {
+                detail: "injected audit failure".into(),
+            });
+        }
+        self.audits
+            .lock()
+            .expect("audit records")
+            .push(record.clone());
+        Ok(())
+    }
 }
 impl EventPayloadStore for Store {
     async fn event_scope(
@@ -48,6 +83,8 @@ impl EventPayloadStore for Store {
         n: NamespaceId,
         _: &EventKey,
     ) -> Result<Option<EventPayloadScope>, StoreError> {
+        self.lookups
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(Some(EventPayloadScope { namespace_id: n }))
     }
     async fn dead_letter_scope(
@@ -57,16 +94,23 @@ impl EventPayloadStore for Store {
         _: ConnectorId,
         _: Option<Uuid>,
     ) -> Result<Option<EventPayloadScope>, StoreError> {
+        self.lookups
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(Some(EventPayloadScope { namespace_id: n }))
     }
     async fn read_event(
         &self,
         _: &PreparedInboxEvent,
         e: &dyn EventPayloadEvaluator,
-        _: &EventPayloadAudits,
+        audits: &EventPayloadAudits,
     ) -> Result<EventPayloadRead<InboxEventRead>, StoreError> {
         Ok(match e.event(event(), self.role, self.grant) {
-            Ok(v) => EventPayloadRead::Ready(v),
+            Ok(v) => {
+                if matches!(&v.data, EventData::Revealed(_)) {
+                    self.write_audit(&audits.revealed)?;
+                }
+                EventPayloadRead::Ready(v)
+            }
             Err(v) => EventPayloadRead::Refused(v),
         })
     }
@@ -74,10 +118,15 @@ impl EventPayloadStore for Store {
         &self,
         _: &PreparedDeadLetter,
         e: &dyn EventPayloadEvaluator,
-        _: &EventPayloadAudits,
+        audits: &EventPayloadAudits,
     ) -> Result<EventPayloadRead<DeadLetterRead>, StoreError> {
         Ok(match e.dead_letter(letter(true), self.role, self.grant) {
-            Ok(v) => EventPayloadRead::Ready(v),
+            Ok(v) => {
+                if matches!(&v.data, DeadLetterData::Revealed { .. }) {
+                    self.write_audit(&audits.revealed)?;
+                }
+                EventPayloadRead::Ready(v)
+            }
             Err(v) => EventPayloadRead::Refused(v),
         })
     }
@@ -152,14 +201,8 @@ fn letter(truncated: bool) -> SelectedDeadLetter {
 
 #[tokio::test]
 async fn default_event_read_is_structure_only_and_debug_redacts_values() {
-    let service = EventPayloadService::new(
-        Store {
-            role: Role::Developer,
-            grant: false,
-        },
-        FixedClock,
-        Projector,
-    );
+    let service =
+        EventPayloadService::new(Store::new(Role::Developer, false), FixedClock, Projector);
     let p = principal(Role::Developer);
     let prepared = service
         .prepare_event(&p, namespace(), key(), EventReveal::Structure, &ctx())
@@ -173,9 +216,86 @@ async fn default_event_read_is_structure_only_and_debug_redacts_values() {
 }
 
 #[tokio::test]
+async fn event_and_letter_values_require_the_mandatory_audit_write_to_succeed() {
+    for fail_audit in [false, true] {
+        let mut store = Store::new(Role::Developer, true);
+        store.fail_audit = fail_audit;
+        let audits = std::sync::Arc::clone(&store.audits);
+        let service = EventPayloadService::new(store, FixedClock, Projector);
+        let caller = principal(Role::Developer);
+        let prepared = service
+            .prepare_event(&caller, namespace(), key(), EventReveal::Pii, &ctx())
+            .await
+            .expect("prepared event reveal");
+        let event = service.event(prepared).await;
+        assert_eq!(event.is_ok(), !fail_audit);
+        assert_eq!(
+            audits.lock().expect("audits").len(),
+            usize::from(!fail_audit)
+        );
+        let prepared = service
+            .prepare_dead_letter(
+                &caller,
+                namespace(),
+                ConnectorId::new(Uuid::new_v4()),
+                Some(Uuid::new_v4()),
+                EventReveal::Pii,
+                &ctx(),
+            )
+            .await
+            .expect("prepared letter reveal");
+        let letter = service.dead_letter(prepared).await;
+        assert_eq!(letter.is_ok(), !fail_audit);
+        let records = audits.lock().expect("audits");
+        assert_eq!(records.len(), 2 * usize::from(!fail_audit));
+        for record in &*records {
+            assert_eq!(record.action(), AuditAction::PayloadPiiRevealed);
+            assert_eq!(record.actor(), caller.subject());
+            assert_eq!(record.tenant_id(), caller.tenant_id());
+        }
+        for debug in [format!("{event:?}"), format!("{letter:?}")] {
+            for canary in ["event-secret", "letter-secret", "body-secret"] {
+                assert!(!debug.contains(canary), "Debug leaked a payload value");
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn an_unsupported_list_body_is_opaque_without_revealing_headers_or_auditing() {
+    let store = Store::new(Role::Developer, true);
+    let audits = std::sync::Arc::clone(&store.audits);
+    let service = EventPayloadService::new(store, FixedClock, OpaqueProjector);
+    let caller = principal(Role::Developer);
+    let prepared = service
+        .prepare_dead_letter(
+            &caller,
+            namespace(),
+            ConnectorId::new(Uuid::new_v4()),
+            None,
+            EventReveal::Pii,
+            &ctx(),
+        )
+        .await
+        .expect("prepared list");
+    let rows = service
+        .dead_letters(prepared, None, 200)
+        .await
+        .expect("structure list");
+    assert_eq!(rows.len(), 1);
+    assert!(matches!(
+        rows[0].data,
+        DeadLetterData::Structure(DeadLetterStructure::Opaque)
+    ));
+    assert!(rows[0].letter.headers.is_empty());
+    assert!(rows[0].letter.body.as_slice().is_empty());
+    assert!(audits.lock().expect("audits").is_empty());
+}
+
+#[tokio::test]
 async fn pii_reveal_requires_internal_role_and_namespace_grant() {
     for (role, grant) in [(Role::Viewer, true), (Role::Developer, false)] {
-        let service = EventPayloadService::new(Store { role, grant }, FixedClock, Projector);
+        let service = EventPayloadService::new(Store::new(role, grant), FixedClock, Projector);
         let p = principal(role);
         let prepared = service
             .prepare_event(&p, namespace(), key(), EventReveal::Pii, &ctx())
@@ -186,14 +306,8 @@ async fn pii_reveal_requires_internal_role_and_namespace_grant() {
             Err(EventPayloadError::PiiRevealNotGranted)
         ));
     }
-    let service = EventPayloadService::new(
-        Store {
-            role: Role::Developer,
-            grant: true,
-        },
-        FixedClock,
-        Projector,
-    );
+    let service =
+        EventPayloadService::new(Store::new(Role::Developer, true), FixedClock, Projector);
     let p = principal(Role::Developer);
     let prepared = service
         .prepare_event(&p, namespace(), key(), EventReveal::Pii, &ctx())
@@ -204,7 +318,7 @@ async fn pii_reveal_requires_internal_role_and_namespace_grant() {
         EventData::Revealed(_)
     ));
     for role in [Role::Operator, Role::Admin] {
-        let service = EventPayloadService::new(Store { role, grant: true }, FixedClock, Projector);
+        let service = EventPayloadService::new(Store::new(role, true), FixedClock, Projector);
         let principal = principal(role);
         let prepared = service
             .prepare_event(&principal, namespace(), key(), EventReveal::Pii, &ctx())
@@ -219,14 +333,7 @@ async fn pii_reveal_requires_internal_role_and_namespace_grant() {
 
 #[tokio::test]
 async fn truncated_dead_letter_is_opaque_and_list_ignores_reveal() {
-    let service = EventPayloadService::new(
-        Store {
-            role: Role::Admin,
-            grant: true,
-        },
-        FixedClock,
-        Projector,
-    );
+    let service = EventPayloadService::new(Store::new(Role::Admin, true), FixedClock, Projector);
     let p = principal(Role::Admin);
     let connector = ConnectorId::new(Uuid::new_v4());
     let detail = service
@@ -262,8 +369,10 @@ async fn truncated_dead_letter_is_opaque_and_list_ignores_reveal() {
 
 #[tokio::test]
 async fn roles_without_event_read_are_refused_before_lookup() {
-    for role in [Role::Worker, Role::Runner] {
-        let service = EventPayloadService::new(Store { role, grant: true }, FixedClock, Projector);
+    for role in [Role::Worker, Role::Runner, Role::DatabaseRunner] {
+        let store = Store::new(role, true);
+        let lookups = std::sync::Arc::clone(&store.lookups);
+        let service = EventPayloadService::new(store, FixedClock, Projector);
         let p = principal(role);
         assert!(
             service
@@ -271,5 +380,6 @@ async fn roles_without_event_read_are_refused_before_lookup() {
                 .await
                 .is_err()
         );
+        assert_eq!(lookups.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 }
