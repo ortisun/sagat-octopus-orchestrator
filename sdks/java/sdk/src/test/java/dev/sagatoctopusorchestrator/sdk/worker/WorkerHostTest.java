@@ -196,6 +196,36 @@ class WorkerHostTest {
     }
 
     @Test
+    void scopedInstancesThatShareALegacyTaskIdAreRunConcurrently() throws Exception {
+        // The legacy task id is run/node/generation, so two iterations of one scope that are leased
+        // together carry the same one: the instance identity is what tells them apart.
+        fake.acceptVersions("1.5");
+        WorkerHost h = host();
+        java.util.concurrent.CountDownLatch together = new java.util.concurrent.CountDownLatch(2);
+        h.registerActivity("charge", (in, ctx) -> {
+            together.countDown();
+            if (!together.await(10, java.util.concurrent.TimeUnit.SECONDS)) {
+                throw new AssertionError("the second iteration never ran beside the first");
+            }
+            return ctx.index();
+        });
+        for (int index = 0; index < 2; index++) {
+            int iteration = index;
+            fake.addLeases(lease(builder -> builder
+                    .setInstance(Worker.ExecutionInstanceIdentity.newBuilder()
+                            .addInstancePath(Worker.ScopePathSegment.newBuilder()
+                                    .setScopeNodeId("lines")
+                                    .setIterationIndex(iteration))
+                            .setDefinitionNodeId("charge"))
+                    .setInputJson("{\"input\":{},\"item\":{\"n\":" + iteration + "},\"index\":" + iteration + ",\"steps\":{}}")));
+        }
+        h.start();
+        until(() -> fake.of("CompleteStep").size() == 2, "both iterations to complete");
+        assertEquals(2, fake.of("CompleteStep").size());
+        assertEquals(0, fake.of("FailStep").size());
+    }
+
+    @Test
     void registrationIsRefusedClearlyAnUnsupportedProtocolAnUnboundIdentity() {
         WorkerHost h = host();
         h.registerActivity("charge", (in, ctx) -> 1);
