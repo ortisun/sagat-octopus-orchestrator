@@ -1,55 +1,47 @@
-# Complete the project's open implementation tasks
+# Completion of the integrated platform
 
-User authorization: 2026-10-17, "Todas as tasks abertas do projeto".
+Work starts from develop 65841f3. Completed historical checklists do not close partial
+requirements. Preserve accepted architectural limits and historical test results;
+only close a remaining requirement with named, executed evidence.
 
-Deliver the 11 open tasks of feature 014 and the 64 open tasks of feature 016 on
-`feature/016-project-completion`, cut from `origin/develop@555a67b`. The canonical
-feature task lists remain the requirement/evidence ledger. Feature 017 is already
-implemented; reconcile it with the combined platform without changing its standalone
-reference branch. Preserve every other worktree and its uncommitted work.
+## Order and dependencies
 
-## Integration and dependencies
+1. Reconcile cross-feature evidence against the integrated code. Review draft worktrees
+   without overwriting or bulk-merging their uncommitted changes.
+2. Complete foundation request correlation and retry-safe identity creation (001),
+   and critical background-loop supervision (010). These slices are independent.
+3. Install and exercise the complete Helm product and KEDA against a disposable cluster
+   (010 using 009 network isolation); fix demonstrated deployment problems.
+4. Follow the reconciled requirement inventory for SDK/runtime/operational work. Preserve
+   explicit unsupported surfaces such as arbitrary dependency installation unless a new
+   design justifies changing the accepted ADR.
+5. Run integrated checks, review consequential changes, then prepare release integration.
 
-1. Reuse the committed workflow-primitives baseline and collection-source/compatibility
-   branches. Resolve shared documentation and harness modules by preserving both additions.
-2. Reconcile feature 017's protocol, migration identities, root task pins and ADR identity
-   under ADR-0036. Preserve scoped worker identity and async provider security together.
-3. Establish feature 016's pure domain, exact wire contract, publication findings, bounded
-   schema interpreter and immutable rules pin. New migrations start at 20261201000000.
-4. Implement input/result/journal disclosure and namespace reveal grants. Read, current
-   authority, projection and audit commit before any value leaves. Then restrict event reads.
-5. Add schema options to all SDKs, explicit CLI disclosure/grants and ephemeral Studio views.
-6. Finish feature 014's remaining accepted collection/nesting/reservation and continuation
-   behavior. Fix transition cost before accepting the required large-workload evidence.
-7. Execute the integrated compatibility, tenant/canary/fault, five-SDK, browser, performance,
-   architecture, contract, build/advisory and Compose gates. Close tasks only with actual evidence.
+The owner selected MIT and ratified constitution v1.0.0 on 2026-10-11. Human acceptance remains an owner decision; external publication requires working
+registry credentials. No successful rollout, performance level or human result is inferred
+from a checklist or from a test double.
 
-## Work ownership
+## Validation
 
-Root owns integration, conflict resolution, canonical schemas/protocol/OpenAPI, migrations,
-application composition, shared harness registration and final documentation/evidence. Agents
-use exclusive isolated worktrees and explicit file ownership. Domain and SDK authoring can
-proceed independently of the root integration; their commits are reviewed before merging.
-Schema interpretation precedes disclosure, grants precede event reveal, and frozen wire
-types precede client UI. No agent writes another agent's worktree.
+Every implementation slice receives focused regression/fault tests, updated contract and
+feature task evidence. Final gates: fmt, clippy, architecture, locked workspace tests,
+contracts, SDKs, Studio, Compose, advisories and the disposable Kubernetes proof.
 
-## Verification
+## Renewed completion request — 2026-10-12
 
-Each implementation slice has tests first and a focused real verification command. One
-coordinated build cache avoids multiplying storage; no unrelated build or container is stopped.
-Run the existing integration and fault targets with real disposable infrastructure and bounded
-parallelism. Capture all failures and skips. Reuse an earlier result only when its tested tree
-and scope remain applicable. Independent review covers security and transactional decisions.
+The owner requested completion of everything still missing after the previous delivery.
+Re-audit historical gap statements against code and named evidence before adding scope.
+Track unresolved work explicitly below; an old completed implementation checklist is not
+proof that every product criterion is fulfilled.
 
-No existing acceptance criterion is replaced by an unsupported-publication refusal or an
-unmeasured lower ceiling. Unreleased cross-feature compositions outside the accepted scopes
-fail explicitly, while the accepted 014 and 016 tasks still require implementation and evidence.
+Immediate independent slices: complete tenant namespace pagination; runtime-configured
+trace links (FR-007-005/G156); reconcile stale traceability. Then address remaining written
+requirements identified by the read-only architectural audit, starting with SDK task
+streaming/backpressure (NFR-006-PERF) and operational surfaces where existing APIs suffice.
+External package publication needs the owner's registry namespaces/available identities;
+no credentials should be sent in chat. Human usability outcomes must come from real people.
+Accepted self-hosted key-ring encryption, offline dependency catalogs and retention that
+protects pinned artifacts are not silently replaced by unrelated architectural projects.
 
-## Operational limits
-
-The integration migration profile targets the released develop baseline plus the preserved
-014 migration history. A standalone, unreleased 017 database is not an accepted in-place
-upgrade baseline: its SQLx version identities collide with 014. Preserve its reference branch
-and backup; do not edit a deployed migration ledger or claim an untested bridge. Production
-rollout, owner-only visual acceptance and unrelated uncommitted 013/015 draft specifications
-are outside this implementation request.
+For each slice: update its feature acceptance/plan/tasks, reproduce the gap, implement,
+run focused tests and relevant integrated gates, record the result, then check the item.
