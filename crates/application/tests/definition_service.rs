@@ -328,6 +328,7 @@ impl DefinitionStore for FakeStore {
         version_id: WorkflowVersionId,
         digest: Digest,
         document: &[u8],
+        _definition: &sagat_domain::workflow::WorkflowDefinition,
         _release_notes: Option<&str>,
         plans: &[sagat_domain::saga::SagaPlan],
         _triggers: &[sagat_application::dispatch::TriggerRegistration],

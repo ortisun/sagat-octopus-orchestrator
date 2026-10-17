@@ -1106,6 +1106,20 @@ where
         let (target_workflow, draft_revision) = if let Some(existing) = existing {
             if let Some(active) = &existing.active {
                 if active.digest() == from.version.digest() {
+                    let parsed = self
+                        .codec
+                        .parse(&from.document)
+                        .map_err(|error| AppError::InvalidDefinition(Box::new(error)))?;
+                    if let Err(error) = self
+                        .store
+                        .check_database_access(principal, target.id(), &parsed.definition)
+                        .await
+                    {
+                        self.definitions
+                            .audit_database_denial(principal, existing.workflow.id(), &error, ctx)
+                            .await;
+                        return Err(error.into());
+                    }
                     return Ok(Promotion::AlreadyActive {
                         version: active.number(),
                     });

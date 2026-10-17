@@ -141,6 +141,17 @@ fn digest(byte: u8) -> Digest {
     Digest::new([byte; 32])
 }
 
+fn no_database_definition() -> sagat_domain::workflow::WorkflowDefinition {
+    use sagat_domain::workflow::{Node, NodeId, NodeKind, WorkflowDefinition};
+    let end = NodeId::parse("end").expect("id");
+    WorkflowDefinition::new(
+        slug("invoice-flow"),
+        end.clone(),
+        vec![Node::new(end, NodeKind::End { output: None })],
+    )
+    .expect("definition")
+}
+
 async fn publish(
     w: &World,
     p: &Principal,
@@ -158,6 +169,7 @@ async fn publish(
             version,
             digest(byte),
             format!("{{\"v\":{byte}}}").as_bytes(),
+            &no_database_definition(),
             Some("notes"),
             &[],
             &[],
@@ -680,6 +692,7 @@ async fn ten_simultaneous_publishers_get_gapless_distinct_numbers() {
                     version,
                     digest(i + 1),
                     b"{}",
+                    &no_database_definition(),
                     None,
                     &[],
                     &[],

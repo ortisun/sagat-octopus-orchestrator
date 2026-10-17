@@ -137,6 +137,44 @@ impl PgRunStore {
             })
     }
 
+    /// A receipt never grants stale database authority, nor resolves a floating reference again.
+    async fn check_database_replay(
+        &self,
+        conn: &mut PgConnection,
+        tenant: TenantId,
+        subject: &str,
+        run: &str,
+    ) -> Result<(), StoreError> {
+        let run = run.parse::<RunId>().map_err(|_| corrupt("run receipt"))?;
+        let row = sqlx::query(RUN_SELECT)
+            .bind(tenant.as_uuid())
+            .bind(run.as_uuid())
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(store_error)?
+            .ok_or(StoreError::MissingReference)?;
+        let info = run_record(&row)?.info;
+        let definition = self.definition(conn, tenant, info.version_id).await?;
+        if definition.nodes().any(|n| n.database_operation().is_some()) {
+            let mut actors = crate::database::run_actors(conn, &info).await?;
+            if subject != sagat_domain::identity::Subject::engine().as_str()
+                && !actors.iter().any(|s| s == subject)
+            {
+                actors.push(subject.to_owned());
+            }
+            crate::database::admit_definition(
+                conn,
+                tenant,
+                info.namespace_id,
+                &actors.iter().map(String::as_str).collect::<Vec<_>>(),
+                &definition,
+                Some(run),
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
     /// Verifies that the stored projections equal a replay of the stored journal. Used by tests and
     /// by operators investigating a suspected inconsistency; never needed on the hot path.
     ///
@@ -189,6 +227,7 @@ impl RunStore for PgRunStore {
     async fn replay_start(
         &self,
         tenant: TenantId,
+        subject: &str,
         idempotency: &Idempotency,
     ) -> Result<Option<String>, StoreError> {
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
@@ -199,6 +238,10 @@ impl RunStore for PgRunStore {
             &hash(&idempotency.fingerprint),
         )
         .await?;
+        if let Some(run) = &result {
+            self.check_database_replay(&mut tx, tenant, subject, run)
+                .await?;
+        }
         tx.rollback().await.map_err(store_error)?;
         Ok(result)
     }
@@ -210,6 +253,8 @@ impl RunStore for PgRunStore {
         for _ in 0..2 {
             let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
             if let Some(existing) = replay(&mut tx, tenant, &new.idempotency, &hash).await? {
+                self.check_database_replay(&mut tx, tenant, &new.info.started_by, &existing)
+                    .await?;
                 return Ok(Applied::Replayed(existing));
             }
             sqlx::query(
@@ -257,6 +302,24 @@ impl RunStore for PgRunStore {
                 let _ = tx.rollback().await;
                 return Err(error);
             }
+            let bindings = if new
+                .definition
+                .nodes()
+                .any(|n| n.database_operation().is_some())
+            {
+                let actors = crate::database::run_actors(&mut tx, &new.info).await?;
+                crate::database::admit_definition(
+                    &mut tx,
+                    tenant,
+                    new.info.namespace_id,
+                    &actors.iter().map(String::as_str).collect::<Vec<_>>(),
+                    &new.definition,
+                    None,
+                )
+                .await?
+            } else {
+                Vec::new()
+            };
             if let Err(error) = ensure_room_for_run(
                 &mut tx,
                 tenant,
@@ -299,13 +362,21 @@ impl RunStore for PgRunStore {
             .execute(&mut *tx)
             .await
             .map_err(store_error)?;
+            for (node, connection, revision) in bindings {
+                sqlx::query("INSERT INTO run_database_connections(tenant_id,namespace_id,run_id,node_id,connection_id,revision) VALUES($1,$2,$3,$4,$5,$6)")
+                    .bind(tenant.as_uuid()).bind(info.namespace_id.as_uuid()).bind(info.run_id.as_uuid())
+                    .bind(node.as_str()).bind(connection.as_uuid()).bind(i64::from(revision))
+                    .execute(&mut *tx).await.map_err(store_error)?;
+            }
             if let Some(sagat_application::blobs::RunInputBinding::Uploaded(descriptor)) =
                 &new.input_blob
                 && let Err(error) = crate::blobs::commit_input(&mut tx, info, descriptor).await
             {
                 tx.rollback().await.map_err(store_error)?;
                 if matches!(error, StoreError::MissingReference)
-                    && let Some(existing) = self.replay_start(tenant, &new.idempotency).await?
+                    && let Some(existing) = self
+                        .replay_start(tenant, &new.info.started_by, &new.idempotency)
+                        .await?
                 {
                     return Ok(Applied::Replayed(existing));
                 }
@@ -2260,6 +2331,16 @@ fn versioned_script_retention(
 
 /// The run store also serves definitions, so one value can back every service that needs both.
 impl DefinitionStore for PgRunStore {
+    async fn check_database_access(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+        definition: &WorkflowDefinition,
+    ) -> Result<(), StoreError> {
+        self.definitions
+            .check_database_access(principal, namespace, definition)
+            .await
+    }
     async fn find_namespace_by_slug(
         &self,
         tenant: TenantId,
@@ -2335,6 +2416,7 @@ impl DefinitionStore for PgRunStore {
         version_id: WorkflowVersionId,
         digest: Digest,
         document: &[u8],
+        definition: &WorkflowDefinition,
         release_notes: Option<&str>,
         plans: &[sagat_domain::saga::SagaPlan],
         triggers: &[sagat_application::dispatch::TriggerRegistration],
@@ -2351,6 +2433,7 @@ impl DefinitionStore for PgRunStore {
                 version_id,
                 digest,
                 document,
+                definition,
                 release_notes,
                 plans,
                 triggers,

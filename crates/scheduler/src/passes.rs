@@ -1137,6 +1137,30 @@ where
             Ok(Applied::Replayed(_)) => Ok((Outcome::Skipped, false)),
             // The parent step no longer waits for this run (cancelled, or created by a peer).
             Err(StoreError::MissingReference) => Ok((Outcome::Skipped, false)),
+            Err(StoreError::DatabaseUnavailable | StoreError::DatabaseLimit) => {
+                let audit = AuditRecord::engine(
+                    tenant,
+                    AuditAction::DatabaseDenied,
+                    ResourceType::Run,
+                    parent_id.to_string(),
+                    format!("database child admission refused: {node}"),
+                    parent.info.trace_id.clone(),
+                    OffsetDateTime::now_utc(),
+                );
+                RunStore::record_denial(&self.store, &audit).await?;
+                Ok((
+                    self.finish_with(
+                        view,
+                        tenant,
+                        parent_id,
+                        node.clone(),
+                        pending.child,
+                        ChildOutcome::Failed(FailureCode::database_unavailable()),
+                    )
+                    .await,
+                    true,
+                ))
+            }
             // Either way the step fails instead of waiting. Waiting for room would leave the
             // blocked reservations at the head of the oldest-first queue, where a full namespace of
             // one tenant would keep every other tenant's children from starting (G32, feature

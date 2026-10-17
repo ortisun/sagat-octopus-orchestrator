@@ -38,4 +38,8 @@ rejected. A later operation that compensates a write must be declared explicitly
 The shared lossless fixture is
 `tests/contract/database-connections/typed-parameters.workflow.json`. Database validation diagnostics
 contain safe categories and paths, never SQL or parameter content. Execution remains gated until
-the dedicated executor and capability checks in T017-012..017 are implemented and tested.
+the dedicated executor and capability checks in T017-013..017 are implemented and tested. Publication
+and run admission already validate current catalog/ACL authority, and runs retain immutable
+connection revisions in their creation transaction. Replaying a start retains the original revision
+and rechecks current authority. A rerun is a new admission and resolves an unversioned reference
+again; specify `revision` to require the same settings across separate runs.

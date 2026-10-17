@@ -694,7 +694,9 @@ fn record(mapped: StoreError) -> StoreError {
         | StoreError::RevisionConflict { .. }
         | StoreError::QuotaExceeded { .. }
         | StoreError::IdempotencyKeyReused
-        | StoreError::StateConflict(_) => {}
+        | StoreError::StateConflict(_)
+        | StoreError::DatabaseUnavailable
+        | StoreError::DatabaseLimit => {}
     }
     mapped
 }

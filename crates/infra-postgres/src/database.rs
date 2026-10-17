@@ -1,10 +1,12 @@
 //! Connection heads, immutable revisions and receipts. No customer database I/O.
+mod admission;
 use crate::{
     execution::PgRunStore,
     identity::{col, corrupt, insert_audit, store_error},
     pool::BeginSafely,
     quotas::lock_secrets,
 };
+pub(crate) use admission::{admit_definition, run_actors};
 use sagat_application::{
     database::{ConnectionRecord, ConnectionStore, ConnectionWrite},
     error::StoreError,

@@ -1,4 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+mod admission;
 #[path = "../../support/mod.rs"]
 mod support;
 
@@ -207,6 +208,7 @@ async fn durable_provider_intents_reconcile_without_plaintext_or_duplicate_rotat
     assert_eq!(authority, "openbao");
     managed_http_facade(provider.clone()).await;
     connection_catalog(&w).await;
+    admission::run(&w, &service).await;
 
     // An ACL/membership change during provider I/O must discard the value already read.
     let gated = Arc::new(ReadBarrier {

@@ -437,7 +437,7 @@ where
             ResourceType::Run,
             run_id.to_string(),
             firing.reason.clone(),
-            Some(trace_id),
+            Some(trace_id.clone()),
             now,
         );
         let limits = RunLimits::of(&self.store, tenant, trigger.namespace_id).await?;
@@ -482,6 +482,21 @@ where
             // The event left the inbox while it was being dispatched (it expired): nothing to
             // start for it.
             Err(StoreError::MissingReference) => Ok(Started::No),
+            Err(StoreError::DatabaseUnavailable | StoreError::DatabaseLimit) => {
+                let audit = AuditRecord::engine(
+                    tenant,
+                    AuditAction::DatabaseDenied,
+                    ResourceType::WorkflowVersion,
+                    trigger.version_id.to_string(),
+                    "database trigger admission refused".to_owned(),
+                    Some(trace_id),
+                    now,
+                );
+                RunStore::record_denial(&self.store, &audit).await?;
+                metrics::counter!("trigger_events_total", "outcome" => "database_denied")
+                    .increment(1);
+                Ok(Started::No)
+            }
             Err(other) => Err(other.into()),
         }
     }

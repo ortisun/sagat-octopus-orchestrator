@@ -43,6 +43,7 @@ pub enum AuditAction {
     SecretStored,
     SecretProvisioningStarted,
     DatabaseConnectionChanged,
+    DatabaseDenied,
     SecretDeleted,
     /// Someone was allowed to reference a secret from workflows, or no longer is.
     SecretAccessGranted,
@@ -163,6 +164,7 @@ impl AuditAction {
             Self::BlobRead
                 | Self::SecretResolved
                 | Self::SecretDenied
+                | Self::DatabaseDenied
                 | Self::EventRejected
                 | Self::ScriptViolation
                 | Self::AuditRead
@@ -181,6 +183,7 @@ impl AuditAction {
         match self {
             Self::AuditRead
             | Self::PublicationDenied
+            | Self::DatabaseDenied
             | Self::PayloadInspected
             | Self::PayloadInspectionDenied => Some(std::time::Duration::from_secs(300)),
             _ => None,
@@ -219,6 +222,7 @@ impl AuditAction {
             Self::SecretStored => "secret.stored",
             Self::SecretProvisioningStarted => "secret.provisioning_started",
             Self::DatabaseConnectionChanged => "database.connection_changed",
+            Self::DatabaseDenied => "database.denied",
             Self::SecretDeleted => "secret.deleted",
             Self::SecretAccessGranted => "secret.access_granted",
             Self::SecretAccessRevoked => "secret.access_revoked",

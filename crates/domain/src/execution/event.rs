@@ -19,6 +19,10 @@ const MAX_KEY_LEN: usize = 256;
 pub struct FailureCode(String);
 
 impl FailureCode {
+    #[must_use]
+    pub fn database_unavailable() -> Self {
+        Self::system("DATABASE_UNAVAILABLE")
+    }
     /// # Errors
     /// [`ExecutionError::InvalidFailureCode`] for an empty, long or non-conforming value.
     pub fn parse(value: &str) -> Result<Self, ExecutionError> {

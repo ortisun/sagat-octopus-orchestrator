@@ -21,7 +21,7 @@ Status: Implementing after user approval on 2026-10-16. Check a task only after 
 ## C. Durable managed execution
 
 - [x] T017-011 Extend canonical IR and typed node metadata; reject reserved activity forgery; shared fixtures. FR-017-010..012. Evidence: infra-ir/database (6), domain/database_connections (4), full domain/IR regression and clippy. Managed leasing remains closed pending T017-013.
-- [ ] T017-012 Validate and pin connections in publish/admission, including replay and child/ad hoc paths. FR-017-002,003,015,019.
+- [ ] T017-012 Validate and pin connections in publish/admission, including replay and child/ad hoc paths. FR-017-002,003,015,019. Publication, promotion (including AlreadyActive), direct/child/event starts, reruns, receipt replay and rollback/ACL-race evidence implemented; final ad hoc-path evidence awaits T017-016.
 - [ ] T017-013 Add dedicated executor role, managed claim/capability fence and lease checks. FR-017-006,008,012,019.
 - [ ] T017-014 Implement PostgreSQL adapter, destination pinning/TLS, restricted transactions, typed/bounded results and fixed probe. FR-017-011..014,016,021.
 - [ ] T017-015 Wire isolated runner process to existing transport, cancellation, heartbeat and safe failure reporting. FR-017-012,018,020.

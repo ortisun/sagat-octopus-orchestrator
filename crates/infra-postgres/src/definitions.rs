@@ -17,7 +17,7 @@ use sagat_domain::audit::AuditRecord;
 use sagat_domain::definition::{Workflow, WorkflowId, WorkflowVersion, WorkflowVersionId};
 use sagat_domain::identity::{Namespace, NamespaceId, Principal, Slug, Subject, TenantId};
 use sagat_domain::saga::SagaPlan;
-use sagat_domain::workflow::{ActivityName, Digest, NodeId};
+use sagat_domain::workflow::{ActivityName, Digest, NodeId, WorkflowDefinition};
 use sha2::{Digest as _, Sha256};
 use sqlx::postgres::PgRow;
 use sqlx::{PgConnection, PgPool};
@@ -114,6 +114,27 @@ pub(crate) async fn register_triggers(
 }
 
 impl DefinitionStore for PgDefinitionStore {
+    async fn check_database_access(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+        definition: &WorkflowDefinition,
+    ) -> Result<(), StoreError> {
+        if !definition.nodes().any(|n| n.database_operation().is_some()) {
+            return Ok(());
+        }
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        crate::database::admit_definition(
+            &mut tx,
+            principal.tenant_id(),
+            namespace,
+            &[principal.subject().as_str()],
+            definition,
+            None,
+        )
+        .await?;
+        tx.commit().await.map_err(store_error)
+    }
     async fn find_namespace_by_slug(
         &self,
         tenant: TenantId,
@@ -329,6 +350,7 @@ impl DefinitionStore for PgDefinitionStore {
         version_id: WorkflowVersionId,
         digest: Digest,
         document: &[u8],
+        definition: &WorkflowDefinition,
         release_notes: Option<&str>,
         plans: &[SagaPlan],
         triggers: &[TriggerRegistration],
@@ -341,9 +363,6 @@ impl DefinitionStore for PgDefinitionStore {
         let hash = hash(&idempotency.fingerprint);
         for _ in 0..2 {
             let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
-            if let Some(resource) = replay(&mut tx, tenant, idempotency, &hash).await? {
-                return Ok(Some(Applied::Replayed(resource)));
-            }
             // The row lock serialises publishers of one workflow, so version numbers are gapless.
             let Some(locked) = sqlx::query(
                 "SELECT id, tenant_id, namespace_id, name, draft_revision, active_version_id, \
@@ -358,13 +377,22 @@ impl DefinitionStore for PgDefinitionStore {
             else {
                 return Ok(None);
             };
+            let workflow = bare_workflow(&locked)?;
+            crate::database::admit_definition(
+                &mut tx,
+                tenant,
+                workflow.namespace_id(),
+                &[principal.subject().as_str()],
+                definition,
+                None,
+            )
+            .await?;
             // The same publication, made by a request that committed while this one waited for the
             // lock, is this one: answered as it was, whatever it left behind (a request that is
             // published now, a draft that has moved on).
             if let Some(resource) = replay(&mut tx, tenant, idempotency, &hash).await? {
                 return Ok(Some(Applied::Replayed(resource)));
             }
-            let workflow = bare_workflow(&locked)?;
             if workflow.draft_revision() != draft_revision {
                 return Err(StoreError::RevisionConflict {
                     current: workflow.draft_revision(),
