@@ -3690,6 +3690,42 @@
       ]
     },
     {
+      "table": "step_database_credentials",
+      "column": "node_id",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Workflow node identifier bounded to 64 UTF-8 bytes by CHECK; one immutable credential pin per retained attempt."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution/database.rs"
+      ]
+    },
+    {
+      "table": "step_database_credentials",
+      "column": "secret_name",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated secret name bounded to 64 ASCII characters by CHECK; one immutable credential pin per retained attempt. Provider value bytes remain accounted by the referenced provider operation."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution/database.rs"
+      ]
+    },
+    {
       "table": "steps",
       "column": "activity",
       "sql_type": "text",

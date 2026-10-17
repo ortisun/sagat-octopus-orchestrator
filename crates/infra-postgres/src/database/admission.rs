@@ -57,7 +57,7 @@ pub(crate) async fn admit_definition(
         return Ok(Vec::new());
     }
     let started = std::time::Instant::now();
-    let result = check_definition(conn, tenant, namespace, actors, definition, pinned).await;
+    let result = check_definition(conn, tenant, namespace, actors, definition, pinned, None).await;
     let outcome = match &result {
         Ok(_) => "authorized",
         Err(StoreError::DatabaseUnavailable | StoreError::DatabaseLimit) => "denied",
@@ -69,6 +69,27 @@ pub(crate) async fn admit_definition(
     result
 }
 
+pub(crate) async fn admit_node(
+    conn: &mut PgConnection,
+    info: &RunInfo,
+    definition: &WorkflowDefinition,
+    node: &NodeId,
+) -> Result<(), StoreError> {
+    let actors = run_actors(conn, info).await?;
+    check_definition(
+        conn,
+        info.tenant_id,
+        info.namespace_id,
+        &actors.iter().map(String::as_str).collect::<Vec<_>>(),
+        definition,
+        Some(info.run_id),
+        Some(node),
+    )
+    .await?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)] // one admission scope, with optional existing run/node
 async fn check_definition(
     conn: &mut PgConnection,
     tenant: TenantId,
@@ -76,9 +97,11 @@ async fn check_definition(
     actors: &[&str],
     definition: &WorkflowDefinition,
     pinned: Option<RunId>,
+    selected: Option<&NodeId>,
 ) -> Result<Vec<(NodeId, ConnectionId, u32)>, StoreError> {
     let operations: Vec<_> = definition
         .nodes()
+        .filter(|n| selected.is_none_or(|id| n.id() == id))
         .filter_map(|n| n.database_operation().map(|op| (n.id(), op)))
         .collect();
     if operations.is_empty() {

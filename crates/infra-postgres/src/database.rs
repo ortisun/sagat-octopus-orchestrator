@@ -6,7 +6,7 @@ use crate::{
     pool::BeginSafely,
     quotas::lock_secrets,
 };
-pub(crate) use admission::{admit_definition, run_actors};
+pub(crate) use admission::{admit_definition, admit_node, run_actors};
 use sagat_application::{
     database::{ConnectionRecord, ConnectionStore, ConnectionWrite},
     error::StoreError,
@@ -62,7 +62,7 @@ fn config_json(config: &ConnectionConfig) -> Value {
         "connectTimeoutMs":limits.connect_timeout_ms,"poolSize":limits.pool_size,"idleTimeoutMs":limits.idle_timeout_ms
     }})
 }
-fn config_from(value: &Value) -> Result<ConnectionConfig, StoreError> {
+pub(crate) fn config_from(value: &Value) -> Result<ConnectionConfig, StoreError> {
     let text = |name: &str| {
         value[name]
             .as_str()
@@ -112,7 +112,7 @@ fn config_from(value: &Value) -> Result<ConnectionConfig, StoreError> {
     )
     .map_err(|_| corrupt("database connection settings"))
 }
-fn from_row(row: &PgRow) -> Result<ConnectionRecord, StoreError> {
+pub(crate) fn from_row(row: &PgRow) -> Result<ConnectionRecord, StoreError> {
     Ok(ConnectionRecord {
         id: ConnectionId::new(col(row, "id")?),
         tenant_id: sagat_domain::identity::TenantId::new(col(row, "tenant_id")?),

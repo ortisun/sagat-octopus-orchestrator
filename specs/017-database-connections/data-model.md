@@ -23,3 +23,17 @@ Lock order for admission is an existing parent/root run reservation (for childre
 A catalog write takes the existing namespace secret-management lock, checks the current membership and OpenBao authority, then commits revision/head/audit together. Creates and rotations cannot race the count or head. Historical reads show historical settings with current lifecycle status. Catalog HTTP routes are metadata operations only; no route executes SQL or claims a successful probe.
 
 Implementation status: the intent/version schema, immutable content-binding guard, byte-accounting trigger, explicit migration fence and provider-aware resolution have real-service evidence. Scheduled provider-object/receipt cleanup is still pending T017-024; current hard bounds fail closed when full. Explicit OpenBao settings now enable management routes and runtime resolution; production deployment profiles and the database connection feature remain incomplete.
+
+## Attempt credential evidence
+
+Migration `20261029000000_database_executor` introduces `step_database_credentials`, keyed by
+`(tenant_id,run_id,node_id,attempt,generation)`. Its immutable row contains namespace, provider
+operation, logical secret name/version and timestamp. Scoped foreign keys tie it to the run,
+step and provider operation. There is deliberately no FK to the logical secret/version: logical
+deletion revokes future capability resolution immediately, while the provider evidence remains
+available to output scanning and retention. It contains no credential bytes. The provider operation
+continues to account for those retained external bytes.
+
+`database-runner` is a separate machine membership role. Downgrade refuses live executor identities
+or credential pins instead of silently deleting authority/evidence. The migration grants the
+application SELECT/INSERT/DELETE on pins and rejects UPDATE with an ALWAYS trigger.

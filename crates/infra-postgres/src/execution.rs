@@ -8,6 +8,8 @@
 //! leaves the previous state intact (`FR-002-003`).
 
 use crate::pool::BeginSafely;
+mod database;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
@@ -1220,6 +1222,37 @@ impl RunTx for PgRunTx {
             })
         })
         .transpose()
+    }
+
+    async fn database_executor_owns(
+        &mut self,
+        node: &NodeId,
+        subject: &str,
+    ) -> Result<bool, StoreError> {
+        self.database_owner(node, subject).await
+    }
+    async fn database_claim(&mut self, node: &NodeId, subject: &str) -> Result<bool, StoreError> {
+        self.database_admission(node, subject).await
+    }
+    async fn database_input(
+        &mut self,
+        node: &NodeId,
+        subject: &str,
+    ) -> Result<sagat_application::database::DatabaseInput, StoreError> {
+        self.database_snapshot(node, subject).await
+    }
+    async fn pin_database_credential(
+        &mut self,
+        node: &NodeId,
+        secret: &sagat_application::secrets::StoredSecret,
+    ) -> Result<(), StoreError> {
+        self.database_pin(node, secret).await
+    }
+    async fn database_credential(
+        &mut self,
+        node: &NodeId,
+    ) -> Result<Option<sagat_application::secrets::StoredSecret>, StoreError> {
+        self.database_pinned_secret(node).await
     }
 
     async fn secret_versions(
