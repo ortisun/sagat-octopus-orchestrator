@@ -290,6 +290,23 @@ impl MaintenanceStore for PgRunStore {
         .collect()
     }
 
+    async fn run_result(
+        &self,
+        tenant: TenantId,
+        run: RunId,
+    ) -> Result<Option<Vec<u8>>, StoreError> {
+        sqlx::query_scalar(
+            "SELECT p.content FROM runs r \
+             JOIN payloads p ON p.tenant_id = r.tenant_id AND p.digest = r.result_digest \
+             WHERE r.tenant_id = $1 AND r.id = $2",
+        )
+        .bind(tenant.as_uuid())
+        .bind(run.as_uuid())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(store_error)
+    }
+
     async fn ended_children(&self, window: &Window) -> Result<Vec<EndedChild>, StoreError> {
         let (limit, shards, exclude) = window_params(window);
         // The child that ended is told to its parent: the shard is the parent's.

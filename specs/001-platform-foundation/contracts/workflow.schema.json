@@ -622,7 +622,8 @@
               "const": "end"
             },
             "outputExpr": {
-              "type": "string"
+              "type": "string",
+              "description": "Expression over the run's data whose value (any JSON, at most 256 KiB) is the run's result: kept as this step's output when the run reaches this end, and given to the parent of a child run as steps.<child>.output. A failing expression fails the run with EXPRESSION_ERROR, an oversized value with RUN_DATA_LIMIT. The API does not disclose it (ADR-0033)."
             }
           }
         }

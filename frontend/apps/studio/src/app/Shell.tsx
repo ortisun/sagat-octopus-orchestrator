@@ -6,9 +6,9 @@ import { useQuery } from '@tanstack/react-query';
 
 const NAV = [
   { to: '/workflows', label: 'Workflows' },
+  { to: '/scripts', label: 'Scripts' },
   { to: '/runs', label: 'Runs' },
   { to: '/operations', label: 'Operations' },
-  { to: '/scripts', label: 'Scripts' },
   { to: '/integrations', label: 'Integrations' },
   { to: '/namespaces', label: 'Namespaces' },
 ] as const;

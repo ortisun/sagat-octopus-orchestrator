@@ -173,12 +173,29 @@ impl PgRunStore {
             .map_err(|e| e.to_string())?
             .ok_or("the run does not exist")?;
         let stored = tx.parts().1.clone();
-        if replayed == stored {
+        if replayed != stored {
+            return Err(format!(
+                "projection differs from the journal:\n  replayed: {replayed:?}\n  stored:   {stored:?}"
+            ));
+        }
+        drop(tx);
+        // The run's result (G21) is the payload its `end.reached` event names.
+        let result_agrees: bool = sqlx::query_scalar(
+            "SELECT r.result_digest IS NOT DISTINCT FROM \
+                    (SELECT e.payload_digest FROM run_events e \
+                      WHERE e.tenant_id = r.tenant_id AND e.run_id = r.id \
+                        AND e.event_type = 'end.reached' ORDER BY e.seq DESC LIMIT 1) \
+             FROM runs r WHERE r.tenant_id = $1 AND r.id = $2",
+        )
+        .bind(tenant.as_uuid())
+        .bind(run.as_uuid())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| e.to_string())?;
+        if result_agrees {
             Ok(())
         } else {
-            Err(format!(
-                "projection differs from the journal:\n  replayed: {replayed:?}\n  stored:   {stored:?}"
-            ))
+            Err("the run's result is not the payload its end.reached event names".into())
         }
     }
 }
@@ -1164,6 +1181,23 @@ impl RunTx for PgRunTx {
         .await
     }
 
+    async fn secret_pool_refusal(
+        &mut self,
+        names: &[SecretName],
+        subject: &str,
+        check: sagat_application::execution::PoolCheck,
+    ) -> Result<Option<SecretName>, StoreError> {
+        crate::secrets::pool_refusal(
+            &mut self.tx,
+            self.info.tenant_id,
+            self.info.namespace_id,
+            names,
+            subject,
+            check == sagat_application::execution::PoolCheck::Delivery,
+        )
+        .await
+    }
+
     async fn secret_inputs(
         &mut self,
         names: &[SecretName],
@@ -1409,6 +1443,21 @@ impl RunTx for PgRunTx {
         .map_err(store_error)
     }
 
+    async fn reported_by(&mut self, node: &NodeId, token_hash: &[u8]) -> Result<bool, StoreError> {
+        sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM steps WHERE tenant_id = $1 AND run_id = $2 AND node = $3 \
+                            AND status NOT IN ('LEASED', 'RUNNING') \
+                            AND reported_lease_token_hash = $4)",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.run_id.as_uuid())
+        .bind(node.as_str())
+        .bind(token_hash)
+        .fetch_one(&mut *self.tx)
+        .await
+        .map_err(store_error)
+    }
+
     async fn replay(&mut self, idempotency: &Idempotency) -> Result<Option<String>, StoreError> {
         replay(
             &mut self.tx,
@@ -1497,6 +1546,10 @@ impl RunTx for PgRunTx {
                         RunEvent::StepCompleted { .. }
                             | RunEvent::WaitSatisfied { .. }
                             | RunEvent::ReconciliationConcluded { .. }
+                            // A run's result (G21) and the result a child hands its parent: the
+                            // journal names the payload, not only the step projection.
+                            | RunEvent::EndReached { .. }
+                            | RunEvent::ChildFinished { .. }
                     )
                 })
                 .and_then(|n| output_digest.get(n));
@@ -1622,11 +1675,17 @@ impl RunTx for PgRunTx {
             (Some(reason), code) => (Some(reason.as_str()), code.map(FailureCode::as_str)),
             (None, _) => (None, None),
         };
+        // The run's result (G21): the output its `end` step was given in this transaction.
+        let result = events.iter().find_map(|event| match event {
+            RunEvent::EndReached { node } => output_digest.get(node).cloned(),
+            _ => None,
+        });
         if written > 0 {
             let updated = sqlx::query(
                 "UPDATE runs SET status = $4, run_version = $5, stop_reason = $6, stop_code = $7, \
                         paused = $8, updated_at = $9, \
-                        finished_at = CASE WHEN $10 THEN COALESCE(finished_at, $9) ELSE NULL END \
+                        finished_at = CASE WHEN $10 THEN COALESCE(finished_at, $9) ELSE NULL END, \
+                        result_digest = COALESCE($11, result_digest) \
                  WHERE tenant_id = $1 AND id = $2 AND run_version = $3",
             )
             .bind(tenant.as_uuid())
@@ -1639,6 +1698,7 @@ impl RunTx for PgRunTx {
             .bind(self.state.is_paused())
             .bind(self.now)
             .bind(self.state.status().is_terminal())
+            .bind(result)
             .execute(&mut *self.tx)
             .await
             .map_err(store_error)?
@@ -2103,6 +2163,7 @@ impl PgRunTx {
         let child_input = spawn.map(|c| c.input.clone());
         let grant = effects.lease.as_ref().filter(|g| &g.node == node);
         let renewal = effects.renewal.as_ref().filter(|r| &r.node == node);
+        let reported = effects.reported.as_ref().filter(|r| &r.node == node);
         let leased = matches!(step.status(), StepStatus::Leased | StepStatus::Running);
         let fresh_grant = grant.filter(|_| leased);
         let step_uuid = step_id(self.info.version_id, self.info.run_id, node);
@@ -2110,6 +2171,16 @@ impl PgRunTx {
         let attempt = i32::try_from(step.attempt()).map_err(|_| corrupt("attempt"))?;
         let generation = i64::try_from(step.generation()).map_err(|_| corrupt("generation"))?;
         let inserted = !self.stored.contains(node);
+        // The secrets the step declares, copied onto its row so that the claim query can leave out
+        // the steps a worker is not entitled to receive (G48). None when it declares none.
+        let declared: Option<Vec<String>> = def_node
+            .map(|n| {
+                n.secrets()
+                    .iter()
+                    .map(|s| s.as_str().to_owned())
+                    .collect::<Vec<_>>()
+            })
+            .filter(|names| !names.is_empty());
         if inserted {
             if leased {
                 return Err(StoreError::Internal {
@@ -2122,11 +2193,11 @@ impl PgRunTx {
                   cancel_requested, routed, condition, timed_out, failure_code, next_attempt_at, \
                   waiting_kind, due_at, event_type, correlation_key, activity, ready_at, \
                   last_hinted_at, output_digest, child_run_id, child_input, updated_at, kind, \
-                  event_since) \
+                  event_since, secrets) \
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, \
                          $18, $19, CASE WHEN $6 = 'READY' THEN $20 END, CASE WHEN $21 THEN $20 END, \
                          $22, $23, $24, $20, $25, \
-                         CASE WHEN $15 = 'EVENT' THEN $20 - $26 * interval '1 microsecond' END)",
+                         CASE WHEN $15 = 'EVENT' THEN $20 - $26 * interval '1 microsecond' END, $27)",
             )
             .bind(self.info.tenant_id.as_uuid())
             .bind(self.info.run_id.as_uuid())
@@ -2154,6 +2225,7 @@ impl PgRunTx {
             .bind(child_input)
             .bind(kind)
             .bind(lookback)
+            .bind(declared)
             .execute(&mut *self.tx)
             .await
             .map_err(store_error)?;
@@ -2173,6 +2245,9 @@ impl PgRunTx {
                 hint_count = CASE WHEN $30 THEN hint_count + 1 WHEN $21 THEN 0 ELSE hint_count END, \
                 lease_token_hash = CASE WHEN $6 IN ('LEASED', 'RUNNING') \
                                         THEN COALESCE($22, lease_token_hash) END, \
+                reported_lease_token_hash = CASE WHEN $6 IN ('LEASED', 'RUNNING') THEN NULL \
+                                                 WHEN $32::bytea IS NOT NULL THEN $32 \
+                                                 ELSE reported_lease_token_hash END, \
                 lease_expires_at = CASE WHEN $6 NOT IN ('LEASED', 'RUNNING') THEN NULL \
                                         WHEN $22::bytea IS NOT NULL THEN $20 + $23 * interval '1 microsecond' \
                                         WHEN $27::bigint IS NOT NULL THEN LEAST( \
@@ -2230,6 +2305,7 @@ impl PgRunTx {
         .bind(child_input)
         .bind(rehinted)
         .bind(lookback)
+        .bind(reported.map(|r| r.token_hash.clone()))
         .execute(&mut *self.tx)
         .await
         .map_err(store_error)?;

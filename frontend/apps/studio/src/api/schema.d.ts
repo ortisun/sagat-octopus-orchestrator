@@ -737,7 +737,7 @@ export interface paths {
         get?: never;
         /**
          * Bind a worker identity to activities of a namespace
-         * @description Replaces what the identity was bound to in this namespace. Each entry is an activity name (`payments.charge`), a prefix ending in `.*` (`payments.*`, which does not cover `payments` itself) or `*`. Sessions the new binding no longer covers are closed and the attempts they hold are released. Needs `worker:bind`. Audited.
+         * @description Replaces what the identity was bound to in this namespace. `pools` (optional) replaces the worker pools the identity is granted: absent leaves them as they are, an empty list takes them away, and removing the binding removes them. A pool is what a secret lists to say which workers may receive it (see `setSecretPools`); repeats are dropped. Each entry is an activity name (`payments.charge`), a prefix ending in `.*` (`payments.*`, which does not cover `payments` itself) or `*`. Sessions the new binding no longer covers are closed and the attempts they hold are released. Needs `worker:bind`. Audited.
          */
         put: operations["bindWorker"];
         post?: never;
@@ -808,6 +808,30 @@ export interface paths {
          */
         get: operations["listSecretAccess"];
         put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/secrets/{secretName}/pools": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The worker pools allowed to receive the secret
+         * @description Needs `secret:manage`. An empty list means the secret is not restricted to pools.
+         */
+        get: operations["listSecretPools"];
+        /**
+         * Restrict delivery of the secret to workers of some pools
+         * @description Needs `secret:manage`. Replaces the list; an empty list lifts the restriction and the secret goes, as before, to every worker bound to the activity of a step that declares it. With a list, a step that declares the secret is not leased to a worker whose identity was not granted one of the pools (see `bindWorker`); the step stays available to a worker that was, and the refusal is audited (`secret.delivery_refused`, once per worker identity, run, node and attempt). `ResolveSecrets` refuses the value again on the grants of that moment, so a lease handed out earlier carries nothing. A pool is a name an administrator grants to an identity in one namespace; the `pools` a worker advertises at registration are scaling labels and play no part. Audited.
+         */
+        put: operations["setSecretPools"];
         post?: never;
         delete?: never;
         options?: never;
@@ -2698,6 +2722,8 @@ export interface components {
             subject: string;
             /** @description Activity names, `<prefix>.*` or `*`. */
             activities: string[];
+            /** @description The worker pools the identity was granted in this namespace; a secret that lists pools is delivered only to identities that hold one of them. */
+            pools?: string[];
             revoked?: components["schemas"]["RevokedWorkers"];
         };
         WorkerBindingList: {
@@ -2705,6 +2731,8 @@ export interface components {
         };
         SetWorkerBindingRequest: {
             activities: string[];
+            /** @description Replaces the pools the identity is granted. Absent leaves them as they are; an empty list takes them all away. Removing the binding removes them too. */
+            pools?: string[];
         };
         Secret: {
             name: string;
@@ -2714,6 +2742,11 @@ export interface components {
             createdBy: string;
             /** Format: date-time */
             updatedAt: string;
+            /** @description The worker pools allowed to receive the secret; empty means every worker bound to the activity (see `setSecretPools`). Present only for callers who hold `secret:manage`: whoever may merely use the secret is not told which fleets are trusted with it. */
+            pools?: string[];
+        };
+        SecretPools: {
+            pools: string[];
         };
         SecretList: {
             items: components["schemas"]["Secret"][];
@@ -2724,6 +2757,8 @@ export interface components {
         SetSecretRequest: {
             /** @description The secret, UTF-8 text of 1 to 16384 bytes. Never returned. */
             value: string;
+            /** @description Replaces the worker pools allowed to receive the secret in the same call (see `setSecretPools`). Absent leaves them as they are, and a new secret then has none; an empty list lifts the restriction. Deleting a secret deletes its restriction, so recreate one that must stay restricted with its pools, which makes it restricted from the first instant. */
+            pools?: string[];
         };
         EgressPolicy: {
             /** @description Exact hosts, `*.domain` rules and CIDR networks, lower-cased and masked. */
@@ -5699,6 +5734,74 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    listSecretPools: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                secretName: components["parameters"]["SecretName"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The pools */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecretPools"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    setSecretPools: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                secretName: components["parameters"]["SecretName"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SecretPools"];
+            };
+        };
+        responses: {
+            /** @description The pools now in force */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecretPools"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
             429: components["responses"]["TooManyRequests"];
             503: components["responses"]["Unavailable"];
             default: components["responses"]["InternalError"];

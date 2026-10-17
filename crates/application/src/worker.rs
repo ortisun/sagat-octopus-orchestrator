@@ -28,7 +28,8 @@ use crate::entropy::{Entropy, Token};
 use crate::error::{AppError, StoreError};
 use crate::execution::{
     Actor, Effects, Engine, EngineError, ExpressionEvaluator, LeaseGrant, LeaseRenewal,
-    MAX_PAYLOAD_BYTES, MAX_RUN_OUTPUT_BYTES, RunTx, compensation_key, step_id,
+    MAX_PAYLOAD_BYTES, MAX_RUN_OUTPUT_BYTES, PoolCheck, ReportedLease, RunTx, compensation_key,
+    step_id,
 };
 use crate::quotas::QuotaLookup;
 use crate::runs::{Lock, RunStore, execution_error};
@@ -211,7 +212,9 @@ pub trait WorkerStore: QuotaLookup + Send + Sync {
         ttl: Duration,
     ) -> impl Future<Output = Result<Option<SessionRecord>, StoreError>> + Send;
 
-    /// Runs of one namespace that have a `READY` step for one of `activities`, oldest first.
+    /// Runs of one namespace that have a `READY` step for one of `activities`, oldest first. Steps
+    /// that declare a secret restricted to worker pools the identity `subject` holds none of are
+    /// left out of the window, bar a few per activity that the claim refuses and audits (G48).
     fn claimable_runs(
         &self,
         tenant: TenantId,
@@ -219,6 +222,7 @@ pub trait WorkerStore: QuotaLookup + Send + Sync {
         activities: &[String],
         limit: u32,
         accepted_protocol_minor: u32,
+        subject: &str,
     ) -> impl Future<Output = Result<Vec<RunId>, StoreError>> + Send;
 }
 
@@ -365,8 +369,18 @@ pub struct StepAck {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeartbeatAck {
     pub cancel_requested: bool,
-    /// When the lease now expires (never past the attempt's own deadline).
-    pub lease_expires_at: OffsetDateTime,
+    /// When the lease now expires (never past the attempt's own deadline). `None` when this very
+    /// lease already reported the attempt (G141): the beat was late, there is nothing to renew and
+    /// the worker should stop beating.
+    pub lease_expires_at: Option<OffsetDateTime>,
+}
+
+/// The lease of `task`, recorded with the report it makes (G141).
+fn reported_lease(task: &TaskRef<'_>) -> ReportedLease {
+    ReportedLease {
+        node: task.node.clone(),
+        token_hash: Token::hash_of(task.lease_token),
+    }
 }
 
 /// The worker protocol use cases.
@@ -670,10 +684,12 @@ where
                 &session.activities,
                 wanted.saturating_mul(4).min(64),
                 session.accepted_protocol_minor,
+                &session.subject,
             )
             .await?;
         let mut claimed = Vec::new();
         self.claim(
+            principal,
             &session,
             &Token::hash_of(session_token),
             candidates,
@@ -697,6 +713,7 @@ where
     #[allow(clippy::too_many_arguments)] // task, byte and authority budgets travel together
     async fn claim(
         &self,
+        principal: &Principal,
         session: &SessionRecord,
         session_token_hash: &[u8],
         candidates: Vec<RunId>,
@@ -715,6 +732,7 @@ where
             }
             match self
                 .claim_run(
+                    principal,
                     session,
                     session_token_hash,
                     run,
@@ -747,6 +765,7 @@ where
     #[allow(clippy::too_many_arguments)] // one run receives the same bounded claim context
     async fn claim_run(
         &self,
+        principal: &Principal,
         session: &SessionRecord,
         session_token_hash: &[u8],
         run: RunId,
@@ -817,6 +836,29 @@ where
             // breaker holds back must not use up the place of one that can run.
             if *bytes + run_bytes >= byte_budget || leased.len() >= remaining {
                 break;
+            }
+            // A secret that lists worker pools is not delivered to a worker outside them, so the
+            // step is not handed to it either: it stays READY, without spending an attempt, for a
+            // worker that may have the value (G48). Judged on the grants as they are in this
+            // transaction, before any quota is reserved for the step.
+            let declared = Self::declared_secrets_of(&mut tx, &node);
+            if !declared.is_empty()
+                && let Some(withheld) = tx
+                    .secret_pool_refusal(&declared, &session.subject, PoolCheck::Hint)
+                    .await?
+            {
+                let attempt = tx
+                    .parts()
+                    .1
+                    .step(&node)
+                    .map_or(0, sagat_domain::execution::StepState::attempt)
+                    .saturating_add(1);
+                let effects = self.pool_refusal_effects(
+                    principal, &tx, &node, attempt, &withheld, "lease", trace_id,
+                );
+                tx.persist(&[], effects).await?;
+                metrics::counter!("secret_delivery_refused_total", "stage" => "lease").increment(1);
+                continue;
             }
             // Measure the actual serialized context before granting any lease. Raw output sizes
             // do not bound it: JSON number normalization can expand a compact stored document.
@@ -1046,7 +1088,20 @@ where
     ) -> Result<HeartbeatAck, AppError> {
         principal.authorize(Permission::WorkerExecute)?;
         let mut tx = self.open(principal, task, Lock::Wait).await?;
-        self.verify(&mut tx, task).await?;
+        if let Err(stale) = self.verify(&mut tx, task).await {
+            // A beat already on its way when this same lease reported (G141): not an error, and
+            // nothing to renew. Any other lease, lost or forged, stays a stale attempt.
+            if matches!(stale, AppError::StaleAttempt) && self.reported_by(&mut tx, task).await? {
+                // The same binding rule as a live beat: a worker no longer bound is refused.
+                self.ensure_bound(principal, &mut tx, task).await?;
+                metrics::counter!("worker_heartbeats_after_report_total").increment(1);
+                return Ok(HeartbeatAck {
+                    cancel_requested: false,
+                    lease_expires_at: None,
+                });
+            }
+            return Err(stale);
+        }
         self.ensure_bound(principal, &mut tx, task).await?;
         let mut effects = Effects::by(Actor::Worker(principal.subject().as_str().to_owned()), None);
         effects.renewal = Some(LeaseRenewal {
@@ -1088,7 +1143,7 @@ where
         tx.commit().await?;
         Ok(HeartbeatAck {
             cancel_requested,
-            lease_expires_at,
+            lease_expires_at: Some(lease_expires_at),
         })
     }
 
@@ -1335,6 +1390,7 @@ where
             }
         }
         let mut effects = Effects::by(Actor::Worker(principal.subject().as_str().to_owned()), None);
+        effects.reported = Some(reported_lease(task));
         // A secret the step was given must not come back in its output, where it would be stored in
         // the journal and handed to every later step: the step fails for good instead.
         if let Some(name) = self.secret_in_output(&mut tx, task, output).await? {
@@ -1496,6 +1552,7 @@ where
         let node = task.node.clone();
         let fence = task.fence;
         let mut effects = Effects::by(Actor::Worker(principal.subject().as_str().to_owned()), None);
+        effects.reported = Some(reported_lease(task));
         effects.audit = audit;
         self.engine
             .run(&mut tx, effects, move |def, state, now| {
@@ -1605,6 +1662,7 @@ where
         self.verify(&mut tx, task).await?;
         self.ensure_bound(principal, &mut tx, task).await?;
         let mut effects = Effects::by(Actor::Worker(principal.subject().as_str().to_owned()), None);
+        effects.reported = Some(reported_lease(task));
         // The code is stored in the journal and shown to everyone who reads the run, and a
         // credential fits the characters and the length it may have (`[A-Za-z0-9_.:-]`, 64): a
         // worker that reports its own secret as the reason it failed fails for good instead.
@@ -1698,6 +1756,7 @@ where
         let node = task.node.clone();
         let fence = task.fence;
         let mut effects = Effects::by(Actor::Worker(principal.subject().as_str().to_owned()), None);
+        effects.reported = Some(reported_lease(task));
         effects.audit = audit;
         self.engine
             .run(&mut tx, effects, move |def, state, now| {
@@ -1788,10 +1847,51 @@ where
 
     /// The secrets the step declares, from its definition.
     fn declared_secrets<Tx: RunTx>(tx: &mut Tx, task: &TaskRef<'_>) -> Vec<SecretName> {
+        Self::declared_secrets_of(tx, task.node)
+    }
+
+    fn declared_secrets_of<Tx: RunTx>(tx: &mut Tx, node: &NodeId) -> Vec<SecretName> {
         let (def, _) = tx.parts();
-        def.node(task.node)
+        def.node(node)
             .map(|node| node.secrets().to_vec())
             .unwrap_or_default()
+    }
+
+    /// The audit of a secret withheld from a worker outside its pools. It names the secret, the
+    /// node and the attempt and never a value or a pool. The audit table keeps the first of
+    /// identical events (same worker identity, run, node, attempt and stage), so a worker that
+    /// polls every half second leaves one row, not one per poll, and a retry (a new attempt) is a
+    /// new event; at most a hundred different ones per worker and run.
+    #[allow(clippy::too_many_arguments)] // one refusal is described by who, what, which and when
+    fn pool_refusal_effects<Tx: RunTx>(
+        &self,
+        principal: &Principal,
+        tx: &Tx,
+        node: &NodeId,
+        attempt: u32,
+        withheld: &SecretName,
+        stage: &str,
+        trace_id: Option<&str>,
+    ) -> Effects {
+        let info = tx.info();
+        let mut effects = Effects::by(
+            Actor::Worker(principal.subject().as_str().to_owned()),
+            trace_id.map(str::to_owned),
+        );
+        effects.audit = Some(
+            AuditRecord::by(
+                principal,
+                AuditAction::SecretDeliveryRefused,
+                ResourceType::Secret,
+                format!("{}/run {}", info.namespace_id, info.run_id),
+                trace_id.map(str::to_owned),
+                self.clock.now(),
+            )
+            .with_reason(format!(
+                "node {node} attempt {attempt}: {withheld} is not delivered outside its worker pools (at {stage})"
+            )),
+        );
+        effects
     }
 
     /// Hands a worker the values of the secrets its step declares, for the length of the attempt it
@@ -1834,6 +1934,29 @@ where
         let names = Self::declared_secrets(&mut tx, task);
         if names.is_empty() {
             return Ok(Vec::new());
+        }
+        // The pools are judged again here, on the grants of this moment: a lease handed out before a
+        // secret was restricted, or before the worker's grant was taken away, does not carry the
+        // value (G48).
+        if let Some(withheld) = tx
+            .secret_pool_refusal(&names, principal.subject().as_str(), PoolCheck::Delivery)
+            .await?
+        {
+            let effects = self.pool_refusal_effects(
+                principal,
+                &tx,
+                task.node,
+                task.fence.attempt,
+                &withheld,
+                "resolve",
+                trace_id,
+            );
+            tx.persist(&[], effects).await?;
+            tx.commit().await?;
+            metrics::counter!("secret_delivery_refused_total", "stage" => "resolve").increment(1);
+            return Err(AppError::SecretUnavailable {
+                name: withheld.to_string(),
+            });
         }
         let info = tx.info().clone();
         let inputs = tx.secret_inputs(&names).await?;
@@ -2009,6 +2132,24 @@ where
             return Err(AppError::NotBound);
         }
         Ok(())
+    }
+
+    /// Whether `task` names the lease that reported the attempt of its step (G141), with the same
+    /// step-id check as [`Self::verify`].
+    async fn reported_by<Tx: RunTx>(
+        &self,
+        tx: &mut Tx,
+        task: &TaskRef<'_>,
+    ) -> Result<bool, AppError> {
+        if let Some(claimed) = task.step_id {
+            let info = tx.info();
+            if claimed != step_id(info.version_id, info.run_id, task.node) {
+                return Ok(false);
+            }
+        }
+        Ok(tx
+            .reported_by(task.node, &Token::hash_of(task.lease_token))
+            .await?)
     }
 
     /// The presented token must be the one hashed into the step's current lease.

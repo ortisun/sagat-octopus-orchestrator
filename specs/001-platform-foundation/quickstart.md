@@ -139,8 +139,7 @@ contract syntax checks through its contracts job.
 
 ## Known limits
 
-Recorded in [`research.md`](./research.md): no token revocation list (G7), `403`s are not audited
-(G9), and HTTP rate limits remain per process (G13). Create operations are now database-backed and
+Recorded in [`research.md`](./research.md): no token revocation list (G7), the `403` audit (G9) is built, and HTTP rate limits remain per process (G13). Create operations are now database-backed and
 idempotent under an optional `Idempotency-Key` (G8 resolved). G6 is closed by feature 008's bounded OTLP/HTTP JSON span
 exporter; protobuf/gRPC OTLP remains feature 008's explicit G169. Access-token `typ` enforcement
 is available but off by default (G14). Operations: [`docs/runbooks/control-plane.md`](../../docs/runbooks/control-plane.md).

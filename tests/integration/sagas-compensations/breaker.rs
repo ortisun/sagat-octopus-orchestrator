@@ -725,6 +725,7 @@ async fn the_claim_does_not_walk_the_compensations_an_open_breaker_holds_back() 
             .replace("$3::text[]", "ARRAY['undo.reserve']::text[]")
             .replace("$4", "8")
             .replace("$5", "3")
+            .replace("$6", "'some-worker'")
     );
     let plan: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
         .fetch_all(&w.db.pool)

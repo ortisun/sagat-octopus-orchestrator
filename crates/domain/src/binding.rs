@@ -12,6 +12,11 @@
 //! * `payments.*`: every activity whose name starts with `payments.` (the dot is part of the prefix,
 //!   so it does not cover `paymentsx.charge` or `payments` itself);
 //! * `*`: every activity of the namespace.
+//!
+//! A binding also carries the **worker pools** its identity belongs to (gap G48). A pool is a name
+//! an administrator grants to a worker identity in one namespace; a secret may list the pools that
+//! may receive it. The grant is the administrator's: a name a worker only *claims* when it
+//! registers (its advertised `pools`, a scaling label) is never read for this decision.
 
 use std::fmt;
 
@@ -19,6 +24,78 @@ use crate::workflow::ActivityName;
 
 /// Most patterns one binding can hold.
 pub const MAX_PATTERNS: usize = 64;
+
+/// Most pools one worker identity can be granted in a namespace, and most one secret can list.
+pub const MAX_POOLS: usize = 16;
+/// Longest pool name.
+pub const MAX_POOL_NAME: usize = 64;
+
+/// A pool name or a list of pool names that cannot be used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum PoolError {
+    #[error("at most {MAX_POOLS} pools")]
+    Count,
+    #[error("a pool name is 1 to {MAX_POOL_NAME} letters, digits or . _ - : +")]
+    InvalidName,
+}
+
+/// The name of a worker pool: 1 to 64 ASCII letters, digits or `. _ - : +` (the same alphabet the
+/// pools a worker advertises use, so one label can name both). Case matters.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct PoolName(String);
+
+impl PoolName {
+    /// # Errors
+    /// [`PoolError::InvalidName`] for an empty, long or oddly spelled name.
+    pub fn parse(text: &str) -> Result<Self, PoolError> {
+        let valid = !text.is_empty()
+            && text.len() <= MAX_POOL_NAME
+            && text
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ':' | '+'));
+        if valid {
+            Ok(Self(text.to_owned()))
+        } else {
+            Err(PoolError::InvalidName)
+        }
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for PoolName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Parses a list of pools: at most [`MAX_POOLS`], sorted, without repeats. An empty list is valid
+/// (for a secret it means "no restriction", for a binding "no pool").
+///
+/// # Errors
+/// [`PoolError`] for an oversized list or an invalid name.
+pub fn parse_pools<S: AsRef<str>>(texts: &[S]) -> Result<Vec<PoolName>, PoolError> {
+    if texts.len() > MAX_POOLS {
+        return Err(PoolError::Count);
+    }
+    let mut pools = texts
+        .iter()
+        .map(|t| PoolName::parse(t.as_ref()))
+        .collect::<Result<Vec<_>, _>>()?;
+    pools.sort();
+    pools.dedup();
+    Ok(pools)
+}
+
+/// Whether a secret that lists `allowed` may be delivered to a worker granted `granted`: yes when
+/// the list is empty (no restriction), otherwise when the two share a pool.
+#[must_use]
+pub fn pool_permits(allowed: &[String], granted: &[String]) -> bool {
+    allowed.is_empty() || allowed.iter().any(|pool| granted.contains(pool))
+}
 
 /// A pattern or a list of patterns that cannot be used.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -197,6 +274,59 @@ mod tests {
             parse_patterns(&["b.x", "bad pattern"]),
             Err(BindingError::InvalidPattern)
         );
+    }
+
+    #[test]
+    fn a_pool_name_is_a_short_label_in_a_closed_alphabet() {
+        for ok in [
+            "trusted",
+            "a",
+            "gpu.eu-west_1:b+c",
+            &"a".repeat(MAX_POOL_NAME),
+        ] {
+            assert_eq!(PoolName::parse(ok).expect("valid").as_str(), ok);
+        }
+        for bad in [
+            "",
+            " ",
+            "a b",
+            "a/b",
+            "tr\u{fc}sted",
+            "a\n",
+            &"a".repeat(MAX_POOL_NAME + 1),
+        ] {
+            assert_eq!(PoolName::parse(bad), Err(PoolError::InvalidName), "{bad:?}");
+        }
+        assert_ne!(
+            PoolName::parse("Trusted"),
+            PoolName::parse("trusted"),
+            "case matters"
+        );
+    }
+
+    #[test]
+    fn a_pool_list_is_bounded_sorted_and_without_repeats_and_may_be_empty() {
+        let none: [&str; 0] = [];
+        assert_eq!(parse_pools(&none), Ok(Vec::new()));
+        let many: Vec<String> = (0..=MAX_POOLS).map(|i| format!("p{i}")).collect();
+        assert_eq!(parse_pools(&many), Err(PoolError::Count));
+        let parsed = parse_pools(&["b", "a", "b"]).expect("valid");
+        let texts: Vec<_> = parsed.iter().map(PoolName::as_str).collect();
+        assert_eq!(texts, ["a", "b"]);
+        assert_eq!(parse_pools(&["a", "b c"]), Err(PoolError::InvalidName));
+    }
+
+    #[test]
+    fn a_secret_without_a_pool_list_goes_to_anyone_and_with_one_only_to_its_pools() {
+        let list = |names: &[&str]| names.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>();
+        assert!(pool_permits(&[], &[]), "no list: today's behaviour");
+        assert!(pool_permits(&[], &list(&["x"])));
+        assert!(pool_permits(&list(&["trusted"]), &list(&["trusted", "x"])));
+        assert!(
+            !pool_permits(&list(&["trusted"]), &[]),
+            "no pool, no secret"
+        );
+        assert!(!pool_permits(&list(&["trusted"]), &list(&["Trusted", "x"])));
     }
 
     #[test]

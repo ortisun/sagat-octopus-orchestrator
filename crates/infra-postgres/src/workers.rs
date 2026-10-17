@@ -15,12 +15,37 @@ use crate::execution::PgRunStore;
 use crate::identity::{col, corrupt, store_error};
 use crate::quotas::ensure_room_for_session;
 
+/// True for a step that declares a secret listing worker pools none of which was granted to the
+/// subject `$6` in the step's namespace (G48). A step that declares none (`secrets` NULL) is never
+/// refused. The claim transaction judges the same condition again on the rows it locks.
+macro_rules! pool_refused {
+    () => {
+        "(st.secrets IS NOT NULL AND EXISTS ( \
+            SELECT 1 FROM secrets sec \
+            WHERE sec.tenant_id = st.tenant_id AND sec.namespace_id = st.namespace_id \
+              AND sec.name = ANY(st.secrets) \
+              AND EXISTS (SELECT 1 FROM secret_pools p \
+                          WHERE p.tenant_id = sec.tenant_id AND p.secret_id = sec.id) \
+              AND NOT EXISTS (SELECT 1 FROM secret_pools p \
+                              JOIN worker_binding_pools g \
+                                ON g.tenant_id = p.tenant_id AND g.pool = p.pool \
+                               AND g.namespace_id = sec.namespace_id AND g.subject = $6 \
+                              WHERE p.tenant_id = sec.tenant_id AND p.secret_id = sec.id)))"
+    };
+}
+
 /// The runs with the oldest ready steps for some activity of the session.
 ///
 /// Per activity it walks `steps_ready_idx` (tenant, namespace, activity, ready_at) in order and
 /// stops after `$4` qualifying rows, so its cost is bounded by the answer and not by the backlog (an
 /// aggregate over all ready steps cost 209 ms with 200 000 of them). Paused and stopping runs are
 /// skipped by a primary-key probe each.
+///
+/// A step that declares a secret restricted to worker pools the subject (`$6`) holds none of is left
+/// out of the candidate window: enough of them ahead of the rest would otherwise fill it and starve
+/// a general worker of unrestricted work. Four of them per activity and kind are still read (the
+/// `LIMIT 4` branches), so that the claim transaction refuses and audits them: the audit samples
+/// the oldest refused steps instead of writing one row per step per poll.
 ///
 /// Compensations have an index of their own (`steps_ready_compensation_idx`), and the branch that
 /// reads it is gated by the circuit breaker of the activity with a condition that does not depend on
@@ -31,7 +56,8 @@ use crate::quotas::ensure_room_for_session;
 // from hiding other activities behind the global LIMIT. The transaction rechecks the exact quota
 // under its admission locks. With no configured override/ceiling, leave the default to that gate.
 // OFFSET/LIMIT stops after the configured number of active leases; it never aggregates READY rows.
-pub const CLAIMABLE: &str = "SELECT s.run_id FROM unnest($3::text[]) AS a(activity) \
+pub const CLAIMABLE: &str = concat!(
+    "SELECT s.run_id FROM unnest($3::text[]) AS a(activity) \
      CROSS JOIN LATERAL ( \
        SELECT least( \
          coalesce( \
@@ -52,6 +78,42 @@ pub const CLAIMABLE: &str = "SELECT s.run_id FROM unnest($3::text[]) AS a(activi
                 WHERE blob.tenant_id = r.tenant_id AND blob.namespace_id = r.namespace_id \
                   AND blob.run_id = r.id AND blob.purpose = 'STEP_OUTPUT' \
                   AND blob.state = 'COMMITTED'))) \
+            AND NOT ",
+    pool_refused!(),
+    " \
+          ORDER BY st.ready_at LIMIT $4) \
+         UNION ALL \
+         (SELECT st.run_id, st.ready_at FROM steps st \
+          JOIN runs r ON r.tenant_id = st.tenant_id AND r.id = st.run_id \
+          WHERE st.tenant_id = $1 AND st.namespace_id = $2 AND st.activity = a.activity \
+            AND st.status = 'READY' AND st.kind <> 'COMPENSATION' AND NOT r.paused \
+            AND (r.stop_reason IS NULL OR st.kind <> 'FORWARD') \
+            AND ($5 >= 3 OR (r.input_blob_id IS NULL AND NOT EXISTS ( \
+                SELECT 1 FROM blobs blob \
+                WHERE blob.tenant_id = r.tenant_id AND blob.namespace_id = r.namespace_id \
+                  AND blob.run_id = r.id AND blob.purpose = 'STEP_OUTPUT' \
+                  AND blob.state = 'COMMITTED'))) \
+            AND ",
+    pool_refused!(),
+    " \
+          ORDER BY st.ready_at LIMIT 4) \
+         UNION ALL \
+         (SELECT st.run_id, st.ready_at FROM steps st \
+          JOIN runs r ON r.tenant_id = st.tenant_id AND r.id = st.run_id \
+          WHERE st.tenant_id = $1 AND st.namespace_id = $2 AND st.activity = a.activity \
+            AND st.status = 'READY' AND st.kind = 'COMPENSATION' \
+            AND NOT r.paused \
+            AND ($5 >= 3 OR (r.input_blob_id IS NULL AND NOT EXISTS ( \
+                SELECT 1 FROM blobs blob \
+                WHERE blob.tenant_id = r.tenant_id AND blob.namespace_id = r.namespace_id \
+                  AND blob.run_id = r.id AND blob.purpose = 'STEP_OUTPUT' \
+                  AND blob.state = 'COMMITTED'))) \
+            AND NOT EXISTS (SELECT 1 FROM compensation_breakers b \
+                WHERE b.tenant_id = $1 AND b.namespace_id = $2 AND b.activity = a.activity \
+                  AND b.opened_until > clock_timestamp()) \
+            AND NOT ",
+    pool_refused!(),
+    " \
           ORDER BY st.ready_at LIMIT $4) \
          UNION ALL \
          (SELECT st.run_id, st.ready_at FROM steps st \
@@ -67,7 +129,10 @@ pub const CLAIMABLE: &str = "SELECT s.run_id FROM unnest($3::text[]) AS a(activi
             AND NOT EXISTS (SELECT 1 FROM compensation_breakers b \
                 WHERE b.tenant_id = $1 AND b.namespace_id = $2 AND b.activity = a.activity \
                   AND b.opened_until > clock_timestamp()) \
-          ORDER BY st.ready_at LIMIT $4) \
+            AND ",
+    pool_refused!(),
+    " \
+          ORDER BY st.ready_at LIMIT 4) \
      ) s \
      WHERE quota.max_inflight IS NULL OR (quota.max_inflight > 0 AND NOT EXISTS ( \
          SELECT 1 FROM steps active \
@@ -75,7 +140,8 @@ pub const CLAIMABLE: &str = "SELECT s.run_id FROM unnest($3::text[]) AS a(activi
            AND active.status IN ('LEASED', 'RUNNING') AND active.lease_expires_at > clock_timestamp() \
          OFFSET greatest(quota.max_inflight - 1, 0) LIMIT 1 \
      )) \
-     ORDER BY s.ready_at, s.run_id LIMIT $4";
+     ORDER BY s.ready_at, s.run_id LIMIT $4"
+);
 
 fn micros(duration: Duration) -> i64 {
     i64::try_from(duration.as_micros()).unwrap_or(i64::MAX)
@@ -251,6 +317,7 @@ impl WorkerStore for PgRunStore {
         activities: &[String],
         limit: u32,
         accepted_protocol_minor: u32,
+        subject: &str,
     ) -> Result<Vec<RunId>, StoreError> {
         let rows: Vec<Uuid> = sqlx::query_scalar(CLAIMABLE)
             .bind(tenant.as_uuid())
@@ -261,6 +328,7 @@ impl WorkerStore for PgRunStore {
                 i32::try_from(accepted_protocol_minor)
                     .map_err(|_| corrupt("accepted protocol minor"))?,
             )
+            .bind(subject)
             .fetch_all(self.pool())
             .await
             .map_err(store_error)?;

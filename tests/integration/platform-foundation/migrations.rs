@@ -22,7 +22,7 @@ fn forward_migrations() -> i64 {
     i64::try_from(count).expect("count fits")
 }
 
-const TABLES: [&str; 31] = [
+const TABLES: [&str; 33] = [
     "tenants",
     "workspaces",
     "namespaces",
@@ -59,6 +59,9 @@ const TABLES: [&str; 31] = [
     "activity_quota_limits",
     // Added by feature 002 completion hardening.
     "blobs",
+    // Added for G48: the worker pools a secret may be delivered to, and the pools an identity holds.
+    "secret_pools",
+    "worker_binding_pools",
 ];
 
 #[tokio::test]
