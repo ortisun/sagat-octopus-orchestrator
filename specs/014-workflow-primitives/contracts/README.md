@@ -117,7 +117,11 @@ outbox, an `end` target finishes the run through the normal terminal path includ
 and the outbound fan-out. The run is never asked to stop, so it stays `RUNNING`/`WAITING` and no
 `run.stop_requested` is journaled. A loop without `onError` keeps failing the run after the drain,
 and a run-level cancellation always finishes the run `CANCELLED` and never takes the edge, even when
-it lands during a failure drain. The public loop subset accepts an `end` as the `onError` target.
+it lands during a failure drain. The public loop subset accepts an `end` or an activity as the `onError`
+target (D400): a recovery activity is an ordinary root activity (a worker takes it with any worker
+protocol), it may chain to further activities and must end at an `end`, and it declares no `onError`,
+`compensateWith`, `reconcileWith`, `irreversible` or `highRisk` of its own. An activity after a loop's
+success edge, or anywhere else in the root graph, stays unsupported.
 An expression error while evaluating the loop's initial carry or condition at entry happens before
 any iteration exists and still fails the run (pending decision G341 in `research.md`).
 

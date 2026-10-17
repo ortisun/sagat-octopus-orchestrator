@@ -6,8 +6,8 @@ use std::time::Duration;
 use reqwest::{Method, StatusCode};
 use sagat_api_grpc::pb::worker_service_client::WorkerServiceClient;
 use sagat_api_grpc::pb::{
-    CompleteStepRequest, FailStepRequest, PollTasksRequest, RegisterWorkerRequest,
-    WorkerCapabilities,
+    CompleteStepRequest, FailStepRequest, HeartbeatRequest, PollTasksRequest,
+    RegisterWorkerRequest, WorkerCapabilities,
 };
 use sagat_application::entropy::SystemEntropy;
 use sagat_application::execution::Engine;
@@ -554,6 +554,39 @@ fn failing_loop_document(name: &str, on_error: bool, timeout_ms: u64) -> Value {
     })
 }
 
+/// Connects a worker that serves both activities the public loop documents use.
+async fn register_loop_worker(
+    api: &TestApi,
+    name: &str,
+) -> (
+    WorkerServiceClient<tonic::transport::Channel>,
+    String,
+    String,
+) {
+    let mut worker = WorkerServiceClient::connect(api.grpc_url.clone())
+        .await
+        .expect("connect loop worker");
+    let registered = worker
+        .register_worker(worker_request(
+            api,
+            RegisterWorkerRequest {
+                worker_name: format!("public-loop-worker-{name}-{}", Uuid::now_v7()),
+                namespace: "payments".into(),
+                capabilities: Some(WorkerCapabilities {
+                    languages: vec!["rust".into()],
+                    activities: vec!["counter.increment".into(), "recover.cleanup".into()],
+                    pools: Vec::new(),
+                    max_inflight: 1,
+                    protocol_version: "1.5".into(),
+                }),
+            },
+        ))
+        .await
+        .expect("register loop worker")
+        .into_inner();
+    (worker, registered.worker_id, registered.session_token)
+}
+
 struct PublicLoop {
     api: TestApi,
     run: RunId,
@@ -657,39 +690,19 @@ async fn start_public_loop(document: impl Fn(&str) -> Value) -> PublicLoop {
             "alice",
             "acme",
         )
-        .json(&json!({"activities": ["counter.increment"]}))
+        .json(&json!({"activities": ["counter.increment", "recover.cleanup"]}))
         .send()
         .await
         .expect("worker binding");
     assert_eq!(binding.status(), StatusCode::OK);
-    let mut worker = WorkerServiceClient::connect(api.grpc_url.clone())
-        .await
-        .expect("connect loop worker");
-    let registered = worker
-        .register_worker(worker_request(
-            &api,
-            RegisterWorkerRequest {
-                worker_name: format!("public-loop-worker-{name}"),
-                namespace: "payments".into(),
-                capabilities: Some(WorkerCapabilities {
-                    languages: vec!["rust".into()],
-                    activities: vec!["counter.increment".into()],
-                    pools: Vec::new(),
-                    max_inflight: 1,
-                    protocol_version: "1.5".into(),
-                }),
-            },
-        ))
-        .await
-        .expect("register loop worker")
-        .into_inner();
+    let (worker, worker_id, session_token) = register_loop_worker(&api, &name).await;
     PublicLoop {
         api,
         run,
         tenant: TenantId::new(tenant.as_uuid()),
         worker,
-        worker_id: registered.worker_id,
-        session_token: registered.session_token,
+        worker_id,
+        session_token,
     }
 }
 
@@ -870,4 +883,463 @@ async fn public_loop_timeout_routes_the_error_edge_and_the_run_completes() {
     assert_eq!(owner, ("FAILED".into(), Some("RUN_TIMED_OUT".into())));
     assert_eq!(public.run_state().await.0, "SUCCEEDED");
     public.verify("loop timed out over the error edge").await;
+}
+
+/// Where the loop's `onError` edge leads in a shaped document.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ErrorTarget {
+    None,
+    End,
+    Activity,
+}
+
+/// A public loop with an optional delay between iterations and an optional error edge. The `while`
+/// form keeps going while `carry < 1`, the `repeatUntil` form until `carry >= 1`, so an iteration
+/// that returns `0` always asks for another one.
+fn shaped_loop_document(
+    name: &str,
+    kind: &str,
+    delay_ms: Option<u64>,
+    timeout_ms: u64,
+    error: ErrorTarget,
+) -> Value {
+    let mut owner = json!({
+        "id": "poll",
+        "type": kind,
+        "condition": if kind == "while" { "carry < 1" } else { "carry >= 1" },
+        "body": "iteration",
+        "initial": "0",
+        "carry": "bodyResult",
+        "maxIterations": 3,
+        "timeoutMs": timeout_ms,
+        "next": "done"
+    });
+    if let Some(delay_ms) = delay_ms {
+        owner["delayMs"] = json!(delay_ms);
+    }
+    let mut nodes = vec![json!({"id": "done", "type": "end", "outputExpr": "steps.poll.output"})];
+    match error {
+        ErrorTarget::None => {}
+        ErrorTarget::End => {
+            owner["onError"] = json!("failed");
+            nodes.push(json!({"id": "failed", "type": "end"}));
+        }
+        ErrorTarget::Activity => {
+            owner["onError"] = json!("recover");
+            nodes.push(json!({
+                "id": "recover",
+                "type": "activity",
+                "activity": "recover.cleanup",
+                "next": "recovered"
+            }));
+            nodes.push(json!({"id": "recovered", "type": "end"}));
+        }
+    }
+    nodes.insert(0, owner);
+    json!({
+        "apiVersion": "sagat-octopus-orchestrator.io/v1",
+        "kind": "Workflow",
+        "metadata": {"name": name},
+        "entrypoint": "poll",
+        "bodies": {
+            "iteration": {
+                "entrypoint": "increment",
+                "nodes": [
+                    {
+                        "id": "increment",
+                        "type": "activity",
+                        "activity": "counter.increment",
+                        "next": "return-value"
+                    },
+                    {"id": "return-value", "type": "return", "result": "steps.increment.output"}
+                ]
+            }
+        },
+        "nodes": nodes
+    })
+}
+
+impl PublicLoop {
+    /// `POST /runs/{id}/operations` with a plain whole-run action.
+    async fn operate(&self, action: &str) -> (StatusCode, Value) {
+        let response = self
+            .api
+            .as_user(
+                Method::POST,
+                &format!("/runs/{}/operations", self.run),
+                "alice",
+                "acme",
+            )
+            .header("x-octopus-namespace", "payments")
+            .header("idempotency-key", Uuid::now_v7().to_string())
+            .json(&json!({"action": action, "reason": "operator asked for it over HTTP"}))
+            .send()
+            .await
+            .expect("operate the run");
+        let status = response.status();
+        (status, json_of(response).await)
+    }
+
+    async fn heartbeat(&mut self, task: &sagat_api_grpc::pb::TaskLease) -> bool {
+        self.worker
+            .heartbeat(worker_request(
+                &self.api,
+                HeartbeatRequest {
+                    task_id: task.task_id.clone(),
+                    worker_id: self.worker_id.clone(),
+                    generation: task.generation,
+                    lease_token: task.lease_token.clone(),
+                    run_id: task.run_id.clone(),
+                    step_id: task.step_id.clone(),
+                    attempt: task.attempt,
+                    instance: task.instance.clone(),
+                },
+            ))
+            .await
+            .expect("heartbeat the loop task")
+            .into_inner()
+            .cancel_requested
+    }
+
+    async fn complete(&mut self, task: &sagat_api_grpc::pb::TaskLease, output: &str) {
+        let completed = self
+            .worker
+            .complete_step(worker_request(
+                &self.api,
+                CompleteStepRequest {
+                    task_id: task.task_id.clone(),
+                    run_id: task.run_id.clone(),
+                    step_id: task.step_id.clone(),
+                    attempt: task.attempt,
+                    generation: task.generation,
+                    lease_token: task.lease_token.clone(),
+                    idempotency_key: format!("complete-public-loop-{}", Uuid::now_v7()),
+                    output_json: output.to_owned(),
+                    output_blob_ref: String::new(),
+                    output_sha256: String::new(),
+                    traceparent: String::new(),
+                    instance: task.instance.clone(),
+                },
+            ))
+            .await
+            .expect("complete loop task")
+            .into_inner();
+        assert_eq!(completed.step_status, "SUCCEEDED");
+    }
+
+    /// How many tasks a poll finds right now.
+    async fn poll_count(&mut self) -> usize {
+        self.worker
+            .poll_tasks(worker_request(
+                &self.api,
+                PollTasksRequest {
+                    worker_id: self.worker_id.clone(),
+                    session_token: self.session_token.clone(),
+                    max_tasks: 1,
+                },
+            ))
+            .await
+            .expect("poll loop task")
+            .into_inner()
+            .tasks
+            .len()
+    }
+
+    /// `(reserved instances of the run, iterations the tenant has active)`.
+    async fn usage(&self) -> (i32, i32) {
+        let reserved: i32 =
+            sqlx::query_scalar("SELECT reserved_instances FROM run_instance_usage WHERE run_id=$1")
+                .bind(self.run.as_uuid())
+                .fetch_one(&self.api.db.pool)
+                .await
+                .expect("run instance usage");
+        let active: i32 =
+            sqlx::query_scalar("SELECT active_iterations FROM tenant_iteration_usage")
+                .fetch_one(&self.api.db.pool)
+                .await
+                .expect("tenant iteration usage");
+        (reserved, active)
+    }
+
+    async fn owner_status(&self) -> String {
+        sqlx::query_scalar("SELECT status FROM steps WHERE run_id=$1 AND node='poll'")
+            .bind(self.run.as_uuid())
+            .fetch_one(&self.api.db.pool)
+            .await
+            .expect("loop owner")
+    }
+
+    /// Ticks the scheduler until the run has this status.
+    async fn tick_until_run(
+        &self,
+        scheduler: &Scheduler<PgRunStore, JsonEvaluator, SystemEntropy>,
+        status: &str,
+    ) {
+        for _ in 0..12 {
+            if self.run_state().await.0 == status {
+                return;
+            }
+            let report = scheduler.tick().await;
+            assert_eq!(report.failed, 0, "{report:?}");
+        }
+        panic!(
+            "the run never reached {status}: {:?}",
+            self.run_state().await
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_public_cancel_while_an_iteration_is_leased_ends_the_run_cancelled() {
+    let mut public = start_public_loop(|name| {
+        shaped_loop_document(name, "while", None, 60_000, ErrorTarget::None)
+    })
+    .await;
+    let placement = acquire_scheduler(&public.api, "cancel-leased").await;
+    let scheduler = scheduler(&public.api, placement);
+    assert_eq!(scheduler.tick().await.loops_advanced, 1);
+    let body = public.poll_one("counter.increment").await;
+    let (reserved, active) = public.usage().await;
+    assert!(
+        reserved > 0 && active == 1,
+        "the leased iteration holds its charge"
+    );
+
+    let (status, answer) = public.operate("CANCEL").await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{answer}");
+    assert_eq!(answer["runStatus"], "CANCELLING");
+    let (run, reason, _) = public.run_state().await;
+    assert_eq!(
+        (run.as_str(), reason.as_deref()),
+        ("CANCELLING", Some("CANCELLED"))
+    );
+
+    // The scheduler drains the loop under its own fence; the leased attempt is asked to stop and
+    // the run cannot end while it still holds the lease.
+    scheduler.tick().await;
+    assert!(
+        public.heartbeat(&body).await,
+        "the leased attempt must be told to stop"
+    );
+    assert_eq!(public.run_state().await.0, "CANCELLING");
+    let acknowledged = public
+        .worker
+        .fail_step(worker_request(
+            &public.api,
+            FailStepRequest {
+                task_id: body.task_id.clone(),
+                run_id: body.run_id.clone(),
+                step_id: body.step_id.clone(),
+                attempt: body.attempt,
+                generation: body.generation,
+                lease_token: body.lease_token.clone(),
+                idempotency_key: format!("ack-cancel-{}", Uuid::now_v7()),
+                error_code: "CANCELLED".into(),
+                safe_message: String::new(),
+                retryable: false,
+                traceparent: String::new(),
+                instance: body.instance.clone(),
+            },
+        ))
+        .await
+        .expect("the worker acknowledges the stop")
+        .into_inner();
+    assert_eq!(acknowledged.step_status, "CANCELLED");
+
+    public.tick_until_run(&scheduler, "CANCELLED").await;
+    assert_eq!(public.scope().await, "CANCELLED");
+    assert_eq!(public.owner_status().await, "CANCELLED");
+    assert_eq!(
+        public.usage().await,
+        (0, 0),
+        "nothing leaks after the cancel"
+    );
+    public
+        .verify("a leased iteration cancelled over HTTP")
+        .await;
+}
+
+impl PublicLoop {
+    /// Runs the first iteration to its checkpoint, which leaves the loop waiting on its delay timer.
+    async fn reach_the_delay(
+        &mut self,
+        scheduler: &Scheduler<PgRunStore, JsonEvaluator, SystemEntropy>,
+    ) {
+        assert_eq!(
+            scheduler.tick().await.loops_advanced,
+            1,
+            "the loop is entered"
+        );
+        let body = self.poll_one("counter.increment").await;
+        self.complete(&body, "0").await;
+        for _ in 0..6 {
+            if self.timer().await.as_deref() == Some("WAITING") {
+                return;
+            }
+            let report = scheduler.tick().await;
+            assert_eq!(report.failed, 0, "{report:?}");
+        }
+        panic!(
+            "the loop never reached its delay: scope {}",
+            self.scope().await
+        );
+    }
+
+    async fn timer(&self) -> Option<String> {
+        sqlx::query_scalar("SELECT lifecycle FROM loop_timers WHERE run_id=$1")
+            .bind(self.run.as_uuid())
+            .fetch_optional(&self.api.db.pool)
+            .await
+            .expect("loop timer")
+    }
+}
+
+#[tokio::test]
+async fn a_public_cancel_while_the_loop_waits_on_its_delay_ends_the_run_cancelled() {
+    let mut public = start_public_loop(|name| {
+        shaped_loop_document(name, "while", Some(60_000), 120_000, ErrorTarget::None)
+    })
+    .await;
+    let placement = acquire_scheduler(&public.api, "cancel-delay").await;
+    let scheduler = scheduler(&public.api, placement);
+    public.reach_the_delay(&scheduler).await;
+    // Only a durable timer holds the loop: no task is out for a worker to take.
+    assert_eq!(public.poll_count().await, 0);
+
+    let (status, answer) = public.operate("CANCEL").await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{answer}");
+    public.tick_until_run(&scheduler, "CANCELLED").await;
+    assert_eq!(public.scope().await, "CANCELLED");
+    assert_eq!(public.owner_status().await, "CANCELLED");
+    assert_eq!(public.timer().await.as_deref(), Some("CANCELLED"));
+    assert_eq!(
+        public.usage().await,
+        (0, 0),
+        "nothing leaks after the cancel"
+    );
+    assert_eq!(
+        public.poll_count().await,
+        0,
+        "no iteration was admitted after the cancel"
+    );
+    public.verify("a delaying loop cancelled over HTTP").await;
+}
+
+#[tokio::test]
+async fn a_paused_run_holds_the_delay_and_resumes_the_loop() {
+    let mut public = start_public_loop(|name| {
+        shaped_loop_document(name, "while", Some(1_500), 120_000, ErrorTarget::None)
+    })
+    .await;
+    let placement = acquire_scheduler(&public.api, "pause-delay").await;
+    let scheduler = scheduler(&public.api, placement);
+    public.reach_the_delay(&scheduler).await;
+
+    let (status, answer) = public.operate("PAUSE").await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{answer}");
+    assert_eq!(answer["runStatus"], "PAUSED");
+    // The delay passes while the run is paused: nothing may be admitted until it resumes.
+    tokio::time::sleep(Duration::from_millis(1_800)).await;
+    for _ in 0..3 {
+        scheduler.tick().await;
+    }
+    assert_eq!(
+        public.poll_count().await,
+        0,
+        "a paused run admits no iteration"
+    );
+    assert_eq!(public.timer().await.as_deref(), Some("WAITING"));
+
+    let (status, answer) = public.operate("RESUME").await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{answer}");
+    for _ in 0..6 {
+        scheduler.tick().await;
+        if public.poll_count().await == 1 {
+            public
+                .verify("a resumed loop admits its next iteration")
+                .await;
+            return;
+        }
+    }
+    panic!("the resumed loop never admitted its second iteration");
+}
+
+#[tokio::test]
+async fn a_public_cancel_before_the_loop_is_entered_cancels_the_run_directly() {
+    let public = start_public_loop(|name| {
+        shaped_loop_document(name, "repeatUntil", None, 60_000, ErrorTarget::None)
+    })
+    .await;
+    let (status, answer) = public.operate("CANCEL").await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{answer}");
+    let placement = acquire_scheduler(&public.api, "cancel-pending").await;
+    let scheduler = scheduler(&public.api, placement);
+    public.tick_until_run(&scheduler, "CANCELLED").await;
+    assert_eq!(public.owner_status().await, "CANCELLED");
+    let scopes: i64 = sqlx::query_scalar("SELECT count(*) FROM loop_scopes WHERE run_id=$1")
+        .bind(public.run.as_uuid())
+        .fetch_one(&public.api.db.pool)
+        .await
+        .expect("loop scopes");
+    assert_eq!(scopes, 0, "a cancelled loop is never entered");
+    public
+        .verify("a loop cancelled before it was entered")
+        .await;
+}
+
+#[tokio::test]
+async fn public_loop_body_failure_routes_the_error_edge_to_an_activity_that_completes_the_run() {
+    let mut public = start_public_loop(|name| {
+        shaped_loop_document(name, "while", None, 60_000, ErrorTarget::Activity)
+    })
+    .await;
+    let placement = acquire_scheduler(&public.api, "error-activity").await;
+    let scheduler = scheduler(&public.api, placement);
+    assert_eq!(scheduler.tick().await.loops_advanced, 1);
+    let body = public.poll_one("counter.increment").await;
+    public.fail(&body).await;
+
+    // The failure drains the active iteration first (D294); the run is not stopped by it.
+    assert_eq!(drain_failed_loop(&public, &scheduler, true).await, 3);
+    let (status, stop_reason, _) = public.run_state().await;
+    assert_ne!(status, "SUCCEEDED", "the recovery activity has not run yet");
+    assert_eq!(stop_reason, None);
+    let owner: (String, bool, Option<String>) = sqlx::query_as(
+        "SELECT status,routed,failure_code FROM steps WHERE run_id=$1 AND node='poll'",
+    )
+    .bind(public.run.as_uuid())
+    .fetch_one(&public.api.db.pool)
+    .await
+    .expect("loop owner");
+    assert_eq!(owner, ("FAILED".into(), true, Some("WORKER_ERROR".into())));
+
+    // A worker takes the recovery activity like any root activity and completes it.
+    let recovery = public.poll_one("recover.cleanup").await;
+    assert!(
+        recovery
+            .instance
+            .as_ref()
+            .is_none_or(|i| i.instance_path.is_empty())
+    );
+    public.complete(&recovery, "{\"cleaned\":true}").await;
+    public.tick_until_run(&scheduler, "SUCCEEDED").await;
+    let recovered: (String, String) = sqlx::query_as(
+        "SELECT (SELECT status FROM steps WHERE run_id=$1 AND node='recover'), \
+                (SELECT status FROM steps WHERE run_id=$1 AND node='recovered')",
+    )
+    .bind(public.run.as_uuid())
+    .fetch_one(&public.api.db.pool)
+    .await
+    .expect("recovery steps");
+    assert_eq!(recovered, ("SUCCEEDED".into(), "SUCCEEDED".into()));
+    let skipped: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM steps WHERE run_id=$1 AND node='done' AND status='SUCCEEDED'",
+    )
+    .bind(public.run.as_uuid())
+    .fetch_one(&public.api.db.pool)
+    .await
+    .expect("success edge");
+    assert_eq!(skipped, 0, "the success edge was not taken");
+    assert_eq!(public.usage().await, (0, 0));
+    public.verify("a loop recovered by an activity").await;
 }

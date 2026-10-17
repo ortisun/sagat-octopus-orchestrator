@@ -759,6 +759,77 @@ pub(crate) fn published_collection_definition(
     Ok(definition)
 }
 
+/// The root activities a loop's `onError` edge recovers with (G340): the target of the edge and the
+/// activities it chains to, ending at `end`. Such an activity is an ordinary root activity that the
+/// loop's failure finish makes ready, so it is kept as plain as the runtime proves: it has no
+/// `onError` edge of its own and declares no compensation, reconciliation or effect policy. An
+/// activity after a loop's success edge, or anywhere else in the root graph, stays unsupported.
+fn loop_recovery_activities(
+    definition: &WorkflowDefinition,
+) -> Result<std::collections::BTreeSet<NodeId>, IrError> {
+    let unsupported =
+        |node: &sagat_domain::workflow::Node, reason: &'static str| IrError::Unsupported {
+            node: node.id().as_str().to_owned(),
+            kind: node.kind().label().to_owned(),
+            reason,
+        };
+    let mut recovery = std::collections::BTreeSet::new();
+    for owner in definition.nodes().filter(|node| {
+        matches!(
+            node.kind(),
+            NodeKind::While { .. } | NodeKind::RepeatUntil { .. }
+        )
+    }) {
+        if let Some(next) = owner.next().and_then(|next| definition.node(next)) {
+            if matches!(next.kind(), NodeKind::Activity { .. }) {
+                return Err(unsupported(
+                    next,
+                    "an activity after a loop's success edge is not enabled by the runtime; only an onError recovery activity is",
+                ));
+            }
+        }
+        let mut current = owner.on_error().and_then(|target| definition.node(target));
+        while let Some(node) = current {
+            let NodeKind::Activity {
+                compensate_with,
+                reconcile_with,
+                ..
+            } = node.kind()
+            else {
+                break;
+            };
+            if node.on_error().is_some()
+                || compensate_with.is_some()
+                || reconcile_with.is_some()
+                || node.effect().irreversible
+                || node.effect().high_risk
+            {
+                return Err(unsupported(
+                    node,
+                    "a loop recovery activity has no onError edge, compensation, reconciliation or effect policy",
+                ));
+            }
+            if !recovery.insert(node.id().clone()) {
+                break;
+            }
+            let next = node.next().and_then(|next| definition.node(next));
+            if !next.is_some_and(|next| {
+                matches!(
+                    next.kind(),
+                    NodeKind::Activity { .. } | NodeKind::End { .. }
+                )
+            }) {
+                return Err(unsupported(
+                    node,
+                    "a loop recovery activity chain ends at end",
+                ));
+            }
+            current = next;
+        }
+    }
+    Ok(recovery)
+}
+
 pub(crate) fn published_loop_definition(document: &Value) -> Result<WorkflowDefinition, IrError> {
     if document.get("chainPolicy").is_some() {
         return Err(IrError::UnsupportedDeclaration {
@@ -787,16 +858,16 @@ pub(crate) fn published_loop_definition(document: &Value) -> Result<WorkflowDefi
             reason: "a published loop workflow starts at its loop owner",
         });
     }
-    if let Some(node) = definition.nodes().find(|node| {
-        !matches!(
-            node.kind(),
-            NodeKind::While { .. } | NodeKind::RepeatUntil { .. } | NodeKind::End { .. }
-        )
+    let recovery = loop_recovery_activities(&definition)?;
+    if let Some(node) = definition.nodes().find(|node| match node.kind() {
+        NodeKind::While { .. } | NodeKind::RepeatUntil { .. } | NodeKind::End { .. } => false,
+        NodeKind::Activity { .. } => !recovery.contains(node.id()),
+        _ => true,
     }) {
         return Err(IrError::Unsupported {
             node: node.id().as_str().to_owned(),
             kind: node.kind().label().to_owned(),
-            reason: "the public loop subset is a loop chain ending at end",
+            reason: "the public loop subset is a loop chain ending at end, plus the activities a loop's onError edge recovers with",
         });
     }
     let referenced_bodies = definition
