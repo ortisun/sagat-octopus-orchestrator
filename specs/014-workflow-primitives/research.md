@@ -998,7 +998,9 @@ Written 2026-10-17 for T014-041 and T014-042. The coordinator ticks the tasks; n
   every checkpoint. `advance_collection_in_view` also walks `0..next_admission` per call. Two red tests
   fail: `red_collection_transition_rows_do_not_grow_with_progress` (218 -> 1,146 rows over 160 items) and
   `red_loop_transition_rows_do_not_grow_with_progress` (91 -> 841 over 160 iterations). Consequence in
-  the 10,000-item workload: see the report; it did not complete in the budget. Not fixed here.
+  the 10,000-item workload: at maxConcurrency 1, 16 and 256 it did not complete in 600 s, and a full-length
+  run at 256 completed in 6,815 s (1 h 54 min, 47 times the 1,000-item run), the p50 of a transition
+  rising from 44 ms to 678 ms and the rows read per transition from 15,000 to 70,000. Not fixed here.
 - **G462 — A conditional chain cannot have more than about 127 segments.** The accepted expression subset
   cannot construct an object, so the first input carries the rest of the chain as a nested `next`; the
   run input must parse as a JSON object, and the JSON parser's recursion limit of 128 stops it. 120
@@ -1041,7 +1043,8 @@ Written 2026-10-17 for T014-041 and T014-042. The coordinator ticks the tasks; n
 ### Owner questions
 
 - **O460 — Is a quadratic collection acceptable for the first release?** With G461 open, a published
-  `maxItems` of 10,000 is not usable (the measured run did not finish inside 10 minutes). Options:
+  `maxItems` of 10,000 is correct but slow (one run took 1 h 54 min, the three budgeted runs did not finish
+  in 10 minutes). Options:
   publish a lower ceiling until the transition is incremental, or schedule the fix before enabling
   collections. The recommendation is to cap `maxItems` and `maxIterations` at the largest size the report
   completed (1,000) until G461 is fixed.
