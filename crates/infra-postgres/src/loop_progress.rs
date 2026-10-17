@@ -2616,11 +2616,11 @@ impl LoopProgressStore for PgLoopProgressStore {
                     .node_for_instance(command.transition.owner())
                     .map(sagat_domain::workflow::Node::kind)
                 {
-                    Some(
-                        NodeKind::While { body, .. } | NodeKind::RepeatUntil { body, .. },
-                    ) => definition
-                        .body(body)
-                        .map_or(1, |body| i64::try_from(body.all_nodes().count()).unwrap_or(i64::MAX)),
+                    Some(NodeKind::While { body, .. } | NodeKind::RepeatUntil { body, .. }) => {
+                        definition.body(body).map_or(1, |body| {
+                            i64::try_from(body.all_nodes().count()).unwrap_or(i64::MAX)
+                        })
+                    }
                     _ => return Err(LoopProgressError::InvalidTransition),
                 };
                 let consumed = i64::from(usage.admitted) + i64::from(usage.reserved);

@@ -9,8 +9,8 @@ use uuid::Uuid;
 
 use crate::support::scope_flow::{
     Flow, activity, all_compensations, collection_document, compensating_loop, compensation_order,
-    compensation_order_with_carry, forward, loop_until_a_charge_is_declined,
-    iteration, node, one_release_that_cannot_be_delivered, reserve_and_charge, reserve_with_a_lost_attempt, retry,
+    compensation_order_with_carry, forward, iteration, loop_until_a_charge_is_declined, node,
+    one_release_that_cannot_be_delivered, reserve_and_charge, reserve_with_a_lost_attempt, retry,
     row, summary,
 };
 

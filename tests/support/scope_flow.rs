@@ -526,8 +526,8 @@ pub async fn one_release_that_cannot_be_delivered(name: &str) -> (Flow, TaskLeas
         ],
         2,
     );
-    let mut flow = Flow::start(name, document, json!([{"sku": "a"}, {"sku": "b"}])).await;
-    forward(&mut flow, &[("reserve", 0), ("reserve", 1)]).await;
+    let flow = Flow::start(name, document, json!([{"sku": "a"}, {"sku": "b"}])).await;
+    forward(&flow, &[("reserve", 0), ("reserve", 1)]).await;
     let charges = flow.poll().await;
     flow.complete(&charges[0], json!({"charged": 1})).await;
     flow.fail(&charges[1], "PAYMENT_DECLINED", false).await;

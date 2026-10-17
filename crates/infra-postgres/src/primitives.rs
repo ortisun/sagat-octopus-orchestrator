@@ -198,7 +198,7 @@ async fn run_status_after_compensation(
         DoneSagaError::Database(error) => store_error(error).into(),
     };
     let saga = read_done_saga(
-        &mut **tx,
+        tx,
         transition.tenant_id().as_uuid(),
         transition.run_id().as_uuid(),
         owner_nodes,
