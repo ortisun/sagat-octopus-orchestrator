@@ -39,6 +39,8 @@ pub mod exec;
 mod extract;
 pub mod governance;
 mod limits;
+#[path = "routes/reveal_grants.rs"]
+pub mod reveal_grants;
 mod routes;
 mod server;
 pub mod streams;

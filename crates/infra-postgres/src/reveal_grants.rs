@@ -6,7 +6,7 @@ use sagat_application::reveal_grants::{
 };
 use sagat_domain::audit::AuditRecord;
 use sagat_domain::identity::{NamespaceId, Permission, Role, Subject, TenantId};
-use sqlx::PgConnection;
+use sqlx::{PgConnection, Postgres, Transaction};
 use time::OffsetDateTime;
 
 use crate::execution::PgRunStore;
@@ -30,18 +30,20 @@ fn corrupt(field: &'static str) -> StoreError {
     }
 }
 
-/// Checks the authenticated subject's effective namespace grant on the caller's current database
-/// transaction/connection.
+/// Checks the authenticated subject's effective namespace grant in the caller's database
+/// transaction.
 ///
-/// Disclosure and event stores call this with the same `PgConnection` that reads the payload and
-/// appends its audit record. The current authenticated role must still hold
-/// `payload:read-internal`; role permissions never imply `payload:reveal-pii`.
+/// Disclosure and event stores call this with the transaction that reads the payload and appends
+/// its audit record. Requiring a `Transaction` keeps the shared revocation fence alive through that
+/// commit. The current authenticated role must still hold `payload:read-internal`; role permissions
+/// never imply `payload:reveal-pii`.
 pub async fn has_effective_payload_reveal_grant(
-    conn: &mut PgConnection,
+    tx: &mut Transaction<'_, Postgres>,
     tenant: TenantId,
     namespace: NamespaceId,
     subject: &Subject,
 ) -> Result<bool, StoreError> {
+    let conn = &mut **tx;
     let roles = lock_membership_roles(conn, tenant, &[subject]).await?;
     let Some(current_role) = locked_role(&roles, subject) else {
         return Ok(false);
