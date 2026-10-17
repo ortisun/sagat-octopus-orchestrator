@@ -93,6 +93,8 @@ SAGAT_SDK_SCENARIO=chain-query-handoff cargo test -p sagat-tests --test sdk_conf
 SAGAT_SDK_SCENARIO=chain-final-success cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
 SAGAT_SDK_SCENARIO=chain-state-final-success cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
 SAGAT_SDK_SCENARIO=chain-commands cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
+SAGAT_SDK_SCENARIO=chain-three-segments cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
+SAGAT_SDK_SCENARIO=chain-child cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
 ```
 
 The `collection-runtime` and `loop-runtime` scenarios execute their restricted public shapes
@@ -104,6 +106,10 @@ in every language. It distinguishes the predecessor's segment wait from a chain 
 the latter times out without mutating state, then cancels the chain and receives its final outcome.
 `chain-final-success` demonstrates a normal two-segment chain that ends `SUCCEEDED` without a
 cancel command or another continuation.
+`chain-three-segments` runs three segments in every language: one pinned version and one original
+deadline, a segment wait that reads `SUCCEEDED` with `CONTINUED` while the chain wait reads the final
+outcome, a paged list of the chain's runs, and refusals for writes aimed at a continued segment.
+`chain-child` runs a chain as the child of another run: the parent waits for the final outcome only.
 `chain-state-final-success` adds declared state to that conditional shape. The successor input
 holds `0.00`, while its final Query returns the transferred `19.99` in all five SDKs.
 The builder commands compare authored documents only.

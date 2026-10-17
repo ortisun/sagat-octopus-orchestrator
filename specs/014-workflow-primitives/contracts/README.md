@@ -148,8 +148,11 @@ workflow shapes above create chains and hand off through the scheduler. Both sta
 preserve the declared state digest, schema, size and revision in the successor transaction.
 Chain Query/Update have seeded PostgreSQL/HTTP evidence. Shared conformance in all five SDKs
 covers initial-head Query plus public Query and Update after stateful handoff, exact Update replay
-and a stale expected-head Query. Broader command races and faults remain open. Paged segment
-operations and wider continuation graphs remain gated.
+and a stale expected-head Query. The segment list is paged (below). Command races against the
+roll-over, a boundary that waits for open work, child continuation chains and the shared
+three-segment and child scenarios have PostgreSQL, fault and five-SDK evidence (see
+`research.md`, "Decisions of the chains increment"). A continuation whose entrypoint is a
+`waitEvent` and wider continuation graphs remain gated.
 
 | Method/path | Body/query | Success result / authorization |
 | --- | --- | --- |
@@ -162,7 +165,7 @@ operations and wider continuation graphs remain gated.
 | `POST /namespaces/{namespaceId}/chains/{chainId}/cancel` | required `expectedRunId`, `reason`; `Idempotency-Key` header | 202 durable cancellation or exact replay; requires `run:operate`; latches chain cancellation and cancels the current head atomically. |
 | `POST /namespaces/{namespaceId}/chains/{chainId}/queries/{name}` | `args`, optional `expectedRunId` | 200 current-head declared result plus the actual `runId`; requires `run:read` + `run:query`; a changed expected head returns 409. |
 | `POST /namespaces/{namespaceId}/chains/{chainId}/updates/{name}` | `updateKey`, `args`, optional `expectedRunId` and `expectedStateRevision` | 200 current-head APPLIED receipt/result; durable 422 rejection or 409 revision conflict; requires `run:update`. Exact receipt replay stays bound to its original resolved run after rollover. |
-| `GET /chains/{chainId}/runs` | bounded cursor/page size | Planned ordered segment page with no implicit payloads. |
+| `GET /namespaces/{namespaceId}/chains/{chainId}/runs` | optional `cursor`, `limit` (1..200, default 50, clamped) | 200 `{items, nextCursor}` in segment order, each item `{index, runId, status, completionKind, predecessorRunId, successorRunId, createdAt, finishedAt}` and no input, output or state; the cursor is opaque and append-stable; requires `run:read`; a foreign or missing chain is the same 404 (with the restricted denial audit); a malformed cursor or limit is 400; never cached. |
 
 **Permissions (accepted by ADR-0030/0031/0032)**: new permissions follow the existing
 `resource:action` form. `approval:read` goes to `admin`, `developer`, `operator` and `viewer`;
@@ -220,7 +223,7 @@ not caller timestamps. The server supplies all outcome timestamps.
 | Operation | Explicit run target | Explicit chain target |
 | --- | --- | --- |
 | Get / Query | Inspect that retained segment, including a continued terminal segment | Resolve and read one consistent current head; return actual run id. |
-| Existing SDK completion wait | Stop when that run becomes terminal; return SUCCEEDED + CONTINUED metadata on handoff | New `waitForChainCompletion` follows authorized links until FINAL; timeout only stops client waiting. |
+| Existing SDK completion wait | Stop when that run becomes terminal; the run read carries `chain` (`SUCCEEDED` with `completionKind` `CONTINUED` on handoff, additive and absent outside a chain) | New `waitForChainCompletion` follows authorized links until FINAL; timeout only stops client waiting. |
 | Signal | Existing exact-run behavior; continued terminal run is not forwarded | Resolve the head and apply the existing signal rule in the same transaction: a waiting step consumes it, otherwise 409 `STATE_CONFLICT`; it is never held for a successor. |
 | Update | Run-scoped key; a new operation on continued run returns RUN_CONTINUED | Chain-scoped key returns original applied/rejected receipt across rollover, never applies twice on different segments. |
 | Cancel | Cancels only that nonterminal run; a terminal old segment is unchanged | Sets chain cancel latch and cancels current run; no later continuation can pass the latch. |
@@ -249,6 +252,22 @@ and inbox rules continue, and an open subscription prevents handoff.
 A child's parent link uses original child-instance identity and chain id, not only its first run id.
 The default and only initial child policy is to await the entire chain. A user can explicitly wait
 for a segment via its run id; no hidden change to existing direct run waits is permitted.
+
+A continuation workflow can be started by a `child` node (D301; it was refused with `INTERNAL` before
+this increment). The chain's runs are created settled, so only the link tells the parent, once, and only
+with the chain's final outcome; a continued segment tells it nothing. The chain keeps the child's deadline
+(the smaller of the parent's, the node's and the chain's required timeout) as its original one. Cancelling the
+parent (or settling its step under a cancelling policy) latches the link under the parent's lock only; the
+hand-off reads the latch under the chain, head-run and link locks and refuses, and the scheduler cancels
+the chain's current head. A hand-off locks the parent first (key share), then the chain and the head run, the
+order every writer of a child uses. The successors are runs of the parent's tree and spend its
+1,024-run budget; a full tree ends the chain with the durable `CHAIN_LIMIT`, as the segment limit does.
+
+A continuation boundary that finds open work waits (D296): a running or ready step, a timer, a subscription,
+an approval, an unsettled child, an unknown effect or an unfinished compensation. It is retried until the work
+settles or the original deadline ends the chain `TIMED_OUT`; nothing about the wait is stored and no error is
+returned to any caller. A namespace or tenant that has no room for the successor makes it wait the same way:
+the successor replaces the predecessor and never needs more room than the predecessor held.
 
 ## 4. Worker and SDK compatibility
 

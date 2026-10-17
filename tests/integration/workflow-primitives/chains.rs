@@ -492,14 +492,23 @@ impl Family {
     /// The parent waits at `kid`, a child node naming the rolling workflow; `kid_input` is the
     /// child's input once it exists.
     async fn start(label: &str) -> Self {
+        Self::start_under(label, None).await
+    }
+
+    /// As [`Self::start`], with the `child` node's cancel policy (`detach`, `request_cancel`).
+    async fn start_under(label: &str, policy: Option<&str>) -> Self {
         let world = world().await;
         let kid = format!("kid-{label}-{}", Uuid::now_v7());
         world.publish(rolling(&kid)).await;
+        let mut child = child_node("kid", &kid, Some("after"));
+        if let Some(policy) = policy {
+            child["cancelPolicy"] = json!(policy);
+        }
         let (parent_workflow, _) = world
             .publish(document(
                 &format!("mother-{label}-{}", Uuid::now_v7()),
                 "kid",
-                vec![child_node("kid", &kid, Some("after")), activity("after")],
+                vec![child, activity("after")],
             ))
             .await;
         let parent = world
@@ -1290,4 +1299,88 @@ async fn operating_on_a_continued_segment_is_refused_like_any_ended_run_and_neve
     assert_eq!(boundary.chain_row().await, (head, count, revision, outcome));
     assert_eq!(boundary.journal_len().await, journal);
     assert_eq!(world.run_status(RunId::new(head)).await, RunStatus::Running);
+}
+
+#[tokio::test]
+async fn a_detached_child_chain_outlives_a_cancelled_parent_and_nobody_is_told() {
+    let family = Family::start_under("detach", Some("detach")).await;
+    family.scheduler.tick().await;
+    family
+        .world
+        .operate_run(family.parent, RunOperation::Cancel)
+        .await;
+    assert_eq!(
+        family.world.run_status(family.parent).await,
+        RunStatus::Cancelled
+    );
+    let (latched, _, _) = family.link().await;
+    assert!(!latched, "a detached child is not latched");
+    let report = family.scheduler.tick().await;
+    assert_eq!(report.children_cancelled, 0, "{report:?}");
+
+    // The chain goes on to its end, and the parent, which stopped waiting, is not told.
+    let session = family.world.session(&["segment.work"]).await;
+    for _ in 0..3 {
+        let task = family.world.one_task_of(&session, "segment.work").await;
+        family
+            .world
+            .complete(&session, &task, &json!({"processed": true}))
+            .await
+            .expect("segment");
+        family.scheduler.tick().await;
+    }
+    assert_eq!(family.chain_row().await.4.as_deref(), Some("SUCCEEDED"));
+    let quiet = family.scheduler.tick().await;
+    assert_eq!(quiet.children_finished, 0, "{quiet:?}");
+    assert_eq!(quiet.failed, 0, "{quiet:?}");
+    assert!(
+        !quiet.did_work(),
+        "and nothing is retried for ever: {quiet:?}"
+    );
+    assert_eq!(
+        family.world.run_status(family.parent).await,
+        RunStatus::Cancelled
+    );
+}
+
+#[tokio::test]
+async fn request_cancel_makes_the_parent_wait_until_the_child_chain_has_settled() {
+    let family = Family::start_under("request-cancel", Some("request_cancel")).await;
+    family.scheduler.tick().await;
+    let session = family.world.session(&["segment.work"]).await;
+    let task = family.world.one_task_of(&session, "segment.work").await;
+    family
+        .world
+        .complete(&session, &task, &json!({"processed": true}))
+        .await
+        .expect("first segment");
+    family.scheduler.tick().await;
+    let head = RunId::new(family.chain_row().await.0);
+    assert_ne!(head, family.chain);
+
+    family
+        .world
+        .operate_run(family.parent, RunOperation::Cancel)
+        .await;
+    assert_eq!(
+        family.world.run_status(family.parent).await,
+        RunStatus::Cancelling,
+        "the parent waits for its child chain"
+    );
+    assert_eq!(
+        family.world.step_status(family.parent, "kid").await,
+        Some(StepStatus::Waiting)
+    );
+    let report = family.scheduler.tick().await;
+    assert_eq!(report.children_cancelled, 1, "{report:?}");
+    assert_eq!(family.world.run_status(head).await, RunStatus::Cancelled);
+    // The chain's end reaches the parent once; the parent, already being cancelled, ends cancelled.
+    let told = family.scheduler.tick().await;
+    assert_eq!(told.children_finished, 1, "{told:?}");
+    assert_eq!(
+        family.world.run_status(family.parent).await,
+        RunStatus::Cancelled
+    );
+    assert_eq!(family.link().await.1.as_deref(), Some("CANCELLED"));
+    family.world.assert_consistent(family.parent).await;
 }

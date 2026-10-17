@@ -1579,3 +1579,58 @@ async fn a_chain_update_and_a_hand_off_commit_in_either_order_without_losing_or_
         "the finished predecessor kept the state it ended with"
     );
 }
+
+#[tokio::test]
+async fn a_lost_wake_of_the_parent_after_a_child_chain_ends_is_found_again_and_runs_the_next_step_once()
+ {
+    let family = Family::start("lost-wake").await;
+    for _ in 0..3 {
+        family.finish_segment().await;
+        family.scheduler.tick().await;
+    }
+    assert_eq!(
+        family.world.step_status(family.parent, "kid").await,
+        Some(StepStatus::Succeeded)
+    );
+    assert_eq!(
+        family.world.step_status(family.parent, "after").await,
+        Some(StepStatus::Ready)
+    );
+
+    // The dispatcher marked the hint of the parent's commit delivered, but the broker lost it: no
+    // worker is told. (An undelivered message cannot be deleted; "delivered and lost" is the fault.)
+    let lost = sqlx::query(
+        "UPDATE event_outbox SET delivered_at=now() \
+         WHERE tenant_id=$1 AND aggregate_id=$2 AND event_type='task.ready' AND delivered_at IS NULL",
+    )
+    .bind(family.world.admin.tenant_id().as_uuid())
+    .bind(family.parent.as_uuid())
+    .execute(&family.world.db.pool)
+    .await
+    .expect("lose the hint")
+    .rows_affected();
+    assert_eq!(lost, 1);
+
+    // The durable READY step is found again by the reconciler and handed out exactly once.
+    family.world.age_hint(family.parent, "after").await;
+    let report = family.scheduler.tick().await;
+    assert_eq!(report.hints_renewed, 1, "{report:?}");
+    assert_eq!(report.failed, 0, "{report:?}");
+    let session = family.world.session(&["act.after"]).await;
+    let task = family.world.one_task_of(&session, "act.after").await;
+    assert_eq!(task.run_id, family.parent);
+    family
+        .world
+        .complete(&session, &task, &json!({"done": true}))
+        .await
+        .expect("the parent's next step");
+    assert_eq!(
+        family.world.run_status(family.parent).await,
+        RunStatus::Succeeded
+    );
+    assert_eq!(
+        count_events(&family.world, family.parent, "child.finished").await,
+        1
+    );
+    family.world.assert_consistent(family.parent).await;
+}

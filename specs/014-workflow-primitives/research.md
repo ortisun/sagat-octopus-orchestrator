@@ -445,3 +445,120 @@ class in the statements the stores issue today; the audit exists for the next on
   dead code that would fail as the runtime role. Both are allowlisted with that reason. If the weight
   should be settable with the runtime role, `tenant_scheduling` needs a column-level `INSERT`/`UPDATE` and
   a `DELETE` grant in a new migration and the entries come out of `ALLOWED`.
+
+
+## Decisions of the chains increment
+
+Taken while closing US07 (T014-034..039). D296, D298, D299 and D301 are the owner's earlier decisions
+(see "Decisions of 2026-10-17"); the entries below say how they were built and what the tests found.
+
+- **D370 — A continuation boundary waits for open work, and says which.** `Quiescence::of_run`
+  (`crates/domain/src/execution/continuation.rs`) reads the run's own state: every step other than the
+  boundary must be finished and routed and every saga done. The most significant open obligation is the
+  blocker, in the fixed order compensation, unknown effect, approval, child, lease, timer, subscription,
+  sibling work. `ChainError::is_transient()` is true for `NotQuiescent` and for nothing else. The
+  scheduler returns `ContinuationAdvanceError::Waiting`, counts it in
+  `Report.continuations_waiting` (not in `did_work`) and in
+  `scheduler_continuation_waits_total{blocker}`, and logs nothing at error level. The store proves
+  quiescence again under the chain and run locks and names the exact blocker (`typed_segment_blocker`).
+  `CONTINUATION_NOT_QUIESCENT` is a wait reason, never stored; the contract table row says so. The run's
+  original deadline still ends the chain `TIMED_OUT` (`quiescence::the_original_deadline_ends_...`).
+- **D371 — Candidates that cannot hand off yet are not candidates.** `continuation_candidates` leaves out a
+  boundary whose run has open steps, an unfinished saga, a pending approval or an unsettled child, so a
+  blocked boundary no longer sits at the head of the oldest-first list and starves the ones behind it
+  (`chains::a_blocked_boundary_does_not_hold_back_...`, red with `batch = 1` before the filter).
+- **D372 — Waiting for room is the same wait.** A namespace or tenant without room for the successor makes
+  the boundary wait (`blocker="capacity"`) instead of failing every tick. The successor replaces the
+  predecessor, so a limit equal to the runs now active is enough and a limit of 0 waits
+  (`chains::a_continuation_never_outgrows_the_active_run_quota_...`; the write re-proves it under the lock,
+  `fault chains::a_quota_lowered_while_the_hand_off_waits_...`).
+- **D373 — A continuation workflow runs as a child (D301 built, not only refused).** No typed refusal was
+  needed: the creating transaction writes the chain, its first segment and the `child_chain_links` row
+  (named by the parent's child step) together, and creates the chain's runs settled so the ordinary
+  child-completion pass ignores them. The link, not the run, tells the parent: `ended_children` reports a
+  chain only when its final outcome is set, its link is unsettled and the parent step still waits for it
+  (`child = chain id`, as the step stored it). The ordinary `ChildFinished` path then settles the link. The
+  narrow `settle_child_chain` prototype (a parent that is itself a chain, one activity successor, `SUCCEEDED`
+  only) and its three seeded tests are removed; `chains::the_parent_hears_only_the_final_outcome_...`,
+  `fault chains::the_final_outcome_of_a_child_chain_reaches_the_parent_once_...` and `..._a_lost_wake_...`
+  replace them with the real path. The chain deadline is the smallest of the parent's, the node's and the
+  chain's required timeout.
+- **D374 — Parent cancellation latches the link under the parent's lock only.** `release_child` and
+  `settle_child` set `child_chain_links.cancel_requested` (and `settled` once the final outcome is applied);
+  the hand-off reads the latch `FOR UPDATE` under the chain and run locks and refuses; the cancel pass
+  (`children_to_cancel`) also picks the current head of every latched chain. `DETACH` leaves the chain running
+  and tells nobody (`chains::a_detached_child_chain_...`); `REQUEST_CANCEL` keeps the parent waiting until the
+  chain settles (`chains::request_cancel_makes_the_parent_wait_...`). Both orders of cancel against hand-off
+  are tested with held locks (`fault chains::parent_cancellation_and_a_child_hand_off_...`).
+- **D375 — Lock order is parent, chain, head run (found by the race above).** The first run of the ordered
+  race ended with `deadlock detected`: the successor insert takes a key-share lock on the parent row (the
+  foreign key) after the hand-off holds the chain and the head run, while the parent holds its own row and
+  wants the child's. Every other writer of a child locks the parent first. `hold_parent` now takes the parent
+  key-share lock in `lock_chain`, before the head run is locked. Red before (the parent's cancel answered
+  `UNAVAILABLE`), green after.
+- **D376 — The tree budget ends a chain with `CHAIN_LIMIT`.** `MAX_TREE_RUNS` (1,024) moved to the domain
+  and `ChainError::TreeBudgetExhausted` is the store's answer when the next successor would exceed it. Unlike
+  an active-run limit, a full tree never frees, so waiting would only wait for the deadline; the scheduler
+  finalizes the chain `FAILED` with `CHAIN_LIMIT`, the code the segment limit already uses, and the parent
+  hears it once as a child failure (`chains::the_last_run_the_tree_budget_allows_...`: 1,023 members accept
+  the successor, 1,024 refuse it and leave no run).
+- **D377 — Lifetime counters are derived from rows nothing deletes.** The chain's segment count
+  (`execution_chains.segment_count`, `CHECK <= max_segments`) and a tree's run count (`runs.root_run_id`) only
+  grow, and this is asserted rather than assumed: no housekeeping pass changes the row counts of runs, chain,
+  segments, links, payloads or declared states with every retention window at zero, and the runtime role has
+  no `DELETE` on them (`chains::finished_chains_links_and_payloads_survive_every_housekeeping_pass`). No
+  counter table was added. A future retention (D298) must keep chain, link and payload references and move
+  the counts it removes into a tombstone first.
+- **D378 — `GET /namespaces/{namespaceId}/chains/{chainId}/runs` is built (D299).** Bounded page (default
+  50, clamped to 1..200), segment order, a two-byte opaque cursor that is the last index returned (a segment
+  is only appended, so a page never repeats or skips one), `run:read`, the denial audit and the single 404 of
+  chain inspection, never cached, no payload. The path carries the namespace, as the other chain operations
+  do; `contracts/README.md` said `/chains/{chainId}/runs`. `ChainSegment.index` in the OpenAPI was tightened
+  from 65,535 to 9,999 to match the 10,000-segment ceiling.
+- **D379 — A run read names its segment.** `Run.chain` (`chainId`, `segmentIndex`, `completionKind`,
+  `successorRunId`) is additive and absent outside a chain, so the segment wait of the contract returns
+  `SUCCEEDED` with `CONTINUED` and a client that predates it sees an ordinary succeeded run
+  (`chains_http::a_continued_segment_is_an_ordinary_succeeded_run_...` compares the key sets). The five SDKs
+  parse it and expose `listChainRuns` (`listAll` follows the cursor).
+- **D380 — Chain command keys stay 8..160 (D293 built).** The code already used the shared
+  `Idempotency-Key` rule; `chains_http::chain_commands_take_a_key_of_eight_to_one_hundred_sixty_...` pins
+  7/8/160/161 and a space, and the contract test ties both chain commands to the shared parameter. T014-037's
+  "stable chain keys (1..128)" should read "(8..160)"; `tasks.md` is the coordinator's to amend.
+- **D381 — A run-addressed operation on a continued segment is `CONFLICT`.** A cancel of an earlier segment,
+  or of a chain that is already latched or finished, tried to latch the chain, found nothing to latch and
+  reported corruption (`INTERNAL` 500). The `chain-three-segments` scenario first recorded that 500 as the
+  expected result. Only the open head of an open chain latches now; any other run is refused by the reducer
+  as an ended run is.
+- **D382 — Ordered races use held locks, not sleeps.** A test transaction holds a lock; each competitor is
+  started and the test waits until `pg_stat_activity` shows the backend blocked on a lock before it starts
+  the next; releasing the gate commits them in arrival order. A hand-off reads in one transaction and writes
+  in another, so there are two gates: the chain row (who looks first) and the quota advisory lock the write
+  takes after the chain and run locks (a hand-off already committed to winning). A dropped connection is
+  `pg_terminate_backend` of a waiting hand-off.
+- **D383 — Chain runs compare as one instant in the SDK goldens.** A run with a `chain` has its `deadline`
+  normalized to `<chain-deadline:N>` by the instant, not `<createdAt+Ns>`: every segment must show the same
+  one, and a successor that moved it would show another. The server state of a scenario is listed by creation
+  time, because the first run of a child chain has an id derived from its parent's that sorts anywhere among
+  time-ordered ids.
+
+- **G370 — No SDK scenario cancels a parent mid-chain.** The harness has no way to hold a segment open
+  deterministically (a worker behaviour is the same for every segment, and the child's chain id is not an
+  observation). Parent cancellation and both race orders are proved in Rust only (D374).
+- **G371 — `RERUN_AS_NEW` has no SDK method**, so there is no five-SDK scenario for it; the unrelated run with
+  its own chain, its own fresh deadline and `rerunOf` is proved by `chains::rerun_as_new_of_a_segment_...`.
+- **G372 — A continuation whose entrypoint is a `waitEvent` (`chain-root-wait.json.pending`) is still closed.**
+  The successor is created with an activity step and its `task.ready` hint; a wait needs the evaluated
+  correlation key, the deadline, the subscription rows and `wait.started` written in the same transaction, a
+  new `ContinuationSelection` carrying them, the publication shape widened, and the same through five SDKs.
+  Not small, so it was not started.
+- **G373 — A wait-shaped chain cannot race a signal against the hand-off.** Until the signal is consumed the
+  boundary is not pending, and once it is there is no wait left to signal; the meaningful races (signal first,
+  hand-off first) are on the activity-shaped chain and the wait-shaped signal-then-hand-off order is exercised
+  by the existing `signalled_wait_handoff_rolls_back_with_outbox_and_retries_once`.
+- **G374 — `contract_grpc_durable_execution::protocol_compatibility::mixed_workers_only_lease_run_input_blobs_to_protocol_1_3`
+  fails on the base branch** (expects 1.4, gets 1.5), with and without this increment. It is not a chain test.
+- **G375 — `inspectChain` still returns every segment.** At most 10,000 small entries, but unbounded for a
+  long chain; clients that only need lineage should page `GET .../runs`. Bounding inspection would change an
+  existing response and was left alone.
+- **G376 — Studio has the generated types, not a screen.** `frontend/apps/studio/src/api/schema.d.ts` follows
+  the OpenAPI; no component lists a chain's runs.
