@@ -567,7 +567,7 @@ public sealed class WorkerHostTests : IAsyncLifetime
         var clock = System.Diagnostics.Stopwatch.StartNew();
         await host.StopAsync(TimeSpan.FromSeconds(1));
         Assert.True(clock.Elapsed < TimeSpan.FromSeconds(2), $"stop took {clock.Elapsed}");
-        Assert.True(State.StreamCancelled);
+        await Eventually.UntilAsync(() => State.StreamCancelled, "the server observes stream cancellation");
     }
 
     [Fact]
