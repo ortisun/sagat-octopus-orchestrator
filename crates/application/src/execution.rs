@@ -18,8 +18,8 @@ use std::sync::Arc;
 use sagat_domain::definition::{WorkflowId, WorkflowVersionId};
 use sagat_domain::execution::{
     AddressedRunEvent, CorrelationKey, Evaluation, ExecutionError, ExecutionInstanceId,
-    FailureCode, InstancePath, Progress, Resolution, RunEvent, RunId, RunState, RunStatus,
-    StopReason,
+    FailureCode, InstancePath, PathExecutionState, Progress, Resolution, RunEvent, RunId, RunState,
+    RunStatus, StopReason,
 };
 use sagat_domain::identity::{NamespaceId, TenantId};
 use sagat_domain::workflow::{ActivityName, CancelPolicy, Expression, NodeId, WorkflowDefinition};
@@ -594,6 +594,25 @@ pub struct RunRecord {
     /// Set by the reads that serve the API (`get`, `list`); `None` for a run outside any chain and
     /// for a record loaded inside a command transaction.
     pub chain: Option<RunSegment>,
+}
+
+/// One consistent bounded read used to plan progress in an exact scoped path.
+#[derive(Debug, Clone)]
+pub struct PathExecutionSnapshot {
+    pub info: RunInfo,
+    pub definition: Arc<WorkflowDefinition>,
+    pub state: PathExecutionState,
+}
+
+/// Read side for bounded scoped execution. Mutation remains on [`RunTx`] until the caller rechecks
+/// the run revision, lease and authority in the write transaction.
+pub trait PathExecutionStore: Send + Sync {
+    fn load_path(
+        &self,
+        tenant: TenantId,
+        run: RunId,
+        path: InstancePath,
+    ) -> impl Future<Output = Result<Option<PathExecutionSnapshot>, StoreError>> + Send;
 }
 
 /// Who caused the events of one transaction (stored with every journal entry).

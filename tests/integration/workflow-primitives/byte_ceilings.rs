@@ -4,9 +4,10 @@
 
 use sagat_application::clock::SystemClock;
 use sagat_application::entropy::SystemEntropy;
-use sagat_application::execution::{MAX_PAYLOAD_BYTES, MAX_RUN_OUTPUT_BYTES};
+use sagat_application::execution::{MAX_PAYLOAD_BYTES, MAX_RUN_OUTPUT_BYTES, PathExecutionStore};
 use sagat_application::worker::{MAX_TASK_INPUT_BYTES, WorkerService};
-use sagat_domain::execution::RunId;
+use sagat_domain::execution::{InstancePath, RunId};
+use sagat_domain::workflow::NodeId;
 use sagat_infra_ir::JsonEvaluator;
 use sagat_infra_postgres::PgRunStore;
 use serde_json::{Value, json};
@@ -227,6 +228,21 @@ async fn a_member_output_over_the_value_ceiling_is_refused_and_the_lease_survive
     .await
     .expect("scoped node kind");
     assert_eq!(node_kind, "activity");
+    let path = InstancePath::root()
+        .child(NodeId::parse("items").expect("owner"), 0)
+        .expect("member path");
+    let bounded = world
+        .store
+        .load_path(world.admin.tenant_id(), run, path)
+        .await
+        .expect("bounded path read")
+        .expect("run");
+    assert_eq!(
+        bounded.state.local_instances().count(),
+        2,
+        "the completed activity and its local return are the complete path body"
+    );
+    assert_eq!(bounded.state.ancestors().len(), 1);
     assert_eq!(world.run_status(run).await.as_str(), "RUNNING");
 }
 
