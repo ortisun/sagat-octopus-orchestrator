@@ -1498,6 +1498,22 @@ async fn loop_usage(flow: &Flow) -> (i32, i32) {
     (reserved, active)
 }
 
+/// Ticks `scheduler` until it advances a loop (a pass may rest its search for a moment after it
+/// found nothing), returning how many loops it advanced and how many actions failed.
+async fn tick_until_a_loop_advances(scheduler: &Sched) -> (u32, u32) {
+    let (mut advanced, mut failed) = (0, 0);
+    for _ in 0..8 {
+        let report = scheduler.tick().await;
+        advanced += report.loops_advanced;
+        failed += report.failed;
+        if advanced > 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    }
+    (advanced, failed)
+}
+
 /// Ticks `scheduler` and completes what it releases until the run reaches `status`.
 async fn finish_with(flow: &Flow, scheduler: &Sched, status: &str) {
     for _ in 0..40 {
@@ -1531,8 +1547,7 @@ async fn a_scheduler_restarted_during_the_delay_wakes_the_loop_exactly_once() {
     assert_eq!(timer(&flow).await.as_deref(), Some("WAITING"));
     tokio::time::sleep(std::time::Duration::from_millis(2_300)).await;
 
-    let woke = restarted.tick().await;
-    assert_eq!((woke.failed, woke.loops_advanced), (0, 1), "{woke:?}");
+    assert_eq!(tick_until_a_loop_advances(&restarted).await, (1, 0));
     assert_eq!(events_of(&flow, "loop.delay_elapsed").await, 1);
     assert_eq!(timer(&flow).await.as_deref(), Some("FIRED"));
     let version_after: i64 = sqlx::query_scalar("SELECT run_version FROM runs WHERE id=$1")
@@ -1560,12 +1575,20 @@ async fn two_replicas_delivering_the_same_due_timer_admit_one_iteration() {
     );
     tokio::time::sleep(std::time::Duration::from_millis(1_800)).await;
 
-    let (a, b) = tokio::join!(first.tick(), second.tick());
-    assert_eq!(
-        a.loops_advanced + b.loops_advanced,
-        1,
-        "only one replica commits the fire: {a:?} {b:?}"
-    );
+    let mut advanced = 0;
+    for _ in 0..8 {
+        let (a, b) = tokio::join!(first.tick(), second.tick());
+        advanced += a.loops_advanced + b.loops_advanced;
+        if advanced > 0 {
+            assert_eq!(
+                advanced, 1,
+                "only one replica commits the fire: {a:?} {b:?}"
+            );
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    }
+    assert_eq!(advanced, 1, "the due timer was delivered");
     assert_eq!(events_of(&flow, "loop.delay_elapsed").await, 1);
     let iterations: i64 =
         sqlx::query_scalar("SELECT count(*) FROM loop_iterations WHERE run_id=$1")
@@ -1588,36 +1611,30 @@ async fn a_replica_that_lost_its_shards_cannot_fire_the_timer() {
     let name = format!("delay-stale-{}", Uuid::now_v7());
     let flow = Flow::start(&name, delayed_loop(&name, 1_500, 120_000, false), json!([])).await;
     until_the_delay(&flow).await;
-    // Another process takes every shard over: the fence of the first one moves on.
-    let successor_name = format!("successor-{name}");
+    // The shards are taken over (their fence generation moves on) and the replacement process, which
+    // keeps the identity, adopts the new generation: the process the flow started with is stale.
     sqlx::query(
-        "UPDATE scheduler_shards SET owner=$1, generation=generation+1, \
+        "UPDATE scheduler_shards SET generation=generation+1, \
                 expires_at=clock_timestamp() + interval '1 hour', acquired_at=clock_timestamp()",
     )
-    .bind(&successor_name)
     .execute(&flow.api.db.pool)
     .await
-    .expect("another process takes the shards");
-    let placement = sagat_scheduler::Placement::new(successor_name);
-    sagat_scheduler::Keeper::new(
-        flow.api.executions.clone(),
-        placement.clone(),
-        sagat_scheduler::KeeperSettings {
-            ttl: std::time::Duration::from_secs(60),
-        },
-    )
-    .round()
-    .await
-    .expect("the successor renews what it holds");
+    .expect("the fence generation moves on");
+    let placement = retake_the_shards(&flow, &name).await;
     let successor = scheduler_on(&flow, &placement);
     tokio::time::sleep(std::time::Duration::from_millis(1_800)).await;
 
-    let stale = flow.scheduler.tick().await;
-    assert_eq!(stale.loops_advanced, 0, "{stale:?}");
+    for _ in 0..3 {
+        let stale = flow.scheduler.tick().await;
+        assert_eq!(stale.loops_advanced, 0, "{stale:?}");
+        assert_eq!(
+            stale.fenced, 1,
+            "the stale replica is fenced out: {stale:?}"
+        );
+    }
     assert_eq!(events_of(&flow, "loop.delay_elapsed").await, 0);
     assert_eq!(timer(&flow).await.as_deref(), Some("WAITING"));
-    let woke = successor.tick().await;
-    assert_eq!((woke.failed, woke.loops_advanced), (0, 1), "{woke:?}");
+    assert_eq!(tick_until_a_loop_advances(&successor).await, (1, 0));
     assert_eq!(events_of(&flow, "loop.delay_elapsed").await, 1);
     finish_with(&flow, &successor, "SUCCEEDED").await;
     flow.verify().await;

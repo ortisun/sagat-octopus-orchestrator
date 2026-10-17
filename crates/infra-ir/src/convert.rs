@@ -780,13 +780,15 @@ fn loop_recovery_activities(
             NodeKind::While { .. } | NodeKind::RepeatUntil { .. }
         )
     }) {
-        if let Some(next) = owner.next().and_then(|next| definition.node(next)) {
-            if matches!(next.kind(), NodeKind::Activity { .. }) {
-                return Err(unsupported(
-                    next,
-                    "an activity after a loop's success edge is not enabled by the runtime; only an onError recovery activity is",
-                ));
-            }
+        if let Some(next) = owner
+            .next()
+            .and_then(|next| definition.node(next))
+            .filter(|next| matches!(next.kind(), NodeKind::Activity { .. }))
+        {
+            return Err(unsupported(
+                next,
+                "an activity after a loop's success edge is not enabled by the runtime; only an onError recovery activity is",
+            ));
         }
         let mut current = owner.on_error().and_then(|target| definition.node(target));
         while let Some(node) = current {
