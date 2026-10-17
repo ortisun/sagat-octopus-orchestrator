@@ -2,13 +2,15 @@
 //! hold for collection and loop values too, against real PostgreSQL. A value over a ceiling is a
 //! durable `RUN_DATA_LIMIT` failure, never a retry loop and never a silently stored oversize value.
 
+use std::time::Duration;
+
 use sagat_application::clock::SystemClock;
 use sagat_application::definitions::Idempotency;
 use sagat_application::entropy::SystemEntropy;
 use sagat_application::entropy::Token;
 use sagat_application::execution::{
-    Actor, Effects, MAX_PAYLOAD_BYTES, MAX_RUN_OUTPUT_BYTES, PathExecutionStore, PathExecutionTx,
-    ReportedLease, ScopeInput,
+    Actor, Effects, LeaseGrant, MAX_PAYLOAD_BYTES, MAX_RUN_OUTPUT_BYTES, PathExecutionStore,
+    PathExecutionTx, ReportedLease, ScopeInput,
 };
 use sagat_application::runs::Lock;
 use sagat_application::worker::{MAX_TASK_INPUT_BYTES, WorkerService};
@@ -595,12 +597,12 @@ async fn a_bounded_script_lease_pins_retention_and_zero_withholds_a_new_member()
     let run = start_collection(
         &world,
         script_collection("bounded-script-retention"),
-        &json!({"items": [1, 2]}),
+        &json!({"items": [1]}),
     )
     .await;
-    let scheduler = scheduler(&world, "bounded-script-retention").await;
-    assert_eq!(scheduler.tick().await.collections_advanced, 1);
-    assert_eq!(scheduler.tick().await.collections_advanced, 1);
+    let active_scheduler = scheduler(&world, "bounded-script-retention").await;
+    assert_eq!(active_scheduler.tick().await.collections_advanced, 1);
+    assert_eq!(active_scheduler.tick().await.collections_advanced, 1);
 
     let owner = NodeId::parse("items").expect("collection owner");
     let node = NodeId::parse("work").expect("script node");
@@ -634,13 +636,18 @@ async fn a_bounded_script_lease_pins_retention_and_zero_withholds_a_new_member()
     );
     let (_, leased) = lease_path_instance(&mut tx.snapshot().state, &first)
         .expect("lease admitted bounded script");
-    tx.persist_addressed(
-        &[leased],
-        &[],
-        Effects::by(Actor::Worker("bounded-script-test".into()), None),
-    )
-    .await
-    .expect("persist bounded script lease");
+    let token = Token::from_bytes([7_u8; 32]).expect("lease token");
+    let mut effects = Effects::by(Actor::Worker("bounded-script-test".into()), None);
+    effects.lease = Some(LeaseGrant {
+        instance: first.clone(),
+        token_hash: token.hash(),
+        worker_id: "bounded-script-test".into(),
+        ttl: Duration::from_secs(30),
+        attempt_timeout: None,
+    });
+    tx.persist_addressed(&[leased], &[], effects)
+        .await
+        .expect("persist bounded script lease");
     tx.commit().await.expect("commit bounded script lease");
 
     let detail: serde_json::Value = sqlx::query_scalar(
@@ -658,13 +665,21 @@ async fn a_bounded_script_lease_pins_retention_and_zero_withholds_a_new_member()
     assert_eq!(detail["scriptRetentionDays"], 5);
 
     set_script_retention(&world, 0).await;
+    let blocked_run = start_collection(
+        &world,
+        script_collection("bounded-script-retention-blocked"),
+        &json!({"items": [1]}),
+    )
+    .await;
+    assert_eq!(active_scheduler.tick().await.collections_advanced, 1);
+    assert_eq!(active_scheduler.tick().await.collections_advanced, 1);
     let second_path = InstancePath::root()
-        .child(owner, 1)
-        .expect("second member path");
+        .child(owner, 0)
+        .expect("new member path");
     let second = ExecutionInstanceId::in_path(second_path.clone(), node);
     let bounded = world
         .store
-        .load_path(world.admin.tenant_id(), run, second_path)
+        .load_path(world.admin.tenant_id(), blocked_run, second_path)
         .await
         .expect("second bounded path")
         .expect("run");
@@ -685,9 +700,9 @@ async fn a_bounded_script_lease_pins_retention_and_zero_withholds_a_new_member()
         "SELECT count(*) FROM run_events WHERE run_id=$1 AND node='work' \
          AND instance_path_nodes=$2 AND instance_path_indices=$3 AND event_type='step.leased'",
     )
-    .bind(run.as_uuid())
+    .bind(blocked_run.as_uuid())
     .bind(vec!["items".to_owned()])
-    .bind(vec![1_i32])
+    .bind(vec![0_i32])
     .fetch_one(&world.db.pool)
     .await
     .expect("withheld member leases");
