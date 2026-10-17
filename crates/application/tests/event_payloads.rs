@@ -203,6 +203,18 @@ async fn pii_reveal_requires_internal_role_and_namespace_grant() {
         service.event(prepared).await.unwrap().data,
         EventData::Revealed(_)
     ));
+    for role in [Role::Operator, Role::Admin] {
+        let service = EventPayloadService::new(Store { role, grant: true }, FixedClock, Projector);
+        let principal = principal(role);
+        let prepared = service
+            .prepare_event(&principal, namespace(), key(), EventReveal::Pii, &ctx())
+            .await
+            .unwrap();
+        assert!(matches!(
+            service.event(prepared).await.unwrap().data,
+            EventData::Revealed(_)
+        ));
+    }
 }
 
 #[tokio::test]
@@ -250,19 +262,14 @@ async fn truncated_dead_letter_is_opaque_and_list_ignores_reveal() {
 
 #[tokio::test]
 async fn roles_without_event_read_are_refused_before_lookup() {
-    let service = EventPayloadService::new(
-        Store {
-            role: Role::Worker,
-            grant: true,
-        },
-        FixedClock,
-        Projector,
-    );
-    let p = principal(Role::Worker);
-    assert!(
-        service
-            .prepare_event(&p, namespace(), key(), EventReveal::Structure, &ctx())
-            .await
-            .is_err()
-    );
+    for role in [Role::Worker, Role::Runner] {
+        let service = EventPayloadService::new(Store { role, grant: true }, FixedClock, Projector);
+        let p = principal(role);
+        assert!(
+            service
+                .prepare_event(&p, namespace(), key(), EventReveal::Structure, &ctx())
+                .await
+                .is_err()
+        );
+    }
 }

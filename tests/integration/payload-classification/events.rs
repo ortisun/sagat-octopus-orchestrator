@@ -1,6 +1,7 @@
 #![allow(clippy::expect_used)]
 
 use sagat_application::clock::SystemClock;
+use sagat_application::error::AppError;
 use sagat_application::event_payloads::{
     EventData, EventPayloadError, EventPayloadService, EventPayloadUseCase, EventReveal,
 };
@@ -21,6 +22,21 @@ async fn event_values_need_current_authority_and_every_reveal_is_audited() {
         .bind(w.admin.tenant_id().as_uuid()).bind(w.namespace.id().as_uuid()).bind(key.source.as_str()).bind(key.event_id.as_str()).bind(br#"{"canary":"event-pii"}"#.as_slice()).execute(&w.db.pool).await.expect("event");
     let reader = w.member("event-reader", Role::Developer).await;
     let service = EventPayloadService::new(w.store.clone(), SystemClock, JsonPayloadProjector);
+    assert!(
+        matches!(
+            service
+                .prepare_event(
+                    &w.other_admin,
+                    w.namespace.id(),
+                    key.clone(),
+                    EventReveal::Pii,
+                    &ctx()
+                )
+                .await,
+            Err(AppError::NotFound)
+        ),
+        "foreign resources remain 404 before reveal authority is considered"
+    );
     let default = service
         .prepare_event(
             &reader,
