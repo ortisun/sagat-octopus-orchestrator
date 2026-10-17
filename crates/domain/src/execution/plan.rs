@@ -117,6 +117,10 @@ pub fn plan_addressed(
             let declared = def
                 .node_for_instance(instance)
                 .ok_or_else(|| ExecutionError::UnknownStep(instance.node().clone()))?;
+            // A compensation is released by its scope, when everything it waits for has finished.
+            if matches!(declared.origin(), NodeOrigin::Compensation(_)) {
+                continue;
+            }
             return match declared.kind() {
                 NodeKind::Activity { .. } => addressed(
                     path,

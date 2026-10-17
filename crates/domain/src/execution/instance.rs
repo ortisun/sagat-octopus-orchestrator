@@ -93,6 +93,17 @@ impl InstancePath {
     pub fn is_root(&self) -> bool {
         self.0.is_empty()
     }
+
+    /// The collection or loop instance whose iteration this path is: the owner of its last
+    /// segment, living in the path before it. `None` for the root path.
+    #[must_use]
+    pub fn scope_owner(&self) -> Option<ExecutionInstanceId> {
+        let (last, parents) = self.0.split_last()?;
+        Some(ExecutionInstanceId::in_path(
+            Self(parents.to_vec()),
+            last.scope_node().clone(),
+        ))
+    }
 }
 
 /// One execution of a definition node, distinct from its attempt and fencing generation.

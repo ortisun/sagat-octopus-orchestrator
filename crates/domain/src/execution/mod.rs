@@ -13,6 +13,7 @@ mod instance;
 mod operations;
 mod plan;
 mod sagas;
+mod scoped_sagas;
 mod state;
 
 pub use approval::{
@@ -23,12 +24,13 @@ pub use approval::{
 };
 pub use command::{
     AddressedProgress, Expiry, Failure, Heartbeat, InstanceHeartbeat, Progress, Resolution,
-    complete_instance, complete_reconciliation, complete_step, expire_attempt, expire_instance,
-    fail_instance, fail_report_for_storage_quota, fail_step, fail_step_for_storage_quota,
-    finish_child, fire_timer, heartbeat, heartbeat_instance, lease_instance, lease_step,
-    mark_for_review, pause_run, release_pending, resolve, resolve_review, resume_run, retry_due,
-    retry_due_instance, retry_review, satisfy_wait, skip_review, start_run, stop_for_storage_quota,
-    stop_run, time_out_wait,
+    complete_instance, complete_reconciliation, complete_reconciliation_instance, complete_step,
+    expire_attempt, expire_instance, fail_instance, fail_report_for_storage_quota, fail_step,
+    fail_step_for_storage_quota, finish_child, fire_timer, heartbeat, heartbeat_instance,
+    lease_instance, lease_step, mark_for_review, mark_for_review_instance, pause_run,
+    release_pending, resolve, resolve_review, resolve_review_instance, resume_run, retry_due,
+    retry_due_instance, retry_review, retry_review_instance, satisfy_wait, skip_review,
+    skip_review_instance, start_run, stop_for_storage_quota, stop_run, time_out_wait,
 };
 pub use continuation::{
     CancelResolution, ChainError, ChainFinalOutcome, ChainHandoff, ChainPolicy, ChainScope,
@@ -41,7 +43,7 @@ pub use event::{
     AddressedRunEvent, Cause, ChildOutcome, CollectionDrainReason, CollectionOutcome,
     CorrelationKey, EventAddressError, FailureCode, Fence, JoinOutcome, LoopContinuation,
     LoopDrainReason, LoopKind, LoopOutcome, PlannedEntry, ReconcileResult, ReviewOutcome, RunEvent,
-    StopReason, SwitchSelection,
+    ScopedPlannedEntry, StopReason, SwitchSelection,
 };
 pub use instance::{
     ExecutionInstanceId, InstanceIdentityError, InstancePath, MAX_ITERATION_INDEX, MAX_SCOPE_DEPTH,
@@ -54,8 +56,9 @@ pub use operations::{
     UpdateReceiptStatus, UpdateRejection, UpdateRequest, UpdateResolution,
 };
 pub use plan::{AddressedPlan, Evaluation, Plan, plan, plan_addressed};
+pub use scoped_sagas::plan_scope_compensation;
 pub use state::{
     CollectionIterationRestore, CollectionPhase, CollectionResult, CollectionState, LoopCheckpoint,
     LoopIterationRestore, LoopPhase, LoopState, RunChainState, RunId, RunState, RunStatus,
-    SagaPhase, SagaState, StepState, StepStatus, WaitingOn,
+    SagaPhase, SagaState, ScopeSagaState, StepState, StepStatus, WaitingOn,
 };
