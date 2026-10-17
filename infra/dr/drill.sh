@@ -37,9 +37,15 @@ PGBIN="$(find_pgbin)"
 export PATH="$PGBIN:$PATH"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sagat-dr-XXXXXX")"
 REPORT="${SAGAT_DR_REPORT:-tests/performance/reports/disaster-recovery.md}"
+# The reference objectives the owner set on 2026-10-16 (docs/runbooks/disaster-recovery.md): a
+# point-in-time restore within an hour and a failover within five minutes, where the failover is
+# the database promotion plus the keeper lease after which another replica takes the shards.
+RTO_RESTORE="${SAGAT_DR_RTO_RESTORE_SECONDS:-3600}"
+RTO_FAILOVER="${SAGAT_DR_RTO_FAILOVER_SECONDS:-300}"
+SHARD_TAKEOVER="${SAGAT_DR_SHARD_TAKEOVER_SECONDS:-15}"
 RUNS="${SAGAT_DR_RUNS:-3000}"
 BASE_PORT="${SAGAT_DR_BASE_PORT:-55460}"
-case "$RUNS$BASE_PORT" in *[!0-9]*) echo "SAGAT_DR_RUNS and SAGAT_DR_BASE_PORT are numbers" >&2; exit 2;; esac
+case "$RUNS$BASE_PORT$RTO_RESTORE$RTO_FAILOVER$SHARD_TAKEOVER" in *[!0-9]*) echo "SAGAT_DR_RUNS, SAGAT_DR_BASE_PORT and the SAGAT_DR_*_SECONDS objectives are numbers" >&2; exit 2;; esac
 PIDS=()
 cleanup() {
   for pid in "${PIDS[@]:-}"; do pkill -P "$pid" 2>/dev/null || true; kill "$pid" 2>/dev/null || true; done
@@ -218,6 +224,8 @@ add '```'
 add "$digest_after"
 add '```'
 [ "$identical" = yes ] || { echo "THE RESTORED JOURNAL DIFFERS" >&2; echo "$SUMMARY"; exit 1; }
+restore_seconds=$(secs "$t0" "$t_up")
+perl -e "exit($restore_seconds <= $RTO_RESTORE ? 0 : 1)" || { echo "THE RESTORE TOOK ${restore_seconds} s, OVER THE ${RTO_RESTORE} s OBJECTIVE" >&2; echo "$SUMMARY"; exit 1; }
 case "$verify" in *"failed=0"*) ;; *) echo "THE RESTORED RUNS DO NOT REPLAY: $verify" >&2; echo "$SUMMARY"; exit 1;; esac
 
 # ----------------------------------------------------------------------------- 2. failover
@@ -271,6 +279,7 @@ failover() { # $1 label, $2 synchronous_standby_names ('' = asynchronous), $3 po
   pg_ctl -D "$ds" -m fast stop >/dev/null
   # (This runs in a subshell, so the row goes to a file the main script reads.)
   echo "| $label | $mode | $(secs "$t_kill" "$t_promoted") s | ${out:-not run} |" >> "$WORK/failover-rows"
+  secs "$t_kill" "$t_promoted" > "$WORK/promote-$label"
   echo "$out"
 }
 add ""
@@ -290,6 +299,9 @@ add "- The time to promote is the database's (the kill until the promoted standb
 add ""
 case "$sync_out" in *"lost=0"*) ;; *) echo "A SYNCHRONOUS STANDBY LOST ACKNOWLEDGED RUNS: $sync_out" >&2; echo "$SUMMARY" >> "$REPORT"; exit 1;; esac
 case "$sync_out" in *"failed=0"*) ;; *) echo "THE PROMOTED RUNS DO NOT REPLAY: $sync_out" >&2; exit 1;; esac
+promote_seconds=$(cat "$WORK/promote-synchronous")
+perl -e "exit($promote_seconds + $SHARD_TAKEOVER <= $RTO_FAILOVER ? 0 : 1)" || { echo "THE FAILOVER TOOK ${promote_seconds} s + ${SHARD_TAKEOVER} s OF SHARD TAKEOVER, OVER THE ${RTO_FAILOVER} s OBJECTIVE" >&2; exit 1; }
+SUMMARY+=$'\n'"Objectives (owner, 2026-10-16): restore ${restore_seconds} s against ${RTO_RESTORE} s; failover ${promote_seconds} s of promotion + ${SHARD_TAKEOVER} s of shard takeover against ${RTO_FAILOVER} s; RPO 0 on the synchronous standby: met."$'\n'
 
 {
   echo "# Disaster recovery drill (feature 010)"

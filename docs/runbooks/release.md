@@ -28,8 +28,10 @@ Each archive holds the binary and `LICENSE`. Every file has a **build provenance
 3. Merge the release PR into `main` (Gitflow `release/<version>`), then tag the merge commit:
    `git tag v<version> && git push origin v<version>`.
 4. The `release` workflow checks that the tag names the workspace version, builds the three CLI
-   archives and the SDK packages, writes `SHA256SUMS`, attests every file and creates the release
-   titled `v<version>` with the notes of step 2.
+   archives and the SDK packages, runs the disaster-recovery drill against the reference
+   objectives (RPO 0, failover ≤ 5 min, restore ≤ 1 h; [disaster-recovery.md](disaster-recovery.md)),
+   writes `SHA256SUMS`, attests every file and creates the release titled `v<version>` with the
+   notes of step 2. Nothing is published when any job fails.
 
 A pull request that changes `.github/workflows/release.yml`, `scripts/package-sdks.sh` or
 `scripts/release-version.sh` runs every build job and stops before attesting and publishing.

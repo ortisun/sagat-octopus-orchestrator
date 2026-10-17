@@ -16,6 +16,7 @@ on:
       - ".github/workflows/release.yml"
       - "scripts/package-sdks.sh"
       - "scripts/release-version.sh"
+      - "infra/dr/drill.sh"
   workflow_dispatch:
 
 permissions:
@@ -113,9 +114,29 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  recovery:
+    name: disaster-recovery drill against the objectives
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      # Fails when a point-in-time restore takes over an hour, a failover (promotion plus the shard
+      # takeover lease) over five minutes, or a synchronous standby loses an acknowledged run
+      # (owner decision 2026-10-16, docs/runbooks/disaster-recovery.md).
+      - name: disaster-recovery drill
+        env:
+          SAGAT_DR_RUNS: "300"
+          SAGAT_DR_REPORT: ${{ runner.temp }}/disaster-recovery.md
+        run: |
+          infra/dr/drill.sh
+          cat "$SAGAT_DR_REPORT"
+
   publish:
     name: attest and publish the release
-    needs: [version, cli, sdks]
+    needs: [version, cli, sdks, recovery]
     if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-latest
     permissions:
