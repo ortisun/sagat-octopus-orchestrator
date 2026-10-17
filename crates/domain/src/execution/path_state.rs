@@ -9,9 +9,9 @@ use std::collections::BTreeMap;
 use super::{
     AddressedRunEvent, CollectionDrainReason, CollectionPhase, CollectionState, ExecutionError,
     ExecutionInstanceId, FailureCode, InstancePath, LoopDrainReason, LoopKind, LoopPhase,
-    LoopState, RunEvent, RunId, RunState, RunStatus, ScopeSagaState, StepState, StepStatus,
-    StopReason,
+    LoopState, RunEvent, RunId, RunState, RunStatus, StepState, StepStatus, StopReason,
 };
+use crate::saga::SagaOutcome;
 use crate::workflow::{Digest, NodeId};
 
 /// Scalar progress for one collection owned by the exact local path.
@@ -169,6 +169,83 @@ pub struct PathLoopState {
     delay_until: Option<time::OffsetDateTime>,
     drain_reason: Option<LoopDrainReason>,
     failure: Option<FailureCode>,
+}
+
+/// Bounded compensation authority relevant to one exact execution path.
+///
+/// The saga header belongs to `owner`. `entries` and `irreversible` contain only forward
+/// instances in the path represented by [`PathExecutionState`]. Entries from sibling iterations
+/// remain in their indexed projection and are deliberately absent here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathScopeSagaState {
+    owner: ExecutionInstanceId,
+    phase: super::SagaPhase,
+    cause: FailureCode,
+    entries: BTreeMap<NodeId, Vec<ExecutionInstanceId>>,
+    irreversible: Vec<NodeId>,
+    outcome: Option<SagaOutcome>,
+    during_stop: bool,
+}
+
+impl PathScopeSagaState {
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn restore(
+        owner: ExecutionInstanceId,
+        phase: super::SagaPhase,
+        cause: FailureCode,
+        entries: BTreeMap<NodeId, Vec<ExecutionInstanceId>>,
+        irreversible: Vec<NodeId>,
+        outcome: Option<SagaOutcome>,
+        during_stop: bool,
+    ) -> Self {
+        Self {
+            owner,
+            phase,
+            cause,
+            entries,
+            irreversible,
+            outcome,
+            during_stop,
+        }
+    }
+
+    #[must_use]
+    pub const fn owner(&self) -> &ExecutionInstanceId {
+        &self.owner
+    }
+
+    #[must_use]
+    pub const fn phase(&self) -> super::SagaPhase {
+        self.phase
+    }
+
+    #[must_use]
+    pub const fn cause(&self) -> &FailureCode {
+        &self.cause
+    }
+
+    /// Forward nodes in the exact path and the forward instances each waits for.
+    #[must_use]
+    pub const fn entries(&self) -> &BTreeMap<NodeId, Vec<ExecutionInstanceId>> {
+        &self.entries
+    }
+
+    /// Irreversible forward nodes in the exact path.
+    #[must_use]
+    pub fn irreversible(&self) -> &[NodeId] {
+        &self.irreversible
+    }
+
+    #[must_use]
+    pub const fn outcome(&self) -> Option<SagaOutcome> {
+        self.outcome
+    }
+
+    #[must_use]
+    pub const fn during_stop(&self) -> bool {
+        self.during_stop
+    }
 }
 
 impl PathLoopState {
@@ -440,7 +517,7 @@ pub struct PathExecutionState {
     steps: BTreeMap<NodeId, StepState>,
     collections: BTreeMap<NodeId, PathCollectionState>,
     loops: BTreeMap<NodeId, PathLoopState>,
-    scope_sagas: BTreeMap<NodeId, ScopeSagaState>,
+    scope_sagas: BTreeMap<ExecutionInstanceId, PathScopeSagaState>,
 }
 
 impl PathExecutionState {
@@ -457,7 +534,7 @@ impl PathExecutionState {
         steps: BTreeMap<NodeId, StepState>,
         collections: BTreeMap<NodeId, PathCollectionState>,
         loops: BTreeMap<NodeId, PathLoopState>,
-        scope_sagas: BTreeMap<NodeId, ScopeSagaState>,
+        scope_sagas: BTreeMap<ExecutionInstanceId, PathScopeSagaState>,
     ) -> Result<Self, ExecutionError> {
         if path.is_root() || ancestors.len() != path.depth() {
             return Err(ExecutionError::Invariant(
@@ -478,6 +555,19 @@ impl PathExecutionState {
             parent = parent
                 .child(segment.scope_node().clone(), segment.iteration_index())
                 .map_err(|_| ExecutionError::Invariant("stored path exceeded its bounds"))?;
+        }
+        for (owner, saga) in &scope_sagas {
+            let ancestor = ancestors.iter().any(|fence| fence.owner() == owner);
+            if saga.owner() != owner
+                || (!ancestor && owner.path() != &path)
+                || saga.entries().values().flatten().any(|after| {
+                    after.path().is_root() || after.path().depth() < owner.path().depth() + 1
+                })
+            {
+                return Err(ExecutionError::Invariant(
+                    "bounded scope saga has unrelated authority",
+                ));
+            }
         }
         Ok(Self {
             global,
@@ -559,10 +649,37 @@ impl PathExecutionState {
                 PathLoopState::from_loop(scope).map(|scalar| (owner.node().clone(), scalar))
             })
             .collect::<Result<_, _>>()?;
+        let ancestor_owners: std::collections::BTreeSet<_> = ancestors
+            .iter()
+            .map(|ancestor| ancestor.owner().clone())
+            .collect();
         let scope_sagas = state
             .scope_sagas()
-            .filter(|(owner, _)| owner.path() == &path)
-            .map(|(owner, saga)| (owner.node().clone(), saga.clone()))
+            .filter(|(owner, _)| owner.path() == &path || ancestor_owners.contains(*owner))
+            .map(|(owner, saga)| {
+                let entries = saga
+                    .entries()
+                    .iter()
+                    .filter(|(forward, _)| forward.path() == &path)
+                    .map(|(forward, after)| (forward.node().clone(), after.clone()))
+                    .collect();
+                let irreversible = saga
+                    .irreversible()
+                    .iter()
+                    .filter(|forward| forward.path() == &path)
+                    .map(|forward| forward.node().clone())
+                    .collect();
+                let bounded = PathScopeSagaState::restore(
+                    owner.clone(),
+                    saga.phase(),
+                    saga.cause().clone(),
+                    entries,
+                    irreversible,
+                    saga.outcome(),
+                    saga.during_stop(),
+                );
+                (owner.clone(), bounded)
+            })
             .collect();
 
         Self::restore(
@@ -619,8 +736,57 @@ impl PathExecutionState {
     }
 
     #[must_use]
-    pub fn local_scope_saga(&self, node: &NodeId) -> Option<&ScopeSagaState> {
-        self.scope_sagas.get(node)
+    pub fn scope_saga(&self, owner: &ExecutionInstanceId) -> Option<&PathScopeSagaState> {
+        self.scope_sagas.get(owner)
+    }
+
+    pub fn scope_sagas(&self) -> impl Iterator<Item = (&ExecutionInstanceId, &PathScopeSagaState)> {
+        self.scope_sagas.iter()
+    }
+
+    /// Whether the exact path's owning scope durably planned this compensation.
+    #[must_use]
+    pub fn authorizes_scope_compensation(&self, instance: &ExecutionInstanceId) -> bool {
+        if instance.path() != &self.path || !instance.node().is_compensation() {
+            return false;
+        }
+        let Some(owner) = instance.path().scope_owner() else {
+            return false;
+        };
+        let Some(forward) = instance.node().forward() else {
+            return false;
+        };
+        self.scope_sagas.get(&owner).is_some_and(|saga| {
+            saga.phase() == super::SagaPhase::Compensating && saga.entries().contains_key(&forward)
+        })
+    }
+
+    /// Whether a persisted local forward step durably requested this reconciliation.
+    #[must_use]
+    pub fn authorizes_reconciliation(&self, instance: &ExecutionInstanceId) -> bool {
+        if instance.path() != &self.path || !instance.node().is_reconciliation() {
+            return false;
+        }
+        let Some(forward) = instance.node().forward() else {
+            return false;
+        };
+        self.steps.get(&forward).is_some_and(|step| {
+            step.status() == StepStatus::Waiting
+                && matches!(step.waiting_on(), Some(super::WaitingOn::Reconciliation))
+        })
+    }
+
+    /// Whether this exact bounded projection contains the durable origin of derived work.
+    #[must_use]
+    pub fn authorizes_derived_work(&self, instance: &ExecutionInstanceId) -> bool {
+        match (
+            instance.node().is_compensation(),
+            instance.node().is_reconciliation(),
+        ) {
+            (true, false) => self.authorizes_scope_compensation(instance),
+            (false, true) => self.authorizes_reconciliation(instance),
+            _ => false,
+        }
     }
 
     /// Applies one exact-path worker lifecycle or routing event with the same step reducer used by

@@ -484,6 +484,151 @@ async fn a_member_output_over_the_value_ceiling_is_refused_and_the_lease_survive
 }
 
 #[tokio::test]
+async fn a_bounded_path_read_does_not_wait_for_the_run_write_lock() {
+    let world = world().await;
+    allow_iterations(&world, 4).await;
+    let run = start_collection(
+        &world,
+        collection("bounded-read-lock", "input.items", 1, 1, "bodyResult"),
+        &json!({"items": [1]}),
+    )
+    .await;
+    let scheduler = scheduler(&world, "bounded-read-lock").await;
+    assert_eq!(scheduler.tick().await.collections_advanced, 1);
+    assert_eq!(scheduler.tick().await.collections_advanced, 1);
+    let path = InstancePath::root()
+        .child(NodeId::parse("items").expect("owner"), 0)
+        .expect("member path");
+
+    let mut writer = world.db.pool.begin().await.expect("writer transaction");
+    sqlx::query("SELECT id FROM runs WHERE id = $1 FOR UPDATE")
+        .bind(run.as_uuid())
+        .execute(&mut *writer)
+        .await
+        .expect("hold the run write lock");
+    let bounded = tokio::time::timeout(
+        Duration::from_secs(1),
+        world.store.load_path(world.admin.tenant_id(), run, path),
+    )
+    .await
+    .expect("a bounded snapshot read must not queue behind the writer")
+    .expect("bounded path read")
+    .expect("run");
+    assert_eq!(bounded.state.global().run_id(), run);
+    writer.rollback().await.expect("release writer lock");
+}
+
+#[tokio::test]
+async fn a_bounded_path_loads_only_its_indexed_scope_saga_authority() {
+    let world = world().await;
+    allow_iterations(&world, 4).await;
+    let run = start_collection(
+        &world,
+        collection("bounded-saga-authority", "input.items", 2, 2, "bodyResult"),
+        &json!({"items": [1, 2]}),
+    )
+    .await;
+    let scheduler = scheduler(&world, "bounded-saga-authority").await;
+    assert_eq!(scheduler.tick().await.collections_advanced, 1);
+    assert_eq!(scheduler.tick().await.collections_advanced, 1);
+    assert_eq!(scheduler.tick().await.collections_advanced, 1);
+    let admitted: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM collection_iterations WHERE run_id=$1 AND lifecycle='ADMITTED'",
+    )
+    .bind(run.as_uuid())
+    .fetch_one(&world.db.pool)
+    .await
+    .expect("two admitted fixtures");
+    assert_eq!(admitted, 2, "both sibling paths must actually exist");
+
+    sqlx::query(
+        "INSERT INTO scope_sagas \
+         (tenant_id,run_id,owner_path_nodes,owner_path_indices,owner_node,phase,cause_code, \
+          outcome,during_stop,planned_sequence,created_at,updated_at) \
+         VALUES ($1,$2,'{}','{}','items','COMPENSATING','BRANCH_FAILED',NULL,false,1,now(),now())",
+    )
+    .bind(world.admin.tenant_id().as_uuid())
+    .bind(run.as_uuid())
+    .execute(&world.db.pool)
+    .await
+    .expect("scope saga header");
+    for (iteration, node, kind, compensation) in [
+        (0_i32, "work", "COMPENSATE", Some(uuid::Uuid::now_v7())),
+        (1_i32, "returned", "IRREVERSIBLE", None),
+    ] {
+        sqlx::query(
+            "INSERT INTO scope_saga_entries \
+             (tenant_id,run_id,owner_path_nodes,owner_path_indices,owner_node,iteration_index, \
+              node,kind,compensation_id,after_iterations,after_nodes) \
+             VALUES ($1,$2,'{}','{}','items',$3,$4,$5,$6,'{}','{}')",
+        )
+        .bind(world.admin.tenant_id().as_uuid())
+        .bind(run.as_uuid())
+        .bind(iteration)
+        .bind(node)
+        .bind(kind)
+        .bind(compensation)
+        .execute(&world.db.pool)
+        .await
+        .expect("scope saga entry");
+    }
+
+    let owner = ExecutionInstanceId::root(NodeId::parse("items").expect("owner"));
+    let first = InstancePath::root()
+        .child(owner.node().clone(), 0)
+        .expect("first member");
+    let first = world
+        .store
+        .load_path(world.admin.tenant_id(), run, first)
+        .await
+        .expect("first bounded path")
+        .expect("run");
+    let first_saga = first.state.scope_saga(&owner).expect("ancestor saga");
+    assert_eq!(first_saga.entries().len(), 1);
+    assert!(
+        first_saga
+            .entries()
+            .contains_key(&NodeId::parse("work").expect("forward"))
+    );
+    assert!(first_saga.irreversible().is_empty());
+    let first_compensation = ExecutionInstanceId::in_path(
+        first.state.path().clone(),
+        NodeId::parse("work").expect("forward").compensation(),
+    );
+    assert!(
+        first
+            .state
+            .authorizes_scope_compensation(&first_compensation)
+    );
+
+    let second = InstancePath::root()
+        .child(owner.node().clone(), 1)
+        .expect("second member");
+    let second = world
+        .store
+        .load_path(world.admin.tenant_id(), run, second)
+        .await
+        .expect("second bounded path")
+        .expect("run");
+    let second_saga = second.state.scope_saga(&owner).expect("ancestor saga");
+    assert!(second_saga.entries().is_empty());
+    assert_eq!(
+        second_saga.irreversible(),
+        [NodeId::parse("returned").expect("irreversible")]
+    );
+    let sibling_compensation = ExecutionInstanceId::in_path(
+        second.state.path().clone(),
+        NodeId::parse("work").expect("forward").compensation(),
+    );
+    assert!(
+        !second
+            .state
+            .authorizes_scope_compensation(&sibling_compensation),
+        "authority from iteration zero must not authorize its sibling"
+    );
+}
+
+#[tokio::test]
 async fn a_bounded_completion_commits_without_reopening_the_run_history() {
     let world = world().await;
     allow_iterations(&world, 4).await;

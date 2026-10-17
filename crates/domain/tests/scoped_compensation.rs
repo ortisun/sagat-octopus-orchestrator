@@ -10,10 +10,10 @@ use std::time::Duration;
 use sagat_domain::execution::{
     AddressedPlan, AddressedRunEvent, CollectionDrainReason, ExecutionError, ExecutionInstanceId,
     Expiry, Failure, FailureCode, Fence, InstancePath, LoopContinuation, LoopDrainReason, LoopKind,
-    ReviewOutcome, RunEvent, RunId, RunState, RunStatus, SagaPhase, StepStatus, StopReason,
-    WaitingOn, complete_instance, complete_reconciliation_instance, expire_instance, fail_instance,
-    lease_instance, plan_scope_compensation, resolve_review_instance, retry_review_instance,
-    skip_review_instance,
+    PathExecutionState, ReviewOutcome, RunEvent, RunId, RunState, RunStatus, SagaPhase, StepStatus,
+    StopReason, WaitingOn, complete_instance, complete_reconciliation_instance, expire_instance,
+    fail_instance, lease_instance, lease_path_instance, plan_scope_compensation,
+    resolve_review_instance, retry_review_instance, skip_review_instance,
 };
 use sagat_domain::identity::Slug;
 use sagat_domain::saga::{EffectPolicy, ReconcileVerdict, SagaOutcome as Outcome};
@@ -602,6 +602,49 @@ fn iterations_of_a_collection_are_independent_branches() {
 }
 
 #[test]
+fn a_bounded_path_derives_only_its_scope_compensation_authority_from_the_oracle() {
+    let mut scope = failed_after_a_completed_iteration();
+    scope.advance();
+
+    let mut first =
+        PathExecutionState::from_run(&scope.state, scope.path(0)).expect("first bounded path");
+    let first_saga = first.scope_saga(&scope.owner).expect("ancestor saga");
+    assert_eq!(
+        first_saga.entries().keys().cloned().collect::<Vec<_>>(),
+        [id("charge"), id("reserve"), id("ship")]
+    );
+    assert!(
+        first_saga
+            .entries()
+            .values()
+            .flatten()
+            .all(|dependency| dependency.path() == &scope.path(0))
+    );
+    assert!(first.authorizes_scope_compensation(&scope.at(0, "ship").compensation()));
+    assert!(first.authorizes_derived_work(&scope.at(0, "ship").compensation()));
+    assert!(!first.authorizes_scope_compensation(&scope.at(1, "charge").compensation()));
+    lease_path_instance(&mut first, &scope.at(0, "ship").compensation())
+        .expect("the exact persisted saga entry authorizes the bounded compensation lease");
+
+    let second =
+        PathExecutionState::from_run(&scope.state, scope.path(1)).expect("second bounded path");
+    let second_saga = second.scope_saga(&scope.owner).expect("ancestor saga");
+    assert_eq!(
+        second_saga.entries().keys().cloned().collect::<Vec<_>>(),
+        [id("charge"), id("reserve")]
+    );
+    assert!(
+        second_saga
+            .entries()
+            .values()
+            .flatten()
+            .all(|dependency| dependency.path() == &scope.path(1))
+    );
+    assert!(second.authorizes_scope_compensation(&scope.at(1, "charge").compensation()));
+    assert!(!second.authorizes_scope_compensation(&scope.at(1, "ship").compensation()));
+}
+
+#[test]
 fn compensation_fan_out_is_bounded_by_the_scope_concurrency() {
     let mut scope = Scope::start(
         collection_definition(vec![step("reserve", true, false)], 1),
@@ -760,6 +803,12 @@ fn an_attempt_with_an_unknown_outcome_is_looked_up_before_anything_is_repeated()
         StepStatus::Ready,
         "the lookup runs"
     );
+    let mut bounded = PathExecutionState::from_run(&scope.state, scope.path(0))
+        .expect("bounded reconciliation path");
+    assert!(bounded.authorizes_reconciliation(&lookup));
+    assert!(bounded.authorizes_derived_work(&lookup));
+    lease_path_instance(&mut bounded, &lookup)
+        .expect("the persisted reconciliation request authorizes the bounded lookup lease");
     scope.assert_replays();
 }
 

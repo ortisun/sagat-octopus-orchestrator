@@ -39,9 +39,10 @@ use sagat_domain::execution::{
     ChainScope, CollectionDrainReason, CollectionIterationRestore, CollectionPhase,
     ContinuationTransfer, CorrelationKey, ExecutionInstanceId, FailureCode, GlobalExecutionFence,
     InstancePath, LoopContinuation, LoopDrainReason, LoopIterationRestore, LoopKind, LoopPhase,
-    PathCollectionState, PathExecutionState, PathLoopState, RunChainState, RunEvent, RunId,
-    RunState, RunStatus, SagaPhase, SagaState, ScopeSagaState, SegmentCompletionKind, SegmentIndex,
-    StepState, StepStatus, StopReason, SwitchSelection, WaitingOn,
+    PathCollectionState, PathExecutionState, PathLoopState, PathScopeSagaState, RunChainState,
+    RunEvent, RunId, RunState, RunStatus, SagaPhase, SagaState, ScopeSagaState,
+    SegmentCompletionKind, SegmentIndex, StepState, StepStatus, StopReason, SwitchSelection,
+    WaitingOn,
 };
 use sagat_domain::identity::{Namespace, NamespaceId, Principal, Slug, TenantId};
 use sagat_domain::saga::{NodeOrigin, SagaOutcome};
@@ -455,12 +456,16 @@ impl PathExecutionStore for PgRunStore {
             });
         }
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            .execute(&mut *tx)
+            .await
+            .map_err(store_error)?;
         let row = sqlx::query(
             "SELECT id,tenant_id,namespace_id,workflow_id,workflow_version_id,status,run_version, \
                     stop_reason,stop_code,paused,correlation_id,started_by,trace_id,deadline_at, \
                     created_at,updated_at,finished_at,parent_run_id,root_run_id,parent_node, \
                     cancel_policy,depth,trace_parent_span,rerun_of,origin \
-             FROM runs WHERE tenant_id=$1 AND id=$2 FOR SHARE",
+             FROM runs WHERE tenant_id=$1 AND id=$2",
         )
         .bind(tenant.as_uuid())
         .bind(run.as_uuid())
@@ -743,6 +748,109 @@ impl PathExecutionStore for PgRunStore {
             owner_nodes.push(segment.scope_node().as_str().to_owned());
             owner_indices.push(index);
         }
+
+        // A scoped compensation is authorized by its owning ancestor saga. Load only entries for
+        // this exact member path; sibling iteration plans remain in PostgreSQL. Local saga headers
+        // are included for bounded control progression, without hydrating their member history.
+        let mut saga_owners = BTreeMap::<ExecutionInstanceId, Option<u32>>::new();
+        for ancestor in &ancestors {
+            saga_owners.insert(ancestor.owner().clone(), Some(ancestor.iteration_index()));
+        }
+        for node in collections.keys().chain(loops.keys()) {
+            saga_owners
+                .entry(ExecutionInstanceId::in_path(path.clone(), node.clone()))
+                .or_insert(None);
+        }
+        let mut scope_sagas = BTreeMap::new();
+        for (owner, relevant_iteration) in saga_owners {
+            let (owner_path_nodes, owner_path_indices) = stored_path_parts(owner.path());
+            let Some(saga_row) = sqlx::query(
+                "SELECT phase,cause_code,outcome,during_stop FROM scope_sagas \
+                 WHERE tenant_id=$1 AND run_id=$2 AND owner_path_nodes=$3 \
+                   AND owner_path_indices=$4 AND owner_node=$5",
+            )
+            .bind(tenant.as_uuid())
+            .bind(run.as_uuid())
+            .bind(&owner_path_nodes)
+            .bind(&owner_path_indices)
+            .bind(owner.node().as_str())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(store_error)?
+            else {
+                continue;
+            };
+            let mut entries = BTreeMap::new();
+            let mut irreversible = Vec::new();
+            if let Some(iteration) = relevant_iteration {
+                let iteration =
+                    i32::try_from(iteration).map_err(|_| corrupt("scope saga iteration"))?;
+                let entry_rows = sqlx::query(
+                    "SELECT node,kind,after_iterations,after_nodes FROM scope_saga_entries \
+                     WHERE tenant_id=$1 AND run_id=$2 AND owner_path_nodes=$3 \
+                       AND owner_path_indices=$4 AND owner_node=$5 AND iteration_index=$6 \
+                     ORDER BY node",
+                )
+                .bind(tenant.as_uuid())
+                .bind(run.as_uuid())
+                .bind(&owner_path_nodes)
+                .bind(&owner_path_indices)
+                .bind(owner.node().as_str())
+                .bind(iteration)
+                .fetch_all(&mut *tx)
+                .await
+                .map_err(store_error)?;
+                let member =
+                    |iteration: i32, node: String| -> Result<ExecutionInstanceId, StoreError> {
+                        let index = u32::try_from(iteration)
+                            .map_err(|_| corrupt("bounded scope saga dependency"))?;
+                        let member_path = owner
+                            .path()
+                            .child(owner.node().clone(), index)
+                            .map_err(|_| corrupt("bounded scope saga member path"))?;
+                        let node = NodeId::parse_stored(&node)
+                            .map_err(|_| corrupt("bounded scope saga member"))?;
+                        Ok(ExecutionInstanceId::in_path(member_path, node))
+                    };
+                for entry in &entry_rows {
+                    let node = NodeId::parse_stored(&col::<String>(entry, "node")?)
+                        .map_err(|_| corrupt("bounded scope saga member"))?;
+                    match col::<String>(entry, "kind")?.as_str() {
+                        "COMPENSATE" => {
+                            let after_iterations = col::<Vec<i32>>(entry, "after_iterations")?;
+                            let after_nodes = col::<Vec<String>>(entry, "after_nodes")?;
+                            if after_iterations.len() != after_nodes.len() {
+                                return Err(corrupt("bounded scope saga dependencies"));
+                            }
+                            let after = after_iterations
+                                .into_iter()
+                                .zip(after_nodes)
+                                .map(|(iteration, node)| member(iteration, node))
+                                .collect::<Result<Vec<_>, _>>()?;
+                            entries.insert(node, after);
+                        }
+                        "IRREVERSIBLE" => irreversible.push(node),
+                        _ => return Err(corrupt("bounded scope saga entry kind")),
+                    }
+                }
+            }
+            let saga = PathScopeSagaState::restore(
+                owner.clone(),
+                col::<String>(&saga_row, "phase")?
+                    .parse::<SagaPhase>()
+                    .map_err(|_| corrupt("bounded scope saga phase"))?,
+                FailureCode::parse(&col::<String>(&saga_row, "cause_code")?)
+                    .map_err(|_| corrupt("bounded scope saga cause"))?,
+                entries,
+                irreversible,
+                col::<Option<String>>(&saga_row, "outcome")?
+                    .map(|outcome| outcome.parse::<SagaOutcome>())
+                    .transpose()
+                    .map_err(|()| corrupt("bounded scope saga outcome"))?,
+                col(&saga_row, "during_stop")?,
+            );
+            scope_sagas.insert(owner, saga);
+        }
         let input_row = sqlx::query(
             "SELECT payload.content,runs.input_blob_id FROM runs JOIN payloads payload \
                ON payload.tenant_id=runs.tenant_id AND payload.digest=runs.input_digest \
@@ -890,7 +998,7 @@ impl PathExecutionStore for PgRunStore {
             steps,
             collections,
             loops,
-            BTreeMap::new(),
+            scope_sagas,
         )
         .map_err(|error| StoreError::Internal {
             detail: error.to_string(),

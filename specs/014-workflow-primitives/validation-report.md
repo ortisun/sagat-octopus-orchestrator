@@ -1425,3 +1425,28 @@ Actual local gates on this integration:
 A follow-up regression is being added for snapshot reads queuing behind the run writer and for
 indexed compensation authority. Neither the foundation nor these focused gates close the remaining
 feature-014 runtime, large-workload or release tasks.
+
+
+### Exact-path snapshot and compensation authority correction
+
+The writer-lock regression failed on the previous implementation in
+`/tmp/sagat-completion-bounded-snapshot-red.log` (the held writer caused the one-second timeout).
+Path reads now use one REPEATABLE READ READ ONLY transaction without a run-row lock. Mutation
+still compares the snapshot revision under its existing exclusive run lock. A typed bounded saga
+projection reads only ancestor/local headers and the exact iteration's indexed entries; it never
+imports sibling compensation authority. Derived leases require that persisted compensation or
+reconciliation authority. The other worktree's uncommitted source was read and applied as a patch
+to this integration checkout; its contents and worktree remain untouched.
+
+Actual focused domain gate: 5 bounded planning/lifecycle tests plus 26 scoped-compensation tests
+passed in `/tmp/sagat-completion-bounded-authority-domain.log`. Actual PostgreSQL gate:
+`cargo test --locked -p sagat-tests --test integration_workflow_primitives
+byte_ceilings::a_bounded -- --test-threads=1` passed 4/4, 12.55 s, no ignored cases
+(`/tmp/sagat-completion-bounded-snapshot-green-2.log`). These cover the nonblocking snapshot,
+per-iteration saga selection, existing bounded completion and script retention. The first saga
+fixture had admitted only iteration 0, so correctly refused iteration 1; an additional scheduler
+admission and an explicit two-member database assertion fix that harness prerequisite.
+
+This does not enable a partially implemented bounded worker. Failure/reconciliation reducers,
+control progression, blobs, root finalization and the accepted large-workload evidence remain
+required before that production switch.

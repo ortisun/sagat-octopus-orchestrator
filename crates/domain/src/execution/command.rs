@@ -384,6 +384,9 @@ pub fn lease_path_instance(
     if !state.allows_forward_progress() && !instance.node().is_derived() {
         return Err(ExecutionError::RunNotRunnable(state.global().status()));
     }
+    if instance.node().is_derived() && !state.authorizes_derived_work(instance) {
+        return Err(ExecutionError::UnknownInstance(instance.clone()));
+    }
     let step = require_path_instance(state, instance)?;
     if step.status() != StepStatus::Ready {
         return Err(ExecutionError::IllegalInstanceTransition {
