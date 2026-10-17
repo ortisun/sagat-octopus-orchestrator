@@ -10,4 +10,5 @@ mod chains;
 mod collections;
 mod loops;
 mod operations;
+mod scope_compensation;
 mod switch;
