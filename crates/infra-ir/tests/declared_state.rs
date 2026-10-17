@@ -119,10 +119,15 @@ fn publication_rejects_unreleased_capabilities_combined_with_declared_state() {
         {"id": "rejected", "type": "end"},
         {"id": "expired", "type": "end"}
     ]);
-    assert!(matches!(
-        JsonIrCodec.parse(with_structured_node.to_string().as_bytes()),
-        Err(IrError::Unsupported { kind, .. }) if kind == "approval"
-    ));
+    // An approval beside declared state is publishable (D295); the state is the declared
+    // operations' and the approval's routes do not read it.
+    let parsed = JsonIrCodec
+        .parse(with_structured_node.to_string().as_bytes())
+        .expect("an approval and declared state publish together (D295)");
+    assert!(parsed.definition.nodes().any(|node| matches!(
+        node.kind(),
+        sagat_domain::workflow::NodeKind::Approval { .. }
+    )));
 }
 
 #[test]

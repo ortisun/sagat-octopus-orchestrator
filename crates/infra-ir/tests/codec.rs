@@ -90,7 +90,7 @@ fn unsupported_additive_declarations_remain_unpublishable() {
 }
 
 #[test]
-fn native_approval_is_publishable_without_enabling_other_structured_capabilities() {
+fn native_approval_is_publishable_beside_declared_state_and_apart_from_parallel() {
     let document = minimal(
         json!([
             {
@@ -119,10 +119,7 @@ fn native_approval_is_publishable_without_enabling_other_structured_capabilities
 
     let mut combined = document.clone();
     combined["state"] = json!({"schema": {"type": "integer"}, "initial": "0"});
-    assert!(matches!(
-        parse(&combined),
-        Err(IrError::Unsupported { kind, .. }) if kind == "approval"
-    ));
+    parse(&combined).expect("an approval and declared state publish together (D295)");
 
     let mut parallel = document.clone();
     parallel["nodes"]
@@ -1643,5 +1640,40 @@ fn a_hostile_node_cannot_make_the_message_long() {
             "{} chars",
             message.chars().count()
         );
+    }
+}
+
+#[test]
+fn an_approval_in_a_collection_or_loop_body_waits_for_scoped_compensation() {
+    let gated = json!([
+        {"id": "gate", "type": "approval", "policy": {"roles": ["operator"]}, "timeoutMs": 60_000,
+         "onApprove": "work", "onReject": "work", "onExpire": "work"},
+        {"id": "work", "type": "activity", "activity": "gate.work", "next": "out"},
+        {"id": "out", "type": "return", "result": "steps.work.output"}
+    ]);
+    for owner in [
+        json!({"id": "owner", "type": "forEach", "items": "input.items", "body": "iteration",
+               "result": "bodyResult", "maxItems": 4, "maxConcurrency": 1, "next": "done"}),
+        json!({"id": "owner", "type": "while", "condition": "carry < 1", "body": "iteration",
+               "initial": "0", "carry": "bodyResult", "maxIterations": 3, "timeoutMs": 60_000,
+               "next": "done"}),
+    ] {
+        let mut document = minimal(json!([owner, {"id": "done", "type": "end"}]), "owner");
+        document["bodies"] = json!({"iteration": {"entrypoint": "gate", "nodes": gated}});
+        match parse(&document) {
+            Err(IrError::Pending {
+                node,
+                kind,
+                dependency,
+                reason,
+            }) => {
+                assert_eq!(
+                    (node.as_str(), kind.as_str(), dependency),
+                    ("gate", "approval", "SCOPED_COMPENSATION")
+                );
+                assert!(reason.contains("scoped compensation"), "{reason}");
+            }
+            other => panic!("expected the pending dependency, got {other:?}"),
+        }
     }
 }

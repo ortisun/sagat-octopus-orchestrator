@@ -5,6 +5,7 @@
 #[path = "../../support/mod.rs"]
 mod support;
 
+mod approval_combinations;
 mod approvals;
 mod chains;
 mod collections;

@@ -369,7 +369,10 @@ async fn declared_state(
         let event = crate::event_codec::decode(&event_type, None, &detail)
             .ok_or(DeclaredOperationStoreError::DefinitionUnavailable)?;
         let payload_digest = optional_digest(&journal, "payload_digest")?;
-        if !matches!(
+        // The state of a revision above zero was written by an Update of this run, or it was handed
+        // over by the segment before it: the successor's link event carries the digest of the
+        // transferred state, and the revision continues from the predecessor's.
+        let written_here = matches!(
             event,
             RunEvent::StateUpdated {
                 after_revision,
@@ -378,7 +381,15 @@ async fn declared_state(
             } if after_revision == state_revision
                 && event_digest == state_digest
                 && payload_digest == Some(state_digest)
-        ) {
+        );
+        let transferred = matches!(
+            event,
+            RunEvent::ExecutionChainSuccessorLinked {
+                state_digest: Some(event_digest),
+                ..
+            } if event_digest == state_digest
+        );
+        if !written_here && !transferred {
             return Err(DeclaredOperationStoreError::DefinitionUnavailable);
         }
     }

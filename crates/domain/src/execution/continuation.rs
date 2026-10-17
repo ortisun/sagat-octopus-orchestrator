@@ -965,6 +965,8 @@ pub enum ChainError {
     NotQuiescent(QuiescenceBlocker),
     #[error("chain segment limit is exhausted")]
     SegmentLimitExceeded,
+    #[error("the chain's original deadline has passed; the deadline ends it, not a hand-off")]
+    DeadlineElapsed,
     #[error("the run tree that holds this chain has no room for another successor")]
     TreeBudgetExhausted,
     #[error("a run may belong to a chain only once")]

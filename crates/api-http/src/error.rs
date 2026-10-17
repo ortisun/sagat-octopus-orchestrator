@@ -368,6 +368,25 @@ impl ApiError {
         &self.parts
     }
 
+    /// The closed rejection code of a refusal that has one: a `details.reason` of the contract's
+    /// table, or the rate and quota codes. Any other failure is not a rejection, so a reason can
+    /// never widen the metric label set.
+    #[must_use]
+    pub fn primitive_rejection(&self) -> Option<sagat_telemetry::WorkflowPrimitiveRejectionCode> {
+        use sagat_telemetry::WorkflowPrimitiveRejectionCode as Code;
+        self.parts
+            .details
+            .as_ref()
+            .and_then(|details| details.get("reason"))
+            .and_then(Value::as_str)
+            .and_then(Code::from_reason)
+            .or(match self.parts.code {
+                ErrorCode::RateLimited => Some(Code::RateLimited),
+                ErrorCode::QuotaExceeded => Some(Code::QuotaExceeded),
+                _ => None,
+            })
+    }
+
     /// Why the caller was refused, when the answer is a `403` / `PERMISSION_DENIED`: what the audit
     /// of the denial records. Any `403` has one, so a refusal added later is audited too.
     #[must_use]
@@ -788,6 +807,14 @@ fn definition_details(error: &IrError) -> Value {
         }),
         IrError::Unsupported { node, kind, .. } => {
             json!({ "reason": "UNSUPPORTED_NODE", "node": node, "kind": kind })
+        }
+        IrError::Pending {
+            node,
+            kind,
+            dependency,
+            ..
+        } => {
+            json!({ "reason": "UNSUPPORTED_NODE", "node": node, "kind": kind, "dependency": dependency })
         }
         IrError::UnsupportedDeclaration { field, .. } => {
             json!({ "reason": "UNSUPPORTED_NODE", "path": format!("/{field}") })

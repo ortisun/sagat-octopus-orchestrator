@@ -197,8 +197,10 @@ the pending request and checks authorized approve/reject, replay, conflicting ke
 opacity in all five SDKs. See
 [`workflow-primitives.md`](../../docs/runbooks/workflow-primitives.md) for the current API paths,
 idempotency and recovery checks. Approval combined with parallel execution is rejected until
-concurrent-run expiry semantics are verified. A declared state document combined with a
-collection, loop, approval or continuation node is still rejected at publication.
+concurrent-run expiry semantics are verified. A declared state document combines with a native
+approval and, with the shapes listed below, with an approval inside a continuation chain (decision
+D295, next section). A declared state document combined with a collection or loop node is still
+rejected at publication, and so is an approval inside a collection or loop body.
 
 The PostgreSQL integration target verifies public collection publication/start, missing-policy
 fail-closed behavior, audited capacity provisioning, scoped worker leasing, ordered checkpoint,
@@ -393,6 +395,70 @@ cargo test -p sagat-tests --test integration_workflow_primitives --locked loops_
 cargo test -p sagat-tests --test fault_workflow_primitives --locked loops:: -- --test-threads=2
 SAGAT_SDK_SCENARIO=loop-cancel cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
 SAGAT_SDK_SCENARIO=loop-error-activity cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
+
+## An approval with declared state, and an approval inside a chain
+
+Decision D295: an approval node combines with declared run state and with a continuation chain. It does
+not combine with a collection or loop body; publication refuses that with `UNSUPPORTED_NODE` and
+`details.dependency: SCOPED_COMPENSATION`, naming what has to exist first.
+
+**Approval and state.** The state belongs to the declared Query and Update calls. While the request is
+open the run is `WAITING` and still mutable; the decision, an expiry or a cancel then end the run with
+the state exactly as the last Update left it, readable but no longer mutable (`RUN_NOT_MUTABLE`). The
+approval's routes are the decision alone: no node expression reads the state.
+
+```sh
+# 1. Publish a workflow with `state` and an `approval` node (see tests/support/approval_flow.rs for the
+#    document: review -> approved | rejected | expired, state {balance}, balance.read, balance.replace).
+WF=$(curl -s -X POST "$API/v1/workflows" -H "authorization: Bearer $ADMIN" -H "x-octopus-namespace: payments" \
+  -H 'content-type: application/json' -H "idempotency-key: $(uuidgen)" \
+  -d "{\"name\":\"review-with-state\",\"ir\":$(cat review-with-state.json)}" | jq -r .id)
+curl -s -X POST "$API/v1/workflows/$WF/publish" -H "authorization: Bearer $ADMIN" -H "x-octopus-namespace: payments" \
+  -H 'content-type: application/json' -H "idempotency-key: $(uuidgen)" -d '{"draftRevision":1}'
+# 2. Start a run as the initiator, then read the request the scheduler opened.
+RUN=$(curl -s -X POST "$API/v1/runs" -H "authorization: Bearer $ADMIN" -H "x-octopus-namespace: payments" \
+  -H 'content-type: application/json' -H "idempotency-key: $(uuidgen)" \
+  -d "{\"workflowId\":\"$WF\",\"input\":{\"account\":{\"balance\":100}}}" | jq -r .runId)
+APPROVAL=$(curl -s "$API/v1/runs/$RUN/approvals" -H "authorization: Bearer $OPERATOR" | jq -r '.items[0].approvalId')
+# 3. Change the state while the request is open (the revision fences concurrent callers) ...
+curl -s -X POST "$API/v1/runs/$RUN/updates/balance.replace" -H "authorization: Bearer $ADMIN" \
+  -H 'content-type: application/json' \
+  -d '{"updateKey":"raise-0001","expectedStateRevision":0,"args":{"allowed":true,"nextState":{"balance":250}}}'
+# 4. ... and decide it as an eligible person who is not the initiator.
+curl -s -X POST "$API/v1/approvals/$APPROVAL/decisions" -H "authorization: Bearer $OPERATOR" \
+  -H 'content-type: application/json' -d '{"decisionKey":"approve-0001","decision":"APPROVE","reasonCode":"POLICY_OK"}'
+curl -s -X POST "$API/v1/runs/$RUN/queries/balance.read" -H "authorization: Bearer $ADMIN" \
+  -H 'content-type: application/json' -d '{"args":0}'   # 250, stateRevision 1, after the run ended
+```
+
+**Approval and a chain.** The published shape is an entry activity, then an approval whose approval
+routes to the `continueAsNew` node and whose rejection and expiry route to `end` nodes; the exact declared
+state may travel with the continuation. Each segment opens an approval of its own. The state an Update
+wrote while a request was open is what the successor starts with (read and update it through the chain
+address); cancelling the chain, or the chain's original deadline, settles an open request as `CANCELLED`
+and a later decision answers `ALREADY_DECIDED`.
+
+```sh
+# `work` (activity) -> `review` (approval) -> approve: `rollover` (continueAsNew) | reject, expire: `end`.
+curl -s "$API/v1/namespaces/$NS/chains/$CHAIN" -H "authorization: Bearer $ADMIN"            # head, segments
+curl -s "$API/v1/runs/$(jq -r .currentRunId head.json)/approvals" -H "authorization: Bearer $OPERATOR"
+curl -s -X POST "$API/v1/namespaces/$NS/chains/$CHAIN/updates/balance.replace" -H "authorization: Bearer $ADMIN" \
+  -H 'content-type: application/json' \
+  -d "{\"updateKey\":\"during-review-0001\",\"expectedRunId\":\"$HEAD\",\"args\":{\"allowed\":true,\"nextState\":{\"balance\":250}}}"
+curl -s -X POST "$API/v1/namespaces/$NS/chains/$CHAIN/cancel" -H "authorization: Bearer $ADMIN" \
+  -H 'content-type: application/json' -H "idempotency-key: $(uuidgen)" \
+  -d "{\"expectedRunId\":\"$HEAD\",\"reason\":\"stop the review chain\"}"
+```
+
+Run the evidence for both combinations (real PostgreSQL, HTTP and scheduler; the scenarios need the five
+SDK toolchains):
+
+```sh
+cargo test -p sagat-tests --test integration_workflow_primitives --locked approval_combinations::
+cargo test -p sagat-tests --test integration_workflow_primitives --locked approval_telemetry::
+cargo test -p sagat-tests --test fault_workflow_primitives --locked approval_combinations::
+SAGAT_SDK_SCENARIO=approval-state cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
+SAGAT_SDK_SCENARIO=approval-chain cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
 ```
 
 ## Compensating a failed collection or loop

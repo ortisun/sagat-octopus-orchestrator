@@ -6,8 +6,10 @@
 #[path = "../../support/mod.rs"]
 mod support;
 
+mod approval_combinations;
 mod approval_progress;
 mod approval_scheduler;
+mod approval_telemetry;
 mod approvals_http;
 mod byte_ceilings;
 mod chain_handoff;

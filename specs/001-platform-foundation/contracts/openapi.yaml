@@ -3553,7 +3553,9 @@ components:
             `CHAIN_HEAD_CHANGED`, `RUN_NOT_MUTABLE`, `RUN_CONTINUED`, `INVALID_ARGUMENTS`,
             `INVALID_UPDATE_KEY`, `INVALID_DECISION_KEY`, `INVALID_REASON_CODE`, `REVISION_CONFLICT` and
             `UPDATE_REJECTED`;
-            they do not add a new `Error.code` value.
+            they do not add a new `Error.code` value. An `UNSUPPORTED_NODE` for a combination the design accepts
+            but whose prerequisite is not built yet also carries `dependency`, a closed name of what has to exist
+            first (`SCOPED_COMPENSATION`: an approval inside a collection or loop body), next to `node` and `kind`.
     Health:
       type: object
       required: [status]

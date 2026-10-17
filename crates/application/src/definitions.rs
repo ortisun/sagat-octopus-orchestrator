@@ -104,6 +104,18 @@ pub enum IrError {
         kind: String,
         reason: &'static str,
     },
+    /// A combination the accepted design allows but whose prerequisite is not built yet (decision
+    /// D295: an approval inside a collection or loop body waits for scoped compensation). Unlike
+    /// [`Self::Unsupported`] it names what has to exist first, so a client can tell a closed door
+    /// from a missing feature.
+    #[error("node '{node}' is a '{kind}', which waits for {dependency}: {reason}")]
+    Pending {
+        node: String,
+        kind: String,
+        /// The closed name of the missing prerequisite (`SCOPED_COMPENSATION`).
+        dependency: &'static str,
+        reason: &'static str,
+    },
     #[error("declaration '{field}' is not supported yet: {reason}")]
     UnsupportedDeclaration {
         field: &'static str,
@@ -207,7 +219,7 @@ pub fn problems_of(error: &IrError) -> Vec<Problem> {
                 Problem::error("SCHEMA", issue.message.clone()).at_path(issue.path.clone())
             })
             .collect(),
-        IrError::Unsupported { node, .. } => {
+        IrError::Unsupported { node, .. } | IrError::Pending { node, .. } => {
             vec![Problem::error("UNSUPPORTED_NODE", error.to_string()).at_node(node.clone())]
         }
         IrError::UnsupportedDeclaration { field, .. } => {

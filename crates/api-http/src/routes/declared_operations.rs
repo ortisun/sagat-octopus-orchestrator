@@ -29,8 +29,7 @@ use sagat_domain::identity::NamespaceId;
 use sagat_domain::identity::Permission;
 use sagat_domain::workflow::{ActivityName, Digest};
 use sagat_telemetry::{
-    WorkflowPrimitiveKind, WorkflowPrimitiveMetric, WorkflowPrimitiveOutcome,
-    WorkflowPrimitiveRejectionCode, WorkflowPrimitiveSpan,
+    WorkflowPrimitiveKind, WorkflowPrimitiveMetric, WorkflowPrimitiveOutcome, WorkflowPrimitiveSpan,
 };
 use tower_http::limit::RequestBodyLimitLayer;
 use tracing::Instrument;
@@ -43,7 +42,7 @@ use crate::dto_declared_operations::{
     ChainDeclaredQueryBody, ChainDeclaredUpdateBody, DeclaredQueryBody, DeclaredQueryResponseBody,
     DeclaredUpdateBody, DeclaredUpdateResponseBody, RejectedUpdateDetails,
 };
-use crate::error::{ApiError, ErrorCode};
+use crate::error::ApiError;
 use crate::extract::{ApiJson, Caller};
 use crate::limits::RateLimiter;
 use crate::{AppState, TokenVerifier};
@@ -350,22 +349,6 @@ impl OperationTelemetry {
         }
     }
 
-    /// A refusal with a closed rejection code is `rejected`; anything else that failed is `failed`.
-    fn rejection(error: &ApiError) -> Option<WorkflowPrimitiveRejectionCode> {
-        let parts = error.parts();
-        parts
-            .details
-            .as_ref()
-            .and_then(|details| details.get("reason"))
-            .and_then(serde_json::Value::as_str)
-            .and_then(WorkflowPrimitiveRejectionCode::from_reason)
-            .or(match parts.code {
-                ErrorCode::RateLimited => Some(WorkflowPrimitiveRejectionCode::RateLimited),
-                ErrorCode::QuotaExceeded => Some(WorkflowPrimitiveRejectionCode::QuotaExceeded),
-                _ => None,
-            })
-    }
-
     fn finish<T>(self, result: &Result<T, ApiError>, replayed: impl FnOnce(&T) -> Option<bool>) {
         let outcome = match result {
             Ok(value) => {
@@ -378,7 +361,7 @@ impl OperationTelemetry {
                     WorkflowPrimitiveOutcome::Succeeded
                 }
             }
-            Err(error) => match Self::rejection(error) {
+            Err(error) => match error.primitive_rejection() {
                 Some(code) => {
                     self.span.record("sagat.rejection.code", code.as_str());
                     metrics::counter!(

@@ -464,3 +464,93 @@ fn rejects_unavailable_transfer_variables_and_invalid_graphs() {
         Err(IrError::Schema(_))
     ));
 }
+
+fn approval_gated_document() -> Value {
+    json!({
+        "apiVersion": "sagat-octopus-orchestrator.io/v1",
+        "kind": "Workflow",
+        "metadata": {"name": "continuation-approval"},
+        "entrypoint": "work",
+        "nodes": [
+            {"id": "work", "type": "activity", "activity": "segment.work", "next": "review"},
+            {
+                "id": "review",
+                "type": "approval",
+                "policy": {"roles": ["operator"]},
+                "timeoutMs": 60_000,
+                "onApprove": "rollover",
+                "onReject": "rejected",
+                "onExpire": "expired"
+            },
+            {"id": "rollover", "type": "continueAsNew", "input": "input.next"},
+            {"id": "rejected", "type": "end"},
+            {"id": "expired", "type": "end"}
+        ],
+        "chainPolicy": {"maxSegments": 3, "timeoutMs": 3_600_000}
+    })
+}
+
+#[test]
+fn publishes_an_approval_that_rolls_the_chain_over_and_ends_it_on_rejection_or_expiry() {
+    let parsed = JsonIrCodec
+        .parse(approval_gated_document().to_string().as_bytes())
+        .expect("an approval and a continuation publish together (D295)");
+    assert!(
+        parsed
+            .definition
+            .node(&NodeId::parse("review").expect("approval"))
+            .is_some_and(|node| matches!(node.kind(), NodeKind::Approval { .. }))
+    );
+    assert!(parsed.definition.continuation_policy().is_some());
+
+    // One end node may serve both the rejection and the expiry.
+    let mut shared = approval_gated_document();
+    shared["nodes"][1]["onExpire"] = json!("rejected");
+    shared["nodes"].as_array_mut().expect("nodes").pop();
+    JsonIrCodec
+        .parse(shared.to_string().as_bytes())
+        .expect("a shared end node");
+
+    // The exact declared state travels with the chain, as for the other published shapes.
+    let mut stateful = approval_gated_document();
+    stateful["nodes"][2]["state"] = json!("state");
+    stateful["state"] = json!({"schema": {"type": "integer"}, "initial": "0"});
+    JsonIrCodec
+        .parse(stateful.to_string().as_bytes())
+        .expect("approval, state and continuation together");
+}
+
+#[test]
+fn publication_keeps_other_approval_continuation_shapes_closed() {
+    let closed = |edit: &dyn Fn(&mut Value)| {
+        let mut document = approval_gated_document();
+        edit(&mut document);
+        assert!(
+            matches!(
+                JsonIrCodec.parse(document.to_string().as_bytes()),
+                Err(IrError::Unsupported { .. } | IrError::Invalid(_))
+            ),
+            "{document}"
+        );
+    };
+    // The approval is the entrypoint: successor creation assumes an activity entrypoint.
+    closed(&|document| document["entrypoint"] = json!("review"));
+    // Rejection continues instead of ending, or the approval routes elsewhere than the boundary.
+    closed(&|document| document["nodes"][1]["onReject"] = json!("rollover"));
+    closed(&|document| document["nodes"][1]["onApprove"] = json!("rejected"));
+    // An approval error edge, and an end that carries an output.
+    closed(&|document| document["nodes"][1]["onError"] = json!("rejected"));
+    closed(&|document| document["nodes"][3]["outputExpr"] = json!("'rejected'"));
+    // A second approval in the segment.
+    closed(&|document| {
+        let second = json!({
+            "id": "second", "type": "approval", "policy": {"roles": ["operator"]},
+            "timeoutMs": 60_000, "onApprove": "rejected", "onReject": "rejected",
+            "onExpire": "rejected"
+        });
+        document["nodes"]
+            .as_array_mut()
+            .expect("nodes")
+            .push(second);
+    });
+}

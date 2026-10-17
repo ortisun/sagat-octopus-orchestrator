@@ -369,11 +369,57 @@ pub(crate) fn parse_published(document: &Value) -> Result<ParsedContinuation, Ir
                 && (continuation_and_end(true_node, false_node)
                     || continuation_and_end(false_node, true_node))
         });
-    if entry.get("onError").is_some() || (!direct && !waiting && !conditional) {
+    // An approval after the entry activity: its approval rolls the chain over, its rejection and its
+    // expiry end it (decision D295). The approval is settled before the boundary is reached, so the
+    // hand-off never meets an open request; the original deadline and the cancel latch still settle
+    // one that is open.
+    let approval_gated = successor
+        .and_then(find_node)
+        .filter(|node| node.get("type").and_then(Value::as_str) == Some("approval"))
+        .is_some_and(|gate| {
+            let route = |field: &str| gate.get(field).and_then(Value::as_str).and_then(find_node);
+            let transfers_declared_state = |continuation: &Value| {
+                if has_declared_state {
+                    continuation.get("state").and_then(Value::as_str) == Some("state")
+                } else {
+                    continuation.get("state").is_none()
+                }
+            };
+            let continues = |node: &Value| {
+                node.get("type").and_then(Value::as_str) == Some("continueAsNew")
+                    && transfers_declared_state(node)
+            };
+            let ends = |node: &Value| {
+                node.get("type").and_then(Value::as_str) == Some("end")
+                    && node.get("output").is_none()
+                    && node.get("outputExpr").is_none()
+            };
+            let (Some(approve), Some(reject), Some(expire)) =
+                (route("onApprove"), route("onReject"), route("onExpire"))
+            else {
+                return false;
+            };
+            let ids = |routes: &[&Value]| {
+                let mut ids: Vec<&str> = routes
+                    .iter()
+                    .filter_map(|node| node.get("id").and_then(Value::as_str))
+                    .collect();
+                ids.sort_unstable();
+                ids.dedup();
+                ids.len()
+            };
+            // entry, approval, the continuation and the distinct end nodes, nothing else.
+            continues(approve)
+                && ends(reject)
+                && ends(expire)
+                && gate.get("onError").is_none()
+                && nodes.len() == 2 + ids(&[approve, reject, expire])
+        });
+    if entry.get("onError").is_some() || (!direct && !waiting && !conditional && !approval_gated) {
         return Err(IrError::Unsupported {
             node: entrypoint.chars().take(64).collect(),
             kind: "continuation".to_owned(),
-            reason: "the runtime supports an activity followed by a continuation that transfers input and, when declared, the exact state snapshot; one condition may select that continuation or an end; an input-only waitEvent after the entry activity may continue after its signal",
+            reason: "the runtime supports an activity followed by a continuation that transfers input and, when declared, the exact state snapshot; one condition may select that continuation or an end; an input-only waitEvent after the entry activity may continue after its signal; an approval after the entry activity may route its approval to the continuation and its rejection and expiry to end nodes",
         });
     }
     parse(document)
