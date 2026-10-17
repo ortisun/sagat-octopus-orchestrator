@@ -83,3 +83,12 @@ live in `integration/workflow-primitives/byte_ceilings.rs`; the 19-case runtime-
 and the failed PostgreSQL infrastructure run are recorded in
 `tasks/project-completion/integration-notes.md`. These prerequisites alone do not establish that
 all production consumers use bounded restoration or satisfy the large-workload resource gate.
+
+The automatic scoped lease-expiry and retry passes now use this port: load one exact path outside
+the write lock, compare the run revision under lock, hold the current shard fence and recheck live
+expiry clocks before persisting the addressed command. A revision race is skipped for later
+rediscovery. Journal, task/timer projection and outbox effects still commit together. Only the
+exceptional retained-content quota drain uses the guarded full-run path. The PostgreSQL test
+`scoped_maintenance_does_not_read_whole_run_iteration_history` revokes iteration-history SELECT
+in its isolated database, proves full restoration fails, then requires both maintenance passes
+and journal replay to succeed. Worker claim/report consumers and wider scale gates remain separate.

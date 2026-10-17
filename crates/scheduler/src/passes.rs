@@ -22,7 +22,8 @@ use sagat_application::entropy::Entropy;
 use sagat_application::error::StoreError;
 use sagat_application::execution::{
     Actor, DefinitionCache, Effects, Engine, EngineError, ExpressionEvaluator, MAX_PAYLOAD_BYTES,
-    MAX_RUN_OUTPUT_BYTES, ParentLink, RunInfo, RunTx, ScopeInput,
+    MAX_RUN_OUTPUT_BYTES, ParentLink, PathExecutionStore, PathExecutionTx, RunInfo, RunTx,
+    ScopeInput,
 };
 use sagat_application::loop_progress::{
     LoopCandidate, LoopCheckpointCommand, LoopDelayElapsedCommand, LoopDrainCommand,
@@ -49,7 +50,8 @@ use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::execution::RunId;
 use sagat_domain::execution::{
     self, AddressedProgress, ChildOutcome, ExecutionError, ExecutionInstanceId, Expiry,
-    FailureCode, LoopContinuation, LoopKind, LoopPhase, Progress, RunStatus, StopReason,
+    FailureCode, LoopContinuation, LoopKind, LoopPhase, PathExecutionState, Progress, RunStatus,
+    StopReason,
 };
 use sagat_domain::identity::{NamespaceId, Subject, TenantId};
 use sagat_domain::sharding::{Shard, ShardSet};
@@ -463,6 +465,18 @@ impl View {
             Hold::Lost => Ok(false),
         }
     }
+
+    async fn holds_path<Tx: PathExecutionTx>(
+        &self,
+        tx: &mut Tx,
+        hold: &Hold,
+    ) -> Result<bool, StoreError> {
+        match hold {
+            Hold::Nothing => Ok(true),
+            Hold::Lease(lease) => tx.holds_shard(&self.owner, *lease).await,
+            Hold::Lost => Ok(false),
+        }
+    }
 }
 
 /// The scheduler over a store, an evaluator and a source of jitter.
@@ -559,8 +573,8 @@ where
     /// Runs every pass once, over the shards this replica holds (all of them when it is alone).
     pub async fn tick(&self) -> Report
     where
-        S: ChainCommandStore + ChainProgressStore,
-        S::Tx: ChainRunTx,
+        S: ChainCommandStore + ChainProgressStore + PathExecutionStore,
+        <S as RunStore>::Tx: ChainRunTx,
     {
         let mut report = Report::default();
         if self.view().shards.is_empty() {
@@ -3103,6 +3117,120 @@ where
         outcome
     }
 
+    /// Retry/expiry decisions need one path, its ancestor fences and current lease clocks. Read
+    /// those before taking the write lock and compare the run revision when acquiring it; a race
+    /// is a skipped candidate, never a reason to reopen the whole run's iteration history.
+    async fn apply_path_if<F>(
+        &self,
+        view: &View,
+        run: RunRef,
+        instance: &ExecutionInstanceId,
+        kind: &'static str,
+        lease_loss: Option<LeaseLoss>,
+        command: F,
+    ) -> Outcome
+    where
+        S: PathExecutionStore,
+        F: FnOnce(
+            &WorkflowDefinition,
+            &mut PathExecutionState,
+            OffsetDateTime,
+        ) -> Result<AddressedProgress, ExecutionError>,
+    {
+        let tenant = run.tenant_id;
+        let run_id = run.run_id;
+        let hold = view.hold_for(run_id);
+        let outcome = async {
+            if matches!(hold, Hold::Lost) {
+                return Ok(Outcome::Fenced);
+            }
+            let Some(snapshot) = self
+                .store
+                .load_path(tenant, run_id, instance.path().clone())
+                .await?
+            else {
+                return Ok(Outcome::Skipped);
+            };
+            let version = snapshot.state.global().version();
+            let trace = snapshot.info.trace_id.clone();
+            let span = tracing::info_span!(
+                "scheduler.action",
+                kind,
+                run_id = %run_id,
+                tenant_id = %tenant,
+                trace_id = trace.as_deref(),
+                parent_span_id = %sagat_telemetry::run_span_id(run_id.as_uuid()),
+            );
+            async {
+                let mut tx = match self.store.begin_path(snapshot, Lock::Wait).await {
+                    Ok(Some(tx)) => tx,
+                    Ok(None) | Err(StoreError::RevisionConflict { .. }) => {
+                        return Ok(Outcome::Skipped);
+                    }
+                    Err(error) => return Err(EngineError::Store(error)),
+                };
+                if !view.holds_path(&mut tx, &hold).await? {
+                    return Ok(Outcome::Fenced);
+                }
+                let now = tx.now();
+                if let Some(cause) = lease_loss {
+                    let due = tx
+                        .lease_deadlines(instance)
+                        .await?
+                        .is_some_and(|d| match cause {
+                            LeaseLoss::Expired => d.expires_at <= now,
+                            LeaseLoss::TimedOut => {
+                                d.attempt_deadline_at.is_some_and(|at| at <= now)
+                            }
+                        });
+                    if !due {
+                        return Ok(Outcome::Skipped);
+                    }
+                }
+                let change = async {
+                    let snapshot = tx.snapshot();
+                    let progress = command(&snapshot.definition, &mut snapshot.state, now)?;
+                    tx.persist_addressed(&progress.events, &[], self.effects())
+                        .await?;
+                    tx.commit().await?;
+                    Ok::<(), EngineError>(())
+                }
+                .await;
+                match change {
+                    Ok(()) => Ok(Outcome::Done),
+                    Err(EngineError::Execution(error))
+                        if !matches!(error, ExecutionError::Invariant(_)) =>
+                    {
+                        Ok(Outcome::Skipped)
+                    }
+                    Err(error) if content_quota(&error) => {
+                        // The failed bounded transaction has been dropped. The exceptional quota
+                        // drain keeps the existing full-run revision/fence/condition guard.
+                        let condition = lease_loss.map_or(Condition::Always, |cause| {
+                            Condition::LeaseLost { instance, cause }
+                        });
+                        self.stop_for_storage_quota(view, &hold, run, kind, condition, version)
+                            .await
+                    }
+                    Err(error) => Err(error),
+                }
+            }
+            .instrument(span)
+            .await
+        }
+        .await;
+        let outcome = outcome.unwrap_or_else(|error: EngineError| {
+            tracing::error!(%error, run = %run_id, kind, "a scheduler action failed");
+            Outcome::Failed
+        });
+        metrics::counter!("scheduler_actions_total", "kind" => kind, "outcome" => outcome.label())
+            .increment(1);
+        if outcome == Outcome::Fenced {
+            metrics::counter!("scheduler_fenced_total", "kind" => kind).increment(1);
+        }
+        outcome
+    }
+
     async fn apply_addressed_if<F>(
         &self,
         view: &View,
@@ -4038,7 +4166,10 @@ where
         }
     }
 
-    async fn retries(&self, view: &View, report: &mut Report) {
+    async fn retries(&self, view: &View, report: &mut Report)
+    where
+        S: PathExecutionStore,
+    {
         let due = self
             .pick(
                 view,
@@ -4076,17 +4207,20 @@ where
                             )
                             .await
                         } else {
-                            self.apply_addressed(
+                            let command_instance = instance.clone();
+                            self.apply_path_if(
                                 view,
-                                tenant_id,
-                                run_id,
+                                RunRef { tenant_id, run_id },
+                                &instance,
                                 "retry",
-                                self.effects(),
+                                None,
                                 move |def, state, now| {
-                                    Ok((
-                                        (),
-                                        execution::retry_due_instance(def, state, &instance, now)?,
-                                    ))
+                                    execution::retry_due_path_instance(
+                                        def,
+                                        state,
+                                        &command_instance,
+                                        now,
+                                    )
                                 },
                             )
                             .await
@@ -4100,7 +4234,10 @@ where
         }
     }
 
-    async fn leases(&self, view: &View, report: &mut Report) {
+    async fn leases(&self, view: &View, report: &mut Report)
+    where
+        S: PathExecutionStore,
+    {
         let lost = self
             .pick(
                 view,
@@ -4153,25 +4290,22 @@ where
                     )
                     .await
                 } else {
-                    self.apply_addressed_if(
+                    self.apply_path_if(
                         view,
                         run,
+                        &instance,
                         "lease",
-                        condition,
-                        self.effects(),
+                        Some(lost.cause),
                         move |def, state, now| {
-                            Ok((
-                                (),
-                                execution::expire_instance(
-                                    def,
-                                    state,
-                                    &command_instance,
-                                    fence,
-                                    cause,
-                                    jitter,
-                                    now,
-                                )?,
-                            ))
+                            execution::expire_path_instance(
+                                def,
+                                state,
+                                &command_instance,
+                                fence,
+                                cause,
+                                jitter,
+                                now,
+                            )
                         },
                     )
                     .await

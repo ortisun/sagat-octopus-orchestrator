@@ -990,3 +990,25 @@ the database ceiling stayed unchanged. It and the previously failing loop-entry 
 (`/tmp/sagat-completion-iteration-ceiling-migration-regression.log`), including concurrent runners,
 idempotence, complete rollback/reapply and writing data after reapplication. This verifies the
 current combined schema; it does not assert an untested upgrade from every unreleased branch snapshot.
+
+### Automatic bounded scoped expiry and retry
+
+Wired the automatic scoped lease-expiry/retry passes to `PathExecutionStore` and their shared pure
+bounded commands. Exact-path state is loaded outside the run write lock; acquisition compares the
+run revision, then holds the scheduler shard fence, rechecks both live lease clocks and persists
+the addressed events/effects in the same short transaction. A revision conflict is a skipped hint
+for rediscovery. The exceptional content-quota drain preserves the prior full-run
+revision/fence/condition recovery guard. Root maintenance and scheduler metric/span names remain
+unchanged. Worker claim/report paths are not converted by this checkpoint.
+
+The real isolation regression revokes `iteration_checkpoints` SELECT from `sagat_app` in its own
+database, first proves full restoration is unavailable, then requires lease recovery and retry
+release without that history. After restoring the normal grant it verifies journal replay against
+the projections. The first invocation accidentally selected zero cases and is not evidence;
+the correctly selected baseline failed with one scheduler action failure
+(`/tmp/sagat-completion-bounded-maintenance-red-2.log`). After wiring, it passed **1/1**, 10.28 s
+(`/tmp/sagat-completion-bounded-maintenance-green.log`). The wider scoped-worker/loop gate passed
+**52/52** as recorded above, including rollback, restart, stale attempts, cancellation acknowledgement,
+capacity, timeout, routing, outbox/audit failures and the schema coexistence case. Strict whole-workspace
+Clippy passed; the separate complete fault matrix is recorded when it finishes. These are bounded
+maintenance correctness checks, not the pending 10k/100k resource acceptance.

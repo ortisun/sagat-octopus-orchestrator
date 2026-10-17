@@ -1842,6 +1842,68 @@ async fn a_late_journal_failure_rolls_back_the_whole_scoped_report() {
 }
 
 #[tokio::test]
+async fn scoped_maintenance_does_not_read_whole_run_iteration_history() {
+    let fixture = fixture("bounded-scoped-maintenance").await;
+    let original = poll(&fixture, 1).await.pop().expect("one scoped task");
+    age_instance_column(&fixture, &original, "lease_expires_at").await;
+    let pool = fixture.world.db.runtime_pool_with(8).await;
+    let store = PgRunStore::new(
+        pool.clone(),
+        DefinitionCache::new(Arc::new(StructuredJsonIrCodec), 8),
+    )
+    .with_scoped_worker_protocol();
+    // The whole-run oracle reads every iteration checkpoint. Exact-path maintenance must not:
+    // revoke that read in this test's isolated database, without changing any production grant.
+    sqlx::query("REVOKE SELECT ON iteration_checkpoints FROM sagat_app")
+        .execute(&fixture.world.db.pool)
+        .await
+        .expect("withhold whole-run iteration history");
+    assert!(
+        store
+            .begin(
+                fixture.world.admin.tenant_id(),
+                fixture.run,
+                sagat_application::runs::Lock::Wait,
+            )
+            .await
+            .is_err(),
+        "the full restore oracle must actually be unavailable"
+    );
+    let scheduler = Scheduler::new(
+        store,
+        Engine::new(JsonEvaluator),
+        SystemEntropy,
+        SchedulerSettings::default(),
+    )
+    .with_placement(fixture.placement.clone());
+    let expired = scheduler.tick().await;
+    assert_eq!(expired.failed, 0, "{expired:?}");
+    assert_eq!(expired.leases_expired, 1, "{expired:?}");
+    assert_eq!(
+        instance_retry_evidence(&fixture, &original).await,
+        ("RETRY_WAIT".into(), 1, 1, 0)
+    );
+    age_instance_column(&fixture, &original, "next_attempt_at").await;
+    let released = scheduler.tick().await;
+    assert_eq!(released.failed, 0, "{released:?}");
+    assert_eq!(released.retries_released, 1, "{released:?}");
+    assert_eq!(
+        instance_retry_evidence(&fixture, &original).await,
+        ("READY".into(), 1, 1, 1)
+    );
+    sqlx::query("GRANT SELECT ON iteration_checkpoints TO sagat_app")
+        .execute(&fixture.world.db.pool)
+        .await
+        .expect("restore the ordinary grant");
+    fixture
+        .store
+        .verify_run(fixture.world.admin.tenant_id(), fixture.run)
+        .await
+        .expect("maintenance projections agree with journal replay");
+    pool.close().await;
+}
+
+#[tokio::test]
 async fn a_scoped_failure_retries_after_restart_and_rejects_the_old_fence() {
     let fixture = fixture("scoped-worker-retry").await;
     let original = poll(&fixture, 1).await.pop().expect("one scoped task");
