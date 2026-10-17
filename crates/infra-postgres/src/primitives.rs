@@ -991,7 +991,7 @@ impl CollectionStore for PgCollectionStore {
         }
 
         let usage = sqlx::query(
-            "SELECT max_instances, admitted_instances, reserved_instances FROM run_instance_usage \
+            "SELECT max_instances, admitted_instances, reserved_instances, retired_reservations FROM run_instance_usage \
              WHERE tenant_id = $1 AND run_id = $2 FOR UPDATE",
         )
         .bind(entry.transition.tenant_id().as_uuid())
@@ -1000,7 +1000,8 @@ impl CollectionStore for PgCollectionStore {
         .await
         .map_err(store_error)?;
         let consumed = i64::from(usage.get::<i32, _>("admitted_instances"))
-            + i64::from(usage.get::<i32, _>("reserved_instances"));
+            + i64::from(usage.get::<i32, _>("reserved_instances"))
+            + i64::from(usage.get::<i32, _>("retired_reservations"));
         // The lifetime budget is the smaller of what the run was created with (the platform
         // ceiling lowered by the author or by tenant policy) and what the pinned definition says.
         // Every iteration will be admitted unless the scope fails first, so a collection that
@@ -1221,7 +1222,7 @@ impl CollectionStore for PgCollectionStore {
             return Err(PrimitiveStoreError::AtCapacity);
         }
         let usage = sqlx::query(
-            "SELECT max_instances, admitted_instances, reserved_instances FROM run_instance_usage \
+            "SELECT max_instances, admitted_instances, reserved_instances, retired_reservations FROM run_instance_usage \
              WHERE tenant_id = $1 AND run_id = $2 FOR UPDATE",
         )
         .bind(admission.transition.tenant_id().as_uuid())
@@ -1231,7 +1232,8 @@ impl CollectionStore for PgCollectionStore {
         .map_err(store_error)?;
         let charge = 1_i64 + i64::from(admission.reserved_instances);
         let consumed = i64::from(usage.get::<i32, _>("admitted_instances"))
-            + i64::from(usage.get::<i32, _>("reserved_instances"));
+            + i64::from(usage.get::<i32, _>("reserved_instances"))
+            + i64::from(usage.get::<i32, _>("retired_reservations"));
         if consumed + charge > i64::from(usage.get::<i32, _>("max_instances")) {
             return Err(PrimitiveStoreError::InstanceBudgetExceeded);
         }
@@ -2273,7 +2275,8 @@ impl CollectionStore for PgCollectionStore {
         .await
         .map_err(store_error)?;
         let usage_updated = sqlx::query(
-            "UPDATE run_instance_usage SET reserved_instances=reserved_instances-$3 \
+            "UPDATE run_instance_usage SET reserved_instances=reserved_instances-$3, \
+                    retired_reservations=retired_reservations+$3 \
              WHERE tenant_id=$1 AND run_id=$2 AND reserved_instances >= $3",
         )
         .bind(drain.transition.tenant_id().as_uuid())
