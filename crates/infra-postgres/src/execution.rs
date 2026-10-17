@@ -3525,6 +3525,15 @@ impl PgRunTx {
         let Some(chain) = self.chain_lock else {
             return Ok(());
         };
+        // Only the open head of an open chain can latch it. A run-addressed cancel of an earlier
+        // segment, or of a chain that is already latched or finished, latches nothing: the reducer
+        // then refuses it as it refuses any run that has ended, instead of this being "corruption".
+        if chain.head() != self.info.run_id
+            || chain.final_outcome().is_some()
+            || chain.cancel_requested()
+        {
+            return Ok(());
+        }
         let revision = i64::try_from(chain.revision()).map_err(|_| corrupt("chain revision"))?;
         let next: Option<i64> = sqlx::query_scalar(
             "UPDATE execution_chains SET cancel_requested=true,revision=revision+1, \

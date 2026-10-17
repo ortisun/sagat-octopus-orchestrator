@@ -1233,3 +1233,61 @@ async fn a_hand_off_claimed_for_another_tenant_or_namespace_moves_nothing() {
     // The rightful scope still hands off once.
     boundary.write_directly().await.expect("hand-off in scope");
 }
+
+#[tokio::test]
+async fn operating_on_a_continued_segment_is_refused_like_any_ended_run_and_never_reaches_the_chain()
+ {
+    let boundary = Boundary::reach("old-operate").await;
+    let scheduler = scheduler(&boundary.world, "old-operate").await;
+    scheduler.tick().await;
+    let (head, count, revision, outcome) = boundary.chain_row().await;
+    let journal = boundary.journal_len().await;
+    let world = &boundary.world;
+
+    // The same refusal a run that never belonged to a chain gets.
+    let plain_workflow = format!("plain-{}", Uuid::now_v7());
+    let (plain, _) = world
+        .publish(document(&plain_workflow, "work", vec![activity("work")]))
+        .await;
+    let ended = world.start(plain, &json!({})).await;
+    world.operate_run(ended, RunOperation::Cancel).await;
+    let reference = world.operate(ended, RunOperation::Cancel).await;
+    let reference = reference.expect_err("an ended run cannot be cancelled again");
+
+    for operation in [
+        RunOperation::Cancel,
+        RunOperation::Pause,
+        RunOperation::Resume,
+    ] {
+        let refused = world
+            .operate(boundary.chain, operation)
+            .await
+            .expect_err("a continued segment accepts no operation");
+        assert_eq!(
+            std::mem::discriminant(&refused),
+            std::mem::discriminant(&reference),
+            "{operation:?}: {refused:?} is not the refusal an ended run gets ({reference:?})"
+        );
+    }
+    let signal = world
+        .runs
+        .signal(
+            &world.admin,
+            boundary.chain,
+            "chain.release",
+            br#"{}"#,
+            "old-segment-signal-key",
+            &crate::support::engine::ctx(),
+        )
+        .await;
+    assert!(
+        matches!(
+            signal,
+            Err(sagat_application::error::AppError::StateConflict(_))
+        ),
+        "{signal:?}"
+    );
+    assert_eq!(boundary.chain_row().await, (head, count, revision, outcome));
+    assert_eq!(boundary.journal_len().await, journal);
+    assert_eq!(world.run_status(RunId::new(head)).await, RunStatus::Running);
+}

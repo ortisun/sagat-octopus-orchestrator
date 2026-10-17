@@ -898,3 +898,64 @@ async fn chain_commands_take_a_key_of_eight_to_one_hundred_sixty_printable_chara
         "the key is required"
     );
 }
+
+#[tokio::test]
+async fn an_operation_on_a_continued_segment_of_a_finished_chain_is_a_conflict_not_an_internal_error()
+ {
+    let fixture = fixture_with_segments(
+        "http-chain-old-operation",
+        waiting_document("http-chain-old-operation"),
+        10,
+    )
+    .await;
+    grow_chain_to(&fixture, 3).await;
+    let pool = &fixture.api.db.pool;
+    // The chain ends: the head finishes and the chain records the outcome.
+    sqlx::query(
+        "UPDATE runs SET status='SUCCEEDED',finished_at=now(),updated_at=now() \
+         WHERE tenant_id=$1 AND id=(SELECT current_run_id FROM execution_chains \
+                                    WHERE tenant_id=$1 AND chain_id=$2)",
+    )
+    .bind(fixture.tenant.as_uuid())
+    .bind(fixture.chain.as_uuid())
+    .execute(pool)
+    .await
+    .expect("finish the head");
+    sqlx::query(
+        "UPDATE chain_segments SET completion_kind='FINAL',completed_at=now() \
+         WHERE tenant_id=$1 AND chain_id=$2 AND completion_kind IS NULL",
+    )
+    .bind(fixture.tenant.as_uuid())
+    .bind(fixture.chain.as_uuid())
+    .execute(pool)
+    .await
+    .expect("final segment");
+    sqlx::query(
+        "UPDATE execution_chains SET final_outcome='SUCCEEDED',revision=revision+1 \
+         WHERE tenant_id=$1 AND chain_id=$2",
+    )
+    .bind(fixture.tenant.as_uuid())
+    .bind(fixture.chain.as_uuid())
+    .execute(pool)
+    .await
+    .expect("final outcome");
+    for action in ["CANCEL", "PAUSE", "RESUME"] {
+        let response = fixture
+            .api
+            .as_user(
+                Method::POST,
+                &format!("/runs/{}/operations", fixture.chain),
+                "alice",
+                "acme",
+            )
+            .header("idempotency-key", format!("old-operation-{action}-key"))
+            .json(&json!({"action": action, "reason": "late caller aimed at a continued segment"}))
+            .send()
+            .await
+            .expect("operation");
+        let status = response.status();
+        let body = json_of(response).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{action}: {body}");
+        assert_eq!(body["code"], "CONFLICT", "{action}");
+    }
+}
