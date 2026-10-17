@@ -93,6 +93,19 @@ of the body decision key. No private store is seeded; the scheduler creates ever
 published workflow path. The SDK unit suites separately cover multi-page cursor traversal and strict
 response parsing.
 
+`approval-settlement.json` is the WP-06 settlement contract. Every run is created through the published
+workflow path and settled through the public calls; no private store is seeded and the control endpoint is
+not used. An approval that nobody decides expires on its own deadline (six seconds in the `short`
+workflow) and takes the `expired` route; a decision that beat the deadline of an earlier run is still
+`APPROVED` after a later run, started after it, has expired. The decision is made on a run that finished
+afterwards, so the exact replay, the same key with another body (`CONFLICT`/`IDEMPOTENCY_KEY_REUSED`) and a
+second key (`CONFLICT`/`ALREADY_DECIDED`) are all read from the settled outcome. A decision after the expiry
+or after a cancellation is `ALREADY_DECIDED`, and a cancel after the decision is refused because the run
+already ended. Raw signals named like a decision are `STATE_CONFLICT` and leave the request `PENDING` and the
+run `WAITING`. The commit order of a decision and an expiry that race is not observable from outside; the
+Rust fault tests (`tests/fault/workflow-primitives/approvals.rs`) drive both orders and the race with barriers.
+The deadline cannot be moved by the control endpoint: it is part of the journal's `approval.opened` event.
+
 `chain-inspect-cancel.json` starts a public chain with an initial activity waiting for a worker,
 then inspects and cancels it through all five SDKs. The reviewed runtime golden requires opaque
 cross-tenant lookup, exact cancel replay and a terminal `CANCELLED` chain and run. It does not
@@ -120,6 +133,7 @@ SAGAT_SDK_SCENARIO=continuation-builders cargo test -p sagat-tests --test sdk_co
 SAGAT_SDK_SCENARIO=state-operation-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=state-operations cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=approval-decisions cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=approval-settlement cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=chain-inspect-cancel cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=scoped-identity cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=collection-runtime cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture

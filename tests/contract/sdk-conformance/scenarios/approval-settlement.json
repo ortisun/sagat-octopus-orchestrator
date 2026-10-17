@@ -1,0 +1,331 @@
+{
+  "name": "approval-settlement",
+  "description": "A native approval has exactly one outcome. The expiry route, the order of decision, expiry and cancellation, the loser's ALREADY_DECIDED, exact receipt replay after the run ended and the refusal of a raw signal are the same in the five SDKs.",
+  "workflows": {
+    "review": {
+      "name": "approval-settlement-runtime",
+      "program": [
+        {
+          "op": "approval",
+          "id": "review",
+          "policy": {
+            "roles": [
+              "admin"
+            ],
+            "excludeInitiator": false
+          },
+          "timeoutMs": 86400000,
+          "onApprove": "approved",
+          "onReject": "rejected",
+          "onExpire": "expired"
+        },
+        {
+          "op": "end",
+          "id": "approved",
+          "options": {
+            "outputExpr": "'approved'"
+          }
+        },
+        {
+          "op": "end",
+          "id": "rejected",
+          "options": {
+            "outputExpr": "'rejected'"
+          }
+        },
+        {
+          "op": "end",
+          "id": "expired",
+          "options": {
+            "outputExpr": "'expired'"
+          }
+        }
+      ]
+    },
+    "short": {
+      "name": "approval-settlement-short",
+      "program": [
+        {
+          "op": "approval",
+          "id": "review",
+          "policy": {
+            "roles": [
+              "admin"
+            ],
+            "excludeInitiator": false
+          },
+          "timeoutMs": 6000,
+          "onApprove": "approved",
+          "onReject": "rejected",
+          "onExpire": "expired"
+        },
+        {
+          "op": "end",
+          "id": "approved",
+          "options": {
+            "outputExpr": "'approved'"
+          }
+        },
+        {
+          "op": "end",
+          "id": "rejected",
+          "options": {
+            "outputExpr": "'rejected'"
+          }
+        },
+        {
+          "op": "end",
+          "id": "expired",
+          "options": {
+            "outputExpr": "'expired'"
+          }
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "id": "expired-run",
+      "op": "start",
+      "workflow": "short",
+      "input": {},
+      "idempotencyKey": "settle-expired-{{unique}}"
+    },
+    {
+      "id": "decided-run",
+      "op": "start",
+      "workflow": "short",
+      "input": {},
+      "idempotencyKey": "settle-decided-{{unique}}"
+    },
+    {
+      "id": "decided-opened",
+      "op": "listApprovals",
+      "run": "decided-run",
+      "limit": 1,
+      "waitForItem": true
+    },
+    {
+      "id": "decided",
+      "op": "decideApproval",
+      "approval": "decided-opened",
+      "decisionKey": "settle-approve-{{unique}}",
+      "decision": "APPROVE",
+      "reasonCode": "POLICY_OK"
+    },
+    {
+      "id": "decided-done",
+      "op": "waitForCompletion",
+      "run": "decided-run",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "decided-replay",
+      "op": "decideApproval",
+      "approval": "decided-opened",
+      "decisionKey": "settle-approve-{{unique}}",
+      "decision": "APPROVE",
+      "reasonCode": "POLICY_OK"
+    },
+    {
+      "id": "decided-changed-body",
+      "op": "decideApproval",
+      "approval": "decided-opened",
+      "decisionKey": "settle-approve-{{unique}}",
+      "decision": "REJECT",
+      "reasonCode": "CHANGED_MIND"
+    },
+    {
+      "id": "decided-second-decision",
+      "op": "decideApproval",
+      "approval": "decided-opened",
+      "decisionKey": "settle-reject-{{unique}}",
+      "decision": "REJECT",
+      "reasonCode": "CHANGED_MIND"
+    },
+    {
+      "id": "later-run",
+      "op": "start",
+      "workflow": "short",
+      "input": {},
+      "idempotencyKey": "settle-later-{{unique}}"
+    },
+    {
+      "id": "later-done",
+      "op": "waitForCompletion",
+      "run": "later-run",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "expired-done",
+      "op": "waitForCompletion",
+      "run": "expired-run",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "expired-settled",
+      "op": "listApprovals",
+      "run": "expired-run",
+      "limit": 1
+    },
+    {
+      "id": "decided-after-deadline",
+      "op": "listApprovals",
+      "run": "decided-run",
+      "limit": 1
+    },
+    {
+      "id": "expiry-then-decision",
+      "op": "decideApproval",
+      "approval": "expired-settled",
+      "decisionKey": "settle-late-approve-{{unique}}",
+      "decision": "APPROVE",
+      "reasonCode": "TOO_LATE"
+    },
+    {
+      "id": "expiry-then-decision-again",
+      "op": "decideApproval",
+      "approval": "expired-settled",
+      "decisionKey": "settle-late-reject-{{unique}}",
+      "decision": "REJECT",
+      "reasonCode": "TOO_LATE"
+    },
+    {
+      "id": "cancelled-run",
+      "op": "start",
+      "workflow": "review",
+      "input": {},
+      "idempotencyKey": "settle-cancelled-{{unique}}"
+    },
+    {
+      "id": "cancelled-opened",
+      "op": "listApprovals",
+      "run": "cancelled-run",
+      "limit": 1,
+      "waitForItem": true
+    },
+    {
+      "id": "cancelled",
+      "op": "cancel",
+      "run": "cancelled-run",
+      "reason": "operator stopped the request"
+    },
+    {
+      "id": "cancelled-done",
+      "op": "waitForCompletion",
+      "run": "cancelled-run",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "cancelled-settled",
+      "op": "listApprovals",
+      "run": "cancelled-run",
+      "limit": 1
+    },
+    {
+      "id": "cancel-then-decision",
+      "op": "decideApproval",
+      "approval": "cancelled-opened",
+      "decisionKey": "settle-after-cancel-{{unique}}",
+      "decision": "APPROVE",
+      "reasonCode": "TOO_LATE"
+    },
+    {
+      "id": "rejected-run",
+      "op": "start",
+      "workflow": "review",
+      "input": {},
+      "idempotencyKey": "settle-rejected-{{unique}}"
+    },
+    {
+      "id": "rejected-opened",
+      "op": "listApprovals",
+      "run": "rejected-run",
+      "limit": 1,
+      "waitForItem": true
+    },
+    {
+      "id": "rejected",
+      "op": "decideApproval",
+      "approval": "rejected-opened",
+      "decisionKey": "settle-reject-first-{{unique}}",
+      "decision": "REJECT",
+      "reasonCode": "POLICY_BLOCKED"
+    },
+    {
+      "id": "rejected-done",
+      "op": "waitForCompletion",
+      "run": "rejected-run",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "decision-then-cancel",
+      "op": "cancel",
+      "run": "rejected-run",
+      "reason": "too late to cancel"
+    },
+    {
+      "id": "rejected-settled",
+      "op": "listApprovals",
+      "run": "rejected-run",
+      "limit": 1
+    },
+    {
+      "id": "signalled-run",
+      "op": "start",
+      "workflow": "review",
+      "input": {},
+      "idempotencyKey": "settle-signalled-{{unique}}"
+    },
+    {
+      "id": "signalled-opened",
+      "op": "listApprovals",
+      "run": "signalled-run",
+      "limit": 1,
+      "waitForItem": true
+    },
+    {
+      "id": "raw-approve-signal",
+      "op": "signal",
+      "run": "signalled-run",
+      "name": "approval.approve",
+      "payload": {
+        "approved": true
+      }
+    },
+    {
+      "id": "raw-decision-signal",
+      "op": "signal",
+      "run": "signalled-run",
+      "name": "approval.decision",
+      "payload": {
+        "decision": "APPROVE"
+      }
+    },
+    {
+      "id": "signalled-still-pending",
+      "op": "listApprovals",
+      "run": "signalled-run",
+      "limit": 1
+    },
+    {
+      "id": "signalled-run-state",
+      "op": "get",
+      "run": "signalled-run"
+    },
+    {
+      "id": "signalled-decided",
+      "op": "decideApproval",
+      "approval": "signalled-opened",
+      "decisionKey": "settle-after-signal-{{unique}}",
+      "decision": "REJECT",
+      "reasonCode": "SIGNAL_IGNORED"
+    },
+    {
+      "id": "signalled-done",
+      "op": "waitForCompletion",
+      "run": "signalled-run",
+      "timeoutMs": 60000
+    }
+  ]
+}
