@@ -22,6 +22,7 @@ mod dispatch;
 mod egress;
 mod event_codec;
 mod events;
+mod event_payloads;
 mod execution;
 mod identity;
 mod loop_progress;
