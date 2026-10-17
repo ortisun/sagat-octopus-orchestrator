@@ -5,7 +5,7 @@
 set -euo pipefail
 
 readonly RELEASE_TAG="v0.1.0"
-readonly RELEASE_COMMIT="e06532dd0e288273f63966e0d950bb4d7c743459"
+readonly RELEASE_COMMIT="6ede1c7849c4ac5a209c08da8ad25294fbdd7795"
 
 repo_root="$(git rev-parse --show-toplevel)"
 artifact_root="${SAGAT_COMPAT_ARTIFACT_ROOT:-${repo_root}/target/payload-classification-compat/v0.1.0}"
@@ -73,6 +73,9 @@ if [[ -n "$(git -C "${old_source}" status --porcelain)" ]]; then
   exit 1
 fi
 echo "Building the current control plane in the coordinated target."
+# Cargo's local package fingerprints can otherwise reuse metadata from a different worktree with
+# the same package version. Refresh only current workspace source mtimes; contents stay unchanged.
+find "${repo_root}/crates" "${repo_root}/apps" -type f -name '*.rs' -exec touch {} +
 CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-3}" \
   cargo build --manifest-path "${repo_root}/Cargo.toml" --locked \
     -p sagat-control-plane --bin control-plane
@@ -120,6 +123,8 @@ export SAGAT_COMPAT_OLD_EXECUTION_ENGINE="${old_execution_engine}"
 export SAGAT_COMPAT_OLD_STUDIO="${old_studio}"
 export SAGAT_COMPAT_CURRENT_CONTROL_PLANE="${current_control_plane}"
 export SAGAT_COMPAT_MANIFEST="${manifest}"
+export SAGAT_COMPAT_LOG_DIR="${run_root}/logs"
+mkdir -p "${SAGAT_COMPAT_LOG_DIR}"
 
 test_name="compat::actual_v0_1_0_processes_survive_the_additive_upgrade"
 test_list="$(

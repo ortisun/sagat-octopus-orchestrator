@@ -1380,3 +1380,22 @@ After the merge: clippy clean workspace-wide; `integration_workflow_primitives` 
 privilege audit), `integration_security_multitenancy` 96, `integration_durable_execution` 178,
 `contract_grpc_durable_execution` 63. The compatibility test expected protocol 1.4; the server has
 negotiated 1.5 since the scoped protocol was enabled, and the test now says so.
+
+
+### Populated release upgrade regression — combined completion branch, 2026-10-17
+
+The actual v0.1.0 process gate reached migration 20261205000000 and failed with PostgreSQL 55006:
+CREATE INDEX on steps had pending deferred steps_quota_flush trigger events. Fresh empty-database
+migration tests had not exposed this. A focused real PostgreSQL regression restores the pre-005
+schema over an existing activity step, then executes the complete up migration in one transaction.
+It first failed with the same error (`/tmp/sagat-completion-discovery-migration-red.log`).
+
+The unreleased bounded_execution_discovery migration now creates indexes before its node-kind
+backfill. Deferred quota triggers retain their normal commit boundary and the migration remains
+atomic. The focused regression passed 1/1 in 7.21 s
+(`/tmp/sagat-completion-discovery-migration-green.log`), preserving step identities/status and
+backfilling the activity kind with a usable index. It ran the actual integration target binary
+built by the preceding focused Cargo command. All 60 migration files in the published v0.1.0 tag
+were compared bytewise and remain unchanged. The full old-process upgrade must still be repeated
+with a newly built current binary containing the corrected migration checksum. This does not close
+T014-041 or T014-043 and does not bridge an already-applied unreleased checksum.

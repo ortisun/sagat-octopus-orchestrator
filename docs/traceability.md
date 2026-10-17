@@ -361,15 +361,15 @@ commands and focused results; unchecked canonical tasks require their full accep
 
 | Requirement or criterion | State | Evidence and remaining gate |
 |---|---|---|
-| FR-016-001..005 authoring and immutable pinning | Implemented in part; security fixes in progress | Domain and adapter tests, two real PostgreSQL pinning cases; authoring review fixes and approved/promotion pinning proof remain |
-| FR-016-006..009, 013..015 disclosure and exact carrier selection | Mounted in integration; final proof pending | Application/PG input, result and scoped journal selectors; result completion regression and complete REST matrix under investigation |
-| FR-016-010..012 permissions, grants and audit | Focused tests passed; full fault gate pending | 48-permission integrated catalog, namespace grant fences/cap/cascade, transactional reveal; deferrable-audit fault tests |
-| FR-016-016..017 unchanged surfaces and value-free telemetry | Full canary gate pending | Dedicated canary/e2e tasks remain open; no broad absence claim inferred from focused tests |
-| FR-016-018..019 Studio and CLI | Implemented; browser/real-API gates pending | Seven Studio disclosure tests including unsafe-number refusal; CLI exact numeric encoding and grant commands |
+| FR-016-001..005 authoring and immutable pinning | Focused gates passed | Pure domain, publication/ref security, all corpus runtime shapes and generated monotonicity; real PostgreSQL legacy, ordinary/approved publish and promotion pinning |
+| FR-016-006..009, 013..015 disclosure and exact carrier selection | Registered core gate passed | 10 application tests, 96-cell REST matrix, retained run result and exact scoped journal carriers; actual script/blob/child/rerun/retry outputs |
+| FR-016-010..012 permissions, grants and audit | Focused fault gates passed | 48-permission catalog, grant fences/cap/cascade, deferred audit failures and actual process death before/after commit with lost-response retry; publication/activation race gate pending |
+| FR-016-016..017 unchanged surfaces and value-free telemetry | Canary core passed; full release gate open | 22 key/value classes across API/CLI and captured logs, OTLP, metrics and audit; full byte-identical pre-feature golden replay remains pending |
+| FR-016-018..019 Studio and CLI | Focused browser and real CLI passed | 1149 Studio tests, typecheck/lint/build, actual four-role Chromium disclosure journey and actual CLI grant/disclose/revoke journey; broader release matrix remains |
 | FR-016-020 five SDK builders | Focused builders and canonical scenario passed | All five emitted the same 1,474-byte carrier document; full integrated runtime protocol matrix remains pending |
-| FR-016-021..025 compatibility, errors, boundaries, bounds and diff | In progress | Canonical OpenAPI checks, authoring report, exact numeric guards and typed-location diff; old-binary upgrade and final benchmark pending |
-| FR-016-026..029 event and dead-letter values | Restricted in integration; full HTTP canary gate pending | Default structure, explicit audited reveal, current-role checks on empty lists, mandatory success audit; readers and release notes updated |
-| NFR-016-001..006 and SC-016-001..010 | Complete acceptance not yet established | Final canary, fault, performance, browser, compatibility and workspace gates remain open |
+| FR-016-021..025 compatibility, errors, boundaries, bounds and diff | Partial gates passed | Canonical contracts, closed request/admission boundaries, numeric guards/diff and registered benchmark passed; actual prior-release upgrade found an unreleased discovery-migration defect, corrected with a passing populated-data regression; full upgrade rerun remains |
+| FR-016-026..029 event and dead-letter values | Actual HTTP canary core passed | Six roles × grant × reveal across three reads; captured event telemetry/audit, empty-page authority, default structure and mandatory reveal audit; original event suites and full tenant release matrix remain |
+| NFR-016-001..006 and SC-016-001..010 | Complete acceptance not yet established | Registered benchmark and focused browser/process gates passed; full golden replay, compatibility, complete tenant/quickstart and workspace release gates remain |
 
 
 ## Completion follow-up — 2026-10-12

@@ -22,7 +22,7 @@ use super::support::fresh_db;
 use super::support::oidc::{AUDIENCE, ISSUER, TestIdp};
 
 const RELEASE_TAG: &str = "v0.1.0";
-const RELEASE_COMMIT: &str = "e06532dd0e288273f63966e0d950bb4d7c743459";
+const RELEASE_COMMIT: &str = "6ede1c7849c4ac5a209c08da8ad25294fbdd7795";
 const TENANT: &str = "compat-release";
 const ADMIN: &str = "compat-admin";
 const NAMESPACE: &str = "compat-payments";
@@ -31,6 +31,37 @@ const VALUE_CANARY: &str = "release-input-value-canary";
 const EVENT_CANARY: &str = "release-event-value-canary";
 const HEADER_CANARY: &str = "release-header-value-canary";
 const BODY_CANARY: &str = "release-body-value-canary";
+
+#[tokio::test]
+async fn bounded_discovery_backfill_reindexes_existing_steps_atomically() {
+    let world = super::support::engine::world().await;
+    let source = super::support::engine::document(
+        "nonempty-discovery-upgrade", "work", vec![super::support::engine::activity("work")],
+    );
+    let (workflow, _) = world.publish(source).await;
+    let run = world.start(workflow, &json!({})).await;
+    type Row = (String, String, Vec<String>, Vec<i32>);
+    let before: Vec<Row> = sqlx::query_as(
+        "SELECT node,status,instance_path_nodes,instance_path_indices FROM steps WHERE run_id=$1 ORDER BY node",
+    ).bind(run.as_uuid()).fetch_all(&world.db.pool).await.expect("retained steps");
+    assert!(!before.is_empty());
+    sqlx::raw_sql(include_str!("../../../crates/infra-postgres/migrations/20261205000000_bounded_execution_discovery.down.sql"))
+        .execute(&world.db.pool).await.expect("restore the pre-discovery fixture schema");
+    let mut tx = world.db.pool.begin().await.expect("migration transaction");
+    sqlx::raw_sql(include_str!("../../../crates/infra-postgres/migrations/20261205000000_bounded_execution_discovery.up.sql"))
+        .execute(&mut *tx).await.expect("upgrade nonempty steps with deferred quota triggers");
+    tx.commit().await.expect("atomic migration commit");
+    let after: Vec<Row> = sqlx::query_as(
+        "SELECT node,status,instance_path_nodes,instance_path_indices FROM steps WHERE run_id=$1 ORDER BY node",
+    ).bind(run.as_uuid()).fetch_all(&world.db.pool).await.expect("preserved steps");
+    assert_eq!(before, after);
+    let kind: String = sqlx::query_scalar("SELECT node_kind FROM steps WHERE run_id=$1 AND node='work'")
+        .bind(run.as_uuid()).fetch_one(&world.db.pool).await.expect("backfilled node kind");
+    assert_eq!(kind, "activity");
+    let indexed: bool = sqlx::query_scalar("SELECT to_regclass('steps_path_actionable_idx') IS NOT NULL")
+        .fetch_one(&world.db.pool).await.expect("discovery index");
+    assert!(indexed);
+}
 
 fn required_path(name: &'static str) -> PathBuf {
     let value = std::env::var_os(name).unwrap_or_else(|| {
@@ -54,7 +85,11 @@ fn sha256(path: &Path) -> String {
         }
         digest.update(&buffer[..read]);
     }
-    format!("{:x}", digest.finalize())
+    digest
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn artifact_manifest() -> BTreeMap<String, String> {
@@ -146,10 +181,17 @@ impl Drop for Process {
 }
 
 fn process_env(db_url: &str, idp: &TestIdp) -> Vec<(&'static str, String)> {
+    static KEY_RING: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+        format!(
+            "compat:{}",
+            sagat_infra_secrets::generate_key().expect("test key")
+        )
+    });
     vec![
         ("SAGAT_ENV", "dev".to_owned()),
         ("SAGAT_LOG_FORMAT", "pretty".to_owned()),
         ("DATABASE_URL", db_url.to_owned()),
+        ("SAGAT_SECRETS_KEYS", KEY_RING.clone()),
         ("SAGAT_DB_MAX_CONNECTIONS", "8".to_owned()),
         ("SAGAT_OIDC_ISSUER", ISSUER.to_owned()),
         ("SAGAT_OIDC_AUDIENCE", AUDIENCE.to_owned()),
@@ -303,6 +345,7 @@ fn assert_status(status: StatusCode, expected: StatusCode, body: &Value) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires immutable v0.1.0 artifacts; run scripts/test-payload-classification-compat.sh"]
 async fn actual_v0_1_0_processes_survive_the_additive_upgrade() {
+    sagat_api_http::auth::install_crypto_provider();
     assert_eq!(
         std::env::var("SAGAT_COMPAT_RELEASE_TAG").as_deref(),
         Ok(RELEASE_TAG)
@@ -319,6 +362,7 @@ async fn actual_v0_1_0_processes_survive_the_additive_upgrade() {
     let manifest = artifact_manifest();
     let control_plane_sha256 = sha256(&old_control_plane);
     let execution_engine_sha256 = sha256(&old_engine);
+    let current_control_plane_sha256 = sha256(&current_control_plane);
     assert_eq!(
         manifest.get("release-tag").map(String::as_str),
         Some(RELEASE_TAG)
@@ -334,6 +378,12 @@ async fn actual_v0_1_0_processes_survive_the_additive_upgrade() {
     assert_eq!(
         manifest.get("execution-engine-sha256").map(String::as_str),
         Some(execution_engine_sha256.as_str())
+    );
+    assert_eq!(
+        manifest
+            .get("current-control-plane-sha256")
+            .map(String::as_str),
+        Some(current_control_plane_sha256.as_str())
     );
     let source_head = command_output(
         &PathBuf::from("git"),
@@ -369,7 +419,7 @@ async fn actual_v0_1_0_processes_survive_the_additive_upgrade() {
         "execution-engine 0.1.0"
     );
 
-    let logs = tempfile::tempdir().expect("compatibility logs");
+    let logs = required_path("SAGAT_COMPAT_LOG_DIR");
     let db = fresh_db().await;
     let idp = TestIdp::start().await;
     let mut base_env = process_env(&db.url, &idp);
@@ -396,7 +446,7 @@ async fn actual_v0_1_0_processes_survive_the_additive_upgrade() {
         &old_engine,
         &db.url,
         &idp,
-        logs.path(),
+        &logs,
         "old-engine-before-upgrade",
     )
     .await;
@@ -405,7 +455,7 @@ async fn actual_v0_1_0_processes_survive_the_additive_upgrade() {
         &db.url,
         &idp,
         Some(&old_studio),
-        logs.path(),
+        &logs,
         "old-control-plane-before-upgrade",
     )
     .await;
@@ -580,7 +630,7 @@ async fn actual_v0_1_0_processes_survive_the_additive_upgrade() {
         &old_engine,
         &db.url,
         &idp,
-        logs.path(),
+        &logs,
         "old-engine-after-upgrade",
     )
     .await;
@@ -589,7 +639,7 @@ async fn actual_v0_1_0_processes_survive_the_additive_upgrade() {
         &db.url,
         &idp,
         Some(&old_studio),
-        logs.path(),
+        &logs,
         "old-control-plane-after-upgrade",
     )
     .await;
@@ -650,7 +700,7 @@ async fn actual_v0_1_0_processes_survive_the_additive_upgrade() {
         &db.url,
         &idp,
         Some(&old_studio),
-        logs.path(),
+        &logs,
         "current-control-plane",
     )
     .await;
