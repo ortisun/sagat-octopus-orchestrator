@@ -32,6 +32,7 @@ use sagat_infra_ir::{JsonEvaluator, JsonIrCodec};
 use sagat_infra_postgres::{MIGRATOR, PgLoopProgressStore, PgRunStore, migrate};
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
+use sqlx::Row;
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
@@ -2798,20 +2799,10 @@ struct Settled {
 }
 
 async fn settled(fixture: &LoopFixture) -> Settled {
-    let row: (
-        String,
-        Option<String>,
-        Option<String>,
-        String,
-        bool,
-        Option<String>,
-        String,
-        String,
-        i32,
-        i32,
-    ) = sqlx::query_as(
-        "SELECT run.status,run.stop_reason,run.stop_code,owner.status,owner.routed, \
-                owner.failure_code,scope.lifecycle,iteration.lifecycle, \
+    let row = sqlx::query(
+        "SELECT run.status AS run_status,run.stop_reason,run.stop_code, \
+                owner.status AS owner_status,owner.routed,owner.failure_code, \
+                scope.lifecycle AS scope,iteration.lifecycle AS iteration, \
                 usage.active_iterations,run_usage.reserved_instances \
          FROM loop_scopes scope \
          JOIN runs run ON run.tenant_id=scope.tenant_id AND run.id=scope.run_id \
@@ -2831,16 +2822,16 @@ async fn settled(fixture: &LoopFixture) -> Settled {
     .await
     .expect("settled loop projection");
     Settled {
-        run_status: row.0,
-        stop_reason: row.1,
-        stop_code: row.2,
-        owner_status: row.3,
-        owner_routed: row.4,
-        owner_failure: row.5,
-        scope: row.6,
-        iteration: row.7,
-        tenant_active: row.8,
-        reserved: row.9,
+        run_status: row.get("run_status"),
+        stop_reason: row.get("stop_reason"),
+        stop_code: row.get("stop_code"),
+        owner_status: row.get("owner_status"),
+        owner_routed: row.get("routed"),
+        owner_failure: row.get("failure_code"),
+        scope: row.get("scope"),
+        iteration: row.get("iteration"),
+        tenant_active: row.get("active_iterations"),
+        reserved: row.get("reserved_instances"),
     }
 }
 
@@ -3363,10 +3354,7 @@ async fn cancel_during_a_failure_drain_finishes_the_run_cancelled_without_routin
 /// The existing route out of an exhausted loop, which had no test of its own.
 #[tokio::test]
 async fn iteration_limit_with_an_error_edge_routes_instead_of_stopping_the_run() {
-    let fixture = {
-        let fixture = seed_loop_fixture("loop-error-limit", 1, false, OnError::Activity).await;
-        fixture
-    };
+    let fixture = seed_loop_fixture("loop-error-limit", 1, false, OnError::Activity).await;
     let command = LoopCheckpointCommand::new(
         transition(
             &fixture,
