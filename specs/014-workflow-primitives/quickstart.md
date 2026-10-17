@@ -128,8 +128,17 @@ cargo test -p sagat-tests --test integration_workflow_primitives --locked chains
 
 `chain-commands` runs a worker activity, waits for a signal, replays the same signal receipt,
 observes the committed successor head, rejects commands fenced to the predecessor, and cancels
-the successor. Its runtime golden passes in all five SDKs. A continuation whose entrypoint is
-itself `waitEvent` remains closed because successor scheduling assumes an activity entrypoint.
+the successor. Its runtime golden passes in all five SDKs. `chain-root-wait` publishes a continuation whose
+entrypoint is itself `waitEvent` (`waitEvent -> continueAsNew`, or one condition choosing between that
+continuation and an `end`): the hand-off creates each successor already waiting, so the correlation key, the
+wait deadline and the event subscription commit with it and a signal sent to the new head is delivered at
+once. `chain-cancel-parent` cancels a parent while its child chain is mid-chain (and shows a detached chain
+keep going) and `chain-rerun` starts a continued segment again with `RERUN_AS_NEW`; their goldens pass in all
+five SDKs. The PostgreSQL proof is `chain_wait` (integration) and the `wait`-chain tests of `chains` (fault):
+```sh
+cargo test -p sagat-tests --test integration_workflow_primitives --locked chain_wait -- --nocapture
+cargo test -p sagat-tests --test fault_workflow_primitives --locked chains:: -- --nocapture
+```
 
 The chain Query REST route resolves declared state on an existing chain. The five-SDK `chain-query`
 scenario exercises this on a public initial head. The five-SDK `chain-query-handoff` scenario

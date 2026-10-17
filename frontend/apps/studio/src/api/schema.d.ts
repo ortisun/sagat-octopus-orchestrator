@@ -634,7 +634,7 @@ export interface paths {
         };
         /**
          * Inspect the immutable lineage and current head of an execution chain
-         * @description Needs `run:read`. The tenant is taken from authentication and a chain in another tenant is indistinguishable from a missing chain. The response is read from one database snapshot and is never cached.
+         * @description Needs `run:read`. The tenant is taken from authentication and a chain in another tenant is indistinguishable from a missing chain. The response is read from one database snapshot and is never cached. It lists every segment (at most 10,000 small entries), and a long chain is read a page at a time with `GET /namespaces/{namespaceId}/chains/{chainId}/runs`.
          */
         get: operations["inspectExecutionChain"];
         put?: never;

@@ -478,6 +478,16 @@ async fn a_successor_whose_correlation_cannot_be_computed_ends_the_chain_with_a_
     );
     assert_eq!(outcome.as_deref(), Some("FAILED"));
     assert_eq!(chain.world.run_status(chain.chain).await, RunStatus::Failed);
+    let stop: serde_json::Value = sqlx::query_scalar(
+        "SELECT detail FROM run_events WHERE tenant_id=$1 AND run_id=$2 \
+           AND event_type='run.stop_requested'",
+    )
+    .bind(chain.world.admin.tenant_id().as_uuid())
+    .bind(chain.chain.as_uuid())
+    .fetch_one(&chain.world.db.pool)
+    .await
+    .expect("the stop that ended the run");
+    assert_eq!(stop["code"], "EXPRESSION_ERROR", "{stop}");
     let successors: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM chain_segments WHERE tenant_id=$1 AND chain_id=$2",
     )
