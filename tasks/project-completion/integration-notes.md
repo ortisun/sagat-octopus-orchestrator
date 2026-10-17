@@ -1037,3 +1037,35 @@ rewriting an admitted identity. All **7/7** chain-handoff cases passed, 10.30 s
 hit the disposable database's recovery; a fresh-cluster repeat then exposed a separate concurrent
 test-role bootstrap race, both retained as failures. The successful repeat uses the healthy,
 explicitly sized PostgreSQL shared-memory profile recorded in the next checkpoint.
+
+### Explicit PostgreSQL shared memory and concurrent test bootstrap
+
+The replacement functional server, with no statistics preload, also crashed. Its log records
+`could not resize shared memory segment ... to 33554432 bytes: No space left on device` before the
+SIGSEGV; inspecting Docker showed its separate `/dev/shm` limit was **64 MiB**, not the free space
+of the data volume. The original server's preserved log contains the same resize error. Removing
+statistics preload therefore did not resolve the exhaustion. Logs and filtered identity/resource
+metadata of the second failure are retained in
+`/tmp/sagat-completion-postgres-crash-evidence/functional-second-crash/`. No vendor SIGSEGV cause
+is asserted beyond this observed sequence; Docker reported no OOM.
+
+Only the exclusively owned disposable server was retired. Its fresh replacement keeps the same
+PostgreSQL 16.15 image and default query/instrumentation settings, with **1 GiB** shared memory
+(`replacement-shm.json` alongside that evidence). The complete fault matrix, unchanged executable,
+then passed **87/87**, 161.21 s
+(`/tmp/sagat-completion-bounded-maintenance-fault-matrix-shm.log`); the preceding **78/9** run is
+retained. The Rust container harness and Compose PostgreSQL now budget that shared memory
+explicitly, following the official image's documented Docker shared-memory guidance. No query
+parallelism or product limit was reduced to obtain the repeat. Compose interpolation with public
+verification-only settings confirms `shm_size=1073741824`
+(`/tmp/sagat-completion-shm-compose-config-2.json`); the first lint attempt lacked required OIDC
+variables and is retained. This is a configuration check, not another rebuilt Compose smoke.
+
+Starting two Rust test processes against the fresh shared server exposed `23505` on
+`pg_authid_rolname_index`: CREATE ROLE's concurrent catalog race is not the `duplicate_object`
+exception the helper already handled. The test helper now takes a transaction advisory lock before
+creating the role. A separate exclusively owned fresh-cluster check ran two actual compiled Rust
+processes concurrently: each passed **1/1**, 1.28 s, both exited zero
+(`/tmp/sagat-completion-runtime-role-concurrency/`). The reproduction script is retained at
+`/tmp/sagat-completion-runtime-role-concurrency.py`; it saved identity/logs and removed only its own
+container. No production role/grant changed.

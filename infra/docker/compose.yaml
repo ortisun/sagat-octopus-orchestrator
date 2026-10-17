@@ -38,6 +38,8 @@ x-control-plane: &control-plane
 services:
   postgres:
     image: postgres:16-alpine
+    # Parallel maintenance queries need more than Docker's default 64 MiB /dev/shm.
+    shm_size: 1gb
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-sagat}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in infra/docker/.env}

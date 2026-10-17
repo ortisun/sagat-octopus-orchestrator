@@ -110,6 +110,9 @@ async fn start_server() -> Server {
     // nothing until a database creates the extension.
     let container = Postgres::default()
         .with_tag("16-alpine")
+        // Docker's 64 MiB default cannot hold concurrent parallel-query shared memory. Keep the
+        // query settings intact and budget the test database explicitly, as the Compose profile does.
+        .with_shm_size(1024 * 1024 * 1024)
         .with_cmd([
             "-c",
             "shared_preload_libraries=pg_stat_statements",
@@ -307,7 +310,9 @@ async fn ensure_runtime_role(admin_url: &str) {
         .await
         .expect("admin connection");
     sqlx::query(sqlx::AssertSqlSafe(format!(
-        "DO $$ BEGIN CREATE ROLE {RUNTIME_ROLE} LOGIN PASSWORD '{RUNTIME_ROLE_PASSWORD}' \
+        "DO $$ BEGIN \
+         PERFORM pg_advisory_xact_lock(hashtextextended('sagat:test:runtime-role',0)); \
+         CREATE ROLE {RUNTIME_ROLE} LOGIN PASSWORD '{RUNTIME_ROLE_PASSWORD}' \
          NOSUPERUSER NOCREATEDB NOCREATEROLE; EXCEPTION WHEN duplicate_object THEN NULL; END $$"
     )))
     .execute(&mut conn)

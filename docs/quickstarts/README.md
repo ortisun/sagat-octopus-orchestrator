@@ -33,6 +33,13 @@ for a smaller Docker memory budget. It starts PostgreSQL, NATS, the control plan
 (the REST API and the Studio), the execution engine (the worker API) and the development identity provider. The
 seed makes a tenant `dev`, its administrator `dev-admin`, and a namespace `payments`; it is safe to run again.
 
+PostgreSQL has an explicit 1 GiB `/dev/shm` limit in Compose and the Rust integration harness.
+Concurrent parallel queries can exhaust Docker's 64 MiB default and fail with a shared-memory
+resize error even when the data volume has free space. This follows the
+[official PostgreSQL image's shared-memory guidance](https://github.com/docker-library/docs/blob/master/postgres/README.md).
+When supplying `SAGAT_TEST_DATABASE_URL`, size that server's shared memory for the same workload;
+for the local Docker verification profile use `docker run --shm-size=1g ...`.
+
 Everything listens on `127.0.0.1` only:
 
 | What | Address |
