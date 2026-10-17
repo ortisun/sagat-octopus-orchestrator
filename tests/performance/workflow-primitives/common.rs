@@ -37,6 +37,14 @@ pub async fn platform() -> Platform {
     let _ = sqlx::query("CREATE EXTENSION IF NOT EXISTS pg_stat_statements")
         .execute(&world.db.pool)
         .await;
+    // `SAGAT_PERF_WITHOUT_OPEN_INDEXES=1` measures without the open-step indexes (D525): the
+    // control that shows what they remove.
+    if std::env::var("SAGAT_PERF_WITHOUT_OPEN_INDEXES").is_ok_and(|value| value == "1") {
+        sqlx::query("DROP INDEX steps_run_open_idx, steps_run_waiting_idx")
+            .execute(&world.db.pool)
+            .await
+            .expect("drop the open-step indexes for the control run");
+    }
     let store =
         PgRunStore::new(world.db.pool.clone(), world.cache.clone()).with_scoped_worker_protocol();
     let workers = WorkerService::new(
