@@ -153,7 +153,7 @@ how to operate it is `docs/runbooks/developer-experience.md`; the path itself is
 - **G216 — No prebuilt `sagat`, no published SDK, no hosted documentation.** The tool is installed with
   `cargo install --path apps/cli --locked` (a Rust toolchain), the SDKs are used from the checkout, and the pages are files in the
   repository (`SAGAT_DOCS_URL` turns the `docs:` line of an error into a link when somebody hosts them).
-  **Decided 2026-10-16 (owner): prebuilt `sagat` and the SDK packages ship through GitHub Releases only; hosted documentation stays open.**
+  **Decided and built 2026-10-16 (owner):** prebuilt `sagat` and the SDK packages are attached to each GitHub Release by `.github/workflows/release.yml`; hosted documentation stays open.
 - **G217 — Closed by CI; the compose stack was not run on the machine where it was written.** The container engine there could not create
   containers (its metadata store is read-only). What was done instead: `docker compose config` on the file; the Studio stage
   of the Dockerfile replayed in a scratch directory; and the real binaries (`dev-idp`, `control-plane`, `execution-engine`,

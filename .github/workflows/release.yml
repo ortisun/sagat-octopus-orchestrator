@@ -1,0 +1,189 @@
+name: release
+
+# Owner decision 2026-10-16 (G123/G203/G216): the only distribution channel is GitHub Releases.
+# A tag `v<semver>` builds the `sagat` CLI for three targets and the five SDK packages, writes
+# SHA256SUMS, attests the provenance of every file (Sigstore, through GitHub artifact attestations)
+# and publishes them as the release `v<semver>`. Nothing goes to npm, PyPI, NuGet or Maven; Go is
+# consumed from the module path in this repository. A pull request that touches this file or the
+# packaging script runs every build step and stops before attesting and publishing.
+
+on:
+  push:
+    tags:
+      - "v*"
+  pull_request:
+    paths:
+      - ".github/workflows/release.yml"
+      - "scripts/package-sdks.sh"
+      - "scripts/release-version.sh"
+      - "infra/dr/drill.sh"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    name: version agrees with the tag
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - id: check
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          version="$(bash scripts/release-version.sh)"
+          if [[ "${REF_TYPE}" == "tag" ]]; then
+            if [[ "${REF_NAME}" != "v${version}" ]]; then
+              echo "tag ${REF_NAME} does not name the workspace version v${version}" >&2
+              exit 1
+            fi
+            # Gitflow: a release is a commit of main, never of a feature or bugfix branch.
+            if ! git merge-base --is-ancestor "${GITHUB_SHA}" origin/main; then
+              echo "tag ${REF_NAME} is not on main" >&2
+              exit 1
+            fi
+            # Checked before anything is attested: a tag without notes publishes nothing.
+            if [[ ! -f "docs/releases/${version}.md" ]]; then
+              echo "release notes docs/releases/${version}.md are missing" >&2
+              exit 1
+            fi
+          fi
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+
+  cli:
+    name: sagat CLI (${{ matrix.target }})
+    needs: version
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - runner: macos-14
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup show active-toolchain
+      - name: Build
+        run: cargo build --release --locked -p sagat-cli
+      - name: Package
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          name="sagat-${VERSION}-${TARGET}"
+          mkdir -p "dist/${name}"
+          cp target/release/sagat LICENSE "dist/${name}/"
+          "dist/${name}/sagat" --version
+          tar -C dist -czf "dist/${name}.tar.gz" "${name}"
+          rm -r "dist/${name}"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cli-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  sdks:
+    name: SDK packages
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.25.14"
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.401
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Build packages and run clean consumers
+        run: bash scripts/package-sdks.sh "${RUNNER_TEMP}/sdk-packages"
+      # The script writes its checksums last: their absence means it stopped early, whatever its status.
+      - name: Every package was written
+        working-directory: ${{ runner.temp }}/sdk-packages
+        run: sha256sum -c SHA256SUMS
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sdk-packages
+          path: ${{ runner.temp }}/sdk-packages/
+          if-no-files-found: error
+          retention-days: 7
+
+  recovery:
+    name: disaster-recovery drill against the objectives
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      # Fails when a point-in-time restore takes over an hour, a failover (promotion plus the shard
+      # takeover lease) over five minutes, or a synchronous standby loses an acknowledged run
+      # (owner decision 2026-10-16, docs/runbooks/disaster-recovery.md).
+      - name: disaster-recovery drill
+        env:
+          SAGAT_DR_RUNS: "300"
+          SAGAT_DR_REPORT: ${{ runner.temp }}/disaster-recovery.md
+        run: |
+          infra/dr/drill.sh
+          cat "$SAGAT_DR_REPORT"
+
+  publish:
+    name: attest and publish the release
+    needs: [version, cli, sdks, recovery]
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: artifacts
+      - name: Collect files and checksums
+        run: |
+          mkdir release
+          find artifacts -type f ! -name 'SHA256SUMS*' -exec cp {} release/ \;
+          # Written beside the directory and moved in, so the glob never reads a half-written file.
+          (cd release && sha256sum -- * | LC_ALL=C sort -k2 > ../SHA256SUMS)
+          mv SHA256SUMS release/SHA256SUMS
+          cat release/SHA256SUMS
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: release/*
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          prerelease=()
+          if [[ "${VERSION}" == *-* ]]; then prerelease=(--prerelease); fi
+          gh release create "${TAG}" release/* --verify-tag --title "${TAG}" \
+            --notes-file "docs/releases/${VERSION}.md" "${prerelease[@]}"
