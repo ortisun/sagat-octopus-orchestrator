@@ -98,3 +98,47 @@ async fn event_values_need_current_authority_and_every_reveal_is_audited() {
         Err(EventPayloadError::PiiRevealNotGranted)
     );
 }
+
+#[tokio::test]
+async fn denied_audit_is_best_effort_but_success_audit_is_mandatory() {
+    let w = world().await;
+    let key = EventKey {
+        source: Slug::parse("source-b").unwrap(),
+        event_id: EventId::parse("event-audit").unwrap(),
+    };
+    sqlx::query("INSERT INTO inbox_events (tenant_id,namespace_id,source,event_id,event_type,payload,payload_digest,received_at,expires_at,next_attempt_at) VALUES ($1,$2,$3,$4,'invoice.created',$5,decode(repeat('02',32),'hex'),clock_timestamp(),clock_timestamp()+interval '1 hour',clock_timestamp())")
+        .bind(w.admin.tenant_id().as_uuid()).bind(w.namespace.id().as_uuid()).bind(key.source.as_str()).bind(key.event_id.as_str()).bind(br#"{"canary":"audit-pii"}"#.as_slice()).execute(&w.db.pool).await.expect("event");
+    let reader = w.member("audit-reader", Role::Developer).await;
+    let service = EventPayloadService::new(w.store.clone(), SystemClock, JsonPayloadProjector);
+    sqlx::raw_sql("CREATE FUNCTION refuse_event_denied_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action='payload.reveal_denied' THEN RAISE EXCEPTION 'injected denied audit failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER refuse_event_denied_audit BEFORE INSERT ON audit_records FOR EACH ROW EXECUTE FUNCTION refuse_event_denied_audit();")
+        .execute(&w.db.pool).await.expect("denied audit failure");
+    let denied = service
+        .prepare_event(
+            &reader,
+            w.namespace.id(),
+            key.clone(),
+            EventReveal::Pii,
+            &ctx(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        service.event(denied).await,
+        Err(EventPayloadError::PiiRevealNotGranted)
+    );
+    sqlx::raw_sql("DROP TRIGGER refuse_event_denied_audit ON audit_records; DROP FUNCTION refuse_event_denied_audit();")
+        .execute(&w.db.pool).await.unwrap();
+    sqlx::query("INSERT INTO payload_reveal_grants (tenant_id,namespace_id,subject,granted_by,granted_at) VALUES ($1,$2,$3,$4,clock_timestamp())")
+        .bind(w.admin.tenant_id().as_uuid()).bind(w.namespace.id().as_uuid()).bind(reader.subject().as_str()).bind(w.admin.subject().as_str()).execute(&w.db.pool).await.unwrap();
+    sqlx::raw_sql("CREATE FUNCTION refuse_event_success_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action='payload.pii_revealed' THEN RAISE EXCEPTION 'injected success audit failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER refuse_event_success_audit BEFORE INSERT ON audit_records FOR EACH ROW EXECUTE FUNCTION refuse_event_success_audit();")
+        .execute(&w.db.pool).await.expect("success audit failure");
+    let reveal = service
+        .prepare_event(&reader, w.namespace.id(), key, EventReveal::Pii, &ctx())
+        .await
+        .unwrap();
+    assert_eq!(
+        service.event(reveal).await,
+        Err(EventPayloadError::Application(AppError::Unavailable)),
+        "values cannot cross a failed required audit"
+    );
+}
