@@ -4424,6 +4424,7 @@ components:
       properties:
         carrier: {type: string, enum: [inputSchema, outputSchema, nodeOutputSchema]}
         nodeId: {type: string, description: 'Present only for a node output carrier.'}
+        bodyName: {type: string, description: 'Present only for a node output carrier inside the named body; distinguishes repeated node identifiers.'}
         path: {type: string, description: 'JSON pointer inside the carrier; the root is the empty pointer.'}
         level: {$ref: '#/components/schemas/ClassificationLevel'}
         declared: {type: boolean, description: 'True when this location carries its own annotation; false when it inherits.'}

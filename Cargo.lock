@@ -4671,6 +4671,7 @@ dependencies = [
  "sagat-application",
  "sagat-domain",
  "sagat-infra-expr",
+ "sagat-infra-schema",
  "serde",
  "serde_json",
  "sha2 0.11.0",

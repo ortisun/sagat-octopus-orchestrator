@@ -97,6 +97,8 @@ pub enum IrError {
     Malformed,
     #[error("the document does not match the workflow schema ({} problem(s))", .0.len())]
     Schema(Vec<IrIssue>),
+    #[error("classification annotations are invalid ({} finding(s))", .0.len())]
+    Classification(Vec<crate::classification::ClassificationFinding>),
     /// A node kind that exists in the schema but that this version of the engine does not run.
     #[error("node '{node}' is a '{kind}', which is not supported yet: {reason}")]
     Unsupported {
@@ -198,6 +200,7 @@ pub struct Validation {
     pub problems: Vec<Problem>,
     pub warnings: Vec<Problem>,
     pub digest: Option<String>,
+    pub classification: Option<crate::classification::ClassificationAnalysis>,
 }
 
 impl Validation {
@@ -213,6 +216,17 @@ pub fn problems_of(error: &IrError) -> Vec<Problem> {
     match error {
         IrError::TooLarge => vec![Problem::error("DOCUMENT_TOO_LARGE", error.to_string())],
         IrError::Malformed => vec![Problem::error("DOCUMENT_MALFORMED", error.to_string())],
+        IrError::Classification(findings) => {
+            let mut problems: Vec<_> = findings.iter()
+                .filter(|finding| finding.code.severity() == crate::classification::FindingSeverity::Error)
+                .map(|finding| Problem::error(finding.code.as_str(), finding.code.message())
+                    .at_path(finding.path.as_str()))
+                .collect();
+            if problems.is_empty() {
+                problems.push(Problem::error("CLASSIFICATION_TOO_COMPLEX", "classification carrier exceeds a fixed complexity bound"));
+            }
+            problems
+        },
         IrError::Schema(issues) => issues
             .iter()
             .map(|issue| {
@@ -334,6 +348,9 @@ pub trait IrCodec: Send + Sync {
     /// # Errors
     /// An [`IrError`] describing why the document cannot be published.
     fn parse(&self, document: &[u8]) -> Result<ParsedDefinition, IrError>;
+
+    /// Bounded authoring report, independent of tenant data and persistence.
+    fn classification_analysis(&self, _document: &[u8]) -> Option<crate::classification::ClassificationAnalysis> { None }
 
     /// Returns immutable declared-state metadata when the document contains that capability.
     /// Codecs that do not implement declared state remain closed and return no publication.
@@ -990,11 +1007,19 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
         principal.authorize(Permission::DefinitionWrite)?;
         let record = self.get_workflow(principal, id, ctx).await?;
         let bytes = document.unwrap_or(&record.draft);
+        let classification = self.codec.classification_analysis(bytes);
+        let classification_warnings = classification.as_ref().map_or_else(Vec::new, |analysis| {
+            analysis.findings.iter().filter(|finding| finding.code.severity() == crate::classification::FindingSeverity::Warning)
+                .map(|finding| Problem { severity: Severity::Warning, code: finding.code.as_str(),
+                    message: finding.code.message().to_owned(), node: None, path: Some(finding.path.as_str().to_owned()) }).collect::<Vec<_>>()
+        });
         let parsed = match self.codec.parse(bytes) {
             Ok(parsed) => parsed,
             Err(error) => {
                 return Ok(Validation {
                     problems: problems_of(&error),
+                    warnings: classification_warnings,
+                    classification,
                     ..Validation::default()
                 });
             }
@@ -1032,10 +1057,12 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
             Err(error) => return Err(error.into()),
         }
         let valid = problems.is_empty();
+        let mut warnings: Vec<_> = parsed.warnings.iter().map(warning_problem).collect();
+        warnings.extend(classification_warnings);
         Ok(Validation {
-            problems,
-            warnings: parsed.warnings.iter().map(warning_problem).collect(),
+            problems, warnings,
             digest: valid.then(|| parsed.digest.to_string()),
+            classification,
         })
     }
 

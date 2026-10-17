@@ -39,3 +39,17 @@ Independent Astra xhigh static review found and drove fixes for pool bypass, sta
 - This is focused integration evidence. It does not establish old-binary compatibility, full
   classified disclosure behavior or the final release gates. Classifier review findings remain
   under correction before value disclosure is mounted.
+
+### Publication and SDK checkpoints
+
+The production IR codec now runs the closed classification findings before the general workflow
+schema, and validation includes its bounded report. Two codec tests first failed (SCHEMA instead
+of CLASSIFICATION_NOT_APPLICABLE; a lowered declaration accepted) and passed after wiring
+(`/tmp/sagat-completion-publication-{red,green}.log`). Full REST report validation remains pending.
+Named-body report rows carry an optional `bodyName` to disambiguate repeated node identifiers.
+
+SDK verification at `a74ec176` used the existing pinned runners and found no SDK defect:
+TypeScript 130 tests, Python workflow 14, .NET builders 80, Java builder 24, and Go workflow
+package passed. All five classification outputs matched the golden: 1,474 canonical carrier
+bytes, SHA-256 `0700a0eb7dfff6baed1a3173e14f77e2a178a33db30d7b9cb4222dfd42dcb046`.
+This focused proof does not replace the final complete protocol/runtime conformance matrix.

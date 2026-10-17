@@ -3183,6 +3183,8 @@ export interface components {
             carrier: "inputSchema" | "outputSchema" | "nodeOutputSchema";
             /** @description Present only for a node output carrier. */
             nodeId?: string;
+            /** @description Present only for a node output carrier inside the named body; distinguishes repeated node identifiers. */
+            bodyName?: string;
             /** @description JSON pointer inside the carrier; the root is the empty pointer. */
             path: string;
             level: components["schemas"]["ClassificationLevel"];

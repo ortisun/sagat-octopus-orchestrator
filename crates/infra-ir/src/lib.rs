@@ -8,6 +8,7 @@
 mod payload_projection;
 pub use payload_projection::JsonPayloadProjector;
 mod canonical;
+mod classification_check;
 mod continuation;
 mod convert;
 pub mod cron;
@@ -92,6 +93,12 @@ impl JsonIrCodec {
 }
 
 impl IrCodec for JsonIrCodec {
+    fn classification_analysis(&self, document: &[u8]) -> Option<sagat_application::classification::ClassificationAnalysis> {
+        if document.len() > MAX_IR_BYTES { return None; }
+        let value: Value = serde_json::from_slice(document).ok()?;
+        value.is_object().then(|| classification_check::check(&value))
+    }
+
     fn check_draft(&self, document: &[u8]) -> Result<(), IrError> {
         if document.len() > MAX_IR_BYTES {
             return Err(IrError::TooLarge);
@@ -217,6 +224,10 @@ fn validated_document(document: &[u8]) -> Result<Value, IrError> {
     }
     // `serde_json` bounds its own recursion (128 levels), so a nesting bomb is a syntax error.
     let value: Value = serde_json::from_slice(document).map_err(|_| IrError::Malformed)?;
+    let classification = classification_check::check(&value);
+    if !classification.is_publishable() {
+        return Err(IrError::Classification(classification.findings));
+    }
     let issues = schema::issues(&value);
     if !issues.is_empty() {
         return Err(IrError::Schema(issues));

@@ -3,11 +3,7 @@
 use sagat_application::classification::ClassificationAnalysis;
 use serde_json::Value;
 
-#[allow(dead_code)]
-#[path = "../../infra-schema/src/classification/publication.rs"]
-mod publication;
-
 #[must_use]
 pub fn check(document: &Value) -> ClassificationAnalysis {
-    publication::analyze_value(document)
+    sagat_infra_schema::classification::analyze_value(document)
 }
