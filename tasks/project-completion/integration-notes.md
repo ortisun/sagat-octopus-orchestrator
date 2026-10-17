@@ -973,3 +973,20 @@ resolve/complete/fail cancellation barriers during provider I/O, rotation, outag
 derived recovery and managed-output cancellation. Whole-workspace/all-target strict Clippy passed
 2 min 44 s (`/tmp/sagat-completion-cancellation-ceiling-workspace-clippy.log`). These combined-tree
 checks also include the bounded scanner and ceiling repair recorded in the following checkpoints.
+
+### Iteration ceiling and database-policy schema coexistence
+
+The loop entry rollback fixture reproduced a combined-schema regression: the feature-017 database
+policy allowlist omitted feature 014's `iteration_concurrency`. Inserting the accepted scheduler
+ceiling failed with PostgreSQL `23514` before the intended capacity test
+(`/tmp/sagat-completion-loop-entry-quota-isolated.log`). Added migration
+`20261209000000_iteration_ceiling_compatibility`; every pre-existing migration remains unchanged.
+Both resource families remain constrained to their explicit allowlist and existing value ranges.
+
+The real-database coexistence test retains both an iteration and database ceiling, proves rollback
+refuses to discard the former, explicitly withdraws it, rolls back and re-applies, then verifies
+the database ceiling stayed unchanged. It and the previously failing loop-entry case pass in the
+52-case combined repeat recorded above. The full migration module passed **5/5**, 14.31 s
+(`/tmp/sagat-completion-iteration-ceiling-migration-regression.log`), including concurrent runners,
+idempotence, complete rollback/reapply and writing data after reapplication. This verifies the
+current combined schema; it does not assert an untested upgrade from every unreleased branch snapshot.

@@ -1133,6 +1133,90 @@ async fn repeat_until_always_admits_its_first_body_before_checking() {
 }
 
 #[tokio::test]
+async fn iteration_ceiling_coexists_with_database_policies_and_rollback_preserves_configuration() {
+    let fixture = seed_pending_loop("combined-iteration-ceiling").await;
+    let up = include_str!(
+        "../../../crates/infra-postgres/migrations/20261209000000_iteration_ceiling_compatibility.up.sql"
+    );
+    let down = include_str!(
+        "../../../crates/infra-postgres/migrations/20261209000000_iteration_ceiling_compatibility.down.sql"
+    );
+    sqlx::query(
+        "INSERT INTO quota_ceilings (tenant_id,resource,max_value,granted_by) \
+         VALUES ($1,'iteration_concurrency',1,'loop-test'), \
+                ($1,'database_connections',2,'loop-test')",
+    )
+    .bind(fixture.tenant)
+    .execute(&fixture.db.pool)
+    .await
+    .expect("both integrated resources remain valid");
+    let mut tx = fixture.db.pool.begin().await.expect("guarded rollback");
+    assert!(sqlx::raw_sql(down).execute(&mut *tx).await.is_err());
+    tx.rollback().await.expect("rollback the refused migration");
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM quota_ceilings WHERE tenant_id=$1")
+        .bind(fixture.tenant)
+        .fetch_one(&fixture.db.pool)
+        .await
+        .expect("retained configuration");
+    assert_eq!(count, 2);
+    sqlx::query(
+        "DELETE FROM quota_ceilings WHERE tenant_id=$1 AND resource='iteration_concurrency'",
+    )
+    .bind(fixture.tenant)
+    .execute(&fixture.db.pool)
+    .await
+    .expect("explicitly withdraw the incompatible ceiling");
+    let mut tx = fixture.db.pool.begin().await.expect("compatible rollback");
+    sqlx::raw_sql(down)
+        .execute(&mut *tx)
+        .await
+        .expect("rollback after explicit withdrawal");
+    tx.commit().await.expect("commit compatible rollback");
+    let refused = sqlx::query(
+        "INSERT INTO quota_ceilings (tenant_id,resource,max_value,granted_by) \
+         VALUES ($1,'iteration_concurrency',1,'loop-test')",
+    )
+    .bind(fixture.tenant)
+    .execute(&fixture.db.pool)
+    .await
+    .expect_err("prior schema still refuses the omitted resource");
+    assert_eq!(
+        refused
+            .as_database_error()
+            .and_then(|e| e.code())
+            .as_deref(),
+        Some("23514")
+    );
+    let mut tx = fixture
+        .db
+        .pool
+        .begin()
+        .await
+        .expect("restore current schema");
+    sqlx::raw_sql(up)
+        .execute(&mut *tx)
+        .await
+        .expect("reapply additive compatibility migration");
+    tx.commit().await.expect("commit current schema");
+    sqlx::query(
+        "INSERT INTO quota_ceilings (tenant_id,resource,max_value,granted_by) \
+         VALUES ($1,'iteration_concurrency',1,'loop-test')",
+    )
+    .bind(fixture.tenant)
+    .execute(&fixture.db.pool)
+    .await
+    .expect("current schema accepts the restored iteration ceiling");
+    let database_limit: i64 = sqlx::query_scalar(
+        "SELECT max_value FROM quota_ceilings WHERE tenant_id=$1 AND resource='database_connections'",
+    )
+    .bind(fixture.tenant)
+    .fetch_one(&fixture.db.pool)
+    .await
+    .expect("database ceiling survives both migrations");
+    assert_eq!(database_limit, 2);
+}
+
+#[tokio::test]
 async fn stale_fence_and_outbox_failure_leave_entry_unchanged() {
     let fixture = seed_pending_loop("loop-entry-rollback").await;
     let store = PgLoopProgressStore::new(fixture.db.pool.clone(), fixture.definitions.clone());

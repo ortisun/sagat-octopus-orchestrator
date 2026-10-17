@@ -97,6 +97,12 @@ work durably waiting for fair scheduler admission; declared hard budget exhausti
 admission with the typed budget error. Reclaim only terminal/drained slots, transactionally.
 A policy reduction stops new admissions above its new ceiling but does not kill accepted work.
 
+The scheduler's `quota_ceilings.resource = 'iteration_concurrency'` remains valid alongside database
+policy resources when features 014 and 017 are combined. Additive migration
+`20261209000000_iteration_ceiling_compatibility` restores that combined allowlist without editing
+earlier migrations. Its rollback refuses existing iteration-ceiling configuration; an operator
+must withdraw it explicitly. Other quota configuration survives rollback and reapplication.
+
 `maxInstances` is a shared lifetime admission budget. Each forward activation charges one unit and
 reserves one for each possible declared compensation/reconciliation identity; reservations immediately
 consume budget and are not reused even if the derived work is never needed. A derived activation
