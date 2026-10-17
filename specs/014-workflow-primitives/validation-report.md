@@ -1451,3 +1451,15 @@ collection takes 23 minutes in a debug build and the 10,000-iteration loop did n
 because the worker `complete` and `poll` still restore the whole run (G520). Approvals inside bodies,
 a run deadline over an open collection or loop, nested scopes, branches and timers in bodies stay closed.
 OTLP export of approval spans is not exercised end to end. See `research.md` for G/O numbers.
+
+### CI on the pull request (2026-10-17)
+
+Run 39057216527 on head `7d7868ff`: all 12 checks passed (`rust`, `sdks`, `studio`, `contracts`, architecture,
+`cargo audit`, Compose smoke, native Go and Java on both architectures, observability files, package smoke,
+scale and recovery). The first run on the same pull request failed three jobs and a second round exposed
+more; each failure was a real gap in the branch and was fixed in a commit of its own (see the T014-043
+evidence). A `cargo test --workspace` I ran on the laptop afterwards reported 33 failures in suites that
+need containers and toolchains this shell did not point at (`fault_developer_experience`,
+`e2e_developer_experience`, `e2e_inline_code_sandbox`, ...) while the machine was under heavy load; the
+same command passed in CI, so the laptop run is not used as evidence here and I did not investigate those
+failures further.
