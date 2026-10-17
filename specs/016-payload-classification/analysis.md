@@ -123,3 +123,34 @@ results and outstanding gates in `tasks/project-completion/integration-notes.md`
 classification proof: 15 contract, 21 real PostgreSQL/HTTP, 2 deferred-audit failure tests and one
 actual Chromium disclosure journey. Full canary, process-crash, upgrade, runtime conformance and
 workspace release acceptance remain open. Canonical task checkboxes name only complete evidence.
+
+
+### Executed classification quickstart and guide reconciliation
+
+Added complete `specs/016-payload-classification/examples/` workflows (original/relaxed/invalid),
+synthetic input and a canned mock worker response. Actual standalone CLI validation passed both
+sound documents and refused the invalid one at the expected CLASSIFICATION_LOOSENED pointer.
+The new `quickstart::the_documented_classified_orders_complete_and_keep_their_original_pin`
+passed 1/1 in 21.00 s (`/tmp/sagat-completion-classification-quickstart-3.log`). It runs the actual
+`sagat` and `curl` processes against HTTP/gRPC/PostgreSQL and the production engine entry point:
+publish, worker-dev binding/execution, terminal result, actual step sequence, public/internal/PII
+reads, grant/revoke and refusal, republish/activate and unchanged old run pin. It also publishes an
+actual event, executes the four documented event/letter reads and checks the audit API for data
+absence. The retained paused-connector letter is explicitly an isolated fixture; no Kafka delivery
+is claimed by this walkthrough. The first compile needed named arrays for async CLI arguments;
+this was a harness lifetime correction before execution.
+
+The guide now points at real files, uses valid Cargo filter invocations, includes the worker/run
+commands and version activation and explains receiving-carrier secret declarations. Its spec
+prerequisite command passed (`/tmp/sagat-completion-classification-spec-prerequisites.log`); the
+PayloadDisclosure/WorkflowSettings tests passed 8/8 in 1.96 s
+(`/tmp/sagat-completion-classification-guide-ui.log`). Developer-experience references/links/CLI
+syntax/secret scan passed 8/8 (`/tmp/sagat-completion-classification-guide-references.log`); strict
+Clippy of the three classification targets passed with warnings denied in 27.81 s
+(`/tmp/sagat-completion-classification-final-focused-clippy.log`).
+
+The benchmark, transaction/process faults, actual old release/old Studio/five-client compatibility
+and Chromium commands in the guide have their separate executed evidence recorded above; those
+are reused where the tested production path is unchanged, not invented reruns. The requirements
+checklist now distinguishes executed local evidence from the still-open full workspace/release
+gates. T016-056 closes for the delivered guide and traceability; T016-054 remains open.

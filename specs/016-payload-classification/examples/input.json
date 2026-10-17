@@ -1,0 +1,9 @@
+{
+  "orderId": "canary-016-public-value",
+  "amount": 42,
+  "customer": {
+    "name": "canary-016-pii-value",
+    "email": "person@example.invalid",
+    "cardToken": "canary-016-secret-value"
+  }
+}

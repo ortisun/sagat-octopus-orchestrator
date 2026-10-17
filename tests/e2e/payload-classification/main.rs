@@ -10,3 +10,4 @@ mod canary_support;
 
 mod canary;
 mod cli;
+mod quickstart;
