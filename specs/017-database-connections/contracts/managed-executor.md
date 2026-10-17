@@ -41,10 +41,11 @@ This capability contract is not evidence that the SQL executor is already shippe
 
 ### Checkpoint gate
 
-Until T017-017 has pin-based credential-field scanning for every result transport, managed
-`CompleteStep` and blob writes are refused before storage. Managed failures accept only fixed
-`WORKER_ERROR` and `OUTCOME_UNKNOWN` codes; the transport already discards `safe_message`.
-This deliberately leaves SQL execution incomplete at the capability checkpoint. The final
-feature delivery must replace this gate with the tested scanner before enabling the runner.
+Managed inline and blob results require the configured retained-credential codec and typed result
+validator. Blob bytes are scanned before staging and verified/rescanned before atomic completion.
+Default instances without those codecs still fail closed. Production composition roots and the
+isolated runner remain pending. Managed failures currently accept only fixed `WORKER_ERROR` and
+`OUTCOME_UNKNOWN` codes; the transport discards `safe_message`. The runner delivery will add its
+closed safe failure vocabulary and integration evidence before enabling SQL execution.
 
 PostgreSQL adapter details and current runtime gates: [target adapter](postgres-executor.md).

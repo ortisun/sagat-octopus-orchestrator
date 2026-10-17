@@ -79,6 +79,33 @@ impl PgRunTx {
         Ok(tenant < 64 && namespace < 16 && pool < i64::from(effective.pool_size))
     }
 
+    pub(super) async fn database_report_owner(
+        &mut self,
+        node: &NodeId,
+        fence: sagat_domain::execution::Fence,
+        subject: &str,
+    ) -> Result<bool, StoreError> {
+        crate::quotas::lock_secrets(&mut self.tx, self.info.tenant_id, self.info.namespace_id)
+            .await?;
+        if !self.database_role(subject).await? {
+            return Ok(false);
+        }
+        sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM run_events WHERE tenant_id=$1 AND run_id=$2
+             AND node=$3 AND event_type='step.leased' AND actor=$4
+             AND detail->>'attempt'=$5 AND detail->>'generation'=$6)",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.run_id.as_uuid())
+        .bind(node.as_str())
+        .bind(format!("worker:{subject}"))
+        .bind(fence.attempt.to_string())
+        .bind(fence.generation.to_string())
+        .fetch_one(&mut *self.tx)
+        .await
+        .map_err(store_error)
+    }
+
     async fn database_connection(
         &mut self,
         node: &NodeId,

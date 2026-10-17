@@ -2,6 +2,7 @@
 mod admission;
 mod executor;
 mod output;
+mod output_blobs;
 #[path = "../../support/mod.rs"]
 mod support;
 
@@ -214,6 +215,7 @@ async fn durable_provider_intents_reconcile_without_plaintext_or_duplicate_rotat
     executor::run(provider.clone()).await;
     executor::grpc(provider.clone()).await;
     output::run(provider.clone()).await;
+    output_blobs::run(provider.clone()).await;
 
     // An ACL/membership change during provider I/O must discard the value already read.
     let gated = Arc::new(ReadBarrier {

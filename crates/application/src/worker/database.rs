@@ -199,6 +199,69 @@ where
         Ok((secret, limits))
     }
 
+    /// Returns the frozen bound only for a live managed attempt with a retained credential pin.
+    /// Ordinary uploads continue through their existing streaming admission.
+    pub async fn database_blob_limit(
+        &self,
+        principal: &Principal,
+        task: &TaskRef<'_>,
+    ) -> Result<Option<usize>, AppError> {
+        principal.authorize(Permission::WorkerExecute)?;
+        let mut tx = self.open(principal, task, Lock::Wait).await?;
+        self.verify(&mut tx, task).await?;
+        self.ensure_bound(principal, &mut tx, task).await?;
+        if !Self::managed_database(&mut tx, task) {
+            return Ok(None);
+        }
+        let (_, limits) = self
+            .database_output_snapshot(principal, &mut tx, task)
+            .await?;
+        tx.commit().await?;
+        Ok(Some(limits.max_result_bytes as usize))
+    }
+
+    /// Scans managed content before any object reservation/write. Rechecks the capability after
+    /// provider I/O and durably rejects credential-bearing content without retaining the bytes.
+    #[tracing::instrument(name = "database.blob.scan", skip_all)]
+    pub async fn check_database_blob_upload(
+        &self,
+        principal: &Principal,
+        task: &TaskRef<'_>,
+        content: &[u8],
+    ) -> Result<BlobScope, AppError> {
+        principal.authorize(Permission::DatabaseExecute)?;
+        let before = {
+            let mut tx = self.open(principal, task, Lock::Wait).await?;
+            let snapshot = self
+                .database_output_snapshot(principal, &mut tx, task)
+                .await?;
+            tx.commit().await?;
+            snapshot
+        };
+        let contains = self
+            .scan_database_output(&before.0, before.1, content)
+            .await?;
+        let mut tx = self.open(principal, task, Lock::Wait).await?;
+        let after = self
+            .database_output_snapshot(principal, &mut tx, task)
+            .await?;
+        if before != after {
+            return Err(AppError::StaleAttempt);
+        }
+        if contains {
+            let idempotency =
+                completion_idempotency(task, "database-blob-output-refused", content, false);
+            self.reject_secret_output(principal, task, tx, before.0.meta.name, idempotency)
+                .await?;
+            return Err(AppError::NotAllowed(
+                "credential in managed database result",
+            ));
+        }
+        let scope = Self::scope_of(&tx, task);
+        tx.commit().await?;
+        Ok(scope)
+    }
+
     async fn database_fence<Tx: RunTx>(
         &self,
         principal: &Principal,

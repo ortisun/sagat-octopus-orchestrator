@@ -2,6 +2,22 @@
 use super::*;
 use crate::blobs::{BlobCommit, descriptor_json};
 use sagat_domain::blobs::BlobDescriptor;
+use sha2::{Digest as _, Sha256};
+
+/// A catalog descriptor and the verified bytes required for managed database completion.
+/// The application independently checks size/digest; adapters cannot assert a scan with a boolean.
+pub struct BlobOutput<'a> {
+    pub descriptor: &'a BlobDescriptor,
+    pub expected_digest: &'a str,
+    pub content: Option<&'a [u8]>,
+}
+
+struct BlobCompletion<'a> {
+    commit: BlobCommit,
+    identity: Vec<u8>,
+    content: Option<&'a [u8]>,
+    content_type: &'a str,
+}
 
 impl<S, C, E, R> WorkerService<S, C, E, R>
 where
@@ -24,7 +40,7 @@ where
         output: &[u8],
         idempotency_key: &str,
     ) -> Result<StepAck, AppError> {
-        self.complete_inner(principal, task, output, None, None, idempotency_key)
+        self.complete_inner(principal, task, output, None, idempotency_key)
             .await
     }
 
@@ -40,19 +56,42 @@ where
         &self,
         principal: &Principal,
         task: &TaskRef<'_>,
-        blob: &BlobDescriptor,
-        expected_digest: &str,
+        report: BlobOutput<'_>,
         idempotency_key: &str,
     ) -> Result<StepAck, AppError> {
+        let blob = report.descriptor;
+        if let Some(ack) = self
+            .replay_blob_completion(
+                principal,
+                task,
+                blob.id(),
+                report.expected_digest,
+                idempotency_key,
+            )
+            .await?
+        {
+            return Ok(ack);
+        }
+        if let Some(content) = report.content
+            && (content.len()
+                > sagat_domain::database::DatabaseLimits::MAX.max_result_bytes as usize
+                || content.len() as u64 != blob.size()
+                || Sha256::digest(content).as_slice() != blob.digest().as_bytes())
+        {
+            return Err(AppError::NotAllowed(
+                "managed blob content does not match its descriptor",
+            ));
+        }
         self.complete_inner(
             principal,
             task,
             &descriptor_json(blob),
-            Some(BlobCommit::new(
-                self.blob_report_scope(principal, task).await?,
-                blob,
-            )),
-            Some(blob_report_identity(blob.id(), expected_digest)),
+            Some(BlobCompletion {
+                commit: BlobCommit::new(self.blob_report_scope(principal, task).await?, blob),
+                identity: blob_report_identity(blob.id(), report.expected_digest),
+                content: report.content,
+                content_type: blob.content_type().as_str(),
+            }),
             idempotency_key,
         )
         .await
@@ -63,8 +102,7 @@ where
         principal: &Principal,
         task: &TaskRef<'_>,
         output: &[u8],
-        blob: Option<BlobCommit>,
-        blob_identity: Option<Vec<u8>>,
+        blob: Option<BlobCompletion<'_>>,
         idempotency_key: &str,
     ) -> Result<StepAck, AppError> {
         principal.authorize(Permission::WorkerExecute)?;
@@ -76,32 +114,46 @@ where
         let idempotency = completion_idempotency(
             task,
             idempotency_key,
-            blob_identity.as_deref().unwrap_or(output),
+            blob.as_ref().map_or(output, |b| b.identity.as_slice()),
             blob.is_some(),
         );
         let mut tx = self.open(principal, task, Lock::Wait).await?;
-        if let Some(ack) = self.replayed(&mut tx, task, &idempotency).await? {
+        if let Some(ack) = self
+            .replayed(principal, &mut tx, task, &idempotency)
+            .await?
+        {
             return Ok(ack);
         }
         self.verify(&mut tx, task).await?;
         self.ensure_bound(principal, &mut tx, task).await?;
         let mut database_secret_in_output = None;
         if Self::managed_database(&mut tx, task) {
-            // Blob uploads/commit remain closed until the bounded pre-storage path is wired.
-            if blob.is_some() {
+            if blob
+                .as_ref()
+                .is_some_and(|blob| blob.content_type != "application/json")
+            {
                 return Err(AppError::NotAllowed(
-                    "managed database blobs require content scanning",
+                    "managed database results require application/json",
                 ));
             }
+            let content = match &blob {
+                Some(blob) => blob.content.ok_or(AppError::NotAllowed(
+                    "managed database blobs require content scanning",
+                ))?,
+                None => output,
+            };
             let before = self
                 .database_output_snapshot(principal, &mut tx, task)
                 .await?;
             tx.commit().await?;
             let contains = self
-                .scan_database_output(&before.0, before.1, output)
+                .scan_database_output(&before.0, before.1, content)
                 .await?;
             tx = self.open(principal, task, Lock::Wait).await?;
-            if let Some(ack) = self.replayed(&mut tx, task, &idempotency).await? {
+            if let Some(ack) = self
+                .replayed(principal, &mut tx, task, &idempotency)
+                .await?
+            {
                 return Ok(ack);
             }
             let after = self
@@ -139,39 +191,8 @@ where
             self.secret_in_output(&mut tx, task, output).await?
         };
         if let Some(name) = leaked_secret {
-            // A detection, counted when found: should the commit below fail the retry finds it again.
-            metrics::counter!("secret_output_detected_total").increment(1);
-            effects.audit = Some(self.leak_audit(principal, &tx, task, &name, "output"));
-            let node = task.node.clone();
-            let fence = task.fence;
-            let fallback_audit = effects.audit.clone();
-            let code = if Self::database_write(&mut tx, task) {
-                FailureCode::outcome_unknown()
-            } else {
-                FailureCode::secret_in_output()
-            };
-            let completed = self
-                .engine
-                .run(&mut tx, effects, move |def, state, now| {
-                    let failure = execution::Failure {
-                        fence,
-                        code,
-                        retryable: false,
-                        jitter_sample: 0.0,
-                    };
-                    Ok(((), execution::fail_step(def, state, &node, failure, now)?))
-                })
-                .await
-                .map_err(engine_error);
-            let result = match completed {
-                Ok(()) => self.finish(tx, task, idempotency.clone()).await,
-                Err(error) => {
-                    drop(tx);
-                    Err(error)
-                }
-            };
             return self
-                .recover_success_storage_quota(principal, task, idempotency, fallback_audit, result)
+                .reject_secret_output(principal, task, tx, name, idempotency)
                 .await;
         }
         // A reconciliation does not produce the output of a step, it says whether the step happened.
@@ -245,7 +266,7 @@ where
                 .await;
         }
         effects.outputs = vec![(task.node.clone(), output.to_vec())];
-        effects.blobs = blob.into_iter().collect();
+        effects.blobs = blob.map(|b| b.commit).into_iter().collect();
         let node = task.node.clone();
         let fence = task.fence;
         let completed = self
@@ -264,6 +285,50 @@ where
             }
         };
         self.recover_success_storage_quota(principal, task, idempotency, None, result)
+            .await
+    }
+
+    pub(super) async fn reject_secret_output(
+        &self,
+        principal: &Principal,
+        task: &TaskRef<'_>,
+        mut tx: S::Tx,
+        name: SecretName,
+        idempotency: Idempotency,
+    ) -> Result<StepAck, AppError> {
+        let mut effects = Effects::by(Actor::Worker(principal.subject().as_str().to_owned()), None);
+        // A detection, counted when found: should the commit below fail the retry finds it again.
+        metrics::counter!("secret_output_detected_total").increment(1);
+        effects.audit = Some(self.leak_audit(principal, &tx, task, &name, "output"));
+        let node = task.node.clone();
+        let fence = task.fence;
+        let fallback_audit = effects.audit.clone();
+        let code = if Self::database_write(&mut tx, task) {
+            FailureCode::outcome_unknown()
+        } else {
+            FailureCode::secret_in_output()
+        };
+        let completed = self
+            .engine
+            .run(&mut tx, effects, move |def, state, now| {
+                let failure = execution::Failure {
+                    fence,
+                    code,
+                    retryable: false,
+                    jitter_sample: 0.0,
+                };
+                Ok(((), execution::fail_step(def, state, &node, failure, now)?))
+            })
+            .await
+            .map_err(engine_error);
+        let result = match completed {
+            Ok(()) => self.finish(tx, task, idempotency.clone()).await,
+            Err(error) => {
+                drop(tx);
+                Err(error)
+            }
+        };
+        self.recover_success_storage_quota(principal, task, idempotency, fallback_audit, result)
             .await
     }
 
@@ -299,7 +364,10 @@ where
         audit: Option<AuditRecord>,
     ) -> Result<StepAck, AppError> {
         let mut tx = self.open(principal, task, Lock::Wait).await?;
-        if let Some(ack) = self.replayed(&mut tx, task, &idempotency).await? {
+        if let Some(ack) = self
+            .replayed(principal, &mut tx, task, &idempotency)
+            .await?
+        {
             return Ok(ack);
         }
         self.verify(&mut tx, task).await?;

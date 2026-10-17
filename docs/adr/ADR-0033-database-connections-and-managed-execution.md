@@ -24,6 +24,14 @@ A connection selects an external effect destination. Retargeting it during retri
 
 ## Affected decisions and dependencies
 
+The managed-result retention boundary refines ADR-0023's streaming path: PostgreSQL results have
+an approved 4 MiB hard maximum and are collected under the existing transfer permit/deadline for
+canonical JSON and retained-credential scanning **before** any object reservation. General blobs
+remain streamed. Completion independently verifies and rescans stored bytes. This bounded scan does
+not evaluate workflow expressions over blobs or add a generic payload reader. Pending PUTs after a
+timeout retain ADR-0023's durable cleanup/tombstone semantics. Result-response memory and concurrency
+measurements remain release evidence in T017-025.
+
 - Preserve ADR-0001 domain/adapter boundaries, ADR-0002 transactions, ADR-0004 external effects, ADR-0006 isolated execution and ADR-0007 five-language parity.
 - Extend 001 contracts, 002 task/admission capabilities, 003 external-outcome integration, 006 builders/conformance, 007 connections/secrets/ad hoc/result UI, 008 instrumentation, 009 secret-provider/network/RBAC/quotas and 011 revision/promotion semantics in the approved implementation delivery.
 - ADR-0028 remains the default for general run inspection. Decision 10 requires a distinct accepted disclosure policy and corresponding dependent-document updates before implementation.

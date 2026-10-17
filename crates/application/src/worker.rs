@@ -10,6 +10,7 @@
 
 mod database;
 mod output;
+pub use output::BlobOutput;
 
 use std::future::Future;
 use std::sync::Arc;
@@ -1033,8 +1034,17 @@ where
         trace_id: Option<&str>,
     ) -> Result<ClaimedTask, AppError> {
         let token = Token::from_bytes(self.entropy.token()).ok_or(AppError::Internal)?;
+        let managed = tx
+            .parts()
+            .0
+            .node(node)
+            .is_some_and(|node| node.database_operation().is_some());
         let mut effects = Effects::by(
-            Actor::Worker(session.id.to_string()),
+            Actor::Worker(if managed {
+                session.subject.clone()
+            } else {
+                session.id.to_string()
+            }),
             trace_id.map(str::to_owned),
         );
         effects.lease = Some(LeaseGrant {
@@ -1207,16 +1217,25 @@ where
     ) -> Result<Option<StepAck>, AppError> {
         principal.authorize(Permission::WorkerExecute)?;
         let mut tx = self.open(principal, task, Lock::Wait).await?;
-        self.ensure_bound(principal, &mut tx, task).await?;
         if task
             .step_id
             .is_some_and(|claimed| claimed != Self::scope_of(&tx, task).step_id)
         {
             return Err(AppError::StaleAttempt);
         }
+        if !Self::managed_database(&mut tx, task) {
+            self.ensure_bound(principal, &mut tx, task).await?;
+        }
         let identity = blob_report_identity(blob_id, expected_digest);
         let idempotency = completion_idempotency(task, key, &identity, true);
-        self.replayed(&mut tx, task, &idempotency).await
+        if let Some(ack) = self
+            .replayed(principal, &mut tx, task, &idempotency)
+            .await?
+        {
+            return Ok(Some(ack));
+        }
+        self.ensure_bound(principal, &mut tx, task).await?;
+        Ok(None)
     }
 
     /// Whether `task` is an attempt that may still act: its lease is current and unexpired and the
@@ -1374,7 +1393,10 @@ where
             ]),
         };
         let mut tx = self.open(principal, task, Lock::Wait).await?;
-        if let Some(ack) = self.replayed(&mut tx, task, &idempotency).await? {
+        if let Some(ack) = self
+            .replayed(principal, &mut tx, task, &idempotency)
+            .await?
+        {
             return Ok(ack);
         }
         self.verify(&mut tx, task).await?;
@@ -1474,7 +1496,10 @@ where
         audit: Option<AuditRecord>,
     ) -> Result<StepAck, AppError> {
         let mut tx = self.open(principal, task, Lock::Wait).await?;
-        if let Some(ack) = self.replayed(&mut tx, task, &idempotency).await? {
+        if let Some(ack) = self
+            .replayed(principal, &mut tx, task, &idempotency)
+            .await?
+        {
             return Ok(ack);
         }
         self.verify(&mut tx, task).await?;
@@ -1560,14 +1585,25 @@ where
     /// worker that merely knows a run id, a node and a guessable key.
     async fn replayed(
         &self,
+        principal: &Principal,
         tx: &mut S::Tx,
         task: &TaskRef<'_>,
         idempotency: &Idempotency,
     ) -> Result<Option<StepAck>, AppError> {
-        Ok(tx
-            .replay(idempotency)
-            .await?
-            .map(|stored| parse_ack(&stored, true, task.run_id)))
+        let Some(stored) = tx.replay(idempotency).await? else {
+            return Ok(None);
+        };
+        if Self::managed_database(tx, task) {
+            principal.authorize(Permission::DatabaseExecute)?;
+            if !tx
+                .database_report_owns(task.node, task.fence, principal.subject().as_str())
+                .await?
+            {
+                return Err(AppError::NotBound);
+            }
+            self.ensure_activity_bound(principal, tx, task).await?;
+        }
+        Ok(Some(parse_ack(&stored, true, task.run_id)))
     }
 
     fn managed_database<Tx: RunTx>(tx: &mut Tx, task: &TaskRef<'_>) -> bool {
@@ -1838,6 +1874,15 @@ where
         {
             return Err(AppError::NotBound);
         }
+        self.ensure_activity_bound(principal, tx, task).await
+    }
+
+    async fn ensure_activity_bound<Tx: RunTx>(
+        &self,
+        principal: &Principal,
+        tx: &mut Tx,
+        task: &TaskRef<'_>,
+    ) -> Result<(), AppError> {
         let activity = {
             let (def, _) = tx.parts();
             match def.node(task.node).map(sagat_domain::workflow::Node::kind) {

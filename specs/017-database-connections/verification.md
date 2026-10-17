@@ -9,6 +9,18 @@
 
 This checkpoint does not enable production execution. Blob scanning/commit, authorized result disclosure, isolated runner, SDK/Studio execution and deployment gates remain pending.
 
+Follow-up inline regression: `cargo test -p sagat-tests --test integration_durable_execution --test contract_grpc_durable_execution --test integration_security_multitenancy` passed all 178 durable, 63 gRPC and 95 security tests (336 total, none skipped). The completion methods were then moved into `worker/output.rs` with method bodies unchanged apart from trailing whitespace; `cargo check -p sagat-application` passed.
+
+## Managed blob result checkpoint (2026-10-17)
+
+- RED: the new real gRPC upload of a valid 350 KB result failed at the prior managed-blob gate.
+- GREEN: `cargo test -p sagat-tests --test integration_database_connections` passed both combined PostgreSQL/OpenBao fixtures with bounded blob upload/commit, pin-required refusal, split credential rejection before staging, query failure/write review, metadata refusal, full-size bound, provider outage/recovery, receipt replay without provider I/O, foreign-machine receipt refusal, audit rollback and provider-scan timeout before reservation. Fault-injected objects bypassing public upload are still checked at completion; rejected contents never enter payloads.
+- `cargo test -p sagat-api-grpc --lib`: 16 passed, including exact collection bound, overflow, corrupt EOF and stalled producer. The timeout assertion initially expected gRPC DEADLINE_EXCEEDED; the existing shared HTTP 408 mapping is UNAVAILABLE, so the assertion was corrected to preserve the protocol.
+- Review found and fixed arbitrary media-type metadata, loss of the deadline after collection and terminal blob replay requiring a cleared live session. Replay now checks the immutable managed lease's subject/attempt/generation plus current role and binding. A direct application-call replay test also passes with no provider/codecs configured.
+- `cargo clippy -p sagat-application -p sagat-api-grpc -p sagat-infra-postgres --all-targets -- -D warnings` passed after collapsing a nested condition. Existing `contract_grpc_durable_execution` (63) and `integration_security_multitenancy` (95) passed, none skipped. Formatting, diff and architecture (23 crates) checks passed. Independent review closed with no remaining Required/Critical finding after the direct application replay fix.
+
+Managed result disclosure, runner/production wiring and remaining feature tasks are still pending. The test object store is the existing in-memory backend; PostgreSQL and OpenBao are real services. Storage-backend behavior retains the existing blob suite's separate adapter evidence.
+
 ## Provider foundation (2026-10-17)
 
 - RED: `cargo test -p sagat-infra-secrets --test openbao --no-default-features` failed because the provider port/adapter did not exist.

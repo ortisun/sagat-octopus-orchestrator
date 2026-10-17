@@ -29,6 +29,7 @@ tonic-prost.workspace = true
 tower-layer = "0.3"
 tracing.workspace = true
 uuid.workspace = true
+zeroize = { version = "1", default-features = false, features = ["alloc"] }
 
 [build-dependencies]
 protox.workspace = true

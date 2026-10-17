@@ -501,6 +501,17 @@ pub trait RunTx: Send {
         async { Ok(false) }
     }
 
+    /// Current dedicated role and durable owner of a previously leased managed attempt. Used only
+    /// to return an existing report receipt after its live session linkage has been cleared.
+    fn database_report_owns(
+        &mut self,
+        _node: &NodeId,
+        _fence: sagat_domain::execution::Fence,
+        _subject: &str,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
+        async { Ok(false) }
+    }
+
     /// Current connection/publisher/initiator admission and exact connection/namespace/tenant
     /// concurrency reservation in the lease transaction. Unsupported stores fail closed.
     fn database_claim(

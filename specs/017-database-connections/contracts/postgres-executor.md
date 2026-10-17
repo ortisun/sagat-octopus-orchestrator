@@ -102,8 +102,22 @@ A detected credential is never stored as output. Query attempts fail with `SECRE
 execute attempts wait on the operator with run status `MANUAL_REVIEW` and `OUTCOME_UNKNOWN`.
 Failure to retain a completed write due to quota likewise requires review, with no automatic retry.
 
-Managed blob uploads/commits, result disclosure and production runner wiring remain closed/pending
-at this inline-result checkpoint (T017-017). No complete result-delivery guarantee is claimed yet.
+Managed blob uploads require canonical `application/json`. The gRPC adapter holds a transfer permit
+and collects at most the frozen effective result bound (hard maximum 4 MiB) before reserving or
+writing any object. It scans that content through the same retained-pin guard. The original upload
+deadline covers collection, provider scanning and storage; a timed-out storage PUT leaves a durable
+unconfirmed reservation for the existing abandoned-upload reconciliation. Nothing unconfirmed can
+be committed. Ordinary blobs keep their streaming path and declared-secret upload restrictions.
+
+Blob completion reads through the storage verifier's EOF, independently verifies SHA-256/size and
+canonical media type, rescans the full content and repeats the live fences before committing the
+descriptor, step and outbox atomically. Neither a descriptor nor an adapter boolean attests a scan.
+An exact receipt needs no provider/object read; managed replay checks current role/binding and the
+original machine recorded in the immutable lease event. This also applies to application callers,
+not only the gRPC shortcut. Ordinary protocol receipt behavior is preserved.
+
+Result disclosure and production runner wiring remain pending at this checkpoint (T017-017).
+No complete result-delivery guarantee is claimed yet.
 
 ## Evidence and sources
 

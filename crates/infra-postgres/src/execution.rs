@@ -1231,6 +1231,14 @@ impl RunTx for PgRunTx {
     ) -> Result<bool, StoreError> {
         self.database_owner(node, subject).await
     }
+    async fn database_report_owns(
+        &mut self,
+        node: &NodeId,
+        fence: sagat_domain::execution::Fence,
+        subject: &str,
+    ) -> Result<bool, StoreError> {
+        self.database_report_owner(node, fence, subject).await
+    }
     async fn database_claim(&mut self, node: &NodeId, subject: &str) -> Result<bool, StoreError> {
         self.database_admission(node, subject).await
     }

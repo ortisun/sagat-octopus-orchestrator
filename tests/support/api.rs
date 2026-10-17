@@ -460,7 +460,11 @@ pub async fn start_with(options: Options) -> TestApi {
         SystemEntropy,
         options.worker,
     )
-    .with_vault(keys.cipher());
+    .with_vault(keys.cipher())
+    .with_database_content(
+        Arc::new(sagat_infra_secrets::database::JsonDatabaseCredentials),
+        Arc::new(sagat_infra_ir::JsonDatabaseResultValidator),
+    );
     if let Some(provider) = &options.secret_provider {
         workers = workers.with_secret_provider(provider.clone());
     }

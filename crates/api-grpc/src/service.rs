@@ -19,7 +19,9 @@ use sagat_application::entropy::Entropy;
 use sagat_application::error::AppError;
 use sagat_application::execution::{ExpressionEvaluator, MAX_PAYLOAD_BYTES};
 use sagat_application::runs::RunStore;
-use sagat_application::worker::{Capabilities, ClaimedTask, StepAck, WorkerService, WorkerStore};
+use sagat_application::worker::{
+    BlobOutput, Capabilities, ClaimedTask, StepAck, WorkerService, WorkerStore,
+};
 use sagat_domain::blobs::BlobId;
 use sagat_telemetry::TraceContext;
 use sha2::{Digest, Sha256};
@@ -825,13 +827,39 @@ where
                 {
                     return Err(invalid("output_sha256 does not match the blob"));
                 }
+                let limit = self
+                    .workers
+                    .database_blob_limit(principal, &attempt.task_ref())
+                    .await
+                    .map_err(app)?;
+                let mut _place = None;
+                let content = if let Some(limit) = limit {
+                    if described.size() > limit as u64 {
+                        return Err(invalid("managed database result is too large"));
+                    }
+                    _place = Some(blobs.permit()?);
+                    let (actual, body) = blobs
+                        .service
+                        .read(scope.access, id)
+                        .await
+                        .map_err(read_failure)?;
+                    if actual != described {
+                        return Err(invalid("managed blob descriptor changed"));
+                    }
+                    Some(blob_failures::collect_database_result(body, limit, blobs.timeout).await?)
+                } else {
+                    None
+                };
                 let ack = self
                     .workers
                     .complete_with_blob(
                         principal,
                         &attempt.task_ref(),
-                        &described,
-                        &message.output_sha256,
+                        BlobOutput {
+                            descriptor: &described,
+                            expected_digest: &message.output_sha256,
+                            content: content.as_ref().map(|bytes| bytes.as_slice()),
+                        },
                         key,
                     )
                     .await
@@ -882,19 +910,84 @@ where
                 &header.lease_token,
             )?;
             let principal = &auth.session.principal;
-            let scope = self
+            let write = write_request(&header)?;
+            let limit = self
                 .workers
-                .check_blob_upload(principal, &attempt.task_ref())
+                .database_blob_limit(principal, &attempt.task_ref())
                 .await
                 .map_err(app)?;
-            let write = write_request(&header)?;
-
-            let (body, flags) =
+            if limit.is_some() && write.content_type.as_str() != "application/json" {
+                return Err(invalid("managed database results require application/json"));
+            }
+            let scope = if limit.is_none() {
+                Some(
+                    self.workers
+                        .check_blob_upload(principal, &attempt.task_ref())
+                        .await
+                        .map_err(app)?,
+                )
+            } else {
+                None
+            };
+            if limit
+                .is_some_and(|limit| write.expected_size.is_some_and(|size| size > limit as u64))
+            {
+                return Err(invalid("managed database result is too large"));
+            }
+            let (mut body, flags) =
                 upload_body(stream, blobs.timeout.saturating_sub(started.elapsed()));
-            let stored = blobs
-                .service
-                .write(scope, principal.subject().as_str(), write, body)
+            let scope = if let Some(limit) = limit {
+                let collected = blob_failures::collect_database_result(
+                    body,
+                    limit,
+                    blobs.timeout.saturating_sub(started.elapsed()),
+                )
                 .await;
+                if flags.timed_out() {
+                    return Err(to_status(&ApiError::request_timeout()));
+                }
+                if flags.violation() {
+                    return Err(invalid(
+                        "after the header an upload carries only chunks of at most 256 KiB",
+                    ));
+                }
+                let content = collected?;
+                if started.elapsed() >= blobs.timeout {
+                    return Err(to_status(&ApiError::request_timeout()));
+                }
+                let scope = tokio::time::timeout(
+                    blobs.timeout.saturating_sub(started.elapsed()),
+                    self.workers.check_database_blob_upload(
+                        principal,
+                        &attempt.task_ref(),
+                        &content,
+                    ),
+                )
+                .await
+                .map_err(|_| to_status(&ApiError::request_timeout()))?
+                .map_err(app)?;
+                body = Box::pin(tokio_stream::iter([Ok(bytes::Bytes::copy_from_slice(
+                    &content,
+                ))]));
+                scope
+            } else {
+                scope.ok_or_else(|| app(AppError::Internal))?
+            };
+            let storing = blobs
+                .service
+                .write(scope, principal.subject().as_str(), write, body);
+            let stored = if limit.is_some() {
+                if started.elapsed() >= blobs.timeout {
+                    return Err(to_status(&ApiError::request_timeout()));
+                }
+                // A cancelled PUT can have an unknown outcome. The existing durable reservation
+                // and abandoned-upload sweep reconcile it; unconfirmed bytes are never usable.
+                tokio::time::timeout(blobs.timeout.saturating_sub(started.elapsed()), storing)
+                    .await
+                    .map_err(|_| to_status(&ApiError::request_timeout()))?
+            } else {
+                storing.await
+            };
             // Why the body ended early is told by the body; the use case only knows it was cut.
             if flags.timed_out() {
                 return Err(to_status(&ApiError::request_timeout()));
