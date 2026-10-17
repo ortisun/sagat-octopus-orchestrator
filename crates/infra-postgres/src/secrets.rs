@@ -210,16 +210,14 @@ pub(crate) async fn pool_refusal(
         .fetch_all(&mut *conn)
         .await
         .map_err(store_error)?;
-        sqlx::query(
-            "SELECT pool FROM worker_binding_pools \
-             WHERE tenant_id = $1 AND namespace_id = $2 AND subject = $3 ORDER BY pool FOR SHARE",
-        )
-        .bind(tenant.as_uuid())
-        .bind(namespace.as_uuid())
-        .bind(subject)
-        .fetch_all(&mut *conn)
-        .await
-        .map_err(store_error)?;
+        // The grants are not row-locked: a row lock needs UPDATE, which the runtime role does not
+        // hold. Replacing or revoking a binding takes this advisory lock exclusively before it
+        // touches the grants, so holding it shared has the same effect (G48, G294).
+        sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))")
+            .bind(format!("binding:{tenant}:{namespace}:{subject}"))
+            .execute(&mut *conn)
+            .await
+            .map_err(store_error)?;
     }
     let refused: Vec<String> = sqlx::query_scalar(
         "SELECT s.name FROM secrets s \
