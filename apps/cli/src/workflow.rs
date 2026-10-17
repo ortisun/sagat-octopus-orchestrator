@@ -306,16 +306,251 @@ pub(crate) async fn runs(
     Ok(EXIT_DONE)
 }
 
+pub(crate) struct InspectAsk<'a> {
+    pub(crate) run: &'a str,
+    pub(crate) values: bool,
+    pub(crate) reveal_pii: bool,
+    pub(crate) sequence: Option<u64>,
+}
+
 pub(crate) async fn inspect(
     common: &Common,
     env: &Env,
-    run: &str,
+    ask: &InspectAsk<'_>,
     io: &mut Io<'_>,
 ) -> Result<u8, String> {
     let namespace = namespace_of(common, env)?;
     let session = session(common, env, &namespace)?;
-    inspect_run(&session.client, run, io).await?;
+    inspect_run(&session.client, ask.run, io).await?;
+    if ask.values {
+        inspect_values(&session.client, ask, io).await?;
+    }
     Ok(EXIT_DONE)
+}
+
+fn disclosure_error(error: CallError) -> String {
+    match error {
+        CallError::Transport(reason) => format!("the platform could not be reached ({reason})"),
+        CallError::Refused(failure) => {
+            let reason = failure
+                .reason
+                .as_deref()
+                .map(|value| format!(", {}", crate::one_line(value)))
+                .unwrap_or_default();
+            let trace = failure
+                .trace_id
+                .as_deref()
+                .map(|value| format!(" Trace {}.", crate::one_line(value)))
+                .unwrap_or_default();
+            format!(
+                "payload values were refused (HTTP {}, {}{reason}).{trace}",
+                failure.status,
+                crate::one_line(&failure.code)
+            )
+        }
+    }
+}
+
+async fn inspect_values(
+    client: &Client,
+    ask: &InspectAsk<'_>,
+    io: &mut Io<'_>,
+) -> Result<(), String> {
+    let selectors = ask.sequence.map_or_else(
+        || {
+            vec![
+                ("input".to_owned(), json!({"source": "input"})),
+                ("result".to_owned(), json!({"source": "result"})),
+            ]
+        },
+        |sequence| {
+            vec![(
+                format!("journal {sequence}"),
+                json!({"source": "journal", "sequence": sequence}),
+            )]
+        },
+    );
+    let mut answers = Vec::with_capacity(selectors.len());
+    for (label, mut selector) in selectors {
+        if ask.reveal_pii {
+            selector["reveal"] = json!(["pii"]);
+        }
+        let (_, answer) = client
+            .call(
+                "POST",
+                &format!("/runs/{}/payload-disclosures", ask.run),
+                Some(&selector),
+                None,
+            )
+            .await
+            .map_err(disclosure_error)?;
+        answers.push((label, answer));
+    }
+    for (label, answer) in answers {
+        render_disclosure(&label, &answer, io)?;
+    }
+    Ok(())
+}
+
+fn closed_text<'a>(value: &'a Value, allowed: &[&str]) -> Option<&'a str> {
+    value.as_str().filter(|value| allowed.contains(value))
+}
+
+fn render_disclosure(label: &str, answer: &Value, io: &mut Io<'_>) -> Result<(), String> {
+    let invalid = || "the platform's disclosure answer is not valid".to_owned();
+    match answer
+        .get("kind")
+        .and_then(Value::as_str)
+        .ok_or_else(invalid)?
+    {
+        "disclosed" => {
+            let tree = answer.get("tree").ok_or_else(invalid)?;
+            let mut lines = Vec::new();
+            let mut nodes = 0_usize;
+            render_node(tree, 1, &mut nodes, &mut lines)?;
+            io.say(format!("{label} values:"));
+            for line in lines {
+                io.say(line);
+            }
+        }
+        "structure-only" => {
+            let reason = closed_text(
+                answer.get("reason").ok_or_else(invalid)?,
+                &[
+                    "NO_SCHEMA",
+                    "SCHEMA_MISMATCH",
+                    "LEGACY_VERSION",
+                    "SCHEMA_UNUSABLE",
+                ],
+            )
+            .ok_or_else(invalid)?;
+            io.say(format!("{label} values: [structure only: {reason}]"));
+        }
+        "external" => {
+            let reason = closed_text(
+                answer.get("reason").ok_or_else(invalid)?,
+                &["EXTERNAL_CONTENT_NOT_INSPECTED"],
+            )
+            .ok_or_else(invalid)?;
+            io.say(format!("{label} values: [external: {reason}]"));
+        }
+        "unavailable" => {
+            let reason = closed_text(
+                answer.get("reason").ok_or_else(invalid)?,
+                &[
+                    "NO_RETAINED_PAYLOAD",
+                    "UNSUPPORTED_FORMAT",
+                    "NOT_DISCLOSABLE",
+                ],
+            )
+            .ok_or_else(invalid)?;
+            io.say(format!("{label} values: [unavailable: {reason}]"));
+        }
+        _ => return Err(invalid()),
+    }
+    Ok(())
+}
+
+fn render_node(
+    node: &Value,
+    depth: usize,
+    nodes: &mut usize,
+    lines: &mut Vec<String>,
+) -> Result<(), String> {
+    const MAX_DEPTH: usize = 16;
+    const MAX_NODES: usize = 1024;
+    let invalid = || "the platform's disclosure answer is not valid".to_owned();
+    if depth > MAX_DEPTH || *nodes >= MAX_NODES {
+        return Err(invalid());
+    }
+    *nodes += 1;
+    let indent = "  ".repeat(depth);
+    let level = closed_text(
+        node.get("level").ok_or_else(invalid)?,
+        &["public", "internal", "pii", "secret"],
+    )
+    .ok_or_else(invalid)?;
+    match node
+        .get("kind")
+        .and_then(Value::as_str)
+        .ok_or_else(invalid)?
+    {
+        "withheld" => {
+            if !matches!(level, "internal" | "pii" | "secret") {
+                return Err(invalid());
+            }
+            lines.push(format!("{indent}[withheld: {level}]"));
+        }
+        "value" => {
+            if level == "secret" {
+                return Err(invalid());
+            }
+            let kind = closed_text(
+                node.get("type").ok_or_else(invalid)?,
+                &["string", "number", "boolean", "null"],
+            )
+            .ok_or_else(invalid)?;
+            let value = node.get("value").ok_or_else(invalid)?;
+            let rendered = match (kind, value) {
+                ("string", Value::String(text)) => {
+                    serde_json::to_string(crate::printable(text).as_ref()).map_err(|_| invalid())?
+                }
+                ("number", Value::Number(_))
+                | ("boolean", Value::Bool(_))
+                | ("null", Value::Null) => value.to_string(),
+                _ => return Err(invalid()),
+            };
+            lines.push(format!("{indent}[{level}] {rendered}"));
+        }
+        "container" => {
+            if level == "secret" {
+                return Err(invalid());
+            }
+            let kind = closed_text(node.get("type").ok_or_else(invalid)?, &["object", "array"])
+                .ok_or_else(invalid)?;
+            let children = node
+                .get("children")
+                .and_then(Value::as_array)
+                .ok_or_else(invalid)?;
+            if children.len() > 128 {
+                return Err(invalid());
+            }
+            lines.push(format!(
+                "{indent}[{level}] {}",
+                if kind == "object" { "{" } else { "[" }
+            ));
+            for child in children {
+                let ordinal = child
+                    .get("ordinal")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(invalid)?;
+                let child_node = child.get("node").ok_or_else(invalid)?;
+                let child_indent = "  ".repeat(depth + 1);
+                let name = match child.get("name") {
+                    Some(Value::String(name)) if kind == "object" => {
+                        serde_json::to_string(name).map_err(|_| invalid())?
+                    }
+                    None => format!("#{ordinal}"),
+                    _ => return Err(invalid()),
+                };
+                lines.push(format!("{child_indent}{name}:"));
+                render_node(child_node, depth + 2, nodes, lines)?;
+            }
+            let omitted = node
+                .get("omittedChildren")
+                .and_then(Value::as_u64)
+                .ok_or_else(invalid)?;
+            if omitted > 0 {
+                lines.push(format!("{}... {omitted} omitted", "  ".repeat(depth + 1)));
+            }
+            lines.push(format!(
+                "{indent}{}",
+                if kind == "object" { "}" } else { "]" }
+            ));
+        }
+        _ => return Err(invalid()),
+    }
+    Ok(())
 }
 
 /// The status, the journal and the attempts of a run: what it did, in order, and where it failed.
