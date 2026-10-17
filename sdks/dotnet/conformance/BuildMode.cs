@@ -75,6 +75,15 @@ internal static class BuildMode
             builder.OutputSchema(output);
         }
 
+        if (definition["limits"] is JsonObject limits)
+        {
+            builder.Limits(new WorkflowLimitsOptions
+            {
+                MaxInstances = (int?)limits["maxInstances"],
+                MaxDepth = (int?)limits["maxDepth"],
+            });
+        }
+
         if (definition["state"] is JsonObject state)
         {
             builder.State(StateOf(state));
@@ -166,6 +175,7 @@ internal static class BuildMode
                         Timeout = Ms(options["timeoutMs"]),
                         OnTimeout = (string?)options["onTimeout"],
                         Lookback = options["lookbackMs"] is { } lookback ? Ms(lookback) : null,
+                        OutputSchema = options["outputSchema"]?.DeepClone().AsObject(),
                     });
                     break;
                 case "invokeChild":
@@ -181,6 +191,7 @@ internal static class BuildMode
                             "request_cancel" => ChildCancelPolicy.RequestCancel,
                             var other => throw new InvalidOperationException($"unknown child cancel policy {other}"),
                         },
+                        OutputSchema = options?["outputSchema"]?.DeepClone().AsObject(),
                     });
                     break;
                 case "condition":
@@ -336,6 +347,7 @@ internal static class BuildMode
             Irreversible = (bool?)options["irreversible"],
             HighRisk = (bool?)options["highRisk"],
             OnError = (string?)options["onError"],
+            OutputSchema = options["outputSchema"]?.DeepClone().AsObject(),
         };
 
     private static StepRetry? RetryOf(JsonObject? retry) => retry is null

@@ -63,6 +63,7 @@ type Builder struct {
 	input       map[string]any
 	output      map[string]any
 	state       map[string]any
+	limits      map[string]any
 	chainPolicy map[string]any
 	bodies      map[string]*Builder
 
@@ -148,6 +149,31 @@ func (b *Builder) InputSchema(schema map[string]any) *Builder {
 // OutputSchema sets the JSON schema of the run output.
 func (b *Builder) OutputSchema(schema map[string]any) *Builder {
 	b.output = schema
+	return b
+}
+
+// Limits lowers the workflow instance and nesting ceilings. Omitted fields keep the platform default.
+func (b *Builder) Limits(opts ...LimitOption) *Builder {
+	if b.err != nil {
+		return b
+	}
+	limits := map[string]any{}
+	for _, opt := range opts {
+		opt(limits)
+	}
+	if value, present := limits["maxInstances"]; present {
+		n := value.(int64)
+		if n < 1 || n > 100000 {
+			return b.fail(sagat.Invalid("limits maxInstances must be between 1 and 100000"))
+		}
+	}
+	if value, present := limits["maxDepth"]; present {
+		n := value.(int64)
+		if n < 1 || n > 8 {
+			return b.fail(sagat.Invalid("limits maxDepth must be between 1 and 8"))
+		}
+	}
+	b.limits = limits
 	return b
 }
 
@@ -745,6 +771,9 @@ func (b *Builder) Build() (map[string]any, error) {
 	}
 	if b.output != nil {
 		document["outputSchema"] = b.output
+	}
+	if b.limits != nil {
+		document["limits"] = b.limits
 	}
 	if b.state != nil {
 		document["state"] = clone(b.state)

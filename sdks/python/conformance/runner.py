@@ -196,6 +196,8 @@ def builder_of(definition: Obj) -> Any:
         builder.input_schema(definition["inputSchema"])
     if definition.get("outputSchema") is not None:
         builder.output_schema(definition["outputSchema"])
+    if definition.get("limits") is not None:
+        builder.limits(**snake(definition["limits"]))
     if definition.get("state") is not None:
         declared = definition["state"]
         queries = {

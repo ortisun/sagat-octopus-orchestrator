@@ -57,6 +57,7 @@ import dev.sagatoctopusorchestrator.sdk.workflow.Trigger;
 import dev.sagatoctopusorchestrator.sdk.workflow.UpdateDefinition;
 import dev.sagatoctopusorchestrator.sdk.workflow.WaitForEventOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.WorkflowBuilder;
+import dev.sagatoctopusorchestrator.sdk.workflow.WorkflowLimits;
 import java.io.File;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -154,7 +155,7 @@ public final class Runner {
             return options;
         }
         known(node, "step", "retry", "timeoutMs", "compensateWith", "reconcileWith", "idempotencyTemplate", "secrets",
-                "compensationRetry", "compensationTimeoutMs", "irreversible", "highRisk", "onError");
+                "compensationRetry", "compensationTimeoutMs", "irreversible", "highRisk", "onError", "outputSchema");
         if (node.has("retry")) {
             options.retry(retryOf(node.get("retry")));
         }
@@ -189,6 +190,9 @@ public final class Runner {
         }
         if (node.has("onError")) {
             options.onError(node.get("onError").asText());
+        }
+        if (node.has("outputSchema")) {
+            options.outputSchema(node.get("outputSchema"));
         }
         return options;
     }
@@ -235,7 +239,7 @@ public final class Runner {
                 case "sleep" -> target.sleepMs(id, op.path("durationMs").asLong());
                 case "waitForEvent" -> {
                     JsonNode o = op.path("options");
-                    known(o, "waitForEvent", "eventType", "correlationExpr", "timeoutMs", "onTimeout", "lookbackMs");
+                    known(o, "waitForEvent", "eventType", "correlationExpr", "timeoutMs", "onTimeout", "lookbackMs", "outputSchema");
                     WaitForEventOptions options = WaitForEventOptions.of(
                             o.path("eventType").asText(null), o.path("correlationExpr").asText(null), o.path("timeoutMs").asLong());
                     if (o.has("onTimeout")) {
@@ -244,11 +248,14 @@ public final class Runner {
                     if (o.has("lookbackMs")) {
                         options.lookbackMs(o.get("lookbackMs").asLong());
                     }
+                    if (o.has("outputSchema")) {
+                        options.outputSchema(o.get("outputSchema"));
+                    }
                     target.waitForEvent(id, options);
                 }
                 case "invokeChild" -> {
                     JsonNode o = op.get("options");
-                    known(o, "invokeChild", "version", "input", "cancelPolicy");
+                    known(o, "invokeChild", "version", "input", "cancelPolicy", "outputSchema");
                     ChildOptions options = ChildOptions.create();
                     if (o != null && o.has("version")) {
                         options.version(o.get("version").asInt());
@@ -258,6 +265,9 @@ public final class Runner {
                     }
                     if (o != null && o.has("cancelPolicy")) {
                         options.cancelPolicy(enumOf(ChildOptions.CancelPolicy.class, o.get("cancelPolicy")));
+                    }
+                    if (o != null && o.has("outputSchema")) {
+                        options.outputSchema(o.get("outputSchema"));
                     }
                     target.invokeChild(id, op.path("workflow").asText(null), options);
                 }
@@ -386,6 +396,12 @@ public final class Runner {
         }
         if (definition.has("outputSchema")) {
             builder.outputSchema(definition.get("outputSchema"));
+        }
+        if (definition.has("limits")) {
+            JsonNode limits = definition.get("limits");
+            builder.limits(new WorkflowLimits(
+                    limits.has("maxInstances") ? limits.get("maxInstances").intValue() : null,
+                    limits.has("maxDepth") ? limits.get("maxDepth").intValue() : null));
         }
         if (definition.has("state")) {
             JsonNode state = definition.path("state");
