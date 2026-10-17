@@ -41,6 +41,9 @@ use sagat_application::primitives::{
 };
 use sagat_application::quotas::RunLimits;
 use sagat_application::runs::{Lock, NewRun, RunStore};
+use sagat_application::scope_frontier::{
+    CollectionFrontier, LoopFrontier, ScopeFrontierStore, ScopeMember,
+};
 use sagat_application::shards::Lease;
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::execution::RunId;
@@ -493,6 +496,7 @@ where
         + DefinitionStore
         + CollectionStore
         + LoopProgressStore
+        + ScopeFrontierStore
         + ApprovalSchedulerStore,
     E: ExpressionEvaluator,
     R: Entropy,
@@ -590,6 +594,9 @@ where
     /// lease. The automatic pass uses the same operation; callers may also request an immediate
     /// transition while worker completions interleave safely.
     ///
+    /// The transition reads the scope's frontier (its counters and the iterations in flight), not
+    /// the whole run, so its cost does not grow with the progress of the scope (G461, D520).
+    ///
     /// # Errors
     /// Returns an error when ownership, projection data, the definition or an expression cannot be
     /// proven consistent.
@@ -607,10 +614,32 @@ where
             .await
     }
 
+    /// The same transition decided from the whole restored run. It is how a scope is entered, how
+    /// the last checkpoint and the finish are produced, and how a compensating scope is advanced
+    /// (their cost is proportional to the scope by nature, once per scope). Kept public so a test
+    /// can drive one scope through both paths and compare their journals (D521).
+    ///
+    /// # Errors
+    /// The errors of [`Self::advance_collection`].
+    pub async fn advance_collection_from_run(
+        &self,
+        tenant: TenantId,
+        run: RunId,
+        owner: &ExecutionInstanceId,
+    ) -> Result<CollectionAdvance, CollectionAdvanceError>
+    where
+        S: CollectionStore,
+    {
+        let view = self.view();
+        self.advance_collection_from_run_in_view(&view, tenant, run, owner)
+            .await
+    }
+
     /// Advances one sequential loop by one fenced durable transition.
     ///
     /// `timer_id` is present only when discovery found the current durable delay. It is rechecked
-    /// by the transaction before the next body is admitted.
+    /// by the transaction before the next body is admitted. Like a collection, a loop reads its
+    /// frontier (the counters and the iteration in flight), not the whole run (G461, D520).
     ///
     /// # Errors
     /// Returns a typed error when the definition, projection, fence or expression snapshot cannot
@@ -624,6 +653,23 @@ where
     ) -> Result<LoopAdvance, LoopAdvanceError> {
         let view = self.view();
         self.advance_loop_in_view(&view, tenant, run, owner, timer_id)
+            .await
+    }
+
+    /// The same transition decided from the whole restored run (see
+    /// [`Self::advance_collection_from_run`]).
+    ///
+    /// # Errors
+    /// The errors of [`Self::advance_loop`].
+    pub async fn advance_loop_from_run(
+        &self,
+        tenant: TenantId,
+        run: RunId,
+        owner: &ExecutionInstanceId,
+        timer_id: Option<uuid::Uuid>,
+    ) -> Result<LoopAdvance, LoopAdvanceError> {
+        let view = self.view();
+        self.advance_loop_from_run_in_view(&view, tenant, run, owner, timer_id)
             .await
     }
 
@@ -882,7 +928,7 @@ where
         Ok(())
     }
 
-    async fn advance_collection_in_view(
+    async fn advance_collection_from_run_in_view(
         &self,
         view: &View,
         tenant: TenantId,
@@ -1397,95 +1443,29 @@ where
                     )
                     .await;
             }
-            let checkpoint = CollectionCheckpoint::from_result(
-                transition(state.version()),
-                progress.scope_id,
-                index,
-                return_instance.clone(),
-                returned,
-                uuid::Uuid::now_v7(),
-            )?;
-            match self
-                .store
-                .checkpoint_collection_iteration(&checkpoint)
-                .await
-            {
-                Ok(_) => {}
-                Err(error) if collection_content_quota(&error) => {
-                    return self
-                        .drain_collection_for_storage_quota(
-                            transition(state.version()),
-                            progress.scope_id,
-                        )
-                        .await;
-                }
-                Err(error) => return Err(error.into()),
-            }
-            return Ok(CollectionAdvance::Checkpointed { index });
+            return self
+                .checkpoint_collection(
+                    transition(state.version()),
+                    progress.scope_id,
+                    index,
+                    return_instance,
+                    returned,
+                )
+                .await;
         }
 
         if collection.next_admission() < collection.item_count()
             && collection.active_count() < usize::from(collection.max_concurrency())
         {
-            let index = collection.next_admission();
-            let entry = ExecutionInstanceId::in_path(
-                owner
-                    .path()
-                    .child(owner.node().clone(), index)
-                    .map_err(|_| CollectionAdvanceError::InvalidProgress)?,
-                body.entrypoint().clone(),
-            );
-            let NodeKind::Activity { activity, .. } = body
-                .node(body.entrypoint())
-                .ok_or(CollectionAdvanceError::InvalidProgress)?
-                .kind()
-            else {
-                return Err(CollectionAdvanceError::InvalidProgress);
-            };
-            // The iteration reserves every other node of its body, the compensations and lookups
-            // of its activities included, so the budget cannot stop them (D384).
-            let reserved_instances = u16::try_from(body.all_nodes().count().saturating_sub(1))
-                .map_err(|_| CollectionAdvanceError::InvalidProgress)?;
-            let item = self
-                .store
-                .collection_item(tenant, run, progress.scope_id, index)
-                .await?
-                .ok_or(CollectionAdvanceError::InvalidProgress)?;
-            let admission = CollectionAdmission::from_item(
-                transition(state.version()),
-                progress.scope_id,
-                index,
-                entry,
-                activity.clone(),
-                item,
-                reserved_instances,
-                uuid::Uuid::now_v7(),
-            )?;
-            match self.store.admit_collection_activity(&admission).await {
-                Ok(_) => {}
-                // Entry proved the whole collection fits, so only a later reduction of the run's
-                // budget (tenant policy) or other work spending it lands here. Accepted work is
-                // kept and no further iteration is admitted until the budget allows it again.
-                Err(PrimitiveStoreError::InstanceBudgetExceeded) => {
-                    metrics::counter!(
-                        "scheduler_admission_paused_total",
-                        "kind" => "collection",
-                        "reason" => "instance_budget",
-                    )
-                    .increment(1);
-                    return Ok(CollectionAdvance::Waiting);
-                }
-                Err(error) if collection_content_quota(&error) => {
-                    return self
-                        .drain_collection_for_storage_quota(
-                            transition(state.version()),
-                            progress.scope_id,
-                        )
-                        .await;
-                }
-                Err(error) => return Err(error.into()),
-            }
-            return Ok(CollectionAdvance::Admitted { index });
+            return self
+                .admit_collection(
+                    transition(state.version()),
+                    (tenant, run, owner),
+                    progress.scope_id,
+                    body,
+                    collection.next_admission(),
+                )
+                .await;
         }
 
         if collection.next_admission() == collection.item_count() && collection.active_count() == 0
@@ -1566,6 +1546,323 @@ where
         }
 
         Ok(CollectionAdvance::Waiting)
+    }
+
+    /// Decides one collection transition from the scope's frontier (G461, D520). When the frontier
+    /// shows a transition whose cost is proportional to the scope by nature (entering it, the last
+    /// checkpoint, the finish, compensating it), the whole-run path decides it instead.
+    async fn advance_collection_in_view(
+        &self,
+        view: &View,
+        tenant: TenantId,
+        run: RunId,
+        owner: &ExecutionInstanceId,
+    ) -> Result<CollectionAdvance, CollectionAdvanceError>
+    where
+        S: CollectionStore,
+    {
+        let lease = match view.hold_for(run) {
+            Hold::Lease(lease) => lease,
+            Hold::Nothing | Hold::Lost => return Err(CollectionAdvanceError::FenceUnavailable),
+        };
+        if let Some(frontier) = self.store.collection_frontier(tenant, run, owner).await?
+            && let Some(advance) = self
+                .advance_collection_frontier(view, lease, tenant, run, owner, &frontier)
+                .await?
+        {
+            return Ok(advance);
+        }
+        self.advance_collection_from_run_in_view(view, tenant, run, owner)
+            .await
+    }
+
+    /// `None`: this transition needs the whole run.
+    #[allow(clippy::too_many_lines)]
+    async fn advance_collection_frontier(
+        &self,
+        view: &View,
+        lease: Lease,
+        tenant: TenantId,
+        run: RunId,
+        owner: &ExecutionInstanceId,
+        frontier: &CollectionFrontier,
+    ) -> Result<Option<CollectionAdvance>, CollectionAdvanceError>
+    where
+        S: CollectionStore,
+    {
+        let definition = &frontier.run.definition;
+        let NodeKind::ForEach { body, .. } = definition
+            .node_for_instance(owner)
+            .ok_or(CollectionAdvanceError::NotCollection)?
+            .kind()
+        else {
+            return Err(CollectionAdvanceError::NotCollection);
+        };
+        let body = definition
+            .body(body)
+            .ok_or(CollectionAdvanceError::NotCollection)?;
+        let authority = SchedulerAuthority::new(view.owner.clone(), lease);
+        let transition = || {
+            CollectionTransition::new(
+                tenant,
+                frontier.run.info.namespace_id,
+                run,
+                frontier.run.version,
+                owner.clone(),
+                authority.clone(),
+                Subject::engine(),
+                frontier.run.info.trace_id.clone(),
+                frontier.run.now,
+                None,
+            )
+        };
+        let scope_id = frontier.scope_id;
+        match frontier.phase {
+            execution::CollectionPhase::Succeeded
+            | execution::CollectionPhase::Failed
+            | execution::CollectionPhase::Cancelled => {
+                return Ok(Some(CollectionAdvance::AlreadyFinished));
+            }
+            execution::CollectionPhase::Open => {
+                let reason = if frontier.run.stop_reason == Some(StopReason::Cancelled) {
+                    Some(execution::CollectionDrainReason::Cancelled)
+                } else {
+                    // The first active iteration (in index order) with a failed step.
+                    frontier.active.iter().find_map(|member| {
+                        member.first_failure().map(|code| {
+                            execution::CollectionDrainReason::Failed {
+                                iteration: member.index,
+                                code: code.clone(),
+                            }
+                        })
+                    })
+                };
+                if let Some(reason) = reason {
+                    self.store
+                        .start_collection_drain(&CollectionDrain::new(
+                            transition(),
+                            scope_id,
+                            reason,
+                            uuid::Uuid::now_v7(),
+                        ))
+                        .await?;
+                    return Ok(Some(CollectionAdvance::DrainStarted));
+                }
+            }
+            execution::CollectionPhase::Draining => {
+                if let Some(member) = frontier.active.first() {
+                    if !member_is_safe_to_drain(member, true) {
+                        return Ok(Some(CollectionAdvance::Waiting));
+                    }
+                    self.store
+                        .drain_collection_iteration(&CollectionIterationDrain::new(
+                            transition(),
+                            scope_id,
+                            member.index,
+                            uuid::Uuid::now_v7(),
+                        ))
+                        .await?;
+                    return Ok(Some(CollectionAdvance::Drained {
+                        index: member.index,
+                    }));
+                }
+                if frontier.other_root_work {
+                    return Ok(Some(CollectionAdvance::Waiting));
+                }
+                // Undoing what the iterations completed reads all of them (D380).
+                if definition.scope_compensates(owner) {
+                    return Ok(None);
+                }
+                self.store
+                    .finish_collection_drain(&CollectionDrainFinish::new(
+                        transition(),
+                        scope_id,
+                        uuid::Uuid::now_v7(),
+                    ))
+                    .await?;
+                return Ok(Some(CollectionAdvance::DrainFinished));
+            }
+        }
+
+        // The body returns that have not been checkpointed yet are those of the iterations in
+        // flight, in index order.
+        for member in &frontier.active {
+            let Some(return_instance) = member.pending_return(definition) else {
+                continue;
+            };
+            // The last result also produces the aggregate, which is checked against the ceilings
+            // over every result: that read is proportional to the scope, once (D521).
+            if frontier.completed.saturating_add(1) == frontier.item_count {
+                return Ok(None);
+            }
+            let NodeKind::Return {
+                result: return_expression,
+            } = definition
+                .node_for_instance(return_instance)
+                .ok_or(CollectionAdvanceError::InvalidProgress)?
+                .kind()
+            else {
+                return Err(CollectionAdvanceError::InvalidProgress);
+            };
+            let returned = match self.engine.evaluator().collection_return(
+                return_expression,
+                &frontier.data,
+                return_instance,
+            ) {
+                Ok(returned) => returned,
+                Err(_) => {
+                    return self
+                        .fail_collection_iteration(
+                            transition(),
+                            scope_id,
+                            member.index,
+                            FailureCode::expression_error(),
+                        )
+                        .await
+                        .map(Some);
+                }
+            };
+            if returned.len() > MAX_PAYLOAD_BYTES {
+                return self
+                    .fail_collection_iteration(
+                        transition(),
+                        scope_id,
+                        member.index,
+                        FailureCode::run_data_limit(),
+                    )
+                    .await
+                    .map(Some);
+            }
+            return self
+                .checkpoint_collection(
+                    transition(),
+                    scope_id,
+                    member.index,
+                    return_instance,
+                    returned,
+                )
+                .await
+                .map(Some);
+        }
+
+        if frontier.next_admission < frontier.item_count
+            && frontier.active.len() < usize::from(frontier.max_concurrency)
+        {
+            return self
+                .admit_collection(
+                    transition(),
+                    (tenant, run, owner),
+                    scope_id,
+                    body,
+                    frontier.next_admission,
+                )
+                .await
+                .map(Some);
+        }
+        if frontier.next_admission == frontier.item_count && frontier.active.is_empty() {
+            // The finish produces the ordered aggregate over every result (D521).
+            return Ok(None);
+        }
+        Ok(Some(CollectionAdvance::Waiting))
+    }
+
+    /// Commits the checkpoint of one iteration; a quota refusal drains the scope instead.
+    async fn checkpoint_collection(
+        &self,
+        transition: CollectionTransition,
+        scope_id: CollectionScopeId,
+        index: u32,
+        return_instance: &ExecutionInstanceId,
+        returned: Vec<u8>,
+    ) -> Result<CollectionAdvance, CollectionAdvanceError> {
+        let checkpoint = CollectionCheckpoint::from_result(
+            transition.clone(),
+            scope_id,
+            index,
+            return_instance.clone(),
+            returned,
+            uuid::Uuid::now_v7(),
+        )?;
+        match self
+            .store
+            .checkpoint_collection_iteration(&checkpoint)
+            .await
+        {
+            Ok(_) => {}
+            Err(error) if collection_content_quota(&error) => {
+                return self
+                    .drain_collection_for_storage_quota(transition, scope_id)
+                    .await;
+            }
+            Err(error) => return Err(error.into()),
+        }
+        Ok(CollectionAdvance::Checkpointed { index })
+    }
+
+    /// Admits iteration `index` of a collection: its entry activity, its slot and its reservation.
+    async fn admit_collection(
+        &self,
+        transition: CollectionTransition,
+        (tenant, run, owner): (TenantId, RunId, &ExecutionInstanceId),
+        scope_id: CollectionScopeId,
+        body: &sagat_domain::workflow::BodyDefinition,
+        index: u32,
+    ) -> Result<CollectionAdvance, CollectionAdvanceError> {
+        let entry = ExecutionInstanceId::in_path(
+            owner
+                .path()
+                .child(owner.node().clone(), index)
+                .map_err(|_| CollectionAdvanceError::InvalidProgress)?,
+            body.entrypoint().clone(),
+        );
+        let NodeKind::Activity { activity, .. } = body
+            .node(body.entrypoint())
+            .ok_or(CollectionAdvanceError::InvalidProgress)?
+            .kind()
+        else {
+            return Err(CollectionAdvanceError::InvalidProgress);
+        };
+        // The iteration reserves every other node of its body, the compensations and lookups
+        // of its activities included, so the budget cannot stop them (D384).
+        let reserved_instances = u16::try_from(body.all_nodes().count().saturating_sub(1))
+            .map_err(|_| CollectionAdvanceError::InvalidProgress)?;
+        let item = self
+            .store
+            .collection_item(tenant, run, scope_id, index)
+            .await?
+            .ok_or(CollectionAdvanceError::InvalidProgress)?;
+        let admission = CollectionAdmission::from_item(
+            transition.clone(),
+            scope_id,
+            index,
+            entry,
+            activity.clone(),
+            item,
+            reserved_instances,
+            uuid::Uuid::now_v7(),
+        )?;
+        match self.store.admit_collection_activity(&admission).await {
+            Ok(_) => {}
+            // Entry proved the whole collection fits, so only a later reduction of the run's
+            // budget (tenant policy) or other work spending it lands here. Accepted work is
+            // kept and no further iteration is admitted until the budget allows it again.
+            Err(PrimitiveStoreError::InstanceBudgetExceeded) => {
+                metrics::counter!(
+                    "scheduler_admission_paused_total",
+                    "kind" => "collection",
+                    "reason" => "instance_budget",
+                )
+                .increment(1);
+                return Ok(CollectionAdvance::Waiting);
+            }
+            Err(error) if collection_content_quota(&error) => {
+                return self
+                    .drain_collection_for_storage_quota(transition, scope_id)
+                    .await;
+            }
+            Err(error) => return Err(error.into()),
+        }
+        Ok(CollectionAdvance::Admitted { index })
     }
 
     /// Fails one admitted iteration whose result cannot be produced or retained: the scope drains
@@ -1757,7 +2054,7 @@ where
         Ok(CollectionAdvance::QuotaStopped)
     }
 
-    async fn advance_loop_in_view(
+    async fn advance_loop_from_run_in_view(
         &self,
         view: &View,
         tenant: TenantId,
@@ -1783,96 +2080,24 @@ where
         let state = state.clone();
         drop(tx);
 
-        let loop_node = definition
-            .node_for_instance(owner)
-            .ok_or(LoopAdvanceError::NotLoop)?;
-        let (kind, condition, body_name, initial, carry, max_iterations, delay) =
-            match loop_node.kind() {
-                NodeKind::While {
-                    condition,
-                    body,
-                    initial,
-                    carry,
-                    max_iterations,
-                    delay,
-                } => (
-                    LoopKind::While,
-                    condition,
-                    body,
-                    initial,
-                    carry,
-                    *max_iterations,
-                    *delay,
-                ),
-                NodeKind::RepeatUntil {
-                    condition,
-                    body,
-                    initial,
-                    carry,
-                    max_iterations,
-                    delay,
-                } => (
-                    LoopKind::RepeatUntil,
-                    condition,
-                    body,
-                    initial,
-                    carry,
-                    *max_iterations,
-                    *delay,
-                ),
-                _ => return Err(LoopAdvanceError::NotLoop),
-            };
-        let timeout = loop_node.timeout().ok_or(LoopAdvanceError::NotLoop)?;
-        let body = definition
-            .body(body_name)
-            .ok_or(LoopAdvanceError::NotLoop)?;
-        let next_activity = |index| -> Result<LoopNextActivity, LoopAdvanceError> {
-            let entry = body
-                .node(body.entrypoint())
-                .ok_or(LoopAdvanceError::InvalidProgress)?;
-            let NodeKind::Activity { activity, .. } = entry.kind() else {
-                return Err(LoopAdvanceError::InvalidProgress);
-            };
-            let path = owner
-                .path()
-                .child(owner.node().clone(), index)
-                .map_err(|_| LoopAdvanceError::InvalidProgress)?;
-            let reserved_instances = body
-                .all_nodes()
-                .count()
-                .checked_sub(1)
-                .and_then(|count| u16::try_from(count).ok())
-                .ok_or(LoopAdvanceError::InvalidProgress)?;
-            Ok(LoopNextActivity::new(
-                ExecutionInstanceId::in_path(path, body.entrypoint().clone()),
-                activity.clone(),
-                reserved_instances,
-            )?)
-        };
-        let authority = SchedulerAuthority::new(view.owner.clone(), lease);
-        let transition = |expected_run_version| {
-            LoopTransition::new(
-                tenant,
-                info.namespace_id,
-                run,
-                expected_run_version,
-                owner.clone(),
-                authority.clone(),
-                Subject::engine(),
-                info.trace_id.clone(),
-                occurred_at,
-                AuditRecord::engine(
-                    tenant,
-                    AuditAction::RunUpdated,
-                    ResourceType::Run,
-                    run.to_string(),
-                    "sequential loop advanced",
-                    info.trace_id.clone(),
-                    occurred_at,
-                ),
-            )
-        };
-
+        let ctx = LoopCtx::new(
+            &definition,
+            owner,
+            (tenant, run),
+            &info,
+            occurred_at,
+            SchedulerAuthority::new(view.owner.clone(), lease),
+        )?;
+        let (kind, condition, initial, carry, max_iterations, timeout) = (
+            ctx.kind,
+            ctx.condition,
+            ctx.initial,
+            ctx.carry,
+            ctx.max_iterations,
+            ctx.timeout,
+        );
+        let next_activity = |index| ctx.next_activity(index);
+        let transition = |expected_run_version| ctx.transition(expected_run_version);
         let Some(loop_state) = state.loop_state(owner) else {
             let evaluated = match self.engine.evaluator().loop_entry(
                 initial,
@@ -2223,6 +2448,259 @@ where
                 return Ok(LoopAdvance::DrainStarted);
             }
         };
+        self.commit_loop_checkpoint(
+            &ctx,
+            view,
+            &hold,
+            LoopSnapshot {
+                version: state.version(),
+                charged: state.charged_instances(),
+                deadline: loop_state.deadline(),
+            },
+            Retained::Known(data.outputs.values().map(Vec::len).sum()),
+            index,
+            return_instance,
+            evaluated,
+        )
+        .await
+    }
+
+    /// Decides one loop transition from the scope's frontier (G461, D520). Entering the loop and
+    /// compensating it are decided from the whole run.
+    async fn advance_loop_in_view(
+        &self,
+        view: &View,
+        tenant: TenantId,
+        run: RunId,
+        owner: &ExecutionInstanceId,
+        timer_id: Option<uuid::Uuid>,
+    ) -> Result<LoopAdvance, LoopAdvanceError> {
+        let hold = view.hold_for(run);
+        if !matches!(hold, Hold::Lease(_)) {
+            return Err(LoopAdvanceError::FenceUnavailable);
+        }
+        if let Some(frontier) = self.store.loop_frontier(tenant, run, owner).await?
+            && let Some(advance) = self
+                .advance_loop_frontier(view, &hold, (tenant, run, owner), timer_id, &frontier)
+                .await?
+        {
+            return Ok(advance);
+        }
+        self.advance_loop_from_run_in_view(view, tenant, run, owner, timer_id)
+            .await
+    }
+
+    /// `None`: this transition needs the whole run.
+    #[allow(clippy::too_many_lines)]
+    async fn advance_loop_frontier(
+        &self,
+        view: &View,
+        hold: &Hold,
+        (tenant, run, owner): (TenantId, RunId, &ExecutionInstanceId),
+        timer_id: Option<uuid::Uuid>,
+        frontier: &LoopFrontier,
+    ) -> Result<Option<LoopAdvance>, LoopAdvanceError> {
+        let Hold::Lease(lease) = hold else {
+            return Err(LoopAdvanceError::FenceUnavailable);
+        };
+        let definition = &frontier.run.definition;
+        let ctx = LoopCtx::new(
+            definition,
+            owner,
+            (tenant, run),
+            &frontier.run.info,
+            frontier.run.now,
+            SchedulerAuthority::new(view.owner.clone(), *lease),
+        )?;
+        let version = frontier.run.version;
+        let occurred_at = frontier.run.now;
+        match frontier.phase {
+            LoopPhase::Succeeded | LoopPhase::Failed | LoopPhase::Cancelled => {
+                return Ok(Some(LoopAdvance::AlreadyFinished));
+            }
+            LoopPhase::Draining => {
+                if let Some(member) = &frontier.member {
+                    if !member_is_safe_to_drain(member, false) {
+                        return Ok(Some(LoopAdvance::Waiting));
+                    }
+                    self.store
+                        .drain_iteration(&LoopIterationDrainCommand::new(
+                            ctx.transition(version),
+                            member.index,
+                            uuid::Uuid::now_v7(),
+                        )?)
+                        .await?;
+                    return Ok(Some(LoopAdvance::Drained {
+                        index: member.index,
+                    }));
+                }
+                if frontier.other_root_work {
+                    return Ok(Some(LoopAdvance::Waiting));
+                }
+                // Undoing what the iterations completed reads all of them (D380, D383).
+                if definition.scope_compensates(owner) {
+                    return Ok(None);
+                }
+                self.store
+                    .finish_drain(&LoopDrainFinishCommand::new(
+                        ctx.transition(version),
+                        uuid::Uuid::now_v7(),
+                    ))
+                    .await?;
+                return Ok(Some(LoopAdvance::DrainFinished));
+            }
+            LoopPhase::Ready | LoopPhase::Running | LoopPhase::Delaying => {}
+        }
+        if frontier.run.stop_reason == Some(StopReason::Cancelled) {
+            self.store
+                .start_drain(&LoopDrainCommand::new(
+                    ctx.transition(version),
+                    execution::LoopDrainReason::Cancelled,
+                    uuid::Uuid::now_v7(),
+                )?)
+                .await?;
+            return Ok(Some(LoopAdvance::DrainStarted));
+        }
+        if occurred_at >= frontier.deadline {
+            self.store
+                .start_drain(&LoopDrainCommand::new(
+                    ctx.transition(version),
+                    execution::LoopDrainReason::TimedOut,
+                    uuid::Uuid::now_v7(),
+                )?)
+                .await?;
+            return Ok(Some(LoopAdvance::DrainStarted));
+        }
+
+        if frontier.phase == LoopPhase::Delaying {
+            let due_at = frontier
+                .delay_until
+                .ok_or(LoopAdvanceError::InvalidProgress)?;
+            if due_at > occurred_at {
+                return Ok(Some(LoopAdvance::Waiting));
+            }
+            let timer_id = timer_id.ok_or(LoopAdvanceError::InvalidProgress)?;
+            let index = frontier.next_iteration;
+            return match self
+                .store
+                .fire_delay(&LoopDelayElapsedCommand::new(
+                    ctx.transition(version),
+                    timer_id,
+                    index,
+                    ctx.next_activity(index)?,
+                    uuid::Uuid::now_v7(),
+                )?)
+                .await
+            {
+                Ok(_) => Ok(Some(LoopAdvance::DelayElapsed { index })),
+                // The budget was reduced while the loop waited: admission pauses, accepted work
+                // is kept, and the loop's own deadline still bounds the wait.
+                Err(LoopProgressError::InstanceBudgetExceeded) => {
+                    metrics::counter!(
+                        "scheduler_admission_paused_total",
+                        "kind" => "loop",
+                        "reason" => "instance_budget",
+                    )
+                    .increment(1);
+                    Ok(Some(LoopAdvance::Waiting))
+                }
+                Err(error) => Err(error.into()),
+            };
+        }
+
+        if frontier.phase != LoopPhase::Running {
+            return Err(LoopAdvanceError::InvalidProgress);
+        }
+        let member = frontier
+            .member
+            .as_ref()
+            .ok_or(LoopAdvanceError::InvalidProgress)?;
+        let index = member.index;
+        if let Some(code) = member.first_failure() {
+            self.store
+                .start_drain(&LoopDrainCommand::new(
+                    ctx.transition(version),
+                    execution::LoopDrainReason::Failed {
+                        iteration: index,
+                        code: code.clone(),
+                    },
+                    uuid::Uuid::now_v7(),
+                )?)
+                .await?;
+            return Ok(Some(LoopAdvance::DrainStarted));
+        }
+        let Some(return_instance) = member.pending_return(definition) else {
+            return Ok(Some(LoopAdvance::Waiting));
+        };
+        let NodeKind::Return { result } = definition
+            .node_for_instance(return_instance)
+            .ok_or(LoopAdvanceError::InvalidProgress)?
+            .kind()
+        else {
+            return Err(LoopAdvanceError::InvalidProgress);
+        };
+        let evaluated = match self.engine.evaluator().loop_checkpoint(
+            result,
+            ctx.carry,
+            ctx.condition,
+            &frontier.data,
+            return_instance,
+        ) {
+            Ok(evaluated) => evaluated,
+            Err(_) => {
+                self.store
+                    .start_drain(&LoopDrainCommand::new(
+                        ctx.transition(version),
+                        execution::LoopDrainReason::Failed {
+                            iteration: index,
+                            code: FailureCode::expression_error(),
+                        },
+                        uuid::Uuid::now_v7(),
+                    )?)
+                    .await?;
+                return Ok(Some(LoopAdvance::DrainStarted));
+            }
+        };
+        self.commit_loop_checkpoint(
+            &ctx,
+            view,
+            hold,
+            LoopSnapshot {
+                version,
+                charged: frontier.run.charged_instances,
+                deadline: frontier.deadline,
+            },
+            Retained::Lookup,
+            index,
+            return_instance.clone(),
+            evaluated,
+        )
+        .await
+        .map(Some)
+    }
+
+    /// Commits the checkpoint of the iteration in flight with the continuation its result calls for:
+    /// the next body, a delay, the end of the loop, or a typed stop at a limit.
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    async fn commit_loop_checkpoint(
+        &self,
+        ctx: &LoopCtx<'_>,
+        view: &View,
+        hold: &Hold,
+        snapshot: LoopSnapshot,
+        retained: Retained,
+        index: u32,
+        return_instance: ExecutionInstanceId,
+        evaluated: sagat_application::loop_progress::LoopCheckpointEvaluation,
+    ) -> Result<LoopAdvance, LoopAdvanceError> {
+        let (tenant, run, owner, occurred_at) = (ctx.tenant, ctx.run, ctx.owner, ctx.occurred_at);
+        let (definition, kind, body, delay, max_iterations) = (
+            ctx.definition,
+            ctx.kind,
+            ctx.body,
+            ctx.delay,
+            ctx.max_iterations,
+        );
         let next_index = index
             .checked_add(1)
             .ok_or(LoopAdvanceError::InvalidProgress)?;
@@ -2234,14 +2712,24 @@ where
         // at this iteration's result boundary, as it does for an expression that cannot be
         // computed. The carry that ends the loop becomes its output, which the run must be able to
         // retain beside every other output.
-        let retained: usize = data.outputs.values().map(Vec::len).sum();
-        if evaluated.result.len() > MAX_PAYLOAD_BYTES
-            || evaluated.carry.len() > MAX_PAYLOAD_BYTES
-            || (!continues && retained.saturating_add(evaluated.carry.len()) > MAX_RUN_OUTPUT_BYTES)
-        {
+        let within_values = evaluated.result.len() <= MAX_PAYLOAD_BYTES
+            && evaluated.carry.len() <= MAX_PAYLOAD_BYTES;
+        let over_run_output = if continues || !within_values {
+            false
+        } else {
+            let retained = match retained {
+                Retained::Known(bytes) => bytes,
+                Retained::Lookup => {
+                    usize::try_from(self.store.retained_output_bytes(tenant, run).await?)
+                        .map_err(|_| LoopAdvanceError::InvalidProgress)?
+                }
+            };
+            retained.saturating_add(evaluated.carry.len()) > MAX_RUN_OUTPUT_BYTES
+        };
+        if !within_values || over_run_output {
             self.store
                 .start_drain(&LoopDrainCommand::new(
-                    transition(state.version()),
+                    ctx.transition(snapshot.version),
                     execution::LoopDrainReason::Failed {
                         iteration: index,
                         code: FailureCode::run_data_limit(),
@@ -2255,13 +2743,13 @@ where
         // need included), charged when it is admitted.
         let budget = definition.limits().max_instances();
         let next_charge = body.all_nodes().count();
-        let affordable = state
-            .charged_instances()
+        let affordable = snapshot
+            .charged
             .checked_add(next_charge)
             .and_then(|total| u32::try_from(total).ok())
             .is_some_and(|total| total <= budget);
-        let successor_affordable = state
-            .charged_instances()
+        let successor_affordable = snapshot
+            .charged
             .checked_add(1)
             .and_then(|total| u32::try_from(total).ok())
             .is_some_and(|total| total <= budget);
@@ -2279,7 +2767,7 @@ where
             (LoopContinuation::InstanceLimit, None, None)
         } else if let Some(delay) = delay {
             let due_at = occurred_at + delay;
-            if due_at > loop_state.deadline() {
+            if due_at > snapshot.deadline {
                 // The delay cannot end inside the loop's budget, so it is never scheduled. The
                 // timeout code means the deadline was reached, which the store insists on before it
                 // accepts a timed-out drain (it refused the early one this branch used to ask for on
@@ -2295,7 +2783,7 @@ where
         } else {
             (
                 LoopContinuation::Continue,
-                Some(next_activity(next_index)?),
+                Some(ctx.next_activity(next_index)?),
                 None,
             )
         };
@@ -2308,7 +2796,7 @@ where
         {
             self.store
                 .start_drain(&LoopDrainCommand::new(
-                    transition(state.version()),
+                    ctx.transition(snapshot.version),
                     execution::LoopDrainReason::Failed {
                         iteration: index,
                         code,
@@ -2319,7 +2807,7 @@ where
             return Ok(LoopAdvance::DrainStarted);
         }
         let checkpoint = LoopCheckpointCommand::from_evaluation(
-            transition(state.version()),
+            ctx.transition(snapshot.version),
             index,
             return_instance.clone(),
             evaluated.clone(),
@@ -2342,7 +2830,7 @@ where
             if definition.scope_compensates(owner) {
                 self.store
                     .start_drain(&LoopDrainCommand::new(
-                        transition(state.version()),
+                        ctx.transition(snapshot.version),
                         execution::LoopDrainReason::Failed {
                             iteration: index,
                             code: FailureCode::instance_limit(),
@@ -2353,7 +2841,7 @@ where
                 return Ok(LoopAdvance::DrainStarted);
             }
             let refused = LoopCheckpointCommand::from_evaluation(
-                transition(state.version()),
+                ctx.transition(snapshot.version),
                 index,
                 return_instance,
                 evaluated,
@@ -2378,7 +2866,7 @@ where
                         },
                         "loop",
                         Condition::Always,
-                        state.version(),
+                        snapshot.version,
                     )
                     .await?
                 {
@@ -4317,5 +4805,187 @@ mod tests {
         assert!(!loop_content_quota(&LoopProgressError::Storage(capacity)));
         assert!(!collection_content_quota(&PrimitiveStoreError::AtCapacity));
         assert!(!loop_content_quota(&LoopProgressError::AtCapacity));
+    }
+}
+
+/// Whether nothing of a draining iteration is in flight, so the scope may drain it: every
+/// non-derived step ended, every derived one settled, or the step has not started (or, for a
+/// collection, waits to retry or is ready, in a run that is stopping and cannot lease it).
+///
+/// `ready_is_safe` is the collection's wider reading (D380): a `Ready` step is safe at any attempt.
+fn member_is_safe_to_drain(member: &ScopeMember, ready_is_safe: bool) -> bool {
+    member.steps.iter().all(|(instance, step)| {
+        let settled_derived = instance.node().is_derived()
+            && matches!(
+                step.status(),
+                execution::StepStatus::Succeeded | execution::StepStatus::Skipped
+            );
+        // Nothing is in flight: a step that has not started, or that waits to retry.
+        let safe_unstarted = (step.attempt() == 0
+            && matches!(
+                step.status(),
+                execution::StepStatus::Pending | execution::StepStatus::Ready
+            ))
+            || (ready_is_safe && step.status() == execution::StepStatus::Ready)
+            || step.status() == execution::StepStatus::RetryWait;
+        step.status().is_terminal() && !instance.node().is_derived()
+            || settled_derived
+            || safe_unstarted
+    })
+}
+
+/// What a loop transition needs from the definition and the run, however the scope was read.
+struct LoopCtx<'a> {
+    tenant: TenantId,
+    run: RunId,
+    owner: &'a ExecutionInstanceId,
+    info: &'a RunInfo,
+    occurred_at: OffsetDateTime,
+    authority: SchedulerAuthority,
+    definition: &'a WorkflowDefinition,
+    kind: LoopKind,
+    condition: &'a sagat_domain::workflow::Expression,
+    body: &'a sagat_domain::workflow::BodyDefinition,
+    initial: &'a sagat_domain::workflow::Expression,
+    carry: &'a sagat_domain::workflow::Expression,
+    max_iterations: u32,
+    delay: Option<Duration>,
+    timeout: Duration,
+}
+
+/// The run-level values a loop checkpoint is decided from.
+#[derive(Clone, Copy)]
+struct LoopSnapshot {
+    version: u64,
+    charged: usize,
+    deadline: OffsetDateTime,
+}
+
+/// Where the bytes the run retains come from when a loop ends.
+enum Retained {
+    /// Already summed over a whole restored run.
+    Known(usize),
+    /// Read from the store, only if the loop ends.
+    Lookup,
+}
+
+impl<'a> LoopCtx<'a> {
+    fn new(
+        definition: &'a WorkflowDefinition,
+        owner: &'a ExecutionInstanceId,
+        (tenant, run): (TenantId, RunId),
+        info: &'a RunInfo,
+        occurred_at: OffsetDateTime,
+        authority: SchedulerAuthority,
+    ) -> Result<Self, LoopAdvanceError> {
+        let loop_node = definition
+            .node_for_instance(owner)
+            .ok_or(LoopAdvanceError::NotLoop)?;
+        let (kind, condition, body_name, initial, carry, max_iterations, delay) =
+            match loop_node.kind() {
+                NodeKind::While {
+                    condition,
+                    body,
+                    initial,
+                    carry,
+                    max_iterations,
+                    delay,
+                } => (
+                    LoopKind::While,
+                    condition,
+                    body,
+                    initial,
+                    carry,
+                    *max_iterations,
+                    *delay,
+                ),
+                NodeKind::RepeatUntil {
+                    condition,
+                    body,
+                    initial,
+                    carry,
+                    max_iterations,
+                    delay,
+                } => (
+                    LoopKind::RepeatUntil,
+                    condition,
+                    body,
+                    initial,
+                    carry,
+                    *max_iterations,
+                    *delay,
+                ),
+                _ => return Err(LoopAdvanceError::NotLoop),
+            };
+        let timeout = loop_node.timeout().ok_or(LoopAdvanceError::NotLoop)?;
+        let body = definition
+            .body(body_name)
+            .ok_or(LoopAdvanceError::NotLoop)?;
+        Ok(Self {
+            tenant,
+            run,
+            owner,
+            info,
+            occurred_at,
+            authority,
+            definition,
+            kind,
+            condition,
+            body,
+            initial,
+            carry,
+            max_iterations,
+            delay,
+            timeout,
+        })
+    }
+
+    fn next_activity(&self, index: u32) -> Result<LoopNextActivity, LoopAdvanceError> {
+        let body = self.body;
+        let entry = body
+            .node(body.entrypoint())
+            .ok_or(LoopAdvanceError::InvalidProgress)?;
+        let NodeKind::Activity { activity, .. } = entry.kind() else {
+            return Err(LoopAdvanceError::InvalidProgress);
+        };
+        let path = self
+            .owner
+            .path()
+            .child(self.owner.node().clone(), index)
+            .map_err(|_| LoopAdvanceError::InvalidProgress)?;
+        let reserved_instances = body
+            .all_nodes()
+            .count()
+            .checked_sub(1)
+            .and_then(|count| u16::try_from(count).ok())
+            .ok_or(LoopAdvanceError::InvalidProgress)?;
+        Ok(LoopNextActivity::new(
+            ExecutionInstanceId::in_path(path, body.entrypoint().clone()),
+            activity.clone(),
+            reserved_instances,
+        )?)
+    }
+
+    fn transition(&self, expected_run_version: u64) -> LoopTransition {
+        LoopTransition::new(
+            self.tenant,
+            self.info.namespace_id,
+            self.run,
+            expected_run_version,
+            self.owner.clone(),
+            self.authority.clone(),
+            Subject::engine(),
+            self.info.trace_id.clone(),
+            self.occurred_at,
+            AuditRecord::engine(
+                self.tenant,
+                AuditAction::RunUpdated,
+                ResourceType::Run,
+                self.run.to_string(),
+                "sequential loop advanced",
+                self.info.trace_id.clone(),
+                self.occurred_at,
+            ),
+        )
     }
 }

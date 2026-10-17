@@ -33,6 +33,7 @@ pub mod publishing;
 pub mod quotas;
 pub mod runs;
 pub mod sandbox;
+pub mod scope_frontier;
 pub mod script_signing;
 pub mod scripts;
 pub mod secrets;

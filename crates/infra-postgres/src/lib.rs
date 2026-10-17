@@ -33,6 +33,7 @@ mod primitives;
 mod privilege;
 mod quotas;
 mod scope_compensation;
+mod scope_frontier;
 mod scripts;
 mod secrets;
 mod signals;

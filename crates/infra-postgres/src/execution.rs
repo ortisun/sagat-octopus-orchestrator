@@ -133,7 +133,7 @@ impl PgRunStore {
     /// The document is read on `conn`, never on a connection of its own: a caller that holds a
     /// transaction and waits for a second connection from the same pool starves the pool when enough
     /// callers do it at once (a burst of first requests for a version nobody has cached yet).
-    async fn definition(
+    pub(crate) async fn definition(
         &self,
         conn: &mut PgConnection,
         tenant: TenantId,
@@ -1142,17 +1142,26 @@ const RUN_SELECT: &str = "SELECT id, tenant_id, namespace_id, workflow_id, workf
      ON true \
      WHERE runs.tenant_id = $1 AND runs.id = $2";
 
-const RUN_FOR_UPDATE: &str = "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, \
+/// The columns a command transaction reads about a run; `$tail` is the lock clause, if any.
+macro_rules! run_columns_sql {
+    ($tail:literal) => {
+        concat!(
+            "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, \
      status, run_version, stop_reason, stop_code, paused, input_digest, correlation_id, started_by, \
      trace_id, deadline_at, created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, \
      cancel_policy, depth, trace_parent_span, rerun_of, clock_timestamp() AS db_now \
-     FROM runs WHERE tenant_id = $1 AND id = $2 FOR UPDATE";
+     FROM runs WHERE tenant_id = $1 AND id = $2",
+            $tail
+        )
+    };
+}
 
-const RUN_FOR_UPDATE_SKIP_LOCKED: &str = "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, \
-     status, run_version, stop_reason, stop_code, paused, input_digest, correlation_id, started_by, \
-     trace_id, deadline_at, created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, \
-     cancel_policy, depth, trace_parent_span, rerun_of, clock_timestamp() AS db_now \
-     FROM runs WHERE tenant_id = $1 AND id = $2 FOR UPDATE SKIP LOCKED";
+const RUN_FOR_UPDATE: &str = run_columns_sql!(" FOR UPDATE");
+
+const RUN_FOR_UPDATE_SKIP_LOCKED: &str = run_columns_sql!(" FOR UPDATE SKIP LOCKED");
+
+/// The same read without a lock, for the bounded snapshot of a scope transition (D523).
+pub(crate) const RUN_SNAPSHOT: &str = run_columns_sql!("");
 
 fn parent_link(row: &PgRow) -> Result<Option<ParentLink>, StoreError> {
     let run: Option<Uuid> = col(row, "parent_run_id")?;
@@ -1169,7 +1178,7 @@ fn parent_link(row: &PgRow) -> Result<Option<ParentLink>, StoreError> {
     }
 }
 
-fn run_record(row: &PgRow) -> Result<RunRecord, StoreError> {
+pub(crate) fn run_record(row: &PgRow) -> Result<RunRecord, StoreError> {
     let status: String = col(row, "status")?;
     let version: i64 = col(row, "run_version")?;
     let stop: Option<String> = col(row, "stop_reason")?;
@@ -1231,7 +1240,7 @@ fn run_segment(row: &PgRow) -> Result<Option<RunSegment>, StoreError> {
     }))
 }
 
-fn instance_path(
+pub(crate) fn instance_path(
     path_nodes: Vec<String>,
     path_indices: Vec<i32>,
     what: &str,
@@ -1260,7 +1269,7 @@ fn stored_path_parts(path: &InstancePath) -> (Vec<String>, Vec<i32>) {
         .unzip()
 }
 
-fn step_instance_path(row: &PgRow) -> Result<InstancePath, StoreError> {
+pub(crate) fn step_instance_path(row: &PgRow) -> Result<InstancePath, StoreError> {
     instance_path(
         col(row, "instance_path_nodes")?,
         col(row, "instance_path_indices")?,
@@ -1279,7 +1288,7 @@ fn event_instance_path(row: &PgRow) -> Result<InstancePath, StoreError> {
     }
 }
 
-fn stored_digest(bytes: Vec<u8>, what: &str) -> Result<Digest, StoreError> {
+pub(crate) fn stored_digest(bytes: Vec<u8>, what: &str) -> Result<Digest, StoreError> {
     <[u8; 32]>::try_from(bytes)
         .map(Digest::new)
         .map_err(|_| corrupt(what))
@@ -1306,7 +1315,7 @@ fn restored_return_instance(
     ))
 }
 
-fn step_state(row: &PgRow) -> Result<StepState, StoreError> {
+pub(crate) fn step_state(row: &PgRow) -> Result<StepState, StoreError> {
     let status: String = col(row, "status")?;
     let attempt: i32 = col(row, "attempt")?;
     let generation: i64 = col(row, "generation")?;
