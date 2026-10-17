@@ -63,7 +63,7 @@ These are design checks, not implementation approvals or test results.
 | IV - pinned, compatible | Pass | Pass | `classification_rules` pins the interpretation to the version; legacy is `0`; IR and OpenAPI changes are additive; five-SDK golden. T016-006, T016-008, T016-020, T016-042. |
 | V - isolation of code, tenant and secrets | Pass | Pass | Tenant-scoped joins and composite foreign keys; opaque `404`; `secret` never returned; no oracle for callers without structure permission; classification is not the secret store (D287). T016-025, T016-049, T016-051. |
 | VI - observability and audit | Pass | Pass | Span, closed-label metrics, five audit actions, typed errors with remediation, canary across logs, spans and metrics. T016-030, T016-049. |
-| VII - inbox/outbox | Pass | Pass | The feature neither writes the outbox nor consumes events, and does not change how events are admitted, deduplicated or dispatched. It restricts what the inbox and dead-letter reads return (US08, D291): a read-side change with no effect on the transaction that stores an event. T016-057 to T016-064. |
+| VII - inbox/outbox | Pass | Pass | The feature neither writes the outbox nor consumes events, and does not change how events are admitted, deduplicated or dispatched. It restricts what the inbox and dead-letter reads return (US08, D302): a read-side change with no effect on the transaction that stores an event. T016-057 to T016-064. |
 | VIII - failure tested, contracts verified, honest | Pass | Pass | Crash before and after the audit commit, audit failure, duplicate reveal, grant revoked mid-flight, restart with an empty cache, concurrent publish; OpenAPI and IR schema compiled in CI; nothing ticked without evidence. T016-033, T016-050. |
 
 **Governance gate**: no new ADR (D290). ADR-0033 is the decision. The owner answered the four product
@@ -134,7 +134,7 @@ the same code.
 
 ## Phase 0 - Research and decisions
 
-`research.md` records the repository evidence, decisions D261-D295, gaps G272-G293 and the owner's
+`research.md` records the repository evidence, decisions D261-D290 and D302-D306, gaps G272-G293 and the owner's
 answers of 2026-10-17 to the four product questions. Nothing blocks code on a product question any more.
 What stays undecided (event field classification, dead-letter reveal on the list, retention, taint
 tracking, a membership surface) is listed at the end of `research.md`.
@@ -188,7 +188,7 @@ announced in the release notes and has no switch.
 | An evaluator and validator disagree about the shape | The validity gate runs first on the whole payload; any doubt (cycle, budget, unsupported) ends as structure only, never as a value |
 | `jsonschema` 0.58 reacts to the unknown keyword | T016-013 proves the validation result is identical with and without annotations; fallback: compile a stripped copy |
 | An annotated root makes every unannotated child public | `CLASSIFICATION_INHERITED_OPEN` warning, the report and the diff findings (G286) |
-| Restricting event values breaks clients that read `data`, `body` or `headers` (G292) | Owner decision D291; OpenAPI descriptions, API reference, runbook and release notes; the repository's own readers (contract and e2e suites) updated in T016-064; Studio, CLI and SDKs read none of them (checked) |
+| Restricting event values breaks clients that read `data`, `body` or `headers` (G292) | Owner decision D302; OpenAPI descriptions, API reference, runbook and release notes; the repository's own readers (contract and e2e suites) updated in T016-064; Studio, CLI and SDKs read none of them (checked) |
 | Cost of compiling and validating per response | Bounds, cache, one admission charge; measured (T016-053); a request cannot exceed 256 KiB of payload and 64 KiB of schema |
 | Reveal audit records grow without bound | They are bounded by the namespace API bucket (ADR-0027) and the number of holders; the audit retention of feature 009 applies |
 | A grant outlives a demotion or a removed member | The grant row cascades with the membership; the effective check also requires `payload:read-internal` at read time |

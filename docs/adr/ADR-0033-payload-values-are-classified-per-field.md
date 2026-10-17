@@ -60,11 +60,11 @@ owner answered the four product questions on 2026-10-17; none changes the decisi
 - **Grant mechanism (D275).** `payload:reveal-pii` is granted through a per-namespace grant list managed by
   administrators, following the worker-binding and secret-access-list pattern. The built-in roles stay six;
   no role holds the permission, `admin` included. Grants and revocations are audited. An administrator may
-  grant it to themselves, audited (D295).
+  grant it to themselves, audited (D306).
 - **Readings of the text (D265, D269).** A field no schema declares is at least `pii`, even under a `public`
   parent. A schema with no annotation is `pii` throughout, and a holder of the reveal grant sees it. A
   payload with no schema at all is structure only for everyone.
-- **Events (D291).** The consequence above that "every surface keeps ADR-0028's structure-only behaviour"
+- **Events (D302).** The consequence above that "every surface keeps ADR-0028's structure-only behaviour"
   was inexact for events: `getInboxEvent` returned `data` and connector dead letters returned `body` and
   `headers` to every holder of `event:read`. In the feature 016 increment these values require the same
   reveal grant and everyone else receives structure only. Field-by-field classification of events waits for

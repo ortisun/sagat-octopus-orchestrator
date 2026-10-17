@@ -352,7 +352,7 @@ Gaps and decisions: `specs/010-scalability-ha/research.md` (D229–D260 and G239
 
 ## Evidence: 016 payload-classification
 
-Decision: [ADR-0033](adr/ADR-0033-payload-values-are-classified-per-field.md). Design, gaps (G272-G293), decisions (D261-D295) and the owner's answers of 2026-10-17 to P1-P4: `specs/016-payload-classification/research.md`. Tasks: `specs/016-payload-classification/tasks.md` (65; only T016-002, the recording of the owner's answers, is ticked). **Specified; not built.** Every row below is a placeholder: no code, test or measurement exists, and nothing in this block is evidence of behaviour.
+Decision: [ADR-0033](adr/ADR-0033-payload-values-are-classified-per-field.md). Design, gaps (G272-G293), decisions (D261-D290 and D302-D306) and the owner's answers of 2026-10-17 to P1-P4: `specs/016-payload-classification/research.md`. Tasks: `specs/016-payload-classification/tasks.md` (65; only T016-002, the recording of the owner's answers, is ticked). **Specified; not built.** Every row below is a placeholder: no code, test or measurement exists, and nothing in this block is evidence of behaviour.
 
 | Requirement or criterion | State | Evidence |
 |---|---|---|
@@ -366,7 +366,7 @@ Decision: [ADR-0033](adr/ADR-0033-payload-values-are-classified-per-field.md). D
 | FR-016-026..029 event values restricted to the reveal grant (`getInboxEvent` `data`, dead-letter `body` and `headers`); breaking for current readers | Specified; not built | none yet (T016-057..065) |
 | NFR-016-001..006 security, consistency, performance, compatibility, observability, accessibility | Specified; not built | none yet |
 | SC-016-001..010 | Not proven | none yet |
-| Today, before the change: the event inbox (`getInboxEvent` `data`, connector dead-letter `body` and `headers`) discloses values to every `event:read` holder | To be restricted by US08 (G272, D291); still the behaviour of the code | `crates/api-http/src/dto_events.rs` (`EventBody`, `DeadLetterBody`) |
+| Today, before the change: the event inbox (`getInboxEvent` `data`, connector dead-letter `body` and `headers`) discloses values to every `event:read` holder | To be restricted by US08 (G272, D302); still the behaviour of the code | `crates/api-http/src/dto_events.rs` (`EventBody`, `DeadLetterBody`) |
 
 ## Completion follow-up — 2026-10-12
 

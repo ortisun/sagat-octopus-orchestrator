@@ -126,7 +126,7 @@ changes the interpretation adds `2` and publishes new versions under it; it neve
 
 All additions are new operations and new schemas, `x-implemented: '016'`. Existing operations,
 schemas and responses are unchanged, except the three event reads of section 2.4 (a breaking change,
-owner decision D291) and the documented `permissions` examples of `AuthContext`,
+owner decision D302) and the documented `permissions` examples of `AuthContext`,
 which gain `payload:read-internal` for the roles that hold it.
 
 ### 2.1 `POST /runs/{runId}/payload-disclosures` (`discloseRunPayload`, tag Runs)
@@ -251,7 +251,7 @@ Remediation rows are added to `ErrorCode::remediation` in `crates/api-http/src/e
 
 `{subject}` uses the same pattern as `WorkerSubject`. Namespace admission is charged as for the sibling
 `worker-bindings` operations. The mechanism is the owner's decision of 2026-10-17 (D275). The subject may
-be the caller (D295); the audit record shows actor and subject.
+be the caller (D306); the audit record shows actor and subject.
 
 ### 2.3 Other additions
 
@@ -309,7 +309,7 @@ Rules:
   answer is the structure answer. With it and without the right, the answer is `403 FORBIDDEN` with
   `details.reason = PII_REVEAL_NOT_GRANTED` (no new reason, no new `Error.code`).
 - A revealed answer carries every value of the event or letter, because events have no classification
-  carrier: the data is `pii` as a whole (D291, G291). No `secret` handling exists for events.
+  carrier: the data is `pii` as a whole (D302, G291). No `secret` handling exists for events.
 - The structure is the ADR-0028 `PayloadStructure` with its bounds (depth 16, 256 nodes, 32 children), built
   by the existing `JsonPayloadProjector`; it holds no key and no scalar. A dead-letter body that is not
   bounded JSON, or is cut at 64 KiB mid-document, is `{"kind": "opaque"}`.

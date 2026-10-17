@@ -38,7 +38,7 @@ reads (payload-free, unchanged), the worker protocol, and retention per customer
 (ADR-0033, point 6). One existing surface disclosed values before this feature: the event inbox
 (`getInboxEvent` returned `data`, connector dead letters returned `body` and `headers`, both to any
 holder of `event:read`, viewers included). That contradicted the premise of ADR-0033, and the owner
-decided on 2026-10-17 (D291) to restrict it in this increment: the values now need the reveal grant,
+decided on 2026-10-17 (D302) to restrict it in this increment: the values now need the reveal grant,
 everyone else gets structure only. The restriction is a breaking change for readers of those fields
 (FR-016-028). Field-by-field classification of events waits for event type schemas (G282); until then
 an event's data is `pii` as a whole.
@@ -159,7 +159,7 @@ confirm no value is returned.
    share one transaction, so there is no later window).
 7. **Given** an administrator, **when** they have not been granted the right, **then** they cannot
    reveal: `admin` does not hold `payload:reveal-pii` by role. They may grant it to themselves; that
-   grant is audited like any other (D295).
+   grant is audited like any other (D306).
 8. **Given** a grant in namespace A, **when** the subject reveals a run of namespace B, **then** it is
    refused; **given** a subject whose membership is removed, **then** its grants are removed with it.
 
@@ -265,7 +265,7 @@ sees the values only when they hold the reveal grant of the namespace and ask fo
 is audited.
 
 **Why this priority**: the event inbox is the one surface that returned values to every viewer; the
-owner decided to close it now (D291) rather than wait for event schemas.
+owner decided to close it now (D302) rather than wait for event schemas.
 
 **Independent Test**: publish an event and set aside a dead letter that carry canaries; read both as a
 viewer, an operator, a developer without a grant and a developer with a grant, with and without
@@ -390,7 +390,7 @@ viewer, an operator, a developer without a grant and a developer with a grant, w
   is removed with its membership, and is refused for a subject whose role lacks `payload:read-internal`
   (such a grant would be inert). At most 256 grants exist per namespace. The mechanism, a per-namespace
   grant list managed by administrators, was decided by the owner on 2026-10-17 (D275); an administrator
-  may grant it to themselves, audited (D295).
+  may grant it to themselves, audited (D306).
 - **FR-016-012**: Every reveal MUST be audited as `payload.pii_revealed`, with actor, tenant, run, the
   server-built reason `classified-v1:<selector>:reveal=pii` and the trace id, committed in the same
   transaction that selects the payload and before any byte is returned; it never collapses repeats.
@@ -576,7 +576,7 @@ viewer, an operator, a developer without a grant and a developer with a grant, w
 - Retention per customer or regulator, deletion of personal data on request, and data residency
   (ADR-0033, point 6; G283, G284).
 - Field-by-field classification of events, connector dead letters and webhook or broker deliveries: an
-  event's data is `pii` as a whole until an event type schema registry exists (G282, D291). The
+  event's data is `pii` as a whole until an event type schema registry exists (G282, D302). The
   values of events are restricted by this feature (FR-016-026, FR-016-027); their classification is not.
 - Disclosure of external (blob) content, raw download or export, and any field-selection or JSON-path
   API.

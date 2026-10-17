@@ -176,7 +176,7 @@ tenant-visible audit. Metrics never carry tenant or run identifiers; spans may c
 
 ## 8. Event inbox and dead letters (US08)
 
-No new table, permission or reason (D294): the check reuses `payload_reveal_grants`, `event:read`,
+No new table, permission or reason (D305): the check reuses `payload_reveal_grants`, `event:read`,
 `payload:read-internal` and `PII_REVEAL_NOT_GRANTED`. The event's `data` is `pii` as a whole (no carrier),
 so there is no walk and no validity gate: the decision is the pure `visibility(Pii, audience)` of section 1.
 
