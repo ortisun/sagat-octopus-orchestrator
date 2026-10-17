@@ -197,6 +197,7 @@ pub async fn revoke_payload_reveal<B: RevealGrantApi>(
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use axum::http::StatusCode;
     use sagat_application::reveal_grants::{RevealGrant, RevealGrantError};
