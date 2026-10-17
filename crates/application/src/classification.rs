@@ -452,6 +452,75 @@ pub struct ClassificationReportEntry {
     pub declared: bool,
 }
 
+/// One semantic step within a carrier. Variants keep literal property names distinct from JSON
+/// Schema applicators that govern otherwise unmatched object properties and array items.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ClassificationSegment {
+    Property(String),
+    Index(usize),
+    AdditionalProperty,
+    RemainingItem,
+}
+
+/// One effective classification location emitted by the bounded authoring walk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClassificationLocation {
+    pub carrier: CarrierPointer,
+    pub location: Vec<ClassificationSegment>,
+    /// Exact JSON pointer to the schema location which governs this effective location.
+    pub source_path: String,
+    pub level: Level,
+    pub declared: bool,
+}
+
+/// Why a carrier could not be walked completely. The path and message code are safe to expose.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClassificationCarrierFailure {
+    pub carrier: CarrierPointer,
+    pub code: ClassificationFindingCode,
+    pub source_path: String,
+}
+
+/// Per-carrier outcome of a classification location walk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClassificationCarrierStatus {
+    Complete(CarrierPointer),
+    Failed(ClassificationCarrierFailure),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ClassificationWalkStatus {
+    pub carriers: Vec<ClassificationCarrierStatus>,
+}
+
+impl ClassificationWalkStatus {
+    #[must_use]
+    pub fn failure(&self, carrier: &CarrierPointer) -> Option<&ClassificationCarrierFailure> {
+        self.carriers.iter().find_map(|status| match status {
+            ClassificationCarrierStatus::Failed(failure) if &failure.carrier == carrier => {
+                Some(failure)
+            }
+            ClassificationCarrierStatus::Complete(_) | ClassificationCarrierStatus::Failed(_) => {
+                None
+            }
+        })
+    }
+}
+
+/// Effective classification lookup used by authoring comparison without retaining a whole report.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClassificationResolution {
+    AbsentCarrier,
+    Incomplete(ClassificationCarrierFailure),
+    Resolved {
+        level: Level,
+        source_path: String,
+        /// True when this exact semantic location is present in the carrier walk. False means its
+        /// value came from an applicable fallback or the conservative PII floor.
+        location_present: bool,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ClassificationAnalysis {
     pub findings: Vec<ClassificationFinding>,
@@ -617,5 +686,18 @@ mod tests {
             },
         ]);
         assert_eq!(carriers.len(), 3);
+    }
+
+    #[test]
+    fn authoring_location_identity_keeps_literals_separate_from_applicators() {
+        let literal_star = vec![ClassificationSegment::Property("*".into())];
+        let literal_zero = vec![ClassificationSegment::Property("0".into())];
+
+        assert_ne!(literal_star, vec![ClassificationSegment::AdditionalProperty]);
+        assert_ne!(literal_zero, vec![ClassificationSegment::Index(0)]);
+        assert_ne!(
+            vec![ClassificationSegment::AdditionalProperty],
+            vec![ClassificationSegment::RemainingItem]
+        );
     }
 }
