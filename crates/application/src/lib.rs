@@ -18,6 +18,7 @@ pub mod events;
 pub mod execution;
 pub mod identity;
 pub mod maintenance;
+pub mod managed_secrets;
 pub mod operations;
 pub mod outbound;
 pub mod payloads;

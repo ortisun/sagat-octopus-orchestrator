@@ -3379,6 +3379,82 @@
       ]
     },
     {
+      "table": "secret_provider_operations",
+      "column": "actor",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Subject identity is at most 255 characters, no controls, enforced by CHECK; at most 1024 receipts per namespace."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/managed_secrets.rs",
+        "crates/infra-postgres/migrations/20261027000000_openbao_secrets.up.sql"
+      ]
+    },
+    {
+      "table": "secret_provider_operations",
+      "column": "binding",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "HMAC-SHA256 receipt content binding, exactly 32 bytes enforced by CHECK; never raw credential content."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/managed_secrets.rs",
+        "crates/infra-postgres/migrations/20261027000000_openbao_secrets.up.sql"
+      ]
+    },
+    {
+      "table": "secret_provider_operations",
+      "column": "name",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "SecretName grammar, at most 64 ASCII bytes enforced by CHECK; at most 1024 receipts per namespace."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/managed_secrets.rs",
+        "crates/infra-postgres/migrations/20261027000000_openbao_secrets.up.sql"
+      ]
+    },
+    {
+      "table": "secret_provider_operations",
+      "column": "state",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed pending/active/abandoned lifecycle enum enforced by CHECK; at most 1024 receipts per namespace."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/managed_secrets.rs",
+        "crates/infra-postgres/migrations/20261027000000_openbao_secrets.up.sql"
+      ]
+    },
+    {
       "table": "secret_versions",
       "column": "ciphertext",
       "sql_type": "bytea",
@@ -3448,6 +3524,25 @@
       },
       "owner_paths": [
         "crates/infra-postgres/src/secrets.rs"
+      ]
+    },
+    {
+      "table": "secrets",
+      "column": "authority",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed local/openbao authority enum enforced by CHECK; writer: managed_secrets.rs."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/managed_secrets.rs",
+        "crates/infra-postgres/migrations/20261027000000_openbao_secrets.up.sql"
       ]
     },
     {
@@ -4571,6 +4666,14 @@
       "owner_paths": [
         "crates/infra-postgres/src/identity.rs"
       ]
+    }
+  ],
+  "external_content": [
+    {
+      "table": "secret_provider_operations",
+      "measurement_column": "value_bytes",
+      "class": "content",
+      "evidence": "1..16384 bytes reserved at intent admission until provider cleanup deletes the receipt; ALWAYS delta/flush triggers account for these off-platform bytes."
     }
   ]
 }

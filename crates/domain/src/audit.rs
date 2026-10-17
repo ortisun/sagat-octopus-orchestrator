@@ -41,6 +41,7 @@ pub enum AuditAction {
     CrossTenantAccessDenied,
     /// A secret was created, or a new version of it was stored (rotation). Never carries a value.
     SecretStored,
+    SecretProvisioningStarted,
     SecretDeleted,
     /// Someone was allowed to reference a secret from workflows, or no longer is.
     SecretAccessGranted,
@@ -215,6 +216,7 @@ impl AuditAction {
             Self::RunSignalled => "run.signalled",
             Self::CrossTenantAccessDenied => "access.denied.cross_tenant",
             Self::SecretStored => "secret.stored",
+            Self::SecretProvisioningStarted => "secret.provisioning_started",
             Self::SecretDeleted => "secret.deleted",
             Self::SecretAccessGranted => "secret.access_granted",
             Self::SecretAccessRevoked => "secret.access_revoked",

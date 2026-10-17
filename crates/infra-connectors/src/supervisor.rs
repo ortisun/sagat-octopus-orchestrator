@@ -64,7 +64,7 @@ pub struct Supervisor<R, G, S, F> {
     runtime: Arc<R>,
     guard: G,
     clients: Clients<S, F>,
-    cipher: Arc<dyn SecretCipher>,
+    cipher: sagat_application::secrets::SecretReader,
     evaluator: Arc<dyn ExpressionEvaluator>,
     /// Who this replica is, for the leases on partitions.
     holder: String,
@@ -93,11 +93,19 @@ where
             runtime,
             guard,
             clients,
-            cipher,
+            cipher: sagat_application::secrets::SecretReader::local(cipher),
             evaluator,
             holder,
             refresh,
         }
+    }
+
+    pub fn with_secret_provider(
+        mut self,
+        provider: Arc<dyn sagat_application::secret_provider::SecretProvider>,
+    ) -> Self {
+        self.cipher = self.cipher.with_provider(provider);
+        self
     }
 
     /// Runs until `stop` is set; then stops every consumer and waits for it.

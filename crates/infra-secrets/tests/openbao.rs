@@ -177,3 +177,113 @@ async fn provider_never_follows_redirects_or_returns_untrusted_error_bodies() {
         server.await.unwrap();
     }
 }
+
+#[tokio::test]
+async fn production_tls_scoped_short_lived_token_and_sealed_provider_fail_closed() {
+    use testcontainers_modules::testcontainers::{
+        GenericImage, ImageExt, core::WaitFor, runners::AsyncRunner,
+    };
+    let container = GenericImage::new("openbao/openbao", "2.7.1")
+        .with_wait_for(WaitFor::message_on_stdout(
+            "Development mode should NOT be used in production",
+        ))
+        .with_exposed_port(8200.into())
+        .with_env_var("BAO_DEV_ROOT_TOKEN_ID", "test-bootstrap-only")
+        .with_cmd([
+            "server",
+            "-dev-tls",
+            "-dev-tls-cert-dir=/tmp",
+            "-dev-listen-address=0.0.0.0:8200",
+        ])
+        .start()
+        .await
+        .unwrap();
+    let ca = container
+        .copy_file_from("/tmp/vault-ca.pem", Vec::new())
+        .await
+        .unwrap();
+    let port = container.get_host_port_ipv4(8200).await.unwrap();
+    let address = format!("https://127.0.0.1:{port}");
+    let temp = tempfile::tempdir().unwrap();
+    let token_file = temp.path().join("token");
+    std::fs::write(&token_file, "test-bootstrap-only").unwrap();
+    let make = |trust: bool| {
+        let mut c = config(&address);
+        c.token_file = token_file.clone();
+        if trust {
+            c.ca_pem = Some(ca.clone());
+        }
+        OpenBao::new(c).unwrap()
+    };
+    let reference = ProviderReference {
+        tenant: TenantId::new(Uuid::new_v4()),
+        namespace: NamespaceId::new(Uuid::new_v4()),
+        operation: Uuid::new_v4(),
+    };
+    assert_eq!(
+        make(false).read(&reference).await.unwrap_err(),
+        ProviderError::Unavailable
+    );
+    assert_eq!(
+        make(true).read(&reference).await.unwrap_err(),
+        ProviderError::Denied
+    ); // root policy
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .add_root_certificate(reqwest::Certificate::from_pem(&ca).unwrap())
+        .build()
+        .unwrap();
+    let policy = format!(
+        "path \"secret/data/sagat/credentials/{}/{}/*\" {{ capabilities = [\"create\", \"read\"] }}\npath \"auth/token/lookup-self\" {{ capabilities = [\"read\"] }}",
+        reference.tenant, reference.namespace
+    );
+    let response = client
+        .put(format!("{address}/v1/sys/policies/acl/sagat-test"))
+        .header("X-Vault-Token", "test-bootstrap-only")
+        .body(serde_json::to_vec(&serde_json::json!({"policy":policy})).unwrap())
+        .send()
+        .await
+        .unwrap();
+    assert!(response.status().is_success());
+    let response = client.post(format!("{address}/v1/auth/token/create"))
+        .header("X-Vault-Token", "test-bootstrap-only").body(serde_json::to_vec(&serde_json::json!({"policies":["sagat-test"],"ttl":"120s","no_default_policy":true})).unwrap()).send().await.unwrap();
+    assert!(response.status().is_success());
+    let issued: serde_json::Value =
+        serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+    std::fs::write(
+        &token_file,
+        issued["auth"]["client_token"].as_str().unwrap(),
+    )
+    .unwrap();
+    let provider = make(true);
+    provider
+        .create(
+            &reference,
+            &SecretValue::new(b"tls-credential-canary".to_vec()).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        provider.read(&reference).await.unwrap().unwrap().expose(),
+        b"tls-credential-canary"
+    );
+    let foreign = ProviderReference {
+        namespace: NamespaceId::new(Uuid::new_v4()),
+        ..reference.clone()
+    };
+    assert_eq!(
+        provider.read(&foreign).await.unwrap_err(),
+        ProviderError::Denied
+    );
+    let response = client
+        .put(format!("{address}/v1/sys/seal"))
+        .header("X-Vault-Token", "test-bootstrap-only")
+        .send()
+        .await
+        .unwrap();
+    assert!(response.status().is_success());
+    assert_eq!(
+        provider.read(&reference).await.unwrap_err(),
+        ProviderError::Unavailable
+    );
+}

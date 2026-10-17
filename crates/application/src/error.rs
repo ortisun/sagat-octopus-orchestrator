@@ -57,6 +57,8 @@ pub enum Refusal {
 /// API clients.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum StoreError {
+    #[error("conflict with the current state: {0}")]
+    StateConflict(&'static str),
     #[error("uniqueness conflict")]
     Conflict(ConflictKind),
     #[error("referenced row does not exist")]
@@ -166,6 +168,7 @@ impl From<IdentityError> for AppError {
 impl From<StoreError> for AppError {
     fn from(err: StoreError) -> Self {
         match err {
+            StoreError::StateConflict(reason) => Self::StateConflict(reason),
             StoreError::Conflict(kind) => Self::Conflict(kind),
             StoreError::MissingReference => Self::NotFound,
             StoreError::RevisionConflict { current } => Self::RevisionConflict { current },

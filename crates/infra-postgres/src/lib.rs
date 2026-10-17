@@ -19,6 +19,7 @@ mod events;
 mod execution;
 mod identity;
 mod maintenance;
+mod managed_secrets;
 mod operations;
 mod outbound;
 mod partitioning;

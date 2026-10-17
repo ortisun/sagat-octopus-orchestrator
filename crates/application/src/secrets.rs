@@ -34,7 +34,71 @@ use crate::quotas::QuotaLookup;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredSecret {
     pub meta: SecretMeta,
-    pub sealed: SealedSecret,
+    pub value: StoredValue,
+}
+
+/// The authoritative representation of a retained version. No remote reference is a ciphertext.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StoredValue {
+    Local(SealedSecret),
+    OpenBao(crate::secret_provider::ProviderReference),
+}
+
+/// Async resolution shared by workers, webhook signing and broker credentials. This does not
+/// grant access: callers must authorize the scope/lease first and audit the use.
+#[derive(Clone, Default)]
+pub struct SecretReader {
+    cipher: Option<Arc<dyn SecretCipher>>,
+    provider: Option<Arc<dyn crate::secret_provider::SecretProvider>>,
+}
+
+impl SecretReader {
+    pub fn local(cipher: Arc<dyn SecretCipher>) -> Self {
+        Self {
+            cipher: Some(cipher),
+            provider: None,
+        }
+    }
+    pub fn with_provider(
+        mut self,
+        provider: Arc<dyn crate::secret_provider::SecretProvider>,
+    ) -> Self {
+        self.provider = Some(provider);
+        self
+    }
+    pub async fn resolve(&self, stored: &StoredSecret) -> Result<SecretValue, AppError> {
+        match &stored.value {
+            StoredValue::Local(sealed) => {
+                let cipher = self.cipher.as_ref().ok_or(AppError::Unavailable)?;
+                let meta = &stored.meta;
+                let aad = associated_data(
+                    meta.tenant_id,
+                    meta.namespace_id,
+                    &meta.name,
+                    meta.id,
+                    &sealed.key_id,
+                );
+                cipher.open(sealed, &aad).map_err(|_| AppError::Internal)
+            }
+            StoredValue::OpenBao(reference) => {
+                if reference.tenant != stored.meta.tenant_id
+                    || reference.namespace != stored.meta.namespace_id
+                    || reference.operation != stored.meta.id
+                {
+                    return Err(AppError::Internal);
+                }
+                self.provider
+                    .as_ref()
+                    .ok_or(AppError::Unavailable)?
+                    .read(reference)
+                    .await
+                    .map_err(crate::managed_secrets::provider_error)?
+                    .ok_or_else(|| AppError::SecretUnavailable {
+                        name: stored.meta.name.to_string(),
+                    })
+            }
+        }
+    }
 }
 
 /// What a secret looks like from outside: never the value, never the ciphertext.
@@ -514,16 +578,19 @@ where
         let (mut moved, mut failed) = (0, 0);
         for old in stale {
             let meta = &old.meta;
+            let StoredValue::Local(old_sealed) = &old.value else {
+                return Err(AppError::Internal);
+            };
             let aad = associated_data(
                 meta.tenant_id,
                 meta.namespace_id,
                 &meta.name,
                 meta.id,
-                &old.sealed.key_id,
+                &old_sealed.key_id,
             );
-            let Ok(value) = self.cipher.open(&old.sealed, &aad) else {
+            let Ok(value) = self.cipher.open(old_sealed, &aad) else {
                 tracing::error!(
-                    key = %old.sealed.key_id,
+                    key = %old_sealed.key_id,
                     version = %meta.id,
                     "a stored secret cannot be opened with the key ring; it is left as it is"
                 );
@@ -552,7 +619,7 @@ where
             );
             if self
                 .store
-                .replace_sealed(meta.id, &old.sealed.key_id, &sealed, &audit)
+                .replace_sealed(meta.id, &old_sealed.key_id, &sealed, &audit)
                 .await?
             {
                 moved += 1;

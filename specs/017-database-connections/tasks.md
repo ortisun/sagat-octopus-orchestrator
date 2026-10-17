@@ -6,8 +6,8 @@ Status: Implementing after user approval on 2026-10-16. Check a task only after 
 
 - [x] T017-001 Record approved architecture, dependency scope, role matrix and finite ceilings. FR-017-001..022. Files: spec, plan, tasks, ADR and tracking documents.
 - [x] T017-002 Define async provider port, scoped provider references and safe typed failures; redaction/path tests. FR-017-005,006,008,020,021.
-- [ ] T017-003 Implement bounded OpenBao KV v2 HTTP adapter with token-file workload auth, TLS, CAS and receipt reads; real OpenBao integration tests. FR-017-005..008,020,022.
-- [ ] T017-004 Add provider intent/version metadata and migration with tenant FKs, audit and quotas. FR-017-007,009,019,021.
+- [x] T017-003 Implement bounded OpenBao KV v2 HTTP adapter with token-file workload auth, TLS, CAS and receipt reads; real OpenBao integration tests. FR-017-005..008,020,022.
+- [x] T017-004 Add provider intent/version metadata and migration with tenant FKs, audit and quotas. FR-017-007,009,019,021.
 - [ ] T017-005 Implement idempotent provisioning/rotation/reconciliation and fence legacy migration. FR-017-004..009.
 - [ ] T017-006 Wire async resolution into existing secret consumers, respecting current authorization, lease and output scanning. FR-017-008,009,019.
 

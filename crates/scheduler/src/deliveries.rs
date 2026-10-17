@@ -23,7 +23,7 @@ use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::outbound::{
     AttemptOutcome, OutboundDestination, Verdict, delivery_backoff, judge_response, out_of_attempts,
 };
-use sagat_domain::secrets::{SecretCipher, SecretName, SecretValue, associated_data};
+use sagat_domain::secrets::{SecretCipher, SecretName, SecretValue};
 use sagat_telemetry::{SpanId, TraceId};
 use tracing::Instrument;
 
@@ -84,7 +84,7 @@ pub struct DeliveryWorker<S, T, R, P = NoBrokerPublisher> {
     sender: T,
     broker: P,
     entropy: R,
-    cipher: Arc<dyn SecretCipher>,
+    cipher: sagat_application::secrets::SecretReader,
     clock: SystemClock,
     settings: DeliverySettings,
 }
@@ -113,7 +113,7 @@ where
             sender,
             broker: NoBrokerPublisher,
             entropy,
-            cipher,
+            cipher: sagat_application::secrets::SecretReader::local(cipher),
             clock: SystemClock,
             settings,
         }
@@ -140,10 +140,18 @@ where
             sender,
             broker,
             entropy,
-            cipher,
+            cipher: sagat_application::secrets::SecretReader::local(cipher),
             clock: SystemClock,
             settings,
         }
+    }
+
+    pub fn with_secret_provider(
+        mut self,
+        provider: Arc<dyn sagat_application::secret_provider::SecretProvider>,
+    ) -> Self {
+        self.cipher = self.cipher.with_provider(provider);
+        self
     }
 
     /// One round: claims what is due and attempts it, concurrently.
@@ -519,14 +527,7 @@ where
         let timestamp = self.clock.now().unix_timestamp();
         let mut parts = Vec::with_capacity(versions.len());
         for stored in &versions {
-            let aad = associated_data(
-                delivery.tenant_id,
-                delivery.namespace_id,
-                &stored.meta.name,
-                stored.meta.id,
-                &stored.meta.key_id,
-            );
-            if let Ok(value) = self.cipher.open(&stored.sealed, &aad) {
+            if let Ok(value) = self.cipher.resolve(stored).await {
                 // The receiver is told the type in a header, so the signature covers it.
                 let covered = signing::Covered {
                     timestamp,
@@ -563,14 +564,7 @@ where
             .ok()?
             .into_iter()
             .next()?;
-        let aad = associated_data(
-            delivery.tenant_id,
-            delivery.namespace_id,
-            &stored.meta.name,
-            stored.meta.id,
-            &stored.meta.key_id,
-        );
-        self.cipher.open(&stored.sealed, &aad).ok()
+        self.cipher.resolve(&stored).await.ok()
     }
 }
 

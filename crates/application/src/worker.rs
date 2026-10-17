@@ -36,7 +36,7 @@ use crate::secrets::{SecretProblem, SecretState, check_usable};
 use sagat_domain::binding::ActivityPattern;
 use sagat_domain::blobs::{BlobDescriptor, BlobId};
 use sagat_domain::quota::QuotaResource;
-use sagat_domain::secrets::{SecretCipher, SecretName, SecretValue, associated_data};
+use sagat_domain::secrets::{SecretCipher, SecretName, SecretValue};
 
 /// The newest minor version of worker protocol 1 this server speaks. Every minor version adds fields
 /// and calls and removes none, so a worker of any minor version of protocol 1 can be served
@@ -378,7 +378,7 @@ pub struct WorkerService<S, C, E, R> {
     entropy: R,
     settings: WorkerSettings,
     /// Opens secrets for workers; `None` when the instance has no key ring (secrets are off).
-    vault: Option<Arc<dyn SecretCipher>>,
+    vault: Option<crate::secrets::SecretReader>,
 }
 
 impl<S, C, E, R> std::fmt::Debug for WorkerService<S, C, E, R> {
@@ -411,10 +411,23 @@ where
         }
     }
 
+    pub fn with_secret_provider(
+        mut self,
+        provider: Arc<dyn crate::secret_provider::SecretProvider>,
+    ) -> Self {
+        self.vault = Some(
+            self.vault
+                .take()
+                .unwrap_or_default()
+                .with_provider(provider),
+        );
+        self
+    }
+
     /// Lets workers resolve the secrets their steps declare, opened with `cipher`.
     #[must_use]
     pub fn with_vault(mut self, cipher: Arc<dyn SecretCipher>) -> Self {
-        self.vault = Some(cipher);
+        self.vault = Some(crate::secrets::SecretReader::local(cipher));
         self
     }
 
@@ -1893,22 +1906,65 @@ where
                 .find(|item| &item.name == name)
                 .and_then(|item| item.stored.as_ref())
                 .ok_or(AppError::Internal)?;
-            let aad = associated_data(
-                info.tenant_id,
-                info.namespace_id,
-                name,
-                stored.meta.id,
-                &stored.sealed.key_id,
-            );
-            let value = cipher.open(&stored.sealed, &aad).map_err(|_| {
-                tracing::error!(secret = %name, key = %stored.sealed.key_id, "a stored secret cannot be opened");
-                AppError::Internal
-            })?;
+            let value = cipher.resolve(stored).await?;
             resolved.push(ResolvedSecret {
                 name: name.clone(),
                 version: stored.meta.version,
                 value,
             });
+        }
+        // Provider I/O can outlive a lease or an ACL. Check again before committing the audit
+        // and handing out any value, and discard values if rotation raced the read.
+        if !tx
+            .lease_unexpired(task.node, &Token::hash_of(task.lease_token))
+            .await?
+        {
+            return Err(AppError::StaleAttempt);
+        }
+        self.ensure_bound(principal, &mut tx, task).await?;
+        let current = tx.secret_inputs(&names).await?;
+        let states: Vec<_> = current
+            .items
+            .iter()
+            .map(|item| {
+                (
+                    item.name.clone(),
+                    if item.stored.is_some() {
+                        SecretState::Present {
+                            granted: item.granted,
+                        }
+                    } else {
+                        SecretState::Missing
+                    },
+                )
+            })
+            .collect();
+        if let Err(SecretProblem(name)) = check_usable(current.publisher_role, &states) {
+            tx.persist(
+                &[],
+                audit(
+                    AuditAction::SecretDenied,
+                    format!(
+                        "node {} attempt {}: access changed during resolution",
+                        task.node, task.fence.attempt
+                    ),
+                ),
+            )
+            .await?;
+            tx.commit().await?;
+            return Err(AppError::SecretUnavailable {
+                name: name.to_string(),
+            });
+        }
+        if current
+            .items
+            .iter()
+            .zip(&inputs.items)
+            .any(|(now, before)| {
+                now.stored.as_ref().map(|s| s.meta.id) != before.stored.as_ref().map(|s| s.meta.id)
+            })
+        {
+            return Err(AppError::Unavailable);
         }
         let listed = resolved
             .iter()
@@ -1947,24 +2003,17 @@ where
         if names.is_empty() {
             return Ok(None);
         }
-        let (tenant, namespace) = {
-            let info = tx.info();
-            (info.tenant_id, info.namespace_id)
-        };
         let versions = tx.secret_versions(&names).await?;
         let Ok(text) = std::str::from_utf8(output) else {
             return Ok(None);
         };
         for stored in &versions {
-            let aad = associated_data(
-                tenant,
-                namespace,
-                &stored.meta.name,
-                stored.meta.id,
-                &stored.sealed.key_id,
-            );
-            let Ok(value) = cipher.open(&stored.sealed, &aad) else {
-                continue;
+            let value = match cipher.resolve(stored).await {
+                Ok(value) => value,
+                Err(error) if matches!(stored.value, crate::secrets::StoredValue::OpenBao(_)) => {
+                    return Err(error);
+                }
+                Err(_) => continue,
             };
             if value.len() < MIN_SCANNED_SECRET_BYTES {
                 continue;
