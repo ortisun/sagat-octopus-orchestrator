@@ -475,3 +475,26 @@ harness. A direct retry passed 1/1 in 5.68 s before the full script was rerun su
 The script keeps its detached source read-only and removes only that clean source on exit;
 artifacts and logs remain. This extra gate complements the separate actual v0.1.0 release upgrade,
 released-five-SDK and old Studio/browser evidence; it is not an arbitrary old-server writer claim.
+
+
+### Expanded six-role real-API canary matrix
+
+`canary::six_roles_with_and_without_grant_keep_every_public_surface_value_free` passed 1/1
+in 18.71 s (`/tmp/sagat-completion-e2e-canary-expanded-3.log`). It now seeds four actual runs
+(classified, schema-invalid, rules-0 legacy, unmarked), probes all six roles with/without a stored
+grant and an explicit reveal, and checks all four runs over the metadata reads, structural
+inspection and SSE. These are 768 REST matrix requests and 96 stream requests, plus setup/audit.
+The unmarked canary positively appears only on an authorized explicit reveal; invalid and legacy
+values/keys never appear. Actual exported spans, structured logs and rendered metrics are captured
+and checked for all 22 classes, with a positive disclosure-span/metric witness.
+
+The fixture retains real rate admission: the platform quota service grants a 10,000 ceiling and
+the tenant sets that supported policy over HTTP. An initial direct tenant increase was correctly
+refused above its default platform ceiling. The synthetic legacy fixture temporarily changes only
+the classification pin in its isolated database, inside one transaction; deferred checks are
+flushed before restoring the immutable trigger and committing. The first fixture attempt found
+PostgreSQL's pending-trigger DDL guard; this fixture correction changes no production migration.
+The separate old-release binary upgrade remains the evidence for natural rules-0 creation.
+
+The CLI/browser/event matrices and the frozen prior-server byte comparison remain separate named
+evidence. T016-049 is kept open while completing its last boundary combinations.

@@ -2,9 +2,11 @@
 
 use std::time::Duration;
 
+use crate::support::collector::Collector;
 use futures_util::StreamExt;
 use reqwest::{Method, StatusCode};
 use sagat_domain::identity::{Membership, NamespaceId, Role, TenantId};
+use sagat_telemetry::Metrics;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -53,10 +55,25 @@ pub(crate) async fn fixture(label: &str) -> Fixture {
             .expect("insert e2e canary membership");
     }
     let canaries = Canaries::unique(label);
+    let run = publish_and_start(
+        &api,
+        canaries.classified_schema(),
+        canaries.classified_input(),
+    )
+    .await;
+    Fixture {
+        api,
+        tenant,
+        namespace,
+        run,
+        canaries,
+    }
+}
+
+async fn publish_and_start(api: &TestApi, schema: Value, input: Value) -> String {
     let name = format!("classification-e2e-{}", Uuid::now_v7());
     let mut ir = document(&name, "done", vec![end_node("done")]);
-    ir["inputSchema"] = canaries.classified_schema();
-    let input = canaries.classified_input();
+    ir["inputSchema"] = schema;
     let created = api
         .as_user(Method::POST, "/workflows", ADMIN, TENANT)
         .header("x-octopus-namespace", NAMESPACE)
@@ -91,17 +108,10 @@ pub(crate) async fn fixture(label: &str) -> Fixture {
         .await
         .expect("start e2e canary run");
     assert_eq!(started.status(), StatusCode::ACCEPTED);
-    let run = json_of(started).await["runId"]
+    json_of(started).await["runId"]
         .as_str()
         .expect("run id")
-        .to_owned();
-    Fixture {
-        api,
-        tenant,
-        namespace,
-        run,
-        canaries,
-    }
+        .to_owned()
 }
 
 impl Fixture {
@@ -153,8 +163,78 @@ impl Fixture {
 
 #[tokio::test]
 async fn six_roles_with_and_without_grant_keep_every_public_surface_value_free() {
+    let collector = Collector::start().await;
+    let (_telemetry_guard, sink, logs) = collector.install_with_logs(1.0);
+    let metrics = Metrics::global();
     let fixture = fixture("public-surfaces").await;
+    // This privacy matrix makes hundreds of real requests; retain admission with an explicit
+    // supported test policy instead of letting rate limiting mask the authorization assertions.
+    sagat_application::quotas::QuotaService::new(
+        fixture.api.execution_store.clone(),
+        sagat_application::clock::SystemClock,
+    )
+    .grant_ceiling(
+        fixture.tenant,
+        sagat_domain::quota::QuotaResource::ApiRequestsPerSecond,
+        Some(10_000),
+    )
+    .await
+    .expect("platform grants the matrix ceiling");
+    let policy = fixture
+        .api
+        .as_user(
+            Method::PUT,
+            "/quotas/api_requests_per_second",
+            ADMIN,
+            TENANT,
+        )
+        .json(&json!({"limit":10_000}))
+        .send()
+        .await
+        .expect("matrix request policy");
+    assert_eq!(policy.status(), StatusCode::OK);
     let run = &fixture.run;
+    let invalid = publish_and_start(
+        &fixture.api,
+        json!({"type":"object","additionalProperties":false,"x-sagat-classification":"public","properties":{"number":{"type":"number"}}}),
+        json!({"number":fixture.canaries.invalid_value.value(),(fixture.canaries.invalid_key.value()):true}),
+    ).await;
+    let legacy = publish_and_start(
+        &fixture.api,
+        json!({"type":"object","x-sagat-classification":"public"}),
+        json!({(fixture.canaries.legacy_key.value()):fixture.canaries.legacy_value.value()}),
+    )
+    .await;
+    let unmarked = publish_and_start(
+        &fixture.api,
+        json!({"type":"object"}),
+        json!({(fixture.canaries.unmarked_key.value()):fixture.canaries.unmarked_value.value()}),
+    )
+    .await;
+    // This isolated fixture exercises all readers of a rules-0 version. The separate actual
+    // released-process upgrade test proves how such a version is created without this fixture.
+    let mut legacy_fixture = fixture
+        .api
+        .db
+        .pool
+        .begin()
+        .await
+        .expect("legacy fixture transaction");
+    sqlx::raw_sql("ALTER TABLE workflow_versions DISABLE TRIGGER workflow_versions_immutable")
+        .execute(&mut *legacy_fixture)
+        .await
+        .expect("open legacy fixture");
+    sqlx::query("UPDATE workflow_versions SET classification_rules=0 WHERE id=(SELECT workflow_version_id FROM runs WHERE tenant_id=$1 AND id=$2)")
+        .bind(fixture.tenant.as_uuid()).bind(Uuid::parse_str(&legacy).expect("legacy run"))
+        .execute(&mut *legacy_fixture).await.expect("rules-0 fixture");
+    sqlx::raw_sql("SET CONSTRAINTS ALL IMMEDIATE; ALTER TABLE workflow_versions ENABLE TRIGGER workflow_versions_immutable")
+        .execute(&mut *legacy_fixture)
+        .await
+        .expect("close legacy fixture");
+    legacy_fixture
+        .commit()
+        .await
+        .expect("atomic legacy fixture");
     let payload_free = [
         format!("/runs/{run}"),
         format!("/runs/{run}/events?limit=200"),
@@ -265,41 +345,130 @@ async fn six_roles_with_and_without_grant_keep_every_public_surface_value_free()
             inspection_body,
             &fixture.canaries.all(),
         );
+
+        for (kind, other_run) in [
+            ("invalid", &invalid),
+            ("legacy", &legacy),
+            ("unmarked", &unmarked),
+        ] {
+            let (status, body) = fixture
+                .text(
+                    case.subject,
+                    Method::POST,
+                    &format!("/runs/{other_run}/payload-disclosures"),
+                    Some(&selector),
+                )
+                .await;
+            assert_eq!(
+                status,
+                if !case.may_read_runs() || (case.reveal && !case.may_reveal()) {
+                    StatusCode::FORBIDDEN
+                } else {
+                    StatusCode::OK
+                }
+            );
+            if kind == "unmarked" && case.may_reveal() {
+                assert_present(
+                    "explicit unmarked reveal",
+                    &body,
+                    &fixture.canaries.unmarked_value,
+                );
+                assert_present(
+                    "explicit unmarked key reveal",
+                    &body,
+                    &fixture.canaries.unmarked_key,
+                );
+            } else {
+                assert_absent(
+                    "invalid legacy or unrequested data",
+                    &body,
+                    &fixture.canaries.all(),
+                );
+            }
+            for suffix in [
+                "",
+                "/events?limit=200",
+                "/graph",
+                "/graph/changes?since=0",
+                "/telemetry",
+                "/attempts",
+            ] {
+                let (status, body) = fixture
+                    .text(
+                        case.subject,
+                        Method::GET,
+                        &format!("/runs/{other_run}{suffix}"),
+                        None,
+                    )
+                    .await;
+                assert_eq!(
+                    status,
+                    if case.may_read_runs() {
+                        StatusCode::OK
+                    } else {
+                        StatusCode::FORBIDDEN
+                    }
+                );
+                assert_absent(
+                    "variant payload-free surface",
+                    body,
+                    &fixture.canaries.all(),
+                );
+            }
+            let (status, body) = fixture
+                .text(
+                    case.subject,
+                    Method::POST,
+                    &format!("/runs/{other_run}/payload-inspections"),
+                    Some(&inspection),
+                )
+                .await;
+            assert_eq!(
+                status,
+                if matches!(case.role, Role::Admin | Role::Operator) {
+                    StatusCode::OK
+                } else {
+                    StatusCode::FORBIDDEN
+                }
+            );
+            assert_absent(
+                "variant structural inspection",
+                body,
+                &fixture.canaries.all(),
+            );
+        }
     }
     assert_eq!(disclosure_cells, 6 * 4 * 2 * 2);
 
-    for subject in [
-        "viewer-canary",
-        DEVELOPER,
-        "operator-canary",
-        ADMIN,
-        "worker-canary",
-        "runner-canary",
-    ] {
-        let response = fixture
-            .api
-            .as_user(
-                Method::GET,
-                &format!("/runs/{run}/stream?since=0"),
-                subject,
-                TENANT,
-            )
-            .send()
-            .await
-            .expect("open audience stream");
-        if matches!(subject, "worker-canary" | "runner-canary") {
-            assert_eq!(response.status(), StatusCode::FORBIDDEN);
-            let body = response.text().await.expect("stream refusal");
-            assert_absent("stream refusal", body, &fixture.canaries.all());
-        } else {
-            assert_eq!(response.status(), StatusCode::OK);
-            let first =
-                tokio::time::timeout(Duration::from_secs(5), response.bytes_stream().next())
-                    .await
-                    .expect("stream event in time")
-                    .expect("stream item")
-                    .expect("stream bytes");
-            assert_absent("run stream", first, &fixture.canaries.all());
+    for case in audience_cases() {
+        fixture.set_grant(case.subject, case.grant).await;
+        let subject = case.subject;
+        for run in [run, &invalid, &legacy, &unmarked] {
+            let response = fixture
+                .api
+                .as_user(
+                    Method::GET,
+                    &format!("/runs/{run}/stream?since=0"),
+                    subject,
+                    TENANT,
+                )
+                .send()
+                .await
+                .expect("open audience stream");
+            if matches!(subject, "worker-canary" | "runner-canary") {
+                assert_eq!(response.status(), StatusCode::FORBIDDEN);
+                let body = response.text().await.expect("stream refusal");
+                assert_absent("stream refusal", body, &fixture.canaries.all());
+            } else {
+                assert_eq!(response.status(), StatusCode::OK);
+                let first =
+                    tokio::time::timeout(Duration::from_secs(5), response.bytes_stream().next())
+                        .await
+                        .expect("stream event in time")
+                        .expect("stream item")
+                        .expect("stream bytes");
+                assert_absent("run stream", first, &fixture.canaries.all());
+            }
         }
     }
 
@@ -308,4 +477,20 @@ async fn six_roles_with_and_without_grant_keep_every_public_surface_value_free()
         .await;
     assert_eq!(audit_status, StatusCode::OK);
     assert_absent("audit read", audit, &fixture.canaries.all());
+    sink.shutdown(Duration::from_secs(5)).await;
+    assert!(
+        collector
+            .spans()
+            .iter()
+            .any(|span| span.name == "payload_disclosure")
+    );
+    assert_absent(
+        "e2e disclosure spans",
+        format!("{:#?}", collector.spans()),
+        &fixture.canaries.all(),
+    );
+    assert_absent("e2e structured logs", logs.text(), &fixture.canaries.all());
+    let metric_page = metrics.render();
+    assert!(metric_page.contains("payload_disclosures_total"));
+    assert_absent("e2e metrics", metric_page, &fixture.canaries.all());
 }
