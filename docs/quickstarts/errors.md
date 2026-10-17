@@ -47,7 +47,7 @@ Add `"activity": "payments.charge"`. The pointer counts from zero: `/nodes/0` is
 
 ### UNSUPPORTED_NODE
 
-This node, or this combination of nodes, is in the schema but cannot be published yet: for example an approval inside a forEach or while body (the error's `dependency` names what it waits for), or a shape the enabled subset does not allow. Move the part that is not allowed into a child workflow.
+This node, or this combination of nodes, is in the schema but cannot be published yet: for example an approval inside a forEach or while body (the error's dependency names what it waits for), or a shape the enabled subset does not allow. Move the part that is not allowed into a child workflow.
 
 Collections, loops, approvals, switches and Continue-As-New are built, each in the shapes the feature's quickstart lists. What is refused is the rest: an approval inside a body (it waits for scoped compensation, `dependency: SCOPED_COMPENSATION`), a branch, timer or nested scope inside a body, and a node kind the reading platform does not enable.
 
