@@ -2583,6 +2583,9 @@ impl RunTx for PgRunTx {
             .fetch_all(&mut *self.tx)
             .await
             .map_err(store_error)?;
+            // The carry an iteration received: the one the loop holds for the iteration that runs,
+            // and, for an iteration with a compensation still to run, the carry it started from
+            // (the loop's initial one, or the one its predecessor produced).
             let loop_inputs = sqlx::query(
                 "SELECT i.entry_path_nodes, i.entry_path_indices, i.iteration_index, p.content \
                  FROM loop_iterations i JOIN loop_scopes s \
@@ -2590,7 +2593,26 @@ impl RunTx for PgRunTx {
                   AND s.owner_instance_id=i.owner_instance_id \
                  JOIN payloads p ON p.tenant_id=s.tenant_id AND p.digest=s.current_carry_digest \
                  WHERE i.tenant_id=$1 AND i.run_id=$2 AND i.lifecycle='ADMITTED' \
-                   AND s.lifecycle='RUNNING' AND s.active_iteration=i.iteration_index",
+                   AND s.lifecycle='RUNNING' AND s.active_iteration=i.iteration_index \
+                 UNION ALL \
+                 SELECT i.entry_path_nodes, i.entry_path_indices, i.iteration_index, p.content \
+                 FROM loop_iterations i JOIN loop_scopes s \
+                   ON s.tenant_id=i.tenant_id AND s.run_id=i.run_id \
+                  AND s.owner_instance_id=i.owner_instance_id \
+                 JOIN payloads p ON p.tenant_id=s.tenant_id AND p.digest = CASE \
+                      WHEN i.iteration_index = 0 THEN s.initial_carry_digest \
+                      ELSE (SELECT before.carry_digest FROM loop_iterations before \
+                             WHERE before.tenant_id=i.tenant_id AND before.run_id=i.run_id \
+                               AND before.owner_instance_id=i.owner_instance_id \
+                               AND before.iteration_index=i.iteration_index-1) END \
+                 WHERE i.tenant_id=$1 AND i.run_id=$2 AND i.lifecycle IN ('CHECKPOINTED','DRAINED') \
+                   AND EXISTS ( \
+                        SELECT 1 FROM steps open_step \
+                         WHERE open_step.tenant_id=i.tenant_id AND open_step.run_id=i.run_id \
+                           AND open_step.instance_path_nodes=i.entry_path_nodes \
+                           AND open_step.instance_path_indices=i.entry_path_indices \
+                           AND open_step.kind='COMPENSATION' \
+                           AND open_step.status NOT IN ('SUCCEEDED','FAILED','CANCELLED','SKIPPED'))",
             )
             .bind(tenant)
             .bind(self.info.run_id.as_uuid())

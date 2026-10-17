@@ -191,46 +191,28 @@ async fn run_status_after_compensation(
     owner_indices: &[i32],
     locked: &LockedDrainRun,
 ) -> Result<String, PrimitiveStoreError> {
-    let saga = sqlx::query(
-        "SELECT phase,cause_code,outcome,during_stop FROM scope_sagas \
-         WHERE tenant_id=$1 AND run_id=$2 AND owner_path_nodes=$3 AND owner_path_indices=$4 \
-           AND owner_node=$5 FOR UPDATE",
-    )
-    .bind(transition.tenant_id().as_uuid())
-    .bind(transition.run_id().as_uuid())
-    .bind(owner_nodes)
-    .bind(owner_indices)
-    .bind(transition.owner().node().as_str())
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(store_error)?;
-    let Some(saga) = saga.filter(|row| row.get::<String, _>("phase") == "DONE") else {
-        return Err(PrimitiveStoreError::InvalidTransition);
+    use crate::scope_compensation::{DoneSagaError, read_done_saga, stopped_run_status};
+    let failure = |error: DoneSagaError| match error {
+        DoneSagaError::NotDone => PrimitiveStoreError::InvalidTransition,
+        DoneSagaError::Corrupt(detail) => invalid_storage(detail),
+        DoneSagaError::Database(error) => store_error(error).into(),
     };
-    let reason = locked
-        .stop_reason
-        .as_deref()
-        .and_then(|reason| reason.parse::<sagat_domain::execution::StopReason>().ok())
-        .ok_or_else(|| invalid_storage("run stop reason"))?;
-    let cause = FailureCode::parse(&saga.get::<String, _>("cause_code"))
-        .map_err(|_| invalid_storage("scope compensation cause"))?;
-    let stop_code = locked
-        .stop_code
-        .as_deref()
-        .map(FailureCode::parse)
-        .transpose()
-        .map_err(|_| invalid_storage("run stop code"))?;
-    let outcome = saga
-        .get::<Option<String>, _>("outcome")
-        .and_then(|outcome| outcome.parse::<sagat_domain::saga::SagaOutcome>().ok())
-        .ok_or_else(|| invalid_storage("scope compensation outcome"))?;
-    Ok(sagat_domain::execution::scope_final_status(
-        reason,
-        stop_code.as_ref(),
-        &cause,
-        outcome,
-        saga.get("during_stop"),
+    let saga = read_done_saga(
+        &mut **tx,
+        transition.tenant_id().as_uuid(),
+        transition.run_id().as_uuid(),
+        owner_nodes,
+        owner_indices,
+        transition.owner().node().as_str(),
     )
+    .await
+    .map_err(failure)?;
+    Ok(stopped_run_status(
+        locked.stop_reason.as_deref(),
+        locked.stop_code.as_deref(),
+        &saga,
+    )
+    .map_err(failure)?
     .as_str()
     .to_owned())
 }

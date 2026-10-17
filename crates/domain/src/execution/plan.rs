@@ -255,6 +255,15 @@ fn drain(
                     "a loop wait has no durable scope",
                 ))?;
             match loop_state.phase() {
+                // A cancelled loop is drained by the scheduler under its own fence, as a collection
+                // is; the run's deadline over a running loop stays unsupported (O382).
+                super::LoopPhase::Ready
+                | super::LoopPhase::Running
+                | super::LoopPhase::Delaying
+                    if reason == StopReason::Cancelled =>
+                {
+                    continue;
+                }
                 super::LoopPhase::Ready
                 | super::LoopPhase::Running
                 | super::LoopPhase::Delaying => {

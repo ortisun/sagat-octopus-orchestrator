@@ -1012,3 +1012,250 @@ async fn a_lookup_that_cannot_say_waits_for_a_person_who_declares_what_happened(
     );
     flow.verify().await;
 }
+
+// ---------------------------------------------------------------------------------------- loops
+
+/// A `while` loop of up to three passes, each `reserve -> charge` with its compensations; the
+/// pass returns its own number plus one, so the loop runs while the carry is below three. With
+/// `on_error`, a failure that was undone takes the edge to `recovered`.
+fn compensating_loop(name: &str, on_error: bool, irreversible_notify: bool) -> Value {
+    let mut nodes = vec![activity(
+        "reserve",
+        "line.reserve",
+        if irreversible_notify {
+            "notify"
+        } else {
+            "charge"
+        },
+        json!({"compensateWith": "line.release", "compensationRetry": retry()}),
+    )];
+    if irreversible_notify {
+        nodes.push(activity(
+            "notify",
+            "line.notify",
+            "charge",
+            json!({"irreversible": true}),
+        ));
+    }
+    nodes.push(activity(
+        "charge",
+        "line.charge",
+        "returned",
+        json!({"compensateWith": "line.refund", "compensationRetry": retry()}),
+    ));
+    if irreversible_notify {
+        // The charge of the irreversible variant has nothing to refund.
+        let last = nodes.len() - 1;
+        nodes[last] = activity("charge", "line.charge", "returned", json!({}));
+    }
+    nodes.push(json!({"id": "returned", "type": "return", "result": "iteration + 1"}));
+    let mut poll = json!({
+        "id": "poll", "type": "while", "condition": "carry < 3", "body": "pass",
+        "initial": "0", "carry": "bodyResult", "maxIterations": 8, "timeoutMs": 600000,
+        "next": "done"
+    });
+    let mut graph = vec![json!({"id": "done", "type": "end"})];
+    if on_error {
+        poll["onError"] = json!("recovered");
+        graph.push(json!({"id": "recovered", "type": "end"}));
+    }
+    graph.insert(0, poll);
+    json!({
+        "apiVersion": "sagat-octopus-orchestrator.io/v1",
+        "kind": "Workflow",
+        "metadata": {"name": name},
+        "entrypoint": "poll",
+        "bodies": {"pass": {"entrypoint": "reserve", "nodes": nodes}},
+        "nodes": graph
+    })
+}
+
+/// Runs the passes of a loop: passes `0..completed` finish both effects, the next one reserves and
+/// then its charge is declined.
+async fn loop_until_a_charge_is_declined(flow: &mut Flow, completed: u32) {
+    for pass in 0..=completed {
+        flow.drive().await;
+        let reserve = flow.poll().await;
+        assert_eq!(
+            summary(&reserve),
+            vec![row(pass, "reserve", "FORWARD", "line.reserve")]
+        );
+        flow.complete(&reserve[0], json!({"hold": pass})).await;
+        flow.drive().await;
+        let charge = flow.poll().await;
+        assert_eq!(
+            summary(&charge),
+            vec![row(pass, "charge", "FORWARD", "line.charge")]
+        );
+        if pass < completed {
+            flow.complete(&charge[0], json!({"charged": pass})).await;
+        } else {
+            flow.fail(&charge[0], "PAYMENT_DECLINED", false).await;
+        }
+    }
+    flow.drive().await;
+}
+
+/// The compensations the loop runs, one at a time, in the order they are leased.
+async fn compensation_order(flow: &mut Flow) -> Vec<(u32, String)> {
+    compensation_order_with_carry(flow).await.0
+}
+
+/// As [`compensation_order`], with the carry each compensation task was given.
+async fn compensation_order_with_carry(flow: &mut Flow) -> (Vec<(u32, String)>, Vec<i64>) {
+    let mut order = Vec::new();
+    let mut carries = Vec::new();
+    for _ in 0..16 {
+        flow.drive().await;
+        let tasks = flow.poll().await;
+        if tasks.is_empty() {
+            break;
+        }
+        // A loop undoes its iterations one after the other: never two compensations at once.
+        assert_eq!(tasks.len(), 1, "{:?}", summary(&tasks));
+        assert_eq!(tasks[0].task_kind, "COMPENSATION");
+        order.push((iteration(&tasks[0]), node(&tasks[0])));
+        let input: Value = serde_json::from_str(&tasks[0].input_json).expect("task input");
+        carries.push(input["carry"].as_i64().expect("the iteration's carry"));
+        flow.complete(&tasks[0], json!({"undone": true})).await;
+    }
+    flow.drive().await;
+    (order, carries)
+}
+
+#[tokio::test]
+async fn a_failed_loop_undoes_its_completed_iterations_last_first() {
+    let name = format!("scope-loop-{}", Uuid::now_v7());
+    let mut flow = Flow::start(&name, compensating_loop(&name, false, false), json!([])).await;
+    loop_until_a_charge_is_declined(&mut flow, 2).await;
+
+    assert_eq!(flow.run_status().await, "COMPENSATING");
+    let (order, carries) = compensation_order_with_carry(&mut flow).await;
+    assert_eq!(
+        carries,
+        vec![2, 1, 1, 0, 0],
+        "a compensation reads the carry its iteration started from, not the loop's latest"
+    );
+    assert_eq!(
+        order,
+        vec![
+            // The declined pass reserved but never charged.
+            (2, "reserve~c".to_owned()),
+            (1, "charge~c".to_owned()),
+            (1, "reserve~c".to_owned()),
+            (0, "charge~c".to_owned()),
+            (0, "reserve~c".to_owned()),
+        ],
+        "the last iteration is undone first, and inside each one the later effect first"
+    );
+    assert_eq!(flow.run_status().await, "COMPENSATED");
+    let scope: (String, Option<String>) =
+        sqlx::query_as("SELECT lifecycle, drain_failure_code FROM loop_scopes WHERE run_id = $1")
+            .bind(flow.run.as_uuid())
+            .fetch_one(&flow.api.db.pool)
+            .await
+            .expect("loop scope");
+    assert_eq!(scope, ("FAILED".into(), Some("PAYMENT_DECLINED".into())));
+    flow.verify().await;
+}
+
+#[tokio::test]
+async fn a_cancelled_loop_undoes_what_completed_and_ends_cancelled() {
+    let name = format!("scope-loop-cancel-{}", Uuid::now_v7());
+    let mut flow = Flow::start(&name, compensating_loop(&name, false, false), json!([])).await;
+    // Two passes complete; the third has reserved and waits for its charge when the run is cancelled.
+    for pass in 0..3 {
+        flow.drive().await;
+        let reserve = flow.poll().await;
+        flow.complete(&reserve[0], json!({"hold": pass})).await;
+        flow.drive().await;
+        let charge = flow.poll().await;
+        if pass < 2 {
+            flow.complete(&charge[0], json!({"charged": pass})).await;
+        } else {
+            let (status, body) = flow
+                .operate(json!({"action": "CANCEL", "reason": "the operator changed their mind"}))
+                .await;
+            assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+            flow.drive().await;
+            flow.fail(&charge[0], "CANCELLED_BY_WORKER", false).await;
+        }
+    }
+    let order = compensation_order(&mut flow).await;
+    assert_eq!(
+        order,
+        vec![
+            (2, "reserve~c".to_owned()),
+            (1, "charge~c".to_owned()),
+            (1, "reserve~c".to_owned()),
+            (0, "charge~c".to_owned()),
+            (0, "reserve~c".to_owned()),
+        ]
+    );
+    assert_eq!(flow.run_status().await, "CANCELLED");
+    flow.verify().await;
+}
+
+#[tokio::test]
+async fn a_loop_error_edge_is_taken_only_after_its_failure_was_undone() {
+    let name = format!("scope-loop-edge-{}", Uuid::now_v7());
+    let mut flow = Flow::start(&name, compensating_loop(&name, true, false), json!([])).await;
+    loop_until_a_charge_is_declined(&mut flow, 1).await;
+    assert_eq!(flow.run_status().await, "COMPENSATING");
+    let order = compensation_order(&mut flow).await;
+    assert_eq!(order.len(), 3, "{order:?}");
+    // The failure was undone: the run goes on at the edge and ends there.
+    assert_eq!(flow.run_status().await, "SUCCEEDED");
+    let edge: Vec<(String, bool)> =
+        sqlx::query_as("SELECT status, routed FROM steps WHERE run_id = $1 AND node = 'poll'")
+            .bind(flow.run.as_uuid())
+            .fetch_all(&flow.api.db.pool)
+            .await
+            .expect("loop owner");
+    assert_eq!(edge, vec![("FAILED".to_owned(), true)]);
+    flow.verify().await;
+}
+
+#[tokio::test]
+async fn a_loop_failure_that_was_not_fully_undone_is_not_handled_by_its_error_edge() {
+    let name = format!("scope-loop-edge-partial-{}", Uuid::now_v7());
+    let mut flow = Flow::start(&name, compensating_loop(&name, true, true), json!([])).await;
+    // `notify` cannot be undone: pass 0 completes it, then pass 1 fails at its charge.
+    for pass in 0..2 {
+        flow.drive().await;
+        let reserve = flow.poll().await;
+        flow.complete(&reserve[0], json!({"hold": pass})).await;
+        flow.drive().await;
+        let notify = flow.poll().await;
+        assert_eq!(
+            summary(&notify),
+            vec![row(pass, "notify", "FORWARD", "line.notify")]
+        );
+        flow.complete(&notify[0], json!({"sent": pass})).await;
+        flow.drive().await;
+        let charge = flow.poll().await;
+        if pass == 0 {
+            flow.complete(&charge[0], json!({"charged": 1})).await;
+        } else {
+            flow.fail(&charge[0], "PAYMENT_DECLINED", false).await;
+        }
+    }
+    let order = compensation_order(&mut flow).await;
+    assert_eq!(
+        order,
+        vec![(1, "reserve~c".to_owned()), (0, "reserve~c".to_owned())]
+    );
+    assert_eq!(
+        flow.run_status().await,
+        "PARTIAL",
+        "an irreversible effect stays, and the failure is not handled as if it had been undone"
+    );
+    let recovered: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM steps WHERE run_id = $1 AND node = 'recovered'")
+            .bind(flow.run.as_uuid())
+            .fetch_one(&flow.api.db.pool)
+            .await
+            .expect("recovery steps");
+    assert_eq!(recovered, 0);
+    flow.verify().await;
+}

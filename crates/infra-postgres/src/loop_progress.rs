@@ -1174,7 +1174,7 @@ impl LoopProgressStore for PgLoopProgressStore {
                     AND timer.owner_instance_id=scope.owner_instance_id \
                     AND timer.lifecycle='WAITING' \
                   WHERE run_shard(scope.run_id)=shard.value \
-                    AND run.status IN ('RUNNING','WAITING','CANCELLING') \
+                    AND run.status IN ('RUNNING','WAITING','CANCELLING','COMPENSATING') \
                     AND scope.tenant_id <> ALL($3::uuid[]) \
                     AND ( \
                       (run.status IN ('RUNNING','WAITING') AND ( \
@@ -2881,6 +2881,18 @@ impl LoopProgressStore for PgLoopProgressStore {
         let path_indices = iteration.get::<Vec<i32>, _>("entry_path_indices");
         let entry_node = iteration.get::<String, _>("entry_node");
         let remaining = iteration.get::<i32, _>("remaining_reservations");
+        let drain_definition = self
+            .definition(
+                &mut tx,
+                command.transition.tenant_id().as_uuid(),
+                run.version_id,
+            )
+            .await?;
+        let kept = crate::primitives::kept_reservations(
+            &drain_definition,
+            command.transition.owner(),
+            remaining,
+        );
         let members = sqlx::query(
             "SELECT node,status,attempt FROM steps WHERE tenant_id=$1 AND run_id=$2 \
                AND instance_path_nodes=$3 AND instance_path_indices=$4 ORDER BY node FOR UPDATE",
@@ -2903,8 +2915,11 @@ impl LoopProgressStore for PgLoopProgressStore {
                 status.as_str(),
                 "SUCCEEDED" | "FAILED" | "CANCELLED" | "SKIPPED"
             );
-            let safe_unstarted = matches!(status.as_str(), "PENDING" | "READY")
-                && member.get::<i32, _>("attempt") == 0;
+            // Nothing is in flight: a step that has not started, or one that waits to retry. One
+            // whose last attempt was lost keeps saying so when it is cancelled, and is compensated.
+            let safe_unstarted = (matches!(status.as_str(), "PENDING" | "READY")
+                && member.get::<i32, _>("attempt") == 0)
+                || status == "RETRY_WAIT";
             if (node.is_derived() && !matches!(status.as_str(), "SUCCEEDED" | "SKIPPED"))
                 || (!terminal && !safe_unstarted)
             {
@@ -2922,7 +2937,8 @@ impl LoopProgressStore for PgLoopProgressStore {
                     routed=true,waiting_kind=NULL,due_at=NULL,event_type=NULL,correlation_key=NULL, \
                     next_attempt_at=NULL,cancel_requested=false,updated_at=$8 \
              WHERE tenant_id=$1 AND run_id=$2 AND instance_path_nodes=$3 \
-               AND instance_path_indices=$4 AND status IN ('PENDING','READY') AND attempt=0",
+               AND instance_path_indices=$4 \
+               AND ((status IN ('PENDING','READY') AND attempt=0) OR status='RETRY_WAIT')",
         )
         .bind(command.transition.tenant_id().as_uuid())
         .bind(command.transition.run_id().as_uuid())
@@ -2938,7 +2954,7 @@ impl LoopProgressStore for PgLoopProgressStore {
         let sequence = run.run_version + 1;
         let updated = sqlx::query(
             "UPDATE loop_iterations SET lifecycle='DRAINED',slot_held=false, \
-                    remaining_reservations=0,drained_sequence=$5,drain_outbox_id=$6,updated_at=$7 \
+                    remaining_reservations=$8,drained_sequence=$5,drain_outbox_id=$6,updated_at=$7 \
              WHERE tenant_id=$1 AND run_id=$2 AND owner_instance_id=$3 AND iteration_index=$4",
         )
         .bind(command.transition.tenant_id().as_uuid())
@@ -2948,6 +2964,7 @@ impl LoopProgressStore for PgLoopProgressStore {
         .bind(number(sequence, "journal sequence")?)
         .bind(command.outbox_id)
         .bind(command.transition.occurred_at())
+        .bind(kept)
         .execute(&mut *tx)
         .await
         .map_err(store_error)?;
@@ -2976,7 +2993,7 @@ impl LoopProgressStore for PgLoopProgressStore {
         )
         .bind(command.transition.tenant_id().as_uuid())
         .bind(command.transition.run_id().as_uuid())
-        .bind(remaining)
+        .bind(remaining - kept)
         .execute(&mut *tx)
         .await
         .map_err(store_error)?;
@@ -3050,19 +3067,22 @@ impl LoopProgressStore for PgLoopProgressStore {
                     .ok_or_else(|| invalid_storage("loop finish sequence"))?,
             )
             .map_err(|_| invalid_storage("loop finish sequence"))?;
-            // `loop.finished` is followed by `run.finished`, or by the error edge's `step.routed`
-            // when the loop ended in failure and the run went on (D294): the journal says which.
-            let routed: bool = sqlx::query_scalar(
-                "SELECT EXISTS (SELECT 1 FROM run_events WHERE tenant_id=$1 AND run_id=$2 \
-                   AND seq=$3 AND event_type='step.routed')",
+            // `loop.finished` is followed by `run.finished`, by the error edge's `step.routed`
+            // when the loop ended in failure and the run went on (D294), or by the stop of a run
+            // whose compensating loop could not undo everything: the journal says which.
+            let next_event: Option<String> = sqlx::query_scalar(
+                "SELECT event_type FROM run_events WHERE tenant_id=$1 AND run_id=$2 AND seq=$3",
             )
             .bind(command.transition.tenant_id().as_uuid())
             .bind(command.transition.run_id().as_uuid())
             .bind(number(sequence + 1, "journal sequence")?)
-            .fetch_one(&mut *tx)
+            .fetch_optional(&mut *tx)
             .await
             .map_err(store_error)?;
-            let run_version = if routed {
+            let routed = next_event.as_deref() == Some("step.routed");
+            let run_version = if next_event.as_deref() == Some("run.stop_requested") {
+                sequence + 2
+            } else if routed {
                 let definition = self
                     .definition(
                         &mut tx,
@@ -3144,6 +3164,41 @@ impl LoopProgressStore for PgLoopProgressStore {
         } else {
             None
         };
+        // A loop that can be compensated ends only when its compensation is over, and the run ends
+        // with the worse of the stop and how the compensations ended (D385).
+        let compensation = if definition.scope_compensates(command.transition.owner()) {
+            let read = crate::scope_compensation::read_done_saga(
+                &mut tx,
+                command.transition.tenant_id().as_uuid(),
+                command.transition.run_id().as_uuid(),
+                &owner_nodes,
+                &owner_indices,
+                command.transition.owner().node().as_str(),
+            )
+            .await;
+            match read {
+                Ok(saga) => Some(saga),
+                Err(crate::scope_compensation::DoneSagaError::NotDone) => {
+                    return Err(LoopProgressError::InvalidTransition);
+                }
+                Err(crate::scope_compensation::DoneSagaError::Corrupt(detail)) => {
+                    return Err(invalid_storage(detail));
+                }
+                Err(crate::scope_compensation::DoneSagaError::Database(error)) => {
+                    return Err(store_error(error).into());
+                }
+            }
+        } else {
+            None
+        };
+        // An error edge handles a failure that was undone; one that was not is unhandled and ends
+        // the run with what the compensation made of it (D66).
+        let unhandled = compensation.as_ref().and_then(|saga| {
+            (route.is_some()
+                && run.active
+                && saga.outcome != sagat_domain::saga::SagaOutcome::Compensated)
+                .then_some(saga.outcome)
+        });
         // How the run stands decides how the loop ends. A stopped run finishes with the stop that
         // drained the loop; a cancel that landed during a failure drain wins over the error edge
         // (the loop still ends FAILED with its code). A running run, whose loop declares
@@ -3154,13 +3209,40 @@ impl LoopProgressStore for PgLoopProgressStore {
             let cancelled_over_route = route.is_some()
                 && run.stop_reason.as_deref() == Some("CANCELLED")
                 && run.stop_code.is_none();
-            if stop_matches {
-                Some(status)
+            let ended = if stop_matches {
+                status
             } else if cancelled_over_route {
-                Some("CANCELLED")
+                "CANCELLED"
             } else {
                 return Err(LoopProgressError::InvalidTransition);
+            };
+            match &compensation {
+                Some(saga) => Some(
+                    crate::scope_compensation::stopped_run_status(
+                        run.stop_reason.as_deref(),
+                        run.stop_code.as_deref(),
+                        saga,
+                    )
+                    .map_err(|error| match error {
+                        crate::scope_compensation::DoneSagaError::Corrupt(detail) => {
+                            invalid_storage(detail)
+                        }
+                        crate::scope_compensation::DoneSagaError::Database(error) => {
+                            store_error(error).into()
+                        }
+                        crate::scope_compensation::DoneSagaError::NotDone => {
+                            LoopProgressError::InvalidTransition
+                        }
+                    })?
+                    .as_str(),
+                ),
+                None => Some(ended),
             }
+        } else if let Some(outcome) = unhandled {
+            Some(match outcome {
+                sagat_domain::saga::SagaOutcome::Partial => "PARTIAL",
+                _ => "COMPENSATION_FAILED",
+            })
         } else if route.is_some() && run.active {
             None
         } else {
@@ -3234,7 +3316,20 @@ impl LoopProgressStore for PgLoopProgressStore {
             last
         } else {
             let run_status = run_status.ok_or(LoopProgressError::InvalidTransition)?;
-            let final_sequence = finish_sequence + 1;
+            // A run that was not stopped and whose compensation did not undo everything is stopped
+            // by that outcome and ends with it, in the same commit.
+            let stopped_by_outcome = unhandled.is_some();
+            let final_sequence = finish_sequence + 1 + u64::from(stopped_by_outcome);
+            if stopped_by_outcome {
+                append_run_event(
+                    &mut tx,
+                    &command.transition,
+                    finish_sequence + 1,
+                    "run.stop_requested",
+                    json!({"reason":run_status,"code":code.as_deref()}),
+                )
+                .await?;
+            }
             append_run_event(
                 &mut tx,
                 &command.transition,
@@ -3244,14 +3339,20 @@ impl LoopProgressStore for PgLoopProgressStore {
             )
             .await?;
             let run_updated = sqlx::query(
-                "UPDATE runs SET status=$3,run_version=$4,updated_at=$5,finished_at=$5 \
-                 WHERE tenant_id=$1 AND id=$2 AND status='CANCELLING'",
+                "UPDATE runs SET status=$3,run_version=$4,updated_at=$5,finished_at=$5, \
+                        stop_reason=CASE WHEN $6 THEN $3 ELSE stop_reason END, \
+                        stop_code=CASE WHEN $6 THEN $7 ELSE stop_code END \
+                 WHERE tenant_id=$1 AND id=$2 \
+                   AND ((NOT $6 AND status='CANCELLING') \
+                     OR ($6 AND status IN ('RUNNING','WAITING')))",
             )
             .bind(command.transition.tenant_id().as_uuid())
             .bind(command.transition.run_id().as_uuid())
             .bind(run_status)
             .bind(number(final_sequence, "run version")?)
             .bind(command.transition.occurred_at())
+            .bind(stopped_by_outcome)
+            .bind(code.as_deref())
             .execute(&mut *tx)
             .await
             .map_err(store_error)?;

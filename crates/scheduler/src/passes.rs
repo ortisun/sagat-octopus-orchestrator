@@ -198,6 +198,8 @@ pub enum LoopAdvance {
         index: u32,
     },
     DrainFinished,
+    /// A compensating scope planned, released or ended its compensation (feature 014, D380).
+    Compensated,
     ExpressionStopped,
     /// Entry retained no value and the run was stopped for its durable-content quota.
     QuotaStopped,
@@ -227,6 +229,8 @@ pub enum LoopAdvanceError {
     Progress(#[from] LoopProgressError),
     #[error(transparent)]
     Input(#[from] LoopInputError),
+    #[error(transparent)]
+    Execution(#[from] ExecutionError),
     #[error("loop expression evaluation failed")]
     Expression,
 }
@@ -1597,9 +1601,6 @@ where
         let body = definition
             .body(body_name)
             .ok_or(LoopAdvanceError::NotLoop)?;
-        if body.all_nodes().count() != body.nodes().count() {
-            return Err(LoopAdvanceError::InvalidProgress);
-        }
         let next_activity = |index| -> Result<LoopNextActivity, LoopAdvanceError> {
             let entry = body
                 .node(body.entrypoint())
@@ -1794,11 +1795,14 @@ where
                                 step.status(),
                                 execution::StepStatus::Succeeded | execution::StepStatus::Skipped
                             );
-                        let safe_unstarted = step.attempt() == 0
+                        // Nothing is in flight: a step that has not started, or one that waits
+                        // to retry.
+                        let safe_unstarted = (step.attempt() == 0
                             && matches!(
                                 step.status(),
                                 execution::StepStatus::Pending | execution::StepStatus::Ready
-                            );
+                            ))
+                            || step.status() == execution::StepStatus::RetryWait;
                         step.status().is_terminal() && !instance.node().is_derived()
                             || settled_derived
                             || safe_unstarted
@@ -1819,6 +1823,43 @@ where
                 instance != owner && instance.path().is_root() && !step.status().is_terminal()
             }) {
                 return Ok(LoopAdvance::Waiting);
+            }
+            // A loop that can be compensated undoes what its iterations completed before it ends,
+            // last iteration first (D380, D383).
+            if definition.scope_compensates(owner) {
+                let finished = state
+                    .scope_saga(owner)
+                    .is_some_and(|saga| saga.phase() == execution::SagaPhase::Done);
+                if !finished {
+                    if !matches!(
+                        execution::plan_scope_compensation(&definition, &state)?,
+                        execution::AddressedPlan::Emit(_)
+                    ) {
+                        return Ok(LoopAdvance::Waiting);
+                    }
+                    return match self
+                        .apply_addressed(
+                            view,
+                            tenant,
+                            run,
+                            "scope_compensation",
+                            self.effects(),
+                            |def, state, _| {
+                                Ok(((), execution::advance_scope_compensation(def, state)?))
+                            },
+                        )
+                        .await
+                    {
+                        Outcome::Done => Ok(LoopAdvance::Compensated),
+                        Outcome::Skipped => Ok(LoopAdvance::Waiting),
+                        Outcome::Fenced => Err(LoopAdvanceError::FenceUnavailable),
+                        Outcome::Failed | Outcome::QuotaStopped => Err(LoopAdvanceError::Engine(
+                            EngineError::Store(StoreError::Internal {
+                                detail: "scope compensation could not be committed".to_owned(),
+                            }),
+                        )),
+                    };
+                }
             }
             self.store
                 .finish_drain(&LoopDrainFinishCommand::new(
@@ -2811,6 +2852,7 @@ where
                         | LoopAdvance::DrainStarted
                         | LoopAdvance::Drained { .. }
                         | LoopAdvance::DrainFinished
+                        | LoopAdvance::Compensated
                         | LoopAdvance::ExpressionStopped,
                     ) => Outcome::Done,
                     Ok(LoopAdvance::QuotaStopped) => Outcome::QuotaStopped,

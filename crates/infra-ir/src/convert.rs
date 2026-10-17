@@ -636,10 +636,10 @@ pub(crate) fn structured_definition(document: &Value) -> Result<WorkflowDefiniti
     structured_definition_inner(document)
 }
 
-/// The longest chain of activities a published collection body may have. A chain is what makes the
+/// The longest chain of activities a published collection or loop body may have. A chain is what makes the
 /// compensation order inside one iteration observable at runtime (the later activities are undone
 /// first); the bound is the largest the runtime tests exercise, and can be raised with them.
-const MAX_COLLECTION_CHAIN: usize = 8;
+const MAX_BODY_CHAIN: usize = 8;
 
 /// Whether the body is one to `limit` activities in sequence and then its return: each activity
 /// routes to the next, has no `onError` edge, and may declare `compensateWith`, `reconcileWith`,
@@ -748,7 +748,7 @@ pub(crate) fn published_collection_definition(
                 reason: "published collection bodies must be referenced by a collection owner",
             });
         }
-        if !is_activity_chain(body, MAX_COLLECTION_CHAIN) {
+        if !is_activity_chain(body, MAX_BODY_CHAIN) {
             return Err(IrError::Unsupported {
                 node: body.name().as_str().to_owned(),
                 kind: "body".to_owned(),
@@ -820,23 +820,11 @@ pub(crate) fn published_loop_definition(document: &Value) -> Result<WorkflowDefi
                 reason: "published loop bodies must be referenced by a loop owner",
             });
         }
-        let nodes = body.nodes().collect::<Vec<_>>();
-        let all_nodes = body.all_nodes().count();
-        let entry = body.node(body.entrypoint());
-        let return_node = entry
-            .and_then(|node| node.next())
-            .and_then(|next| body.node(next));
-        let proven = nodes.len() == 2
-            && all_nodes == 2
-            && entry.is_some_and(|node| {
-                matches!(node.kind(), NodeKind::Activity { .. }) && node.on_error().is_none()
-            })
-            && return_node.is_some_and(|node| matches!(node.kind(), NodeKind::Return { .. }));
-        if !proven {
+        if !is_activity_chain(body, MAX_BODY_CHAIN) {
             return Err(IrError::Unsupported {
                 node: body.name().as_str().to_owned(),
                 kind: "body".to_owned(),
-                reason: "the runtime supports a loop body with one activity followed by one return",
+                reason: "the runtime supports a loop body of one to eight activities in sequence followed by one return",
             });
         }
     }
