@@ -117,6 +117,8 @@ function runJson(run: Run): Obj {
     paused: run.paused, startedBy: run.startedBy, createdAt: iso(run.createdAt), updatedAt: iso(run.updatedAt),
     finishedAt: iso(run.finishedAt), deadline: iso(run.deadline), traceId: run.traceId, correlationId: run.correlationId,
     depth: run.depth, parent: run.parent,
+    // Present only for a run in a chain, so the observations of every other run stay as they were.
+    ...(run.chain ? { chain: run.chain } : {}),
   };
 }
 
@@ -341,6 +343,13 @@ async function run(scenario: Obj, config: Obj): Promise<Obj> {
   const observations: Obj[] = [];
   const results = new Map<string, Obj>();
   const runOf = (step: Obj): string => {
+    if (typeof step['page'] === 'string') {
+      // A segment of a page of `listChainRuns`, by position.
+      const items = results.get(step['page'])?.['items'];
+      const id = Array.isArray(items) ? (items[step['index'] ?? 0] as Obj | undefined)?.['runId'] : undefined;
+      if (typeof id !== 'string') throw new Error(`step ${String(step['page'])} has no segment ${String(step['index'])}`);
+      return id;
+    }
     const result = results.get(step['run']);
     const id = result?.['runId'];
     if (typeof id !== 'string') throw new Error(`step ${String(step['run'])} has no run`);
@@ -480,6 +489,23 @@ async function run(scenario: Obj, config: Obj): Promise<Obj> {
             runId: r.runId, operation: r.operation, updateKey: r.updateKey, status: r.status, result: r.result,
             beforeStateRevision: r.beforeStateRevision, afterStateRevision: r.afterStateRevision,
             runVersion: r.runVersion, replayed: r.replayed,
+          };
+          break;
+        }
+        case 'listChainRuns': {
+          const named = /^\{\{nextCursor:([^}]+)\}\}$/.exec(String(step['cursor'] ?? ''));
+          const cursor = named ? (results.get(named[1]!)?.['nextCursor'] as string | undefined) : (step['cursor'] as string | undefined);
+          if (named && typeof cursor !== 'string') throw new Error(`step ${named[1]} has no next page`);
+          const page = await client.listChainRuns(chainRef(step['namespaceId']), chainRef(step['chainId']), {
+            cursor, limit: step['limit'], traceparent: step['traceparent'],
+          });
+          result = {
+            items: page.items.map((item) => ({
+              index: item.index, runId: item.runId, status: item.status, completionKind: item.completionKind,
+              predecessorRunId: item.predecessorRunId, successorRunId: item.successorRunId,
+              createdAt: iso(item.createdAt), finishedAt: iso(item.finishedAt),
+            })),
+            nextCursor: page.nextCursor,
           };
           break;
         }

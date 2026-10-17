@@ -459,6 +459,14 @@ public final class Runner {
             parent.put("node", run.parent().node());
             parent.put("cancelPolicy", run.parent().cancelPolicy());
         }
+        // Present only for a run in a chain, so the observations of every other run stay as they were.
+        if (run.chain() != null) {
+            ObjectNode chain = out.putObject("chain");
+            chain.put("chainId", run.chain().chainId());
+            chain.put("segmentIndex", run.chain().segmentIndex());
+            if (run.chain().completionKind() == null) chain.putNull("completionKind"); else chain.put("completionKind", run.chain().completionKind());
+            if (run.chain().successorRunId() == null) chain.putNull("successorRunId"); else chain.put("successorRunId", run.chain().successorRunId());
+        }
         return out;
     }
 
@@ -648,6 +656,16 @@ public final class Runner {
     }
 
     private static String runOf(JsonNode step, Map<String, JsonNode> results) {
+        if (step.path("page").isTextual()) {
+            // A segment of a page of listChainRuns, by position.
+            JsonNode listed = results.get(step.get("page").asText());
+            JsonNode items = listed == null ? null : listed.path("items");
+            int index = step.path("index").asInt(0);
+            if (items == null || !items.isArray() || index < 0 || index >= items.size() || !items.get(index).path("runId").isTextual()) {
+                throw new IllegalStateException("step " + step.get("page").asText() + " has no segment " + index);
+            }
+            return items.get(index).get("runId").textValue();
+        }
         JsonNode result = results.get(step.path("run").asText());
         JsonNode id = result == null ? null : result.get("runId");
         if (id == null || !id.isTextual()) {
@@ -909,6 +927,36 @@ public final class Runner {
                 result.put("beforeStateRevision", updated.beforeStateRevision());
                 result.put("afterStateRevision", updated.afterStateRevision());
                 result.put("runVersion", updated.runVersion()); result.put("replayed", updated.replayed());
+                return result;
+            }
+            case "listChainRuns": {
+                dev.sagatoctopusorchestrator.sdk.ChainRunListOptions options = dev.sagatoctopusorchestrator.sdk.ChainRunListOptions.create();
+                if (step.has("limit")) options.limit(step.get("limit").asInt());
+                if (step.has("traceparent")) options.traceparent(step.get("traceparent").asText());
+                if (step.has("cursor")) {
+                    String cursor = step.get("cursor").asText();
+                    if (cursor.startsWith("{{nextCursor:") && cursor.endsWith("}}")) {
+                        JsonNode earlier = results.get(cursor.substring("{{nextCursor:".length(), cursor.length() - 2));
+                        if (earlier == null || !earlier.path("nextCursor").isTextual()) {
+                            throw new IllegalStateException("the referenced step has no next page");
+                        }
+                        cursor = earlier.get("nextCursor").asText();
+                    }
+                    options.cursor(cursor);
+                }
+                dev.sagatoctopusorchestrator.sdk.ChainRunPage page = client.listChainRuns(
+                        chainRef(step.get("namespaceId"), config, results), chainRef(step.get("chainId"), config, results), options);
+                ObjectNode result = F.objectNode();
+                ArrayNode items = result.putArray("items");
+                for (dev.sagatoctopusorchestrator.sdk.ChainRun item : page.items()) {
+                    ObjectNode entry = items.addObject();
+                    entry.put("index", item.index()); entry.put("runId", item.runId()); entry.put("status", item.status());
+                    if (item.completionKind() == null) entry.putNull("completionKind"); else entry.put("completionKind", item.completionKind());
+                    if (item.predecessorRunId() == null) entry.putNull("predecessorRunId"); else entry.put("predecessorRunId", item.predecessorRunId());
+                    if (item.successorRunId() == null) entry.putNull("successorRunId"); else entry.put("successorRunId", item.successorRunId());
+                    entry.set("createdAt", instant(item.createdAt())); entry.set("finishedAt", instant(item.finishedAt()));
+                }
+                if (page.nextCursor() == null) result.putNull("nextCursor"); else result.put("nextCursor", page.nextCursor());
                 return result;
             }
             case "inspectChain": {

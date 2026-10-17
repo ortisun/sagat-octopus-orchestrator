@@ -25,6 +25,19 @@ func asString(value any) string {
 	return s
 }
 
+// asCount reads a small non-negative integer the scenario wrote (a limit, a position); absent is zero.
+func asCount(value any) int {
+	n, ok := value.(interface{ Int64() (int64, error) })
+	if !ok {
+		return 0
+	}
+	count, err := n.Int64()
+	if err != nil || count < 0 {
+		return 0
+	}
+	return int(count)
+}
+
 func asMillis(value any) time.Duration {
 	n, ok := value.(interface{ Int64() (int64, error) })
 	if !ok {

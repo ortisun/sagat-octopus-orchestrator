@@ -162,6 +162,16 @@ internal sealed class RunMode : IAsyncDisposable
 
     private string RunOf(JsonObject step)
     {
+        if (step["page"] is JsonValue pageKey && pageKey.TryGetValue<string>(out var page))
+        {
+            // A segment of a page of listChainRuns, by position.
+            var index = (int?)step["index"] ?? 0;
+            return results.TryGetValue(page, out var listed) && listed["items"] is JsonArray items && index >= 0 && index < items.Count
+                && items[index] is JsonObject segment && segment["runId"] is JsonValue segmentId && segmentId.TryGetValue<string>(out var segmentRun)
+                ? segmentRun
+                : throw new InvalidOperationException($"step {page} has no segment {index}");
+        }
+
         var key = (string)step["run"]!;
         return results.TryGetValue(key, out var result) && result["runId"] is JsonValue id && id.TryGetValue<string>(out var text)
             ? text
@@ -520,6 +530,33 @@ internal sealed class RunMode : IAsyncDisposable
                     };
                 }
 
+            case "listChainRuns":
+                {
+                    var cursor = (string?)step["cursor"];
+                    if (cursor is not null && cursor.StartsWith("{{nextCursor:", StringComparison.Ordinal) && cursor.EndsWith("}}", StringComparison.Ordinal))
+                    {
+                        var reference = cursor["{{nextCursor:".Length..^2];
+                        cursor = results.TryGetValue(reference, out var earlier) && earlier["nextCursor"] is JsonValue next && next.TryGetValue<string>(out var text)
+                            ? text
+                            : throw new InvalidOperationException($"step {reference} has no next page");
+                    }
+
+                    var page = await client.ListChainRunsAsync(
+                        ChainRef(step["namespaceId"]), ChainRef(step["chainId"]),
+                        new ChainRunListOptions { Cursor = cursor, Limit = (int?)step["limit"], Traceparent = (string?)step["traceparent"] },
+                        cancellationToken).ConfigureAwait(false);
+                    return new JsonObject
+                    {
+                        ["items"] = new JsonArray([.. page.Items.Select(item => (JsonNode?)new JsonObject
+                        {
+                            ["index"] = item.Index, ["runId"] = item.RunId, ["status"] = item.Status,
+                            ["completionKind"] = item.CompletionKind, ["predecessorRunId"] = item.PredecessorRunId,
+                            ["successorRunId"] = item.SuccessorRunId, ["createdAt"] = Iso(item.CreatedAt), ["finishedAt"] = Iso(item.FinishedAt),
+                        })]),
+                        ["nextCursor"] = page.NextCursor,
+                    };
+                }
+
             case "inspectChain":
                 {
                     var namespaceId = ChainRef(step["namespaceId"]);
@@ -729,7 +766,23 @@ internal sealed class RunMode : IAsyncDisposable
         _ => throw new InvalidOperationException($"unknown action {action}"),
     };
 
-    internal static JsonObject RunJson(Run run) => new()
+    internal static JsonObject RunJson(Run run)
+    {
+        var observed = RunFields(run);
+        // Present only for a run in a chain, so the observations of every other run stay as they were.
+        if (run.Chain is { } chain)
+        {
+            observed["chain"] = new JsonObject
+            {
+                ["chainId"] = chain.ChainId, ["segmentIndex"] = chain.SegmentIndex,
+                ["completionKind"] = chain.CompletionKind, ["successorRunId"] = chain.SuccessorRunId,
+            };
+        }
+
+        return observed;
+    }
+
+    private static JsonObject RunFields(Run run) => new()
     {
         ["runId"] = run.RunId,
         ["workflowId"] = run.WorkflowId,
