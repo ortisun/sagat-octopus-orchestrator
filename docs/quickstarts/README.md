@@ -27,7 +27,9 @@ docker compose -f infra/docker/compose.yaml --env-file infra/docker/.env up -d -
 docker compose -f infra/docker/compose.yaml --env-file infra/docker/.env --profile seed run --rm seed
 ```
 
-The first command builds the images (a few minutes the first time). It starts PostgreSQL, NATS, the control plane
+The first command builds the images (a few minutes the first time). The Rust image builder defaults
+to three concurrent Cargo jobs; an explicit `docker build` can set `--build-arg CARGO_BUILD_JOBS=2`
+for a smaller Docker memory budget. It starts PostgreSQL, NATS, the control plane
 (the REST API and the Studio), the execution engine (the worker API) and the development identity provider. The
 seed makes a tenant `dev`, its administrator `dev-admin`, and a namespace `payments`; it is safe to run again.
 

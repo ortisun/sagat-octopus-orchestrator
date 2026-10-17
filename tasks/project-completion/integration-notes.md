@@ -888,3 +888,15 @@ protocol-negotiation 56.19 s, scoped-identity 46.04 s, secrets 24.19 s
 `/tmp/sagat-completion-sdk-secrets-heartbeat-fixture.log`). Registry preflight passed 1/1, 0.05 s
 (`/tmp/sagat-completion-sdk-reviewed-registry.log`). These targeted repeats repair the recorded
 failed checkpoint; they are not a claim that a later whole matrix has already completed.
+
+### Canonical local Compose execution
+
+The Docker Rust builder now defaults to three Cargo jobs, configurable through the
+`CARGO_BUILD_JOBS` build argument. The documented local memory budget completed both real
+five-process release builds. The first Compose smoke passed migration/seed/health/runtime audit
+immutability and CLI work, then exposed an uncompiled TypeScript example prerequisite; its failed
+log remains `/tmp/sagat-completion-current-compose-smoke.log`. After locked installation and
+compilation of that example, the complete smoke passed, including CLI, TypeScript worker and real
+Chromium **1/1**, no ignored (`/tmp/sagat-completion-current-compose-smoke-2.log`). The script
+removed only its own Compose project and volumes. Images were built before the later mutation-clock
+fix; this checkpoint does not claim rebuilt post-clock release images or final release acceptance.
