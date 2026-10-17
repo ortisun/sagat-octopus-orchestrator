@@ -131,3 +131,7 @@ partial-delivery recovery and all-five public WorkerHost parity. Polling remains
 older servers and explicit diagnostics. The comparative benchmark must report both RPC and
 claim rates; streaming does not imply reduced database polling or guaranteed throughput gains.
 This acceptance text records intended behavior, not implementation or validation results.
+
+## Approved dependent delivery: database connections
+
+Feature [017](../017-database-connections/spec.md) and [ADR-0033](../../docs/adr/ADR-0033-database-connections-and-managed-execution.md) were approved on 2026-10-16. Its [plan](../017-database-connections/plan.md) defines the bounded extension to shared contracts, admission/leases, effects, SDKs, Studio, telemetry, secret-provider/security and immutable revisions. Existing transactional, tenant and general payload-inspection guarantees remain binding. Track implementation and new runtime evidence in feature 017; this dependency note does not mark its requirements complete.

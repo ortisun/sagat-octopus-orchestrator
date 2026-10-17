@@ -45,4 +45,4 @@ OpenBao's [MPL-2.0 license](https://github.com/openbao/openbao/blob/main/LICENSE
 
 ## Evidence status
 
-Only document consistency checks apply to this delivery. No driver, API, migration, UI, SDK builder or OpenBao deployment is implemented here. Feature 017 runtime suites and their conformance fixtures must be created in the approved implementation work; existing tests are not evidence for this new feature.
+Implementation is authorized. Actual checks are recorded in `verification.md`; tasks and success criteria remain open until their own evidence exists. The adapter fixture pins OpenBao 2.7.1, verified against the official release and KV v2 documentation. Workload identity renewal uses the OpenBao Agent token sink; production rejects root and non-expiring tokens at lookup-self.

@@ -134,3 +134,7 @@ terminal evidence. Log exhaustion truncates with persisted evidence. Rejected as
 ends with a fenced typed failure and repeatable acknowledgement. Lowering retention policy does not
 rewrite existing expiry or authorize deletion. These are conservative engineering limits; quota
 tiers and regulatory retention classification remain the open product questions above.
+
+## Approved dependent delivery: database connections
+
+Feature [017](../017-database-connections/spec.md) and [ADR-0033](../../docs/adr/ADR-0033-database-connections-and-managed-execution.md) were approved on 2026-10-16. Its [plan](../017-database-connections/plan.md) defines the bounded extension to shared contracts, admission/leases, effects, SDKs, Studio, telemetry, secret-provider/security and immutable revisions. Existing transactional, tenant and general payload-inspection guarantees remain binding. Track implementation and new runtime evidence in feature 017; this dependency note does not mark its requirements complete.

@@ -19,7 +19,7 @@
 
 ## Evidence protocol
 
-Feature [017 database-connections](../specs/017-database-connections/spec.md) is a design proposal: FR-017-001..022, five user stories and SC-017-001..011 have future evidence mapping in the specification. PostgreSQL and OpenBao in the first delivery are user-confirmed. APIs, executor, UI, SDK builders, migration and runtime tests are not implemented; specification review and the proposed ADR remain pending. No existing test result closes these requirements.
+Feature [017 database-connections](../specs/017-database-connections/spec.md) is approved and implementing (2026-10-16). FR-017-001..022 and SC-017-001..011 are tracked in its [tasks](../specs/017-database-connections/tasks.md). Runtime evidence is pending; approval does not close any runtime criterion.
 
 1. Link the PR to the FR and SC satisfied; reference the exact test (name and CI execution).
 2. For durability invariants: failure scenario, journal evidence and absence of a double transition.

@@ -27,6 +27,7 @@ pub mod runs;
 pub mod sandbox;
 pub mod script_signing;
 pub mod scripts;
+pub mod secret_provider;
 pub mod secrets;
 pub mod shards;
 pub mod signing;

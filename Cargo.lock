@@ -4545,9 +4545,21 @@ version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "base64 0.23.1",
+ "bytes",
  "getrandom 0.4.3",
+ "metrics",
+ "reqwest",
+ "rustls",
+ "sagat-application",
  "sagat-domain",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "testcontainers-modules",
  "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "uuid",
  "zeroize",
 ]
 

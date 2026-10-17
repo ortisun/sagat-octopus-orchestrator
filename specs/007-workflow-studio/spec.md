@@ -202,3 +202,7 @@ cursor. A later-page error or cancellation must not publish a partial list as a 
 Send signal acceptance (T007-056/G167): [`signal-completion.md`](./signal-completion.md) defines
 the authorized confirmation, bounded JSON input, retry identity and context-disposal behavior.
 It uses the existing durable feature 002 signal API; no execution or audit semantics change.
+
+## Approved dependent delivery: database connections
+
+Feature [017](../017-database-connections/spec.md) and [ADR-0033](../../docs/adr/ADR-0033-database-connections-and-managed-execution.md) were approved on 2026-10-16. Its [plan](../017-database-connections/plan.md) defines the bounded extension to shared contracts, admission/leases, effects, SDKs, Studio, telemetry, secret-provider/security and immutable revisions. Existing transactional, tenant and general payload-inspection guarantees remain binding. Track implementation and new runtime evidence in feature 017; this dependency note does not mark its requirements complete.

@@ -126,3 +126,7 @@ Requirements `FR-002-###` and criteria `SC-002-###` must be mapped to tasks and 
 ## Large run-input contract (T002-040)
 
 A caller authorized to start a run may stream an input blob into its namespace and use its returned id through the mutually exclusive `inputBlobRef` start field. The creator owns the unused upload; binding commits atomically with the run and replays idempotently. The run's input is an explicit claim-check descriptor, validated against a declared input schema, while the blob contents remain opaque. Worker reads require a current bound lease and committed input scope. Reruns and inherited child inputs preserve the source reference through durable provenance.
+
+## Approved dependent delivery: database connections
+
+Feature [017](../017-database-connections/spec.md) and [ADR-0033](../../docs/adr/ADR-0033-database-connections-and-managed-execution.md) were approved on 2026-10-16. Its [plan](../017-database-connections/plan.md) defines the bounded extension to shared contracts, admission/leases, effects, SDKs, Studio, telemetry, secret-provider/security and immutable revisions. Existing transactional, tenant and general payload-inspection guarantees remain binding. Track implementation and new runtime evidence in feature 017; this dependency note does not mark its requirements complete.

@@ -1,6 +1,6 @@
 # ADR-0033 — Reusable database connections and managed execution
 
-Status: **Proposed — design review pending** | Date: 2026-10-16 | Feature: [017](../../specs/017-database-connections/spec.md)
+Status: **Accepted — user approved implementation on 2026-10-16** | Date: 2026-10-16 | Feature: [017](../../specs/017-database-connections/spec.md)
 
 ## Context
 
@@ -8,7 +8,7 @@ The user confirmed UI-managed PostgreSQL connections, OpenBao in the first deliv
 
 A connection selects an external effect destination. Retargeting it during retries, exposing arbitrary secret-manager paths, or treating a UI query as an unaudited shortcut would violate the platform's durability and tenant boundaries. Customer databases commonly require private networking, which cannot be enabled by weakening all existing egress checks.
 
-## Proposed decisions
+## Decisions
 
 1. **A scoped connection is a versioned resource.** Store non-secret PostgreSQL settings plus a logical credential reference. Resolve names/revisions when a run is admitted and retain the binding throughout its attempts. Subsequent edits affect subsequent runs. Current revocation is still authoritative. Preserve referenced revisions through run retention and require explicit migration for environment promotion.
 2. **UI and SDKs share one database-operation contract.** Both author the same canonical connection reference, operation, bound parameters, limits and effect policy. An additive database node is a candidate wire shape, not an accepted new discriminator yet. The reviewed plan must choose its exact representation and capability negotiation without forking SDK semantics or granting ordinary workers access to managed database tasks.
@@ -39,4 +39,4 @@ A connection selects an external effect destination. Retargeting it during retri
 
 ## Review and verification gates
 
-This proposal accepts no runtime guarantee. Before it becomes Accepted, approve the operation/capability/result contracts and dependency changes; pin provider/driver versions; specify token bootstrap, migration, private-network enforcement and default resource limits. Measure the dedicated executor's operational cost and resolution/pooling latency. Prove with real PostgreSQL/OpenBao: cross-tenant denial, provider/engine/target commit faults, DNS/TLS/route refusal, ambiguous writes, stale leases, cancellation races, failed compensation, restart, secret canaries, quota exhaustion and backup/restore. All five SDKs must execute the shared fixtures, and real-browser E2E must cover registration through ad hoc outcome.
+This proposal accepts no runtime guarantee. Implementation details and finite ceilings are recorded in the [plan](../../specs/017-database-connections/plan.md); pin provider/driver versions; specify token bootstrap, migration, private-network enforcement and default resource limits. Measure the dedicated executor's operational cost and resolution/pooling latency. Prove with real PostgreSQL/OpenBao: cross-tenant denial, provider/engine/target commit faults, DNS/TLS/route refusal, ambiguous writes, stale leases, cancellation races, failed compensation, restart, secret canaries, quota exhaustion and backup/restore. All five SDKs must execute the shared fixtures, and real-browser E2E must cover registration through ad hoc outcome.

@@ -126,3 +126,7 @@ reads; `worker:manage` additionally gates drain/resume. Confirmation must explai
 applies to every session of that identity in this namespace and prevents new claims without
 cancelling current attempts. Require the existing audited justification. Namespace/session changes
 must discard forms and stale results; failures must remain actionable without fabricated health.
+
+## Approved dependent delivery: database connections
+
+Feature [017](../017-database-connections/spec.md) and [ADR-0033](../../docs/adr/ADR-0033-database-connections-and-managed-execution.md) were approved on 2026-10-16. Its [plan](../017-database-connections/plan.md) defines the bounded extension to shared contracts, admission/leases, effects, SDKs, Studio, telemetry, secret-provider/security and immutable revisions. Existing transactional, tenant and general payload-inspection guarantees remain binding. Track implementation and new runtime evidence in feature 017; this dependency note does not mark its requirements complete.

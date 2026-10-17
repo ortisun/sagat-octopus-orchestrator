@@ -4,7 +4,7 @@
 
 **Created:** 2026-10-16
 
-**Status:** Draft for design review; product scope confirmed, implementation pending
+**Status:** Approved for implementation on 2026-10-16; implementation in progress
 
 **Input:** Configure databases in the Sagat UI, create access secrets backed by OpenBao, and reuse the configuration in SDK-authored workflows, visual workflows and ad hoc workflows/steps.
 
@@ -165,4 +165,4 @@ Integration tests require Docker/PostgreSQL and the repository's test configurat
 
 Out of scope: more database engines in this first delivery, Kafka target redesign, arbitrary scripts with direct database sockets, automatic schema/database provisioning, cross-step/customer-database distributed transactions, automatic account/password creation through OpenBao's database engine, full platform key/telemetry migration, and bulk result export.
 
-`plan.md`, `tasks.md`, machine-readable contracts and implementation follow this specification's design review. No task or success criterion is complete merely because this document exists. See the [requirements checklist](checklists/requirements.md).
+The user approved implementation on 2026-10-16. `plan.md` and `tasks.md` record the execution sequence; machine-readable contracts are updated with their implementation. No task or success criterion is complete merely because this document exists. See the [requirements checklist](checklists/requirements.md).
