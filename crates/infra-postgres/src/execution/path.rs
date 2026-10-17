@@ -3,6 +3,18 @@
 use super::*;
 
 impl PathExecutionTx for PgPathExecutionTx {
+    async fn logical_output_bytes(&mut self) -> Result<u64, StoreError> {
+        let bytes: i64 = sqlx::query_scalar(
+            "SELECT logical_output_bytes FROM run_instance_usage WHERE tenant_id=$1 AND run_id=$2",
+        )
+        .bind(self.snapshot.info.tenant_id.as_uuid())
+        .bind(self.snapshot.info.run_id.as_uuid())
+        .fetch_one(&mut *self.tx)
+        .await
+        .map_err(store_error)?;
+        u64::try_from(bytes).map_err(|_| corrupt("logical run output bytes"))
+    }
+
     fn snapshot(&mut self) -> &mut PathExecutionSnapshot {
         &mut self.snapshot
     }

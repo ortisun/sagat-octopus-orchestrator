@@ -1256,3 +1256,58 @@ withdrawal or an incorrect echoed step id. The first invocation had an invalid t
 and failed compilation (`...-report-red.log`). These new failures are not included in the preceding
 344-pass checkpoint and remain the next implementation slice. Full release/resource gates and all
 open feature tasks remain unchecked.
+
+### Bounded inline reports and current receipt authority
+
+Ordinary Root receipt lookup now checks the echoed step identity and persisted binding/membership
+before reading the receipt. Scoped inline completion/failure uses its current exact path, shared
+pure completion/failure/compensation/reconciliation policy and the global logical-output ledger
+without historical value restoration. Reports atomically persist output references, outcome,
+journal/projection/outbox, applicable audit and the original receipt. Retained-content failure rolls
+back before a fresh fenced metadata failure under the same identity; secret-denial audit survives
+that fallback. A provider output scan closes the transaction, reads immutable versions outside it,
+then reopens the current path and rechecks authority/lease/secret versions. Only the explicit
+non-retryable cancellation acknowledgement gets the existing cancellation exception. Blob
+completion and secret/blob capability conversion remain separate open work.
+
+The five genuine failing report/receipt baselines recorded above passed **5/5**, 2.81 s
+(`/tmp/sagat-completion-bounded-worker-report-green-2.log`). The earlier interface check/green
+invocation failed compilation from an overly broad associated-type bound and a mistyped editing
+helper; those logs are retained, not runtime evidence. Root receipt-only intermediate repeat
+passed **3/3**, 1.78 s (`/tmp/sagat-completion-root-receipt-authority-green.log`).
+
+The complete workflow suite as compiled before the two new provider-barrier cases passed
+**349 passed /0 failed /1 ignored**, 234.19 s
+(`/tmp/sagat-completion-bounded-worker-report-workflow-regression.log`, four harness threads).
+Two additional tests use real OpenBao 2.7.1, explicit legacy-secret migration and a wrapper that
+only pauses the actual provider read. Role/binding withdrawal commits while paused, and the
+resumed report returns a typed refusal with zero completed events. The initial barrier repeat
+passed **2/2**, 5.24 s, before adding an independent run-row lock probe; the updated compiled
+barriers including that probe passed **2/2**, 5.34 s
+(`/tmp/sagat-completion-bounded-worker-report-provider-lock-barriers.log`, one harness thread).
+This proves both run/authority locks are released during provider I/O; the first executable did
+not include the later run-lock probe and is not used for that additional assertion.
+
+Current complete gRPC passed **70/70**, 50.31 s; PostgreSQL/OpenBao aggregate **3/3**, 33.57 s;
+full primitive faults **87/87**, 82.90 s. They ran sequentially with four harness threads:
+`/tmp/sagat-completion-bounded-worker-report-{grpc,provider,faults}-regression.log`; command wall
+times/exit codes are separately retained in `...-gate-results.json`. The privilege module passed
+**33/33**, 11.22 s, reading current SQL with the unchanged reviewed extractor: **1,036 statements
+in 52 files**, 653 distinct needs, 620 actual runtime-role probes, no added grant/exception
+(`...-privilege-audit.log`). Strict whole-workspace/all-target Clippy passed, 2 min 22 s
+(`...-clippy.log`); formatting and diff checks passed.
+
+Four current scenarios each passed across all five SDKs without changed sources or expected files:
+`scoped-identity`, `collection-compensation`, `loop-compensation`, `secrets`. Aggregate command
+wall times were 57.08/48.62/48.16/25.17 s; per-scenario logs and exit/time manifest are retained at
+`/tmp/sagat-completion-bounded-worker-report-sdk-results.json`. This is twenty focused language
+executions, not the final complete 55-scenario compatibility gate.
+
+Resource housekeeping removed only obsolete compiler `.rlib`/`.rmeta` cache files under the owned,
+finished initial diagnostic target after checking its owner marker and that it was not executing.
+It reclaimed 2,404,926,818 bytes; all remaining test executables and logs were preserved. Exact
+manifest: `/tmp/sagat-completion-obsolete-verification-library-cleanup.json`. The shared warm target
+and other worktrees/caches were untouched. A separate explicitly owned PostgreSQL 16.15 benchmark
+server now preloads pg_stat_statements, retains default query/connection settings and has 1 GiB
+shared memory; identity/profile at `/tmp/sagat-completion-path-perf-postgres.json`. Its creation and
+the new performance executable's successful build are preparation, not completed capacity evidence.

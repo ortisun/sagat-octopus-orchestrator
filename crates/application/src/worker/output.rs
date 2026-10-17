@@ -39,7 +39,10 @@ where
         task: &TaskRef<'_>,
         output: &[u8],
         idempotency_key: &str,
-    ) -> Result<StepAck, AppError> {
+    ) -> Result<StepAck, AppError>
+    where
+        S: PathExecutionStore,
+    {
         self.complete_inner(principal, task, output, None, idempotency_key)
             .await
     }
@@ -58,7 +61,10 @@ where
         task: &TaskRef<'_>,
         report: BlobOutput<'_>,
         idempotency_key: &str,
-    ) -> Result<StepAck, AppError> {
+    ) -> Result<StepAck, AppError>
+    where
+        S: PathExecutionStore,
+    {
         let blob = report.descriptor;
         if let Some(ack) = self
             .replay_blob_completion(
@@ -104,7 +110,10 @@ where
         output: &[u8],
         blob: Option<BlobCompletion<'_>>,
         idempotency_key: &str,
-    ) -> Result<StepAck, AppError> {
+    ) -> Result<StepAck, AppError>
+    where
+        S: PathExecutionStore,
+    {
         principal.authorize(Permission::WorkerExecute)?;
         if output.len() > MAX_PAYLOAD_BYTES || !self.engine.evaluator().is_json(output) {
             return Err(AppError::NotAllowed(
@@ -117,6 +126,16 @@ where
             blob.as_ref().map_or(output, |b| b.identity.as_slice()),
             blob.is_some(),
         );
+        if !task.instance.path().is_root() && blob.is_none() {
+            return self
+                .report_path(
+                    principal,
+                    task,
+                    super::scoped_reports::PathReport::Completion(output),
+                    idempotency,
+                )
+                .await;
+        }
         let mut tx = self.open(principal, task, Lock::Wait).await?;
         if let Some(ack) = self
             .replayed(principal, &mut tx, task, &idempotency)
@@ -298,7 +317,7 @@ where
         effects.reported = Some(reported_lease(task));
         // A detection, counted when found: should the commit below fail the retry finds it again.
         metrics::counter!("secret_output_detected_total").increment(1);
-        effects.audit = Some(self.leak_audit(principal, &tx, task, &name, "output"));
+        effects.audit = Some(self.leak_audit(principal, tx.info(), task, &name, "output"));
         let fallback_audit = effects.audit.clone();
         let code = if Self::database_write(&mut tx, task) {
             FailureCode::outcome_unknown()

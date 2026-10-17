@@ -1628,3 +1628,20 @@ identity/collection-compensation/loop-compensation repeats recorded in the integ
 These are focused current checkpoints. Five newly added report/history/current-receipt regressions
 subsequently failed **0/5** and are outside the 344-pass checkpoint. Inline report/capability
 conversion, wider graphs/nesting and full release/resource acceptance remain open.
+
+
+### Combined integration: bounded inline completion and failure
+
+Five real failing history/current-receipt baselines passed **5/5**, then the complete pre-provider-
+barrier workflow suite passed **349 passed /0 failed /1 ignored**, 234.19 s. Two additional real
+OpenBao scan barriers passed **2/2**, 5.34 s, including independent acquisition of the run lock and
+committed role/binding withdrawal while the provider read was paused. Resumption commits no step
+completion and returns the expected typed refusal. Current receipt authority also covers Root.
+
+Current complete gRPC **70/70**, OpenBao aggregate **3/3**, primitive faults **87/87**, SQL privilege
+module **33/33**, strict whole-workspace/all-target Clippy, format/diff checks and four individually
+selected all-five SDK scenarios passed. Exact logs, wall/harness times, failed compilations and
+source boundaries are recorded in the integration notes. Pure policy, logical output accounting,
+mandatory secret-denial audit, transactional receipt/outbox and provider I/O boundaries remain;
+no schema, wire or expected SDK output changed. Blob completion, secret/blob capabilities, broader
+body/control/nesting, the complete compatibility matrix and 10k/100k resource gates remain open.

@@ -12,6 +12,8 @@ mod approval_scheduler;
 mod approval_telemetry;
 mod approvals_http;
 mod bounded_fences;
+mod bounded_report_provider;
+mod bounded_reports;
 mod bounded_worker;
 mod byte_ceilings;
 mod chain_handoff;

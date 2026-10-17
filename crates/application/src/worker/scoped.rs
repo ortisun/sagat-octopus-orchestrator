@@ -70,7 +70,7 @@ where
         })
     }
 
-    async fn ensure_path_bound<Tx: PathExecutionTx>(
+    pub(super) async fn ensure_path_bound<Tx: PathExecutionTx>(
         principal: &Principal,
         tx: &mut Tx,
         task: &TaskRef<'_>,

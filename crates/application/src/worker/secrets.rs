@@ -220,7 +220,7 @@ where
     /// looked for either. Both the value and its JSON-escaped form are searched, for every version
     /// of the secret that is still stored: a value handed out earlier in the attempt may have been
     /// replaced since.
-    async fn secret_in_output(
+    pub(super) async fn secret_in_output(
         &self,
         versions: &[StoredSecret],
         output: &[u8],

@@ -316,3 +316,33 @@ retained idempotency receipt references them. Revert only after validating old a
 worker minors and all five SDKs against the target build. The worker adapter advertises minor 1.5
 for scoped tasks. Workers using 1.4 or earlier receive only root tasks; preserve that capability
 gate and the 1.5 journal/lease recovery path during rollback.
+
+
+## Scoped inline reports and stale receipts
+
+Scoped claims, heartbeat and inline completion/failure use current exact-path transactions.
+Completion and reconciliation retain outputs and receipts atomically with their addressed journal;
+compensation outputs remain discarded. Whole-run replay remains the independent projection oracle.
+A secret output scan closes its database transaction before calling OpenBao, then checks current
+binding/membership, lease and secret versions again. An ordinary completion cannot acknowledge a
+cancelled capability; the explicit non-retryable `CANCELLED` failure can settle cancellation.
+
+A previously accepted receipt still requires current execution authority and the correct echoed
+step identity. Investigate `FORBIDDEN`, `NOT_BOUND` or `STALE_ATTEMPT` against current membership,
+bindings and the exact task identity; retaining an old receipt/token does not restore authority.
+Never copy tokens or secret values into logs. Relevant traces are `worker.scoped.report` and
+`secret.output.scan`; existing quota and secret-denial counters/audits remain authoritative.
+
+Reproduce the happy report/replay and failure barriers with Docker and the Rust toolchain:
+
+```sh
+SAGAT_TEST_AS_RUNTIME_ROLE=1 cargo test --locked -p sagat-tests \
+  --test integration_workflow_primitives -- \
+  bounded_reports:: bounded_report_provider:: --test-threads=1 --nocapture
+```
+
+The tests revoke unrelated iteration-history access, retain full journal replay as an oracle,
+withdraw current membership/binding, forge a step id and pause real OpenBao reads. The provider
+barriers additionally acquire the run lock independently while the scan is paused; no completion
+commits after authority withdrawal. These diagnostics do not enable scoped blob output or close
+secret/blob capability conversion, larger graph/nesting or the large resource acceptance gates.

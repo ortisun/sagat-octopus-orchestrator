@@ -351,13 +351,24 @@ is folded into them after each event. Both representations use the same global s
 Resolving one local review therefore cannot hide an unresolved review elsewhere, and unrelated
 live work still keeps the run runnable. These facts do not decide global terminal finalization.
 
-PostgreSQL reads them in the same read-only repeatable-read snapshot as local/ancestor state,
-using tenant/run predicates and partial indexes over open/live/review work. Migration
-`20261208000000` adds the missing live/review/root-saga indexes; existing open/waiting/scoped-saga
-indexes are reused. The mutation transaction rechecks the run version under its run lock, so
-outside progress invalidates an older decision. The path writer persists derived lookup creation,
-reservation consumption, hints/outbox, review status and outputs atomically with their journal.
+PostgreSQL reads these facts with local/ancestor state, tenant/run predicates and partial indexes
+over open/live/review work. `load_path` prepares a read-only repeatable-read snapshot; `begin_path`
+compares that revision under the run lock before a prepared mutation. Metadata/worker commands
+instead use `begin_current_path`, locking the run before reading the complete current path on the
+same connection. Migration `20261208000000` adds the live/review/root-saga indexes; existing
+open/waiting/scoped-saga indexes are reused. Both paths sample mutation time after the required
+lock and preserve their distinct revision contracts.
 
-This checkpoint does not switch WorkerService to bounded execution. Provider/scanner/blob paths,
-all scoped control nodes, global/ancestor drain and root finalization still need their complete
-consumer integration and required larger workload/fault evidence before that switch.
+Scoped expiry/retry, claims, heartbeat and inline completion/failure now consume these ports.
+Inline compensation/reconciliation uses the shared pure policy; a completed loop's absent active
+iteration is a false ancestor-active flag, while derived saga authority remains independent.
+Reports consult `run_instance_usage.logical_output_bytes` under the run lock instead of loading
+historical values to check the aggregate budget. The writer keeps its independent exact byte
+charge, output references, journal, projection, outbox, audit and receipt in the same transaction.
+Provider output scans close the transaction before I/O, then recheck current authority/lease and
+secret version snapshots. Current membership, binding and echoed step identity precede receipt
+replay for ordinary Root and scoped reports.
+
+Secret/blob capability reads, blob completion, broader scoped control nodes, global/ancestor drain
+and root finalization still need their remaining consumer integration and larger workload/fault
+evidence. These current consumers do not establish a 10k/100k capacity claim.

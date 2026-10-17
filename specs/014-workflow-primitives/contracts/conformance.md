@@ -141,6 +141,30 @@ negative test retains a successful own-shard check. The two-replica child/parent
 parent ownership chooses the creator even when child shard ownership differs. These controls do
 not authorize subsequent child mutations using a parent's lease.
 
+### Bounded inline worker reports and receipt authority
+
+Inline scoped completion/failure reads only its current path. The existing pure path commands also
+settle compensation/reconciliation, preserving forward-effect identity and reconciliation output.
+Run-wide logical output bytes come from the admission ledger under the run lock, not a restoration
+of historical values. Lease outcome, exact output references, journal/projection/outbox, applicable
+audit and the original report receipt share the transaction. A failed retained-content write rolls
+back before a newly fenced metadata-only failure is committed under that same request identity.
+Secret-denial auditing survives that recovery.
+
+Secret output scanning takes an immutable version snapshot, closes its database transaction,
+performs provider I/O, then reads the current path again. Check current binding/membership, the
+exact lease and applicable cancellation/expiry fences again; refuse changed secret versions. Only
+the explicit non-retryable `CANCELLED` report can acknowledge cancellation through that scan fence.
+Receipts are looked up only after current authority and echoed step identity checks, for both Root
+and scoped tasks. A stale caller cannot regain an acknowledgement through an old receipt.
+
+`bounded_reports.rs` first reproduces revoked-history completion/failure and Root replay after role/
+binding withdrawal or a forged step id. `bounded_report_provider.rs` uses actual OpenBao, an explicit
+legacy-secret migration and a wrapper that pauses real reads to exercise authority withdrawal
+during the scan. Traces retain `worker.scoped.report` and `secret.output.scan`, without payloads or
+tokens; existing quota and secret-denial counters/audits remain. Blob completion and secret/blob
+capability reads are separate boundaries, as are larger graph/nesting/resource release gates.
+
 The automatic scoped lease-expiry and retry passes now use this port: load one exact path outside
 the write lock, compare the run revision under lock, hold the current shard fence and recheck live
 expiry clocks before persisting the addressed command. A revision race is skipped for later

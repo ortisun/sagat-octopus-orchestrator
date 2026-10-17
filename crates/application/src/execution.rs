@@ -660,6 +660,9 @@ pub trait PathExecutionStore: Send + Sync {
 pub trait PathExecutionTx: Send {
     fn snapshot(&mut self) -> &mut PathExecutionSnapshot;
 
+    /// Run-wide logical output charge under the run lock, without reading historical values.
+    fn logical_output_bytes(&mut self) -> impl Future<Output = Result<u64, StoreError>> + Send;
+
     /// Database time observed after the run lock was acquired.
     fn now(&self) -> OffsetDateTime;
 

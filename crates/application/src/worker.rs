@@ -12,6 +12,7 @@ mod database;
 mod output;
 mod scoped;
 mod scoped_claims;
+mod scoped_reports;
 mod secrets;
 pub use output::BlobOutput;
 use secrets::SecretReport;
@@ -1728,7 +1729,10 @@ where
         error_code: &str,
         retryable: bool,
         idempotency_key: &str,
-    ) -> Result<StepAck, AppError> {
+    ) -> Result<StepAck, AppError>
+    where
+        S: PathExecutionStore,
+    {
         principal.authorize(Permission::WorkerExecute)?;
         let mut code =
             FailureCode::parse(error_code).unwrap_or_else(|_| FailureCode::worker_error());
@@ -1743,6 +1747,20 @@ where
                 &[u8::from(retryable)],
             ]),
         };
+        if !task.instance.path().is_root() {
+            return self
+                .report_path(
+                    principal,
+                    task,
+                    scoped_reports::PathReport::Failure {
+                        raw_code: error_code,
+                        code,
+                        retryable,
+                    },
+                    idempotency,
+                )
+                .await;
+        }
         let mut tx = self.open(principal, task, Lock::Wait).await?;
         if let Some(ack) = self
             .replayed(principal, &mut tx, task, &idempotency)
@@ -1786,7 +1804,8 @@ where
         };
         if let Some(name) = leaked {
             metrics::counter!("secret_output_detected_total").increment(1);
-            effects.audit = Some(self.leak_audit(principal, &tx, task, &name, "failure code"));
+            effects.audit =
+                Some(self.leak_audit(principal, tx.info(), task, &name, "failure code"));
             code = FailureCode::secret_in_output();
             retryable = false;
         }
@@ -1898,7 +1917,7 @@ where
     fn leak_audit(
         &self,
         principal: &Principal,
-        tx: &S::Tx,
+        info: &crate::execution::RunInfo,
         task: &TaskRef<'_>,
         name: &SecretName,
         what: &str,
@@ -1907,7 +1926,7 @@ where
             principal,
             AuditAction::SecretDenied,
             ResourceType::Secret,
-            format!("{}/{name}", tx.info().namespace_id),
+            format!("{}/{name}", info.namespace_id),
             None,
             self.clock.now(),
         )
@@ -1971,6 +1990,14 @@ where
         task: &TaskRef<'_>,
         idempotency: &Idempotency,
     ) -> Result<Option<StepAck>, AppError> {
+        if task.step_id.is_some_and(|claimed| {
+            claimed != instance_step_id(tx.info().version_id, task.run_id, task.instance)
+        }) {
+            return Err(AppError::StaleAttempt);
+        }
+        if !Self::managed_database(tx, task) {
+            self.ensure_bound(principal, tx, task).await?;
+        }
         let Some(stored) = tx.replay(idempotency).await? else {
             return Ok(None);
         };

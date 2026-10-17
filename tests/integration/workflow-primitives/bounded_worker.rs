@@ -20,7 +20,7 @@ use crate::scoped_worker::{Fixture, ScopedWorkers, StructuredJsonIrCodec, fixtur
 use crate::support::engine::{activity, document, subject_of, task_ref, world};
 use crate::support::eventually;
 
-async fn runtime_workers(fixture: &Fixture, connections: u32) -> ScopedWorkers {
+pub(super) async fn runtime_workers(fixture: &Fixture, connections: u32) -> ScopedWorkers {
     let store = PgRunStore::new(
         fixture.world.db.runtime_pool_with(connections).await,
         DefinitionCache::new(Arc::new(StructuredJsonIrCodec), 8),
