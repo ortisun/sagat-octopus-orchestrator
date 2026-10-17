@@ -43,7 +43,8 @@ TERMINAL_STATUSES: frozenset[str] = frozenset(
 )
 
 OperateAction = Literal[
-    "PAUSE", "RESUME", "CANCEL", "RETRY_STEP", "RETRY_COMPENSATION", "SKIP_COMPENSATION", "RESOLVE_STEP"
+    "PAUSE", "RESUME", "CANCEL", "RETRY_STEP", "RETRY_COMPENSATION", "SKIP_COMPENSATION", "RESOLVE_STEP",
+    "RERUN_AS_NEW",
 ]
 ApprovalDecision = Literal["APPROVE", "REJECT"]
 ApprovalStatus = Literal["PENDING", "APPROVED", "REJECTED", "EXPIRED", "CANCELLED"]
@@ -125,6 +126,7 @@ class OperationResult:
     accepted: bool
     run_status: str | None
     run_version: int | None
+    new_run_id: str | None
     raw: Mapping[str, Any] = field(default_factory=dict, repr=False, compare=False)
 
 
@@ -689,6 +691,7 @@ class SagatClient:
             accepted=raw.get("accepted") is True,
             run_status=_opt_str(raw, "runStatus"),
             run_version=run_version if isinstance(run_version, int) and not isinstance(run_version, bool) else None,
+            new_run_id=_opt_str(raw, "newRunId"),
             raw=raw,
         )
 
@@ -705,6 +708,25 @@ class SagatClient:
         return await self.operate(
             run_id,
             "CANCEL",
+            reason,
+            expected_run_version=expected_run_version,
+            idempotency_key=idempotency_key,
+            traceparent=traceparent,
+        )
+
+    async def rerun_as_new(
+        self,
+        run_id: str,
+        reason: str,
+        *,
+        expected_run_version: int | None = None,
+        idempotency_key: str | None = None,
+        traceparent: str | None = None,
+    ) -> OperationResult:
+        """Starts a new run of the ended run's pinned version, input and correlation id."""
+        return await self.operate(
+            run_id,
+            "RERUN_AS_NEW",
             reason,
             expected_run_version=expected_run_version,
             idempotency_key=idempotency_key,

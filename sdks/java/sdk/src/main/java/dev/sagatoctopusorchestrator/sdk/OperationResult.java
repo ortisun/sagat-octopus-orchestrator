@@ -11,4 +11,10 @@ import com.fasterxml.jackson.databind.JsonNode;
  * @param runVersion  the run's version after it (nullable)
  * @param raw         the answer as sent
  */
-public record OperationResult(String operationId, boolean accepted, String runStatus, Long runVersion, JsonNode raw) {}
+public record OperationResult(String operationId, boolean accepted, String runStatus, Long runVersion, JsonNode raw) {
+    /** The run started by RERUN_AS_NEW, otherwise null. */
+    public String newRunId() {
+        JsonNode value = raw.get("newRunId");
+        return value != null && value.isTextual() ? value.textValue() : null;
+    }
+}

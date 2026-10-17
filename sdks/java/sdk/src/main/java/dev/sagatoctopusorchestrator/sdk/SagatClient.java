@@ -447,6 +447,15 @@ public final class SagatClient implements AutoCloseable {
         return async(() -> cancel(runId, reason, options));
     }
 
+    /** Starts a new run of the ended run's pinned version, input and correlation id. */
+    public OperationResult rerunAsNew(String runId, String reason, OperateOptions options) {
+        return operate(runId, OperateAction.RERUN_AS_NEW, reason, options);
+    }
+
+    public CompletableFuture<OperationResult> rerunAsNewAsync(String runId, String reason, OperateOptions options) {
+        return async(() -> rerunAsNew(runId, reason, options));
+    }
+
     /** Reads one bounded page of approval requests in immutable opening order. */
     public ApprovalPage listApprovals(String runId, ApprovalListOptions options) {
         ApprovalListOptions opts = options == null ? ApprovalListOptions.create() : options;

@@ -670,7 +670,7 @@ async def test_cancel_and_signal_are_operations_with_a_reason_and_a_payload_and_
 ) -> None:
     http.serve(
         lambda seen: (
-            reply(202, {"operationId": "op-1", "accepted": True, "runStatus": "CANCELLING", "runVersion": 9})
+            reply(202, {"operationId": "op-1", "accepted": True, "runStatus": "CANCELLING", "runVersion": 9, "newRunId": "0190aaaa-0000-7000-8000-000000000002"})
             if seen.url.endswith("/operations")
             else reply(202, {"deliveredTo": ["wait"]})
         )
@@ -691,8 +691,11 @@ async def test_cancel_and_signal_are_operations_with_a_reason_and_a_payload_and_
     assert http.seen[1].body == {"paymentId": "p-1"}
     await client.operate(RUN, "PAUSE", "maintenance window")
     assert http.seen[2].url == f"/v1/runs/{RUN}/operations"
+    rerun = await client.rerun_as_new(RUN, "repeat completed run")
+    assert rerun.new_run_id == "0190aaaa-0000-7000-8000-000000000002"
+    assert http.seen[3].body == {"action": "RERUN_AS_NEW", "reason": "repeat completed run"}
     await client.signal(RUN, "a/b c", {})
-    assert http.seen[3].url == f"/v1/runs/{RUN}/signals/a%2Fb%20c", "a name is a path segment, whatever it holds"
+    assert http.seen[4].url == f"/v1/runs/{RUN}/signals/a%2Fb%20c", "a name is a path segment, whatever it holds"
 
 
 async def test_the_journal_of_a_run_is_read_a_page_at_a_time(http: FakeHttpServer, make_client: MakeClient) -> None:

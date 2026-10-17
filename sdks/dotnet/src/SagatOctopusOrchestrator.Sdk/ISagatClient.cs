@@ -36,6 +36,8 @@ public interface ISagatClient
     /// <summary>Cancels a run (the server's reason has 8 to 2000 characters).</summary>
     Task<OperationResult> CancelAsync(string runId, string reason, OperateOptions? options = null, CancellationToken cancellationToken = default);
 
+    Task<OperationResult> RerunAsNewAsync(string runId, string reason, OperateOptions? options = null, CancellationToken cancellationToken = default);
+
     /// <summary>Records an eligible actor's durable decision for an approval request.</summary>
     Task<ApprovalDecisionReceipt> DecideApprovalAsync(string approvalId, ApprovalDecision decision, ApprovalDecisionOptions options, CancellationToken cancellationToken = default);
 

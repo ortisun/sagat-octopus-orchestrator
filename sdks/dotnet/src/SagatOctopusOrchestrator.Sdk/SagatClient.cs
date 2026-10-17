@@ -274,6 +274,10 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
         OperateAsync(runId, RunAction.Cancel, reason, options, cancellationToken);
 
     /// <inheritdoc/>
+    public Task<OperationResult> RerunAsNewAsync(string runId, string reason, OperateOptions? options = null, CancellationToken cancellationToken = default) =>
+        OperateAsync(runId, RunAction.RerunAsNew, reason, options, cancellationToken);
+
+    /// <inheritdoc/>
     public async Task<ApprovalPage> ListApprovalsAsync(
         string runId,
         ApprovalListOptions? options = null,
@@ -896,6 +900,7 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
         RunAction.RetryCompensation => "RETRY_COMPENSATION",
         RunAction.SkipCompensation => "SKIP_COMPENSATION",
         RunAction.ResolveStep => "RESOLVE_STEP",
+        RunAction.RerunAsNew => "RERUN_AS_NEW",
         _ => throw new ArgumentOutOfRangeException(nameof(action)),
     };
 

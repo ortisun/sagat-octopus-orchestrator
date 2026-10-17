@@ -726,12 +726,15 @@ public sealed class ClientTests : IAsyncLifetime
     [Fact]
     public async Task OperationsOtherThanCancelNameTheirActionAndCarryTheirArguments()
     {
-        server.Handler = _ => Reply(202, new JsonObject { ["operationId"] = "op-2", ["accepted"] = true });
+        server.Handler = _ => Reply(202, new JsonObject { ["operationId"] = "op-2", ["accepted"] = true, ["newRunId"] = "0190aaaa-0000-7000-8000-000000000002" });
         var client = NewClient();
         await client.OperateAsync(Ids.Run, RunAction.Pause, "maintenance window");
         await client.OperateAsync(Ids.Run, RunAction.ResolveStep, "fixed by hand", new OperateOptions { StepId = "charge", Outcome = StepOutcome.Failed, ErrorCode = "MANUAL" });
+        var rerun = await client.RerunAsNewAsync(Ids.Run, "repeat completed run");
         Assert.Equal("""{"action":"PAUSE","reason":"maintenance window"}""", server.Requests[0].BodyText);
         Assert.Equal("""{"action":"RESOLVE_STEP","reason":"fixed by hand","stepId":"charge","outcome":"FAILED","errorCode":"MANUAL"}""", server.Requests[1].BodyText);
+        Assert.Equal("""{"action":"RERUN_AS_NEW","reason":"repeat completed run"}""", server.Requests[2].BodyText);
+        Assert.Equal("0190aaaa-0000-7000-8000-000000000002", rerun.NewRunId);
     }
 
     [Fact]

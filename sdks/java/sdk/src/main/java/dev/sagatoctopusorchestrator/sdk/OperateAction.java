@@ -8,5 +8,6 @@ public enum OperateAction {
     RETRY_STEP,
     RETRY_COMPENSATION,
     SKIP_COMPENSATION,
-    RESOLVE_STEP
+    RESOLVE_STEP,
+    RERUN_AS_NEW
 }

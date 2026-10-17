@@ -152,6 +152,9 @@ public enum RunAction
 
     /// <summary>Resolve a step by hand.</summary>
     ResolveStep,
+
+    /// <summary>Start a new run of an ended run's pinned version and input.</summary>
+    RerunAsNew,
 }
 
 /// <summary>The outcome an operator gives a step in <see cref="RunAction.ResolveStep"/>.</summary>
@@ -165,7 +168,11 @@ public enum StepOutcome
 }
 
 /// <summary>What the server answers to an operation.</summary>
-public sealed record OperationResult(string OperationId, bool Accepted, string? RunStatus, long? RunVersion, JsonElement Raw);
+public sealed record OperationResult(string OperationId, bool Accepted, string? RunStatus, long? RunVersion, JsonElement Raw)
+{
+    /// <summary>The run started by <see cref="RunAction.RerunAsNew"/>, otherwise null.</summary>
+    public string? NewRunId => Raw.TryGetProperty("newRunId", out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+}
 
 /// <summary>A decision an eligible actor records for an approval request.</summary>
 public enum ApprovalDecision

@@ -374,14 +374,17 @@ test('no answer at all is a retryable transport error, and a lost answer is retr
 });
 
 test('cancel and signal are operations with a reason and a payload and the result is typed', async () => {
-  prepare((req, res) => (req.url.endsWith('/operations') ? reply(res, 202, { operationId: 'op-1', accepted: true, runStatus: 'CANCELLING', runVersion: 9 }) : reply(res, 202, { deliveredTo: ['wait'] })));
+  prepare((req, res) => (req.url.endsWith('/operations') ? reply(res, 202, { operationId: 'op-1', accepted: true, runStatus: 'CANCELLING', runVersion: 9, newRunId: '0190aaaa-0000-7000-8000-000000000002' }) : reply(res, 202, { deliveredTo: ['wait'] })));
   const cancelled = await client().cancel('0190aaaa-0000-7000-8000-000000000001', 'no longer needed', { expectedRunVersion: 3 });
-  assert.deepEqual({ ...cancelled, raw: undefined }, { operationId: 'op-1', accepted: true, runStatus: 'CANCELLING', runVersion: 9, raw: undefined });
+  assert.deepEqual({ ...cancelled, raw: undefined }, { operationId: 'op-1', accepted: true, runStatus: 'CANCELLING', runVersion: 9, newRunId: '0190aaaa-0000-7000-8000-000000000002', raw: undefined });
   assert.deepEqual(seen[0]?.body, { action: 'CANCEL', reason: 'no longer needed', expectedRunVersion: 3 });
   const signalled = await client().signal('0190aaaa-0000-7000-8000-000000000001', 'payment-confirmed', { paymentId: 'p-1' });
   assert.deepEqual(signalled.deliveredTo, ['wait']);
   assert.equal(seen[1]?.url, '/v1/runs/0190aaaa-0000-7000-8000-000000000001/signals/payment-confirmed');
   assert.deepEqual(seen[1]?.body, { paymentId: 'p-1' });
+  const rerun = await client().rerunAsNew('0190aaaa-0000-7000-8000-000000000001', 'repeat completed run');
+  assert.equal(rerun.newRunId, '0190aaaa-0000-7000-8000-000000000002');
+  assert.deepEqual(seen[2]?.body, { action: 'RERUN_AS_NEW', reason: 'repeat completed run' });
 });
 
 test('waiting for completion polls until the run is terminal', async () => {

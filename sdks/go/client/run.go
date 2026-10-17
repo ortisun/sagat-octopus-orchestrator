@@ -137,7 +137,9 @@ type OperationResult struct {
 	// RunStatus is empty when the server did not say.
 	RunStatus  RunStatus
 	RunVersion int64
-	Raw        map[string]json.RawMessage
+	// NewRunID is the run started by RERUN_AS_NEW, or empty for other operations.
+	NewRunID string
+	Raw      map[string]json.RawMessage
 }
 
 // ApprovalDecision is the outcome an eligible actor records for an approval request.

@@ -883,7 +883,7 @@ func TestCancelAndSignalAreOperationsWithAReasonAndAPayloadAndTheResultIsTyped(t
 	f := newFake(t)
 	f.answer(func(r seen, w http.ResponseWriter) {
 		if strings.HasSuffix(r.url, "/operations") {
-			reply(w, 202, map[string]any{"operationId": "op-1", "accepted": true, "runStatus": "CANCELLING", "runVersion": 9})
+			reply(w, 202, map[string]any{"operationId": "op-1", "accepted": true, "runStatus": "CANCELLING", "runVersion": 9, "newRunId": "0190aaaa-0000-7000-8000-000000000002"})
 			return
 		}
 		reply(w, 202, map[string]any{"deliveredTo": []any{"wait"}})
@@ -918,6 +918,13 @@ func TestCancelAndSignalAreOperationsWithAReasonAndAPayloadAndTheResultIsTyped(t
 		t.Fatal(err)
 	}
 	if body := f.requests()[2].json(t); fmt.Sprint(body) != "map[action:RESOLVE_STEP errorCode:E_X outcome:FAILED reason:an operator decided stepId:s]" {
+		t.Errorf("%v", body)
+	}
+	rerun, err := c.RerunAsNew(context.Background(), runUUID, "repeat completed run")
+	if err != nil || rerun.NewRunID != "0190aaaa-0000-7000-8000-000000000002" {
+		t.Fatalf("%+v %v", rerun, err)
+	}
+	if body := f.requests()[3].json(t); fmt.Sprint(body) != "map[action:RERUN_AS_NEW reason:repeat completed run]" {
 		t.Errorf("%v", body)
 	}
 }

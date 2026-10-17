@@ -526,7 +526,7 @@ class SagatClientTest {
     @Test
     void cancelAndSignalAreOperationsWithAReasonAndAPayloadAndTheResultIsTyped() {
         server.prepare((req, reply) -> reply.send(202, req.path().endsWith("/operations")
-                ? "{\"operationId\":\"op-1\",\"accepted\":true,\"runStatus\":\"CANCELLING\",\"runVersion\":9}"
+                ? "{\"operationId\":\"op-1\",\"accepted\":true,\"runStatus\":\"CANCELLING\",\"runVersion\":9,\"newRunId\":\"0190aaaa-0000-7000-8000-000000000002\"}"
                 : "{\"deliveredTo\":[\"wait\"]}"));
         OperationResult cancelled = client().cancel(RUN, "no longer needed", OperateOptions.create().expectedRunVersion(3L));
         assertEquals("op-1", cancelled.operationId());
@@ -538,6 +538,9 @@ class SagatClientTest {
         assertEquals(List.of("wait"), signalled.deliveredTo());
         assertEquals("/v1/runs/" + RUN + "/signals/payment-confirmed", server.seen.get(1).path());
         assertEquals("{\"paymentId\":\"p-1\"}", server.seen.get(1).rawBody());
+        OperationResult rerun = client().rerunAsNew(RUN, "repeat completed run", null);
+        assertEquals("0190aaaa-0000-7000-8000-000000000002", rerun.newRunId());
+        assertEquals("{\"action\":\"RERUN_AS_NEW\",\"reason\":\"repeat completed run\"}", server.seen.get(2).rawBody());
     }
 
     @Test

@@ -94,6 +94,8 @@ export interface OperationResult {
   accepted: boolean;
   runStatus: string | null;
   runVersion: number | null;
+  /** The new run started by RERUN_AS_NEW, otherwise null. */
+  newRunId: string | null;
   raw: Record<string, unknown>;
 }
 
@@ -556,7 +558,7 @@ export class SagatClient {
 
   async operate(
     runId: string,
-    action: 'PAUSE' | 'RESUME' | 'CANCEL' | 'RETRY_STEP' | 'RETRY_COMPENSATION' | 'SKIP_COMPENSATION' | 'RESOLVE_STEP',
+    action: 'PAUSE' | 'RESUME' | 'CANCEL' | 'RETRY_STEP' | 'RETRY_COMPENSATION' | 'SKIP_COMPENSATION' | 'RESOLVE_STEP' | 'RERUN_AS_NEW',
     reason: string,
     options: CallOptions & { stepId?: string; outcome?: 'SUCCEEDED' | 'FAILED'; errorCode?: string; expectedRunVersion?: number } = {},
   ): Promise<OperationResult> {
@@ -579,6 +581,7 @@ export class SagatClient {
       accepted: raw['accepted'] === true,
       runStatus: optStr(raw, 'runStatus'),
       runVersion: typeof raw['runVersion'] === 'number' ? raw['runVersion'] : null,
+      newRunId: optStr(raw, 'newRunId'),
       raw,
     };
   }
@@ -586,6 +589,11 @@ export class SagatClient {
   /** Cancels a run (the server's reason has 8 to 2000 characters). */
   cancel(runId: string, reason: string, options: CallOptions & { expectedRunVersion?: number } = {}): Promise<OperationResult> {
     return this.operate(runId, 'CANCEL', reason, options);
+  }
+
+  /** Starts a new run of the ended run's pinned version, input and correlation id. */
+  rerunAsNew(runId: string, reason: string, options: CallOptions & { expectedRunVersion?: number } = {}): Promise<OperationResult> {
+    return this.operate(runId, 'RERUN_AS_NEW', reason, options);
   }
 
   /** Lists the approval requests of one run in immutable opening order. */
