@@ -710,6 +710,15 @@ pub trait PathExecutionTx: Send {
         activity: &ActivityName,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 
+    /// Freezes script retention for a lease of `instance` in this exact structured path.
+    /// Forward work also freezes any script compensation or reconciliation it can create.
+    /// Derived work inherits the pin recorded by its originating forward attempt.
+    fn script_execution_admitted(
+        &mut self,
+        instance: &ExecutionInstanceId,
+        activity: &ActivityName,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
     fn lease_unexpired(
         &mut self,
         instance: &ExecutionInstanceId,

@@ -958,6 +958,7 @@ impl PathExecutionStore for PgRunStore {
             persisted,
             stored,
             signals: Vec::new(),
+            script_retention: BTreeMap::new(),
         }))
     }
 }
@@ -971,6 +972,7 @@ pub struct PgPathExecutionTx {
     persisted: u64,
     stored: BTreeSet<ExecutionInstanceId>,
     signals: Vec<Signal>,
+    script_retention: BTreeMap<ExecutionInstanceId, ScriptRetentionPins>,
 }
 
 impl std::fmt::Debug for PgPathExecutionTx {

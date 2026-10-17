@@ -14,8 +14,9 @@ use sagat_application::runs::Lock;
 use sagat_application::worker::{MAX_TASK_INPUT_BYTES, WorkerService};
 use sagat_domain::execution::{
     ExecutionInstanceId, InstancePath, RunId, StepStatus, complete_path_instance,
-    heartbeat_path_instance,
+    heartbeat_path_instance, lease_path_instance,
 };
+use sagat_domain::quota::QuotaResource;
 use sagat_domain::workflow::{ActivityName, NodeId};
 use sagat_infra_ir::JsonEvaluator;
 use sagat_infra_postgres::PgRunStore;
@@ -24,13 +25,97 @@ use serde_json::{Value, json};
 use crate::limits::{
     allow_iterations, assert_failed_with, register_scoped, scheduler, scoped_workers, scopes,
 };
+use crate::support::engine::ctx;
 use crate::support::engine::{World, activity, document, end_node, task_ref, with, world};
 
 type Workers = WorkerService<PgRunStore, SystemClock, JsonEvaluator, SystemEntropy>;
 
+const SCRIPT_DIGEST: &str =
+    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
 fn text_of(bytes: usize) -> String {
     // A JSON string of exactly `bytes` bytes: the quotes count.
     format!("\"{}\"", "x".repeat(bytes - 2))
+}
+
+async fn ready_script(world: &World, retention_days: i16) -> ActivityName {
+    sqlx::query(
+        "INSERT INTO script_artifacts \
+         (tenant_id,digest,language,content,signature,key_id,sbom,toolchain) \
+         VALUES ($1,$2,'typescript','\\x01',decode(repeat('ab',64),'hex'),'key-1','\\x7b7d','node@sha256:aa')",
+    )
+    .bind(world.admin.tenant_id().as_uuid())
+    .bind(SCRIPT_DIGEST)
+    .execute(&world.db.pool)
+    .await
+    .expect("script artifact");
+    let script = uuid::Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO scripts \
+         (id,tenant_id,namespace_id,name,language,source,policy,retention_days,created_by) \
+         VALUES ($1,$2,$3,'bounded-script','typescript','export default 1','v1',$4,'test')",
+    )
+    .bind(script)
+    .bind(world.admin.tenant_id().as_uuid())
+    .bind(world.namespace.id().as_uuid())
+    .bind(retention_days)
+    .execute(&world.db.pool)
+    .await
+    .expect("script");
+    sqlx::query(
+        "INSERT INTO script_versions \
+         (id,tenant_id,namespace_id,script_id,number,language,status,source,policy,retention_days, \
+          content_digest,artifact_digest,created_by,created_at) \
+         VALUES ($1,$2,$3,$4,1,'typescript','READY','export default 1','v1',$5,$6,$6,'test',now())",
+    )
+    .bind(uuid::Uuid::now_v7())
+    .bind(world.admin.tenant_id().as_uuid())
+    .bind(world.namespace.id().as_uuid())
+    .bind(script)
+    .bind(retention_days)
+    .bind(SCRIPT_DIGEST)
+    .execute(&world.db.pool)
+    .await
+    .expect("READY script version");
+    let activity = format!("script.sha256-{}", &SCRIPT_DIGEST["sha256:".len()..]);
+    ActivityName::parse(&activity).expect("script activity")
+}
+
+async fn set_script_retention(world: &World, days: u64) {
+    world
+        .quotas
+        .set(
+            &world.admin,
+            Some(world.namespace.id()),
+            QuotaResource::ScriptRetentionDays,
+            days,
+            &ctx(),
+        )
+        .await
+        .expect("set script retention policy");
+}
+
+fn script_collection(name: &str) -> Value {
+    json!({
+        "apiVersion": "sagat-octopus-orchestrator.io/v1",
+        "kind": "Workflow",
+        "metadata": {"name": name},
+        "entrypoint": "items",
+        "bodies": {"line": {"entrypoint": "work", "nodes": [
+            {
+                "id": "work", "type": "script", "artifactDigest": SCRIPT_DIGEST,
+                "language": "typescript", "next": "returned"
+            },
+            {"id": "returned", "type": "return", "result": "steps.work.output"}
+        ]}},
+        "nodes": [
+            {
+                "id": "items", "type": "forEach", "items": "input.items", "body": "line",
+                "result": "bodyResult", "maxItems": 2, "maxConcurrency": 2, "next": "done"
+            },
+            {"id": "done", "type": "end"}
+        ]
+    })
 }
 
 pub(crate) fn collection(
@@ -347,6 +432,15 @@ async fn a_member_output_over_the_value_ceiling_is_refused_and_the_lease_survive
     );
     let completed =
         ExecutionInstanceId::in_path(path.clone(), NodeId::parse("work").expect("activity node"));
+    assert!(
+        fenced
+            .script_execution_admitted(
+                &completed,
+                &ActivityName::parse("limits.step").expect("activity"),
+            )
+            .await
+            .expect("script retention fence")
+    );
     let reported_token = tasks[0].lease_token.hash();
     assert!(
         !fenced
@@ -490,6 +584,114 @@ async fn a_bounded_completion_commits_without_reopening_the_run_history() {
         Some("ack".into())
     );
     replay.commit().await.expect("read-only replay commit");
+}
+
+#[tokio::test]
+async fn a_bounded_script_lease_pins_retention_and_zero_withholds_a_new_member() {
+    let world = world().await;
+    allow_iterations(&world, 4).await;
+    let script_activity = ready_script(&world, 30).await;
+    set_script_retention(&world, 5).await;
+    let run = start_collection(
+        &world,
+        script_collection("bounded-script-retention"),
+        &json!({"items": [1, 2]}),
+    )
+    .await;
+    let scheduler = scheduler(&world, "bounded-script-retention").await;
+    assert_eq!(scheduler.tick().await.collections_advanced, 1);
+    assert_eq!(scheduler.tick().await.collections_advanced, 1);
+
+    let owner = NodeId::parse("items").expect("collection owner");
+    let node = NodeId::parse("work").expect("script node");
+    let first_path = InstancePath::root()
+        .child(owner.clone(), 0)
+        .expect("first member path");
+    let first = ExecutionInstanceId::in_path(first_path.clone(), node.clone());
+    let bounded = world
+        .store
+        .load_path(world.admin.tenant_id(), run, first_path)
+        .await
+        .expect("first bounded path")
+        .expect("run");
+    assert_eq!(
+        bounded
+            .state
+            .local_instance(&node)
+            .map(|step| step.status()),
+        Some(StepStatus::Ready)
+    );
+    let mut tx = world
+        .store
+        .begin_path(bounded, Lock::Wait)
+        .await
+        .expect("first bounded transaction")
+        .expect("run");
+    assert!(
+        tx.script_execution_admitted(&first, &script_activity)
+            .await
+            .expect("script retention fence")
+    );
+    let (_, leased) = lease_path_instance(&mut tx.snapshot().state, &first)
+        .expect("lease admitted bounded script");
+    tx.persist_addressed(
+        &[leased],
+        &[],
+        Effects::by(Actor::Worker("bounded-script-test".into()), None),
+    )
+    .await
+    .expect("persist bounded script lease");
+    tx.commit().await.expect("commit bounded script lease");
+
+    let detail: serde_json::Value = sqlx::query_scalar(
+        "SELECT detail FROM run_events WHERE run_id=$1 AND node='work' \
+         AND instance_path_nodes=$2 AND instance_path_indices=$3 \
+         AND event_type='step.leased' AND attempt=1",
+    )
+    .bind(run.as_uuid())
+    .bind(vec!["items".to_owned()])
+    .bind(vec![0_i32])
+    .fetch_one(&world.db.pool)
+    .await
+    .expect("bounded script lease detail");
+    assert_eq!(detail["scriptRetentionPolicyVersion"], 1);
+    assert_eq!(detail["scriptRetentionDays"], 5);
+
+    set_script_retention(&world, 0).await;
+    let second_path = InstancePath::root()
+        .child(owner, 1)
+        .expect("second member path");
+    let second = ExecutionInstanceId::in_path(second_path.clone(), node);
+    let bounded = world
+        .store
+        .load_path(world.admin.tenant_id(), run, second_path)
+        .await
+        .expect("second bounded path")
+        .expect("run");
+    let mut tx = world
+        .store
+        .begin_path(bounded, Lock::Wait)
+        .await
+        .expect("second bounded transaction")
+        .expect("run");
+    assert!(
+        !tx.script_execution_admitted(&second, &script_activity)
+            .await
+            .expect("closed script retention fence"),
+        "a zero policy leaves new scoped script work ready"
+    );
+    tx.commit().await.expect("commit withheld script probe");
+    let leases: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM run_events WHERE run_id=$1 AND node='work' \
+         AND instance_path_nodes=$2 AND instance_path_indices=$3 AND event_type='step.leased'",
+    )
+    .bind(run.as_uuid())
+    .bind(vec!["items".to_owned()])
+    .bind(vec![1_i32])
+    .fetch_one(&world.db.pool)
+    .await
+    .expect("withheld member leases");
+    assert_eq!(leases, 0);
 }
 
 #[tokio::test]

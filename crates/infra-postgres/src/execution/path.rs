@@ -197,6 +197,14 @@ impl PathExecutionTx for PgPathExecutionTx {
         .await
     }
 
+    async fn script_execution_admitted(
+        &mut self,
+        instance: &ExecutionInstanceId,
+        activity: &ActivityName,
+    ) -> Result<bool, StoreError> {
+        self.admit_path_script(instance, activity).await
+    }
+
     async fn lease_unexpired(
         &mut self,
         instance: &ExecutionInstanceId,
@@ -382,7 +390,28 @@ impl PgPathExecutionTx {
                 .instance()
                 .ok_or_else(|| corrupt("bounded event instance"))?;
             let event = addressed.event();
-            let encoded = encode(event);
+            let mut encoded = encode(event);
+            if matches!(event, RunEvent::StepLeased { .. })
+                && let Some(pins) = self.script_retention.get(&instance)
+            {
+                let detail =
+                    encoded
+                        .detail
+                        .as_object_mut()
+                        .ok_or_else(|| StoreError::Internal {
+                            detail: "a bounded lease event did not encode as an object".into(),
+                        })?;
+                detail.insert("scriptRetentionPolicyVersion".into(), serde_json::json!(1));
+                for (name, value) in [
+                    ("scriptRetentionDays", pins.script),
+                    ("compensationScriptRetentionDays", pins.compensation),
+                    ("reconciliationScriptRetentionDays", pins.reconciliation),
+                ] {
+                    if let Some(days) = value {
+                        detail.insert(name.into(), serde_json::json!(days));
+                    }
+                }
+            }
             let seq = i64::try_from(self.persisted + 1 + offset as u64)
                 .map_err(|_| corrupt("sequence"))?;
             let (path_nodes, path_indices) = stored_path_parts(instance.path());
@@ -579,6 +608,177 @@ impl PgPathExecutionTx {
             });
         }
         Ok(())
+    }
+
+    async fn ready_path_script_retention(
+        &mut self,
+        activity: &ActivityName,
+    ) -> Result<Option<u16>, StoreError> {
+        let Some(digest) = sagat_domain::scripts::digest_of_activity(activity.as_str()) else {
+            return Ok(None);
+        };
+        let days: Option<i16> = sqlx::query_scalar(
+            "SELECT max(retention_days) FROM script_versions \
+             WHERE tenant_id=$1 AND artifact_digest=$2 AND status='READY'",
+        )
+        .bind(self.snapshot.info.tenant_id.as_uuid())
+        .bind(digest.as_str())
+        .fetch_one(&mut *self.tx)
+        .await
+        .map_err(store_error)?;
+        let days = days.ok_or_else(|| StoreError::Internal {
+            detail: "a workflow script has no READY version".into(),
+        })?;
+        u16::try_from(days)
+            .ok()
+            .filter(|days| (1..=365).contains(days))
+            .ok_or_else(|| corrupt("READY script retention"))
+            .map(Some)
+    }
+
+    async fn current_path_script_retention(
+        &mut self,
+        activity: &ActivityName,
+    ) -> Result<ScriptRetentionDecision, StoreError> {
+        if sagat_domain::scripts::digest_of_activity(activity.as_str()).is_none() {
+            return Ok(ScriptRetentionDecision::NotScript);
+        }
+        let cap = match crate::content_usage::script_execution_retention(
+            &mut self.tx,
+            self.snapshot.info.tenant_id,
+            self.snapshot.info.namespace_id,
+            365,
+        )
+        .await
+        {
+            Ok(days) => days,
+            Err(StoreError::QuotaExceeded { what })
+                if what == sagat_domain::quota::QuotaResource::ScriptRetentionDays.limit_name() =>
+            {
+                return Ok(ScriptRetentionDecision::Refused);
+            }
+            Err(error) => return Err(error),
+        };
+        let requested = self
+            .ready_path_script_retention(activity)
+            .await?
+            .ok_or_else(|| corrupt("script activity digest"))?;
+        Ok(ScriptRetentionDecision::Pinned(requested.min(cap)))
+    }
+
+    async fn inherited_path_script_retention(
+        &mut self,
+        forward: &ExecutionInstanceId,
+        field: &'static str,
+        activity: &ActivityName,
+    ) -> Result<u16, StoreError> {
+        let attempt = self
+            .snapshot
+            .state
+            .local_instance(forward.node())
+            .map(sagat_domain::execution::StepState::attempt)
+            .ok_or_else(|| corrupt("bounded derived script forward step"))?;
+        let (path_nodes, path_indices) = stored_path_parts(forward.path());
+        let detail: serde_json::Value = sqlx::query_scalar(
+            "SELECT detail FROM run_events WHERE tenant_id=$1 AND run_id=$2 AND node=$3 \
+               AND instance_path_nodes=$4 AND instance_path_indices=$5 \
+               AND event_type='step.leased' AND attempt=$6 ORDER BY seq DESC LIMIT 1",
+        )
+        .bind(self.snapshot.info.tenant_id.as_uuid())
+        .bind(self.snapshot.info.run_id.as_uuid())
+        .bind(forward.node().as_str())
+        .bind(path_nodes)
+        .bind(path_indices)
+        .bind(i32::try_from(attempt).map_err(|_| corrupt("attempt"))?)
+        .fetch_optional(&mut *self.tx)
+        .await
+        .map_err(store_error)?
+        .ok_or_else(|| corrupt("bounded derived script lease"))?;
+        match versioned_script_retention(&detail, field)? {
+            Some(days) => Ok(days),
+            None => self
+                .ready_path_script_retention(activity)
+                .await?
+                .ok_or_else(|| corrupt("legacy bounded script version")),
+        }
+    }
+
+    async fn admit_path_script(
+        &mut self,
+        instance: &ExecutionInstanceId,
+        activity: &ActivityName,
+    ) -> Result<bool, StoreError> {
+        let origin = self
+            .snapshot
+            .definition
+            .node_for_instance(instance)
+            .map(Node::origin)
+            .cloned()
+            .ok_or_else(|| corrupt("bounded leased node"))?;
+        match origin {
+            NodeOrigin::Compensation(forward) | NodeOrigin::Reconciliation(forward) => {
+                if sagat_domain::scripts::digest_of_activity(activity.as_str()).is_none() {
+                    return Ok(true);
+                }
+                let field = if instance.node().is_compensation() {
+                    "compensationScriptRetentionDays"
+                } else {
+                    "reconciliationScriptRetentionDays"
+                };
+                let forward = ExecutionInstanceId::in_path(instance.path().clone(), forward);
+                let days = self
+                    .inherited_path_script_retention(&forward, field, activity)
+                    .await?;
+                self.script_retention.insert(
+                    instance.clone(),
+                    ScriptRetentionPins {
+                        script: Some(days),
+                        ..ScriptRetentionPins::default()
+                    },
+                );
+                Ok(true)
+            }
+            NodeOrigin::Declared => {
+                let companion_activity = |node: NodeId| {
+                    let candidate = ExecutionInstanceId::in_path(instance.path().clone(), node);
+                    self.snapshot
+                        .definition
+                        .node_for_instance(&candidate)
+                        .and_then(|node| match node.kind() {
+                            NodeKind::Activity { activity, .. } => Some(activity.clone()),
+                            _ => None,
+                        })
+                };
+                let compensation = companion_activity(instance.node().compensation());
+                let reconciliation = companion_activity(instance.node().reconciliation());
+                let mut pins = ScriptRetentionPins::default();
+                for (role, candidate) in [
+                    (0_u8, Some(activity.clone())),
+                    (1_u8, compensation),
+                    (2_u8, reconciliation),
+                ] {
+                    let Some(candidate) = candidate else {
+                        continue;
+                    };
+                    match self.current_path_script_retention(&candidate).await? {
+                        ScriptRetentionDecision::NotScript => {}
+                        ScriptRetentionDecision::Refused => return Ok(false),
+                        ScriptRetentionDecision::Pinned(days) => match role {
+                            0 => pins.script = Some(days),
+                            1 => pins.compensation = Some(days),
+                            _ => pins.reconciliation = Some(days),
+                        },
+                    }
+                }
+                if pins.script.is_some()
+                    || pins.compensation.is_some()
+                    || pins.reconciliation.is_some()
+                {
+                    self.script_retention.insert(instance.clone(), pins);
+                }
+                Ok(true)
+            }
+        }
     }
 
     async fn record_path_breaker(
