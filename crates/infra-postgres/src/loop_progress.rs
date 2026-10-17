@@ -635,6 +635,7 @@ async fn route_loop_successor(
     conn: &mut PgConnection,
     transition: &LoopTransition,
     run: &LockedRun,
+    definition: &WorkflowDefinition,
     successor: &LoopSuccessor,
     routed_sequence: u64,
     outbox_id: uuid::Uuid,
@@ -744,7 +745,9 @@ async fn route_loop_successor(
             json!({"status":"SUCCEEDED"}),
         )
         .await?;
-        insert_loop_hint(conn, transition, outbox_id, "run.finished", "SUCCEEDED").await?;
+        // The run ends here, so its subscribers hear of it exactly as when an activity or a
+        // cancellation ends it: the documented RunFinished hint plus the outbound deliveries.
+        outbox_run_finished(conn, transition, definition, outbox_id, "SUCCEEDED").await?;
         Ok((routed_sequence + 2, true))
     } else {
         insert_loop_hint(conn, transition, outbox_id, "loop.finished", "SUCCEEDED").await?;
@@ -856,9 +859,9 @@ async fn outbox_run_finished(
     conn: &mut PgConnection,
     transition: &LoopTransition,
     definition: &WorkflowDefinition,
+    message: uuid::Uuid,
     status: &'static str,
 ) -> Result<(), LoopProgressError> {
-    let message = uuid::Uuid::now_v7();
     sqlx::query(
         "INSERT INTO event_outbox (id,tenant_id,aggregate_id,event_type,payload) \
          VALUES ($1,$2,$3,'run.finished',$4)",
@@ -1487,6 +1490,7 @@ impl LoopProgressStore for PgLoopProgressStore {
                 &mut tx,
                 &command.transition,
                 &run,
+                &definition,
                 successor,
                 entered_sequence + 1,
                 command.outbox_id,
@@ -2039,6 +2043,8 @@ impl LoopProgressStore for PgLoopProgressStore {
             .bind(command.transition.tenant_id().as_uuid())
             .bind(command.transition.run_id().as_uuid())
             .bind(json!({
+                "tenantId": command.transition.tenant_id().to_string(),
+                "namespaceId": command.transition.namespace_id().to_string(),
                 "runId": command.transition.run_id().to_string(),
                 "timerId": timer_id.to_string(),
                 "dueAtMicros": micros(due_at)?,
@@ -2053,6 +2059,7 @@ impl LoopProgressStore for PgLoopProgressStore {
                 &mut tx,
                 &command.transition,
                 &run,
+                &definition,
                 successor,
                 checkpoint_sequence + 1,
                 command.outbox_id,
@@ -3079,7 +3086,14 @@ impl LoopProgressStore for PgLoopProgressStore {
                 run.version_id,
             )
             .await?;
-        outbox_run_finished(&mut tx, &command.transition, &definition, status).await?;
+        outbox_run_finished(
+            &mut tx,
+            &command.transition,
+            &definition,
+            uuid::Uuid::now_v7(),
+            status,
+        )
+        .await?;
         mark_telemetry_pending(&mut tx, &command.transition, final_sequence).await?;
         tx.commit().await.map_err(store_error)?;
         Ok(LoopWrite {

@@ -1,6 +1,7 @@
 //! Authorized HTTP boundary for declared business Query and Update operations.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
@@ -27,7 +28,12 @@ use sagat_domain::execution::{
 use sagat_domain::identity::NamespaceId;
 use sagat_domain::identity::Permission;
 use sagat_domain::workflow::{ActivityName, Digest};
+use sagat_telemetry::{
+    WorkflowPrimitiveKind, WorkflowPrimitiveMetric, WorkflowPrimitiveOutcome,
+    WorkflowPrimitiveRejectionCode, WorkflowPrimitiveSpan,
+};
 use tower_http::limit::RequestBodyLimitLayer;
+use tracing::Instrument;
 use uuid::Uuid;
 
 use crate::admission::{Admission, admit};
@@ -37,7 +43,7 @@ use crate::dto_declared_operations::{
     ChainDeclaredQueryBody, ChainDeclaredUpdateBody, DeclaredQueryBody, DeclaredQueryResponseBody,
     DeclaredUpdateBody, DeclaredUpdateResponseBody, RejectedUpdateDetails,
 };
-use crate::error::ApiError;
+use crate::error::{ApiError, ErrorCode};
 use crate::extract::{ApiJson, Caller};
 use crate::limits::RateLimiter;
 use crate::{AppState, TokenVerifier};
@@ -295,11 +301,162 @@ fn store_error(error: DeclaredOperationStoreError, permission: Permission) -> Ap
     }
 }
 
+/// The contracted telemetry of one declared operation (feature 014 `contracts/README.md` §6): a
+/// `workflow.query` or `workflow.update` span under the request span, the
+/// `workflow_operation_duration_seconds{kind,outcome}` histogram and, when the operation is refused
+/// for a known reason, `workflow_primitive_rejections_total{kind,code}`. Every label and attribute
+/// comes from a closed enum; the operation name, arguments, state and result never reach them.
+struct OperationTelemetry {
+    kind: WorkflowPrimitiveKind,
+    span: tracing::Span,
+    started: Instant,
+}
+
+impl OperationTelemetry {
+    fn start(kind: WorkflowPrimitiveKind) -> Self {
+        let span = if kind == WorkflowPrimitiveKind::Update {
+            tracing::info_span!(
+                WorkflowPrimitiveSpan::Update.as_str(),
+                sagat.primitive.kind = kind.as_str(),
+                sagat.outcome = tracing::field::Empty,
+                sagat.rejection.code = tracing::field::Empty,
+                sagat.operation.replayed = tracing::field::Empty,
+                otel.status_code = tracing::field::Empty,
+            )
+        } else {
+            tracing::info_span!(
+                WorkflowPrimitiveSpan::Query.as_str(),
+                sagat.primitive.kind = kind.as_str(),
+                sagat.outcome = tracing::field::Empty,
+                sagat.rejection.code = tracing::field::Empty,
+                otel.status_code = tracing::field::Empty,
+            )
+        };
+        Self {
+            kind,
+            span,
+            started: Instant::now(),
+        }
+    }
+
+    /// A refusal with a closed rejection code is `rejected`; anything else that failed is `failed`.
+    fn rejection(error: &ApiError) -> Option<WorkflowPrimitiveRejectionCode> {
+        let parts = error.parts();
+        parts
+            .details
+            .as_ref()
+            .and_then(|details| details.get("reason"))
+            .and_then(serde_json::Value::as_str)
+            .and_then(WorkflowPrimitiveRejectionCode::from_reason)
+            .or(match parts.code {
+                ErrorCode::RateLimited => Some(WorkflowPrimitiveRejectionCode::RateLimited),
+                ErrorCode::QuotaExceeded => Some(WorkflowPrimitiveRejectionCode::QuotaExceeded),
+                _ => None,
+            })
+    }
+
+    fn finish<T>(self, result: &Result<T, ApiError>, replayed: impl FnOnce(&T) -> Option<bool>) {
+        let outcome = match result {
+            Ok(value) => {
+                if let Some(replayed) = replayed(value) {
+                    self.span.record("sagat.operation.replayed", replayed);
+                }
+                if self.kind == WorkflowPrimitiveKind::Update {
+                    WorkflowPrimitiveOutcome::Applied
+                } else {
+                    WorkflowPrimitiveOutcome::Succeeded
+                }
+            }
+            Err(error) => match Self::rejection(error) {
+                Some(code) => {
+                    self.span.record("sagat.rejection.code", code.as_str());
+                    metrics::counter!(
+                        WorkflowPrimitiveMetric::Rejections.as_str(),
+                        "kind" => self.kind.as_str(),
+                        "code" => code.as_str(),
+                    )
+                    .increment(1);
+                    WorkflowPrimitiveOutcome::Rejected
+                }
+                None => {
+                    if error.parts().status.is_server_error() {
+                        self.span.record("otel.status_code", "error");
+                    }
+                    WorkflowPrimitiveOutcome::Failed
+                }
+            },
+        };
+        self.span.record("sagat.outcome", outcome.as_str());
+        metrics::histogram!(
+            WorkflowPrimitiveMetric::OperationDuration.as_str(),
+            "kind" => self.kind.as_str(),
+            "outcome" => outcome.as_str(),
+        )
+        .record(self.started.elapsed().as_secs_f64());
+    }
+}
+
 pub async fn query_chain<B: DeclaredOperationApi>(
     caller: Caller,
     State(state): State<B>,
-    Path((namespace_id, chain_id, name)): Path<(String, String, String)>,
+    Path(path): Path<(String, String, String)>,
     ApiJson(body): ApiJson<ChainDeclaredQueryBody>,
+) -> Result<(HeaderMap, Json<DeclaredQueryResponseBody>), ApiError> {
+    let telemetry = OperationTelemetry::start(WorkflowPrimitiveKind::Query);
+    let result = query_chain_operation(caller, state, path, body)
+        .instrument(telemetry.span.clone())
+        .await;
+    telemetry.finish(&result, |_| None);
+    result
+}
+
+pub async fn query<B: DeclaredOperationApi>(
+    caller: Caller,
+    State(state): State<B>,
+    Path(path): Path<(String, String)>,
+    ApiJson(body): ApiJson<DeclaredQueryBody>,
+) -> Result<(HeaderMap, Json<DeclaredQueryResponseBody>), ApiError> {
+    let telemetry = OperationTelemetry::start(WorkflowPrimitiveKind::Query);
+    let result = query_operation(caller, state, path, body)
+        .instrument(telemetry.span.clone())
+        .await;
+    telemetry.finish(&result, |_| None);
+    result
+}
+
+pub async fn update<B: DeclaredOperationApi>(
+    caller: Caller,
+    State(state): State<B>,
+    Path(path): Path<(String, String)>,
+    ApiJson(body): ApiJson<DeclaredUpdateBody>,
+) -> Result<(HeaderMap, Json<DeclaredUpdateResponseBody>), ApiError> {
+    let telemetry = OperationTelemetry::start(WorkflowPrimitiveKind::Update);
+    let result = update_operation(caller, state, path, body)
+        .instrument(telemetry.span.clone())
+        .await;
+    telemetry.finish(&result, |(_, Json(body))| Some(body.replayed));
+    result
+}
+
+pub async fn update_chain<B: DeclaredOperationApi>(
+    caller: Caller,
+    State(state): State<B>,
+    Path(path): Path<(String, String, String)>,
+    ApiJson(body): ApiJson<ChainDeclaredUpdateBody>,
+) -> Result<(HeaderMap, Json<DeclaredUpdateResponseBody>), ApiError> {
+    let telemetry = OperationTelemetry::start(WorkflowPrimitiveKind::Update);
+    let result = update_chain_operation(caller, state, path, body)
+        .instrument(telemetry.span.clone())
+        .await;
+    telemetry.finish(&result, |(_, Json(body))| Some(body.replayed));
+    result
+}
+
+async fn query_chain_operation<B: DeclaredOperationApi>(
+    caller: Caller,
+    state: B,
+    (namespace_id, chain_id, name): (String, String, String),
+    body: ChainDeclaredQueryBody,
 ) -> Result<(HeaderMap, Json<DeclaredQueryResponseBody>), ApiError> {
     let namespace_id = namespace_id
         .parse::<Uuid>()
@@ -355,7 +512,6 @@ pub async fn query_chain<B: DeclaredOperationApi>(
         .map_err(evaluation_error)?;
     let result = serde_json::from_slice(evaluated.result().content())
         .map_err(|_| ApiError::from(AppError::Internal))?;
-    metrics::counter!("workflow_declared_operations_total", "kind" => "query", "outcome" => "returned").increment(1);
     tracing::info!(operation = %operation, chain_id = %chain_id, run_id = %evaluated.response().run_id(), "chain declared query returned");
     Ok((
         no_store(),
@@ -368,11 +524,11 @@ pub async fn query_chain<B: DeclaredOperationApi>(
     ))
 }
 
-pub async fn query<B: DeclaredOperationApi>(
+async fn query_operation<B: DeclaredOperationApi>(
     caller: Caller,
-    State(state): State<B>,
-    Path((run_id, name)): Path<(String, String)>,
-    ApiJson(body): ApiJson<DeclaredQueryBody>,
+    state: B,
+    (run_id, name): (String, String),
+    body: DeclaredQueryBody,
 ) -> Result<(HeaderMap, Json<DeclaredQueryResponseBody>), ApiError> {
     let run_id = run_id.parse::<RunId>().map_err(|_| ApiError::not_found())?;
     let operation = ActivityName::parse(&name).map_err(|_| ApiError::not_found())?;
@@ -413,7 +569,6 @@ pub async fn query<B: DeclaredOperationApi>(
         .map_err(evaluation_error)?;
     let result = serde_json::from_slice(evaluated.result().content())
         .map_err(|_| ApiError::from(AppError::Internal))?;
-    metrics::counter!("workflow_declared_operations_total", "kind" => "query", "outcome" => "returned").increment(1);
     tracing::info!(operation = %operation, run_id = %run_id, "declared query returned");
     Ok((
         no_store(),
@@ -426,11 +581,11 @@ pub async fn query<B: DeclaredOperationApi>(
     ))
 }
 
-pub async fn update<B: DeclaredOperationApi>(
+async fn update_operation<B: DeclaredOperationApi>(
     caller: Caller,
-    State(state): State<B>,
-    Path((run_id, name)): Path<(String, String)>,
-    ApiJson(body): ApiJson<DeclaredUpdateBody>,
+    state: B,
+    (run_id, name): (String, String),
+    body: DeclaredUpdateBody,
 ) -> Result<(HeaderMap, Json<DeclaredUpdateResponseBody>), ApiError> {
     let run_id = run_id.parse::<RunId>().map_err(|_| ApiError::not_found())?;
     let operation = ActivityName::parse(&name).map_err(|_| ApiError::not_found())?;
@@ -493,7 +648,6 @@ pub async fn update<B: DeclaredOperationApi>(
         } else {
             StatusCode::UNPROCESSABLE_ENTITY
         };
-        metrics::counter!("workflow_declared_operations_total", "kind" => "update", "outcome" => "rejected").increment(1);
         tracing::info!(operation = %operation, run_id = %run_id, outcome = "rejected", "declared update resolved");
         return Err(ApiError::validation("the declared update was rejected")
             .with_status(status)
@@ -514,7 +668,6 @@ pub async fn update<B: DeclaredOperationApi>(
     } else {
         "applied"
     };
-    metrics::counter!("workflow_declared_operations_total", "kind" => "update", "outcome" => outcome).increment(1);
     tracing::info!(operation = %operation, run_id = %run_id, outcome, "declared update resolved");
     Ok((
         no_store(),
@@ -526,11 +679,11 @@ pub async fn update<B: DeclaredOperationApi>(
     ))
 }
 
-pub async fn update_chain<B: DeclaredOperationApi>(
+async fn update_chain_operation<B: DeclaredOperationApi>(
     caller: Caller,
-    State(state): State<B>,
-    Path((namespace_id, chain_id, name)): Path<(String, String, String)>,
-    ApiJson(body): ApiJson<ChainDeclaredUpdateBody>,
+    state: B,
+    (namespace_id, chain_id, name): (String, String, String),
+    body: ChainDeclaredUpdateBody,
 ) -> Result<(HeaderMap, Json<DeclaredUpdateResponseBody>), ApiError> {
     let namespace_id = namespace_id
         .parse::<Uuid>()
@@ -611,7 +764,6 @@ pub async fn update_chain<B: DeclaredOperationApi>(
         } else {
             StatusCode::UNPROCESSABLE_ENTITY
         };
-        metrics::counter!("workflow_declared_operations_total", "kind" => "update", "outcome" => "rejected").increment(1);
         tracing::info!(operation = %operation, chain_id = %chain_id, run_id = %resolution.receipt().resolved_run_id(), outcome = "rejected", "chain declared update resolved");
         return Err(ApiError::validation("the declared update was rejected")
             .with_status(status)
@@ -632,7 +784,6 @@ pub async fn update_chain<B: DeclaredOperationApi>(
     } else {
         "applied"
     };
-    metrics::counter!("workflow_declared_operations_total", "kind" => "update", "outcome" => outcome).increment(1);
     tracing::info!(operation = %operation, chain_id = %chain_id, run_id = %resolution.receipt().resolved_run_id(), outcome, "chain declared update resolved");
     Ok((
         no_store(),

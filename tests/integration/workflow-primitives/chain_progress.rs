@@ -473,6 +473,9 @@ async fn handoff_replays_after_restart_without_releasing_a_second_successor() {
     .await
     .expect("durable evidence counts");
     assert_eq!(counts, (2, 1));
+    let published =
+        crate::hint_contract::assert_outbox_matches_the_contract(&fixture.world.db.pool).await;
+    crate::hint_contract::assert_published(&published, &["run.continued"]);
 }
 
 #[tokio::test]
@@ -572,6 +575,67 @@ async fn final_head_closes_once_and_exposes_child_outcome_without_settling_paren
     .await
     .expect("terminal audit");
     assert_eq!(audits, 1);
+}
+
+/// The final head of a chain is a finished run for `run.finished` subscribers, and both terminal
+/// hints carry the run's trace.
+#[tokio::test]
+async fn final_head_is_delivered_to_run_finished_subscribers_once() {
+    let fixture = seed_quiescent_chain("chain-final-subscribers", Duration::hours(1)).await;
+    let subscription = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO webhook_subscriptions \
+         (id,tenant_id,namespace_id,name,destination_kind,destination_settings,url,secret_name, \
+          kinds,rate_per_second,timeout_ms,status,created_by) \
+         VALUES ($1,$2,$3,'chain-final','WEBHOOK','{}','https://example.invalid/chain', \
+                 'chain-key',ARRAY['run.finished'],100,1000,'ACTIVE','test')",
+    )
+    .bind(subscription)
+    .bind(fixture.world.admin.tenant_id().as_uuid())
+    .bind(fixture.world.namespace.id().as_uuid())
+    .execute(&fixture.world.db.pool)
+    .await
+    .expect("run finished subscription");
+    let run_outbox = Uuid::now_v7();
+    let chain_outbox = Uuid::now_v7();
+    let command = finalization(&fixture, run_outbox, chain_outbox);
+    assert!(
+        !fixture
+            .store
+            .finalize_chain(&command)
+            .await
+            .expect("finalize chain")
+            .replayed()
+    );
+    assert!(
+        fixture
+            .store
+            .finalize_chain(&command)
+            .await
+            .expect("finalization replay")
+            .replayed()
+    );
+
+    let delivered: (i64, Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM webhook_deliveries d \
+                  WHERE d.tenant_id=$1 AND d.subscription_id=$2), \
+                (SELECT payload->>'traceId' FROM event_outbox WHERE tenant_id=$1 AND id=$3), \
+                (SELECT payload->>'traceId' FROM event_outbox WHERE tenant_id=$1 AND id=$4)",
+    )
+    .bind(fixture.world.admin.tenant_id().as_uuid())
+    .bind(subscription)
+    .bind(run_outbox)
+    .bind(chain_outbox)
+    .fetch_one(&fixture.world.db.pool)
+    .await
+    .expect("terminal deliveries");
+    assert_eq!(
+        delivered,
+        (1, fixture.trace_id.clone(), fixture.trace_id.clone())
+    );
+    let published =
+        crate::hint_contract::assert_outbox_matches_the_contract(&fixture.world.db.pool).await;
+    crate::hint_contract::assert_published(&published, &["run.finished", "chain.finished"]);
 }
 
 #[tokio::test]

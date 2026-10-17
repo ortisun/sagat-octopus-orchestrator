@@ -445,6 +445,12 @@ async fn scheduler_opened_approval_routes_approved_and_rejected_decisions_after_
             evidence,
             (status.into(), "CANCELLED".into(), "SUCCEEDED".into(), 1, 1)
         );
+        let published =
+            crate::hint_contract::assert_outbox_matches_the_contract(&fixture.world.db.pool).await;
+        assert!(
+            published.iter().any(|kind| kind == "approval.settled"),
+            "{published:?}"
+        );
     }
 }
 
@@ -590,6 +596,9 @@ async fn cancelling_the_run_cancels_the_request_timer_and_audits_one_atomic_outc
             1,
         )
     );
+    let published =
+        crate::hint_contract::assert_outbox_matches_the_contract(&fixture.world.db.pool).await;
+    crate::hint_contract::assert_published(&published, &["approval.opened", "approval.cancelled"]);
 }
 
 #[tokio::test]

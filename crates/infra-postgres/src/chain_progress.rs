@@ -18,6 +18,7 @@ use sagat_domain::execution::{
     RunEvent, RunId, RunState, RunStatus, SegmentCompletionKind,
 };
 use sagat_domain::identity::{NamespaceId, Subject, TenantId};
+use sagat_domain::outbound::OutboundKind;
 use sagat_domain::quota::{self, QuotaResource};
 use sagat_domain::sharding::Shard;
 use sagat_domain::workflow::{Digest, NodeId, NodeKind, WorkflowDefinition};
@@ -1973,10 +1974,42 @@ impl ChainProgressStore for PgChainProgressStore {
             "chainId": command.chain_id().to_string(),
             "headRunId": command.expected_head().to_string(),
             "status": command.status().as_str(),
+            "traceId": run.trace_id,
         }))
         .execute(&mut *tx)
         .await
         .map_err(store_error)?;
+        // The final head is a finished run for its subscribers too, as on every other terminal path.
+        let definition = self
+            .definition(&mut tx, command.scope().tenant_id(), chain.version_id)
+            .await?;
+        let body = json!({
+            "id": command.run_outbox_id().to_string(),
+            "type": "run.finished",
+            "time": command
+                .occurred_at()
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap_or_default(),
+            "data": {
+                "tenantId": command.scope().tenant_id().to_string(),
+                "namespaceId": command.scope().namespace_id().to_string(),
+                "runId": command.expected_head().to_string(),
+                "workflow": definition.name().as_str(),
+                "status": command.status().as_str(),
+                "traceId": run.trace_id,
+            },
+        });
+        crate::outbound::fan_out(
+            &mut tx,
+            command.scope().tenant_id(),
+            command.scope().namespace_id(),
+            OutboundKind::RunFinished,
+            &command.run_outbox_id().to_string(),
+            &serde_json::to_vec(&body).unwrap_or_default(),
+            command.occurred_at(),
+        )
+        .await
+        .map_err(ChainProgressError::Storage)?;
         insert_audit(&mut tx, command.audit()).await?;
         mark_telemetry(
             &mut tx,

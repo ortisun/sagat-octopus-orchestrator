@@ -13,12 +13,12 @@ use uuid::Uuid;
 use crate::support;
 use crate::support::api::{TestApi, json_of};
 
-struct Fixture {
-    api: TestApi,
-    tenant: sagat_domain::identity::TenantId,
-    namespace: NamespaceId,
+pub(crate) struct Fixture {
+    pub(crate) api: TestApi,
+    pub(crate) tenant: sagat_domain::identity::TenantId,
+    pub(crate) namespace: NamespaceId,
     version: WorkflowVersionId,
-    run: RunId,
+    pub(crate) run: RunId,
 }
 
 fn digest(bytes: &[u8]) -> Digest {
@@ -227,7 +227,7 @@ async fn seed_version(
     (version, run)
 }
 
-async fn fixture(name: &str) -> Fixture {
+pub(crate) async fn fixture(name: &str) -> Fixture {
     let api = support::api::start().await;
     let tenant = api.tenant("acme", "alice").await;
     api.tenant("globex", "bob").await;
@@ -273,11 +273,11 @@ async fn fixture(name: &str) -> Fixture {
     }
 }
 
-fn query_path(fixture: &Fixture) -> String {
+pub(crate) fn query_path(fixture: &Fixture) -> String {
     format!("/runs/{}/queries/balance.read", fixture.run)
 }
 
-fn update_path(fixture: &Fixture) -> String {
+pub(crate) fn update_path(fixture: &Fixture) -> String {
     format!("/runs/{}/updates/balance.replace", fixture.run)
 }
 
@@ -924,6 +924,9 @@ async fn update_commits_once_and_replays_the_durable_result() {
     assert_eq!(stored.1, 2);
     assert_eq!(stored.2, br#"{"balance":27}"#);
     assert_eq!((stored.3, stored.4, stored.5), (1, 1, 1));
+    let published =
+        crate::hint_contract::assert_outbox_matches_the_contract(&fixture.api.db.pool).await;
+    crate::hint_contract::assert_published(&published, &["run.state_updated"]);
 }
 
 #[tokio::test]

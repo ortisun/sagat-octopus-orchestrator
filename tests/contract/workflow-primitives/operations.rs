@@ -223,6 +223,39 @@ fn result_schema_requires_finite_shapes_and_matches_the_value_ceiling() {
     assert!(!validator().is_valid(&unbounded_array));
 }
 
+/// The REST precondition is optional and never negative; the HTTP adapter reads it as `u64`, so a
+/// negative value is refused before any lookup.
+#[test]
+fn expected_state_revision_is_an_optional_nonnegative_integer() {
+    let path =
+        super::repository_root().join("specs/001-platform-foundation/contracts/openapi.yaml");
+    let source = std::fs::read_to_string(path).expect("canonical OpenAPI exists");
+    let openapi: Value = serde_saphyr::from_str(&source).expect("canonical OpenAPI is YAML");
+    for request in ["DeclaredUpdateRequest", "ChainDeclaredUpdateRequest"] {
+        let schema = &openapi["components"]["schemas"][request];
+        let required = schema["required"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{request} lists required fields"));
+        assert!(
+            !required
+                .iter()
+                .any(|field| field == "expectedStateRevision"),
+            "{request}: the precondition must stay optional"
+        );
+        let revision = &schema["properties"]["expectedStateRevision"];
+        assert_eq!(revision["type"], "integer", "{request}");
+        assert_eq!(revision["minimum"], 0, "{request}");
+        assert_eq!(
+            schema["properties"]["updateKey"]["minLength"], 1,
+            "{request}"
+        );
+        assert_eq!(
+            schema["properties"]["updateKey"]["maxLength"], MAX_UPDATE_KEY_BYTES,
+            "{request}"
+        );
+    }
+}
+
 #[test]
 fn declared_state_schema_uses_the_same_closed_bounded_value_shapes() {
     assert_eq!(

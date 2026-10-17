@@ -1362,6 +1362,9 @@ async fn delay_checkpoint_restart_and_duplicate_timer_fire_are_atomic() {
         final_state,
         ("RUNNING".into(), "FIRED".into(), 1, 4, 1, 2, 2, 13, 13)
     );
+    let published =
+        crate::hint_contract::assert_outbox_matches_the_contract(&fixture.db.pool).await;
+    crate::hint_contract::assert_published(&published, &["loop.timer.scheduled"]);
 }
 
 #[tokio::test]
@@ -1659,6 +1662,80 @@ async fn complete_checkpoint_routes_the_terminal_successor_atomically() {
     assert!(error.to_string().contains("loop progress is retained"));
 }
 
+/// A run that a loop finishes is a finished run for its subscribers too: the same transaction that
+/// records `SUCCEEDED` schedules the `run.finished` delivery of every matching subscription, as
+/// the activity and cancellation paths do.
+#[tokio::test]
+async fn a_run_finished_by_its_loop_is_delivered_to_run_finished_subscribers() {
+    let fixture = seed_running_loop("loop-terminal-subscribers").await;
+    let subscription = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO webhook_subscriptions \
+         (id,tenant_id,namespace_id,name,destination_kind,destination_settings,url,secret_name, \
+          kinds,rate_per_second,timeout_ms,status,created_by) \
+         VALUES ($1,$2,$3,'loop-finished','WEBHOOK','{}','https://example.invalid/loop', \
+                 'loop-key',ARRAY['run.finished'],100,1000,'ACTIVE','test')",
+    )
+    .bind(subscription)
+    .bind(fixture.tenant)
+    .bind(fixture.namespace.as_uuid())
+    .execute(&fixture.db.pool)
+    .await
+    .expect("run finished subscription");
+    let store = PgLoopProgressStore::new(fixture.db.pool.clone(), fixture.definitions.clone());
+    let complete = LoopCheckpointCommand::new(
+        transition(
+            &fixture,
+            8,
+            fixture.authority.clone(),
+            audit(&fixture),
+            crate::support::now(),
+        ),
+        0,
+        fixture.returned.clone(),
+        fixture.initial_carry,
+        fixture.initial_carry,
+        false,
+        crate::support::now(),
+        LoopContinuation::Complete,
+        None,
+        None,
+        Uuid::now_v7(),
+    )
+    .expect("complete checkpoint");
+    assert!(
+        store
+            .checkpoint(&complete)
+            .await
+            .expect("finish loop")
+            .applied
+    );
+    assert!(!store.checkpoint(&complete).await.expect("replay").applied);
+
+    let delivered: (String, i64, Option<String>) = sqlx::query_as(
+        "SELECT run.status, \
+                (SELECT count(*) FROM webhook_deliveries d \
+                  WHERE d.tenant_id=run.tenant_id AND d.subscription_id=$3), \
+                (SELECT o.payload->>'node' FROM event_outbox o WHERE o.tenant_id=run.tenant_id \
+                  AND o.aggregate_id=run.id AND o.event_type='run.finished') \
+         FROM runs run WHERE run.tenant_id=$1 AND run.id=$2",
+    )
+    .bind(fixture.tenant)
+    .bind(fixture.run.as_uuid())
+    .bind(subscription)
+    .fetch_one(&fixture.db.pool)
+    .await
+    .expect("terminal delivery");
+    assert_eq!(
+        delivered,
+        ("SUCCEEDED".to_owned(), 1, None),
+        "one delivery, and the run.finished hint has the documented RunFinished shape"
+    );
+    let published =
+        crate::hint_contract::assert_outbox_matches_the_contract(&fixture.db.pool).await;
+    crate::hint_contract::assert_published(&published, &["run.finished"]);
+}
+
 #[tokio::test]
 async fn terminal_outbox_failure_rolls_back_checkpoint_routing_and_slot_release() {
     let fixture = seed_running_loop("loop-terminal-rollback").await;
@@ -1802,6 +1879,9 @@ async fn iteration_limit_stops_the_run_without_routing_a_successor() {
         )
         .await
         .expect("iteration-limit journal and projection agree");
+    let published =
+        crate::hint_contract::assert_outbox_matches_the_contract(&fixture.db.pool).await;
+    crate::hint_contract::assert_published(&published, &["loop.iteration_limit"]);
 }
 
 #[tokio::test]
@@ -2094,6 +2174,12 @@ async fn cancellation_drains_the_active_iteration_and_finishes_after_restart() {
         )
         .await
         .expect("cancelled terminal projection matches journal");
+    let published =
+        crate::hint_contract::assert_outbox_matches_the_contract(&fixture.db.pool).await;
+    crate::hint_contract::assert_published(
+        &published,
+        &["loop.drain_started", "loop.finished", "run.finished"],
+    );
 }
 
 #[tokio::test]

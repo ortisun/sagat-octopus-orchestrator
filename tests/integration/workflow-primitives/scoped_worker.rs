@@ -877,6 +877,21 @@ async fn cancellation_drains_members_atomically_and_finishes_after_restart() {
         .verify_run(tenant, fixture.run)
         .await
         .expect("drained run replay");
+    // The conflicting row above was seeded by this test, not published by the platform.
+    let published = crate::hint_contract::assert_outbox_matches_the_contract_except(
+        &fixture.world.db.pool,
+        &[conflicting_outbox],
+    )
+    .await;
+    crate::hint_contract::assert_published(
+        &published,
+        &[
+            "task.ready",
+            "collection.drain.started",
+            "collection.finished",
+            "run.finished",
+        ],
+    );
 }
 
 #[tokio::test]
@@ -1417,6 +1432,9 @@ async fn scheduler_resumes_collection_through_checkpoint_and_finish() {
         .verify_run(tenant, fixture.run)
         .await
         .expect("journal and projections remain consistent");
+    let published =
+        crate::hint_contract::assert_outbox_matches_the_contract(&fixture.world.db.pool).await;
+    crate::hint_contract::assert_published(&published, &["collection.iteration.checkpointed"]);
 }
 
 #[tokio::test]

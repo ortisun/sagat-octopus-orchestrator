@@ -1,7 +1,7 @@
 asyncapi: 3.0.0
 info:
   title: Sagat Octopus Orchestrator Integration Events
-  version: 0.2.0
+  version: 0.3.0
   description: |
     Event contract; at-least-once everywhere. Hints on NATS are deduplicated by the Nats-Msg-Id header (the outbox row id); events that come in (webhook, API, broker) are deduplicated by (tenant, namespace, source, eventId) for the endpoint's window; events that go out (webhooks and broker subscriptions) carry a stable delivery id.
 
@@ -41,6 +41,156 @@ channels:
     messages:
       runFinished:
         $ref: '#/components/messages/RunFinished'
+  # --- Implemented by feature 014 (workflow primitives) -------------------------------------
+  # The same outbox and dispatcher as above publish these hints: identifiers, statuses, indices and
+  # revisions only, never inputs, results, declared state or secrets. Nothing in the platform
+  # consumes them; they let an operator or an integration watch a primitive without polling. A hint
+  # is redeliverable and may arrive out of order: read the run (or chain) before acting on it.
+  runContinued:
+    address: sagat.v1.run.continued.{tenant}
+    description: A chain segment handed off to its successor (Continue-As-New).
+    parameters:
+      tenant:
+        description: Tenant id (UUID).
+    messages:
+      runContinued:
+        $ref: '#/components/messages/RunContinued'
+  chainFinished:
+    address: sagat.v1.chain.finished.{tenant}
+    description: A continuation chain reached its final outcome; `headRunId` is the segment that ended it.
+    parameters:
+      tenant:
+        description: Tenant id (UUID).
+    messages:
+      chainFinished:
+        $ref: '#/components/messages/ChainFinished'
+  loopFinished:
+    address: sagat.v1.loop.finished.{tenant}
+    description: A loop node finished (the run may continue past it).
+    parameters:
+      tenant:
+        description: Tenant id (UUID).
+    messages:
+      loopFinished:
+        $ref: '#/components/messages/LoopHint'
+  loopIterationLimit:
+    address: sagat.v1.loop.iteration_limit.{tenant}
+    description: A loop exhausted `maxIterations`; the run is stopping with ITERATION_LIMIT.
+    parameters:
+      tenant:
+        description: Tenant id (UUID).
+    messages:
+      loopIterationLimit:
+        $ref: '#/components/messages/LoopHint'
+  loopDrainStarted:
+    address: sagat.v1.loop.drain_started.{tenant}
+    description: A loop started draining its active iteration (failure, cancellation or deadline).
+    parameters:
+      tenant:
+        description: Tenant id (UUID).
+    messages:
+      loopDrainStarted:
+        $ref: '#/components/messages/LoopHint'
+  loopIterationDrained:
+    address: sagat.v1.loop.iteration.drained.{tenant}
+    description: The active iteration of a draining loop has settled.
+    parameters:
+      tenant:
+        description: Tenant id (UUID).
+    messages:
+      loopIterationDrained:
+        $ref: '#/components/messages/LoopHint'
+  loopTimerScheduled:
+    address: sagat.v1.loop.timer.scheduled.{tenant}
+    description: A loop scheduled its durable delay before the next iteration.
+    parameters:
+      tenant:
+        description: Tenant id (UUID).
+    messages:
+      loopTimerScheduled:
+        $ref: '#/components/messages/LoopTimerScheduled'
+  approvalOpened:
+    address: sagat.v1.approval.opened.{tenant}
+    description: An approval request opened and waits for an eligible decision.
+    parameters:
+      tenant:
+        description: Tenant id (UUID).
+    messages:
+      approvalOpened:
+        $ref: '#/components/messages/ApprovalOpened'
+  approvalSettled:
+    address: sagat.v1.approval.settled.{tenant}
+    description: An approval request was decided or expired, and the run took the matching route.
+    parameters:
+      tenant:
+        description: Tenant id (UUID).
+    messages:
+      approvalSettled:
+        $ref: '#/components/messages/ApprovalSettled'
+  approvalCancelled:
+    address: sagat.v1.approval.cancelled.{tenant}
+    description: An open approval request was cancelled with its run.
+    parameters:
+      tenant:
+        description: Tenant id (UUID).
+    messages:
+      approvalCancelled:
+        $ref: '#/components/messages/ApprovalCancelled'
+  runStateUpdated:
+    address: sagat.v1.run.state_updated.{tenant}.{routingKey}
+    description: A declared Update was applied and the run's declared state revision advanced.
+    parameters:
+      tenant:
+        description: Tenant id (UUID).
+      routingKey:
+        description: The declared update operation name, mapped onto subject-safe tokens.
+    messages:
+      runStateUpdated:
+        $ref: '#/components/messages/RunStateUpdated'
+  collectionIterationCheckpointed:
+    address: sagat.v1.collection.iteration.checkpointed.{tenant}.{routingKey}
+    description: One iteration of a forEach/map collection committed its result.
+    parameters:
+      tenant:
+        description: Tenant id (UUID).
+      routingKey:
+        description: The collection node id, mapped onto subject-safe tokens.
+    messages:
+      collectionIterationCheckpointed:
+        $ref: '#/components/messages/CollectionIteration'
+  collectionDrainStarted:
+    address: sagat.v1.collection.drain.started.{tenant}.{routingKey}
+    description: A collection stopped admitting iterations and drains the active ones.
+    parameters:
+      tenant:
+        description: Tenant id (UUID).
+      routingKey:
+        description: The collection node id, mapped onto subject-safe tokens.
+    messages:
+      collectionDrainStarted:
+        $ref: '#/components/messages/CollectionDrainStarted'
+  collectionIterationDrained:
+    address: sagat.v1.collection.iteration.drained.{tenant}.{routingKey}
+    description: An active iteration of a draining collection has settled.
+    parameters:
+      tenant:
+        description: Tenant id (UUID).
+      routingKey:
+        description: The collection node id, mapped onto subject-safe tokens.
+    messages:
+      collectionIterationDrained:
+        $ref: '#/components/messages/CollectionIteration'
+  collectionFinished:
+    address: sagat.v1.collection.finished.{tenant}.{routingKey}
+    description: A collection node finished.
+    parameters:
+      tenant:
+        description: Tenant id (UUID).
+      routingKey:
+        description: The collection node id, mapped onto subject-safe tokens.
+    messages:
+      collectionFinished:
+        $ref: '#/components/messages/CollectionFinished'
   # --- Implemented by feature 004 ------------------------------------------------------------
   inboundWebhook:
     address: /v1/webhooks/{endpointId}
@@ -90,6 +240,66 @@ operations:
     action: send
     channel: {$ref: '#/channels/runFinished'}
     messages: [{$ref: '#/channels/runFinished/messages/runFinished'}]
+  publishRunContinued:
+    action: send
+    channel: {$ref: '#/channels/runContinued'}
+    messages: [{$ref: '#/channels/runContinued/messages/runContinued'}]
+  publishChainFinished:
+    action: send
+    channel: {$ref: '#/channels/chainFinished'}
+    messages: [{$ref: '#/channels/chainFinished/messages/chainFinished'}]
+  publishLoopFinished:
+    action: send
+    channel: {$ref: '#/channels/loopFinished'}
+    messages: [{$ref: '#/channels/loopFinished/messages/loopFinished'}]
+  publishLoopIterationLimit:
+    action: send
+    channel: {$ref: '#/channels/loopIterationLimit'}
+    messages: [{$ref: '#/channels/loopIterationLimit/messages/loopIterationLimit'}]
+  publishLoopDrainStarted:
+    action: send
+    channel: {$ref: '#/channels/loopDrainStarted'}
+    messages: [{$ref: '#/channels/loopDrainStarted/messages/loopDrainStarted'}]
+  publishLoopIterationDrained:
+    action: send
+    channel: {$ref: '#/channels/loopIterationDrained'}
+    messages: [{$ref: '#/channels/loopIterationDrained/messages/loopIterationDrained'}]
+  publishLoopTimerScheduled:
+    action: send
+    channel: {$ref: '#/channels/loopTimerScheduled'}
+    messages: [{$ref: '#/channels/loopTimerScheduled/messages/loopTimerScheduled'}]
+  publishApprovalOpened:
+    action: send
+    channel: {$ref: '#/channels/approvalOpened'}
+    messages: [{$ref: '#/channels/approvalOpened/messages/approvalOpened'}]
+  publishApprovalSettled:
+    action: send
+    channel: {$ref: '#/channels/approvalSettled'}
+    messages: [{$ref: '#/channels/approvalSettled/messages/approvalSettled'}]
+  publishApprovalCancelled:
+    action: send
+    channel: {$ref: '#/channels/approvalCancelled'}
+    messages: [{$ref: '#/channels/approvalCancelled/messages/approvalCancelled'}]
+  publishRunStateUpdated:
+    action: send
+    channel: {$ref: '#/channels/runStateUpdated'}
+    messages: [{$ref: '#/channels/runStateUpdated/messages/runStateUpdated'}]
+  publishCollectionIterationCheckpointed:
+    action: send
+    channel: {$ref: '#/channels/collectionIterationCheckpointed'}
+    messages: [{$ref: '#/channels/collectionIterationCheckpointed/messages/collectionIterationCheckpointed'}]
+  publishCollectionDrainStarted:
+    action: send
+    channel: {$ref: '#/channels/collectionDrainStarted'}
+    messages: [{$ref: '#/channels/collectionDrainStarted/messages/collectionDrainStarted'}]
+  publishCollectionIterationDrained:
+    action: send
+    channel: {$ref: '#/channels/collectionIterationDrained'}
+    messages: [{$ref: '#/channels/collectionIterationDrained/messages/collectionIterationDrained'}]
+  publishCollectionFinished:
+    action: send
+    channel: {$ref: '#/channels/collectionFinished'}
+    messages: [{$ref: '#/channels/collectionFinished/messages/collectionFinished'}]
   receiveWebhook:
     action: receive
     channel: {$ref: '#/channels/inboundWebhook'}
@@ -129,6 +339,16 @@ components:
           node: {type: string}
           activity: {type: string}
           traceId: {type: [string, 'null'], description: 'W3C trace id (32 hex) of the run.'}
+          instancePath:
+            type: array
+            maxItems: 8
+            description: 'Feature 014: the scoped instance of the step, outermost first; empty for a root step. Absent from hints written before worker protocol 1.5.'
+            items:
+              type: object
+              required: [scope, index]
+              properties:
+                scope: {type: string, description: 'The node id of the collection or loop that owns the scope.'}
+                index: {type: integer, minimum: 0, maximum: 9999}
     RunFinished:
       name: RunFinished
       contentType: application/json
@@ -144,6 +364,201 @@ components:
           namespaceId: {type: string, format: uuid}
           runId: {type: string, format: uuid}
           status: {type: string, enum: [SUCCEEDED, FAILED, CANCELLED, TIMED_OUT, COMPENSATED, PARTIAL, COMPENSATION_FAILED], description: "How the run ended. COMPENSATED, PARTIAL and COMPENSATION_FAILED are the ends of a run whose saga undid its work (feature 003); a cancelled or timed-out run is reported as such once what it had done was undone."}
+          traceId: {type: [string, 'null'], description: 'W3C trace id (32 hex) of the run.'}
+    RunContinued:
+      name: RunContinued
+      contentType: application/json
+      headers:
+        type: object
+        properties:
+          Nats-Msg-Id: {type: string, description: 'The outbox row id; stable across redeliveries.'}
+      payload:
+        type: object
+        required: [tenantId, namespaceId, chainId, predecessorRunId, successorRunId]
+        properties:
+          tenantId: {type: string, format: uuid}
+          namespaceId: {type: string, format: uuid}
+          chainId: {type: string, format: uuid}
+          predecessorRunId: {type: string, format: uuid}
+          successorRunId: {type: string, format: uuid}
+          traceId: {type: [string, 'null'], description: 'W3C trace id (32 hex) of the run.'}
+    ChainFinished:
+      name: ChainFinished
+      contentType: application/json
+      headers:
+        type: object
+        properties:
+          Nats-Msg-Id: {type: string, description: 'The outbox row id; stable across redeliveries.'}
+      payload:
+        type: object
+        required: [tenantId, namespaceId, chainId, headRunId, status]
+        properties:
+          tenantId: {type: string, format: uuid}
+          namespaceId: {type: string, format: uuid}
+          chainId: {type: string, format: uuid}
+          headRunId: {type: string, format: uuid, description: 'The segment whose end is the chain outcome.'}
+          status: {type: string, enum: [SUCCEEDED, FAILED, CANCELLED, TIMED_OUT, COMPENSATED, PARTIAL, COMPENSATION_FAILED]}
+          traceId: {type: [string, 'null'], description: 'W3C trace id (32 hex) of the run.'}
+    LoopHint:
+      name: LoopHint
+      contentType: application/json
+      description: 'Shared by loop.finished, loop.iteration_limit (FAILED), loop.drain_started and loop.iteration.drained (DRAINING).'
+      headers:
+        type: object
+        properties:
+          Nats-Msg-Id: {type: string, description: 'The outbox row id; stable across redeliveries.'}
+      payload:
+        type: object
+        required: [tenantId, namespaceId, runId, node, status]
+        properties:
+          tenantId: {type: string, format: uuid}
+          namespaceId: {type: string, format: uuid}
+          runId: {type: string, format: uuid}
+          node: {type: string, description: 'The loop node id.'}
+          status: {type: string, enum: [SUCCEEDED, FAILED, CANCELLED, DRAINING]}
+          traceId: {type: [string, 'null'], description: 'W3C trace id (32 hex) of the run.'}
+    LoopTimerScheduled:
+      name: LoopTimerScheduled
+      contentType: application/json
+      description: 'tenantId and namespaceId were added before the first release that published this hint.'
+      headers:
+        type: object
+        properties:
+          Nats-Msg-Id: {type: string, description: 'The outbox row id; stable across redeliveries.'}
+      payload:
+        type: object
+        required: [tenantId, namespaceId, runId, timerId, dueAtMicros]
+        properties:
+          tenantId: {type: string, format: uuid}
+          namespaceId: {type: string, format: uuid}
+          runId: {type: string, format: uuid}
+          timerId: {type: string, format: uuid}
+          dueAtMicros: {type: integer, description: 'When the delay elapses, in microseconds since the Unix epoch (UTC).'}
+          traceId: {type: [string, 'null'], description: 'W3C trace id (32 hex) of the run.'}
+    ApprovalOpened:
+      name: ApprovalOpened
+      contentType: application/json
+      headers:
+        type: object
+        properties:
+          Nats-Msg-Id: {type: string, description: 'The outbox row id; stable across redeliveries.'}
+      payload:
+        type: object
+        required: [tenantId, namespaceId, runId, requestId, deadline]
+        properties:
+          tenantId: {type: string, format: uuid}
+          namespaceId: {type: string, format: uuid}
+          runId: {type: string, format: uuid}
+          requestId: {type: string, format: uuid}
+          deadline: {type: integer, description: 'When the request expires, in seconds since the Unix epoch (UTC).'}
+          traceId: {type: [string, 'null'], description: 'W3C trace id (32 hex) of the run.'}
+    ApprovalSettled:
+      name: ApprovalSettled
+      contentType: application/json
+      description: 'The decider and any reason code stay in the audit trail; they are never in a hint.'
+      headers:
+        type: object
+        properties:
+          Nats-Msg-Id: {type: string, description: 'The outbox row id; stable across redeliveries.'}
+      payload:
+        type: object
+        required: [tenantId, namespaceId, runId, requestId, status, route, outcomeSequence]
+        properties:
+          tenantId: {type: string, format: uuid}
+          namespaceId: {type: string, format: uuid}
+          runId: {type: string, format: uuid}
+          requestId: {type: string, format: uuid}
+          status: {type: string, enum: [APPROVED, REJECTED, EXPIRED]}
+          route: {type: string, description: 'The node the run continues at.'}
+          outcomeSequence: {type: integer, minimum: 1, description: 'Journal sequence of the outcome.'}
+          traceId: {type: [string, 'null'], description: 'W3C trace id (32 hex) of the run.'}
+    ApprovalCancelled:
+      name: ApprovalCancelled
+      contentType: application/json
+      headers:
+        type: object
+        properties:
+          Nats-Msg-Id: {type: string, description: 'The outbox row id; stable across redeliveries.'}
+      payload:
+        type: object
+        required: [tenantId, namespaceId, runId, requestId, outcomeSequence]
+        properties:
+          tenantId: {type: string, format: uuid}
+          namespaceId: {type: string, format: uuid}
+          runId: {type: string, format: uuid}
+          requestId: {type: string, format: uuid}
+          outcomeSequence: {type: integer, minimum: 1}
+          traceId: {type: [string, 'null'], description: 'W3C trace id (32 hex) of the run.'}
+    RunStateUpdated:
+      name: RunStateUpdated
+      contentType: application/json
+      description: 'Never carries the arguments, the new state or the result; read them through the declared Query.'
+      headers:
+        type: object
+        properties:
+          Nats-Msg-Id: {type: string, description: 'The outbox row id; stable across redeliveries.'}
+      payload:
+        type: object
+        required: [tenantId, namespaceId, runId, operation, runVersion, stateRevision]
+        properties:
+          tenantId: {type: string, format: uuid}
+          namespaceId: {type: string, format: uuid}
+          runId: {type: string, format: uuid}
+          operation: {type: string, description: 'The declared update name.'}
+          runVersion: {type: integer, minimum: 1}
+          stateRevision: {type: integer, minimum: 1}
+          traceId: {type: [string, 'null'], description: 'W3C trace id (32 hex) of the run.'}
+    CollectionIteration:
+      name: CollectionIteration
+      contentType: application/json
+      description: 'Shared by collection.iteration.checkpointed and collection.iteration.drained.'
+      headers:
+        type: object
+        properties:
+          Nats-Msg-Id: {type: string, description: 'The outbox row id; stable across redeliveries.'}
+      payload:
+        type: object
+        required: [tenantId, namespaceId, runId, scopeId, index]
+        properties:
+          tenantId: {type: string, format: uuid}
+          namespaceId: {type: string, format: uuid}
+          runId: {type: string, format: uuid}
+          scopeId: {type: string, format: uuid, description: 'The collection scope instance.'}
+          index: {type: integer, minimum: 0, maximum: 9999}
+          traceId: {type: [string, 'null'], description: 'W3C trace id (32 hex) of the run.'}
+    CollectionDrainStarted:
+      name: CollectionDrainStarted
+      contentType: application/json
+      headers:
+        type: object
+        properties:
+          Nats-Msg-Id: {type: string, description: 'The outbox row id; stable across redeliveries.'}
+      payload:
+        type: object
+        required: [tenantId, namespaceId, runId, scopeId, reason]
+        properties:
+          tenantId: {type: string, format: uuid}
+          namespaceId: {type: string, format: uuid}
+          runId: {type: string, format: uuid}
+          scopeId: {type: string, format: uuid}
+          reason: {type: string, enum: [FAILED, STORAGE_QUOTA, CANCELLED]}
+          traceId: {type: [string, 'null'], description: 'W3C trace id (32 hex) of the run.'}
+    CollectionFinished:
+      name: CollectionFinished
+      contentType: application/json
+      headers:
+        type: object
+        properties:
+          Nats-Msg-Id: {type: string, description: 'The outbox row id; stable across redeliveries.'}
+      payload:
+        type: object
+        required: [tenantId, namespaceId, runId, scopeId, status]
+        properties:
+          tenantId: {type: string, format: uuid}
+          namespaceId: {type: string, format: uuid}
+          runId: {type: string, format: uuid}
+          scopeId: {type: string, format: uuid}
+          status: {type: string, enum: [SUCCEEDED, FAILED, CANCELLED]}
           traceId: {type: [string, 'null'], description: 'W3C trace id (32 hex) of the run.'}
     WebhookEvent:
       name: WebhookEvent

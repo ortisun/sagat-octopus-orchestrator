@@ -194,6 +194,13 @@ impl WorkflowPrimitiveRejectionCode {
             Self::StaleFence => "STALE_FENCE",
         }
     }
+
+    /// The code whose text equals a `details.reason`, if it is one of this closed set. Any other
+    /// reason yields `None`, so a reason can never widen the label set.
+    #[must_use]
+    pub fn from_reason(reason: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|code| code.as_str() == reason)
+    }
 }
 
 /// Metric instruments and their only permitted label keys.
