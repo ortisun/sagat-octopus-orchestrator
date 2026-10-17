@@ -160,6 +160,16 @@ races. The separate real-process crash gate requires an absolute coordinated `CA
 runs the ignored process case, retaining its logs and binary manifest. Service reconstruction alone
 is not process-crash evidence. A failed infrastructure prerequisite must be reported as a failure.
 
+## Unchanged response compatibility
+
+With the absolute coordinated `CARGO_TARGET_DIR` exported, run
+`scripts/test-payload-classification-surfaces.sh`. It builds the immutable integrated server from
+before feature 016 and the current server, migrates the same populated fixture and compares the
+actual body bytes of all ten FR-016-016 surfaces, including declared Query/Update and a completed
+SSE stream. It retains a binary/source manifest and before/after bodies; it never blesses or
+normalizes a response. The complete script passed on 2026-10-17; exact artifact and command evidence
+is in `tests/integration/payload-classification/compatibility-report.md`.
+
 ## What this guide does not prove
 
 It does not prove field classification of events (their data is `pii` as a whole, G282, G291), erasure, retention, taint tracking, or the

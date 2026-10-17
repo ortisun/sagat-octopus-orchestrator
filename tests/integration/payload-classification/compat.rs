@@ -32,6 +32,237 @@ const VALUE_CANARY: &str = "release-input-value-canary";
 const EVENT_CANARY: &str = "release-event-value-canary";
 const HEADER_CANARY: &str = "release-header-value-canary";
 const BODY_CANARY: &str = "release-body-value-canary";
+const PRE_CLASSIFICATION_COMMIT: &str = "3637ee8c4b98d2e5809f1527a9b2bb1fcaf2406a";
+
+/// Exact HTTP bytes from the integrated 014/017 server before feature 016, on the same persisted
+/// fixture before/after migration. No normalization or golden blessing is used.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires frozen pre-classification binary; run scripts/test-payload-classification-surfaces.sh"]
+async fn unchanged_surfaces_match_actual_pre_classification_response_bytes() {
+    sagat_api_http::auth::install_crypto_provider();
+    let baseline = required_path("SAGAT_SURFACE_BASELINE_CP");
+    let current = required_path("SAGAT_SURFACE_CURRENT_CP");
+    let source = required_path("SAGAT_SURFACE_BASELINE_SOURCE");
+    let artifacts = required_path("SAGAT_SURFACE_ARTIFACT_DIR");
+    let logs = required_path("SAGAT_SURFACE_LOG_DIR");
+    let manifest_path = required_path("SAGAT_SURFACE_MANIFEST");
+    let manifest = fs::read_to_string(manifest_path).expect("surface artifact manifest");
+    for (key, value) in [
+        ("baseline-commit", PRE_CLASSIFICATION_COMMIT.to_owned()),
+        ("baseline-control-plane-sha256", sha256(&baseline)),
+        ("current-control-plane-sha256", sha256(&current)),
+    ] {
+        assert!(
+            manifest
+                .lines()
+                .any(|line| line == format!("{key} {value}")),
+            "artifact identity: {key}"
+        );
+    }
+    assert_eq!(
+        command_output(
+            Path::new("git"),
+            &["-C", source.to_str().expect("source"), "rev-parse", "HEAD"],
+            &[]
+        ),
+        PRE_CLASSIFICATION_COMMIT
+    );
+    assert!(
+        command_output(
+            Path::new("git"),
+            &[
+                "-C",
+                source.to_str().expect("source"),
+                "status",
+                "--porcelain"
+            ],
+            &[]
+        )
+        .is_empty()
+    );
+
+    let db = fresh_db().await;
+    let idp = TestIdp::start().await;
+    let mut env = process_env(&db.url, &idp);
+    command_output(&baseline, &["migrate"], &env);
+    env.extend([
+        ("SAGAT_SEED_TENANT", TENANT.to_owned()),
+        ("SAGAT_SEED_ADMIN_SUBJECT", ADMIN.to_owned()),
+        ("SAGAT_SEED_WORKSPACE", WORKSPACE.to_owned()),
+        ("SAGAT_SEED_NAMESPACE", NAMESPACE.to_owned()),
+        ("SAGAT_SEED_ENVIRONMENT", "dev".to_owned()),
+    ]);
+    command_output(&baseline, &["seed-dev"], &env);
+    let (old_server, old_base) = start_control_plane(
+        &baseline,
+        &db.url,
+        &idp,
+        None,
+        &logs,
+        "pre-classification-surfaces",
+    )
+    .await;
+    let client = Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .expect("surface HTTP client");
+    let token = idp.token(ADMIN, TENANT).build();
+    let mut runs = Vec::new();
+    for (name, stateful) in [("surface-terminal", false), ("surface-operations", true)] {
+        let mut ir = json!({"apiVersion":"sagat-octopus-orchestrator.io/v1","kind":"Workflow",
+            "metadata":{"name":name},"entrypoint":"work","nodes":[{"id":"work","type":"end"}]});
+        if stateful {
+            ir["nodes"] = json!([{"id":"work","type":"activity","activity":"surface.hold","next":"done"},{"id":"done","type":"end"}]);
+            let state_schema = json!({"type":"object","additionalProperties":false,"properties":{"word":{"type":"string","maxLength":256}},"required":["word"]});
+            ir["state"] = json!({"schema":state_schema,"initial":"input.account",
+                "queries":{"word.read":{"argsSchema":{"type":"object","additionalProperties":false},"resultSchema":{"type":"string","maxLength":256},"expression":"state.word","disclosure":"declared-business-result-v1"}},
+                "updates":{"word.replace":{"argsSchema":state_schema,"validate":"true","state":"args","result":"newState.word","resultSchema":{"type":"string","maxLength":256},"disclosure":"declared-business-result-v1"}}});
+        }
+        let (status, created, _) = api(
+            &client,
+            &old_base,
+            &token,
+            Method::POST,
+            "/workflows",
+            Some(NAMESPACE),
+            Some(&json!({"name":name,"ir":ir})),
+        )
+        .await;
+        assert_status(status, StatusCode::CREATED, &created);
+        let workflow = created["id"].as_str().expect("surface workflow");
+        let (status, published, _) = api(
+            &client,
+            &old_base,
+            &token,
+            Method::POST,
+            &format!("/workflows/{workflow}/publish"),
+            None,
+            Some(&json!({"draftRevision":created["draftRevision"]})),
+        )
+        .await;
+        assert_status(status, StatusCode::CREATED, &published);
+        let (status, started, _) = api(
+            &client,
+            &old_base,
+            &token,
+            Method::POST,
+            "/runs",
+            Some(NAMESPACE),
+            Some(&json!({"workflowId":workflow,"input":{"account":{"word":VALUE_CANARY}}})),
+        )
+        .await;
+        assert_status(status, StatusCode::ACCEPTED, &started);
+        runs.push(started["runId"].as_str().expect("surface run").to_owned());
+    }
+    let terminal = &runs[0];
+    let operations = &runs[1];
+    let update = json!({"updateKey":"surface-golden-key","args":{"word":VALUE_CANARY},"expectedStateRevision":0});
+    let update_path = format!("/runs/{operations}/updates/word.replace");
+    let (status, applied, _) = api(
+        &client,
+        &old_base,
+        &token,
+        Method::POST,
+        &update_path,
+        None,
+        Some(&update),
+    )
+    .await;
+    assert_status(status, StatusCode::OK, &applied);
+    assert_eq!(applied["replayed"], false);
+    assert_eq!(applied["result"], VALUE_CANARY);
+
+    // A caught-up telemetry projection is a legitimate stable fixture: compare the actual lag=0
+    // bytes, without scrubbing the response's clock or substituting a test clock in either server.
+    sqlx::query("UPDATE telemetry_pending SET applied_seq=head_seq,behind_since=NULL")
+        .execute(&db.pool)
+        .await
+        .expect("caught-up telemetry fixture");
+    let mut requests = Vec::new();
+    for (label, suffix) in [
+        ("run", ""),
+        ("journal", "/events?limit=200"),
+        ("graph", "/graph"),
+        ("changes", "/graph/changes?since=0"),
+        ("stream", "/stream"),
+        ("telemetry", "/telemetry"),
+        ("attempts", "/attempts"),
+    ] {
+        requests.push((
+            label,
+            Method::GET,
+            format!("/runs/{terminal}{suffix}"),
+            None,
+        ));
+    }
+    requests.push((
+        "inspection",
+        Method::POST,
+        format!("/runs/{terminal}/payload-inspections"),
+        Some(json!({"source":"input"})),
+    ));
+    requests.push((
+        "query",
+        Method::POST,
+        format!("/runs/{operations}/queries/word.read"),
+        Some(json!({"args":{}})),
+    ));
+    requests.push(("update", Method::POST, update_path, Some(update)));
+    let mut goldens = BTreeMap::new();
+    for (label, method, path, body) in &requests {
+        let (status, value, wire) = api(
+            &client,
+            &old_base,
+            &token,
+            method.clone(),
+            path,
+            None,
+            body.as_ref(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "baseline surface: {label}");
+        if matches!(*label, "query" | "update") {
+            assert_eq!(value["result"], VALUE_CANARY);
+        } else {
+            assert!(
+                !wire.contains(VALUE_CANARY),
+                "baseline surface leaked: {label}"
+            );
+        }
+        if *label == "stream" {
+            assert!(
+                wire.contains("event: end"),
+                "terminal SSE must have completed"
+            );
+        }
+        fs::write(artifacts.join(format!("{label}.before.http-body")), &wire)
+            .expect("baseline response artifact");
+        goldens.insert(*label, wire);
+    }
+    old_server.stop();
+    command_output(&current, &["migrate"], &process_env(&db.url, &idp));
+    let (_new_server, new_base) =
+        start_control_plane(&current, &db.url, &idp, None, &logs, "current-surfaces").await;
+    for (label, method, path, body) in &requests {
+        let (status, _, wire) = api(
+            &client,
+            &new_base,
+            &token,
+            method.clone(),
+            path,
+            None,
+            body.as_ref(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "current surface: {label}");
+        fs::write(artifacts.join(format!("{label}.after.http-body")), &wire)
+            .expect("current response artifact");
+        assert!(
+            goldens[*label].as_bytes() == wire.as_bytes(),
+            "pre-classification response changed: {label}"
+        );
+    }
+}
 
 #[tokio::test]
 async fn bounded_discovery_backfill_reindexes_existing_steps_atomically() {

@@ -452,3 +452,26 @@ Command: `SAGAT_STUDIO_NO_SANDBOX=1 SAGAT_STUDIO_REBUILD=0
 SAGAT_STUDIO_GREP='viewer, developer, operator and revealer' cargo test --locked
 -p sagat-tests --test e2e_workflow_studio -- --ignored journeys --nocapture`. As before, the
 unrelated sandbox journey is explicitly excluded; this is not full Studio acceptance.
+
+
+### Actual pre-classification byte compatibility
+
+`scripts/test-payload-classification-surfaces.sh` passed its complete build/migrate/HTTP gate
+(1 test, 5.96 s runtime; `/tmp/sagat-completion-surface-compat-full-3.log`). The immutable baseline
+is 3637ee8c4b98d2e5809f1527a9b2bb1fcaf2406a: the approved integrated 014/017 platform immediately
+before feature 016, rather than a release without Query/Update. The actual baseline publishes and
+starts terminal and stateful runs and applies a declared Update. Its responses are retained,
+then the actual current server migrates the populated database and repeats the exact requests.
+No response is normalized and no golden is blessed. Actual bodies are byte-identical for all ten
+surfaces: run, journal, graph, graph changes, completed SSE stream, telemetry, attempts, structural
+inspection, declared Query, and a replayed declared Update. The latter two positively return the
+canary under their explicit declared-result policy; classification does not filter those results.
+Telemetry uses a legitimate caught-up persisted projection (lag zero), not a substituted clock.
+
+Manifest/binaries/response pairs: `/Users/marcelo/Documents/Projects/sagat-octopus-surface016-artifacts/run.U6mTUY/artifacts/SHA256SUMS`.
+The first complete script run reached the real old server but refused an unbounded-string test
+fixture, as the existing contract requires. Adding maxLength=256 to that fixture corrected the
+harness. A direct retry passed 1/1 in 5.68 s before the full script was rerun successfully.
+The script keeps its detached source read-only and removes only that clean source on exit;
+artifacts and logs remain. This extra gate complements the separate actual v0.1.0 release upgrade,
+released-five-SDK and old Studio/browser evidence; it is not an arbitrary old-server writer claim.
