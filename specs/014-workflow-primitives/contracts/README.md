@@ -40,6 +40,9 @@ the budget is a durable run failure, never a silent wait:
 | a root node beyond `maxInstances` | `INSTANCE_LIMIT` | by the planner, as the stop that replaces the activation |
 | a collection whose iterations cannot all be admitted | `INSTANCE_LIMIT` | before the collection enters |
 | more collection items than `maxItems` | `ITERATION_LIMIT` | before the collection enters |
+| a collection's blob source is not an array, is over a byte ceiling, or has more elements than `maxItems` | `EXPRESSION_ERROR`, `RUN_DATA_LIMIT`, `ITERATION_LIMIT` | before the collection enters |
+| a collection's blob source is missing, not the run's own, or without bytes | `BLOB_UNAVAILABLE` | before the collection enters |
+| a collection's blob source does not match its recorded size or digest | `BLOB_CORRUPT` | before the collection enters |
 | a loop's first body or successor does not fit | `INSTANCE_LIMIT` | before the loop enters |
 | a loop's next body (or its successor once it is done) does not fit | `INSTANCE_LIMIT` | at the checkpoint, before any delay is scheduled; the completed iterations are kept |
 | a loop needs another body after `maxIterations` | `ITERATION_LIMIT` | at the checkpoint |
@@ -172,6 +175,24 @@ indices have no language-specific iteration semantics. Loop bodies see `{iterati
 conditions. A map output is always index-ordered; there is no unordered mode in this increment. A referenced
 input/blob array may contain up to 10,000 items within the capture/value/context byte limits, subject
 to bounded materialization evidence; this does not increase CEL literal/constructed-list limits.
+
+**Blob item sources (D420-D428).** When the `items` expression yields the descriptor
+`{"$blob": {"id", "size", "sha256", "contentType"}}` of a blob (the run's bound input, for example
+`items: "input"` of a run started with `inputBlobRef`, or a committed output of one of the run's own
+steps) the scheduler reads the blob once, at entry, and the array it holds becomes the membership.
+The blob must be committed, in the run's own tenant and namespace, and be the run's bound input or the
+committed output of one of its own steps; a descriptor typed into a JSON value is not a capability, and
+a blob that is missing, foreign, unused, or whose descriptor disagrees with the catalog fails the run
+with `BLOB_UNAVAILABLE` (they are indistinguishable on purpose). The bytes are checked against the
+recorded size and SHA-256 as they are read (`BLOB_CORRUPT`). The array is bounded before anything is
+retained: at most `maxItems` elements (`ITERATION_LIMIT`), 256 KiB per element and 4 MiB of canonical
+elements together, from a blob of at most 8 MiB (`RUN_DATA_LIMIT`); content that is not a JSON array is
+`EXPRESSION_ERROR`. Elements are stored as canonical compact JSON under their own digests; an element
+may itself be a blob descriptor, and the iteration is handed that reference verbatim, never the bytes.
+The scope keeps a manifest (the descriptor, the count and the digest of the canonical array) as its
+snapshot payload and a restricted foreign key to the blob, so neither the blob sweep nor a retention job can remove
+the source of a live membership. The engine's read is audited (`blob.read`, resource = the blob). A store
+outage, or a replica with no blob store, leaves the run waiting; it is never failed for that.
 The engine assembles the indexed aggregate separately from expression list concatenation.
 
 Numeric limits, payload ceilings and uniqueness rules are specified in `data-model.md`. SDK builders

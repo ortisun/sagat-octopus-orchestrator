@@ -285,6 +285,112 @@ async fn an_array_of_blob_references_larger_than_one_payload_is_materialized_and
     }
 }
 
+/// An element too large to be a value is itself a blob; the iteration is handed its descriptor and
+/// its worker reads the bytes through the lease it holds, as for any blob.
+#[tokio::test]
+async fn a_large_item_reaches_its_iteration_as_a_reference_that_the_worker_can_read() {
+    let p = platform().await;
+    // Two earlier runs leave two committed blobs of 600 KiB (over what a payload may hold).
+    let producer = p
+        .publish(
+            "blob-source-producer",
+            &json!({
+                "apiVersion": "sagat-octopus-orchestrator.io/v1", "kind": "Workflow",
+                "metadata": {"name": "blob-source-producer"}, "entrypoint": "make",
+                "nodes": [{"id": "make", "type": "activity", "activity": "src.make"}]
+            }),
+        )
+        .await;
+    let first = start_inline(&p, &producer, &json!({})).await;
+    let _second = start_inline(&p, &producer, &json!({})).await;
+    let mut worker = scoped_worker(&p, "blob-source-large", &["src.make", "src.line"]).await;
+    let mut documents = std::collections::BTreeMap::new();
+    for lease in worker.poll(8).await {
+        let run: Uuid = lease.run_id.parse().expect("run id");
+        let body: Vec<u8> = if run == first {
+            vec![b'a'; 600 * 1024]
+        } else {
+            vec![b'b'; 600 * 1024]
+        };
+        let written = worker
+            .write_blob(
+                &lease,
+                sagat_api_grpc::pb::WriteBlobHeader {
+                    content_type: "application/pdf".into(),
+                    expected_size: i64::try_from(body.len()).expect("size"),
+                    expected_sha256: sha(&body),
+                    ..Default::default()
+                },
+                &body,
+                64 * 1024,
+            )
+            .await
+            .expect("write the document");
+        worker
+            .complete_with_blob(&lease, &written.blob_id)
+            .await
+            .expect("complete with the document");
+        documents.insert(
+            written.blob_id.clone(),
+            (
+                body,
+                json!({"$blob": {
+                "id": written.blob_id, "size": written.size,
+                "sha256": written.sha256, "contentType": written.content_type}}),
+            ),
+        );
+    }
+    assert_eq!(documents.len(), 2);
+    let references: Vec<Value> = documents
+        .values()
+        .map(|(_, reference)| json!({"document": reference["$blob"].clone()}))
+        .collect();
+
+    let workflow = p
+        .publish(
+            "blob-source-large-items",
+            &collection_ir("blob-source-large-items", "input", 10),
+        )
+        .await;
+    let source = upload(&p, &serde_json::to_vec(&references).expect("json")).await;
+    let run = start_with_blob(&p, &workflow, source["id"].as_str().expect("id")).await;
+    let scheduler = scheduler(&p, Some(blob_source(&p))).await;
+    for _ in 0..4 {
+        scheduler.tick().await;
+    }
+    let tasks = worker.poll(8).await;
+    assert_eq!(tasks.len(), 2, "the two iterations are leased");
+    for task in &tasks {
+        assert!(
+            task.input_json.len() < 4096,
+            "the context carries a reference, not 600 KiB"
+        );
+        let input: Value = serde_json::from_str(&task.input_json).expect("task input");
+        let reference = &input["item"]["document"];
+        let id = reference["id"]
+            .as_str()
+            .expect("the item holds a descriptor");
+        let (body, _) = documents.get(id).expect("one of the documents");
+        let (header, content) = worker
+            .read_blob(task, id)
+            .await
+            .expect("the iteration's worker reads the document it was handed");
+        assert_eq!(header.size, i64::try_from(body.len()).expect("size"));
+        assert_eq!(&content, body);
+    }
+    for task in &tasks {
+        worker
+            .complete(task, &json!({"read": true}))
+            .await
+            .expect("complete");
+    }
+    run_to_the_end(&p, &scheduler, &mut worker, run).await;
+    assert_eq!(
+        aggregate(&p, run).await,
+        json!([{"read": true}, {"read": true}])
+    );
+}
+
 // ---------------------------------------------------------------------------------------------
 // Immutability and garbage collection
 // ---------------------------------------------------------------------------------------------
