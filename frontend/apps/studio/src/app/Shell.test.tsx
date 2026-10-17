@@ -34,7 +34,7 @@ describe('Shell', () => {
     expect(within(sidebar).getByText('sagat-octopus')).toBeInTheDocument();
     expect(within(sidebar).getByLabelText('Namespace')).toHaveValue('production');
     const navigation = within(sidebar).getByRole('navigation', { name: 'Main' });
-    expect(within(navigation).getAllByRole('link').map((link) => link.textContent)).toEqual(['Workflows', 'Scripts', 'Runs', 'Operations', 'Integrations', 'Namespaces']);
+    expect(within(navigation).getAllByRole('link').map((link) => link.textContent)).toEqual(['Workflows', 'Scripts', 'Runs', 'Operations', 'Ad hoc database', 'Connections', 'Secrets', 'Integrations', 'Namespaces']);
     expect(within(navigation).getByRole('link', { name: 'Runs' })).toHaveAttribute('aria-current', 'page');
   });
 

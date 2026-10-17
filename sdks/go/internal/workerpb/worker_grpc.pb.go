@@ -19,15 +19,16 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	WorkerService_RegisterWorker_FullMethodName = "/sagat_octopus_orchestrator.v1.WorkerService/RegisterWorker"
-	WorkerService_PollTasks_FullMethodName      = "/sagat_octopus_orchestrator.v1.WorkerService/PollTasks"
-	WorkerService_StreamTasks_FullMethodName    = "/sagat_octopus_orchestrator.v1.WorkerService/StreamTasks"
-	WorkerService_Heartbeat_FullMethodName      = "/sagat_octopus_orchestrator.v1.WorkerService/Heartbeat"
-	WorkerService_CompleteStep_FullMethodName   = "/sagat_octopus_orchestrator.v1.WorkerService/CompleteStep"
-	WorkerService_FailStep_FullMethodName       = "/sagat_octopus_orchestrator.v1.WorkerService/FailStep"
-	WorkerService_ResolveSecrets_FullMethodName = "/sagat_octopus_orchestrator.v1.WorkerService/ResolveSecrets"
-	WorkerService_WriteBlob_FullMethodName      = "/sagat_octopus_orchestrator.v1.WorkerService/WriteBlob"
-	WorkerService_ReadBlob_FullMethodName       = "/sagat_octopus_orchestrator.v1.WorkerService/ReadBlob"
+	WorkerService_RegisterWorker_FullMethodName  = "/sagat_octopus_orchestrator.v1.WorkerService/RegisterWorker"
+	WorkerService_PollTasks_FullMethodName       = "/sagat_octopus_orchestrator.v1.WorkerService/PollTasks"
+	WorkerService_StreamTasks_FullMethodName     = "/sagat_octopus_orchestrator.v1.WorkerService/StreamTasks"
+	WorkerService_Heartbeat_FullMethodName       = "/sagat_octopus_orchestrator.v1.WorkerService/Heartbeat"
+	WorkerService_CompleteStep_FullMethodName    = "/sagat_octopus_orchestrator.v1.WorkerService/CompleteStep"
+	WorkerService_FailStep_FullMethodName        = "/sagat_octopus_orchestrator.v1.WorkerService/FailStep"
+	WorkerService_ResolveSecrets_FullMethodName  = "/sagat_octopus_orchestrator.v1.WorkerService/ResolveSecrets"
+	WorkerService_ResolveDatabase_FullMethodName = "/sagat_octopus_orchestrator.v1.WorkerService/ResolveDatabase"
+	WorkerService_WriteBlob_FullMethodName       = "/sagat_octopus_orchestrator.v1.WorkerService/WriteBlob"
+	WorkerService_ReadBlob_FullMethodName        = "/sagat_octopus_orchestrator.v1.WorkerService/ReadBlob"
 )
 
 // WorkerServiceClient is the client API for WorkerService service.
@@ -72,6 +73,12 @@ type WorkerServiceClient interface {
 	// The values are credentials: use this call only over TLS, never log or persist them, and drop them
 	// when the attempt ends. Every call is audited (names and versions, never values).
 	ResolveSecrets(ctx context.Context, in *ResolveSecretsRequest, opts ...grpc.CallOption) (*ResolveSecretsResponse, error)
+	// Added in 1.5. Only the current database-runner machine that owns this managed lease may
+	// resolve it. The connection revision is pinned at run admission; current state/ACLs and the
+	// lease are checked before and after provider I/O. Expressions use server semantics and arrive
+	// as typed literals. SQL, parameters and credential bytes must never be logged or persisted by
+	// the executor. The response contains no provider routing, provider token or platform key.
+	ResolveDatabase(ctx context.Context, in *ResolveSecretsRequest, opts ...grpc.CallOption) (*ResolvedDatabase, error)
 	// Added in 1.3 (additive, FR-002-008): payloads too large to travel in a message. The engine never
 	// carries them; a step's input holds a small descriptor `{"$blob": {"id", "size", "sha256",
 	// "contentType"}}` and the bytes are fetched here. Both calls need the lease of an attempt that is
@@ -180,6 +187,16 @@ func (c *workerServiceClient) ResolveSecrets(ctx context.Context, in *ResolveSec
 	return out, nil
 }
 
+func (c *workerServiceClient) ResolveDatabase(ctx context.Context, in *ResolveSecretsRequest, opts ...grpc.CallOption) (*ResolvedDatabase, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ResolvedDatabase)
+	err := c.cc.Invoke(ctx, WorkerService_ResolveDatabase_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *workerServiceClient) WriteBlob(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[WriteBlobRequest, WriteBlobResponse], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &WorkerService_ServiceDesc.Streams[1], WorkerService_WriteBlob_FullMethodName, cOpts...)
@@ -254,6 +271,12 @@ type WorkerServiceServer interface {
 	// The values are credentials: use this call only over TLS, never log or persist them, and drop them
 	// when the attempt ends. Every call is audited (names and versions, never values).
 	ResolveSecrets(context.Context, *ResolveSecretsRequest) (*ResolveSecretsResponse, error)
+	// Added in 1.5. Only the current database-runner machine that owns this managed lease may
+	// resolve it. The connection revision is pinned at run admission; current state/ACLs and the
+	// lease are checked before and after provider I/O. Expressions use server semantics and arrive
+	// as typed literals. SQL, parameters and credential bytes must never be logged or persisted by
+	// the executor. The response contains no provider routing, provider token or platform key.
+	ResolveDatabase(context.Context, *ResolveSecretsRequest) (*ResolvedDatabase, error)
 	// Added in 1.3 (additive, FR-002-008): payloads too large to travel in a message. The engine never
 	// carries them; a step's input holds a small descriptor `{"$blob": {"id", "size", "sha256",
 	// "contentType"}}` and the bytes are fetched here. Both calls need the lease of an attempt that is
@@ -303,6 +326,9 @@ func (UnimplementedWorkerServiceServer) FailStep(context.Context, *FailStepReque
 }
 func (UnimplementedWorkerServiceServer) ResolveSecrets(context.Context, *ResolveSecretsRequest) (*ResolveSecretsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ResolveSecrets not implemented")
+}
+func (UnimplementedWorkerServiceServer) ResolveDatabase(context.Context, *ResolveSecretsRequest) (*ResolvedDatabase, error) {
+	return nil, status.Error(codes.Unimplemented, "method ResolveDatabase not implemented")
 }
 func (UnimplementedWorkerServiceServer) WriteBlob(grpc.ClientStreamingServer[WriteBlobRequest, WriteBlobResponse]) error {
 	return status.Error(codes.Unimplemented, "method WriteBlob not implemented")
@@ -450,6 +476,24 @@ func _WorkerService_ResolveSecrets_Handler(srv interface{}, ctx context.Context,
 	return interceptor(ctx, in, info, handler)
 }
 
+func _WorkerService_ResolveDatabase_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ResolveSecretsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorkerServiceServer).ResolveDatabase(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorkerService_ResolveDatabase_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorkerServiceServer).ResolveDatabase(ctx, req.(*ResolveSecretsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _WorkerService_WriteBlob_Handler(srv interface{}, stream grpc.ServerStream) error {
 	return srv.(WorkerServiceServer).WriteBlob(&grpc.GenericServerStream[WriteBlobRequest, WriteBlobResponse]{ServerStream: stream})
 }
@@ -498,6 +542,10 @@ var WorkerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ResolveSecrets",
 			Handler:    _WorkerService_ResolveSecrets_Handler,
+		},
+		{
+			MethodName: "ResolveDatabase",
+			Handler:    _WorkerService_ResolveDatabase_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

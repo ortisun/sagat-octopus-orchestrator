@@ -12,6 +12,7 @@ use std::process::Command;
 use regex::Regex;
 use serde_json::Value;
 
+mod database_chart;
 mod tls_chart;
 
 fn repo() -> PathBuf {

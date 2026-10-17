@@ -667,3 +667,20 @@ fn insecure_blob_endpoints_cannot_be_enabled_outside_development() {
     }
     assert!(EngineConfig::from_lookup(&env(&settings), Environment::Dev).is_ok());
 }
+
+#[test]
+fn openbao_workers_require_secret_transport_without_a_local_keyring() {
+    let settings = [
+        ("SAGAT_OPENBAO_ADDRESS", "https://bao:8200"),
+        ("SAGAT_OPENBAO_TOKEN_FILE", "/run/openbao/token"),
+    ];
+    assert!(parse(&settings).is_err());
+    let configured = parse(&[
+        settings[0],
+        settings[1],
+        ("SAGAT_GRPC_ALLOW_PLAINTEXT_SECRETS", "true"),
+    ])
+    .expect("TLS terminated at ingress");
+    assert!(configured.openbao.is_some());
+    assert!(configured.secrets.is_none());
+}

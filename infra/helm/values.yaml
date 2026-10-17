@@ -44,6 +44,51 @@ oidc:
 secrets:
   existingSecret: ""
 
+# Opt-in managed secrets. Workload login is performed by a native OpenBao Agent sidecar (K8s 1.29+).
+# Bootstrap/unseal remains operator-owned; no root token or static provider token is accepted here.
+openbao:
+  enabled: false
+  address: "https://openbao.openbao.svc:8200"
+  mount: secret
+  caSecret: ""                # key ca.crt
+  intentKeySecret: ""         # key intent-key: exactly 32 raw random bytes, shared/backed up
+  authMount: kubernetes
+  audience: openbao
+  agentImage: "docker.io/openbao/openbao:2.7.1@sha256:6d2b93856e3fcf7b18ad855a0b51eaba474dc8b79cf554379ea32034797d2acf"
+  roles:
+    control-plane: sagat-management
+    execution-engine: sagat-runtime
+    secret-cleanup: sagat-cleanup
+  agentResources:
+    requests: {cpu: 25m, memory: 64Mi}
+    limits: {cpu: 250m, memory: 128Mi}
+  cleanup:
+    enabled: true
+    schedule: "*/5 * * * *"
+    batch: 32
+  # Required when networkPolicy.enabled: exact provider peers, never a wildcard/global CIDR.
+  network:
+    port: 8200
+    to: []
+
+# Dedicated managed executor. Supply a digest of Dockerfile target database-runner.
+# The token Secret is rotated by your OIDC workload-identity integration; the runner rereads it.
+databaseRunner:
+  enabled: false
+  image: ""
+  replicas: 2
+  tokenSecret: ""             # key token, namespace-bound database:execute machine identity
+  caSecret: ""                # key ca.crt, trust for the engine's verified gRPC endpoint
+  config: {}                  # closed Config schema: see examples/database.yaml
+  resources:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {cpu: 1, memory: 512Mi}
+  # Explicit approved database peers/ports; application CIDR restrictions also apply.
+  targetEgress: []
+  telemetry:
+    tracesEndpoint: ""         # optional verified HTTPS OTLP http/json endpoint
+    egress: []                  # explicit collector peers/ports when the endpoint is configured
+
 # JetStream. Empty: hints are not published, workers poll, and the outbox accumulates.
 nats:
   url: ""

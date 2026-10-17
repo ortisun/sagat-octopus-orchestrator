@@ -7,7 +7,7 @@
 //! * `write_stall_timeout`: a client that takes no byte of a response for this long is
 //!   disconnected. Without it a client that asks for a large body and never reads holds the
 //!   connection, and everything the response keeps alive, for as long as it likes. A reader that
-//!   makes progress, however slowly, is never cut.
+//!   makes progress is allowed to continue unless its response opts into an absolute deadline.
 //! * `max_connections`: when the cap is reached the server stops accepting; new connections wait in
 //!   the kernel backlog instead of exhausting file descriptors.
 //! * `shutdown_grace`: on shutdown, in-flight requests may finish, but only for this long; a
@@ -234,6 +234,8 @@ async fn serve_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
         .timer(TokioTimer::new())
         .header_read_timeout(header_read_timeout)
         .keep_alive(true);
+    let (abort, mut aborted) = watch::channel(false);
+    let app = app.layer(axum::Extension(ConnectionAbort(abort)));
     let connection = builder.serve_connection(io, TowerToHyperService::new(app));
     tokio::pin!(connection);
 
@@ -246,11 +248,35 @@ async fn serve_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                 }
                 return;
             }
+            _ = aborted.changed() => {
+                metrics::counter!("http_response_deadlines_total").increment(1);
+                return;
+            }
             _ = stop.changed(), if !stopping => {
                 stopping = true;
                 connection.as_mut().graceful_shutdown();
             }
         }
+    }
+}
+
+/// Available only from the native HTTP server. A bounded response owns the deadline guard in
+/// its Bytes owner so the timer covers Hyper's buffers too, independently of body polling.
+#[derive(Clone)]
+pub(crate) struct ConnectionAbort(watch::Sender<bool>);
+pub(crate) struct DeliveryDeadline(tokio::task::JoinHandle<()>);
+impl ConnectionAbort {
+    pub(crate) fn deadline(&self, deadline: Instant) -> DeliveryDeadline {
+        let abort = self.0.clone();
+        DeliveryDeadline(tokio::spawn(async move {
+            tokio::time::sleep_until(deadline).await;
+            let _ = abort.send(true);
+        }))
+    }
+}
+impl Drop for DeliveryDeadline {
+    fn drop(&mut self) {
+        self.0.abort();
     }
 }
 
@@ -447,3 +473,7 @@ impl ClientIdentity {
 #[cfg(test)]
 #[path = "server_tls_tests.rs"]
 mod tls_tests;
+
+#[cfg(test)]
+#[path = "server_deadline_tests.rs"]
+mod deadline_tests;

@@ -13,6 +13,7 @@ export function IntegrationForm({ namespace, connector, onClose }: { namespace: 
   const { api, queries, session } = useApp();
   const canSecret = useCan('secret:manage');
   const announce = useAnnounce();
+  const credentialRequest = useRef<string | undefined>(undefined);
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const settings = connector?.settings;
@@ -43,7 +44,7 @@ export function IntegrationForm({ namespace, connector, onClose }: { namespace: 
   const secure = kind === 'SQS' ? queue.startsWith('https://') : addresses.every((value) => /^(tls|ssl):\/\//.test(value));
   const credentialsValid = auth === 'none' || (auth === 'existing' ? /^[a-z][a-z0-9_.-]{0,63}$/.test(secretName) : canSecret && (auth === 'token' || auth === 'creds' ? !!token.trim() : !!username.trim() && !!password));
   const valid = /^[a-z][a-z0-9-]{1,61}[a-z0-9]$/.test(slug) && !slug.includes('--') && (kind === 'SQS' ? /^https:\/\/[^@?#\s]+$/.test(queue) && !!region.trim() : validServers && (kind === 'KAFKA' ? !!topic.trim() : !!stream.trim() && !!consumer.trim())) && credentialsValid && (!writingSecret || secure);
-  function clearCredentials() { setUsername(''); setPassword(''); setToken(''); }
+  function clearCredentials() { credentialRequest.current = undefined; setUsername(''); setPassword(''); setToken(''); }
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (busy || !valid) return;
@@ -54,8 +55,9 @@ export function IntegrationForm({ namespace, connector, onClose }: { namespace: 
     let reference = auth === 'existing' ? secretName : undefined;
     if (writingSecret) {
       const value = auth === 'token' ? { token } : auth === 'creds' ? { creds: token } : auth === 'user' ? { user: username, password } : auth === 'sasl' ? { mechanism, username, password } : { accessKeyId: username, secretAccessKey: password, ...(token ? { sessionToken: token } : {}) };
-      reference = `integration-${crypto.randomUUID()}`;
-      try { await service.credentials(reference, JSON.stringify(value)); }
+      const requestId = credentialRequest.current ??= crypto.randomUUID();
+      reference = `integration-${requestId}`;
+      try { await service.credentials(reference, JSON.stringify(value), requestId); }
       catch {
         if (live()) { setNotice('Credentials could not be saved. Check secret:manage permission and the namespace secret configuration, then retry.'); setBusy(false); }
         return;
@@ -82,9 +84,9 @@ export function IntegrationForm({ namespace, connector, onClose }: { namespace: 
       {kind === 'NATS' ? <><Field label="Stream"><input value={stream} onChange={(event) => setStream(event.target.value)} /></Field><Field label="Durable consumer"><input value={consumer} onChange={(event) => setConsumer(event.target.value)} /></Field><Field label="Subject filter (optional)"><input value={filter} onChange={(event) => setFilter(event.target.value)} /></Field></> : null}
       <Field label="Authentication"><select value={auth} onChange={(event) => { setAuth(event.target.value as Auth); clearCredentials(); }}><option value="none">No credentials</option><option value="existing">Existing secret reference</option>{canSecret && kind === 'NATS' ? <><option value="token">Token</option><option value="user">Username and password</option><option value="creds">NATS credentials file contents</option></> : null}{canSecret && kind === 'KAFKA' ? <option value="sasl">SASL username and password</option> : null}{canSecret && kind === 'SQS' ? <option value="aws">AWS access keys</option> : null}</select></Field>
       {auth === 'existing' ? <Field label="Secret reference" hint="An existing credential secret in this namespace. Stored values are never shown."><input value={secretName} onChange={(event) => setSecretName(event.target.value)} autoComplete="off" /></Field> : null}
-      {auth === 'sasl' ? <Field label="SASL mechanism"><select value={mechanism} onChange={(event) => setMechanism(event.target.value)}><option>PLAIN</option><option>SCRAM-SHA-256</option><option>SCRAM-SHA-512</option></select></Field> : null}
-      {['user', 'sasl', 'aws'].includes(auth) ? <><Field label={auth === 'aws' ? 'Access key ID' : 'Username'}><input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="off" /></Field><Field label={auth === 'aws' ? 'Secret access key' : 'Password'}><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="new-password" /></Field></> : null}
-      {['token', 'creds', 'aws'].includes(auth) ? <Field label={auth === 'creds' ? 'Credentials file contents' : auth === 'aws' ? 'Session token (optional)' : 'Token'}>{auth === 'creds' ? <textarea value={token} onChange={(event) => setToken(event.target.value)} autoComplete="off" spellCheck={false} rows={4} /> : <input type="password" value={token} onChange={(event) => setToken(event.target.value)} autoComplete="new-password" />}</Field> : null}
+      {auth === 'sasl' ? <Field label="SASL mechanism"><select value={mechanism} onChange={(event) => { credentialRequest.current = undefined; setMechanism(event.target.value); }}><option>PLAIN</option><option>SCRAM-SHA-256</option><option>SCRAM-SHA-512</option></select></Field> : null}
+      {['user', 'sasl', 'aws'].includes(auth) ? <><Field label={auth === 'aws' ? 'Access key ID' : 'Username'}><input value={username} onChange={(event) => { credentialRequest.current = undefined; setUsername(event.target.value); }} autoComplete="off" /></Field><Field label={auth === 'aws' ? 'Secret access key' : 'Password'}><input type="password" value={password} onChange={(event) => { credentialRequest.current = undefined; setPassword(event.target.value); }} autoComplete="new-password" /></Field></> : null}
+      {['token', 'creds', 'aws'].includes(auth) ? <Field label={auth === 'creds' ? 'Credentials file contents' : auth === 'aws' ? 'Session token (optional)' : 'Token'}>{auth === 'creds' ? <textarea value={token} onChange={(event) => { credentialRequest.current = undefined; setToken(event.target.value); }} autoComplete="off" spellCheck={false} rows={4} /> : <input type="password" value={token} onChange={(event) => { credentialRequest.current = undefined; setToken(event.target.value); }} autoComplete="new-password" />}</Field> : null}
       {writingSecret && !secure ? <p role="alert">Use TLS broker addresses before saving credentials.</p> : null}
       {!canSecret ? <p className="hint">Entering new credentials requires secret:manage permission. You can reference an existing secret.</p> : null}
       <Field label="Default event type (optional)"><input value={eventType} onChange={(event) => setEventType(event.target.value)} /></Field>

@@ -1,0 +1,24 @@
+.connection-form fieldset {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.connection-form details {
+  margin-block: var(--space-4);
+}
+.connection-form details > summary {
+  cursor: pointer;
+  font-weight: var(--weight-medium);
+  padding-block: var(--space-2);
+}
+.connection-target,
+.connection-credentials {
+  display: grid;
+  gap: var(--space-4);
+  min-width: 0;
+}
+@media (min-width: 640px) {
+  .connection-target { grid-template-columns: 1fr 2fr; }
+  .connection-credentials { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

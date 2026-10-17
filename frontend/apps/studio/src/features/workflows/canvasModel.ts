@@ -120,6 +120,10 @@ export function keyField(node: IrNode): string {
   switch (node.type) {
     case 'activity':
       return clip(text(node['activity']), 60);
+    case 'database': {
+      const ref = node['connectionRef'];
+      return ref !== null && typeof ref === 'object' && 'name' in ref ? clip(`${text(node['operation'])} · ${String(ref.name)}`, 60) : '';
+    }
     case 'script': {
       const digest = text(node['artifactDigest']);
       return clip(digest, 24);

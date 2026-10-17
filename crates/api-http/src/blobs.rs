@@ -44,6 +44,13 @@ pub struct BlobTransfers {
 }
 
 impl BlobTransfers {
+    pub(crate) fn acquire(&self) -> Result<tokio::sync::OwnedSemaphorePermit, ApiError> {
+        self.slots
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| ApiError::unavailable_after(1))
+    }
+
     pub(crate) fn new(limits: HttpBlobTransfer) -> Arc<Self> {
         Arc::new(Self {
             slots: Arc::new(Semaphore::new(limits.max_concurrent.max(1))),

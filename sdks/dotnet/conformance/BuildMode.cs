@@ -152,6 +152,9 @@ internal static class BuildMode
                 case "step":
                     target.Step(id, (string)op["activity"]!, StepOptionsOf(options));
                     break;
+                case "database":
+                    target.Database(id, DatabaseOptionsOf(options!));
+                    break;
                 case "sleep":
                     target.Sleep(id, Ms(op["durationMs"]));
                     break;
@@ -283,6 +286,30 @@ internal static class BuildMode
             }
         }
     }
+
+    private static DatabaseOptions DatabaseOptionsOf(JsonObject options)
+    {
+        try { return ParseDatabaseOptions(options); }
+        catch (Exception error) when (error is InvalidOperationException or FormatException or OverflowException)
+        {
+            throw new SagatException(SagatErrorCode.ValidationFailed, "invalid managed database operation");
+        }
+    }
+
+    private static DatabaseOptions ParseDatabaseOptions(JsonObject options) => new()
+    {
+        ConnectionRef = new ConnectionRef((string)options["connectionRef"]!["name"]!, (int?)options["connectionRef"]!["revision"]),
+        Operation = Enum.TryParse<DatabaseOperation>((string?)options["operation"], true, out var operation) ? operation : (DatabaseOperation)(-1),
+        Statement = (string)options["statement"]!,
+        Parameters = options["parameters"]?.AsArray().Select(p => p!["literal"] is { } literal
+            ? DatabaseParameter.Literal(DatabaseTypeOf(literal["type"]), literal["value"])
+            : DatabaseParameter.Expression(DatabaseTypeOf(p["type"]), (string)p["expression"]!)).ToArray(),
+        Limits = options["limits"]?.AsObject().ToDictionary(p => p.Key, p => (int)p.Value!, StringComparer.Ordinal),
+        Timeout = options["timeoutMs"] is { } timeout ? Ms(timeout) : null,
+        OnError = (string?)options["onError"],
+    };
+
+    private static DatabaseType DatabaseTypeOf(JsonNode? node) => Enum.TryParse<DatabaseType>((string?)node, true, out var type) ? type : (DatabaseType)(-1);
 
     private static TimeSpan Ms(JsonNode? value) => TimeSpan.FromMilliseconds((long)value!);
 

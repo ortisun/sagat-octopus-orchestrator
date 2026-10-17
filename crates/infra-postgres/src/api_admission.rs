@@ -51,7 +51,7 @@ impl ApiAdmissionStore for PgRunStore {
         workflow: WorkflowId,
     ) -> Result<Option<NamespaceId>, StoreError> {
         optional_namespace(
-            sqlx::query("SELECT namespace_id FROM workflows WHERE tenant_id = $1 AND id = $2")
+            sqlx::query("SELECT namespace_id FROM workflows WHERE tenant_id = $1 AND id = $2 AND NOT internal")
                 .bind(tenant.as_uuid())
                 .bind(workflow.as_uuid())
                 .fetch_optional(self.pool())

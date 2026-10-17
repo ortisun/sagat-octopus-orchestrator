@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use sagat_application::api_admission::{ApiAdmissionService, ApiAdmissionStore};
 use sagat_application::clock::Clock;
+use sagat_application::database_results::DatabaseResultUseCase;
 use sagat_application::definitions::{DefinitionService, DefinitionStore, IrCodec};
 use sagat_application::execution::ExpressionEvaluator;
 use sagat_application::identity::IdentityStore;
@@ -38,6 +39,7 @@ pub trait Exec: Core + Admission {
     fn streams(&self) -> &Arc<StreamRegistry>;
     fn blob_transfers(&self) -> &Arc<BlobTransfers>;
     fn payload_inspections(&self) -> Option<&Arc<dyn PayloadInspectionUseCase>>;
+    fn database_results(&self) -> Option<&Arc<dyn DatabaseResultUseCase>>;
 }
 
 /// The identity state plus the definition and run services.
@@ -50,6 +52,7 @@ pub struct ExecState<S, C, P, X, E> {
     streams: Arc<StreamRegistry>,
     blob_transfers: Arc<BlobTransfers>,
     payload_inspections: Option<Arc<dyn PayloadInspectionUseCase>>,
+    database_results: Option<Arc<dyn DatabaseResultUseCase>>,
 }
 
 impl<S, C, P, X, E> ExecState<S, C, P, X, E> {
@@ -69,7 +72,14 @@ impl<S, C, P, X, E> ExecState<S, C, P, X, E> {
             streams: StreamRegistry::new(StreamLimits::default()),
             blob_transfers: BlobTransfers::new(HttpBlobTransfer::default()),
             payload_inspections: None,
+            database_results: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_database_results(mut self, results: Arc<dyn DatabaseResultUseCase>) -> Self {
+        self.database_results = Some(results);
+        self
     }
 
     /// Serves the approval, active-version and promotion routes, backed by `publishing`.
@@ -113,6 +123,7 @@ impl<S, C, P, X, E> Clone for ExecState<S, C, P, X, E> {
             streams: Arc::clone(&self.streams),
             blob_transfers: Arc::clone(&self.blob_transfers),
             payload_inspections: self.payload_inspections.clone(),
+            database_results: self.database_results.clone(),
         }
     }
 }
@@ -210,6 +221,10 @@ where
 
     fn blob_transfers(&self) -> &Arc<BlobTransfers> {
         &self.blob_transfers
+    }
+
+    fn database_results(&self) -> Option<&Arc<dyn DatabaseResultUseCase>> {
+        self.database_results.as_ref()
     }
 
     fn payload_inspections(&self) -> Option<&Arc<dyn PayloadInspectionUseCase>> {

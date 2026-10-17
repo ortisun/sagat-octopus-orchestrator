@@ -329,6 +329,7 @@ impl DefinitionStore for FakeStore {
         digest: Digest,
         document: &[u8],
         _declared_state: Option<&sagat_application::declared_operations::PublishedDeclaredState>,
+        _definition: &sagat_domain::workflow::WorkflowDefinition,
         _release_notes: Option<&str>,
         plans: &[sagat_domain::saga::SagaPlan],
         _triggers: &[sagat_application::dispatch::TriggerRegistration],

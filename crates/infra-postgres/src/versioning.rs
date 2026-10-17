@@ -317,7 +317,7 @@ impl PublishingStore for PgDefinitionStore {
         // person who saved the document is read here, from the draft the request is about.
         let Some(draft) = sqlx::query(
             "SELECT draft_revision, draft_edited_by FROM workflows \
-             WHERE tenant_id = $1 AND id = $2 FOR SHARE",
+             WHERE tenant_id = $1 AND id = $2 AND NOT internal FOR SHARE",
         )
         .bind(request.tenant_id().as_uuid())
         .bind(request.workflow_id().as_uuid())
@@ -531,7 +531,7 @@ impl PublishingStore for PgDefinitionStore {
         let Some(locked) = sqlx::query(
             "SELECT id, tenant_id, namespace_id, name, draft_revision, active_version_id, \
                     created_at, updated_at \
-             FROM workflows WHERE tenant_id = $1 AND id = $2 FOR UPDATE",
+             FROM workflows WHERE tenant_id = $1 AND id = $2 AND NOT internal FOR UPDATE",
         )
         .bind(tenant.as_uuid())
         .bind(workflow.as_uuid())
@@ -733,7 +733,7 @@ pub(crate) async fn record_publication(
                      WHERE d.request_id = r.id AND d.verdict = 'APPROVED') AS approvals, \
                     coalesce(p.required_approvals, CASE n.environment WHEN 'prod' THEN 1 ELSE 0 END)::smallint AS needed \
              FROM publication_requests r \
-             JOIN workflows w ON w.tenant_id = r.tenant_id AND w.id = r.workflow_id \
+             JOIN workflows w ON w.tenant_id = r.tenant_id AND w.id = r.workflow_id AND NOT w.internal \
              JOIN namespaces n ON n.tenant_id = w.tenant_id AND n.id = w.namespace_id \
              LEFT JOIN publication_policies p ON p.tenant_id = w.tenant_id AND p.namespace_id = w.namespace_id \
              WHERE r.tenant_id = $1 AND r.id = $2 AND r.workflow_id = $3 FOR UPDATE OF r",

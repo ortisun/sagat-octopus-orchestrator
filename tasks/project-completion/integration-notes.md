@@ -1,0 +1,29 @@
+# Integration checkpoint — 2026-10-17
+
+This is an implementation checkpoint, not a completed release gate.
+
+## Reconciled boundaries
+
+- Preserve all 100 migration files from the combined 014 baseline byte for byte.
+- Allocate 017 migrations after that history (20261122–20261128); preserve its standalone branch.
+- Preserve scoped protobuf field numbers; reserve managed capabilities for minor1.6 independently of scoped minor1.5. Default adapters keep ordinary workers at minor1.4 until scoped execution is enabled.
+- Bind managed credential pins and all managed step/journal selections to root identities; reject unproven managed/structured or continuation composition at publication and typed construction.
+- Keep provider reads outside transactions; repeat current role, lease, publisher ACL, binding and pool checks before disclosure and commit its audit first. Use binding → session (managed) → catalog → membership ordering, retain final grant locks through commit.
+- Bind optional worker pools into durable OpenBao intents and apply the restrictions with activation. Omitted pools preserve existing policy; changed replay metadata conflicts.
+
+## Executed checks
+
+- `cargo test -p sagat-application --lib worker::tests:: --locked`:8passed,0failed; includes ordinary/managed protocol feature-gate matrix.
+- `cargo test -p sagat-infra-ir --test database --locked`:8passed,0failed; includes publication composition boundary.
+- `cargo check --workspace --all-targets --locked`: passed after integration fixes (dev profile,1m06s including shared-cache contention). This compiles test targets but does not execute them.
+- `python3 scripts/check-architecture.py`: passed,24workspace crates, no dependency cycles.
+- Canonical `worker.proto` compiled with `protoc` into a descriptor.
+- Automated byte comparison against HEAD: all100preexisting migration files unchanged.
+- Storage classification metadata:387entries,0duplicate(table,column)keys.
+- Python and Go protobuf code regenerated; Studio OpenAPI types regenerated from the combined017/014contract. References and future016types still need integrated regeneration.
+
+## Pending verification
+
+Workspace all-target compilation exposed cross-feature interface mismatches; the final check passed after correcting them. Earlier failed attempts are not passing test evidence. The database composition RED fixture exposed the existing body-kind schema refusal; its assertion was corrected to accept the documented schema refusal and separately demand the mixed-root publication gate. Real PostgreSQL/OpenBao pool/authority races, scoped regressions, all-five-SDK runtime conformance and the final full gates remain pending.
+
+Independent Astra xhigh static review found and drove fixes for pool bypass, stale ordinary worker membership/ACL authority, same-named scoped lease deadlines, binding/session deadlock order and protocol feature-gate negotiation. It ran no executable tests. A subsequent final review remains required after integration.

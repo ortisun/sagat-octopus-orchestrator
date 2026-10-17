@@ -120,7 +120,7 @@ function RunDetail({ runId }: { runId: string }) {
   const { model } = snapshot;
 
   const run = useQuery({ queryKey: ['run', runId], queryFn: ({ signal }) => ep.getRun(runId, signal) });
-  const workflowId = run.data?.workflowId;
+  const workflowId = run.data?.origin ? undefined : run.data?.workflowId;
   const workflow = useQuery({ queryKey: ['workflow', workflowId], enabled: workflowId !== undefined, staleTime: 60_000, queryFn: ({ signal }) => ep.getWorkflow(workflowId as string, signal) });
   const versions = useVersions(workflowId);
   const status = model?.status ?? run.data?.status;

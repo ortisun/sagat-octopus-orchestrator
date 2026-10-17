@@ -39,6 +39,7 @@ fn clip(text: &str) -> String {
 /// Root node types in the order used by the canonical schema.
 const ROOT_NODE_TYPES: &[&str] = &[
     "activity",
+    "database",
     "timer",
     "waitEvent",
     "condition",
@@ -157,6 +158,14 @@ fn node_issues(node: &Value, path: &str, expected: &[&str]) -> Vec<IrIssue> {
         .iter_errors(node)
         .take(MAX_ISSUES)
         .map(|error| {
+            // JSON Schema diagnostics can quote the entire invalid instance (including SQL and
+            // values), or user-authored unknown keys. Only a safe node path leaves this boundary.
+            if kind == "database" {
+                return issue(
+                    path.to_owned(),
+                    "invalid database node fields or limits".into(),
+                );
+            }
             issue(
                 format!("{path}{}", error.instance_path()),
                 error.to_string(),
@@ -191,7 +200,18 @@ pub(crate) fn issues(document: &Value) -> Vec<IrIssue> {
         }
         found.push(IrIssue {
             path,
-            message: clip(&error.to_string()),
+            message: if document
+                .get("nodes")
+                .and_then(Value::as_array)
+                .is_some_and(|nodes| {
+                    nodes
+                        .iter()
+                        .any(|n| n.get("type").and_then(Value::as_str) == Some("database"))
+                }) {
+                "invalid workflow document containing a database operation".into()
+            } else {
+                clip(&error.to_string())
+            },
         });
     }
     found.truncate(MAX_ISSUES);

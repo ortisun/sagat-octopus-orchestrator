@@ -10,6 +10,7 @@ mod macros;
 pub mod audit;
 pub mod binding;
 pub mod connectors;
+pub mod database;
 pub mod definition;
 pub mod egress;
 pub mod events;

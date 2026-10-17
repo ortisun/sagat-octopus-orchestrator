@@ -140,7 +140,8 @@ pub struct SecretBody {
     pub name: String,
     pub version: u32,
     /// Which key of the ring the current version is sealed under.
-    pub key_id: String,
+    pub key_id: Option<String>,
+    pub provider: String,
     pub created_by: String,
     #[serde(with = "time::serde::rfc3339")]
     pub updated_at: time::OffsetDateTime,
@@ -156,6 +157,7 @@ impl From<&SecretView> for SecretBody {
             name: view.name.clone(),
             version: view.version,
             key_id: view.key_id.clone(),
+            provider: view.provider.to_owned(),
             created_by: view.created_by.clone(),
             updated_at: view.updated_at,
             pools: view.pools.clone(),
@@ -182,13 +184,29 @@ pub struct SecretPoolsBody {
 /// The value of a secret on its way in. It is the only place the API accepts one, and it never
 /// prints.
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct SetSecretBody {
+    pub required_provider: Option<RequiredSecretProvider>,
     pub value: String,
     /// Replaces the pools allowed to receive the secret in the same call; absent leaves them as
     /// they are (none on a new secret), `[]` lifts the restriction.
     #[serde(default)]
     pub pools: Option<Vec<String>>,
+    pub request_id: Option<String>,
+    pub expected_version: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct MigrateSecretBody {
+    pub request_id: String,
+    pub expected_version: u32,
+}
+
+#[derive(serde::Deserialize)]
+pub enum RequiredSecretProvider {
+    #[serde(rename = "openbao")]
+    OpenBao,
 }
 
 impl std::fmt::Debug for SetSecretBody {

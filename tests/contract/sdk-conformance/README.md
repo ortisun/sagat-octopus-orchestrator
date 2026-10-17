@@ -280,6 +280,14 @@ that predecessor. The reviewed runtime and workflow goldens pass in all five SDK
 After both segments finish, chain Query on the final head returns `19.99`, although the successor
 input contains `0.00`. The reviewed goldens pass in all five SDKs.
 
+The `database-connections` scenario also requires a prebuilt isolated executor:
+`cargo build -p sagat-database-runner --bin database-runner --locked` (or set
+`SAGAT_DATABASE_RUNNER_BIN`). Its fixture starts OpenBao 2.7.1 and target PostgreSQL
+16 for each language and gives the executor only its capability token and policy.
+The five ordinary SDK workers consume typed results and never execute managed SQL.
+Independent assertions check precise values, target effects and safe failure codes
+before goldens can be blessed. The CI SDK job builds the executable first.
+
 ## What each SDK ships
 
 `sdks/<language>/conformance/` with two executables (shell scripts, `chmod +x`):
@@ -353,6 +361,7 @@ the server without an SDK API: `expireLease {run, node}`, `elapseRetryDelay {run
 | `op` | Fields | Builder call |
 |---|---|---|
 | `step` | `id`, `activity`, `options?` | `step` (options named as in `workflow.schema.json`: `retry`, `timeoutMs`, `compensateWith`, `reconcileWith`, `idempotencyTemplate`, `secrets`, `compensationRetry`, `compensationTimeoutMs`, `irreversible`, `highRisk`, `onError`) |
+| `database` | `id`, `options` (`connectionRef`, `operation`, `statement`, `parameters?`, `limits?`, `timeoutMs?`, `onError?`) | `database`; [typed values and expression bindings](../../../docs/guides/managed-database-sdk.md) |
 | `sleep` | `id`, `durationMs` | `sleep` |
 | `waitForEvent` | `id`, `options` (`eventType`, `correlationExpr`, `timeoutMs`, `onTimeout?`, `lookbackMs?`) | `waitForEvent` |
 | `invokeChild` | `id`, `workflow`, `options?` | `invokeChild` |

@@ -1,3 +1,4 @@
+import { parseAuthoringJson, UnsafeJsonNumber } from '../model/safeJson';
 import { ApiError, errorFromResponse, transportError } from './errors';
 
 export interface ClientConfig {
@@ -16,6 +17,9 @@ export interface ClientConfig {
 }
 
 export interface RequestOptions {
+  /** Refuse numeric JSON tokens that this authoring UI cannot preserve exactly. */
+  safeNumbers?: boolean;
+
   query?: Record<string, string | number | boolean | undefined>;
   body?: unknown;
   signal?: AbortSignal | undefined;
@@ -160,7 +164,7 @@ export class ApiClient {
     } finally {
       clearTimeout(timer);
     }
-    const parsed = await readBody(response);
+    const parsed = await readBody(response, options.safeNumbers);
     if (!response.ok) {
       const error = errorFromResponse(response.status, parsed, response.headers);
       if (error.code === 'UNAUTHENTICATED') this.#config.onUnauthenticated();
@@ -170,13 +174,14 @@ export class ApiClient {
   }
 }
 
-async function readBody(response: Response): Promise<unknown> {
+async function readBody(response: Response, safeNumbers = false): Promise<unknown> {
   if (response.status === 204) return undefined;
   const text = await response.text().catch(() => '');
   if (text === '') return undefined;
   try {
-    return JSON.parse(text) as unknown;
-  } catch {
+    return safeNumbers ? parseAuthoringJson(text) : JSON.parse(text) as unknown;
+  } catch (cause) {
+    if (cause instanceof UnsafeJsonNumber) throw new ApiError({ code: 'VALIDATION_FAILED', status: response.status, message: 'This definition contains JSON numbers the Studio cannot preserve exactly. Use the SDK or API to represent exact integers and decimals as strings before editing it here.' });
     // A proxy's page, not the platform's answer.
     if (response.ok) {
       throw new ApiError({ code: 'INTERNAL', status: response.status, message: 'The platform sent an answer that is not JSON.' });

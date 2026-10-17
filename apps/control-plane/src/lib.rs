@@ -40,6 +40,7 @@ use time::OffsetDateTime;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
+pub mod cleanup;
 pub mod cli;
 pub mod config;
 
@@ -80,6 +81,8 @@ pub enum RunError {
     Io(#[from] std::io::Error),
     #[error("health check failed: {0}")]
     Unhealthy(String),
+    #[error("secret cleanup could not finish; retry the command")]
+    Cleanup,
 }
 
 impl RunError {
@@ -96,6 +99,7 @@ impl RunError {
             | Self::Io(_)
             | Self::Unhealthy(_)
             | Self::AlreadyExists => 1,
+            Self::Cleanup => 1,
         }
     }
 }
@@ -520,19 +524,35 @@ pub async fn serve_with_admin(
         SystemClock,
         serve.runbook_base.clone(),
     ));
-    if let Some(secrets) = &serve.secrets {
+    let provider: Option<Arc<dyn sagat_application::secret_provider::SecretProvider>> =
+        match &serve.openbao {
+            Some(settings) => Some(
+                settings
+                    .provider()
+                    .await
+                    .map_err(|_| RunError::Refused("could not configure OpenBao"))?,
+            ),
+            None => None,
+        };
+    let mut secret_reader = sagat_application::secrets::SecretReader::default();
+    if let Some(keys) = &serve.secrets {
+        secret_reader = secret_reader.with_cipher(keys.cipher());
+    }
+    if let Some(provider) = &provider {
+        secret_reader = secret_reader.with_provider(provider.clone());
+    }
+    if serve.secrets.is_some() || provider.is_some() {
         governance = governance
-            .with_secrets(SecretService::new(
-                executions.clone(),
-                SystemClock,
-                secrets.cipher(),
-            ))
-            // Webhooks are verified with secrets of the namespace, so they need the key ring too.
+            .with_secrets(match &serve.secrets {
+                Some(keys) => SecretService::new(executions.clone(), SystemClock, keys.cipher()),
+                None => SecretService::metadata_only(executions.clone(), SystemClock),
+            })
+            // Webhooks use the same namespace-scoped secret reader.
             .with_events(
-                EventService::new(
+                EventService::with_reader(
                     executions.clone(),
                     SystemClock,
-                    secrets.cipher(),
+                    secret_reader.clone(),
                     Arc::new(JsonEvaluator),
                 )
                 .with_identities(Arc::new(
@@ -558,6 +578,26 @@ pub async fn serve_with_admin(
                 EgressService::new(executions.clone(), SystemClock),
                 Arc::new(JsonEvaluator),
             ));
+    }
+    governance = governance.with_connections(sagat_application::database::ConnectionService::new(
+        executions.clone(),
+        SystemClock,
+    ));
+    if let (Some(settings), Some(provider)) = (&serve.openbao, provider) {
+        let key = settings.intent_key().await.map_err(|_| {
+            RunError::Refused("OpenBao management requires a 32-byte SAGAT_OPENBAO_INTENT_KEY_FILE")
+        })?;
+        let mut service = sagat_application::managed_secrets::ManagedSecretService::new(
+            executions.clone(),
+            SystemClock,
+            provider,
+            key,
+        )
+        .map_err(|_| RunError::Refused("could not configure managed secrets"))?;
+        if let Some(keys) = &serve.secrets {
+            service = service.with_legacy_cipher(keys.cipher());
+        }
+        governance = governance.with_managed_secrets(service);
     }
     // An artifact is only trusted if the platform signed it, so without a key there are no scripts.
     if let Some(scripts) = &serve.scripts {
@@ -603,12 +643,19 @@ pub async fn serve_with_admin(
             Arc::new(sagat_infra_schema::Schemas),
         );
     }
+    let database_results = sagat_application::database_results::DatabaseResultService::new(
+        executions.clone(),
+        SystemClock,
+        sagat_infra_ir::JsonDatabaseResultValidator,
+        runs.input_blobs().cloned(),
+    );
     let exec = ExecState::new(
         state,
         sagat_application::api_admission::ApiAdmissionService::new(executions.clone(), SystemClock),
         DefinitionService::new(executions.clone(), SystemClock, JsonIrCodec),
         runs,
     )
+    .with_database_results(Arc::new(database_results))
     .with_stream_limits(serve.streams)
     .with_blob_transfer(serve.blob_transfer)
     .with_payload_inspections(Arc::new(

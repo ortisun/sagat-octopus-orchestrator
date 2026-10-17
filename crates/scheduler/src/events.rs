@@ -413,6 +413,7 @@ where
             None => (sagat_telemetry::TraceId::generate().to_string(), None),
         };
         let info = RunInfo {
+            origin: None,
             run_id,
             tenant_id: tenant,
             namespace_id: trigger.namespace_id,
@@ -437,11 +438,12 @@ where
             ResourceType::Run,
             run_id.to_string(),
             firing.reason.clone(),
-            Some(trace_id),
+            Some(trace_id.clone()),
             now,
         );
         let limits = RunLimits::of(&self.store, tenant, trigger.namespace_id).await?;
         let new = NewRun {
+            retained: None,
             limits,
             info,
             definition: Arc::clone(&definition),
@@ -482,6 +484,21 @@ where
             // The event left the inbox while it was being dispatched (it expired): nothing to
             // start for it.
             Err(StoreError::MissingReference) => Ok(Started::No),
+            Err(StoreError::DatabaseUnavailable | StoreError::DatabaseLimit) => {
+                let audit = AuditRecord::engine(
+                    tenant,
+                    AuditAction::DatabaseDenied,
+                    ResourceType::WorkflowVersion,
+                    trigger.version_id.to_string(),
+                    "database trigger admission refused".to_owned(),
+                    Some(trace_id),
+                    now,
+                );
+                RunStore::record_denial(&self.store, &audit).await?;
+                metrics::counter!("trigger_events_total", "outcome" => "database_denied")
+                    .increment(1);
+                Ok(Started::No)
+            }
             Err(other) => Err(other.into()),
         }
     }

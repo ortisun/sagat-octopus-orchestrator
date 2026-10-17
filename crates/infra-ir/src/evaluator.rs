@@ -220,6 +220,34 @@ impl ExpressionEvaluator for JsonEvaluator {
         serde_json::to_vec(&value).map_err(failure)
     }
 
+    fn database_parameter(
+        &self,
+        parameter: &sagat_domain::database::Parameter,
+        data: &RunData,
+    ) -> Result<sagat_domain::database::TypedValue, ExpressionFailure> {
+        use sagat_domain::database::Parameter;
+        let Parameter::Expression {
+            value_type,
+            expression,
+        } = parameter
+        else {
+            let Parameter::Literal(value) = parameter else {
+                unreachable!()
+            };
+            return Ok(value.clone());
+        };
+        // All failures are a fixed category: expression source and payload values are sensitive.
+        let safe = |_| failure("invalid database parameter");
+        let compiled = Compiled::compile(expression.as_str()).map_err(safe)?;
+        let env = environment(&compiled.variables(), data, None)
+            .map_err(|_| failure("invalid database parameter"))?;
+        let value = compiled
+            .eval(&env)
+            .map_err(|_| failure("invalid database parameter"))?;
+        crate::database::typed_value(*value_type, &value)
+            .map_err(|_| failure("invalid database parameter"))
+    }
+
     fn task_input(&self, data: &RunData, node: &NodeId) -> Vec<u8> {
         let input = parse(&data.input).unwrap_or(Value::Null);
         let mut steps = Map::new();

@@ -89,6 +89,7 @@ pub struct EngineConfig {
     /// The key ring that opens secrets for workers (`SAGAT_SECRETS_KEYS`); `None` turns the
     /// `ResolveSecrets` call off.
     pub secrets: Option<sagat_infra_secrets::SecretsConfig>,
+    pub openbao: Option<sagat_infra_secrets::openbao::OpenBaoSettings>,
     pub blobs: Option<BlobSettings>,
     pub blob_transfer: BlobTransfer,
 }
@@ -678,9 +679,10 @@ impl EngineConfig {
         };
 
         let secrets = read_secrets(get)?;
+        let openbao = sagat_control_plane::config::read_openbao(get, environment)?;
         // Secret values travel over the worker API: plaintext is acceptable only in development, or
         // when the operator states that TLS is terminated in front of the engine.
-        if secrets.is_some()
+        if (secrets.is_some() || openbao.is_some())
             && grpc.tls.is_none()
             && environment != Environment::Dev
             && !flag(get, "SAGAT_GRPC_ALLOW_PLAINTEXT_SECRETS")?
@@ -723,6 +725,7 @@ impl EngineConfig {
             monitor,
             nats,
             secrets,
+            openbao,
             blobs,
             blob_transfer,
         })

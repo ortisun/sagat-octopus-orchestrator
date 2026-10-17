@@ -13,6 +13,7 @@ import { ActionsMenu } from './Operations';
 import type { Operation } from './ops';
 import { clip } from './time';
 import { useApp } from '../../app/context';
+import { originLabel } from './queries';
 import { TraceLink } from './TraceLink';
 
 const FOLLOW_SYMBOL: Record<LiveFollow, string> = { idle: '○', connecting: '◌', live: '●', polling: '↻', reconnecting: '↯', ended: '■', unauthorized: '✕', failed: '✕' };
@@ -76,7 +77,7 @@ export function RunHeader({
       <div className="rn-title">
         <div className="rn-heading-line">
           <h1>
-            {workflowName ? clip(workflowName, 80) : 'Run'}
+            {originLabel(run.origin) ?? (workflowName ? clip(workflowName, 80) : 'Run')}
             <span className="visually-hidden"> run {run.runId}</span>
           </h1>
           <StatusBadge view={view} />
@@ -96,7 +97,7 @@ export function RunHeader({
       <NowProvider intervalMs={1000} enabled={!finished}>
         <dl className="rn-facts rn-grid">
           <Fact label="Workflow">
-            <Link to={path`/workflows/${run.workflowId}`}>{workflowName ? clip(workflowName, 80) : `workflow ${run.workflowId.slice(0, 8)}`}</Link>, {version}
+            {run.origin ? originLabel(run.origin) : <Link to={path`/workflows/${run.workflowId}`}>{workflowName ? clip(workflowName, 80) : `workflow ${run.workflowId.slice(0, 8)}`}</Link>}, {version}
           </Fact>
           <Fact label="Started">
             <Moment at={run.createdAt} />

@@ -1,0 +1,47 @@
+{{- if .Values.openbao.enabled }}
+{{- include "sagat.openbao.validate" . }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "sagat.fullname" . }}-openbao-agent
+  labels:
+    {{- include "sagat.labels" . | nindent 4 }}
+data:
+{{- range $component := list "control-plane" "execution-engine" "secret-cleanup" }}
+  {{ $component }}.hcl: |
+    log_level = "warn"
+    log_format = "json"
+    exit_after_auth = {{ eq $component "secret-cleanup" }}
+    vault {
+      address = {{ $.Values.openbao.address | quote }}
+      ca_cert = "/etc/openbao/ca/ca.crt"
+    }
+    auto_auth {
+      method "kubernetes" {
+        mount_path = "auth/{{ $.Values.openbao.authMount }}"
+        config = {
+          role = {{ get $.Values.openbao.roles $component | quote }}
+          token_path = "/run/openbao-identity/token"
+        }
+      }
+      sink "file" {
+        config = {
+          path = "/run/openbao/token"
+          mode = 0640
+        }
+      }
+    }
+{{- end }}
+{{- if .Values.serviceAccount.create }}
+{{- range $component := list "control-plane" "execution-engine" "secret-cleanup" }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "sagat.fullname" $ }}-{{ $component }}
+  labels:
+    {{- include "sagat.labels" $ | nindent 4 }}
+automountServiceAccountToken: false
+{{- end }}
+{{- end }}
+{{- end }}
