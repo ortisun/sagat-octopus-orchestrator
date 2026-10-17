@@ -1,7 +1,8 @@
 # Data model: per-field payload classification
 
-**Status**: designed, not built. No table, type or endpoint below exists yet. Fields and constraints are
-the implementation design; release needs the named evidence in `tasks.md`.
+**Status**: implemented on the integration branch; integrated release gates pending. The model below
+describes the implementation and its constraints. Focused test and process evidence is recorded in
+`tasks/project-completion/integration-notes.md`; release still needs the gates named in `tasks.md`.
 
 Domain rules use typed values; `serde_json` stays in adapter crates (AGENTS.md rule 5). The domain
 holds the level, its order, the audience decision and the permission names. The schema walk, the

@@ -72,3 +72,14 @@ Each row records command, toolchain/environment, seed/barrier, failures/skips an
 outcome in the release validation report. SC-014-002–006 require this evidence and the benchmark;
 writing this matrix does not complete them. Existing baseline feature suites remain mandatory to
 catch changes to saga, child, waitEvent, quota, versioning and worker-minor behavior.
+
+### Exact-path maintenance transaction prerequisites
+
+`PathExecutionTx` reads both live lease clocks only for its addressed path. Its scheduler fence
+checks the run shard, owner, generation and current database expiry and holds the shard's shared
+row lock until commit. Run-lock contention must not backdate mutation time: both full and bounded
+transactions sample the database clock after acquiring that lock. Real competing-lock assertions
+live in `integration/workflow-primitives/byte_ceilings.rs`; the 19-case runtime-role checkpoint
+and the failed PostgreSQL infrastructure run are recorded in
+`tasks/project-completion/integration-notes.md`. These prerequisites alone do not establish that
+all production consumers use bounded restoration or satisfy the large-workload resource gate.
