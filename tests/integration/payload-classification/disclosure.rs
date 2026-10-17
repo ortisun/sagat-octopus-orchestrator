@@ -22,6 +22,16 @@ pub(crate) async fn disclose(
     run: RunId,
     selector: DisclosureSelector,
 ) -> Result<PayloadDisclosure, PayloadDisclosureError> {
+    disclose_with_reveal(world, principal, run, selector, false).await
+}
+
+async fn disclose_with_reveal(
+    world: &World,
+    principal: &Principal,
+    run: RunId,
+    selector: DisclosureSelector,
+    reveal_pii: bool,
+) -> Result<PayloadDisclosure, PayloadDisclosureError> {
     let service = PayloadDisclosureService::new(
         world.store.clone(),
         SystemClock,
@@ -29,10 +39,89 @@ pub(crate) async fn disclose(
         JsonPayloadProjector,
     );
     let prepared = service
-        .prepare(principal, run, selector, false, &ctx())
+        .prepare(principal, run, selector, reveal_pii, &ctx())
         .await
         .map_err(PayloadDisclosureError::from)?;
     service.disclose(prepared).await
+}
+
+#[tokio::test]
+async fn effective_namespace_grants_reveal_and_audit_every_success_then_revoke_immediately() {
+    let world = world().await;
+    let (workflow, _) = world
+        .publish(classified_document(
+            "classified-reveal",
+            json!({
+                "type":"object", "additionalProperties":false,
+                "x-sagat-classification":"pii",
+                "properties":{"personal":{"type":"string"}}
+            }),
+        ))
+        .await;
+    let run = world
+        .start(workflow, &json!({"personal":"revealed-value"}))
+        .await;
+    let developer = world.member("pii-developer", Role::Developer).await;
+    sqlx::query(
+        "INSERT INTO payload_reveal_grants \
+         (tenant_id,namespace_id,subject,granted_by,granted_at) VALUES ($1,$2,$3,$4,clock_timestamp())",
+    )
+    .bind(world.admin.tenant_id().as_uuid())
+    .bind(world.namespace.id().as_uuid())
+    .bind(developer.subject().as_str())
+    .bind(world.admin.subject().as_str())
+    .execute(&world.db.pool)
+    .await
+    .expect("grant reveal");
+
+    for _ in 0..2 {
+        let answer = disclose_with_reveal(&world, &developer, run, DisclosureSelector::Input, true)
+            .await
+            .expect("granted reveal");
+        let PayloadDisclosureResult::Disclosed { projection, .. } = answer.result else {
+            panic!("PII projection")
+        };
+        assert_eq!(
+            disclosed_string(&projection.tree, "personal"),
+            Some("revealed-value")
+        );
+    }
+    let reveal_audits: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_records WHERE tenant_id=$1 AND actor=$2 AND resource_id=$3 \
+         AND action='payload.pii_revealed' AND reason='classified-v1:input:reveal=pii'",
+    )
+    .bind(world.admin.tenant_id().as_uuid())
+    .bind(developer.subject().as_str())
+    .bind(run.to_string())
+    .fetch_one(&world.db.pool)
+    .await
+    .expect("reveal audits");
+    assert_eq!(reveal_audits, 2, "successful reveals never collapse");
+
+    sqlx::query(
+        "DELETE FROM payload_reveal_grants WHERE tenant_id=$1 AND namespace_id=$2 AND subject=$3",
+    )
+    .bind(world.admin.tenant_id().as_uuid())
+    .bind(world.namespace.id().as_uuid())
+    .bind(developer.subject().as_str())
+    .execute(&world.db.pool)
+    .await
+    .expect("revoke reveal");
+    assert_eq!(
+        disclose_with_reveal(&world, &developer, run, DisclosureSelector::Input, true,).await,
+        Err(PayloadDisclosureError::PiiRevealNotGranted)
+    );
+    let denied_audits: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_records WHERE tenant_id=$1 AND actor=$2 AND resource_id=$3 \
+         AND action='payload.reveal_denied' AND reason='permission'",
+    )
+    .bind(world.admin.tenant_id().as_uuid())
+    .bind(developer.subject().as_str())
+    .bind(run.to_string())
+    .fetch_one(&world.db.pool)
+    .await
+    .expect("denied audit");
+    assert_eq!(denied_audits, 1);
 }
 
 pub(crate) fn disclosed_string<'a>(node: &'a ClassifiedNode, name: &str) -> Option<&'a str> {
