@@ -105,6 +105,66 @@ fn state(iterations: u32) -> RunState {
     state
 }
 
+fn state_with_local_collection(iterations: u32) -> RunState {
+    let mut state = RunState::new(RunId::generate());
+    let owner_path = path(0);
+    for event in [
+        AddressedRunEvent::root(RunEvent::RunStarted {
+            entrypoint: id("items"),
+        }),
+        AddressedRunEvent::root(RunEvent::CollectionEntered {
+            node: id("items"),
+            item_count: 1,
+            max_items: 10_000,
+            max_concurrency: 256,
+            snapshot_digest: sagat_domain::workflow::Digest::new([1; 32]),
+        }),
+        AddressedRunEvent::root(RunEvent::CollectionIterationAdmitted {
+            node: id("items"),
+            index: 0,
+            entry: ExecutionInstanceId::in_path(owner_path.clone(), id("inner")),
+            item_digest: sagat_domain::workflow::Digest::new([2; 32]),
+        }),
+    ] {
+        state.apply_addressed(&event).expect("outer scope event");
+    }
+    state
+        .apply_addressed(
+            &AddressedRunEvent::in_path(
+                owner_path.clone(),
+                RunEvent::CollectionEntered {
+                    node: id("inner"),
+                    item_count: iterations,
+                    max_items: 10_000,
+                    max_concurrency: 256,
+                    snapshot_digest: sagat_domain::workflow::Digest::new([3; 32]),
+                },
+            )
+            .expect("nested collection address"),
+        )
+        .expect("nested collection entered");
+    for index in 0..iterations {
+        let nested_path = owner_path
+            .child(id("inner"), index)
+            .expect("nested member path");
+        state
+            .apply_addressed(
+                &AddressedRunEvent::in_path(
+                    owner_path.clone(),
+                    RunEvent::CollectionIterationAdmitted {
+                        node: id("inner"),
+                        index,
+                        entry: ExecutionInstanceId::in_path(nested_path, id("work")),
+                        item_digest: sagat_domain::workflow::Digest::new([4; 32]),
+                    },
+                )
+                .expect("nested iteration address"),
+            )
+            .expect("nested iteration admitted");
+    }
+    state
+}
+
 #[test]
 fn one_path_snapshot_excludes_every_unrelated_iteration() {
     let full = state(256);
@@ -122,6 +182,18 @@ fn one_path_snapshot_excludes_every_unrelated_iteration() {
     );
     assert_eq!(local.ancestors()[0].iteration_index(), 255);
     assert_eq!(local.global().version(), full.version());
+}
+
+#[test]
+fn local_collection_is_a_scalar_projection_without_member_history() {
+    let full = state_with_local_collection(256);
+    let local = PathExecutionState::from_run(&full, path(0)).expect("complete local snapshot");
+    let collection = local.local_collection(&id("inner")).expect("local scope");
+
+    assert_eq!(collection.admitted_count(), 256);
+    assert_eq!(collection.completed_count(), 0);
+    assert_eq!(collection.active_count(), 256);
+    assert_eq!(local.local_instances().count(), 1);
 }
 
 #[test]

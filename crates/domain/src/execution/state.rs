@@ -653,6 +653,15 @@ impl CollectionState {
             .count()
     }
 
+    /// Iterations whose result was checkpointed or whose drain completed.
+    #[must_use]
+    pub fn completed_count(&self) -> usize {
+        self.iterations
+            .values()
+            .filter(|iteration| iteration.is_settled())
+            .count()
+    }
+
     /// Admitted members that still hold a durable tenant slot.
     pub fn active_iterations(&self) -> impl Iterator<Item = u32> + '_ {
         self.iterations

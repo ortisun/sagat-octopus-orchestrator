@@ -57,7 +57,10 @@ pub use operations::{
     QueryResponse, QuerySnapshot, ResultDisclosure, UpdateEvaluation, UpdateKey, UpdateReceipt,
     UpdateReceiptStatus, UpdateRejection, UpdateRequest, UpdateResolution,
 };
-pub use path_state::{AncestorExecutionFence, GlobalExecutionFence, PathExecutionState};
+pub use path_state::{
+    AncestorExecutionFence, GlobalExecutionFence, PathCollectionState, PathExecutionState,
+    PathLoopState,
+};
 pub use plan::{AddressedPlan, Evaluation, Plan, plan, plan_addressed, plan_path};
 pub use scoped_sagas::plan_scope_compensation;
 pub use state::{

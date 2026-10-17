@@ -35,9 +35,9 @@ use sagat_domain::execution::{
     ChainScope, CollectionDrainReason, CollectionIterationRestore, CollectionPhase,
     ContinuationTransfer, CorrelationKey, ExecutionInstanceId, FailureCode, GlobalExecutionFence,
     InstancePath, LoopContinuation, LoopDrainReason, LoopIterationRestore, LoopKind, LoopPhase,
-    PathExecutionState, RunChainState, RunEvent, RunId, RunState, RunStatus, SagaPhase, SagaState,
-    ScopeSagaState, SegmentCompletionKind, SegmentIndex, StepState, StepStatus, StopReason,
-    SwitchSelection, WaitingOn,
+    PathCollectionState, PathExecutionState, PathLoopState, RunChainState, RunEvent, RunId,
+    RunState, RunStatus, SagaPhase, SagaState, ScopeSagaState, SegmentCompletionKind, SegmentIndex,
+    StepState, StepStatus, StopReason, SwitchSelection, WaitingOn,
 };
 use sagat_domain::identity::{Namespace, NamespaceId, Principal, Slug, TenantId};
 use sagat_domain::saga::{NodeOrigin, SagaOutcome};
@@ -453,6 +453,178 @@ impl PathExecutionStore for PgRunStore {
             steps.insert(node, step_state(row)?);
         }
 
+        let collection_rows = sqlx::query(
+            "SELECT owner_node,kind,lifecycle,snapshot_digest,item_count,max_items, \
+                    max_concurrency,next_admission_index,admitted_count,completed_count, \
+                    active_count,result_digest,drain_kind,drain_iteration,drain_failure_code \
+             FROM iteration_scopes WHERE tenant_id=$1 AND run_id=$2 \
+               AND owner_path_nodes=$3 AND owner_path_indices=$4 ORDER BY owner_node",
+        )
+        .bind(tenant.as_uuid())
+        .bind(run.as_uuid())
+        .bind(&path_nodes)
+        .bind(&path_indices)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        let mut collections = BTreeMap::new();
+        for row in &collection_rows {
+            if col::<String>(row, "kind")? != "COLLECTION" {
+                return Err(corrupt("bounded collection kind"));
+            }
+            let node = NodeId::parse_stored(&col::<String>(row, "owner_node")?)
+                .map_err(|_| corrupt("bounded collection owner"))?;
+            if !steps.contains_key(&node) {
+                return Err(corrupt("bounded collection owner"));
+            }
+            let phase = match col::<String>(row, "lifecycle")?.as_str() {
+                "OPEN" => CollectionPhase::Open,
+                "DRAINING" => CollectionPhase::Draining,
+                "SUCCEEDED" => CollectionPhase::Succeeded,
+                "FAILED" => CollectionPhase::Failed,
+                "CANCELLED" => CollectionPhase::Cancelled,
+                _ => return Err(corrupt("bounded collection lifecycle")),
+            };
+            let drain_reason = match (
+                col::<Option<String>>(row, "drain_kind")?.as_deref(),
+                col::<Option<i32>>(row, "drain_iteration")?,
+                col::<Option<String>>(row, "drain_failure_code")?,
+            ) {
+                (None, None, None) => None,
+                (Some("FAILED"), Some(iteration), Some(code)) => {
+                    Some(CollectionDrainReason::Failed {
+                        iteration: u32::try_from(iteration)
+                            .map_err(|_| corrupt("bounded collection drain iteration"))?,
+                        code: FailureCode::parse(&code)
+                            .map_err(|_| corrupt("bounded collection drain code"))?,
+                    })
+                }
+                (Some("STORAGE_QUOTA"), None, Some(code))
+                    if code == FailureCode::storage_quota_exceeded().as_str() =>
+                {
+                    Some(CollectionDrainReason::StorageQuotaExceeded)
+                }
+                (Some("CANCELLED"), None, None) => Some(CollectionDrainReason::Cancelled),
+                _ => return Err(corrupt("bounded collection drain reason")),
+            };
+            let next_admission = u32::try_from(col::<i32>(row, "next_admission_index")?)
+                .map_err(|_| corrupt("bounded collection next admission"))?;
+            if col::<i32>(row, "admitted_count")?
+                != i32::try_from(next_admission).unwrap_or(i32::MAX)
+            {
+                return Err(corrupt("bounded collection admitted count"));
+            }
+            let scope = PathCollectionState::restore(
+                phase,
+                u32::try_from(col::<i32>(row, "item_count")?)
+                    .map_err(|_| corrupt("bounded collection item count"))?,
+                u32::try_from(col::<i32>(row, "max_items")?)
+                    .map_err(|_| corrupt("bounded collection item limit"))?,
+                u16::try_from(col::<i32>(row, "max_concurrency")?)
+                    .map_err(|_| corrupt("bounded collection concurrency"))?,
+                stored_digest(col(row, "snapshot_digest")?, "bounded collection snapshot")?,
+                next_admission,
+                u32::try_from(col::<i32>(row, "completed_count")?)
+                    .map_err(|_| corrupt("bounded collection completed count"))?,
+                u16::try_from(col::<i32>(row, "active_count")?)
+                    .map_err(|_| corrupt("bounded collection active count"))?,
+                col::<Option<Vec<u8>>>(row, "result_digest")?
+                    .map(|digest| stored_digest(digest, "bounded collection result"))
+                    .transpose()?,
+                drain_reason,
+            )
+            .map_err(|_| corrupt("bounded collection scalar progress"))?;
+            if collections.insert(node, scope).is_some() {
+                return Err(corrupt("bounded collection owner"));
+            }
+        }
+
+        let loop_rows = sqlx::query(
+            "SELECT owner_node,kind,lifecycle,max_iterations,created_at,deadline_at, \
+                    initial_carry_digest,current_carry_digest,next_iteration,active_iteration, \
+                    delay_due_at,drain_kind,drain_iteration,drain_failure_code \
+             FROM loop_scopes WHERE tenant_id=$1 AND run_id=$2 \
+               AND owner_path_nodes=$3 AND owner_path_indices=$4 ORDER BY owner_node",
+        )
+        .bind(tenant.as_uuid())
+        .bind(run.as_uuid())
+        .bind(&path_nodes)
+        .bind(&path_indices)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        let mut loops = BTreeMap::new();
+        for row in &loop_rows {
+            let node = NodeId::parse_stored(&col::<String>(row, "owner_node")?)
+                .map_err(|_| corrupt("bounded loop owner"))?;
+            let owner = steps
+                .get(&node)
+                .ok_or_else(|| corrupt("bounded loop owner"))?;
+            let kind = match col::<String>(row, "kind")?.as_str() {
+                "WHILE" => LoopKind::While,
+                "REPEAT_UNTIL" => LoopKind::RepeatUntil,
+                _ => return Err(corrupt("bounded loop kind")),
+            };
+            let phase = match col::<String>(row, "lifecycle")?.as_str() {
+                "READY" => LoopPhase::Ready,
+                "RUNNING" => LoopPhase::Running,
+                "DELAYING" => LoopPhase::Delaying,
+                "DRAINING" => LoopPhase::Draining,
+                "SUCCEEDED" => LoopPhase::Succeeded,
+                "FAILED" => LoopPhase::Failed,
+                "CANCELLED" => LoopPhase::Cancelled,
+                _ => return Err(corrupt("bounded loop lifecycle")),
+            };
+            let drain_reason = match (
+                col::<Option<String>>(row, "drain_kind")?.as_deref(),
+                col::<Option<i32>>(row, "drain_iteration")?,
+                col::<Option<String>>(row, "drain_failure_code")?,
+            ) {
+                (None, None, None) => None,
+                (Some("FAILED"), Some(iteration), Some(code)) => Some(LoopDrainReason::Failed {
+                    iteration: u32::try_from(iteration)
+                        .map_err(|_| corrupt("bounded loop drain iteration"))?,
+                    code: FailureCode::parse(&code)
+                        .map_err(|_| corrupt("bounded loop drain code"))?,
+                }),
+                (Some("TIMED_OUT"), None, Some(code)) if code == "RUN_TIMED_OUT" => {
+                    Some(LoopDrainReason::TimedOut)
+                }
+                (Some("CANCELLED"), None, None) => Some(LoopDrainReason::Cancelled),
+                _ => return Err(corrupt("bounded loop drain reason")),
+            };
+            let scope = PathLoopState::restore(
+                kind,
+                phase,
+                u32::try_from(col::<i32>(row, "max_iterations")?)
+                    .map_err(|_| corrupt("bounded loop iteration limit"))?,
+                col(row, "created_at")?,
+                col(row, "deadline_at")?,
+                stored_digest(
+                    col(row, "initial_carry_digest")?,
+                    "bounded loop initial carry",
+                )?,
+                stored_digest(
+                    col(row, "current_carry_digest")?,
+                    "bounded loop current carry",
+                )?,
+                u32::try_from(col::<i32>(row, "next_iteration")?)
+                    .map_err(|_| corrupt("bounded loop next iteration"))?,
+                col::<Option<i32>>(row, "active_iteration")?
+                    .map(|index| {
+                        u32::try_from(index).map_err(|_| corrupt("bounded loop active iteration"))
+                    })
+                    .transpose()?,
+                col(row, "delay_due_at")?,
+                drain_reason,
+                owner.failure().cloned(),
+            )
+            .map_err(|_| corrupt("bounded loop scalar progress"))?;
+            if loops.insert(node, scope).is_some() {
+                return Err(corrupt("bounded loop owner"));
+            }
+        }
+
         let mut ancestors = Vec::with_capacity(path.depth());
         let mut owner_nodes = Vec::<String>::new();
         let mut owner_indices = Vec::<i32>::new();
@@ -529,6 +701,24 @@ impl PathExecutionStore for PgRunStore {
         let definition = self
             .definition(&mut tx, tenant, record.info.version_id)
             .await?;
+        for node in collections.keys() {
+            let owner = ExecutionInstanceId::in_path(path.clone(), node.clone());
+            if !matches!(
+                definition.node_for_instance(&owner).map(Node::kind),
+                Some(NodeKind::ForEach { .. })
+            ) {
+                return Err(corrupt("bounded collection definition"));
+            }
+        }
+        for node in loops.keys() {
+            let owner = ExecutionInstanceId::in_path(path.clone(), node.clone());
+            if !matches!(
+                definition.node_for_instance(&owner).map(Node::kind),
+                Some(NodeKind::While { .. } | NodeKind::RepeatUntil { .. })
+            ) {
+                return Err(corrupt("bounded loop definition"));
+            }
+        }
         let state = PathExecutionState::restore(
             GlobalExecutionFence::restore(
                 run,
@@ -540,8 +730,8 @@ impl PathExecutionStore for PgRunStore {
             path,
             ancestors,
             steps,
-            BTreeMap::new(),
-            BTreeMap::new(),
+            collections,
+            loops,
             BTreeMap::new(),
         )
         .map_err(|error| StoreError::Internal {

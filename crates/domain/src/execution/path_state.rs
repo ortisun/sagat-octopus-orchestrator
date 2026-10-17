@@ -7,11 +7,297 @@
 use std::collections::BTreeMap;
 
 use super::{
-    CollectionPhase, CollectionState, ExecutionError, ExecutionInstanceId, FailureCode,
-    InstancePath, LoopPhase, LoopState, RunId, RunState, RunStatus, ScopeSagaState, StepState,
-    StopReason,
+    CollectionDrainReason, CollectionPhase, CollectionState, ExecutionError, ExecutionInstanceId,
+    FailureCode, InstancePath, LoopDrainReason, LoopKind, LoopPhase, LoopState, RunId, RunState,
+    RunStatus, ScopeSagaState, StepState, StopReason,
 };
-use crate::workflow::NodeId;
+use crate::workflow::{Digest, NodeId};
+
+/// Scalar progress for one collection owned by the exact local path.
+///
+/// Historical members stay in their indexed projection; this state is independent of the number
+/// of admitted iterations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathCollectionState {
+    phase: CollectionPhase,
+    item_count: u32,
+    max_items: u32,
+    max_concurrency: u16,
+    snapshot_digest: Digest,
+    next_admission: u32,
+    completed_count: u32,
+    active_count: u16,
+    result_digest: Option<Digest>,
+    drain_reason: Option<CollectionDrainReason>,
+}
+
+impl PathCollectionState {
+    /// Restores trusted scalar collection progress.
+    ///
+    /// # Errors
+    /// The counters exceed the collection bounds or contradict one another.
+    #[allow(clippy::too_many_arguments)]
+    pub fn restore(
+        phase: CollectionPhase,
+        item_count: u32,
+        max_items: u32,
+        max_concurrency: u16,
+        snapshot_digest: Digest,
+        next_admission: u32,
+        completed_count: u32,
+        active_count: u16,
+        result_digest: Option<Digest>,
+        drain_reason: Option<CollectionDrainReason>,
+    ) -> Result<Self, ExecutionError> {
+        if max_items == 0
+            || max_concurrency == 0
+            || item_count > max_items
+            || next_admission > item_count
+            || completed_count > next_admission
+            || u32::from(active_count) > u32::from(max_concurrency)
+            || u32::from(active_count) > next_admission - completed_count
+        {
+            return Err(ExecutionError::Invariant(
+                "bounded collection has invalid scalar progress",
+            ));
+        }
+        Ok(Self {
+            phase,
+            item_count,
+            max_items,
+            max_concurrency,
+            snapshot_digest,
+            next_admission,
+            completed_count,
+            active_count,
+            result_digest,
+            drain_reason,
+        })
+    }
+
+    fn from_collection(state: &CollectionState) -> Result<Self, ExecutionError> {
+        Self::restore(
+            state.phase(),
+            state.item_count(),
+            state.max_items(),
+            state.max_concurrency(),
+            state.snapshot_digest(),
+            state.next_admission(),
+            u32::try_from(state.completed_count()).map_err(|_| {
+                ExecutionError::Invariant("bounded collection completed count exceeded its bounds")
+            })?,
+            u16::try_from(state.active_count()).map_err(|_| {
+                ExecutionError::Invariant("bounded collection active count exceeded its bounds")
+            })?,
+            state.result_digest(),
+            state.drain_reason().cloned(),
+        )
+    }
+
+    #[must_use]
+    pub const fn phase(&self) -> CollectionPhase {
+        self.phase
+    }
+
+    #[must_use]
+    pub const fn item_count(&self) -> u32 {
+        self.item_count
+    }
+
+    #[must_use]
+    pub const fn max_items(&self) -> u32 {
+        self.max_items
+    }
+
+    #[must_use]
+    pub const fn max_concurrency(&self) -> u16 {
+        self.max_concurrency
+    }
+
+    #[must_use]
+    pub const fn snapshot_digest(&self) -> Digest {
+        self.snapshot_digest
+    }
+
+    #[must_use]
+    pub const fn next_admission(&self) -> u32 {
+        self.next_admission
+    }
+
+    #[must_use]
+    pub const fn admitted_count(&self) -> u32 {
+        self.next_admission
+    }
+
+    #[must_use]
+    pub const fn completed_count(&self) -> u32 {
+        self.completed_count
+    }
+
+    #[must_use]
+    pub const fn active_count(&self) -> u16 {
+        self.active_count
+    }
+
+    #[must_use]
+    pub const fn result_digest(&self) -> Option<Digest> {
+        self.result_digest
+    }
+
+    #[must_use]
+    pub const fn drain_reason(&self) -> Option<&CollectionDrainReason> {
+        self.drain_reason.as_ref()
+    }
+}
+
+/// Scalar progress for one loop owned by the exact local path.
+///
+/// Historical checkpoints stay outside this state; only the current iteration or delay can affect
+/// forward progress.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathLoopState {
+    kind: LoopKind,
+    phase: LoopPhase,
+    max_iterations: u32,
+    entered_at: time::OffsetDateTime,
+    deadline: time::OffsetDateTime,
+    initial_carry_digest: Digest,
+    current_carry_digest: Digest,
+    next_iteration: u32,
+    active_iteration: Option<u32>,
+    delay_until: Option<time::OffsetDateTime>,
+    drain_reason: Option<LoopDrainReason>,
+    failure: Option<FailureCode>,
+}
+
+impl PathLoopState {
+    /// Restores trusted scalar loop progress.
+    ///
+    /// # Errors
+    /// The counters or active/delay fields contradict the loop phase.
+    #[allow(clippy::too_many_arguments)]
+    pub fn restore(
+        kind: LoopKind,
+        phase: LoopPhase,
+        max_iterations: u32,
+        entered_at: time::OffsetDateTime,
+        deadline: time::OffsetDateTime,
+        initial_carry_digest: Digest,
+        current_carry_digest: Digest,
+        next_iteration: u32,
+        active_iteration: Option<u32>,
+        delay_until: Option<time::OffsetDateTime>,
+        drain_reason: Option<LoopDrainReason>,
+        failure: Option<FailureCode>,
+    ) -> Result<Self, ExecutionError> {
+        let active_matches = match phase {
+            LoopPhase::Running => active_iteration.is_some() && delay_until.is_none(),
+            LoopPhase::Delaying => active_iteration.is_none() && delay_until.is_some(),
+            LoopPhase::Draining => delay_until.is_none(),
+            _ => active_iteration.is_none() && delay_until.is_none(),
+        };
+        if max_iterations == 0
+            || next_iteration > max_iterations
+            || active_iteration.is_some_and(|index| index >= max_iterations)
+            || !active_matches
+        {
+            return Err(ExecutionError::Invariant(
+                "bounded loop has invalid scalar progress",
+            ));
+        }
+        Ok(Self {
+            kind,
+            phase,
+            max_iterations,
+            entered_at,
+            deadline,
+            initial_carry_digest,
+            current_carry_digest,
+            next_iteration,
+            active_iteration,
+            delay_until,
+            drain_reason,
+            failure,
+        })
+    }
+
+    fn from_loop(state: &LoopState) -> Result<Self, ExecutionError> {
+        Self::restore(
+            state.kind(),
+            state.phase(),
+            state.max_iterations(),
+            state.entered_at(),
+            state.deadline(),
+            state.initial_carry_digest(),
+            state.current_carry_digest(),
+            state.next_iteration(),
+            state.active_iteration(),
+            state.delay_until(),
+            state.drain_reason().cloned(),
+            state.failure().cloned(),
+        )
+    }
+
+    #[must_use]
+    pub const fn kind(&self) -> LoopKind {
+        self.kind
+    }
+
+    #[must_use]
+    pub const fn phase(&self) -> LoopPhase {
+        self.phase
+    }
+
+    #[must_use]
+    pub const fn max_iterations(&self) -> u32 {
+        self.max_iterations
+    }
+
+    #[must_use]
+    pub const fn entered_at(&self) -> time::OffsetDateTime {
+        self.entered_at
+    }
+
+    #[must_use]
+    pub const fn deadline(&self) -> time::OffsetDateTime {
+        self.deadline
+    }
+
+    #[must_use]
+    pub const fn initial_carry_digest(&self) -> Digest {
+        self.initial_carry_digest
+    }
+
+    #[must_use]
+    pub const fn current_carry_digest(&self) -> Digest {
+        self.current_carry_digest
+    }
+
+    #[must_use]
+    pub const fn next_iteration(&self) -> u32 {
+        self.next_iteration
+    }
+
+    #[must_use]
+    pub const fn active_iteration(&self) -> Option<u32> {
+        self.active_iteration
+    }
+
+    #[must_use]
+    pub const fn delay_until(&self) -> Option<time::OffsetDateTime> {
+        self.delay_until
+    }
+
+    #[must_use]
+    pub const fn drain_reason(&self) -> Option<&LoopDrainReason> {
+        self.drain_reason.as_ref()
+    }
+
+    #[must_use]
+    pub const fn failure(&self) -> Option<&FailureCode> {
+        self.failure.as_ref()
+    }
+}
 
 /// Run-wide values that fence every local transition.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -151,8 +437,8 @@ pub struct PathExecutionState {
     path: InstancePath,
     ancestors: Vec<AncestorExecutionFence>,
     steps: BTreeMap<NodeId, StepState>,
-    collections: BTreeMap<NodeId, CollectionState>,
-    loops: BTreeMap<NodeId, LoopState>,
+    collections: BTreeMap<NodeId, PathCollectionState>,
+    loops: BTreeMap<NodeId, PathLoopState>,
     scope_sagas: BTreeMap<NodeId, ScopeSagaState>,
 }
 
@@ -168,8 +454,8 @@ impl PathExecutionState {
         path: InstancePath,
         ancestors: Vec<AncestorExecutionFence>,
         steps: BTreeMap<NodeId, StepState>,
-        collections: BTreeMap<NodeId, CollectionState>,
-        loops: BTreeMap<NodeId, LoopState>,
+        collections: BTreeMap<NodeId, PathCollectionState>,
+        loops: BTreeMap<NodeId, PathLoopState>,
         scope_sagas: BTreeMap<NodeId, ScopeSagaState>,
     ) -> Result<Self, ExecutionError> {
         if path.is_root() || ancestors.len() != path.depth() {
@@ -260,13 +546,18 @@ impl PathExecutionState {
         let collections = state
             .collections()
             .filter(|(owner, _)| owner.path() == &path)
-            .map(|(owner, scope)| (owner.node().clone(), scope.clone()))
-            .collect();
+            .map(|(owner, scope)| {
+                PathCollectionState::from_collection(scope)
+                    .map(|scalar| (owner.node().clone(), scalar))
+            })
+            .collect::<Result<_, _>>()?;
         let loops = state
             .loops()
             .filter(|(owner, _)| owner.path() == &path)
-            .map(|(owner, scope)| (owner.node().clone(), scope.clone()))
-            .collect();
+            .map(|(owner, scope)| {
+                PathLoopState::from_loop(scope).map(|scalar| (owner.node().clone(), scalar))
+            })
+            .collect::<Result<_, _>>()?;
         let scope_sagas = state
             .scope_sagas()
             .filter(|(owner, _)| owner.path() == &path)
@@ -317,12 +608,12 @@ impl PathExecutionState {
     }
 
     #[must_use]
-    pub fn local_collection(&self, node: &NodeId) -> Option<&CollectionState> {
+    pub fn local_collection(&self, node: &NodeId) -> Option<&PathCollectionState> {
         self.collections.get(node)
     }
 
     #[must_use]
-    pub fn local_loop(&self, node: &NodeId) -> Option<&LoopState> {
+    pub fn local_loop(&self, node: &NodeId) -> Option<&PathLoopState> {
         self.loops.get(node)
     }
 
