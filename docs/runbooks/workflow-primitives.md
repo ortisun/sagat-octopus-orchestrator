@@ -8,8 +8,10 @@ The restricted public loop shape uses an activity followed by a return in its bo
 collections, triggers, structured-primitive combinations and broader body graphs remain closed.
 The public continuation subset accepts an activity followed by `continueAsNew`, including exact
 declared-state transfer, or an activity and condition that select the same continuation or `end`.
-Approval documents cannot combine
-approval with parallel execution, declared state or another structured primitive yet.
+An approval combines with declared state and with a continuation chain (an entry activity, then an
+approval that rolls the chain over or ends it; decision D295). An approval cannot combine with parallel
+execution, and an approval inside a collection or loop body is refused at publication with
+`details.dependency: SCOPED_COMPENSATION` until scoped compensation can settle it.
 
 Collection admission has no implicit capacity. An administrator must configure the tenant-wide
 `iteration_concurrency` quota before the scheduler can open the first scope:
@@ -234,6 +236,36 @@ forward node), so a retried compensation reaches the provider with the key of th
 
 Not covered: a run deadline that expires over a collection or loop that is still open stays unsupported
 (O382), and branches, timers and nested scopes inside a compensating body are not published (D388).
+
+## An approval beside state or inside a chain
+
+What to look at when a run waits for a person and also has declared state or a chain.
+
+- **State.** The run is `WAITING` while the request is open and `POST /runs/{runId}/updates/{name}` still
+  applies; the journal then holds `approval.opened`, `state.updated` and `approval.decided` in one gap-free
+  sequence, because the decision and the Update both take the run's row lock. A stale `expectedStateRevision`
+  is `CONFLICT`/`REVISION_CONFLICT` and leaves the request `PENDING`. When the run has ended the state is
+  still readable and no longer mutable (`RUN_NOT_MUTABLE`). A node expression that names `state` does not read
+  it (it evaluates to null, G442); read state through a declared Query.
+- **Chain.** `GET /v1/namespaces/{ns}/chains/{chain}` gives the head; list the requests of the head run with
+  `GET /v1/runs/{head}/approvals`. Each segment has a request of its own and a decision belongs to the segment
+  that opened it. The boundary after an approval is reached only when the request is settled, so the hand-off
+  never meets an open one; if some graph did, the boundary would wait (`continuations_waiting`,
+  `scheduler_continuation_waits_total{blocker="approval"}`), never fail. Transferred state is read and updated
+  through the chain address; the predecessor answers `RUN_CONTINUED`.
+- **A chain that stops.** Cancelling the chain or reaching its original deadline settles the open request
+  `CANCELLED` (audited as the engine's own act when no operator cancelled) and a later decision answers
+  `ALREADY_DECIDED`. A boundary approved just before the deadline is not handed off: the deadline ends the
+  chain `TIMED_OUT` and the scheduler counts a skip, not a failure (`ChainError::DeadlineElapsed`).
+- **If a request stays `PENDING` on a run that ended**, that is a defect: compare the projection with the
+  journal (`verify_run`) and look for a scheduler action that failed with an `approval cancellation` error
+  before touching the rows.
+
+Telemetry is the declared set only: `workflow.approval.decide` (from the journal, under the run's own
+trace, with the closed `approved`/`rejected`/`expired` outcome), `workflow_primitive_transitions_total{kind="approval"}`,
+`workflow_approval_wait_seconds{outcome}` and, for a refused decision,
+`workflow_primitive_rejections_total{kind="approval",code}`. The earlier `workflow_approval_http_*` counters
+were removed (D446).
 
 ## Rollback and compatibility
 

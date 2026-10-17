@@ -933,3 +933,112 @@ Evidence, by clause (test names; the files are under `crates/domain/tests`, `tes
   individual commit of a long compensation is not enumerated.
 - **G387 — SDK `operate` and Studio show a scoped step by its id only.** The graph lists
   `lines[2]/reserve~c`; there is no screen that groups a scope's compensations.
+
+## Decisions of the approval combinations increment
+
+Implements D295 (an approval combines with declared state and with chains, not inside bodies). Evidence is
+in `tests/integration/workflow-primitives/{approval_combinations,approval_telemetry,chains}.rs`,
+`tests/fault/workflow-primitives/approval_combinations.rs`, `crates/infra-ir/tests/{codec,continuation}.rs`
+and the shared scenarios `approval-state` and `approval-chain`. The combination was far smaller than the
+task text suggested: the only gates were two refusals in the codec. The work was in what the combination
+exposed once it ran (D443-D445, D447).
+
+- **D440 — An approval publishes beside declared state, and its routes are the decision alone.** The codec
+  refused `state` with an `approval` node; the gate is gone (`published_declared_state_definition` shares the
+  root-graph builder with the plain path, so an approval still cannot meet `parallel`). While a request is
+  open the run is `WAITING` and Update and Query work; the decision and the Update both take the run's row
+  lock and write one gap-free journal in either order (`a_decision_and_a_declared_update_racing_...`, six
+  rounds). No node expression reads the state: the design says only Updates change it and no node reads or
+  waits on it (accepted decision 6), so the "state visible to the approval's route" of the task text is
+  not a feature; see G442 for what a node expression naming `state` does today.
+- **D441 — The published approval-and-chain shape.** An entry `activity`, then an `approval` (no `onError`)
+  whose `onApprove` is the `continueAsNew` boundary (transferring the exact declared state when the document
+  declares one) and whose `onReject` and `onExpire` are `end` nodes without output, nothing else in the
+  graph (`continuation::parse_published`). Each segment is a new run with the same graph, so each opens a
+  request of its own; a decision belongs to the segment that opened it. The entry stays an activity because
+  successor creation assumes one (G441). Other approval-and-continuation graphs stay closed
+  (`publication_keeps_other_approval_continuation_shapes_closed`).
+- **D442 — An approval in a collection or loop body is refused with its dependency named.** It was refused
+  as a `GRAPH` error or as "a body is one to eight activities" (the validation order decided). Publication
+  now checks the bodies first and answers `VALIDATION_FAILED`/`UNSUPPORTED_NODE` with `details.node`,
+  `details.kind: "approval"` and the additive `details.dependency: "SCOPED_COMPENSATION"`
+  (`IrError::Pending`, `contracts/README.md` §5, OpenAPI `Error.details`). No new `details.reason`: the
+  table stays closed (O440).
+- **D443 — A stop the platform makes is audited as the engine's act.** A run with an open approval whose
+  deadline passed could never end: cancelling the request needed the operator's run audit, the deadline
+  pass has none, so the action failed on every tick and the run stayed `WAITING` with a `PENDING` request
+  (`the_chains_original_deadline_settles_an_open_approval` failed with `approval cancellation requires its
+  enclosing run audit`). It affected every approval under a run or chain deadline and every system cancel
+  (a parent cancelling its child). The cancellation now writes `approval.cancelled` as the engine when no
+  operator audit comes with the stop.
+- **D444 — A state revision handed to a successor is readable.** `declared_state` accepted only a
+  `state.updated` entry as the origin of a revision above zero, so the state an Update wrote in segment N
+  could not be read or updated in segment N+1 (404). The successor's `execution_chain.successor_linked`
+  entry, which carries the transferred digest, is accepted as the origin too. It never showed because the
+  published shapes gave no window for an Update before the hand-off; an open approval is that window
+  (`the_state_an_update_wrote_during_the_approval_is_what_the_next_segment_starts_with`).
+- **D445 — A hand-off past the chain's original deadline is skipped, not failed.** It was refused as
+  `RuntimeNotIntegrated`, which logged an error and counted a failed scheduler action until the deadline
+  pass ended the run in the same tick. It is `ChainError::DeadlineElapsed` and the continuation pass counts a
+  skip (`an_approved_boundary_past_the_chains_deadline_is_ended_by_the_deadline_not_failed`; found by the
+  deadline race).
+- **D446 — The approval routes keep no series of their own.** `workflow_approval_http_reads_total` and
+  `workflow_approval_http_decisions_total` were outside the declared vocabulary (their `outcome` values
+  `listed` and `replayed` are not in the closed set) and nothing in the repository reads them. They are
+  removed. A refused decision counts once in `workflow_primitive_rejections_total{kind="approval",code}`
+  with its closed code (`ApiError::primitive_rejection`, shared with the declared operations); committed
+  outcomes are the journal-derived `workflow_primitive_transitions_total` and `workflow_approval_wait_seconds`.
+- **D447 — A cancelled request records its wait.** `workflow_approval_wait_seconds{outcome="cancelled"}` was
+  never recorded; it is now, when (and only when) the cancelling transaction commits.
+- **D448 — Open work at a boundary is proven for approvals with a seeded request.** No published graph has
+  an open approval at its boundary (the approval settles first, and `parallel` is closed with approvals), so
+  `chains::a_boundary_with_an_open_approval_waits_until_the_decision_settles_the_request` and
+  `the_store_proves_an_open_approval_again_under_the_locks` open a real request on a synthetic step and
+  assert the `Approval` blocker in the scheduler and, again, in the store under its locks, as the existing
+  tests do for the other blockers. They prove the rule, not a reachable run.
+
+Task clauses of T014-024 and the tests that prove them (the storage is `approval_progress.rs`, D300):
+
+| Clause | Evidence |
+|---|---|
+| Transactional request, expiry, decision, audit storage | `approval_progress::{settlement_outbox_failures_roll_back_decision_and_expiry, outbox_failure_rolls_back_request_timer_journal_projection_and_audit, a_decision_cut_off_at_any_await_commits_whole_or_not_at_all}`, fault `approvals::{an_audit_failure_rolls_back_a_decision_..., ..._an_expiry_..., ..._opening_...}`; with a stop: `approval_combinations::the_chains_original_deadline_settles_an_open_approval` |
+| Authorized operations (initiator, eligibility, tenant) | `approvals_http::permission_eligibility_initiator_and_tenant_boundaries_are_opaque_and_audited`, `approval_combinations::a_viewer_reads_the_state_but_cannot_decide_a_stateful_approval`, scenario `approval-security` |
+| SDK builders and client calls (five SDKs) | scenarios `approval-builders`, `approval-decisions`, `approval-settlement`, `approval-security`, `approval-state`, `approval-chain`; the per-SDK unit suites |
+| Declared telemetry (spans, metrics, trace id) | `approval_telemetry::*` (span under the run's trace, closed attributes and outcomes, no person or key; refusal series; cancelled wait), `approvals_http` (wait histogram), `projection::approval_routes_and_the_recorded_decision_are_projected_over_http` |
+| Typed errors | `approvals_http::out_of_bound_decision_keys_and_reason_codes_...`, the reason table test (`contract_workflow_primitives::errors`), `approval_combinations` (`UNSUPPORTED_NODE`+`dependency`, `REVISION_CONFLICT`, `RUN_NOT_MUTABLE`, `RUN_CONTINUED`, `ALREADY_DECIDED`) |
+
+### Gaps and questions recorded by this increment
+
+- **G440 — An approval inside a collection or loop body stays unsupported.** It waits for scoped
+  compensation (D295); the refusal now names that (D442). Nothing else was built.
+- **G441 — An approval cannot be a chain's entrypoint, and only one approval per segment is published.**
+  Successor creation assumes an activity entrypoint (the same limit as `chain-root-wait.json.pending`), and
+  the published shape has one approval, no condition after it and no way for an approval to end the chain
+  except rejection or expiry (a final approval round ends only by `maxSegments` or by a rejection).
+- **G442 — A node expression that names `state` compiles and evaluates to null.** The codec only checks the
+  syntax of node expressions, so `end.outputExpr: "state.balance"` publishes and the run ends `SUCCEEDED`
+  with a null output (observed; not pinned by a test because it is undesirable). Any root the engine does
+  not provide behaves the same way, so this is general, not approval-specific (O442).
+- **G443 — A cancelled or stopped request has no span.** The telemetry spans are derived from journal
+  entries and a cancellation writes no approval entry, so only the metric (D447) shows it; the step shows
+  `CANCELLED` in the graph.
+- **G444 — The race tests assert invariants, not the commit order.** Contenders are released together by a
+  barrier and each of the six rounds checks one outcome, one gap-free journal and no second successor; which
+  contender wins is the database's. The deadline race moves the decision around the real deadline
+  (-400..+200 ms) and the expiry race around a 1.2 s timeout, so both depend on the machine's clock
+  resolution, not on a fake clock. They passed three consecutive runs here; a loaded CI may need wider offsets.
+- **G445 — The OTLP export of approval spans is not exercised end to end here.** The tests stop at the
+  projector's `derive`, which is where the span and its trace id are decided; the exporter has its own suites.
+- **G446 — Approvals are listed per run.** A chain's open request is found through the chain head
+  (`GET /chains/{id}` then `GET /runs/{head}/approvals`); there is no chain-level listing.
+- **G447 — The `continue` command path keeps `RuntimeNotIntegrated` for a hand-off past the deadline.**
+  Only the evaluated path the scheduler uses was changed (D445).
+- **O440 — Should `details.dependency` be the contract's way to say "not built yet", or should each
+  dependency get its own `details.reason`?** The first keeps the reason table closed and adds one optional
+  field (the choice made); the second adds a row and a remediation per dependency.
+- **O441 — Should an approval be allowed as the first node of a chain?** It needs successor creation for a
+  non-activity entrypoint, the work `chain-root-wait.json.pending` also waits for.
+- **O442 — Should publication refuse a node expression that names a root the engine never provides
+  (`state`)?** It would turn G442 into a typed error at publication.
+- **O443 — Is anything outside this repository reading `workflow_approval_http_*`?** Nothing in the repository
+  does (D446); restore them under a declared name if something does.
