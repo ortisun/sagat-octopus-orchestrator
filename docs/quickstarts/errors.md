@@ -78,6 +78,14 @@ sagat script publish scripts/enrich.ts          # prints: artifactDigest sha256:
 
 Paste the digest into the `script` node's `artifactDigest`.
 
+### INVALID_DATABASE_NODE
+
+Check the connection reference, query or execute operation, typed parameters and finite limits. Managed database steps cannot declare automatic retries or impersonate an ordinary activity.
+
+Use a namespace connection with an OpenBao credential and positional SQL parameters.
+Integer and decimal literal values are strings; expression bindings must declare their type.
+See [managed database SDK examples](../guides/managed-database-sdk.md) for the canonical shape.
+
 ### SECRET_UNAVAILABLE
 
 A node names a secret that does not exist in the namespace, or that you may not use. Create it there, or ask an administrator for access to it.

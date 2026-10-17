@@ -25,7 +25,7 @@ fn workers_of_an_older_and_of_a_newer_minor_version_are_both_served_and_another_
                 ("1.2", "1.2"),
                 ("1.3", "1.3"),
                 ("1.4", "1.4"),
-                ("1.9", "1.4"),
+                ("1.9", "1.5"),
             ] {
                 let step = observation(doc, &format!("offer-{offer}"));
                 assert_eq!(
@@ -69,7 +69,7 @@ fn workers_of_an_older_and_of_a_newer_minor_version_are_both_served_and_another_
             // The same SDK upgraded (offering the newest minor) serves the next run at the server's.
             assert_eq!(
                 observation(doc, "start-new")["result"]["protocolVersion"],
-                "1.4",
+                "1.5",
                 "{language}"
             );
             assert_eq!(

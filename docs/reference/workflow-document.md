@@ -30,7 +30,7 @@ Made from `specs/001-platform-foundation/contracts/workflow.schema.json`. A work
 
 ## Nodes
 
-Every node has the fields below; each kind adds its own. The kinds: [`activity`](#activity), [`timer`](#timer), [`waitEvent`](#waitEvent), [`condition`](#condition), [`parallel`](#parallel), [`child`](#child), [`saga`](#saga), [`script`](#script), [`foreach`](#foreach), [`humanApproval`](#humanApproval), [`end`](#end).
+Every node has the fields below; each kind adds its own. The kinds: [`activity`](#activity), [`database`](#database), [`timer`](#timer), [`waitEvent`](#waitEvent), [`condition`](#condition), [`parallel`](#parallel), [`child`](#child), [`saga`](#saga), [`script`](#script), [`foreach`](#foreach), [`humanApproval`](#humanApproval), [`end`](#end).
 
 ### base
 
@@ -57,6 +57,23 @@ Every node has the fields below; each kind adds its own. The kinds: [`activity`]
 | `retry` | [`retry`](#retry) |  |  |
 | `secrets` | array of string (max items 16) |  | Names of the secrets of the namespace the worker may ask for while it holds a lease on this step. Names only: a value is never part of a definition. |
 | `type` | `"activity"` | yes |  |
+
+### database
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `connectionRef` | object | yes |  |
+| `connectionRef.name` | string (pattern `^[a-z][a-z0-9-]{2,63}$`) | yes |  |
+| `connectionRef.revision` | integer (min 1, max 2147483647) |  |  |
+| `id` | string (min length 1) | yes |  |
+| `limits` | [`databaseLimits`](#databaseLimits) |  |  |
+| `next` | string |  |  |
+| `onError` | string |  |  |
+| `operation` | one of `"query"`, `"execute"` | yes |  |
+| `parameters` | array of [`databaseParameter`](#databaseParameter) (max items 256) |  |  |
+| `statement` | string (min length 1, max length 65536) | yes |  |
+| `timeoutMs` | integer (min 1, max 60000) |  |  |
+| `type` | `"database"` | yes |  |
 
 ### timer
 
@@ -153,6 +170,28 @@ Every node has the fields below; each kind adds its own. The kinds: [`activity`]
 | `type` | `"end"` | yes |  |
 
 ## Other shapes
+
+### databaseLimits
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `connectTimeoutMs` | integer (min 1, max 10000) |  |  |
+| `idleTimeoutMs` | integer (min 1, max 60000) |  |  |
+| `maxParameterBytes` | integer (min 1, max 262144) |  |  |
+| `maxParameters` | integer (min 1, max 256) |  |  |
+| `maxResultBytes` | integer (min 1, max 4194304) |  |  |
+| `maxRows` | integer (min 1, max 10000) |  |  |
+| `maxStatementBytes` | integer (min 1, max 65536) |  |  |
+| `poolSize` | integer (min 1, max 16) |  |  |
+| `timeoutMs` | integer (min 1, max 30000) |  |  |
+
+### databaseParameter
+
+any
+
+### databaseValue
+
+any
 
 ### retry
 

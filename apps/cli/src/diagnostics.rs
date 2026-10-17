@@ -44,6 +44,10 @@ pub const CATALOG: &[(&str, &str)] = &[
         "A node names a secret that does not exist in the namespace, or that you may not use. Create it there, or ask an administrator for access to it.",
     ),
     (
+        "INVALID_DATABASE_NODE",
+        "Check the connection reference, query or execute operation, typed parameters and finite limits. Managed database steps cannot declare automatic retries or impersonate an ordinary activity.",
+    ),
+    (
         "INVALID_NODE_ID",
         "A node id is up to 64 characters of letters, digits, '_', '.' and '-', starting with a letter or a digit.",
     ),
