@@ -3239,6 +3239,7 @@ impl PgRunTx {
     async fn charge_logical_output_bytes(
         &mut self,
         outputs: &[(ExecutionInstanceId, usize)],
+        introduced_outputs: &BTreeSet<ExecutionInstanceId>,
     ) -> Result<(), StoreError> {
         let mut seen = BTreeSet::new();
         let mut charge = 0_i64;
@@ -3262,14 +3263,16 @@ impl PgRunTx {
             .fetch_optional(&mut *self.tx)
             .await
             .map_err(store_error)?;
-            match retained {
-                Some(true) => {}
-                Some(false) => {
-                    charge = charge
-                        .checked_add(i64::try_from(*bytes).map_err(|_| corrupt("output bytes"))?)
-                        .ok_or_else(|| corrupt("output byte ledger"))?;
-                }
+            let should_charge = match retained {
+                Some(true) => false,
+                Some(false) => true,
+                None if introduced_outputs.contains(instance) => true,
                 None => return Err(corrupt("output step projection")),
+            };
+            if should_charge {
+                charge = charge
+                    .checked_add(i64::try_from(*bytes).map_err(|_| corrupt("output bytes"))?)
+                    .ok_or_else(|| corrupt("output byte ledger"))?;
             }
         }
         if charge == 0 {
@@ -4070,7 +4073,22 @@ impl RunTx for PgRunTx {
             .iter()
             .map(|(node, bytes)| (ExecutionInstanceId::root(node.clone()), bytes.len()))
             .collect::<Vec<_>>();
-        self.charge_logical_output_bytes(&output_charges).await?;
+        let introduced_outputs = events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    RunEvent::StepCompleted { .. }
+                        | RunEvent::WaitSatisfied { .. }
+                        | RunEvent::ReconciliationConcluded { .. }
+                        | RunEvent::EndReached { .. }
+                        | RunEvent::ChildFinished { .. }
+                )
+            })
+            .filter_map(|event| event.node().cloned().map(ExecutionInstanceId::root))
+            .collect::<BTreeSet<_>>();
+        self.charge_logical_output_bytes(&output_charges, &introduced_outputs)
+            .await?;
         let mut output_digest: BTreeMap<&NodeId, Vec<u8>> = BTreeMap::new();
         for (node, bytes) in &effects.outputs {
             let digest = Sha256::digest(bytes).to_vec();
@@ -4827,7 +4845,8 @@ impl PgRunTx {
             }
             output_charges.push((instance.clone(), bytes.len()));
         }
-        self.charge_logical_output_bytes(&output_charges).await?;
+        self.charge_logical_output_bytes(&output_charges, &completed)
+            .await?;
         let mut output_digest = BTreeMap::new();
         for (instance, bytes) in outputs {
             if !completed.contains(instance) || output_digest.contains_key(instance) {

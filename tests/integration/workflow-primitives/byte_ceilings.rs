@@ -24,7 +24,7 @@ use serde_json::{Value, json};
 use crate::limits::{
     allow_iterations, assert_failed_with, register_scoped, scheduler, scoped_workers, scopes,
 };
-use crate::support::engine::{World, task_ref, world};
+use crate::support::engine::{World, activity, document, end_node, task_ref, with, world};
 
 type Workers = WorkerService<PgRunStore, SystemClock, JsonEvaluator, SystemEntropy>;
 
@@ -130,6 +130,37 @@ async fn is_over(world: &World, run: RunId) -> bool {
 async fn start_collection(world: &World, document: Value, input: &Value) -> RunId {
     let (workflow, _) = world.publish(document).await;
     world.start(workflow, input).await
+}
+
+#[tokio::test]
+async fn an_end_output_created_with_the_report_is_charged_once_as_a_logical_output() {
+    let world = world().await;
+    let work = with(activity("work"), "next", json!("done"));
+    let done = with(end_node("done"), "outputExpr", json!("steps.work.output"));
+    let (workflow, _) = world
+        .publish(document("root-output-ledger", "work", vec![work, done]))
+        .await;
+    let run = world.start(workflow, &json!({})).await;
+    let session = world.session(&["act.work"]).await;
+    let task = world.one_task(&session).await;
+    let output = json!({"answer": "retained twice"});
+    world
+        .complete(&session, &task, &output)
+        .await
+        .expect("the report and end result commit together");
+
+    let charged: i64 =
+        sqlx::query_scalar("SELECT logical_output_bytes FROM run_instance_usage WHERE run_id=$1")
+            .bind(run.as_uuid())
+            .fetch_one(&world.db.pool)
+            .await
+            .expect("logical output ledger");
+    let one_output = serde_json::to_vec(&output).expect("output JSON").len() as i64;
+    assert_eq!(
+        charged,
+        2 * one_output,
+        "the worker output and the end result are distinct logical references"
+    );
 }
 
 #[tokio::test]
