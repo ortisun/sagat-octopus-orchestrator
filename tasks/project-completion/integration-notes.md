@@ -348,3 +348,30 @@ The source reader inventory used `rg -n 'getInboxEvent|listConnectorDeadLetters|
 dead-letters|InboxEvent|DeadLetter' frontend/apps/studio/src apps/cli/src sdks`, excluding generated
 `schema.d.ts`, target/bin/obj/node_modules/dist/.venv/.mypy_cache/build artifacts. It found no
 handwritten product reader of these event values. Canonical generated types retain the new shapes.
+
+
+### Live event REST fault and full dead-letter page
+
+`events::actual_event_and_letter_reads_validate_reveal_refusals_and_revocation` passed 1/1
+in 8.51 s (`/tmp/sagat-completion-event-contract-live-2.log`). It validates every actual
+response against canonical OpenAPI: default structure, explicit reveal without/with grant, invalid
+reveal, an injected real PostgreSQL audit-insert failure, and the next call after grant revocation.
+Two successful reveals create exactly two durable reveal audits; neither 503 nor refusal adds one.
+The original RED (`/tmp/sagat-completion-event-contract-live.log`) showed that the server's closed
+422 rejection was absent from both detail operations in OpenAPI. Those two response declarations
+and generated Studio types are fixed. The reference generator passed all 8 checks in
+`/tmp/sagat-completion-event-reference-gate.log`; no server behavior was relaxed.
+
+The same test seeds exactly 200 retained letters. A non-JSON body and a truncated but valid JSON
+body independently return opaque structure. The entire 200-row page validates as DeadLetterPage,
+contains no body/header fields or canary, and creates no reveal audit even with an active Admin
+grant and reveal=pii in the list URL. Earlier PG event/dead-letter/canary tests plus the new live
+security test cover current roles, all audience combinations, cross-namespace and foreign opacity.
+
+The complete classification contract target then passed 18/18, 25.27 s
+(`/tmp/sagat-completion-contract-complete.log`). Studio `check:api` confirms exact generated types
+(`/tmp/sagat-completion-event-api-check.log`). The fixture corpus now distinguishes explicit-parent
+loosening from an unmarked-root child and lists all 22 unique runtime canary classes.
+`cargo test --locked -p sagat-infra-ir --test classification` passed 14/14 after this update
+(`/tmp/sagat-completion-fixture-corpus.log`). These results close the named corpus and event cases;
+full integrated release/workspace gates remain open.
