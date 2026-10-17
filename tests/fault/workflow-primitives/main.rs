@@ -7,6 +7,7 @@ mod support;
 
 mod approvals;
 mod chains;
+mod collection_sources;
 mod collections;
 mod loops;
 mod operations;

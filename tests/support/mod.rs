@@ -11,6 +11,7 @@
 #![allow(dead_code, clippy::expect_used, clippy::panic)]
 
 pub mod api;
+pub mod blob_collections;
 pub mod brokers;
 pub mod collector;
 pub mod contract;
