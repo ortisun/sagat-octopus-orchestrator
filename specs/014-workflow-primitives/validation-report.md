@@ -1380,3 +1380,74 @@ After the merge: clippy clean workspace-wide; `integration_workflow_primitives` 
 privilege audit), `integration_security_multitenancy` 96, `integration_durable_execution` 178,
 `contract_grpc_durable_execution` 63. The compatibility test expected protocol 1.4; the server has
 negotiated 1.5 since the scoped protocol was enabled, and the test now says so.
+
+## Release-gate checkpoint (2026-10-17)
+
+Run on `feature/workflow-primitives` after merging the chain, scoped-compensation, loop, approval,
+collection, chain-wait, compatibility/performance and scale branches and `develop` (owner decisions,
+G9/G21/G48/G141). Machine: one shared laptop, other agents building and testing at the same time.
+PostgreSQL is a disposable container per test (`testcontainers`), started from this repository's
+fixtures. No golden was blessed in this step; each one blessed earlier was read by hand first.
+
+### Commands and results
+
+| Command | Result |
+|---|---|
+| `cargo fmt --check` | clean |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | exit 0 |
+| `python3 scripts/check-architecture.py` | 22 crates, layers respected, no cycles |
+| `cargo test -p sagat-tests --test integration_workflow_primitives` | 319 passed, 0 failed, 1 ignored (the 10,000-item run, `collection_10k`) |
+| `cargo test -p sagat-tests --test fault_workflow_primitives` | 87 passed, 0 failed |
+| `cargo test -p sagat-tests --test contract_workflow_primitives` | 47 passed |
+| `cargo test -p sagat-tests --test integration_platform_foundation` (includes `runtime_privileges`) | 89 passed |
+| `cargo test -p sagat-tests --test integration_durable_execution` | 178 passed |
+| `cargo test -p sagat-tests --test integration_security_multitenancy` | 123 passed |
+| `cargo test -p sagat-tests --test integration_sagas_compensations` | 74 passed |
+| `cargo test -p sagat-tests --test integration_scalability_ha` | 44 passed |
+| `cargo test -p sagat-tests --test contract_developer_experience` | 8 passed |
+| `SAGAT_TEST_AS_RUNTIME_ROLE=1` over `integration_workflow_primitives`, `fault_workflow_primitives`, `integration_security_multitenancy` | 319 / 87 / 123 passed: every service connected as the least-privilege role `sagat_app` |
+| `cargo test --workspace --lib --bins` | no failure |
+| Five-SDK conformance, 51 scenarios x 5 languages, `cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture`, no bless | passed on the branch heads of the chain-wait (51 scenarios) and compat-perf (44 scenarios, 220/220) increments; rerun for the whole tree by CI on the pull request |
+| Compose smoke, `cargo audit`, contract compilation, observability, Studio, native Go/Java | run by CI on the pull request (not run locally: the disk is near full) |
+
+`SAGAT_TEST_AS_RUNTIME_ROLE=1` is not applied to `integration_scalability_ha`: those tests probe
+owner-only operations on purpose and fail under the sweep (12 failures that are the point of the tests).
+
+### Fault matrix (T014-040)
+
+`fault_workflow_primitives` has 87 tests; each row names the tests and the evidence is the suite result
+above. Races use held locks and `pg_stat_activity`, barriers or in-transaction hooks, never sleeps.
+
+| Class | Tests (files under `tests/fault/workflow-primitives/`) |
+|---|---|
+| Crash at a critical point | `operations/crash.rs` (3: an Update cut off at every await, a connection killed while queued for the run lock, after the decision); `scope_compensation.rs` (a connection dying inside each transaction of the compensation, the scheduler cut at every await); `loops.rs::delay_checkpoint_restart_and_duplicate_timer_fire_are_atomic`; `chains.rs::a_dropped_connection_before_commit_…`, `a_restart_between_the_hand_off_and_the_event_…` |
+| Duplicate delivery | `operations/races.rs::two_deliveries_of_one_update_key_…`; `approval_combinations.rs` (same decision twice, two deciders); `chains.rs::duplicate_hand_offs_of_one_boundary_…`; `scope_compensation.rs::a_compensation_reported_twice_…`; `loops.rs::two_replicas_delivering_the_same_due_timer_…`, `concurrent_replicas_finishing_one_drain_…` |
+| Race: timeout vs signal / update / cancel / completion | `loops.rs` (timeout vs completing body in both orders; cancel vs timeout in both orders; a signal during the delay is refused); `operations/races.rs` (Update vs worker completion, vs firing timer, vs wait timeout); `approval_combinations.rs` (decision vs Update, vs run cancel, vs chain latch, vs hand-off, vs chain deadline, vs expiry); `approvals.rs::decision_and_expiry_race_…`; `chains.rs` (cancel vs hand-off, signal vs hand-off, Update vs hand-off, parent cancel vs child hand-off — each in both orders) |
+| Lost broker delivery | `chains.rs::restart_recovers_the_successor_when_the_handoff_hint_is_lost`; `switch.rs::restart_recovers_the_recorded_choice_when_the_broker_hint_is_lost`; `collections.rs::bounded_public_collection_finishes_in_input_order_after_restart_and_lost_hints`; `scope_compensation.rs::a_compensation_whose_hint_never_arrived_is_leased_from_the_database`; `chains.rs::a_lost_wake_of_the_parent_…` |
+| Failed outbox / audit write rolls everything back | `approvals.rs` (outbox and audit failures on opening, decision and expiry); `loops.rs::outbox_and_audit_failures_roll_back_the_whole_checkpoint`; `chains.rs::chain_limit_outbox_failure_…`, `signalled_wait_handoff_rolls_back_…`; `switch.rs::successor_outbox_failure_…`; `scope_compensation.rs::a_planning_transaction_that_cannot_write_its_hint_…`, `an_operator_decision_that_cannot_be_audited_…` |
+| Stale fence / replica takeover | `approvals.rs::stale_scheduler_fence_cannot_open_or_expire_an_approval`; `loops.rs::scheduler_takeover_mid_drain_…`, `a_replica_that_lost_its_shards_cannot_fire_the_timer`; `scope_compensation.rs::a_scheduler_replica_that_takes_over_mid_compensation_…`; `collection_sources.rs::a_scheduler_that_loses_its_shard_after_reading_…` |
+| Failed / unknown compensation | `scope_compensation.rs` (reported twice, stale report refused, operator decision unaudited, cancellation racing a stop for failure); `integration_sagas_compensations` (74) and `fault_sagas_compensations` (13) for the root saga |
+| Restart | `loops.rs::a_scheduler_restarted_during_the_delay_wakes_the_loop_exactly_once`; `approvals.rs::restart_and_identical_replay_…`; `chains.rs::restart_…` |
+| Tenant boundary | `approvals.rs::current_membership_and_tenant_boundary_are_checked_before_receipt_replay`, `a_revoked_approver_cannot_replay_a_receipt_it_committed`; `chains.rs` tenant-claim tests; `integration_security_multitenancy` (123) |
+| Secrets | `operations/redaction.rs::a_resolved_secret_and_secret_shaped_text_never_leave_the_operation_boundary`; `operations.rs::undeclared_input_canary_never_crosses_…`; `integration_security_multitenancy::secrets` and the G48 pool tests |
+
+Independently inspected persistence: every fault test ends with `verify_run` / `assert_consistent`
+(the stored projection equals a replay of the journal) and the tests read the rows the claim is about
+(`run_instance_usage`, `tenant_iteration_usage`, `loop_timers`, `chain_links`, `event_outbox`,
+`audit_records`) rather than only the API response.
+
+Failures seen on the way, and what they were: `scope_compensation::a_scheduler_replica_that_takes_over_…`
+failed about half of its runs because the dead scheduler's membership was still unexpired (G407, fixed:
+8 of 8 afterwards); three SDK scenarios failed once under host load 30–47 and passed alone (G467, not
+investigated); four tests of the scale branch failed on the first run of the merged tree (a charge count
+that differed from `RunState`'s, two fixtures, one plan test) and were fixed in `fix(scale): …`.
+Skipped: the 10,000-item end-to-end run is `#[ignore]` (7,926 s before the scale fix; 1,405 s after, see the
+performance report).
+
+### Not proven
+
+Production ceilings for `maxItems` and `maxIterations` of 10,000: after the scale fix a 10,000-item
+collection takes 23 minutes in a debug build and the 10,000-iteration loop did not finish in 30 minutes,
+because the worker `complete` and `poll` still restore the whole run (G520). Approvals inside bodies,
+a run deadline over an open collection or loop, nested scopes, branches and timers in bodies stay closed.
+OTLP export of approval spans is not exercised end to end. See `research.md` for G/O numbers.
