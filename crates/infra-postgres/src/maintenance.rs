@@ -98,6 +98,9 @@ fn window_params(window: &Window) -> (i64, Vec<i16>, Vec<Uuid>) {
 }
 
 impl MaintenanceStore for PgRunStore {
+    /// Boundaries that can be handed off now. A run that still holds open work is not a candidate: it
+    /// would sit at the head of the oldest-first list and keep the others from being examined
+    /// (D296). The store proves quiescence again under the chain and run locks.
     async fn continuation_candidates(
         &self,
         window: &Window,
@@ -118,6 +121,25 @@ impl MaintenanceStore for PgRunStore {
                  AND step.status='PENDING' AND cardinality(step.instance_path_nodes)=0 \
                  AND chain.cancel_requested=false AND chain.final_outcome IS NULL \
                  AND step.tenant_id <> ALL($3::uuid[]) \
+                 AND NOT EXISTS ( \
+                   SELECT 1 FROM steps open \
+                   WHERE open.tenant_id=step.tenant_id AND open.run_id=step.run_id \
+                     AND (open.node<>step.node OR cardinality(open.instance_path_nodes)>0) \
+                     AND (open.status<>'SUCCEEDED' OR open.routed=false)) \
+                 AND NOT EXISTS ( \
+                   SELECT 1 FROM run_sagas saga WHERE saga.tenant_id=step.tenant_id \
+                     AND saga.run_id=step.run_id AND saga.phase<>'DONE') \
+                 AND NOT EXISTS ( \
+                   SELECT 1 FROM approval_requests approval \
+                   WHERE approval.tenant_id=step.tenant_id AND approval.run_id=step.run_id \
+                     AND approval.status='PENDING') \
+                 AND NOT EXISTS ( \
+                   SELECT 1 FROM runs child WHERE child.tenant_id=step.tenant_id \
+                     AND child.parent_run_id=step.run_id AND child.parent_settled=false) \
+                 AND NOT EXISTS ( \
+                   SELECT 1 FROM child_chain_links link WHERE link.tenant_id=step.tenant_id \
+                     AND link.parent_run_id=step.run_id \
+                     AND (link.final_outcome IS NULL OR link.settled=false)) \
                ORDER BY step.updated_at LIMIT $1 \
              ) candidate ORDER BY candidate.updated_at LIMIT $1",
         )
@@ -469,15 +491,40 @@ impl MaintenanceStore for PgRunStore {
 
     async fn ended_children(&self, window: &Window) -> Result<Vec<EndedChild>, StoreError> {
         let (limit, shards, exclude) = window_params(window);
-        // The child that ended is told to its parent: the shard is the parent's.
+        // The child that ended is told to its parent: the shard is the parent's. A child chain is
+        // told once, by its final outcome, through its link (the runs of a chain are created
+        // settled); the parent step must still be waiting for that chain.
         sqlx::query(
-            "SELECT t.tenant_id, t.id, t.parent_run_id, t.parent_node, t.status \
+            "SELECT t.tenant_id, t.child, t.parent_run_id, t.parent_node, t.status \
              FROM unnest($2::smallint[]) AS sh(s) \
              CROSS JOIN LATERAL ( \
-                 SELECT tenant_id, id, parent_run_id, parent_node, status, finished_at FROM runs \
-                 WHERE run_shard(parent_run_id) = sh.s AND parent_run_id IS NOT NULL \
-                   AND parent_settled = false AND finished_at IS NOT NULL \
-                   AND tenant_id <> ALL($3::uuid[]) \
+                 SELECT * FROM ( \
+                     SELECT tenant_id, id AS child, parent_run_id, parent_node, status, \
+                            finished_at FROM runs \
+                     WHERE run_shard(parent_run_id) = sh.s AND parent_run_id IS NOT NULL \
+                       AND parent_settled = false AND finished_at IS NOT NULL \
+                       AND tenant_id <> ALL($3::uuid[]) \
+                     ORDER BY finished_at LIMIT $1) plain \
+                 UNION ALL \
+                 SELECT * FROM ( \
+                     SELECT link.tenant_id, link.child_chain_id AS child, link.parent_run_id, \
+                            first.parent_node, link.final_outcome AS status, \
+                            link.updated_at AS finished_at \
+                     FROM child_chain_links link \
+                     JOIN runs first ON first.tenant_id = link.tenant_id \
+                                    AND first.id = link.child_chain_id \
+                     WHERE run_shard(link.parent_run_id) = sh.s \
+                       AND link.final_outcome IS NOT NULL AND link.settled = false \
+                       AND link.tenant_id <> ALL($3::uuid[]) \
+                       AND EXISTS ( \
+                           SELECT 1 FROM steps parent_step \
+                           WHERE parent_step.tenant_id = link.tenant_id \
+                             AND parent_step.run_id = link.parent_run_id \
+                             AND parent_step.step_id = link.parent_instance_id \
+                             AND parent_step.status = 'WAITING' \
+                             AND parent_step.waiting_kind = 'CHILD' \
+                             AND parent_step.child_run_id = link.child_chain_id) \
+                     ORDER BY link.updated_at LIMIT $1) chained \
                  ORDER BY finished_at LIMIT $1) t \
              ORDER BY t.finished_at LIMIT $1",
         )
@@ -493,7 +540,7 @@ impl MaintenanceStore for PgRunStore {
             let status: String = col(row, "status")?;
             Ok(EndedChild {
                 tenant_id: TenantId::new(col::<Uuid>(row, "tenant_id")?),
-                child: RunId::new(col::<Uuid>(row, "id")?),
+                child: RunId::new(col::<Uuid>(row, "child")?),
                 parent: RunId::new(col::<Uuid>(row, "parent_run_id")?),
                 node: NodeId::parse(&node).map_err(|_| corrupt("parent node"))?,
                 status: status.parse().map_err(|_| corrupt("run status"))?,
@@ -504,12 +551,24 @@ impl MaintenanceStore for PgRunStore {
 
     async fn children_to_cancel(&self, window: &Window) -> Result<Vec<RunRef>, StoreError> {
         let (limit, shards, exclude) = window_params(window);
+        // A run the parent asked to stop, and the current head of a child chain whose link the
+        // parent latched (the head is the only run of the chain that is still unfinished).
         sqlx::query(
             "SELECT t.tenant_id, t.id FROM unnest($2::smallint[]) AS sh(s) \
              CROSS JOIN LATERAL ( \
-                 SELECT tenant_id, id FROM runs \
-                 WHERE run_shard(id) = sh.s AND parent_cancel AND finished_at IS NULL \
-                   AND stop_reason IS NULL AND tenant_id <> ALL($3::uuid[]) \
+                 SELECT tenant_id, id FROM ( \
+                     SELECT tenant_id, id FROM runs \
+                     WHERE run_shard(id) = sh.s AND parent_cancel AND finished_at IS NULL \
+                       AND stop_reason IS NULL AND tenant_id <> ALL($3::uuid[]) \
+                     UNION ALL \
+                     SELECT run.tenant_id, run.id FROM child_chain_links link \
+                     JOIN execution_chains chain ON chain.tenant_id = link.tenant_id \
+                                                AND chain.chain_id = link.child_chain_id \
+                     JOIN runs run ON run.tenant_id = chain.tenant_id \
+                                  AND run.id = chain.current_run_id \
+                     WHERE link.cancel_requested AND run_shard(run.id) = sh.s \
+                       AND chain.final_outcome IS NULL AND run.finished_at IS NULL \
+                       AND run.stop_reason IS NULL AND link.tenant_id <> ALL($3::uuid[])) due \
                  ORDER BY id LIMIT $1) t \
              ORDER BY t.id LIMIT $1",
         )

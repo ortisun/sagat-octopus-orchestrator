@@ -268,7 +268,7 @@ def instant(value: Any) -> str | None:
 
 
 def run_json(run: Run) -> Obj:
-    return {
+    observed: Obj = {
         "runId": run.run_id,
         "workflowId": run.workflow_id,
         "versionId": run.version_id,
@@ -289,6 +289,15 @@ def run_json(run: Run) -> Obj:
             else None
         ),
     }
+    # Present only for a run in a chain, so the observations of every other run stay as they were.
+    if run.chain is not None:
+        observed["chain"] = {
+            "chainId": run.chain.chain_id,
+            "segmentIndex": run.chain.segment_index,
+            "completionKind": run.chain.completion_kind,
+            "successorRunId": run.chain.successor_run_id,
+        }
+    return observed
 
 
 def error_json(error: BaseException) -> Obj:
@@ -545,6 +554,13 @@ async def run(scenario: Obj, config: Obj) -> Obj:
     results: dict[str, Obj] = {}
 
     def run_of(step: Obj) -> str:
+        if isinstance(step.get("page"), str):
+            # A segment of a page of listChainRuns, by position.
+            items = results.get(step["page"], {}).get("items")
+            index = int(step.get("index", 0))
+            if not isinstance(items, list) or not 0 <= index < len(items) or not isinstance(items[index], dict):
+                raise ValueError(f"step {step['page']} has no segment {index}")
+            return str(items[index]["runId"])
         found = results.get(step["run"], {}).get("runId")
         if not isinstance(found, str):
             raise ValueError(f"step {step['run']} has no run")
@@ -768,6 +784,35 @@ async def run(scenario: Obj, config: Obj) -> Obj:
                         "afterStateRevision": updated.after_state_revision,
                         "runVersion": updated.run_version,
                         "replayed": updated.replayed,
+                    }
+                elif op == "listChainRuns":
+                    cursor = step.get("cursor")
+                    if isinstance(cursor, str) and cursor.startswith("{{nextCursor:") and cursor.endswith("}}"):
+                        cursor = results.get(cursor[len("{{nextCursor:") : -2], {}).get("nextCursor")
+                        if not isinstance(cursor, str):
+                            raise ValueError("the referenced step has no next page")
+                    page = await client.list_chain_runs(
+                        chain_ref(step["namespaceId"]),
+                        chain_ref(step["chainId"]),
+                        cursor=cursor,
+                        limit=step.get("limit"),
+                        traceparent=step.get("traceparent"),
+                    )
+                    result = {
+                        "items": [
+                            {
+                                "index": item.index,
+                                "runId": item.run_id,
+                                "status": item.status,
+                                "completionKind": item.completion_kind,
+                                "predecessorRunId": item.predecessor_run_id,
+                                "successorRunId": item.successor_run_id,
+                                "createdAt": instant(item.created_at),
+                                "finishedAt": instant(item.finished_at),
+                            }
+                            for item in page.items
+                        ],
+                        "nextCursor": page.next_cursor,
                     }
                 elif op == "inspectChain":
                     chain = await client.inspect_chain(

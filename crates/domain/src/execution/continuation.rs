@@ -10,10 +10,15 @@ use crate::definition::WorkflowVersionId;
 use crate::identity::{NamespaceId, Subject, TenantId};
 use crate::workflow::Digest;
 
-use super::{ExecutionInstanceId, RunId};
+use super::{ExecutionInstanceId, RunId, RunState, SagaPhase, StepState, StepStatus, WaitingOn};
+use crate::workflow::NodeId;
 
 /// Absolute definition ceiling, including the initial run at index zero.
 pub const MAX_CHAIN_SEGMENTS: u16 = 10_000;
+
+/// Most runs one tree may hold (a root run and all its descendants). The successors of a child
+/// chain are runs of the parent's tree and spend the same budget (ADR-0030).
+pub const MAX_TREE_RUNS: usize = 1_024;
 
 /// Tenant and namespace coordinates that every member of one chain retains.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -115,6 +120,9 @@ impl ContinuationTransfer {
 }
 
 /// Outstanding work that makes a continuation boundary unsafe.
+///
+/// A blocker is a reason to wait. The boundary stays pending until the work settles or the run's
+/// original deadline ends it; it is never recorded as a terminal outcome (D296).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum QuiescenceBlocker {
     SiblingWork,
@@ -125,6 +133,53 @@ pub enum QuiescenceBlocker {
     Approval,
     UnknownEffect,
     Compensation,
+}
+
+impl QuiescenceBlocker {
+    /// Every blocker, most significant first. When a run holds several kinds of open work, the
+    /// first of this list is the one reported, so the answer does not depend on map order.
+    pub const ALL: [Self; 8] = [
+        Self::Compensation,
+        Self::UnknownEffect,
+        Self::Approval,
+        Self::Child,
+        Self::Lease,
+        Self::Timer,
+        Self::Subscription,
+        Self::SiblingWork,
+    ];
+
+    /// A bounded, stable word for logs and metric labels.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::SiblingWork => "sibling_work",
+            Self::Child => "child",
+            Self::Lease => "lease",
+            Self::Timer => "timer",
+            Self::Subscription => "subscription",
+            Self::Approval => "approval",
+            Self::UnknownEffect => "unknown_effect",
+            Self::Compensation => "compensation",
+        }
+    }
+
+    /// The obligation one step still holds, or `None` when it is finished and routed.
+    #[must_use]
+    pub const fn of_step(step: &StepState) -> Option<Self> {
+        if matches!(step.status(), StepStatus::Succeeded) && step.routed() {
+            return None;
+        }
+        Some(match (step.status(), step.waiting_on()) {
+            (StepStatus::Leased | StepStatus::Running, _) => Self::Lease,
+            (StepStatus::Waiting, Some(WaitingOn::Timer { .. })) => Self::Timer,
+            (StepStatus::Waiting, Some(WaitingOn::Event { .. })) => Self::Subscription,
+            (StepStatus::Waiting, Some(WaitingOn::Approval { .. })) => Self::Approval,
+            (StepStatus::Waiting, Some(WaitingOn::Child { .. })) => Self::Child,
+            (StepStatus::Waiting, Some(WaitingOn::Reconciliation)) => Self::UnknownEffect,
+            _ => Self::SiblingWork,
+        })
+    }
 }
 
 /// Result of the boundary's bounded obligation check.
@@ -149,6 +204,28 @@ impl Quiescence {
     #[must_use]
     pub const fn blocker(self) -> Option<QuiescenceBlocker> {
         self.blocker
+    }
+
+    /// Reads the run's own state: every step other than the boundary must be finished and routed,
+    /// and every saga must be done. The most significant open obligation is the blocker.
+    #[must_use]
+    pub fn of_run(state: &RunState, boundary: &NodeId) -> Self {
+        let open = state
+            .instances()
+            .filter(|(instance, _)| !(instance.path().is_root() && instance.node() == boundary))
+            .filter_map(|(_, step)| QuiescenceBlocker::of_step(step))
+            .chain(
+                state
+                    .sagas()
+                    .filter(|(_, saga)| saga.phase() != SagaPhase::Done)
+                    .map(|_| QuiescenceBlocker::Compensation),
+            );
+        let most_significant = open.min_by_key(|blocker| {
+            QuiescenceBlocker::ALL
+                .iter()
+                .position(|candidate| candidate == blocker)
+        });
+        most_significant.map_or_else(Self::ready, Self::blocked)
     }
 }
 
@@ -845,6 +922,24 @@ impl ChildChainLink {
     }
 }
 
+impl ChainError {
+    /// The obligation a rejected handoff is waiting for, when the rejection is only that.
+    #[must_use]
+    pub const fn awaited_blocker(&self) -> Option<QuiescenceBlocker> {
+        match self {
+            Self::NotQuiescent(blocker) => Some(*blocker),
+            _ => None,
+        }
+    }
+
+    /// Whether the same handoff may succeed later without anyone changing the request: the
+    /// boundary keeps waiting instead of ending the chain (D296).
+    #[must_use]
+    pub const fn is_transient(&self) -> bool {
+        self.awaited_blocker().is_some()
+    }
+}
+
 /// Typed rejection of an in-memory continuation-chain transition.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ChainError {
@@ -870,6 +965,8 @@ pub enum ChainError {
     NotQuiescent(QuiescenceBlocker),
     #[error("chain segment limit is exhausted")]
     SegmentLimitExceeded,
+    #[error("the run tree that holds this chain has no room for another successor")]
+    TreeBudgetExhausted,
     #[error("a run may belong to a chain only once")]
     DuplicateRun,
     #[error("the committed continuation has different transfer content")]

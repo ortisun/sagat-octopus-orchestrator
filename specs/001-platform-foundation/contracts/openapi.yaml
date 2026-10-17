@@ -848,6 +848,41 @@ paths:
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/chains/{chainId}/runs:
+    get:
+      operationId: listExecutionChainRuns
+      summary: List the runs of an execution chain in segment order
+      tags: [Runs]
+      x-implemented: '014'
+      description: |
+        Needs `run:read`. One bounded page of the chain's segments, ordered by segment index, with
+        each run's status and whether the segment was `CONTINUED` into a successor or ended the
+        chain (`FINAL`). The cursor is opaque and stable: a segment is only ever appended, so a
+        page never repeats or skips one when the chain grows between reads. Pages carry lineage and
+        lifecycle only, never an input, output or state. The tenant is taken from authentication and a
+        chain in another tenant is indistinguishable from a missing chain. The response is never cached.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {name: chainId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200':
+          description: 'A bounded page of segments'
+          headers:
+            Cache-Control: {schema: {type: string, const: no-store}}
+            X-Trace-Id: {$ref: '#/components/headers/TraceId'}
+            X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ChainRunPage'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
   /namespaces/{namespaceId}/chains/{chainId}/queries/{operationName}:
     post:
       operationId: queryExecutionChain
@@ -3668,6 +3703,16 @@ components:
             runId: {type: string, format: uuid}
             node: {type: string}
             cancelPolicy: {type: string, enum: [PROPAGATE, REQUEST_CANCEL, DETACH]}
+        chain:
+          type: object
+          additionalProperties: false
+          description: 'Present only when the run is a segment of a continuation chain. A segment with status `SUCCEEDED` and `completionKind` `CONTINUED` ended into its successor: it is not the process outcome, which is the chain''s `finalOutcome`.'
+          required: [chainId, segmentIndex, completionKind, successorRunId]
+          properties:
+            chainId: {type: string, format: uuid}
+            segmentIndex: {type: integer, minimum: 0, maximum: 9999}
+            completionKind: {type: [string, 'null'], enum: [CONTINUED, FINAL, null], description: 'Null while the segment is open.'}
+            successorRunId: {type: [string, 'null'], format: uuid}
     RunPage:
       type: object
       required: [items]
@@ -4220,10 +4265,33 @@ components:
       additionalProperties: false
       required: [index, runId, predecessorRunId, successorRunId]
       properties:
-        index: {type: integer, minimum: 0, maximum: 65535}
+        index: {type: integer, minimum: 0, maximum: 9999}
         runId: {type: string, format: uuid}
         predecessorRunId: {type: [string, 'null'], format: uuid}
         successorRunId: {type: [string, 'null'], format: uuid}
+    ChainRun:
+      type: object
+      additionalProperties: false
+      required: [index, runId, status, completionKind, predecessorRunId, successorRunId, createdAt, finishedAt]
+      properties:
+        index: {type: integer, minimum: 0, maximum: 9999}
+        runId: {type: string, format: uuid}
+        status: {type: string, enum: [RUNNING, WAITING, PAUSED, CANCELLING, COMPENSATING, MANUAL_REVIEW, SUCCEEDED, FAILED, CANCELLED, TIMED_OUT, COMPENSATED, PARTIAL, COMPENSATION_FAILED]}
+        completionKind: {type: [string, 'null'], enum: [CONTINUED, FINAL, null], description: '`CONTINUED`: this segment ended into its successor, so its `SUCCEEDED` status is not the process outcome. `FINAL`: it ended the chain. Absent (null) while the segment is open.'}
+        predecessorRunId: {type: [string, 'null'], format: uuid}
+        successorRunId: {type: [string, 'null'], format: uuid}
+        createdAt: {type: string, format: date-time}
+        finishedAt: {type: [string, 'null'], format: date-time}
+    ChainRunPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          maxItems: 200
+          items: {$ref: '#/components/schemas/ChainRun'}
+        nextCursor: {type: [string, 'null']}
     ChainInspection:
       type: object
       additionalProperties: false

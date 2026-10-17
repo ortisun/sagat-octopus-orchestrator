@@ -34,8 +34,24 @@ export interface Run {
   correlationId: string | null;
   depth: number;
   parent: { runId: string; node: string; cancelPolicy: string } | null;
+  /**
+   * The run's segment in its continuation chain, or null for a run outside any chain. A segment
+   * that is `SUCCEEDED` with `completionKind` `CONTINUED` ended into its successor: it is not the
+   * process outcome, which is the chain's `finalOutcome` (`waitForChainCompletion`).
+   */
+  chain: RunChainSegment | null;
   /** The answer as the server sent it, so a field of a newer server is reachable. */
   raw: Record<string, unknown>;
+}
+
+export type SegmentCompletionKind = 'CONTINUED' | 'FINAL';
+
+export interface RunChainSegment {
+  chainId: string;
+  segmentIndex: number;
+  /** Null while the segment is open. */
+  completionKind: SegmentCompletionKind | null;
+  successorRunId: string | null;
 }
 
 export interface RunPage {
@@ -188,6 +204,32 @@ export interface ChainSegment {
   successorRunId: string | null;
 }
 
+/** One segment as the paged list of a chain's runs gives it: lineage and lifecycle, never a payload. */
+export interface ChainRun {
+  index: number;
+  runId: string;
+  status: RunStatus;
+  /** Null while the segment is open. */
+  completionKind: SegmentCompletionKind | null;
+  predecessorRunId: string | null;
+  successorRunId: string | null;
+  createdAt: Date;
+  finishedAt: Date | null;
+}
+
+export interface ChainRunPage {
+  items: ChainRun[];
+  nextCursor: string | null;
+  raw: Record<string, unknown>;
+}
+
+export interface ChainRunListOptions extends QueryOptions {
+  /** The `nextCursor` of the previous page; opaque. */
+  cursor?: string;
+  /** 1 to 200; the server clamps values outside that range. */
+  limit?: number;
+}
+
 export interface ChainInspection {
   chainId: string;
   currentRunId: string;
@@ -321,7 +363,25 @@ export function toRun(value: unknown): Run {
     parent: parent
       ? { runId: String(parent['runId']), node: String(parent['node']), cancelPolicy: String(parent['cancelPolicy']) }
       : null,
+    chain: toRunChain(raw['chain']),
     raw,
+  };
+}
+
+function completionKind(value: unknown): SegmentCompletionKind | null {
+  if (value === null || value === undefined) return null;
+  if (value === 'CONTINUED' || value === 'FINAL') return value;
+  throw new SagatError({ code: 'PROTOCOL', message: 'completionKind is invalid in the answer' });
+}
+
+function toRunChain(value: unknown): RunChainSegment | null {
+  if (value === null || value === undefined) return null;
+  const chain = object(value, 'a run chain segment');
+  const segmentIndex = revision(chain, 'segmentIndex');
+  if (segmentIndex > 9_999) throw new SagatError({ code: 'PROTOCOL', message: 'segmentIndex is invalid in the answer' });
+  return {
+    chainId: str(chain, 'chainId'), segmentIndex, completionKind: completionKind(chain['completionKind']),
+    successorRunId: optStr(chain, 'successorRunId'),
   };
 }
 
@@ -782,6 +842,46 @@ export class SagatClient {
         };
       }), raw,
     };
+  }
+
+  /**
+   * Lists the runs of a chain in segment order, one bounded page at a time. The cursor is opaque
+   * and stable: a segment is only appended, so a page never repeats or skips one while the chain
+   * grows. Pages carry lineage and lifecycle only, never an input, output or state.
+   */
+  async listChainRuns(namespaceId: string, chainId: string, options: ChainRunListOptions = {}): Promise<ChainRunPage> {
+    const response = await this.#http.request({
+      method: 'GET',
+      path: `/namespaces/${encodeURIComponent(namespaceIdOf(namespaceId))}/chains/${encodeURIComponent(runIdOf(chainId))}/runs`,
+      query: { cursor: options.cursor, limit: options.limit }, traceparent: this.trace(options.traceparent),
+      signal: options.signal, safeToRepeat: true,
+    });
+    const raw = object(response.body, 'a chain run page');
+    const values = raw['items'];
+    if (!Array.isArray(values) || values.length > 200) throw new SagatError({ code: 'PROTOCOL', message: 'items is invalid in the answer' });
+    const items = values.map((value): ChainRun => {
+      const item = object(value, 'a chain run');
+      const index = revision(item, 'index');
+      if (index > 9_999) throw new SagatError({ code: 'PROTOCOL', message: 'index is invalid in the answer' });
+      const created = optDate(item, 'createdAt');
+      if (!created) throw new SagatError({ code: 'PROTOCOL', message: 'createdAt is missing from the answer' });
+      return {
+        index, runId: str(item, 'runId'), status: str(item, 'status') as RunStatus,
+        completionKind: completionKind(item['completionKind']), predecessorRunId: optStr(item, 'predecessorRunId'),
+        successorRunId: optStr(item, 'successorRunId'), createdAt: created, finishedAt: optDate(item, 'finishedAt'),
+      };
+    });
+    return { items, nextCursor: optStr(raw, 'nextCursor'), raw };
+  }
+
+  /** Streams every run of a chain, in segment order, by following the server's opaque cursor. */
+  async *listAllChainRuns(namespaceId: string, chainId: string, options: Omit<ChainRunListOptions, 'cursor'> = {}): AsyncGenerator<ChainRun> {
+    let cursor: string | undefined;
+    do {
+      const page = await this.listChainRuns(namespaceId, chainId, { ...options, cursor });
+      yield* page.items;
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor);
   }
 
   /** Signals a root wait on the expected current chain head. */

@@ -639,6 +639,71 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
     }
 
     /// <inheritdoc/>
+    public async Task<ChainRunPage> ListChainRunsAsync(string namespaceId, string chainId, ChainRunListOptions? options = null, CancellationToken cancellationToken = default)
+    {
+        options ??= new ChainRunListOptions();
+        var query = new List<KeyValuePair<string, string>>();
+        if (options.Cursor is not null)
+        {
+            query.Add(new("cursor", options.Cursor));
+        }
+
+        if (options.Limit is { } limit)
+        {
+            query.Add(new("limit", limit.ToString(CultureInfo.InvariantCulture)));
+        }
+
+        var answer = await transport.SendAsync(
+            new HttpCall("list chain runs", HttpMethod.Get, ChainPath(namespaceId, chainId) + "/runs", "/namespaces/{namespaceId}/chains/{chainId}/runs", query, null, null, TraceOf(options.Traceparent), SafeToRepeat: true),
+            cancellationToken).ConfigureAwait(false);
+        var raw = Object(answer.Body, "a chain run page");
+        if (!raw.TryGetProperty("items", out var values) || values.ValueKind != JsonValueKind.Array || values.GetArrayLength() > 200)
+        {
+            throw new SagatException(SagatErrorCode.Protocol, "items is invalid in the answer");
+        }
+
+        var items = new List<ChainRun>(values.GetArrayLength());
+        foreach (var value in values.EnumerateArray())
+        {
+            var item = Object(value, "a chain run");
+            var index = Revision(item, "index", 0);
+            if (index > 9_999)
+            {
+                throw new SagatException(SagatErrorCode.Protocol, "index is invalid in the answer");
+            }
+
+            var created = OptDate(item, "createdAt") ?? throw new SagatException(SagatErrorCode.Protocol, "createdAt is missing from the answer");
+            items.Add(new ChainRun(
+                (int)index, Str(item, "runId"), Str(item, "status"), CompletionKind(item),
+                OptStr(item, "predecessorRunId"), OptStr(item, "successorRunId"), created, OptDate(item, "finishedAt"), item));
+        }
+
+        return new ChainRunPage(items, OptStr(raw, "nextCursor"));
+    }
+
+    /// <inheritdoc/>
+    public async IAsyncEnumerable<ChainRun> ListAllChainRunsAsync(
+        string namespaceId,
+        string chainId,
+        ChainRunListOptions? options = null,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        options ??= new ChainRunListOptions();
+        string? cursor = null;
+        do
+        {
+            var page = await ListChainRunsAsync(namespaceId, chainId, options with { Cursor = cursor }, cancellationToken).ConfigureAwait(false);
+            foreach (var item in page.Items)
+            {
+                yield return item;
+            }
+
+            cursor = page.NextCursor;
+        }
+        while (cursor is not null);
+    }
+
+    /// <inheritdoc/>
     public async Task<SignalResult> SignalChainAsync<TPayload>(string namespaceId, string chainId, string name, TPayload payload, ChainCommandOptions options, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(options);
@@ -909,7 +974,33 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
             CorrelationId = OptStr(raw, "correlationId"),
             Depth = (int)Num(raw, "depth"),
             Parent = parent,
+            Chain = ToRunChain(raw),
             Raw = raw,
         };
+    }
+
+    private static string? CompletionKind(JsonElement element)
+    {
+        var kind = OptStr(element, "completionKind");
+        return kind is null or "CONTINUED" or "FINAL"
+            ? kind
+            : throw new SagatException(SagatErrorCode.Protocol, "completionKind is invalid in the answer");
+    }
+
+    private static RunChainSegment? ToRunChain(JsonElement run)
+    {
+        if (!run.TryGetProperty("chain", out var value) || value.ValueKind == JsonValueKind.Null)
+        {
+            return null;
+        }
+
+        var chain = Object(value, "a run chain segment");
+        var index = Revision(chain, "segmentIndex", 0);
+        if (index > 9_999)
+        {
+            throw new SagatException(SagatErrorCode.Protocol, "segmentIndex is invalid in the answer");
+        }
+
+        return new RunChainSegment(Str(chain, "chainId"), (int)index, CompletionKind(chain), OptStr(chain, "successorRunId"));
     }
 }

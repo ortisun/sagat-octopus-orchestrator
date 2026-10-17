@@ -104,12 +104,27 @@ public sealed record Run
     /// <summary>The parent of a child run.</summary>
     public ParentRun? Parent { get; init; }
 
+    /// <summary>
+    /// The run's segment in its continuation chain; <c>null</c> for a run outside any chain. A segment that is
+    /// <c>SUCCEEDED</c> with <see cref="RunChainSegment.CompletionKind"/> <c>CONTINUED</c> ended into its
+    /// successor: it is not the process outcome, which is the chain's final outcome
+    /// (<see cref="ISagatClient.WaitForChainCompletionAsync"/>).
+    /// </summary>
+    public RunChainSegment? Chain { get; init; }
+
     /// <summary>The answer as the server sent it.</summary>
     public JsonElement Raw { get; init; }
 
     /// <summary>True when <see cref="Status"/> is final.</summary>
     public bool IsTerminal => RunStatuses.IsTerminal(Status);
 }
+
+/// <summary>Where a run sits in its continuation chain.</summary>
+/// <param name="ChainId">The chain, which is its first run's id.</param>
+/// <param name="SegmentIndex">0-based position of the run in the chain.</param>
+/// <param name="CompletionKind"><c>CONTINUED</c> or <c>FINAL</c>; <c>null</c> while the segment is open.</param>
+/// <param name="SuccessorRunId">The next segment when the run was continued.</param>
+public sealed record RunChainSegment(string ChainId, int SegmentIndex, string? CompletionKind, string? SuccessorRunId);
 
 /// <summary>A page of runs.</summary>
 public sealed record RunPage(IReadOnlyList<Run> Items, string? NextCursor);
@@ -283,6 +298,26 @@ public sealed record SignalResult(IReadOnlyList<string> DeliveredTo);
 
 /// <summary>One immutable run link in an execution chain.</summary>
 public sealed record ChainSegment(int Index, string RunId, string? PredecessorRunId, string? SuccessorRunId);
+
+/// <summary>One segment as the paged list of a chain's runs gives it: lineage and lifecycle, never a payload.</summary>
+public sealed record ChainRun(
+    int Index, string RunId, string Status, string? CompletionKind, string? PredecessorRunId, string? SuccessorRunId,
+    DateTimeOffset CreatedAt, DateTimeOffset? FinishedAt, JsonElement Raw);
+
+/// <summary>One bounded page of a chain's runs in segment order.</summary>
+public sealed record ChainRunPage(IReadOnlyList<ChainRun> Items, string? NextCursor);
+
+/// <summary>Options for one page of a chain's runs.</summary>
+public sealed record ChainRunListOptions
+{
+    /// <summary>The <c>NextCursor</c> of the previous page; opaque.</summary>
+    public string? Cursor { get; init; }
+
+    /// <summary>1 to 200; the server clamps values outside that range.</summary>
+    public int? Limit { get; init; }
+
+    public string? Traceparent { get; init; }
+}
 
 /// <summary>One committed snapshot of an execution chain.</summary>
 public sealed record ChainInspection(

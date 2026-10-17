@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use sagat_application::chain_progress::{
-    ChainInitialization, ChainProgressError, ChainRunTx, LockedChainHead,
+    ChainInitialization, ChainParent, ChainProgressError, ChainRunTx, LockedChainHead,
 };
 use sagat_application::definitions::{
     Applied, DefinitionStore, Idempotency, VersionRecord, WorkflowRecord,
@@ -21,7 +21,7 @@ use sagat_application::definitions::{
 use sagat_application::error::StoreError;
 use sagat_application::execution::{
     BreakerPolicy, DefinitionCache, Effects, LeaseDeadlines, ParentLink, RunData, RunInfo,
-    RunRecord, RunTx, ScopeInput, compensation_id, instance_step_id,
+    RunRecord, RunSegment, RunTx, ScopeInput, compensation_id, instance_step_id,
 };
 use sagat_application::runs::{
     ApprovalView, ChainView, GraphSnapshot, JournalEntry, Lock, NewRun, RunFilter, RunStore,
@@ -681,13 +681,19 @@ impl RunStore for PgRunStore {
             "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, status, run_version, \
                     stop_reason, paused, correlation_id, started_by, trace_id, deadline_at, \
                     created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, \
-                    cancel_policy, depth, trace_parent_span, rerun_of \
-             FROM runs \
-             WHERE tenant_id = $1 AND namespace_id = $2 \
-               AND ($3::uuid IS NULL OR id < $3) \
-               AND ($4::uuid IS NULL OR workflow_id = $4) \
-               AND ($5::text IS NULL OR status = $5) \
-             ORDER BY id DESC LIMIT $6",
+                    cancel_policy, depth, trace_parent_span, rerun_of, \
+                    seg_chain_id, seg_index, seg_completion, seg_successor \
+             FROM runs LEFT JOIN LATERAL ( \
+               SELECT chain_id AS seg_chain_id, segment_index AS seg_index, \
+                      completion_kind AS seg_completion, successor_run_id AS seg_successor \
+               FROM chain_segments \
+               WHERE chain_segments.tenant_id = runs.tenant_id \
+                 AND chain_segments.run_id = runs.id) segment ON true \
+             WHERE runs.tenant_id = $1 AND runs.namespace_id = $2 \
+               AND ($3::uuid IS NULL OR runs.id < $3) \
+               AND ($4::uuid IS NULL OR runs.workflow_id = $4) \
+               AND ($5::text IS NULL OR runs.status = $5) \
+             ORDER BY runs.id DESC LIMIT $6",
         )
         .bind(tenant.as_uuid())
         .bind(namespace.as_uuid())
@@ -1099,11 +1105,20 @@ async fn claim_reservation(
     }
 }
 
+// `get` and `list` also read the run's chain segment as four extra columns (`run_record` reads them
+// when present): one lateral index probe (`chain_segments_run_unique`) that yields nothing for a run
+// outside any chain.
 const RUN_SELECT: &str = "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, status, \
      run_version, stop_reason, paused, correlation_id, started_by, trace_id, deadline_at, \
      created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, cancel_policy, depth, \
-     trace_parent_span, rerun_of \
-     FROM runs WHERE tenant_id = $1 AND id = $2";
+     trace_parent_span, rerun_of, seg_chain_id, seg_index, seg_completion, seg_successor \
+     FROM runs LEFT JOIN LATERAL ( \
+       SELECT chain_id AS seg_chain_id, segment_index AS seg_index, \
+              completion_kind AS seg_completion, successor_run_id AS seg_successor \
+       FROM chain_segments \
+       WHERE chain_segments.tenant_id = runs.tenant_id AND chain_segments.run_id = runs.id) segment \
+     ON true \
+     WHERE runs.tenant_id = $1 AND runs.id = $2";
 
 const RUN_FOR_UPDATE: &str = "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, \
      status, run_version, stop_reason, stop_code, paused, input_digest, correlation_id, started_by, \
@@ -1167,7 +1182,31 @@ fn run_record(row: &PgRow) -> Result<RunRecord, StoreError> {
         paused: col(row, "paused")?,
         updated_at: col(row, "updated_at")?,
         finished_at: col(row, "finished_at")?,
+        chain: run_segment(row)?,
     })
+}
+
+/// The segment columns of `get` and `list`; a row from a command transaction has none.
+fn run_segment(row: &PgRow) -> Result<Option<RunSegment>, StoreError> {
+    let Ok(chain) = sqlx::Row::try_get::<Option<Uuid>, _>(row, "seg_chain_id") else {
+        return Ok(None);
+    };
+    let Some(chain) = chain else {
+        return Ok(None);
+    };
+    let index: i32 = col(row, "seg_index")?;
+    let completion: Option<String> = col(row, "seg_completion")?;
+    Ok(Some(RunSegment {
+        chain_id: RunId::new(chain),
+        index: u16::try_from(index).map_err(|_| corrupt("chain segment index"))?,
+        completion_kind: match completion.as_deref() {
+            None => None,
+            Some("CONTINUED") => Some(sagat_domain::execution::SegmentCompletionKind::Continued),
+            Some("FINAL") => Some(sagat_domain::execution::SegmentCompletionKind::Final),
+            Some(_) => return Err(corrupt("chain completion kind")),
+        },
+        successor: col::<Option<Uuid>>(row, "seg_successor")?.map(RunId::new),
+    }))
 }
 
 fn instance_path(
@@ -3119,7 +3158,9 @@ impl RunTx for PgRunTx {
                     fence: Some(_),
                     ..
                 } if node.is_compensation() => self.breaker_outcome(node, false).await?,
-                RunEvent::ChildFinished { child, .. } => self.settle_child(*child, false).await?,
+                RunEvent::ChildFinished { child, .. } => {
+                    self.settle_child(*child, false, true).await?;
+                }
                 RunEvent::StepCancelled { node } => {
                     self.release_child(node, true).await?;
                     if matches!(
@@ -3327,20 +3368,19 @@ impl RunTx for PgRunTx {
         if self.initialize_chain
             && let Some(policy) = self.def.continuation_policy()
         {
-            if self.info.parent.is_some() {
-                return Err(StoreError::Internal {
-                    detail: "child continuation chains are not enabled".to_owned(),
-                });
-            }
             let chain_policy =
                 ChainPolicy::new(policy.max_segments()).map_err(|_| StoreError::Internal {
                     detail: "validated continuation policy became invalid".to_owned(),
                 })?;
-            let initialization = ChainInitialization::new(
+            let mut initialization = ChainInitialization::new(
                 ChainScope::new(self.info.tenant_id, self.info.namespace_id),
                 self.info.run_id,
                 chain_policy,
             );
+            if let Some(parent) = &self.info.parent {
+                initialization =
+                    initialization.with_parent(ChainParent::new(parent.run, parent.node.clone()));
+            }
             crate::chain_progress::initialize_chain_in_transaction(&mut self.tx, &initialization)
                 .await
                 .map_err(|error| match error {
@@ -3485,6 +3525,15 @@ impl PgRunTx {
         let Some(chain) = self.chain_lock else {
             return Ok(());
         };
+        // Only the open head of an open chain can latch it. A run-addressed cancel of an earlier
+        // segment, or of a chain that is already latched or finished, latches nothing: the reducer
+        // then refuses it as it refuses any run that has ended, instead of this being "corruption".
+        if chain.head() != self.info.run_id
+            || chain.final_outcome().is_some()
+            || chain.cancel_requested()
+        {
+            return Ok(());
+        }
         let revision = i64::try_from(chain.revision()).map_err(|_| corrupt("chain revision"))?;
         let next: Option<i64> = sqlx::query_scalar(
             "UPDATE execution_chains SET cancel_requested=true,revision=revision+1, \
@@ -3965,7 +4014,14 @@ impl PgRunTx {
     }
 
     /// The parent is told the outcome (or no longer cares): the child need not notify it again.
-    async fn settle_child(&mut self, child: RunId, cancel: bool) -> Result<(), StoreError> {
+    /// `finished` says the outcome was applied to the parent's step (a child chain's link is then
+    /// settled); otherwise the parent only stopped caring and the link is merely latched.
+    async fn settle_child(
+        &mut self,
+        child: RunId,
+        cancel: bool,
+        finished: bool,
+    ) -> Result<(), StoreError> {
         sqlx::query(
             "UPDATE runs SET parent_settled = true, \
                     parent_cancel = (parent_cancel OR ($3 AND finished_at IS NULL)) \
@@ -3974,6 +4030,22 @@ impl PgRunTx {
         .bind(self.info.tenant_id.as_uuid())
         .bind(child.as_uuid())
         .bind(cancel)
+        .execute(&mut *self.tx)
+        .await
+        .map_err(store_error)?;
+        // A child chain answers through its link: the parent's lock is the only one taken here, so
+        // the latch can never wait for (or deadlock with) a hand-off holding the chain's locks.
+        sqlx::query(
+            "UPDATE child_chain_links SET cancel_requested = (cancel_requested OR $4), \
+                    settled = (settled OR ($5 AND final_outcome IS NOT NULL)), updated_at = $6 \
+             WHERE tenant_id = $1 AND parent_run_id = $2 AND child_chain_id = $3",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.run_id.as_uuid())
+        .bind(child.as_uuid())
+        .bind(cancel)
+        .bind(finished)
+        .bind(self.now)
         .execute(&mut *self.tx)
         .await
         .map_err(store_error)?;
@@ -4006,7 +4078,7 @@ impl PgRunTx {
             return Ok(());
         };
         if settle {
-            self.settle_child(RunId::new(child), cascades).await
+            self.settle_child(RunId::new(child), cascades, false).await
         } else if cascades {
             sqlx::query(
                 "UPDATE runs SET parent_cancel = true \
@@ -4014,6 +4086,17 @@ impl PgRunTx {
             )
             .bind(self.info.tenant_id.as_uuid())
             .bind(child)
+            .execute(&mut *self.tx)
+            .await
+            .map_err(store_error)?;
+            sqlx::query(
+                "UPDATE child_chain_links SET cancel_requested = true, updated_at = $4 \
+                 WHERE tenant_id = $1 AND parent_run_id = $2 AND child_chain_id = $3",
+            )
+            .bind(self.info.tenant_id.as_uuid())
+            .bind(self.info.run_id.as_uuid())
+            .bind(child)
+            .bind(self.now)
             .execute(&mut *self.tx)
             .await
             .map_err(store_error)?;

@@ -1208,3 +1208,108 @@ func TestTheFieldsOfAnEventAreSentAsTheAPINamesThemAndTheAbsentOnesAreLeftOut(t 
 		t.Errorf("an event with only a type: %v", bare)
 	}
 }
+
+func TestARunInAChainNamesItsSegmentAndARunOutsideOneHasNone(t *testing.T) {
+	f := newFake(t)
+	chain := "0190aaaa-0000-7000-8000-000000000011"
+	successor := "0190aaaa-0000-7000-8000-000000000012"
+	c := newClient(t, f)
+	f.answer(func(_ seen, w http.ResponseWriter) {
+		reply(w, 200, run(map[string]any{"status": "SUCCEEDED", "chain": map[string]any{
+			"chainId": chain, "segmentIndex": 0, "completionKind": "CONTINUED", "successorRunId": successor,
+		}}))
+	})
+	continued, err := c.Get(context.Background(), runUUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := &client.RunChainSegment{ChainID: chain, SegmentIndex: 0, CompletionKind: client.SegmentContinued, SuccessorRunID: successor}
+	if continued.Status != "SUCCEEDED" || !reflect.DeepEqual(continued.Chain, want) {
+		t.Fatalf("%+v %+v", continued, continued.Chain)
+	}
+	f.answer(func(_ seen, w http.ResponseWriter) {
+		reply(w, 200, run(map[string]any{"chain": map[string]any{"chainId": chain, "segmentIndex": 2, "completionKind": nil, "successorRunId": nil}}))
+	})
+	open, err := c.Get(context.Background(), runUUID)
+	if err != nil || open.Chain == nil || open.Chain.CompletionKind != "" || open.Chain.SuccessorRunID != "" {
+		t.Fatalf("%+v %v", open, err)
+	}
+	f.answer(func(_ seen, w http.ResponseWriter) { reply(w, 200, run(nil)) })
+	plain, err := c.Get(context.Background(), runUUID)
+	if err != nil || plain.Chain != nil {
+		t.Fatalf("%+v %v", plain, err)
+	}
+	f.answer(func(_ seen, w http.ResponseWriter) {
+		reply(w, 200, run(map[string]any{"chain": map[string]any{"chainId": chain, "segmentIndex": 0, "completionKind": "SOMEDAY"}}))
+	})
+	if _, err := c.Get(context.Background(), runUUID); asSagat(t, err).Code != sagat.CodeProtocol {
+		t.Fatalf("%v", err)
+	}
+}
+
+func TestTheRunsOfAChainArePagedInSegmentOrderFollowingTheServerCursor(t *testing.T) {
+	f := newFake(t)
+	namespace := "0190aaaa-0000-7000-8000-000000000010"
+	chain := "0190aaaa-0000-7000-8000-000000000011"
+	ids := []string{chain, "0190aaaa-0000-7000-8000-000000000012", "0190aaaa-0000-7000-8000-000000000013"}
+	item := func(index int) map[string]any {
+		var predecessor, successor, kind, finished any
+		if index > 0 {
+			predecessor = ids[index-1]
+		}
+		if index < 2 {
+			successor, kind, finished = ids[index+1], "CONTINUED", "2026-10-10T10:00:01Z"
+		}
+		status := "RUNNING"
+		if index < 2 {
+			status = "SUCCEEDED"
+		}
+		return map[string]any{
+			"index": index, "runId": ids[index], "status": status, "completionKind": kind,
+			"predecessorRunId": predecessor, "successorRunId": successor,
+			"createdAt": "2026-10-10T10:00:00Z", "finishedAt": finished,
+		}
+	}
+	f.answer(func(request seen, w http.ResponseWriter) {
+		if strings.Contains(request.url, "cursor=AAE") {
+			reply(w, 200, map[string]any{"items": []any{item(2)}, "nextCursor": nil})
+			return
+		}
+		reply(w, 200, map[string]any{"items": []any{item(0), item(1)}, "nextCursor": "AAE"})
+	})
+	c := newClient(t, f)
+	var got []int
+	for segment, err := range c.ListAllChainRuns(context.Background(), namespace, chain, client.ChainRunListOptions{Limit: 2}) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, segment.Index)
+	}
+	if !reflect.DeepEqual(got, []int{0, 1, 2}) {
+		t.Fatalf("got %v", got)
+	}
+	f.mu.Lock()
+	first, second := f.seen[0], f.seen[1]
+	f.mu.Unlock()
+	if first.method != "GET" || first.url != "/v1/namespaces/"+namespace+"/chains/"+chain+"/runs?limit=2" {
+		t.Fatalf("%+v", first)
+	}
+	if second.url != "/v1/namespaces/"+namespace+"/chains/"+chain+"/runs?cursor=AAE&limit=2" {
+		t.Fatalf("%+v", second)
+	}
+	page, err := c.ListChainRuns(context.Background(), namespace, chain, client.ChainRunListOptions{})
+	if err != nil || page.NextCursor != "AAE" || page.Items[0].CompletionKind != client.SegmentContinued || page.Items[1].SuccessorRunID != ids[2] || page.Items[0].CreatedAt.IsZero() {
+		t.Fatalf("%+v %v", page, err)
+	}
+	f.answer(func(_ seen, w http.ResponseWriter) {
+		bad := item(0)
+		bad["index"] = 10_000
+		reply(w, 200, map[string]any{"items": []any{bad}, "nextCursor": nil})
+	})
+	if _, err := c.ListChainRuns(context.Background(), namespace, chain, client.ChainRunListOptions{}); asSagat(t, err).Code != sagat.CodeProtocol {
+		t.Fatalf("%v", err)
+	}
+	if _, err := c.ListChainRuns(context.Background(), "nope", chain, client.ChainRunListOptions{}); err == nil {
+		t.Fatal("a namespace id is a UUID")
+	}
+}

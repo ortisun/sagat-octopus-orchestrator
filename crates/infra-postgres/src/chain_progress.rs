@@ -5,23 +5,23 @@
 
 use sagat_application::chain_progress::{
     ChainCommandStore, ChainFinalizationCommand, ChainFinalizationWrite, ChainHandoffCommand,
-    ChainHandoffWrite, ChainInitialization, ChainInspection, ChainProgressError,
-    ChainProgressStore, ChainSegmentView, ChildChainSettlementCommand, ChildChainSettlementWrite,
-    EvaluatedChainHandoffCommand, LockedChainHead,
+    ChainHandoffWrite, ChainInitialization, ChainInspection, ChainParent, ChainProgressError,
+    ChainProgressStore, ChainRunItem, ChainRunPage, ChainSegmentView, EvaluatedChainHandoffCommand,
+    LockedChainHead,
 };
 use sagat_application::error::StoreError;
 use sagat_application::execution::{DefinitionCache, instance_step_id};
 use sagat_application::runs::Lock;
 use sagat_domain::audit::{AuditAction, ResourceType};
 use sagat_domain::execution::{
-    ChainFinalOutcome, ChainScope, ChildOutcome, ContinuationTransfer, ExecutionInstanceId,
+    ChainFinalOutcome, ChainScope, ContinuationTransfer, ExecutionInstanceId, QuiescenceBlocker,
     RunEvent, RunId, RunState, RunStatus, SegmentCompletionKind,
 };
 use sagat_domain::identity::{NamespaceId, Subject, TenantId};
 use sagat_domain::outbound::OutboundKind;
 use sagat_domain::quota::{self, QuotaResource};
 use sagat_domain::sharding::Shard;
-use sagat_domain::workflow::{Digest, NodeId, NodeKind, WorkflowDefinition};
+use sagat_domain::workflow::{Digest, NodeKind, WorkflowDefinition};
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
 use sqlx::{PgConnection, PgPool, Row};
@@ -473,6 +473,7 @@ async fn lock_chain(
     if row.get::<uuid::Uuid, _>("namespace_id") != command.scope().namespace_id().as_uuid() {
         return Err(ChainProgressError::Missing);
     }
+    hold_parent(conn, command.scope().tenant_id(), command.chain_id()).await?;
     Ok(LockedChain {
         namespace_id: NamespaceId::new(row.get("namespace_id")),
         current_run_id: RunId::new(row.get("current_run_id")),
@@ -487,6 +488,30 @@ async fn lock_chain(
         cancel_requested: row.get("cancel_requested"),
         final_outcome: row.get("final_outcome"),
     })
+}
+
+/// A child chain's successor is a run whose parent is the chain's parent, so inserting it takes a
+/// key-share lock on the parent's row (the foreign key). Every writer of a child run locks the
+/// parent first (`claim_reservation`, the parent's own commands); a hand-off holds the chain and the
+/// head run and would take the parent last, which deadlocks against a parent that is writing the
+/// child's run (found by the ordered parent-cancellation race). Taking the same lock here, before
+/// the head run is locked, keeps one order: parent, then chain, then runs.
+async fn hold_parent(
+    conn: &mut PgConnection,
+    tenant_id: TenantId,
+    chain_id: RunId,
+) -> Result<(), ChainProgressError> {
+    sqlx::query(
+        "SELECT parent.id FROM runs first JOIN runs parent \
+           ON parent.tenant_id = first.tenant_id AND parent.id = first.parent_run_id \
+         WHERE first.tenant_id = $1 AND first.id = $2 FOR KEY SHARE OF parent",
+    )
+    .bind(tenant_id.as_uuid())
+    .bind(chain_id.as_uuid())
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(store_error)?;
+    Ok(())
 }
 
 async fn lock_run(
@@ -746,37 +771,70 @@ async fn segment_quiescent(
     .map_err(ChainProgressError::from)
 }
 
-async fn typed_segment_quiescent(
+/// The first obligation (most significant first) the run still holds besides its boundary step, as
+/// a word of [`QuiescenceBlocker::label`], or `Ok(None)` when it is quiescent. A boundary that is no
+/// longer a pending root step is not an obligation: the caller's snapshot is stale.
+async fn typed_segment_blocker(
     conn: &mut PgConnection,
     command: &EvaluatedChainHandoffCommand,
-) -> Result<bool, ChainProgressError> {
+) -> Result<Result<Option<QuiescenceBlocker>, BoundaryGone>, ChainProgressError> {
     let handoff = command.handoff();
-    sqlx::query_scalar(
+    let (pending, blocker): (bool, Option<String>) = sqlx::query_as(
         "SELECT \
            EXISTS (SELECT 1 FROM steps WHERE tenant_id=$1 AND run_id=$2 AND node=$3 \
              AND instance_path_nodes='{}' AND instance_path_indices='{}' \
              AND status='PENDING' AND routed=false AND waiting_kind IS NULL \
-             AND lease_token_hash IS NULL) \
-           AND NOT EXISTS (SELECT 1 FROM steps WHERE tenant_id=$1 AND run_id=$2 \
-             AND (node<>$3 OR instance_path_nodes<>'{}' OR instance_path_indices<>'{}') \
-             AND (status<>'SUCCEEDED' OR routed=false)) \
-           AND NOT EXISTS (SELECT 1 FROM run_sagas WHERE tenant_id=$1 AND run_id=$2 \
-             AND phase<>'DONE') \
-           AND NOT EXISTS (SELECT 1 FROM approval_requests WHERE tenant_id=$1 AND run_id=$2 \
-             AND status='PENDING') \
-           AND NOT EXISTS (SELECT 1 FROM runs WHERE tenant_id=$1 AND parent_run_id=$2 \
-             AND parent_settled=false) \
-           AND NOT EXISTS (SELECT 1 FROM child_chain_links WHERE tenant_id=$1 AND parent_run_id=$2 \
-             AND (final_outcome IS NULL OR settled=false))",
+             AND lease_token_hash IS NULL), \
+           CASE \
+             WHEN EXISTS (SELECT 1 FROM run_sagas WHERE tenant_id=$1 AND run_id=$2 \
+               AND phase<>'DONE') THEN 'compensation' \
+             WHEN EXISTS (SELECT 1 FROM steps WHERE tenant_id=$1 AND run_id=$2 \
+               AND (node<>$3 OR instance_path_nodes<>'{}' OR instance_path_indices<>'{}') \
+               AND status='WAITING' AND waiting_kind='RECONCILIATION') THEN 'unknown_effect' \
+             WHEN EXISTS (SELECT 1 FROM approval_requests WHERE tenant_id=$1 AND run_id=$2 \
+               AND status='PENDING') \
+               OR EXISTS (SELECT 1 FROM steps WHERE tenant_id=$1 AND run_id=$2 \
+               AND status='WAITING' AND waiting_kind='APPROVAL') THEN 'approval' \
+             WHEN EXISTS (SELECT 1 FROM runs WHERE tenant_id=$1 AND parent_run_id=$2 \
+               AND parent_settled=false) \
+               OR EXISTS (SELECT 1 FROM child_chain_links WHERE tenant_id=$1 AND parent_run_id=$2 \
+               AND (final_outcome IS NULL OR settled=false)) \
+               OR EXISTS (SELECT 1 FROM steps WHERE tenant_id=$1 AND run_id=$2 \
+               AND status='WAITING' AND waiting_kind='CHILD') THEN 'child' \
+             WHEN EXISTS (SELECT 1 FROM steps WHERE tenant_id=$1 AND run_id=$2 \
+               AND (node<>$3 OR instance_path_nodes<>'{}' OR instance_path_indices<>'{}') \
+               AND status IN ('LEASED','RUNNING')) THEN 'lease' \
+             WHEN EXISTS (SELECT 1 FROM steps WHERE tenant_id=$1 AND run_id=$2 \
+               AND status='WAITING' AND waiting_kind='TIMER') THEN 'timer' \
+             WHEN EXISTS (SELECT 1 FROM steps WHERE tenant_id=$1 AND run_id=$2 \
+               AND status='WAITING' AND waiting_kind='EVENT') THEN 'subscription' \
+             WHEN EXISTS (SELECT 1 FROM steps WHERE tenant_id=$1 AND run_id=$2 \
+               AND (node<>$3 OR instance_path_nodes<>'{}' OR instance_path_indices<>'{}') \
+               AND (status<>'SUCCEEDED' OR routed=false)) THEN 'sibling_work' \
+           END",
     )
     .bind(handoff.scope().tenant_id().as_uuid())
     .bind(handoff.expected_head().as_uuid())
     .bind(command.boundary().as_str())
     .fetch_one(&mut *conn)
     .await
-    .map_err(store_error)
-    .map_err(ChainProgressError::from)
+    .map_err(store_error)?;
+    if !pending {
+        return Ok(Err(BoundaryGone));
+    }
+    let blocker = blocker
+        .map(|label| {
+            QuiescenceBlocker::ALL
+                .into_iter()
+                .find(|candidate| candidate.label() == label)
+                .ok_or_else(|| corrupt("quiescence blocker"))
+        })
+        .transpose()?;
+    Ok(Ok(blocker))
 }
+
+/// The boundary step is not a pending root step any more.
+struct BoundaryGone;
 
 async fn ensure_tree_capacity_for_successor(
     conn: &mut PgConnection,
@@ -798,9 +856,10 @@ async fn ensure_tree_capacity_for_successor(
             .fetch_one(&mut *conn)
             .await
             .map_err(store_error)?;
-    if usize::try_from(members).unwrap_or(usize::MAX) >= sagat_application::execution::MAX_TREE_RUNS
-    {
-        return Err(ChainProgressError::AtCapacity);
+    if usize::try_from(members).unwrap_or(usize::MAX) >= sagat_domain::execution::MAX_TREE_RUNS {
+        return Err(ChainProgressError::Chain(
+            sagat_domain::execution::ChainError::TreeBudgetExhausted,
+        ));
     }
     Ok(())
 }
@@ -853,6 +912,16 @@ pub async fn initialize_chain_in_transaction(
     .execute(&mut *conn)
     .await
     .map_err(store_error)?;
+    if let Some(parent) = initialization.parent() {
+        link_child_chain(
+            conn,
+            scope,
+            initialization.initial_run_id(),
+            parent,
+            created_at,
+        )
+        .await?;
+    }
     sqlx::query(
         "INSERT INTO chain_segments \
          (tenant_id, namespace_id, chain_id, segment_index, run_id, created_at) \
@@ -909,6 +978,56 @@ pub async fn initialize_chain_in_transaction(
         next_version,
     )
     .await
+}
+
+/// Records that `chain` answers to the parent's `child` step, and that its runs are not told to the
+/// parent one by one: the link carries the chain's final outcome (`ended_children`).
+async fn link_child_chain(
+    conn: &mut PgConnection,
+    scope: ChainScope,
+    chain: RunId,
+    parent: &ChainParent,
+    created_at: time::OffsetDateTime,
+) -> Result<(), ChainProgressError> {
+    let step: Option<(uuid::Uuid, Option<uuid::Uuid>)> = sqlx::query_as(
+        "SELECT step_id, child_run_id FROM steps \
+         WHERE tenant_id=$1 AND run_id=$2 AND node=$3 \
+           AND instance_path_nodes='{}' AND instance_path_indices='{}'",
+    )
+    .bind(scope.tenant_id().as_uuid())
+    .bind(parent.run().as_uuid())
+    .bind(parent.node().as_str())
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(store_error)?;
+    let Some((parent_instance, Some(reserved))) = step else {
+        return Err(ChainProgressError::Missing);
+    };
+    if reserved != chain.as_uuid() {
+        return Err(ChainProgressError::CorruptProjection);
+    }
+    sqlx::query(
+        "INSERT INTO child_chain_links \
+         (tenant_id, namespace_id, parent_run_id, parent_instance_id, child_chain_id, \
+          created_at, updated_at) \
+         VALUES ($1,$2,$3,$4,$5,$6,$6)",
+    )
+    .bind(scope.tenant_id().as_uuid())
+    .bind(scope.namespace_id().as_uuid())
+    .bind(parent.run().as_uuid())
+    .bind(parent_instance)
+    .bind(chain.as_uuid())
+    .bind(created_at)
+    .execute(&mut *conn)
+    .await
+    .map_err(store_error)?;
+    sqlx::query("UPDATE runs SET parent_settled=true WHERE tenant_id=$1 AND id=$2")
+        .bind(scope.tenant_id().as_uuid())
+        .bind(chain.as_uuid())
+        .execute(&mut *conn)
+        .await
+        .map_err(store_error)?;
+    Ok(())
 }
 
 async fn replay_handoff(
@@ -1456,13 +1575,17 @@ impl ChainProgressStore for PgChainProgressStore {
         if !matches!(
             definition.node(prepared.boundary()).map(|node| node.kind()),
             Some(NodeKind::ContinueAsNew { .. })
-        ) || !typed_segment_quiescent(&mut tx, prepared).await?
-        {
-            return Err(ChainProgressError::Chain(
-                sagat_domain::execution::ChainError::NotQuiescent(
-                    sagat_domain::execution::QuiescenceBlocker::SiblingWork,
-                ),
-            ));
+        ) {
+            return Err(ChainProgressError::RuntimeNotIntegrated);
+        }
+        match typed_segment_blocker(&mut tx, prepared).await? {
+            Err(BoundaryGone) => return Err(ChainProgressError::RuntimeNotIntegrated),
+            Ok(Some(blocker)) => {
+                return Err(ChainProgressError::Chain(
+                    sagat_domain::execution::ChainError::NotQuiescent(blocker),
+                ));
+            }
+            Ok(None) => {}
         }
         let entrypoint = definition.entrypoint().clone();
         let activity = match definition.node(&entrypoint).map(|node| node.kind()) {
@@ -1549,8 +1672,10 @@ impl ChainProgressStore for PgChainProgressStore {
             "INSERT INTO runs \
              (id, tenant_id, namespace_id, workflow_id, workflow_version_id, status, run_version, \
               paused, input_digest, started_by, trace_id, deadline_at, created_at, updated_at, \
-              root_run_id, depth, parent_run_id, parent_node, cancel_policy, trace_parent_span) \
-             VALUES ($1,$2,$3,$4,$5,'RUNNING',3,false,$6,$7,$8,$9,$10,$10,$11,$12,$13,$14,$15,$16)",
+              root_run_id, depth, parent_run_id, parent_node, cancel_policy, trace_parent_span, \
+              parent_settled) \
+             VALUES ($1,$2,$3,$4,$5,'RUNNING',3,false,$6,$7,$8,$9,$10,$10,$11,$12,$13,$14,$15,$16, \
+                     $13 IS NOT NULL)",
         )
         .bind(command.successor().as_uuid())
         .bind(command.scope().tenant_id().as_uuid())
@@ -2041,305 +2166,6 @@ impl ChainProgressStore for PgChainProgressStore {
             false,
         ))
     }
-
-    async fn settle_child_chain(
-        &self,
-        command: &ChildChainSettlementCommand,
-    ) -> Result<ChildChainSettlementWrite, ChainProgressError> {
-        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
-        let parent_chain = sqlx::query(
-            "SELECT namespace_id,current_run_id,revision,final_outcome FROM execution_chains \
-             WHERE tenant_id=$1 AND chain_id=$2 FOR UPDATE",
-        )
-        .bind(command.scope().tenant_id().as_uuid())
-        .bind(command.parent_chain_id().as_uuid())
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(store_error)?
-        .ok_or(ChainProgressError::Missing)?;
-        if parent_chain.get::<uuid::Uuid, _>("namespace_id")
-            != command.scope().namespace_id().as_uuid()
-        {
-            return Err(ChainProgressError::Missing);
-        }
-        let current = RunId::new(parent_chain.get("current_run_id"));
-        if current != command.expected_parent_head() {
-            return Err(ChainProgressError::Chain(
-                sagat_domain::execution::ChainError::HeadChanged { current },
-            ));
-        }
-        if parent_chain
-            .get::<Option<String>, _>("final_outcome")
-            .is_some()
-            || stored_u64(parent_chain.get("revision"), "parent chain revision")?
-                != command.expected_parent_chain_revision()
-        {
-            return Err(ChainProgressError::RuntimeNotIntegrated);
-        }
-        let parent = sqlx::query(
-            "SELECT namespace_id,workflow_version_id,status,run_version,finished_at,trace_id \
-             FROM runs WHERE tenant_id=$1 AND id=$2 FOR UPDATE",
-        )
-        .bind(command.scope().tenant_id().as_uuid())
-        .bind(command.expected_parent_head().as_uuid())
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(store_error)?
-        .ok_or(ChainProgressError::Missing)?;
-        if parent.get::<uuid::Uuid, _>("namespace_id") != command.scope().namespace_id().as_uuid() {
-            return Err(ChainProgressError::Missing);
-        }
-        check_fence(&mut tx, command.scheduler(), command.expected_parent_head()).await?;
-        let link = sqlx::query(
-            "SELECT parent_instance_id,final_outcome,settled FROM child_chain_links \
-             WHERE tenant_id=$1 AND namespace_id=$2 AND parent_run_id=$3 AND child_chain_id=$4 \
-             FOR UPDATE",
-        )
-        .bind(command.scope().tenant_id().as_uuid())
-        .bind(command.scope().namespace_id().as_uuid())
-        .bind(command.expected_parent_head().as_uuid())
-        .bind(command.child_chain_id().as_uuid())
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(store_error)?
-        .ok_or(ChainProgressError::Missing)?;
-        let parent_instance: uuid::Uuid = link.get("parent_instance_id");
-        let outcome: Option<String> = link.get("final_outcome");
-        if outcome.as_deref() != Some("SUCCEEDED") {
-            return Err(ChainProgressError::RuntimeNotIntegrated);
-        }
-        if link.get::<bool, _>("settled") {
-            let replayed: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM event_outbox WHERE tenant_id=$1 AND id=$2 \
-                   AND aggregate_id=$3 AND event_type='task.ready')",
-            )
-            .bind(command.scope().tenant_id().as_uuid())
-            .bind(command.task_outbox_id())
-            .bind(command.expected_parent_head().as_uuid())
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(store_error)?;
-            if replayed {
-                tx.rollback().await.map_err(store_error)?;
-                return Ok(ChildChainSettlementWrite::new(
-                    command.expected_parent_head(),
-                    command.child_chain_id(),
-                    true,
-                ));
-            }
-            return Err(ChainProgressError::CorruptProjection);
-        }
-        let parent_version = stored_u64(parent.get("run_version"), "parent run version")?;
-        if parent_version != command.expected_parent_run_version()
-            || parent
-                .get::<Option<time::OffsetDateTime>, _>("finished_at")
-                .is_some()
-            || !matches!(
-                parent.get::<String, _>("status").as_str(),
-                "RUNNING" | "WAITING"
-            )
-        {
-            return Err(ChainProgressError::RuntimeNotIntegrated);
-        }
-        let step = sqlx::query(
-            "SELECT node,instance_path_nodes,instance_path_indices,child_run_id,status,waiting_kind \
-             FROM steps WHERE tenant_id=$1 AND run_id=$2 AND step_id=$3 FOR UPDATE",
-        )
-        .bind(command.scope().tenant_id().as_uuid())
-        .bind(command.expected_parent_head().as_uuid())
-        .bind(parent_instance)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(store_error)?
-        .ok_or(ChainProgressError::Missing)?;
-        let path_nodes: Vec<String> = step.get("instance_path_nodes");
-        let path_indices: Vec<i32> = step.get("instance_path_indices");
-        if !path_nodes.is_empty()
-            || !path_indices.is_empty()
-            || step.get::<Option<uuid::Uuid>, _>("child_run_id")
-                != Some(command.child_chain_id().as_uuid())
-            || step.get::<String, _>("status") != "WAITING"
-            || step.get::<Option<String>, _>("waiting_kind").as_deref() != Some("CHILD")
-        {
-            return Err(ChainProgressError::RuntimeNotIntegrated);
-        }
-        let child_node = NodeId::parse_stored(&step.get::<String, _>("node"))
-            .map_err(|_| ChainProgressError::CorruptProjection)?;
-        let version =
-            sagat_domain::definition::WorkflowVersionId::new(parent.get("workflow_version_id"));
-        let definition = self
-            .definition(&mut tx, command.scope().tenant_id(), version)
-            .await?;
-        let mut state = replay_root_journal(
-            &mut tx,
-            command.scope().tenant_id(),
-            command.expected_parent_head(),
-        )
-        .await?;
-        if state.version() != parent_version {
-            return Err(ChainProgressError::CorruptProjection);
-        }
-        let progress = sagat_domain::execution::finish_child(
-            &definition,
-            &mut state,
-            &child_node,
-            command.child_chain_id(),
-            ChildOutcome::Succeeded,
-            command.occurred_at(),
-        )
-        .map_err(|_| ChainProgressError::RuntimeNotIntegrated)?;
-        let [
-            RunEvent::ChildFinished {
-                node: finished,
-                child,
-                outcome: ChildOutcome::Succeeded,
-            },
-            RunEvent::StepRouted {
-                node: routed,
-                activated,
-            },
-            RunEvent::StepReleased { node: released },
-        ] = progress.events.as_slice()
-        else {
-            return Err(ChainProgressError::RuntimeNotIntegrated);
-        };
-        let [successor] = activated.as_slice() else {
-            return Err(ChainProgressError::RuntimeNotIntegrated);
-        };
-        if finished != &child_node
-            || routed != &child_node
-            || *child != command.child_chain_id()
-            || released != successor
-            || progress.pending.is_some()
-        {
-            return Err(ChainProgressError::CorruptProjection);
-        }
-        let activity = match definition.node(successor).map(|node| node.kind()) {
-            Some(NodeKind::Activity { activity, .. }) => activity.clone(),
-            _ => return Err(ChainProgressError::RuntimeNotIntegrated),
-        };
-        let trace_id: Option<String> = parent.get("trace_id");
-        let metadata = JournalMetadata {
-            tenant_id: command.scope().tenant_id(),
-            actor: command.scheduler().owner(),
-            trace_id: trace_id.as_deref(),
-            occurred_at: command.occurred_at(),
-        };
-        for (offset, event) in progress.events.iter().enumerate() {
-            append_event(
-                &mut tx,
-                command.expected_parent_head(),
-                parent_version
-                    .checked_add(u64::try_from(offset + 1).map_err(|_| corrupt("child offset"))?)
-                    .ok_or_else(|| corrupt("parent journal sequence"))?,
-                event,
-                None,
-                &metadata,
-            )
-            .await?;
-        }
-        let child_changed = sqlx::query(
-            "UPDATE steps SET status='SUCCEEDED',waiting_kind=NULL,cancel_requested=false, \
-                    routed=true,updated_at=$4 \
-             WHERE tenant_id=$1 AND run_id=$2 AND step_id=$3",
-        )
-        .bind(command.scope().tenant_id().as_uuid())
-        .bind(command.expected_parent_head().as_uuid())
-        .bind(parent_instance)
-        .bind(command.occurred_at())
-        .execute(&mut *tx)
-        .await
-        .map_err(store_error)?
-        .rows_affected();
-        let successor_instance = ExecutionInstanceId::root(successor.clone());
-        sqlx::query(
-            "INSERT INTO steps \
-             (tenant_id,run_id,node,step_id,namespace_id,status,activity,ready_at,last_hinted_at, \
-              hint_count,updated_at,instance_path_nodes,instance_path_indices) \
-             VALUES ($1,$2,$3,$4,$5,'READY',$6,$7,$7,1,$7,'{}','{}')",
-        )
-        .bind(command.scope().tenant_id().as_uuid())
-        .bind(command.expected_parent_head().as_uuid())
-        .bind(successor.as_str())
-        .bind(instance_step_id(
-            version,
-            command.expected_parent_head(),
-            &successor_instance,
-        ))
-        .bind(command.scope().namespace_id().as_uuid())
-        .bind(activity.as_str())
-        .bind(command.occurred_at())
-        .execute(&mut *tx)
-        .await
-        .map_err(store_error)?;
-        let final_version = parent_version
-            .checked_add(u64::try_from(progress.events.len()).map_err(|_| corrupt("child events"))?)
-            .ok_or_else(|| corrupt("parent run version"))?;
-        let run_changed = sqlx::query(
-            "UPDATE runs SET status='RUNNING',run_version=$3,updated_at=$4 \
-             WHERE tenant_id=$1 AND id=$2 AND run_version=$5 AND finished_at IS NULL",
-        )
-        .bind(command.scope().tenant_id().as_uuid())
-        .bind(command.expected_parent_head().as_uuid())
-        .bind(number(final_version, "settled parent version")?)
-        .bind(command.occurred_at())
-        .bind(number(parent_version, "expected parent version")?)
-        .execute(&mut *tx)
-        .await
-        .map_err(store_error)?
-        .rows_affected();
-        let link_changed = sqlx::query(
-            "UPDATE child_chain_links SET settled=true,updated_at=$5 \
-             WHERE tenant_id=$1 AND namespace_id=$2 AND parent_run_id=$3 AND child_chain_id=$4 \
-               AND final_outcome='SUCCEEDED' AND settled=false",
-        )
-        .bind(command.scope().tenant_id().as_uuid())
-        .bind(command.scope().namespace_id().as_uuid())
-        .bind(command.expected_parent_head().as_uuid())
-        .bind(command.child_chain_id().as_uuid())
-        .bind(command.occurred_at())
-        .execute(&mut *tx)
-        .await
-        .map_err(store_error)?
-        .rows_affected();
-        if child_changed != 1 || run_changed != 1 || link_changed != 1 {
-            return Err(ChainProgressError::CorruptProjection);
-        }
-        sqlx::query(
-            "INSERT INTO event_outbox \
-             (id,tenant_id,aggregate_id,event_type,routing_key,payload) \
-             VALUES ($1,$2,$3,'task.ready',$4,$5)",
-        )
-        .bind(command.task_outbox_id())
-        .bind(command.scope().tenant_id().as_uuid())
-        .bind(command.expected_parent_head().as_uuid())
-        .bind(activity.as_str())
-        .bind(json!({
-            "tenantId": command.scope().tenant_id().to_string(),
-            "namespaceId": command.scope().namespace_id().to_string(),
-            "runId": command.expected_parent_head().to_string(),
-            "node": successor.as_str(),
-            "instancePath": [],
-            "activity": activity.as_str(),
-            "traceId": trace_id,
-        }))
-        .execute(&mut *tx)
-        .await
-        .map_err(store_error)?;
-        mark_telemetry(
-            &mut tx,
-            command.scope().tenant_id(),
-            command.expected_parent_head(),
-            final_version,
-        )
-        .await?;
-        tx.commit().await.map_err(store_error)?;
-        Ok(ChildChainSettlementWrite::new(
-            command.expected_parent_head(),
-            command.child_chain_id(),
-            false,
-        ))
-    }
 }
 
 impl ChainProgressStore for PgRunStore {
@@ -2367,15 +2193,6 @@ impl ChainProgressStore for PgRunStore {
     ) -> Result<ChainFinalizationWrite, ChainProgressError> {
         PgChainProgressStore::new(self.pool.clone(), self.cache.clone())
             .finalize_chain(command)
-            .await
-    }
-
-    async fn settle_child_chain(
-        &self,
-        command: &ChildChainSettlementCommand,
-    ) -> Result<ChildChainSettlementWrite, ChainProgressError> {
-        PgChainProgressStore::new(self.pool.clone(), self.cache.clone())
-            .settle_child_chain(command)
             .await
     }
 }
@@ -2487,6 +2304,88 @@ impl ChainCommandStore for PgRunStore {
         };
         tx.rollback().await.map_err(store_error)?;
         Ok(Some(inspection))
+    }
+
+    async fn list_chain_runs(
+        &self,
+        scope: ChainScope,
+        chain_id: RunId,
+        after: Option<u16>,
+        limit: u32,
+    ) -> Result<Option<ChainRunPage>, StoreError> {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM execution_chains \
+             WHERE tenant_id=$1 AND namespace_id=$2 AND chain_id=$3)",
+        )
+        .bind(scope.tenant_id().as_uuid())
+        .bind(scope.namespace_id().as_uuid())
+        .bind(chain_id.as_uuid())
+        .fetch_one(self.pool())
+        .await
+        .map_err(store_error)?;
+        if !exists {
+            return Ok(None);
+        }
+        // One more than the page: its presence says that another page exists.
+        let rows = sqlx::query(
+            "SELECT segment.segment_index,segment.run_id,segment.predecessor_run_id, \
+                    segment.successor_run_id,segment.completion_kind,run.status, \
+                    run.created_at,run.finished_at \
+             FROM chain_segments segment \
+             JOIN runs run ON run.tenant_id=segment.tenant_id AND run.id=segment.run_id \
+             WHERE segment.tenant_id=$1 AND segment.namespace_id=$2 AND segment.chain_id=$3 \
+               AND ($4::int IS NULL OR segment.segment_index > $4) \
+             ORDER BY segment.segment_index LIMIT $5",
+        )
+        .bind(scope.tenant_id().as_uuid())
+        .bind(scope.namespace_id().as_uuid())
+        .bind(chain_id.as_uuid())
+        .bind(after.map(i32::from))
+        .bind(i64::from(limit) + 1)
+        .fetch_all(self.pool())
+        .await
+        .map_err(store_error)?;
+        let invalid = |what: &str| StoreError::Internal {
+            detail: format!("stored chain segment {what} is invalid"),
+        };
+        let mut items = rows
+            .iter()
+            .map(|row| {
+                Ok(ChainRunItem {
+                    index: u16::try_from(row.get::<i32, _>("segment_index"))
+                        .map_err(|_| invalid("index"))?,
+                    run_id: RunId::new(row.get("run_id")),
+                    status: row
+                        .get::<String, _>("status")
+                        .parse()
+                        .map_err(|_| invalid("run status"))?,
+                    completion_kind: match row
+                        .get::<Option<String>, _>("completion_kind")
+                        .as_deref()
+                    {
+                        None => None,
+                        Some("CONTINUED") => Some(SegmentCompletionKind::Continued),
+                        Some("FINAL") => Some(SegmentCompletionKind::Final),
+                        Some(_) => return Err(invalid("completion kind")),
+                    },
+                    predecessor: row
+                        .get::<Option<uuid::Uuid>, _>("predecessor_run_id")
+                        .map(RunId::new),
+                    successor: row
+                        .get::<Option<uuid::Uuid>, _>("successor_run_id")
+                        .map(RunId::new),
+                    created_at: row.get("created_at"),
+                    finished_at: row.get("finished_at"),
+                })
+            })
+            .collect::<Result<Vec<_>, StoreError>>()?;
+        let next_after = if items.len() > limit as usize {
+            items.truncate(limit as usize);
+            items.last().map(|item| item.index)
+        } else {
+            None
+        };
+        Ok(Some(ChainRunPage { items, next_after }))
     }
 
     async fn chain_exists_outside(

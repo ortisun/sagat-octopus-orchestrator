@@ -531,3 +531,47 @@ test('a number that is a whole number beyond 2^53 - 1 and is printed in digits i
   assert.match(text(9007199254740991), /"maximum":9007199254740991/);
   assert.match(text(1.5), /"maximum":1.5/);
 });
+
+test('a run in a chain names its segment, and a run outside one has none', async () => {
+  const chainId = '0190aaaa-0000-7000-8000-000000000011';
+  const successor = '0190aaaa-0000-7000-8000-000000000012';
+  prepare((_req, res) => reply(res, 200, run({
+    status: 'SUCCEEDED', chain: { chainId, segmentIndex: 0, completionKind: 'CONTINUED', successorRunId: successor },
+  })));
+  const continued = await client().get('0190aaaa-0000-7000-8000-000000000001');
+  assert.equal(continued.status, 'SUCCEEDED');
+  assert.deepEqual(continued.chain, { chainId, segmentIndex: 0, completionKind: 'CONTINUED', successorRunId: successor });
+  prepare((_req, res) => reply(res, 200, run({ chain: { chainId, segmentIndex: 2, completionKind: null, successorRunId: null } })));
+  assert.equal((await client().get('0190aaaa-0000-7000-8000-000000000001')).chain?.completionKind, null);
+  prepare((_req, res) => reply(res, 200, run()));
+  assert.equal((await client().get('0190aaaa-0000-7000-8000-000000000001')).chain, null);
+  prepare((_req, res) => reply(res, 200, run({ chain: { chainId, segmentIndex: 0, completionKind: 'SOMEDAY', successorRunId: null } })));
+  await assert.rejects(client().get('0190aaaa-0000-7000-8000-000000000001'), (error: unknown) => error instanceof SagatError && error.code === 'PROTOCOL');
+});
+
+test('the runs of a chain are listed in pages that follow the server cursor and carry no payload', async () => {
+  const namespaceId = '0190aaaa-0000-7000-8000-000000000010';
+  const chainId = '0190aaaa-0000-7000-8000-000000000011';
+  const ids = ['0190aaaa-0000-7000-8000-000000000011', '0190aaaa-0000-7000-8000-000000000012', '0190aaaa-0000-7000-8000-000000000013'];
+  const item = (index: number): Record<string, unknown> => ({
+    index, runId: ids[index], status: index < 2 ? 'SUCCEEDED' : 'RUNNING', completionKind: index < 2 ? 'CONTINUED' : null,
+    predecessorRunId: index === 0 ? null : ids[index - 1], successorRunId: index < 2 ? ids[index + 1] : null,
+    createdAt: '2026-10-10T10:00:00Z', finishedAt: index < 2 ? '2026-10-10T10:00:01Z' : null,
+  });
+  prepare((request, res) => reply(res, 200, request.url.includes('cursor=') ? { items: [item(2)], nextCursor: null } : { items: [item(0), item(1)], nextCursor: 'AAE' }));
+  const collected: number[] = [];
+  for await (const segment of client().listAllChainRuns(namespaceId, chainId, { limit: 2 })) collected.push(segment.index);
+  assert.deepEqual(collected, [0, 1, 2]);
+  assert.equal(seen[0]?.method, 'GET');
+  assert.equal(seen[0]?.url, `/v1/namespaces/${namespaceId}/chains/${chainId}/runs?limit=2`);
+  assert.equal(seen[1]?.url, `/v1/namespaces/${namespaceId}/chains/${chainId}/runs?cursor=AAE&limit=2`);
+  const page = await client().listChainRuns(namespaceId, chainId);
+  assert.equal(page.items[0]?.completionKind, 'CONTINUED');
+  assert.equal(page.items[1]?.successorRunId, ids[2]);
+  assert.equal(page.nextCursor, 'AAE');
+  assert.ok(page.items[0]?.createdAt instanceof Date);
+
+  prepare((_req, res) => reply(res, 200, { items: [{ ...item(0), index: 10_000 }], nextCursor: null }));
+  await assert.rejects(client().listChainRuns(namespaceId, chainId), (error: unknown) => error instanceof SagatError && error.code === 'PROTOCOL');
+  await assert.rejects(client().listChainRuns('not-an-id', chainId), /namespace/i);
+});

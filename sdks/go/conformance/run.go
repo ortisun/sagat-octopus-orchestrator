@@ -41,12 +41,20 @@ func runJSON(run *client.Run) object {
 	if run.Parent != nil {
 		parent = object{"runId": run.Parent.RunID, "node": run.Parent.Node, "cancelPolicy": run.Parent.CancelPolicy}
 	}
-	return object{
+	observed := object{
 		"runId": run.RunID, "workflowId": run.WorkflowID, "versionId": run.VersionID, "status": string(run.Status), "version": run.Version,
 		"paused": run.Paused, "startedBy": orNull(run.StartedBy), "createdAt": iso(run.CreatedAt), "updatedAt": iso(run.UpdatedAt),
 		"finishedAt": iso(run.FinishedAt), "deadline": iso(run.Deadline), "traceId": orNull(run.TraceID),
 		"correlationId": orNull(run.CorrelationID), "depth": run.Depth, "parent": parent,
 	}
+	// Present only for a run in a chain, so the observations of every other run stay as they were.
+	if run.Chain != nil {
+		observed["chain"] = object{
+			"chainId": run.Chain.ChainID, "segmentIndex": run.Chain.SegmentIndex,
+			"completionKind": orNull(string(run.Chain.CompletionKind)), "successorRunId": orNull(run.Chain.SuccessorRunID),
+		}
+	}
+	return observed
 }
 
 func chainJSON(chain *client.ChainInspection) object {
@@ -146,6 +154,15 @@ func run(scenario, config object) (object, error) {
 
 	results := map[string]object{}
 	runOf := func(step object) (string, error) {
+		if page := asString(step["page"]); page != "" {
+			// A segment of a page of listChainRuns, by position.
+			items := asList(results[page]["items"])
+			index := asCount(step["index"])
+			if index < 0 || index >= len(items) || asString(asObject(items[index])["runId"]) == "" {
+				return "", fmt.Errorf("step %s has no segment %d", page, index)
+			}
+			return asString(asObject(items[index])["runId"]), nil
+		}
 		id, _ := results[asString(step["run"])]["runId"].(string)
 		if id == "" {
 			return "", fmt.Errorf("step %s has no run", asString(step["run"]))
@@ -531,6 +548,42 @@ func playStep(ctx context.Context, step object, op string, c *client.Client, con
 			"beforeStateRevision": result.BeforeStateRevision, "afterStateRevision": result.AfterStateRevision,
 			"runVersion": result.RunVersion, "replayed": result.Replayed,
 		}, nil
+	case "listChainRuns":
+		namespaceID, err := chainRef(step["namespaceId"])
+		if err != nil {
+			return nil, err
+		}
+		chainID, err := chainRef(step["chainId"])
+		if err != nil {
+			return nil, err
+		}
+		options := client.ChainRunListOptions{}
+		options.Limit = asCount(step["limit"])
+		options.Cursor = asString(step["cursor"])
+		if strings.HasPrefix(options.Cursor, "{{nextCursor:") && strings.HasSuffix(options.Cursor, "}}") {
+			ref := strings.TrimSuffix(strings.TrimPrefix(options.Cursor, "{{nextCursor:"), "}}")
+			options.Cursor = asString(results[ref]["nextCursor"])
+			if options.Cursor == "" {
+				return nil, broken("step %s has no next page", ref)
+			}
+		}
+		opts := callOpts
+		if value := asString(step["traceparent"]); value != "" {
+			opts = append(opts, client.WithTraceparent(value))
+		}
+		page, err := c.ListChainRuns(ctx, namespaceID, chainID, options, opts...)
+		if err != nil {
+			return nil, err
+		}
+		items := make([]any, 0, len(page.Items))
+		for _, item := range page.Items {
+			items = append(items, object{
+				"index": item.Index, "runId": item.RunID, "status": string(item.Status),
+				"completionKind": orNull(string(item.CompletionKind)), "predecessorRunId": orNull(item.PredecessorRunID),
+				"successorRunId": orNull(item.SuccessorRunID), "createdAt": iso(item.CreatedAt), "finishedAt": iso(item.FinishedAt),
+			})
+		}
+		return object{"items": items, "nextCursor": orNull(page.NextCursor)}, nil
 	case "inspectChain":
 		namespaceID, err := chainRef(step["namespaceId"])
 		if err != nil {

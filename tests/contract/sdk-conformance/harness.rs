@@ -423,7 +423,16 @@ async fn server_state(run: &Run) -> Result<Value, String> {
         return Err(format!("listing the runs answered {status}: {page}"));
     }
     let mut runs = Vec::new();
-    for item in page["items"].as_array().cloned().unwrap_or_default() {
+    // Newest first by creation, as the list gives them, but not by id alone: the first run of a child
+    // chain has an id derived from its parent's, which sorts anywhere among time-ordered ids.
+    let mut items = page["items"].as_array().cloned().unwrap_or_default();
+    items.sort_by(|a, b| {
+        b["createdAt"]
+            .as_str()
+            .cmp(&a["createdAt"].as_str())
+            .then_with(|| b["runId"].as_str().cmp(&a["runId"].as_str()))
+    });
+    for item in items {
         let id = item["runId"]
             .as_str()
             .ok_or("a run without an id")?

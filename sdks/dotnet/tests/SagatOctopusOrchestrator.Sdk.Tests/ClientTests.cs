@@ -621,6 +621,74 @@ public sealed class ClientTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ARunInAChainNamesItsSegmentAndARunOutsideOneHasNone()
+    {
+        const string chain = "0190aaaa-0000-7000-8000-000000000011";
+        const string successor = "0190aaaa-0000-7000-8000-000000000012";
+        server.Handler = _ => Reply(200, Run(run =>
+        {
+            run["status"] = "SUCCEEDED";
+            run["chain"] = new JsonObject { ["chainId"] = chain, ["segmentIndex"] = 0, ["completionKind"] = "CONTINUED", ["successorRunId"] = successor };
+        }));
+        var continued = await NewClient().GetAsync(Ids.Run);
+        Assert.Equal("SUCCEEDED", continued.Status);
+        Assert.Equal(new RunChainSegment(chain, 0, "CONTINUED", successor), continued.Chain);
+
+        server.Handler = _ => Reply(200, Run(run =>
+            run["chain"] = new JsonObject { ["chainId"] = chain, ["segmentIndex"] = 2, ["completionKind"] = null, ["successorRunId"] = null }));
+        var open = await NewClient().GetAsync(Ids.Run);
+        Assert.Equal(new RunChainSegment(chain, 2, null, null), open.Chain);
+
+        server.Handler = _ => Reply(200, Run());
+        Assert.Null((await NewClient().GetAsync(Ids.Run)).Chain);
+
+        server.Handler = _ => Reply(200, Run(run =>
+            run["chain"] = new JsonObject { ["chainId"] = chain, ["segmentIndex"] = 0, ["completionKind"] = "SOMEDAY", ["successorRunId"] = null }));
+        var bad = await Assert.ThrowsAsync<SagatException>(() => NewClient().GetAsync(Ids.Run));
+        Assert.Equal(SagatErrorCode.Protocol, bad.Code);
+    }
+
+    [Fact]
+    public async Task TheRunsOfAChainArePagedInSegmentOrderFollowingTheServerCursor()
+    {
+        const string namespaceId = "0190aaaa-0000-7000-8000-000000000010";
+        const string chainId = "0190aaaa-0000-7000-8000-000000000011";
+        string[] ids = [chainId, "0190aaaa-0000-7000-8000-000000000012", "0190aaaa-0000-7000-8000-000000000013"];
+        JsonObject Item(int index) => new()
+        {
+            ["index"] = index, ["runId"] = ids[index], ["status"] = index < 2 ? "SUCCEEDED" : "RUNNING",
+            ["completionKind"] = index < 2 ? "CONTINUED" : null, ["predecessorRunId"] = index == 0 ? null : ids[index - 1],
+            ["successorRunId"] = index < 2 ? ids[index + 1] : null, ["createdAt"] = "2026-10-10T10:00:00Z",
+            ["finishedAt"] = index < 2 ? "2026-10-10T10:00:01Z" : null,
+        };
+        server.Handler = request => request.PathAndQuery.Contains("cursor=AAE", StringComparison.Ordinal)
+            ? Reply(200, new JsonObject { ["items"] = new JsonArray(Item(2)), ["nextCursor"] = null })
+            : Reply(200, new JsonObject { ["items"] = new JsonArray(Item(0), Item(1)), ["nextCursor"] = "AAE" });
+        var client = NewClient();
+        var collected = new List<int>();
+        await foreach (var segment in client.ListAllChainRunsAsync(namespaceId, chainId, new ChainRunListOptions { Limit = 2 }))
+        {
+            collected.Add(segment.Index);
+        }
+
+        Assert.Equal([0, 1, 2], collected);
+        Assert.Equal($"/v1/namespaces/{namespaceId}/chains/{chainId}/runs?limit=2", server.Requests[0].PathAndQuery);
+        Assert.Equal($"/v1/namespaces/{namespaceId}/chains/{chainId}/runs?cursor=AAE&limit=2", server.Requests[1].PathAndQuery);
+        var page = await client.ListChainRunsAsync(namespaceId, chainId);
+        Assert.Equal("CONTINUED", page.Items[0].CompletionKind);
+        Assert.Equal(ids[2], page.Items[1].SuccessorRunId);
+        Assert.Equal("AAE", page.NextCursor);
+        Assert.Equal(2026, page.Items[0].CreatedAt.Year);
+
+        var oversized = Item(0);
+        oversized["index"] = 10_000;
+        server.Handler = _ => Reply(200, new JsonObject { ["items"] = new JsonArray(oversized), ["nextCursor"] = null });
+        var bad = await Assert.ThrowsAsync<SagatException>(() => client.ListChainRunsAsync(namespaceId, chainId));
+        Assert.Equal(SagatErrorCode.Protocol, bad.Code);
+        await Assert.ThrowsAsync<SagatException>(() => client.ListChainRunsAsync("not-an-id", chainId));
+    }
+
+    [Fact]
     public async Task ChainQueryCarriesExpectedHeadAndReturnsResolvedRevisions()
     {
         const string namespaceId = "0190aaaa-0000-7000-8000-000000000010";

@@ -1,0 +1,44 @@
+{
+  "name": "chain-three-segments",
+  "description": "WP-10: three executed segments, each ended into one successor with the input the node named. Every segment keeps the pinned version and the original deadline, a segment wait reports SUCCEEDED with CONTINUED metadata while the chain wait reports the final outcome, the paged list of the chain's runs is stable, and writes to a continued run are refused and never reach the chain.",
+  "workflows": {
+    "chain": {
+      "name": "chain-three-segments-runtime",
+      "chainPolicy": { "maxSegments": 4, "timeoutMs": 86400000 },
+      "program": [
+        { "op": "step", "id": "work", "activity": "chain.work" },
+        { "op": "condition", "id": "again", "expression": "input.continue", "ifTrue": "rollover", "ifFalse": "done" },
+        { "op": "continueAsNew", "id": "rollover", "input": "input.next" },
+        { "op": "end", "id": "done" }
+      ]
+    }
+  },
+  "workers": {
+    "current": {
+      "workerName": "chain-three-worker",
+      "protocolVersion": "1.5",
+      "transport": "poll",
+      "maxInflight": 1,
+      "autostart": false,
+      "activities": {
+        "chain.work": { "behavior": { "sleepMs": 50, "returns": { "ok": true } } }
+      }
+    }
+  },
+  "steps": [
+    { "id": "start", "op": "start", "workflow": "chain", "input": { "stage": 1, "continue": true, "next": { "stage": 2, "continue": true, "next": { "stage": 3, "continue": false } } } },
+    { "id": "initial", "op": "inspectChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}" },
+    { "id": "start-worker", "op": "startWorker", "worker": "current" },
+    { "id": "chain-done", "op": "waitForChainCompletion", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "timeoutMs": 30000 },
+    { "id": "segment-wait", "op": "waitForCompletion", "run": "start", "timeoutMs": 10000 },
+    { "id": "runs-page-1", "op": "listChainRuns", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "limit": 2 },
+    { "id": "runs-page-2", "op": "listChainRuns", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "limit": 2, "cursor": "{{nextCursor:runs-page-1}}" },
+    { "id": "segment-1", "op": "get", "page": "runs-page-1", "index": 1 },
+    { "id": "segment-2", "op": "get", "page": "runs-page-2", "index": 0 },
+    { "id": "old-signal", "op": "signal", "run": "start", "name": "chain.release", "payload": { "released": true } },
+    { "id": "old-cancel", "op": "cancel", "run": "start", "reason": "late caller aimed at a continued segment" },
+    { "id": "after-old-writes", "op": "inspectChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}" },
+    { "id": "head-after", "op": "get", "page": "runs-page-2", "index": 0 },
+    { "id": "stop-worker", "op": "stopWorker", "worker": "current" }
+  ]
+}

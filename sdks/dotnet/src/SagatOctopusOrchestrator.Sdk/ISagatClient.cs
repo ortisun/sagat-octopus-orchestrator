@@ -63,6 +63,15 @@ public interface ISagatClient
     /// <summary>Reads one committed chain head and lineage snapshot.</summary>
     Task<ChainInspection> InspectChainAsync(string namespaceId, string chainId, RequestOptions? options = null, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Reads one bounded page of a chain's runs in segment order. The cursor is opaque and stable: a segment is
+    /// only appended, so a page never repeats or skips one while the chain grows.
+    /// </summary>
+    Task<ChainRunPage> ListChainRunsAsync(string namespaceId, string chainId, ChainRunListOptions? options = null, CancellationToken cancellationToken = default);
+
+    /// <summary>Streams every run of a chain, in segment order, by following the server's opaque cursor.</summary>
+    IAsyncEnumerable<ChainRun> ListAllChainRunsAsync(string namespaceId, string chainId, ChainRunListOptions? options = null, CancellationToken cancellationToken = default);
+
     /// <summary>Signals a root wait on the expected current chain head.</summary>
     Task<SignalResult> SignalChainAsync<TPayload>(string namespaceId, string chainId, string name, TPayload payload, ChainCommandOptions options, CancellationToken cancellationToken = default);
 

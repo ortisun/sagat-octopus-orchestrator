@@ -6,9 +6,15 @@
       "ok": true,
       "op": "start",
       "result": {
+        "chain": {
+          "chainId": "<uuid:1>",
+          "completionKind": null,
+          "segmentIndex": 0,
+          "successorRunId": null
+        },
         "correlationId": null,
         "createdAt": "<time>",
-        "deadline": "<createdAt+86400s>",
+        "deadline": "<chain-deadline:1>",
         "depth": 0,
         "finishedAt": null,
         "parent": null,
@@ -39,9 +45,15 @@
       "ok": true,
       "op": "start",
       "result": {
+        "chain": {
+          "chainId": "<uuid:4>",
+          "completionKind": null,
+          "segmentIndex": 0,
+          "successorRunId": null
+        },
         "correlationId": null,
         "createdAt": "<time>",
-        "deadline": "<createdAt+86400s>",
+        "deadline": "<chain-deadline:2>",
         "depth": 0,
         "finishedAt": null,
         "parent": null,

@@ -108,6 +108,9 @@ pub struct Report {
     pub collections_advanced: u32,
     pub loops_advanced: u32,
     pub continuations_advanced: u32,
+    /// Continuation boundaries that were examined and are waiting for open work to settle (D296).
+    /// Waiting is not work: it is left out of [`Report::did_work`].
+    pub continuations_waiting: u32,
     pub approvals_opened: u32,
     pub approvals_expired: u32,
     pub approval_routes_released: u32,
@@ -236,6 +239,10 @@ pub enum ContinuationAdvanceError {
     FenceUnavailable,
     #[error("the requested node is not a pending continuation boundary")]
     NotContinuation,
+    /// Open work (`{0:?}`) keeps the boundary pending. It is not a failure: the boundary is tried
+    /// again and the run's original deadline still ends it (D296).
+    #[error("the continuation boundary waits for open work: {0:?}")]
+    Waiting(sagat_domain::execution::QuiescenceBlocker),
     #[error("continuation expression evaluation failed")]
     Expression,
     #[error("the continuation expression failed and finalized the chain")]
@@ -632,6 +639,9 @@ where
             if step.status() != execution::StepStatus::Pending {
                 return Err(ContinuationAdvanceError::NotContinuation);
             }
+            if let Some(blocker) = execution::Quiescence::of_run(state, boundary).blocker() {
+                return Err(ContinuationAdvanceError::Waiting(blocker));
+            }
             (input.clone(), next.clone(), state.version())
         };
         tx.commit().await?;
@@ -707,7 +717,8 @@ where
         {
             Ok(write) => Ok(write),
             Err(ChainProgressError::Chain(
-                sagat_domain::execution::ChainError::SegmentLimitExceeded,
+                limit @ (sagat_domain::execution::ChainError::SegmentLimitExceeded
+                | sagat_domain::execution::ChainError::TreeBudgetExhausted),
             )) => {
                 let Some(mut tx) = self.store.begin_chain_head(scope, chain_id).await? else {
                     return Err(ContinuationAdvanceError::MissingChain);
@@ -725,7 +736,12 @@ where
                     AuditAction::RunFinished,
                     ResourceType::Run,
                     chain.head().to_string(),
-                    "chain segment limit exhausted",
+                    match limit {
+                        sagat_domain::execution::ChainError::TreeBudgetExhausted => {
+                            "run tree budget exhausted"
+                        }
+                        _ => "chain segment limit exhausted",
+                    },
                     info.trace_id,
                     tx.now(),
                 ));
@@ -746,6 +762,14 @@ where
                     .await?;
                 tx.commit().await?;
                 Err(ContinuationAdvanceError::ChainLimitFinalized)
+            }
+            Err(ChainProgressError::Chain(error)) if error.awaited_blocker().is_some() => {
+                // Work appeared between the evaluation and the write locks: wait, do not fail.
+                Err(ContinuationAdvanceError::Waiting(
+                    error
+                        .awaited_blocker()
+                        .unwrap_or(sagat_domain::execution::QuiescenceBlocker::SiblingWork),
+                ))
             }
             Err(error) => Err(error.into()),
         }
@@ -2816,6 +2840,7 @@ where
             .await;
         let outcomes = self
             .each(candidates, |candidate| async move {
+                let mut waiting = false;
                 let outcome = match self
                     .advance_continuation_in_view(
                         view,
@@ -2831,6 +2856,27 @@ where
                         ContinuationAdvanceError::ChainLimitFinalized
                         | ContinuationAdvanceError::ExpressionFinalized,
                     ) => Outcome::Done,
+                    Err(ContinuationAdvanceError::Waiting(blocker)) => {
+                        metrics::counter!(
+                            "scheduler_continuation_waits_total",
+                            "blocker" => blocker.label()
+                        )
+                        .increment(1);
+                        // Not an error and not skipped work: the boundary is examined again.
+                        waiting = true;
+                        Outcome::Skipped
+                    }
+                    // A full namespace or tenant is a reason to wait for room, not a failure: the
+                    // successor replaces the predecessor and never takes room it does not have.
+                    Err(ContinuationAdvanceError::Progress(ChainProgressError::AtCapacity)) => {
+                        metrics::counter!(
+                            "scheduler_continuation_waits_total",
+                            "blocker" => "capacity"
+                        )
+                        .increment(1);
+                        waiting = true;
+                        Outcome::Skipped
+                    }
                     Err(
                         ContinuationAdvanceError::MissingChain
                         | ContinuationAdvanceError::NotContinuation
@@ -2856,18 +2902,22 @@ where
                 metrics::counter!(
                     "scheduler_actions_total",
                     "kind" => "continuation",
-                    "outcome" => outcome.label()
+                    "outcome" => if waiting { "waiting" } else { outcome.label() }
                 )
                 .increment(1);
                 if outcome == Outcome::Fenced {
                     metrics::counter!("scheduler_fenced_total", "kind" => "continuation")
                         .increment(1);
                 }
-                outcome
+                (outcome, waiting)
             })
             .await;
-        for outcome in outcomes {
-            Self::tally(report, outcome, |value| value.continuations_advanced += 1);
+        for (outcome, waiting) in outcomes {
+            if waiting {
+                report.continuations_waiting += 1;
+            } else {
+                Self::tally(report, outcome, |value| value.continuations_advanced += 1);
+            }
         }
     }
 
@@ -3506,10 +3556,17 @@ where
             .timeout()
             .and_then(|t| time::Duration::try_from(t).ok())
             .and_then(|t| pending.as_of.checked_add(t));
-        let deadline_at = match (parent.info.deadline_at, own) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        };
+        // A continuation chain carries its own required timeout, counted from the first run: it can
+        // only shorten the child's deadline, and the chain keeps the result as its original one.
+        let chain_deadline = definition.continuation_policy().and_then(|policy| {
+            time::Duration::try_from(policy.timeout())
+                .ok()
+                .and_then(|timeout| pending.as_of.checked_add(timeout))
+        });
+        let deadline_at = [parent.info.deadline_at, own, chain_deadline]
+            .into_iter()
+            .flatten()
+            .min();
         let child_id = pending.child;
         let info = RunInfo {
             run_id: child_id,

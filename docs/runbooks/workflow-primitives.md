@@ -145,8 +145,14 @@ closed argument/result schemas and disclosure mode still apply; Query cannot rea
 network calls. The shared `chain-query` scenario reads the initial head through all five SDKs;
 `chain-query-handoff` completes the predecessor and reads the successor's transferred snapshot
 through each public SDK. It also applies and replays a chain Update, then reads revision 1.
-`waitForCompletion` ends at the continued predecessor; `waitForChainCompletion` polls the chain's
+`waitForCompletion` ends at the continued predecessor and now reads its `chain` segment
+(`SUCCEEDED` with `completionKind` `CONTINUED`); `waitForChainCompletion` polls the chain's
 authorized snapshot until `finalOutcome` is set. A client timeout leaves the chain running.
+`GET /namespaces/{namespaceId}/chains/{chainId}/runs` lists the segments in order, 50 by default and
+at most 200 per page, behind an opaque cursor that stays valid while the chain grows; it needs
+`run:read`, answers a foreign or missing chain with the same 404, and returns no input, output or state.
+`chain-three-segments` proves three executed segments with one pinned version and one original deadline,
+and that writes aimed at a continued segment are refused (`CONFLICT`) without touching the chain.
 The shared `chain-final-success` scenario also proves a conditional continuation reaches a
 `SUCCEEDED` final outcome after the second segment. A transfer expression failure ends its current
 head with durable `EXPRESSION_ERROR`; the scheduler does not keep retrying the same input.
@@ -173,8 +179,26 @@ run fails with `CHAIN_LIMIT` and the chain records `FINAL` once. Direct declared
 available. The shared `chain-commands` scenario uses `activity -> waitEvent -> continueAsNew`:
 wait for `wait.started` before signalling, retain one command key for exact replay, inspect the
 new head after delivery, and send subsequent commands with that run ID. A direct `waitEvent`
-entrypoint, body-local continuation, triggers and broader graphs remain disabled. Exact-run commands remain bound to their
-segment and do not forward silently.
+entrypoint, body-local continuation, triggers and broader graphs remain disabled (G372 in
+`research.md`). Exact-run commands remain bound to their segment and do not forward silently; a
+cancel, pause or resume aimed at a continued segment is `409 CONFLICT`, as for any ended run.
+
+A boundary that still holds open work (a running step, a timer, a subscription, an approval, an
+unsettled child, an unknown effect or an unfinished compensation) **waits**: it is not a failure and
+nothing is stored for it. The scheduler counts it in `scheduler_continuation_waits_total{blocker}`
+(`blocker` is `sibling_work`, `child`, `lease`, `timer`, `subscription`, `approval`, `unknown_effect`,
+`compensation` or `capacity`, when the namespace or tenant has no room for the successor), and
+`Report.continuations_waiting`. The chain's original deadline still ends it `TIMED_OUT`. A hand-off
+replaces the predecessor and never takes room it does not have; lower the active-run quota to 0 and the
+boundary waits until it is raised again.
+
+A continuation workflow can run as a `child` node. The parent waits for the chain's final outcome,
+never for a segment, and is told once. Cancelling the parent latches the child chain and cancels its
+current head; the latch also stops a hand-off that had not committed. The successors of a child chain
+are runs of the parent's tree and spend its 1,024-run budget: a full tree ends the chain with
+`CHAIN_LIMIT` (the same durable code as the segment limit). The `chain-child` scenario runs this in all
+five SDKs. Nothing the chain owns is ever deleted (D298): the segment count of a chain and the run
+count of a tree only grow, and the runtime role has no `DELETE` on them.
 
 ## Rollback and compatibility
 

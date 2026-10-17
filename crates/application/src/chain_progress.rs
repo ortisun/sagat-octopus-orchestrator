@@ -28,12 +28,38 @@ use crate::identity::RequestContext;
 use crate::primitives::SchedulerAuthority;
 use crate::runs::RunStore;
 
+/// The parent step a child chain answers to. The link names the parent run and its `child` node;
+/// the store resolves the step identity inside the creating transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChainParent {
+    run: RunId,
+    node: NodeId,
+}
+
+impl ChainParent {
+    #[must_use]
+    pub const fn new(run: RunId, node: NodeId) -> Self {
+        Self { run, node }
+    }
+
+    #[must_use]
+    pub const fn run(&self) -> RunId {
+        self.run
+    }
+
+    #[must_use]
+    pub const fn node(&self) -> &NodeId {
+        &self.node
+    }
+}
+
 /// Chain metadata captured by the transaction that creates the initial run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChainInitialization {
     scope: ChainScope,
     initial_run_id: RunId,
     policy: ChainPolicy,
+    parent: Option<ChainParent>,
 }
 
 impl ChainInitialization {
@@ -43,7 +69,21 @@ impl ChainInitialization {
             scope,
             initial_run_id,
             policy,
+            parent: None,
         }
+    }
+
+    /// Makes the chain a child of `parent`: the parent step waits for the chain's final outcome,
+    /// never for one of its segments.
+    #[must_use]
+    pub fn with_parent(mut self, parent: ChainParent) -> Self {
+        self.parent = Some(parent);
+        self
+    }
+
+    #[must_use]
+    pub const fn parent(&self) -> Option<&ChainParent> {
+        self.parent.as_ref()
     }
 
     #[must_use]
@@ -445,127 +485,6 @@ pub struct ChainFinalizationWrite {
     replayed: bool,
 }
 
-/// Scheduler-fenced application of one final child-chain outcome to its original parent step.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ChildChainSettlementCommand {
-    scope: ChainScope,
-    parent_chain_id: RunId,
-    expected_parent_head: RunId,
-    expected_parent_chain_revision: u64,
-    expected_parent_run_version: u64,
-    child_chain_id: RunId,
-    scheduler: SchedulerAuthority,
-    occurred_at: OffsetDateTime,
-    task_outbox_id: Uuid,
-}
-
-impl ChildChainSettlementCommand {
-    #[allow(clippy::too_many_arguments)]
-    #[must_use]
-    pub const fn new(
-        scope: ChainScope,
-        parent_chain_id: RunId,
-        expected_parent_head: RunId,
-        expected_parent_chain_revision: u64,
-        expected_parent_run_version: u64,
-        child_chain_id: RunId,
-        scheduler: SchedulerAuthority,
-        occurred_at: OffsetDateTime,
-        task_outbox_id: Uuid,
-    ) -> Self {
-        Self {
-            scope,
-            parent_chain_id,
-            expected_parent_head,
-            expected_parent_chain_revision,
-            expected_parent_run_version,
-            child_chain_id,
-            scheduler,
-            occurred_at,
-            task_outbox_id,
-        }
-    }
-
-    #[must_use]
-    pub const fn scope(&self) -> ChainScope {
-        self.scope
-    }
-
-    #[must_use]
-    pub const fn parent_chain_id(&self) -> RunId {
-        self.parent_chain_id
-    }
-
-    #[must_use]
-    pub const fn expected_parent_head(&self) -> RunId {
-        self.expected_parent_head
-    }
-
-    #[must_use]
-    pub const fn expected_parent_chain_revision(&self) -> u64 {
-        self.expected_parent_chain_revision
-    }
-
-    #[must_use]
-    pub const fn expected_parent_run_version(&self) -> u64 {
-        self.expected_parent_run_version
-    }
-
-    #[must_use]
-    pub const fn child_chain_id(&self) -> RunId {
-        self.child_chain_id
-    }
-
-    #[must_use]
-    pub const fn scheduler(&self) -> &SchedulerAuthority {
-        &self.scheduler
-    }
-
-    #[must_use]
-    pub const fn occurred_at(&self) -> OffsetDateTime {
-        self.occurred_at
-    }
-
-    #[must_use]
-    pub const fn task_outbox_id(&self) -> Uuid {
-        self.task_outbox_id
-    }
-}
-
-/// Durable result of applying or replaying a child-chain outcome at the parent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ChildChainSettlementWrite {
-    parent_run_id: RunId,
-    child_chain_id: RunId,
-    replayed: bool,
-}
-
-impl ChildChainSettlementWrite {
-    #[must_use]
-    pub const fn new(parent_run_id: RunId, child_chain_id: RunId, replayed: bool) -> Self {
-        Self {
-            parent_run_id,
-            child_chain_id,
-            replayed,
-        }
-    }
-
-    #[must_use]
-    pub const fn parent_run_id(self) -> RunId {
-        self.parent_run_id
-    }
-
-    #[must_use]
-    pub const fn child_chain_id(self) -> RunId {
-        self.child_chain_id
-    }
-
-    #[must_use]
-    pub const fn replayed(self) -> bool {
-        self.replayed
-    }
-}
-
 impl ChainFinalizationWrite {
     #[must_use]
     pub const fn new(head: RunId, outcome: ChainFinalOutcome, replayed: bool) -> Self {
@@ -671,11 +590,6 @@ pub trait ChainProgressStore: Send + Sync {
         &self,
         command: &ChainFinalizationCommand,
     ) -> impl Future<Output = Result<ChainFinalizationWrite, ChainProgressError>> + Send;
-
-    fn settle_child_chain(
-        &self,
-        command: &ChildChainSettlementCommand,
-    ) -> impl Future<Output = Result<ChildChainSettlementWrite, ChainProgressError>> + Send;
 }
 
 /// Chain row held before its current run is locked.
@@ -760,6 +674,30 @@ pub struct ChainInspection {
     pub segments: Vec<ChainSegmentView>,
 }
 
+/// Most segments one page of a chain's runs may carry (the list convention of the API).
+pub const MAX_CHAIN_RUN_PAGE: u32 = 200;
+
+/// One segment of a chain as a list item: lineage and lifecycle, never a payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChainRunItem {
+    pub index: u16,
+    pub run_id: RunId,
+    pub status: RunStatus,
+    pub completion_kind: Option<execution::SegmentCompletionKind>,
+    pub predecessor: Option<RunId>,
+    pub successor: Option<RunId>,
+    pub created_at: OffsetDateTime,
+    pub finished_at: Option<OffsetDateTime>,
+}
+
+/// One page of a chain's runs in segment order. `next_after` is the last index on a full page that
+/// has more behind it; the API turns it into an opaque cursor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChainRunPage {
+    pub items: Vec<ChainRunItem>,
+    pub next_after: Option<u16>,
+}
+
 /// A run transaction opened only after its chain row was serialized.
 pub trait ChainRunTx: RunTx {
     fn locked_chain(&self) -> Result<&LockedChainHead, StoreError>;
@@ -787,6 +725,16 @@ where
         tenant_id: TenantId,
         chain_id: RunId,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    /// The segments after index `after` (all of them from the first when `None`), at most `limit`,
+    /// in segment order, or `None` when the chain does not exist in this tenant and namespace.
+    fn list_chain_runs(
+        &self,
+        scope: ChainScope,
+        chain_id: RunId,
+        after: Option<u16>,
+        limit: u32,
+    ) -> impl Future<Output = Result<Option<ChainRunPage>, StoreError>> + Send;
 }
 
 /// Canonical private command path for the current head of an execution chain.
@@ -824,6 +772,31 @@ where
         let scope = ChainScope::new(principal.tenant_id(), namespace_id);
         match self.store.inspect_chain(scope, chain_id).await? {
             Some(inspection) => Ok(inspection),
+            None => Err(self.missing_async(principal, chain_id, ctx).await),
+        }
+    }
+
+    /// One bounded page of the chain's runs in segment order. Authorization, tenant opacity and the
+    /// denial audit are those of [`Self::inspect`]; the segment index is a stable cursor because a
+    /// segment is only ever appended.
+    pub async fn list_runs(
+        &self,
+        principal: &Principal,
+        namespace_id: NamespaceId,
+        chain_id: RunId,
+        after: Option<u16>,
+        limit: u32,
+        ctx: &RequestContext,
+    ) -> Result<ChainRunPage, AppError> {
+        principal.authorize(Permission::RunRead)?;
+        let scope = ChainScope::new(principal.tenant_id(), namespace_id);
+        let limit = limit.clamp(1, MAX_CHAIN_RUN_PAGE);
+        match self
+            .store
+            .list_chain_runs(scope, chain_id, after, limit)
+            .await?
+        {
+            Some(page) => Ok(page),
             None => Err(self.missing_async(principal, chain_id, ctx).await),
         }
     }

@@ -1,4 +1,4 @@
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -10,8 +10,12 @@ use sagat_domain::identity::NamespaceId;
 use serde_json::json;
 use tower_http::limit::RequestBodyLimitLayer;
 
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use serde::Deserialize;
+
 use crate::dto_chains::{
-    ChainCancelBody, ChainInspectionBody, ChainSignalBody, ChainSignalResultBody,
+    ChainCancelBody, ChainInspectionBody, ChainRunPageBody, ChainSignalBody, ChainSignalResultBody,
 };
 use crate::error::ApiError;
 use crate::exec::Exec;
@@ -28,6 +32,10 @@ where
         .route(
             "/namespaces/{namespace_id}/chains/{chain_id}",
             get(inspect_chain::<B>),
+        )
+        .route(
+            "/namespaces/{namespace_id}/chains/{chain_id}/runs",
+            get(list_chain_runs::<B>),
         )
         .route(
             "/namespaces/{namespace_id}/chains/{chain_id}/signals/{signal_name}",
@@ -64,6 +72,74 @@ where
         )
         .await?;
     Ok((no_store(), Json(inspection.into())))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChainRunsQuery {
+    pub cursor: Option<String>,
+    pub limit: Option<String>,
+}
+
+/// The cursor is the index of the last segment returned, in a fixed-width opaque form. A segment is
+/// only ever appended, so a page never repeats or skips one when the chain grows between reads.
+fn decode_segment_cursor(cursor: &str) -> Result<u16, ApiError> {
+    let invalid = || ApiError::bad_request("the cursor is not valid");
+    let bytes = URL_SAFE_NO_PAD.decode(cursor).map_err(|_| invalid())?;
+    let bytes: [u8; 2] = bytes.try_into().map_err(|_| invalid())?;
+    let index = u16::from_be_bytes(bytes);
+    if index >= 10_000 {
+        return Err(invalid());
+    }
+    Ok(index)
+}
+
+fn encode_segment_cursor(index: u16) -> String {
+    URL_SAFE_NO_PAD.encode(index.to_be_bytes())
+}
+
+pub async fn list_chain_runs<B>(
+    caller: Caller,
+    State(state): State<B>,
+    Path((namespace_id, chain_id)): Path<(String, String)>,
+    Query(query): Query<ChainRunsQuery>,
+) -> Result<(HeaderMap, Json<ChainRunPageBody>), ApiError>
+where
+    B: Exec,
+    B::Store: ChainCommandStore,
+    <B::Store as RunStore>::Tx: ChainRunTx,
+{
+    let namespace_id = parse_namespace(&namespace_id)?;
+    let chain_id = parse_run(&chain_id)?;
+    let after = query
+        .cursor
+        .as_deref()
+        .map(decode_segment_cursor)
+        .transpose()?;
+    // Out-of-range sizes are clamped, as every list of the API does; text is not a size.
+    let limit = match query.limit.as_deref() {
+        None => 50,
+        Some(text) => text
+            .parse::<i64>()
+            .map_err(|_| ApiError::bad_request("the limit is not a number"))?
+            .clamp(1, 200) as u32,
+    };
+    let page = state
+        .runs()
+        .chain_commands()
+        .list_runs(
+            &caller.session.principal,
+            namespace_id,
+            chain_id,
+            after,
+            limit,
+            &caller.ctx,
+        )
+        .await?;
+    Ok((
+        no_store(),
+        Json(ChainRunPageBody::from_page(page, encode_segment_cursor)),
+    ))
 }
 
 pub async fn signal_chain<B>(

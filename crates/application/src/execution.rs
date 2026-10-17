@@ -40,7 +40,7 @@ pub const MAX_PAYLOAD_BYTES: usize = 256 * 1024;
 
 /// Most runs one tree may hold: a root run and all its descendants. Depth alone does not bound a
 /// tree (a parallel node can start hundreds of children per level), so the whole tree has a budget.
-pub const MAX_TREE_RUNS: usize = 1024;
+pub const MAX_TREE_RUNS: usize = sagat_domain::execution::MAX_TREE_RUNS;
 
 /// What the refusal names when a tree is full (`StoreError::QuotaExceeded::what`); the scheduler
 /// tells it apart from the quotas of a namespace or a tenant, which fail the child differently.
@@ -474,6 +474,17 @@ pub struct RunInfo {
     pub root: RunId,
 }
 
+/// Where a run sits in its continuation chain, when it belongs to one. A segment that ended into
+/// its successor is `SUCCEEDED` without being the process outcome; this is what tells the two apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunSegment {
+    pub chain_id: RunId,
+    pub index: u16,
+    /// `None` while the segment is open.
+    pub completion_kind: Option<sagat_domain::execution::SegmentCompletionKind>,
+    pub successor: Option<RunId>,
+}
+
 /// A run as read by the API.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunRecord {
@@ -484,6 +495,9 @@ pub struct RunRecord {
     pub paused: bool,
     pub updated_at: OffsetDateTime,
     pub finished_at: Option<OffsetDateTime>,
+    /// Set by the reads that serve the API (`get`, `list`); `None` for a run outside any chain and
+    /// for a record loaded inside a command transaction.
+    pub chain: Option<RunSegment>,
 }
 
 /// Who caused the events of one transaction (stored with every journal entry).

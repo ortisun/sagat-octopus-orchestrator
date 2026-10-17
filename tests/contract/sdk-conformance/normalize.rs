@@ -12,6 +12,7 @@ pub struct Normalizer {
     time: Regex,
     uuids: HashMap<String, usize>,
     traces: HashMap<String, usize>,
+    deadlines: HashMap<String, usize>,
     unique: String,
     given_traces: Vec<String>,
 }
@@ -28,6 +29,7 @@ impl Normalizer {
                 .expect("regex"),
             uuids: HashMap::new(),
             traces: HashMap::new(),
+            deadlines: HashMap::new(),
             unique: unique.to_owned(),
             given_traces,
         }
@@ -43,7 +45,11 @@ impl Normalizer {
                 // the scenario sent is compared like any other value.
                 let is_error = map.contains_key("remediation");
                 let is_run = map.contains_key("runId") && map.contains_key("createdAt");
-                let deadline_after = if is_run {
+                // A segment of a chain keeps the chain's original deadline: the same instant, whatever
+                // run it belongs to. Its placeholder names the instant, not its distance from this run's
+                // creation, so a successor that moved the deadline (or reset it) shows as another one.
+                let in_chain = is_run && map.contains_key("chain");
+                let deadline_after = if is_run && !in_chain {
                     deadline_after_creation(map)
                 } else {
                     None
@@ -69,6 +75,12 @@ impl Normalizer {
                         }
                         // The deadline of a run is "so long after it was created": that is what an SDK that
                         // sends it in the wrong unit would get wrong, so that is what is compared.
+                        "deadline" if in_chain && item.is_string() => {
+                            let known = self.deadlines.len() + 1;
+                            let instant = item.as_str().unwrap_or_default().to_owned();
+                            let n = *self.deadlines.entry(instant).or_insert(known);
+                            out.insert(key.clone(), Value::String(format!("<chain-deadline:{n}>")));
+                        }
                         "deadline" if deadline_after.is_some() => {
                             out.insert(
                                 key.clone(),
