@@ -900,3 +900,21 @@ compilation of that example, the complete smoke passed, including CLI, TypeScrip
 Chromium **1/1**, no ignored (`/tmp/sagat-completion-current-compose-smoke-2.log`). The script
 removed only its own Compose project and volumes. Images were built before the later mutation-clock
 fix; this checkpoint does not claim rebuilt post-clock release images or final release acceptance.
+
+### Runtime event-read privilege repair
+
+The broad workspace checkpoint exposed two privilege-audit findings. The dead-letter read really
+failed as `sagat_app`: `FOR SHARE` requires UPDATE permission on at least one column, while this
+table intentionally grants no UPDATE. The isolated runtime-role baseline failed 1/2
+(`/tmp/sagat-completion-dead-letter-runtime-privilege-red.log`). The read now selects the committed
+immutable record without that row lock; namespace/membership/reveal authority stays locked through
+the projection/audit commit. No new privilege is granted. Its runtime-role repeat passed **2/2**,
+18.04 s (`/tmp/sagat-completion-dead-letter-runtime-privilege-green.log`).
+
+The other finding was the SQL auditor treating the LATERAL keyword as a relation. A standalone
+regression failed first (the initial test also incorrectly included `public.` in the auditor's
+normalized function name; both red logs are retained), then **17/17** scanner tests passed. The
+new case still requires function EXECUTE and nested-relation SELECT/row-lock checks. The complete
+real-database runtime-privilege module then passed **32/32**, 55.49 s
+(`/tmp/sagat-completion-current-runtime-privilege-audit.log`), with no added exception or grant.
+The model document now describes the implemented prepared-request and authority-lock boundaries.

@@ -96,7 +96,10 @@ impl EventPayloadStore for PgRunStore {
             return Ok(EventPayloadRead::Missing);
         };
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
-        let Some(row)=sqlx::query("SELECT id,connector_id,position,reason,headers,body,truncated,received_at FROM connector_dead_letters WHERE tenant_id=$1 AND namespace_id=$2 AND connector_id=$3 AND id=$4 FOR SHARE")
+        // Dead-letter contents are immutable to the runtime role. Read the committed value without
+        // a row lock, which would require granting UPDATE just to disclose this retained record.
+        // Current role/grant checks below still hold their authority locks through the audit commit.
+        let Some(row)=sqlx::query("SELECT id,connector_id,position,reason,headers,body,truncated,received_at FROM connector_dead_letters WHERE tenant_id=$1 AND namespace_id=$2 AND connector_id=$3 AND id=$4")
             .bind(p.tenant_id().as_uuid()).bind(p.namespace_id().as_uuid()).bind(p.connector_id().as_uuid()).bind(id).fetch_optional(&mut *tx).await.map_err(store_error)? else{return Ok(EventPayloadRead::Missing)};
         lock_authority(&mut tx, p.tenant_id(), p.namespace_id()).await?;
         let Some(role) = current_role(&mut tx, p.tenant_id(), p.subject().as_str()).await? else {
