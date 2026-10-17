@@ -13,6 +13,8 @@ pub enum Command {
     ProvisionTenant,
     /// Re-seal every stored secret version under the active key of `SAGAT_SECRETS_KEYS`, then exit.
     ResealSecrets,
+    /// Retire one bounded batch of unreferenced OpenBao credentials, then exit.
+    CleanupSecrets,
     /// Grant a tenant a quota ceiling, or withdraw it, then exit. Values are explicit.
     QuotaCeiling,
     /// Set the weight of a tenant in the scheduler's passes, or withdraw it, then exit.
@@ -41,6 +43,7 @@ pub fn parse(args: &[String]) -> Result<Command, UsageError> {
         Some("seed-dev") => Command::SeedDev,
         Some("provision-tenant") => Command::ProvisionTenant,
         Some("reseal-secrets") => Command::ResealSecrets,
+        Some("cleanup-secrets") => Command::CleanupSecrets,
         Some("quota-ceiling") => Command::QuotaCeiling,
         Some("scheduling-weight") => Command::SchedulingWeight,
         Some("script-key") => Command::ScriptKey,
@@ -67,6 +70,7 @@ COMMANDS:
     seed-dev      Create a development tenant and admin (only when SAGAT_ENV=dev)
     provision-tenant  Create a tenant and its first admin (any environment; values are explicit)
     reseal-secrets  Re-seal stored secrets under the active key of SAGAT_SECRETS_KEYS (after a key rotation)
+    cleanup-secrets  Retire expired unreferenced OpenBao credentials (one batch; 60 second deadline)
     quota-ceiling  Grant a tenant a quota ceiling (SAGAT_CEILING_TENANT_ID, _RESOURCE, _VALUE; a number or default)
     scheduling-weight  Set a tenant's weight in the scheduler's passes, 1 to 16 (SAGAT_WEIGHT_TENANT_ID, SAGAT_WEIGHT_VALUE; a number or default)
     script-key    Print a new Ed25519 key for SAGAT_SCRIPT_SIGNING_KEY (it signs the artifacts of scripts)
@@ -136,6 +140,17 @@ ENVIRONMENT (seed-dev):
                                       below) for the administrator; unset: none
     SAGAT_SEED_WORKSPACE              workspace slug of that namespace [dev]
     SAGAT_SEED_ENVIRONMENT            its environment: dev, staging or prod [dev]
+
+ENVIRONMENT (cleanup-secrets):
+    Use the least-privilege runtime database role and a separate OpenBao cleanup token.
+    SAGAT_SECRET_CLEANUP_BATCH        maximum operations and terminal runs per batch, 1..128 [32]
+    SAGAT_OPENBAO_ADDRESS             provider URL, HTTPS outside explicit loopback development
+    SAGAT_OPENBAO_TOKEN_FILE          absolute token-file path; cleanup policy only
+    SAGAT_OPENBAO_MOUNT               KV v2 mount [secret]
+    SAGAT_OPENBAO_CA_FILE             optional PEM trust roots
+    SAGAT_OPENBAO_TIMEOUT_MS          whole provider operation deadline, 1..10000 [5000]
+    SAGAT_OPENBAO_DEVELOPMENT         allow numeric loopback HTTP, only when SAGAT_ENV=dev [false]
+    No local secret key ring or OpenBao intent key is required. Exit 1 means retry later.
 
 ENVIRONMENT (provision-tenant):
     SAGAT_PROVISION_TENANT            tenant slug (required)

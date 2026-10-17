@@ -50,6 +50,7 @@ pub trait SecretProvider: Send + Sync {
         &'a self,
         reference: &'a ProviderReference,
     ) -> ProviderFuture<'a, Option<SecretValue>>;
-    /// Permanently remove an unreferenced object, e.g. after retention or an abandoned intent.
+    /// Permanently destroy unreferenced value bytes and fence future creates at this identity.
+    /// Provider metadata may remain as a noncredential tombstone. Safe to repeat after lost replies.
     fn delete<'a>(&'a self, reference: &'a ProviderReference) -> ProviderFuture<'a, ()>;
 }

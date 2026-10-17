@@ -135,3 +135,28 @@ The four count grants use the table defaults. Catalog capacity includes paused e
 count does not block edits, pause/delete, receipt replay or activation of a reserved provider intent.
 Lease capacity is checked only for new claims, not again against the already occupied slot during
 credential resolution. Tightened output bounds preserve unknown-write/manual-review handling.
+
+## Provider retirement and bounded cleanup (T017-005/024)
+
+An operator cleanup command/CronJob uses the runtime database role and a separate OpenBao token.
+Keep current and four preceding logical versions, all live/manual-review attempt pins and a
+24-hour receipt window. Release pins only from terminal runs finished more than 24 hours ago,
+one run per transaction with run lock before namespace secret lock. Existing result validation and
+completion receipts do not need those pins after the terminal retention window.
+
+For an eligible unreferenced operation, take the namespace secret lock, recheck both logical
+version and attempt references and database-time age, mark it abandoned and persist a unique
+cleanup lease/expiry with audit. Commit before provider I/O. After retirement succeeds, a second
+transaction verifies the same lease, abandoned state and absent references, then deletes the
+receipt and releases its charged bytes with audit. Failures/crashes retain metadata for retry.
+Batches and command wall time are bounded; replicas may reclaim expired cleanup leases.
+
+Retirement permanently destroys version-1 bytes while preserving OpenBao KV metadata. Read only
+metadata (never credentials); if no version exists, create a noncredential tombstone using CAS=0,
+then destroy version 1. Existing/conflicting metadata must prove current_version=1. This fences a
+process paused after preparing an old create: its later CAS=0 cannot recreate the credential.
+Cleanup needs metadata:read, data:create and destroy:update on only the credential prefix; it has
+no data:read or metadata:delete grant. Tombstones contain no secret values but accumulate in the
+provider; do not claim their count is bounded. Back up/restore them with OpenBao, and do not purge
+metadata while old workloads/requests could still resume. This refines retention, without changing
+logical provider authority or the immutable operation paths. Source: OpenBao KV v2 API semantics.

@@ -40,6 +40,7 @@ use time::OffsetDateTime;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
+pub mod cleanup;
 pub mod cli;
 pub mod config;
 
@@ -80,6 +81,8 @@ pub enum RunError {
     Io(#[from] std::io::Error),
     #[error("health check failed: {0}")]
     Unhealthy(String),
+    #[error("secret cleanup could not finish; retry the command")]
+    Cleanup,
 }
 
 impl RunError {
@@ -96,6 +99,7 @@ impl RunError {
             | Self::Io(_)
             | Self::Unhealthy(_)
             | Self::AlreadyExists => 1,
+            Self::Cleanup => 1,
         }
     }
 }

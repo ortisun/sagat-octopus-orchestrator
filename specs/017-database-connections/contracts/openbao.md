@@ -5,13 +5,48 @@ Implementation: `sagat_infra_secrets::openbao::OpenBao`. Backend-only boundary. 
 
 A provider reference consists of tenant UUID, namespace UUID and provisioning-operation UUID, all allocated/read from trusted Sagat persistence. The configured mount is a single alphanumeric/underscore/hyphen segment. Paths are `/v1/{mount}/data/sagat/credentials/{tenant}/{namespace}/{operation}`. Each operation has one immutable KV object, created with `options.cas = 0` and `data.value` containing base64 of 1–16384 secret bytes. Reads explicitly request provider version 1 and validate the returned version/deletion metadata. Logical rotation creates another operation object; it never overwrites an existing one.
 
-`create` returns success only with a valid version-1 receipt. On a refused CAS, it reads the object: existence returns `Conflict`, never success. The application must verify the durable content binding before activation. `read` returns missing only for provider 404. `delete` permanently removes metadata/versions, and is only for authorized retention/abandoned-intent cleanup.
+`create` returns success only with a valid version-1 receipt. On a refused CAS, it reads the object: existence returns `Conflict`, never success. The application must verify the durable content binding before activation. `read` returns missing only for provider 404. `delete` permanently destroys version-1 value bytes and retains metadata as a fence against late CAS=0 creation. It first reads bounded metadata; an absent path gets a noncredential CAS=0 tombstone before version 1 is destroyed. Metadata must prove current_version=1. Retirement uses only metadata reads, data creation and version destruction; no credential read or metadata-delete grant is required. Tombstone metadata accumulates and must be preserved during restore. This operation is only for authorized retention/abandoned-intent cleanup.
 
 Production uses verified HTTPS, optional configured CA, and an absolute token-file path maintained by OpenBao Agent. Each request rereads the bounded token file, validates lookup-self has a positive TTL no greater than 24 hours and no root policy, and sends a sensitive `X-Vault-Token` header. Agent authentication/renewal is external to this adapter. The full operation, including lookup and any receipt read, has one 1–10 second deadline. Redirects and environment proxies are disabled. Responses are bounded to 64 KiB before parsing. Only an explicitly selected development mode permits loopback HTTP/root tokens.
 
 Errors are a closed enum: configuration, unavailable, denied, conflict, rejected, invalid response. They carry no provider response text, secret, token or URL. Buffers owned by the adapter for plaintext, base64 JSON and token-file contents are zeroized; HTTP/TLS libraries also hold transient copies, so this is not a claim of eliminating every process-memory copy. No cross-request plaintext cache exists.
 
 Metrics: `secret_provider_requests_total{provider,operation,outcome}` and `secret_provider_request_seconds{provider,operation}`, all closed labels. Read/create tracing spans skip every argument. Application-layer audits and tenant authorization are required before exposing this port to users.
+
+## Operator retirement
+
+`control-plane cleanup-secrets` processes one batch (`SAGAT_SECRET_CLEANUP_BATCH`, default 32,
+range 1..128) with a 60-second command deadline. It uses the runtime PostgreSQL role, checked
+outside development, and a separate token file with the cleanup policy below. It needs neither
+the local encryption key ring nor the intent-binding key. A deferred/provider-failed batch exits 1
+and can be scheduled again; invalid configuration exits 2. A killed job leaves a recoverable
+90-second claim. Run it periodically; one invocation does not promise to drain the backlog.
+
+```hcl
+path "auth/token/lookup-self" { capabilities = ["read"] }
+path "secret/metadata/sagat/credentials/*" { capabilities = ["read"] }
+path "secret/data/sagat/credentials/*" { capabilities = ["create"] }
+path "secret/destroy/sagat/credentials/*" { capabilities = ["update"] }
+```
+
+Replace `secret` with the configured mount. This policy cannot read credential values or delete
+metadata. Production tokens are non-root, finite-lived (at most 24 hours), supplied/renewed by
+the workload's authentication agent. Management/engine tokens must not receive destruction rights.
+
+Cleanup preserves current plus four prior logical versions, all live/manual-review attempt pins,
+and terminal attempt pins for 24 hours. Unreferenced operations become eligible 24 hours after
+creation/activation. Abandonment/audit/claim commit before provider retirement; receipt removal,
+retained-byte refund and retirement audit commit only after confirmed retirement under the same
+unexpired claim. No database transaction waits on provider I/O. Provider metadata is deliberately
+retained forever to reject delayed CAS=0 writes; account for its storage growth and preserve it on
+restore. Restoring PostgreSQL and OpenBao from unrelated points can leave missing credentials and
+must fail closed until reconciled.
+
+Observability: `secret.cleanup` span; `secret_cleanup_seconds`,
+`secret_cleanup_command_seconds{outcome=success|retry}`, `secret_cleanup_pins_released_total`,
+`secret_cleanup_operations_total{outcome=retired|deferred|superseded}`. Audits are
+`secret.provider_abandoned`, `secret.provider_retired`, `secret.attempt_pins_released`; logs carry
+counts, never credential/provider paths or tokens.
 
 Sources: [OpenBao HTTP API](https://openbao.org/api-docs/), [KV v2](https://openbao.org/docs/secrets/kv/kv-v2/), [official releases](https://github.com/openbao/openbao/releases). Real-service fixture: pinned `openbao/openbao:2.7.1`; production digest/profile is a separate delivery task.
 

@@ -63,3 +63,5 @@ pub async fn migrate(pool: &PgPool) -> Result<(), sqlx::migrate::MigrateError> {
 mod blobs;
 
 pub use blobs::PgBlobCatalog;
+
+mod secret_cleanup;

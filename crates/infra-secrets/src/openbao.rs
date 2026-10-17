@@ -270,6 +270,69 @@ impl OpenBao {
         }
         Ok(())
     }
+
+    /// No secret-data read permission is needed to retire a path. Metadata is the permanent CAS
+    /// fence, including when cleanup wins the race before the original writer reaches OpenBao.
+    async fn retirement_version(
+        &self,
+        reference: &ProviderReference,
+    ) -> Result<Option<u32>, ProviderError> {
+        let response = self
+            .request(Method::GET, self.url(reference, "metadata")?, None)
+            .await?;
+        if response.status() == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        check_status(response.status())?;
+        let body = bounded_body(response).await?;
+        let metadata: RetirementMetadata =
+            serde_json::from_slice(&body).map_err(|_| ProviderError::InvalidResponse)?;
+        match metadata.data.current_version {
+            0 => Ok(None),
+            1 => Ok(Some(1)),
+            _ => Err(ProviderError::InvalidResponse),
+        }
+    }
+
+    async fn retire_inner(&self, reference: &ProviderReference) -> Result<(), ProviderError> {
+        if self.retirement_version(reference).await?.is_none() {
+            let response = self
+                .request(
+                    Method::POST,
+                    self.url(reference, "data")?,
+                    Some(Bytes::from_static(
+                        br#"{"options":{"cas":0},"data":{"retired":true}}"#,
+                    )),
+                )
+                .await?;
+            if matches!(
+                response.status(),
+                StatusCode::BAD_REQUEST | StatusCode::FORBIDDEN
+            ) {
+                // create-only tokens can get 403 when a racing writer already created the key.
+                // Only metadata version evidence permits proceeding; the status alone never does.
+                if self.retirement_version(reference).await? != Some(1) {
+                    return Err(ProviderError::Rejected);
+                }
+            } else {
+                check_status(response.status())?;
+                let body = bounded_body(response).await?;
+                let receipt: WriteResponse =
+                    serde_json::from_slice(&body).map_err(|_| ProviderError::InvalidResponse)?;
+                if receipt.data.version != 1 {
+                    return Err(ProviderError::InvalidResponse);
+                }
+            }
+        }
+        let response = self
+            .request(
+                Method::POST,
+                self.url(reference, "destroy")?,
+                Some(Bytes::from_static(br#"{"versions":[1]}"#)),
+            )
+            .await?;
+        check_status(response.status())
+    }
 }
 
 impl SecretProvider for OpenBao {
@@ -290,19 +353,7 @@ impl SecretProvider for OpenBao {
         Box::pin(async move { self.measured("read", self.read_inner(reference)).await })
     }
     fn delete<'a>(&'a self, reference: &'a ProviderReference) -> ProviderFuture<'a, ()> {
-        Box::pin(async move {
-            self.measured("delete", async {
-                let response = self
-                    .request(Method::DELETE, self.url(reference, "metadata")?, None)
-                    .await?;
-                if response.status() == StatusCode::NOT_FOUND {
-                    Ok(())
-                } else {
-                    check_status(response.status())
-                }
-            })
-            .await
-        })
+        Box::pin(async move { self.measured("delete", self.retire_inner(reference)).await })
     }
 }
 
@@ -381,6 +432,14 @@ struct Metadata {
     version: u32,
     destroyed: bool,
     deletion_time: String,
+}
+#[derive(Deserialize)]
+struct RetirementMetadata {
+    data: CurrentVersion,
+}
+#[derive(Deserialize)]
+struct CurrentVersion {
+    current_version: u32,
 }
 #[derive(Deserialize)]
 struct TokenLookup {

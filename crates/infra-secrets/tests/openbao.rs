@@ -121,6 +121,66 @@ async fn real_openbao_preserves_scope_cas_and_token_rotation() {
     assert!(!format!("{error:?} {error}").contains("canary"));
     std::fs::write(&token_file, "sagat-test-bootstrap\n").unwrap();
     assert!(provider.read(&reference).await.unwrap().is_some());
+
+    let client = reqwest::Client::new();
+    let base = format!("http://127.0.0.1:{port}/v1");
+    let policy = r#"
+path "secret/metadata/sagat/credentials/*" { capabilities = ["read"] }
+path "secret/data/sagat/credentials/*" { capabilities = ["create"] }
+path "secret/destroy/sagat/credentials/*" { capabilities = ["update"] }
+path "auth/token/lookup-self" { capabilities = ["read"] }
+"#;
+    client
+        .put(format!("{base}/sys/policies/acl/sagat-cleanup-test"))
+        .header("X-Vault-Token", "sagat-test-bootstrap")
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_vec(&serde_json::json!({"policy":policy})).unwrap())
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    let issued=client.post(format!("{base}/auth/token/create"))
+        .header("X-Vault-Token","sagat-test-bootstrap")
+        .header("Content-Type","application/json").body(serde_json::to_vec(&serde_json::json!({"policies":["sagat-cleanup-test"],"ttl":"1h","no_default_policy":true})).unwrap())
+        .send().await.unwrap().error_for_status().unwrap().bytes().await.unwrap();
+    let issued: serde_json::Value = serde_json::from_slice(&issued).unwrap();
+    let cleanup_token = issued["auth"]["client_token"].as_str().unwrap();
+    let cleanup_file = temp.path().join("cleanup-token");
+    std::fs::write(&cleanup_file, cleanup_token).unwrap();
+    let mut cleanup_config = config(&format!("http://127.0.0.1:{port}"));
+    cleanup_config.development_loopback = true;
+    cleanup_config.token_file = cleanup_file;
+    let cleanup = OpenBao::new(cleanup_config).unwrap();
+    assert_eq!(
+        cleanup.read(&reference).await.unwrap_err(),
+        ProviderError::Denied
+    );
+    // Retirement must also fence a process that resumes a stale CAS=0 create after cleanup.
+    for retired in [&reference, &foreign] {
+        cleanup.delete(retired).await.unwrap();
+        assert!(provider.read(retired).await.unwrap().is_none());
+        cleanup.delete(retired).await.unwrap();
+        assert!(
+            provider.create(retired, &replacement).await.is_err(),
+            "retired operations cannot recreate provider bytes"
+        );
+        assert!(provider.read(retired).await.unwrap().is_none());
+        let metadata_url = format!(
+            "{base}/secret/metadata/sagat/credentials/{}/{}/{}",
+            retired.tenant, retired.namespace, retired.operation
+        );
+        assert_eq!(
+            client
+                .delete(metadata_url)
+                .header("X-Vault-Token", cleanup_token)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            403
+        );
+    }
 }
 
 #[tokio::test]

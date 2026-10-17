@@ -367,3 +367,13 @@ coverage above; full deployment/SDK/crash gates remain T017-023/024/025.
   integration_database_connections --locked -- -D warnings` passes in 10.93 seconds. Its first
   run caught identical validation branches; combined the range predicate and reran successfully.
   Formatting and diff whitespace checks pass.
+
+## Recoverable provider retirement checkpoint
+
+- Real OpenBao retirement suite: 6 passed (1.46 s), including a separate scoped token that cannot read credentials or delete metadata. Existing and absent paths remain fenced against delayed CAS=0 writes after destruction.
+- `cargo test -p sagat-tests --test integration_database_connections --locked`: 3 passed (14.49 s). New scenarios run cleanup/managed-intent writes through `sagat_app`, prove lost destruction acknowledgement, expired/superseded claims, no early quota refund, provider-outage deferral, 24-hour terminal retention, preserved live/manual-review pins and the current plus four prior versions. Fixture time is advanced only through the isolated owner connection.
+- `cargo test -p sagat-control-plane --test cli --locked`: 19 passed (8.94 s), including missing provider and invalid batch without configuration/value leakage.
+- Focused application/PostgreSQL/secrets/control-plane `clippy --all-targets --locked -- -D warnings`, formatting, diff whitespace and architecture (24 crates): passed.
+- Independent read-only review: no Required/Critical findings.
+- Test development caught an off-by-one rotation fixture and cancellation still awaiting lease expiry; both fixtures were corrected to exercise the actual lifecycle. No failing test is claimed as evidence.
+- Production scheduling, coordinated backup/restore and final regression remain separate open tasks. OpenBao metadata tombstones accumulate permanently; only value bytes and unreferenced PostgreSQL receipts are reclaimed.

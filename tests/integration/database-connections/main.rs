@@ -1,6 +1,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 mod ad_hoc;
 mod admission;
+mod cleanup;
+mod cleanup_retention;
 mod executor;
 mod output;
 mod output_blobs;
@@ -216,6 +218,8 @@ async fn durable_provider_intents_reconcile_without_plaintext_or_duplicate_rotat
     connection_catalog(&w).await;
     ad_hoc::run(&w).await;
     admission::run(&w, &service).await;
+    cleanup::run(provider.clone()).await;
+    cleanup_retention::run(provider.clone()).await;
     policies::run(provider.clone()).await;
     executor::run(provider.clone()).await;
     executor::grpc(provider.clone()).await;

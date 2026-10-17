@@ -38,3 +38,5 @@ pub mod telemetry;
 pub mod worker;
 
 pub mod blobs;
+
+pub mod secret_cleanup;
