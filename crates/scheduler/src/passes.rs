@@ -711,7 +711,8 @@ where
         {
             Ok(write) => Ok(write),
             Err(ChainProgressError::Chain(
-                sagat_domain::execution::ChainError::SegmentLimitExceeded,
+                limit @ (sagat_domain::execution::ChainError::SegmentLimitExceeded
+                | sagat_domain::execution::ChainError::TreeBudgetExhausted),
             )) => {
                 let Some(mut tx) = self.store.begin_chain_head(scope, chain_id).await? else {
                     return Err(ContinuationAdvanceError::MissingChain);
@@ -729,7 +730,12 @@ where
                     AuditAction::RunFinished,
                     ResourceType::Run,
                     chain.head().to_string(),
-                    "chain segment limit exhausted",
+                    match limit {
+                        sagat_domain::execution::ChainError::TreeBudgetExhausted => {
+                            "run tree budget exhausted"
+                        }
+                        _ => "chain segment limit exhausted",
+                    },
                     info.trace_id,
                     tx.now(),
                 ));
@@ -3427,10 +3433,17 @@ where
             .timeout()
             .and_then(|t| time::Duration::try_from(t).ok())
             .and_then(|t| pending.as_of.checked_add(t));
-        let deadline_at = match (parent.info.deadline_at, own) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        };
+        // A continuation chain carries its own required timeout, counted from the first run: it can
+        // only shorten the child's deadline, and the chain keeps the result as its original one.
+        let chain_deadline = definition.continuation_policy().and_then(|policy| {
+            time::Duration::try_from(policy.timeout())
+                .ok()
+                .and_then(|timeout| pending.as_of.checked_add(timeout))
+        });
+        let deadline_at = [parent.info.deadline_at, own, chain_deadline]
+            .into_iter()
+            .flatten()
+            .min();
         let child_id = pending.child;
         let info = RunInfo {
             run_id: child_id,

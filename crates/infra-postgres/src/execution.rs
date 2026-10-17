@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use sagat_application::chain_progress::{
-    ChainInitialization, ChainProgressError, ChainRunTx, LockedChainHead,
+    ChainInitialization, ChainParent, ChainProgressError, ChainRunTx, LockedChainHead,
 };
 use sagat_application::definitions::{
     Applied, DefinitionStore, Idempotency, VersionRecord, WorkflowRecord,
@@ -3119,7 +3119,9 @@ impl RunTx for PgRunTx {
                     fence: Some(_),
                     ..
                 } if node.is_compensation() => self.breaker_outcome(node, false).await?,
-                RunEvent::ChildFinished { child, .. } => self.settle_child(*child, false).await?,
+                RunEvent::ChildFinished { child, .. } => {
+                    self.settle_child(*child, false, true).await?;
+                }
                 RunEvent::StepCancelled { node } => {
                     self.release_child(node, true).await?;
                     if matches!(
@@ -3327,20 +3329,19 @@ impl RunTx for PgRunTx {
         if self.initialize_chain
             && let Some(policy) = self.def.continuation_policy()
         {
-            if self.info.parent.is_some() {
-                return Err(StoreError::Internal {
-                    detail: "child continuation chains are not enabled".to_owned(),
-                });
-            }
             let chain_policy =
                 ChainPolicy::new(policy.max_segments()).map_err(|_| StoreError::Internal {
                     detail: "validated continuation policy became invalid".to_owned(),
                 })?;
-            let initialization = ChainInitialization::new(
+            let mut initialization = ChainInitialization::new(
                 ChainScope::new(self.info.tenant_id, self.info.namespace_id),
                 self.info.run_id,
                 chain_policy,
             );
+            if let Some(parent) = &self.info.parent {
+                initialization =
+                    initialization.with_parent(ChainParent::new(parent.run, parent.node.clone()));
+            }
             crate::chain_progress::initialize_chain_in_transaction(&mut self.tx, &initialization)
                 .await
                 .map_err(|error| match error {
@@ -3965,7 +3966,14 @@ impl PgRunTx {
     }
 
     /// The parent is told the outcome (or no longer cares): the child need not notify it again.
-    async fn settle_child(&mut self, child: RunId, cancel: bool) -> Result<(), StoreError> {
+    /// `finished` says the outcome was applied to the parent's step (a child chain's link is then
+    /// settled); otherwise the parent only stopped caring and the link is merely latched.
+    async fn settle_child(
+        &mut self,
+        child: RunId,
+        cancel: bool,
+        finished: bool,
+    ) -> Result<(), StoreError> {
         sqlx::query(
             "UPDATE runs SET parent_settled = true, \
                     parent_cancel = (parent_cancel OR ($3 AND finished_at IS NULL)) \
@@ -3974,6 +3982,22 @@ impl PgRunTx {
         .bind(self.info.tenant_id.as_uuid())
         .bind(child.as_uuid())
         .bind(cancel)
+        .execute(&mut *self.tx)
+        .await
+        .map_err(store_error)?;
+        // A child chain answers through its link: the parent's lock is the only one taken here, so
+        // the latch can never wait for (or deadlock with) a hand-off holding the chain's locks.
+        sqlx::query(
+            "UPDATE child_chain_links SET cancel_requested = (cancel_requested OR $4), \
+                    settled = (settled OR ($5 AND final_outcome IS NOT NULL)), updated_at = $6 \
+             WHERE tenant_id = $1 AND parent_run_id = $2 AND child_chain_id = $3",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.run_id.as_uuid())
+        .bind(child.as_uuid())
+        .bind(cancel)
+        .bind(finished)
+        .bind(self.now)
         .execute(&mut *self.tx)
         .await
         .map_err(store_error)?;
@@ -4006,7 +4030,7 @@ impl PgRunTx {
             return Ok(());
         };
         if settle {
-            self.settle_child(RunId::new(child), cascades).await
+            self.settle_child(RunId::new(child), cascades, false).await
         } else if cascades {
             sqlx::query(
                 "UPDATE runs SET parent_cancel = true \
@@ -4014,6 +4038,17 @@ impl PgRunTx {
             )
             .bind(self.info.tenant_id.as_uuid())
             .bind(child)
+            .execute(&mut *self.tx)
+            .await
+            .map_err(store_error)?;
+            sqlx::query(
+                "UPDATE child_chain_links SET cancel_requested = true, updated_at = $4 \
+                 WHERE tenant_id = $1 AND parent_run_id = $2 AND child_chain_id = $3",
+            )
+            .bind(self.info.tenant_id.as_uuid())
+            .bind(self.info.run_id.as_uuid())
+            .bind(child)
+            .bind(self.now)
             .execute(&mut *self.tx)
             .await
             .map_err(store_error)?;

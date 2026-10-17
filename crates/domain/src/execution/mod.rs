@@ -33,8 +33,8 @@ pub use command::{
 pub use continuation::{
     CancelResolution, ChainError, ChainFinalOutcome, ChainHandoff, ChainPolicy, ChainScope,
     ChildChainLink, ChildObservation, ContinuationProposal, ContinuationTransfer, ExecutionChain,
-    FinalizationResolution, MAX_CHAIN_SEGMENTS, Quiescence, QuiescenceBlocker, Segment,
-    SegmentCompletionKind, SegmentIndex,
+    FinalizationResolution, MAX_CHAIN_SEGMENTS, MAX_TREE_RUNS, Quiescence, QuiescenceBlocker,
+    Segment, SegmentCompletionKind, SegmentIndex,
 };
 pub use error::ExecutionError;
 pub use event::{

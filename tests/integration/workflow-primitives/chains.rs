@@ -441,3 +441,476 @@ async fn a_blocked_boundary_does_not_hold_back_the_boundaries_behind_it() {
         "the blocked chain stayed put"
     );
 }
+
+// ------------------------------------------------------------------------------------ children
+
+use sagat_application::execution::child_run_id;
+use sagat_application::runs::RunOperation;
+use sagat_domain::execution::StepStatus;
+
+use crate::support::engine::{activity, child_node, document};
+
+/// A continuation workflow that keeps going while `input.continue` is true and then ends.
+fn rolling(name: &str) -> Value {
+    json!({
+        "apiVersion": "sagat-octopus-orchestrator.io/v1",
+        "kind": "Workflow",
+        "metadata": {"name": name},
+        "entrypoint": "work",
+        "nodes": [
+            {"id": "work", "type": "activity", "activity": "segment.work", "next": "again"},
+            {"id": "again", "type": "condition", "expression": "input.continue",
+             "ifTrue": "rollover", "ifFalse": "done"},
+            {"id": "rollover", "type": "continueAsNew", "input": "input.next"},
+            {"id": "done", "type": "end"}
+        ],
+        "chainPolicy": {"maxSegments": 5, "timeoutMs": 3_600_000}
+    })
+}
+
+struct Family {
+    world: World,
+    scheduler: Sched,
+    parent: RunId,
+    /// The child chain's first run, which is also its chain id.
+    chain: RunId,
+}
+
+impl Family {
+    /// The parent waits at `kid`, a child node naming the rolling workflow; `kid_input` is the
+    /// child's input once it exists.
+    async fn start(label: &str) -> Self {
+        let world = world().await;
+        let kid = format!("kid-{label}-{}", Uuid::now_v7());
+        world.publish(rolling(&kid)).await;
+        let (parent_workflow, _) = world
+            .publish(document(
+                &format!("mother-{label}-{}", Uuid::now_v7()),
+                "kid",
+                vec![child_node("kid", &kid, Some("after")), activity("after")],
+            ))
+            .await;
+        let parent = world
+            .start(
+                parent_workflow,
+                &json!({"continue": true, "next": {"continue": true, "next": {"continue": false}}}),
+            )
+            .await;
+        let chain = child_run_id(parent, &NodeId::parse("kid").expect("kid node"));
+        let scheduler = scheduler(&world, label).await;
+        Self {
+            world,
+            scheduler,
+            parent,
+            chain,
+        }
+    }
+
+    async fn chain_row(&self) -> (Uuid, i32, i64, bool, Option<String>) {
+        sqlx::query_as(
+            "SELECT current_run_id,segment_count,revision,cancel_requested,final_outcome \
+             FROM execution_chains WHERE tenant_id=$1 AND chain_id=$2",
+        )
+        .bind(self.world.admin.tenant_id().as_uuid())
+        .bind(self.chain.as_uuid())
+        .fetch_one(&self.world.db.pool)
+        .await
+        .expect("child chain row")
+    }
+
+    async fn link(&self) -> (bool, Option<String>, bool) {
+        sqlx::query_as(
+            "SELECT cancel_requested,final_outcome,settled FROM child_chain_links \
+             WHERE tenant_id=$1 AND parent_run_id=$2 AND child_chain_id=$3",
+        )
+        .bind(self.world.admin.tenant_id().as_uuid())
+        .bind(self.parent.as_uuid())
+        .bind(self.chain.as_uuid())
+        .fetch_one(&self.world.db.pool)
+        .await
+        .expect("child chain link")
+    }
+}
+
+#[tokio::test]
+async fn a_continuation_workflow_starts_as_a_child_with_a_durable_link() {
+    let family = Family::start("link").await;
+    let report = family.scheduler.tick().await;
+    assert_eq!(report.children_started, 1, "{report:?}");
+    assert_eq!(report.failed, 0, "{report:?}");
+
+    let chain = family.chain_row().await;
+    assert_eq!(chain.0, family.chain.as_uuid(), "the first run is the head");
+    assert_eq!((chain.1, chain.2, chain.3, chain.4), (1, 0, false, None));
+    assert_eq!(family.link().await, (false, None, false));
+    let (parent_instance, step): (Uuid, Uuid) = sqlx::query_as(
+        "SELECT link.parent_instance_id,step.step_id FROM child_chain_links link \
+           JOIN steps step ON step.tenant_id=link.tenant_id AND step.run_id=link.parent_run_id \
+            AND step.node='kid' \
+         WHERE link.tenant_id=$1 AND link.child_chain_id=$2",
+    )
+    .bind(family.world.admin.tenant_id().as_uuid())
+    .bind(family.chain.as_uuid())
+    .fetch_one(&family.world.db.pool)
+    .await
+    .expect("link identity");
+    assert_eq!(
+        parent_instance, step,
+        "the link names the parent's child step"
+    );
+    let record = family
+        .world
+        .run_record(family.chain)
+        .await
+        .expect("child run");
+    assert_eq!(record.info.depth, 1);
+    assert_eq!(record.info.parent.expect("parent link").run, family.parent);
+    assert_eq!(
+        family.world.step_status(family.parent, "kid").await,
+        Some(StepStatus::Waiting)
+    );
+}
+
+#[tokio::test]
+async fn the_parent_hears_only_the_final_outcome_of_a_child_chain_and_hears_it_once() {
+    let family = Family::start("final").await;
+    family.scheduler.tick().await;
+    let session = family.world.session(&["segment.work", "act.after"]).await;
+    let mut heads = vec![family.chain];
+
+    // Two hand-offs: three segments, the last one ends the chain.
+    for _ in 0..2 {
+        let task = family.world.one_task_of(&session, "segment.work").await;
+        family
+            .world
+            .complete(&session, &task, &json!({"processed": true}))
+            .await
+            .expect("segment activity");
+        let report = family.scheduler.tick().await;
+        assert_eq!(report.continuations_advanced, 1, "{report:?}");
+        assert_eq!(
+            report.children_finished, 0,
+            "a continued segment is not an ending: {report:?}"
+        );
+        assert_eq!(report.failed, 0, "{report:?}");
+        assert_eq!(
+            family.world.step_status(family.parent, "kid").await,
+            Some(StepStatus::Waiting),
+            "the parent still waits for the chain"
+        );
+        heads.push(RunId::new(family.chain_row().await.0));
+    }
+    let last = family.world.one_task_of(&session, "segment.work").await;
+    assert_eq!(last.run_id, heads[2]);
+    family
+        .world
+        .complete(&session, &last, &json!({"processed": true}))
+        .await
+        .expect("final segment activity");
+    assert_eq!(family.chain_row().await.4.as_deref(), Some("SUCCEEDED"));
+    assert_eq!(family.link().await.1.as_deref(), Some("SUCCEEDED"));
+
+    let report = family.scheduler.tick().await;
+    assert_eq!(report.children_finished, 1, "{report:?}");
+    assert_eq!(
+        family.world.step_status(family.parent, "kid").await,
+        Some(StepStatus::Succeeded)
+    );
+    assert_eq!(family.link().await, (false, Some("SUCCEEDED".into()), true));
+    let again = family.scheduler.tick().await;
+    assert_eq!(again.children_finished, 0, "told once: {again:?}");
+    assert_eq!(again.failed, 0, "{again:?}");
+
+    // The continued predecessors never reached the parent: one child.finished in its journal.
+    let finished = family
+        .world
+        .journal(family.parent)
+        .await
+        .into_iter()
+        .filter(|event| event == "child.finished")
+        .count();
+    assert_eq!(finished, 1);
+    let after = family.world.one_task_of(&session, "act.after").await;
+    assert_eq!(after.run_id, family.parent);
+    family.world.assert_consistent(family.parent).await;
+    for head in heads {
+        family.world.assert_consistent(head).await;
+    }
+}
+
+#[tokio::test]
+async fn cancelling_the_parent_latches_the_child_chain_and_cancels_its_current_head() {
+    let family = Family::start("cancel").await;
+    family.scheduler.tick().await;
+    let session = family.world.session(&["segment.work"]).await;
+    let task = family.world.one_task_of(&session, "segment.work").await;
+    family
+        .world
+        .complete(&session, &task, &json!({"processed": true}))
+        .await
+        .expect("first segment");
+    family.scheduler.tick().await;
+    let head = RunId::new(family.chain_row().await.0);
+    assert_ne!(head, family.chain, "the chain has a successor head");
+
+    family
+        .world
+        .operate_run(family.parent, RunOperation::Cancel)
+        .await;
+    assert!(
+        family.link().await.0,
+        "the parent's cancellation latches the link"
+    );
+    let report = family.scheduler.tick().await;
+    assert_eq!(report.children_cancelled, 1, "{report:?}");
+    assert_eq!(family.world.run_status(head).await, RunStatus::Cancelled);
+    let chain = family.chain_row().await;
+    assert_eq!(chain.4.as_deref(), Some("CANCELLED"));
+    assert_eq!(
+        chain.0,
+        head.as_uuid(),
+        "no successor was started after the latch"
+    );
+    assert_eq!(
+        family.world.run_status(family.parent).await,
+        RunStatus::Cancelled
+    );
+
+    let quiet = family.scheduler.tick().await;
+    assert_eq!((quiet.failed, quiet.children_finished), (0, 0), "{quiet:?}");
+    assert_eq!(family.chain_row().await, chain);
+}
+
+#[tokio::test]
+async fn a_latched_child_chain_never_hands_off_even_before_its_head_is_cancelled() {
+    let family = Family::start("latch").await;
+    family.scheduler.tick().await;
+    let session = family.world.session(&["segment.work"]).await;
+    let task = family.world.one_task_of(&session, "segment.work").await;
+    family
+        .world
+        .complete(&session, &task, &json!({"processed": true}))
+        .await
+        .expect("first segment");
+    // The latch commits before the boundary is handed off: the scheduler must not pass it.
+    sqlx::query(
+        "UPDATE child_chain_links SET cancel_requested=true,updated_at=now() \
+         WHERE tenant_id=$1 AND child_chain_id=$2",
+    )
+    .bind(family.world.admin.tenant_id().as_uuid())
+    .bind(family.chain.as_uuid())
+    .execute(&family.world.db.pool)
+    .await
+    .expect("latch");
+    let report = family.scheduler.tick().await;
+    assert_eq!(report.continuations_advanced, 0, "{report:?}");
+    assert_eq!(family.chain_row().await.1, 1, "no successor");
+}
+
+impl Family {
+    /// Brings the tree of the parent to `members` runs with finished, settled filler children.
+    async fn fill_tree_to(&self, members: i64) {
+        let present: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM runs WHERE tenant_id=$1 AND root_run_id=$2")
+                .bind(self.world.admin.tenant_id().as_uuid())
+                .bind(self.parent.as_uuid())
+                .fetch_one(&self.world.db.pool)
+                .await
+                .expect("tree size");
+        assert!(present <= members, "the tree already has {present} runs");
+        sqlx::query(
+            "INSERT INTO runs (id,tenant_id,namespace_id,workflow_id,workflow_version_id,status, \
+                               run_version,input_digest,started_by,created_at,updated_at,finished_at, \
+                               parent_run_id,root_run_id,parent_node,cancel_policy,depth,parent_settled) \
+             SELECT gen_random_uuid(),tenant_id,namespace_id,workflow_id,workflow_version_id, \
+                    'SUCCEEDED',0,input_digest,started_by,now(),now(),now(), \
+                    parent_run_id,root_run_id,parent_node,cancel_policy,depth,true \
+             FROM runs, generate_series(1,$3::int) \
+             WHERE tenant_id=$1 AND id=$2",
+        )
+        .bind(self.world.admin.tenant_id().as_uuid())
+        .bind(self.chain.as_uuid())
+        .bind(i32::try_from(members - present).expect("filler count"))
+        .execute(&self.world.db.pool)
+        .await
+        .expect("filler runs");
+    }
+
+    /// Runs the first segment's activity so the boundary is pending.
+    async fn finish_first_segment(&self) {
+        let session = self.world.session(&["segment.work"]).await;
+        let task = self.world.one_task_of(&session, "segment.work").await;
+        self.world
+            .complete(&session, &task, &json!({"processed": true}))
+            .await
+            .expect("first segment");
+    }
+}
+
+#[tokio::test]
+async fn the_last_run_the_tree_budget_allows_is_a_successor_and_the_next_one_is_refused() {
+    use sagat_application::execution::MAX_TREE_RUNS;
+    let members = i64::try_from(MAX_TREE_RUNS).expect("budget");
+
+    // One run short of the budget: the successor fills it exactly.
+    let fits = Family::start("tree-fits").await;
+    fits.scheduler.tick().await;
+    fits.fill_tree_to(members - 1).await;
+    fits.finish_first_segment().await;
+    let report = fits.scheduler.tick().await;
+    assert_eq!(report.continuations_advanced, 1, "{report:?}");
+    assert_eq!(fits.chain_row().await.1, 2);
+    let size: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM runs WHERE tenant_id=$1 AND root_run_id=$2")
+            .bind(fits.world.admin.tenant_id().as_uuid())
+            .bind(fits.parent.as_uuid())
+            .fetch_one(&fits.world.db.pool)
+            .await
+            .expect("tree size");
+    assert_eq!(size, members, "the successor is a run of the parent's tree");
+
+    // The tree is full: the boundary ends the chain with CHAIN_LIMIT and writes no successor.
+    let full = Family::start("tree-full").await;
+    full.scheduler.tick().await;
+    full.fill_tree_to(members).await;
+    full.finish_first_segment().await;
+    // Finalizing the chain is the boundary's action, as it is at the segment limit.
+    let report = full.scheduler.tick().await;
+    assert_eq!(report.failed, 0, "{report:?}");
+    let chain = full.chain_row().await;
+    assert_eq!(chain.1, 1, "no successor");
+    assert_eq!(chain.4.as_deref(), Some("FAILED"));
+    let (status, code): (String, Option<String>) =
+        sqlx::query_as("SELECT status,stop_code FROM runs WHERE tenant_id=$1 AND id=$2")
+            .bind(full.world.admin.tenant_id().as_uuid())
+            .bind(full.chain.as_uuid())
+            .fetch_one(&full.world.db.pool)
+            .await
+            .expect("head");
+    assert_eq!(
+        (status.as_str(), code.as_deref()),
+        ("FAILED", Some("CHAIN_LIMIT"))
+    );
+    let size: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM runs WHERE tenant_id=$1 AND root_run_id=$2")
+            .bind(full.world.admin.tenant_id().as_uuid())
+            .bind(full.parent.as_uuid())
+            .fetch_one(&full.world.db.pool)
+            .await
+            .expect("tree size");
+    assert_eq!(size, members, "the refused successor left no run behind");
+
+    // The parent heard the chain's failure once, as a child failure.
+    assert_eq!(report.children_finished, 1, "{report:?}");
+    assert_eq!(full.scheduler.tick().await.children_finished, 0);
+    assert_eq!(
+        full.world.step_status(full.parent, "kid").await,
+        Some(StepStatus::Failed)
+    );
+}
+
+#[tokio::test]
+async fn finished_chains_links_and_payloads_survive_every_housekeeping_pass() {
+    // D298: retention of finished runs is a pending decision, so the counts the tree budget and the
+    // segment limit read (runs of a tree, segments of a chain) are never reduced by anything the
+    // platform runs on a schedule, and a future retention must keep chain, link and payload rows.
+    let family = Family::start("retention").await;
+    family.scheduler.tick().await;
+    let session = family.world.session(&["segment.work", "act.after"]).await;
+    for _ in 0..3 {
+        let task = family.world.one_task_of(&session, "segment.work").await;
+        family
+            .world
+            .complete(&session, &task, &json!({"processed": true}))
+            .await
+            .expect("segment");
+        family.scheduler.tick().await;
+    }
+    assert_eq!(family.chain_row().await.4.as_deref(), Some("SUCCEEDED"));
+    assert_eq!(family.link().await.2, true);
+
+    let ticking = crate::limits::scheduler_with(
+        &family.world,
+        "chain-retention",
+        sagat_scheduler::SchedulerSettings {
+            idempotency_retention: StdDuration::ZERO,
+            outbox_retention: StdDuration::ZERO,
+            ..sagat_scheduler::SchedulerSettings::default()
+        },
+    )
+    .await;
+    let tables = [
+        "runs",
+        "run_events",
+        "steps",
+        "execution_chains",
+        "chain_segments",
+        "child_chain_links",
+        "payloads",
+        "workflow_operation_states",
+    ];
+    let census = || async {
+        let mut counts = Vec::new();
+        for table in tables {
+            let count: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+                "SELECT count(*) FROM {table} WHERE tenant_id = $1"
+            )))
+            .bind(family.world.admin.tenant_id().as_uuid())
+            .fetch_one(&family.world.db.pool)
+            .await
+            .expect("table census");
+            counts.push((table, count));
+        }
+        counts
+    };
+    let before = census().await;
+    assert!(
+        before
+            .iter()
+            .filter(|(table, _)| [
+                "runs",
+                "execution_chains",
+                "chain_segments",
+                "child_chain_links"
+            ]
+            .contains(table))
+            .all(|(_, count)| *count >= 1),
+        "{before:?}"
+    );
+    ticking.housekeeping().await;
+    family
+        .world
+        .store
+        .purge_projected(StdDuration::ZERO, 10_000)
+        .await
+        .expect("purge projected telemetry notes");
+    assert_eq!(
+        census().await,
+        before,
+        "maintenance must not delete chain data"
+    );
+
+    // The runtime role cannot delete any of it either, so no code path of the platform can.
+    let role_exists: bool =
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'sagat_app')")
+            .fetch_one(&family.world.db.pool)
+            .await
+            .expect("role lookup");
+    if role_exists {
+        for table in [
+            "runs",
+            "execution_chains",
+            "chain_segments",
+            "child_chain_links",
+            "payloads",
+        ] {
+            let may_delete: bool =
+                sqlx::query_scalar("SELECT has_table_privilege('sagat_app', $1, 'DELETE')")
+                    .bind(table)
+                    .fetch_one(&family.world.db.pool)
+                    .await
+                    .expect("privilege lookup");
+            assert!(!may_delete, "the runtime role may delete from {table}");
+        }
+    }
+}

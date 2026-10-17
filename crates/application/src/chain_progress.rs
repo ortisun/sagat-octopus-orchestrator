@@ -28,12 +28,38 @@ use crate::identity::RequestContext;
 use crate::primitives::SchedulerAuthority;
 use crate::runs::RunStore;
 
+/// The parent step a child chain answers to. The link names the parent run and its `child` node;
+/// the store resolves the step identity inside the creating transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChainParent {
+    run: RunId,
+    node: NodeId,
+}
+
+impl ChainParent {
+    #[must_use]
+    pub const fn new(run: RunId, node: NodeId) -> Self {
+        Self { run, node }
+    }
+
+    #[must_use]
+    pub const fn run(&self) -> RunId {
+        self.run
+    }
+
+    #[must_use]
+    pub const fn node(&self) -> &NodeId {
+        &self.node
+    }
+}
+
 /// Chain metadata captured by the transaction that creates the initial run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChainInitialization {
     scope: ChainScope,
     initial_run_id: RunId,
     policy: ChainPolicy,
+    parent: Option<ChainParent>,
 }
 
 impl ChainInitialization {
@@ -43,7 +69,21 @@ impl ChainInitialization {
             scope,
             initial_run_id,
             policy,
+            parent: None,
         }
+    }
+
+    /// Makes the chain a child of `parent`: the parent step waits for the chain's final outcome,
+    /// never for one of its segments.
+    #[must_use]
+    pub fn with_parent(mut self, parent: ChainParent) -> Self {
+        self.parent = Some(parent);
+        self
+    }
+
+    #[must_use]
+    pub const fn parent(&self) -> Option<&ChainParent> {
+        self.parent.as_ref()
     }
 
     #[must_use]
@@ -445,127 +485,6 @@ pub struct ChainFinalizationWrite {
     replayed: bool,
 }
 
-/// Scheduler-fenced application of one final child-chain outcome to its original parent step.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ChildChainSettlementCommand {
-    scope: ChainScope,
-    parent_chain_id: RunId,
-    expected_parent_head: RunId,
-    expected_parent_chain_revision: u64,
-    expected_parent_run_version: u64,
-    child_chain_id: RunId,
-    scheduler: SchedulerAuthority,
-    occurred_at: OffsetDateTime,
-    task_outbox_id: Uuid,
-}
-
-impl ChildChainSettlementCommand {
-    #[allow(clippy::too_many_arguments)]
-    #[must_use]
-    pub const fn new(
-        scope: ChainScope,
-        parent_chain_id: RunId,
-        expected_parent_head: RunId,
-        expected_parent_chain_revision: u64,
-        expected_parent_run_version: u64,
-        child_chain_id: RunId,
-        scheduler: SchedulerAuthority,
-        occurred_at: OffsetDateTime,
-        task_outbox_id: Uuid,
-    ) -> Self {
-        Self {
-            scope,
-            parent_chain_id,
-            expected_parent_head,
-            expected_parent_chain_revision,
-            expected_parent_run_version,
-            child_chain_id,
-            scheduler,
-            occurred_at,
-            task_outbox_id,
-        }
-    }
-
-    #[must_use]
-    pub const fn scope(&self) -> ChainScope {
-        self.scope
-    }
-
-    #[must_use]
-    pub const fn parent_chain_id(&self) -> RunId {
-        self.parent_chain_id
-    }
-
-    #[must_use]
-    pub const fn expected_parent_head(&self) -> RunId {
-        self.expected_parent_head
-    }
-
-    #[must_use]
-    pub const fn expected_parent_chain_revision(&self) -> u64 {
-        self.expected_parent_chain_revision
-    }
-
-    #[must_use]
-    pub const fn expected_parent_run_version(&self) -> u64 {
-        self.expected_parent_run_version
-    }
-
-    #[must_use]
-    pub const fn child_chain_id(&self) -> RunId {
-        self.child_chain_id
-    }
-
-    #[must_use]
-    pub const fn scheduler(&self) -> &SchedulerAuthority {
-        &self.scheduler
-    }
-
-    #[must_use]
-    pub const fn occurred_at(&self) -> OffsetDateTime {
-        self.occurred_at
-    }
-
-    #[must_use]
-    pub const fn task_outbox_id(&self) -> Uuid {
-        self.task_outbox_id
-    }
-}
-
-/// Durable result of applying or replaying a child-chain outcome at the parent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ChildChainSettlementWrite {
-    parent_run_id: RunId,
-    child_chain_id: RunId,
-    replayed: bool,
-}
-
-impl ChildChainSettlementWrite {
-    #[must_use]
-    pub const fn new(parent_run_id: RunId, child_chain_id: RunId, replayed: bool) -> Self {
-        Self {
-            parent_run_id,
-            child_chain_id,
-            replayed,
-        }
-    }
-
-    #[must_use]
-    pub const fn parent_run_id(self) -> RunId {
-        self.parent_run_id
-    }
-
-    #[must_use]
-    pub const fn child_chain_id(self) -> RunId {
-        self.child_chain_id
-    }
-
-    #[must_use]
-    pub const fn replayed(self) -> bool {
-        self.replayed
-    }
-}
-
 impl ChainFinalizationWrite {
     #[must_use]
     pub const fn new(head: RunId, outcome: ChainFinalOutcome, replayed: bool) -> Self {
@@ -671,11 +590,6 @@ pub trait ChainProgressStore: Send + Sync {
         &self,
         command: &ChainFinalizationCommand,
     ) -> impl Future<Output = Result<ChainFinalizationWrite, ChainProgressError>> + Send;
-
-    fn settle_child_chain(
-        &self,
-        command: &ChildChainSettlementCommand,
-    ) -> impl Future<Output = Result<ChildChainSettlementWrite, ChainProgressError>> + Send;
 }
 
 /// Chain row held before its current run is locked.

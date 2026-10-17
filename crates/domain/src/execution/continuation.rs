@@ -16,6 +16,10 @@ use crate::workflow::NodeId;
 /// Absolute definition ceiling, including the initial run at index zero.
 pub const MAX_CHAIN_SEGMENTS: u16 = 10_000;
 
+/// Most runs one tree may hold (a root run and all its descendants). The successors of a child
+/// chain are runs of the parent's tree and spend the same budget (ADR-0030).
+pub const MAX_TREE_RUNS: usize = 1_024;
+
 /// Tenant and namespace coordinates that every member of one chain retains.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ChainScope {
@@ -961,6 +965,8 @@ pub enum ChainError {
     NotQuiescent(QuiescenceBlocker),
     #[error("chain segment limit is exhausted")]
     SegmentLimitExceeded,
+    #[error("the run tree that holds this chain has no room for another successor")]
+    TreeBudgetExhausted,
     #[error("a run may belong to a chain only once")]
     DuplicateRun,
     #[error("the committed continuation has different transfer content")]
