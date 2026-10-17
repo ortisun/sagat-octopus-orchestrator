@@ -56,6 +56,16 @@ export interface StepOptions {
   onError?: string;
 }
 
+export interface ScriptOptions {
+  language?: 'typescript' | 'python' | 'csharp' | 'go' | 'java';
+  retry?: RetryOptions;
+  compensateWith?: string;
+  secrets?: string[];
+  onError?: string;
+  /** The JSON Schema of the script result carried by journal completion events. */
+  outputSchema?: Record<string, Json>;
+}
+
 export interface WaitOptions {
   eventType: string;
   /** An expression over the run's data that yields the correlation key. */
@@ -139,6 +149,7 @@ export interface Trigger {
 const NAME = /^[a-z][a-z0-9-]{2,63}$/;
 const OPERATION_NAME = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
 const SECRET = /^[a-z][a-z0-9._-]{0,63}$/;
+const ARTIFACT_DIGEST = /^sha256:[0-9a-f]{64}$/;
 const DISCLOSURE: DisclosurePolicy = 'declared-business-result-v1';
 
 function clean(options: object | undefined): Record<string, Json> {
@@ -288,6 +299,16 @@ export class Flow {
     if (outputSchema !== undefined) node['outputSchema'] = copyJson(outputSchema);
     if (onError !== undefined) node['onError'] = onError;
     return this.push(node);
+  }
+
+  /** A pinned script artifact executed by an isolated runner. */
+  script(id: string, artifactDigest: string, options: ScriptOptions = {}): this {
+    if (!ARTIFACT_DIGEST.test(artifactDigest)) throw invalid(`script ${id} needs a sha256 artifact digest`);
+    for (const secret of options.secrets ?? []) {
+      if (!SECRET.test(secret)) throw invalid(`script ${id} names a secret that is not a name: ${JSON.stringify(secret)}`);
+    }
+    const { outputSchema, ...rest } = options;
+    return this.push({ id, type: 'script', artifactDigest, ...clean(rest), ...(outputSchema === undefined ? {} : { outputSchema: copyJson(outputSchema) }) });
   }
 
   /** Sleep: waits for a duration. A timer, not a process: nothing is kept alive. */

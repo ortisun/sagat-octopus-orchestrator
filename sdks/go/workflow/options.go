@@ -138,6 +138,33 @@ func OutputSchema(schema map[string]any) StepOption {
 	return func(s *stepSpec) { s.fields["outputSchema"] = schema }
 }
 
+// ScriptOption sets one optional field of a pinned script node.
+type ScriptOption func(map[string]any)
+
+func ScriptLanguage(value string) ScriptOption {
+	return func(m map[string]any) { m["language"] = value }
+}
+func ScriptRetry(opts ...RetryOption) ScriptOption {
+	return func(m map[string]any) { m["retry"] = retryOf(opts) }
+}
+func ScriptCompensateWith(value string) ScriptOption {
+	return func(m map[string]any) { m["compensateWith"] = value }
+}
+func ScriptOnError(value string) ScriptOption { return func(m map[string]any) { m["onError"] = value } }
+func ScriptOutputSchema(schema map[string]any) ScriptOption {
+	return func(m map[string]any) { m["outputSchema"] = schema }
+}
+
+func ScriptSecrets(names ...string) ScriptOption {
+	return func(m map[string]any) {
+		list := make([]any, 0, len(names))
+		for _, name := range names {
+			list = append(list, name)
+		}
+		m["secrets"] = list
+	}
+}
+
 // ---- wait for an event
 
 // WaitOption sets an option of WaitForEvent.

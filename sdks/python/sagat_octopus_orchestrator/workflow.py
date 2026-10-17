@@ -21,6 +21,7 @@ from .errors import invalid
 _NAME = re.compile(r"[a-z][a-z0-9-]{2,63}")
 _OPERATION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
 _SECRET = re.compile(r"[a-z][a-z0-9._-]{0,63}")
+_ARTIFACT_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 
 Node = dict[str, Any]
 _F = TypeVar("_F", bound="Flow")
@@ -322,6 +323,36 @@ class Flow:
         if isinstance(duration_ms, bool) or not isinstance(duration_ms, int) or duration_ms < 1:
             raise invalid(f"sleep {node_id} needs a duration of at least 1 ms")
         self._push({"id": node_id, "type": "timer", "durationMs": duration_ms})
+        return self
+
+    def script(
+        self: _F,
+        node_id: str,
+        artifact_digest: str,
+        *,
+        language: Literal["typescript", "python", "csharp", "go", "java"] | None = None,
+        retry: RetrySpec | None = None,
+        compensate_with: str | None = None,
+        secrets: Sequence[str] | None = None,
+        on_error: str | None = None,
+        output_schema: Mapping[str, Any] | None = None,
+    ) -> _F:
+        """Runs one immutable script artifact in the platform's isolated runner."""
+        if not _ARTIFACT_DIGEST.fullmatch(artifact_digest):
+            raise invalid(f"script {node_id} needs a sha256 artifact digest")
+        for secret in secrets or ():
+            if not _SECRET.fullmatch(secret):
+                raise invalid(f"script {node_id} names a secret that is not a name: {secret!r}")
+        node: Node = {"id": node_id, "type": "script", "artifactDigest": artifact_digest}
+        self._push(_add(
+            node,
+            language=language,
+            retry=_retry(retry),
+            compensateWith=compensate_with,
+            secrets=list(secrets) if secrets is not None else None,
+            onError=on_error,
+            outputSchema=deepcopy(dict(output_schema)) if output_schema is not None else None,
+        ))
         return self
 
     def wait_for_event(

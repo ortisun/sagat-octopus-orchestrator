@@ -153,6 +153,31 @@ func apply(b *workflow.Builder, ops []any) {
 			b.Database(id, database)
 		case "step":
 			b.Step(id, asString(op["activity"]), stepOptions(options)...)
+		case "script":
+			var opts []workflow.ScriptOption
+			for _, key := range sortedKeys(options) {
+				switch key {
+				case "language":
+					opts = append(opts, workflow.ScriptLanguage(asString(options[key])))
+				case "retry":
+					opts = append(opts, workflow.ScriptRetry(retryOptions(asObject(options[key]))...))
+				case "compensateWith":
+					opts = append(opts, workflow.ScriptCompensateWith(asString(options[key])))
+				case "secrets":
+					var names []string
+					for _, value := range asList(options[key]) {
+						names = append(names, asString(value))
+					}
+					opts = append(opts, workflow.ScriptSecrets(names...))
+				case "onError":
+					opts = append(opts, workflow.ScriptOnError(asString(options[key])))
+				case "outputSchema":
+					opts = append(opts, workflow.ScriptOutputSchema(asObject(options[key])))
+				default:
+					panic(fmt.Sprintf("unknown script option %q", key))
+				}
+			}
+			b.Script(id, asString(op["artifactDigest"]), opts...)
 		case "sleep":
 			b.Sleep(id, asMillis(op["durationMs"]))
 		case "waitForEvent":

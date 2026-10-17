@@ -50,6 +50,7 @@ import dev.sagatoctopusorchestrator.sdk.workflow.QueryDefinition;
 import dev.sagatoctopusorchestrator.sdk.workflow.DatabaseOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.RetryOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.SagaOptions;
+import dev.sagatoctopusorchestrator.sdk.workflow.ScriptOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.StateDefinition;
 import dev.sagatoctopusorchestrator.sdk.workflow.StepOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.SwitchCase;
@@ -236,6 +237,18 @@ public final class Runner {
             switch (op.path("op").asText()) {
                 case "database" -> target.database(id, databaseOptionsOf(op.path("options")));
                 case "step" -> target.step(id, op.path("activity").asText(null), stepOptionsOf(op.get("options")));
+                case "script" -> {
+                    JsonNode o = op.path("options");
+                    known(o, "script", "language", "retry", "compensateWith", "secrets", "onError", "outputSchema");
+                    ScriptOptions options = ScriptOptions.create();
+                    if (o.has("language")) options.language(o.get("language").asText());
+                    if (o.has("retry")) options.retry(retryOf(o.get("retry")));
+                    if (o.has("compensateWith")) options.compensateWith(o.get("compensateWith").asText());
+                    if (o.has("secrets")) { List<String> values = new ArrayList<>(); o.get("secrets").forEach(value -> values.add(value.asText())); options.secrets(values); }
+                    if (o.has("onError")) options.onError(o.get("onError").asText());
+                    if (o.has("outputSchema")) options.outputSchema(o.get("outputSchema"));
+                    target.script(id, op.path("artifactDigest").asText(null), options);
+                }
                 case "sleep" -> target.sleepMs(id, op.path("durationMs").asLong());
                 case "waitForEvent" -> {
                     JsonNode o = op.path("options");

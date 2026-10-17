@@ -71,6 +71,17 @@ public sealed record StepOptions
     public string? OnError { get; init; }
 }
 
+/// <summary>Options of a pinned script artifact node.</summary>
+public sealed record ScriptOptions
+{
+    public string? Language { get; init; }
+    public StepRetry? Retry { get; init; }
+    public string? CompensateWith { get; init; }
+    public IReadOnlyList<string>? Secrets { get; init; }
+    public string? OnError { get; init; }
+    public JsonObject? OutputSchema { get; init; }
+}
+
 /// <summary>Options of <see cref="FlowBase{TSelf}.WaitForEvent"/>.</summary>
 public sealed record WaitForEventOptions
 {
