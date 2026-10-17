@@ -292,7 +292,7 @@ async fn scheduler_opens_then_expires_and_routes_an_approval_after_restart() {
              AND event.event_type='approval.expired'), \
           (SELECT count(*) FROM steps route \
            WHERE route.tenant_id=request.tenant_id AND route.run_id=request.run_id \
-             AND route.node='expired' AND route.status='PENDING'), \
+             AND route.node='expired' AND route.status='READY'), \
           (SELECT count(*) FROM audit_records audit \
            WHERE audit.tenant_id=request.tenant_id \
              AND audit.resource_id=$3 AND audit.action IN ('approval.opened','approval.expired')) \
@@ -742,4 +742,91 @@ async fn cancellation_outbox_and_audit_failures_roll_back_the_whole_run_transiti
          DROP FUNCTION reject_approval_cancel_audit()",
     )
     .await;
+}
+
+/// What the scheduler left of a settled approval's chosen route: its status and how many times the
+/// run journalled the release of that route.
+async fn route_evidence(fixture: &Fixture, route: &str) -> (String, i64, String) {
+    sqlx::query_as(
+        "SELECT routed.status, \
+           (SELECT count(*) FROM run_events event \
+            WHERE event.tenant_id=routed.tenant_id AND event.run_id=routed.run_id \
+              AND event.event_type='step.released' AND event.node=routed.node), \
+           run.status \
+         FROM steps routed JOIN runs run ON run.tenant_id=routed.tenant_id AND run.id=routed.run_id \
+         WHERE routed.tenant_id=$1 AND routed.run_id=$2 AND routed.node=$3",
+    )
+    .bind(fixture.world.admin.tenant_id().as_uuid())
+    .bind(fixture.run.as_uuid())
+    .bind(route)
+    .fetch_one(&fixture.world.db.pool)
+    .await
+    .expect("route evidence")
+}
+
+#[tokio::test]
+async fn the_scheduler_releases_the_route_of_every_settled_approval_exactly_once() {
+    for (name, outcome, route) in [
+        (
+            "approval-route-released-approved",
+            Some(ApprovalDecision::Approve),
+            "approved",
+        ),
+        (
+            "approval-route-released-rejected",
+            Some(ApprovalDecision::Reject),
+            "rejected",
+        ),
+        ("approval-route-released-expired", None, "expired"),
+    ] {
+        let timeout_ms = if outcome.is_some() { 60_000 } else { 1 };
+        let fixture = fixture(name, timeout_ms).await;
+        let request_id = opened_request(&fixture).await;
+        match outcome {
+            Some(decision) => decide(&fixture, request_id, decision).await,
+            None => {
+                let expired = scheduler(&fixture).tick().await;
+                assert_eq!(expired.approvals_expired, 1, "{name}: {expired:?}");
+            }
+        }
+        // The decision (or the expiry) chose the route; a scheduler pass, a new process image
+        // included, takes it from there.
+        let restarted = scheduler(&fixture).tick().await;
+        assert_eq!(restarted.failed, 0, "{name}: {restarted:?}");
+        let (status, releases, run_status) = route_evidence(&fixture, route).await;
+        assert_eq!(
+            (status.as_str(), releases, run_status.as_str()),
+            ("READY", 1, "RUNNING"),
+            "{name}"
+        );
+        let other_routes: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM steps WHERE tenant_id=$1 AND run_id=$2 \
+             AND node IN ('approved','rejected','expired') AND node <> $3",
+        )
+        .bind(fixture.world.admin.tenant_id().as_uuid())
+        .bind(fixture.run.as_uuid())
+        .bind(route)
+        .fetch_one(&fixture.world.db.pool)
+        .await
+        .expect("other routes");
+        assert_eq!(other_routes, 0, "{name}: only the chosen route exists");
+
+        let again = scheduler(&fixture).tick().await;
+        assert_eq!(again.failed, 0, "{name}: {again:?}");
+        assert_eq!(
+            route_evidence(&fixture, route).await,
+            ("READY".into(), 1, "RUNNING".into()),
+            "{name}: a second pass releases nothing"
+        );
+        let published =
+            crate::hint_contract::assert_outbox_matches_the_contract(&fixture.world.db.pool).await;
+        assert_eq!(
+            published
+                .iter()
+                .filter(|kind| *kind == "task.ready")
+                .count(),
+            1,
+            "{name}: one task hint for the released route: {published:?}"
+        );
+    }
 }

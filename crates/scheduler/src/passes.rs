@@ -107,6 +107,7 @@ pub struct Report {
     pub continuations_advanced: u32,
     pub approvals_opened: u32,
     pub approvals_expired: u32,
+    pub approval_routes_released: u32,
     pub timers_fired: u32,
     pub waits_timed_out: u32,
     pub retries_released: u32,
@@ -251,6 +252,7 @@ impl Report {
             + self.continuations_advanced
             + self.approvals_opened
             + self.approvals_expired
+            + self.approval_routes_released
             + self.waits_timed_out
             + self.retries_released
             + self.leases_expired
@@ -503,6 +505,7 @@ where
         self.continuations(&self.view(), &mut report).await;
         self.approvals_expire(&self.view(), &mut report).await;
         self.approvals_open(&self.view(), &mut report).await;
+        self.approval_routes(&self.view(), &mut report).await;
         self.timers(&self.view(), &mut report).await;
         self.wait_deadlines(&self.view(), &mut report).await;
         self.retries(&self.view(), &mut report).await;
@@ -2562,6 +2565,44 @@ where
             .await;
         for outcome in outcomes {
             Self::tally(report, outcome, |value| value.approvals_expired += 1);
+        }
+    }
+
+    /// Continues the runs whose approval has an outcome: the transaction that settled the request
+    /// activated the chosen route and committed; this pass releases it, once, under the shard lease.
+    async fn approval_routes(&self, view: &View, report: &mut Report) {
+        if view.snapshot.is_none() {
+            return;
+        }
+        let pending = self
+            .pick(
+                view,
+                "approval_routes",
+                report,
+                |step: &StepRef| step.tenant_id,
+                |step| (step.run_id, step.instance()),
+                |store, window| async move { store.approval_routes(&window).await },
+            )
+            .await;
+        let outcomes = self
+            .each(
+                pending,
+                |StepRef {
+                     tenant_id, run_id, ..
+                 }| {
+                    self.apply(
+                        view,
+                        tenant_id,
+                        run_id,
+                        "approval_route",
+                        self.effects(),
+                        |def, state, now| Ok(((), execution::release_pending(def, state, now)?)),
+                    )
+                },
+            )
+            .await;
+        for outcome in outcomes {
+            Self::tally(report, outcome, |r| r.approval_routes_released += 1);
         }
     }
 

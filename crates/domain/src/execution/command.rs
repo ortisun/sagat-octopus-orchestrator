@@ -917,6 +917,20 @@ pub fn fire_timer(
     apply_then_settle(def, state, now, RunEvent::TimerFired { node: node.clone() })
 }
 
+/// Continues a run whose state changed outside the planner: a durable transaction (an approval's
+/// outcome) activated a step and left it `PENDING`. Nothing is applied that the planner would not
+/// have chosen itself, so a run with nothing to release is returned unchanged.
+///
+/// # Errors
+/// [`ExecutionError`] when the planner cannot settle the state.
+pub fn release_pending(
+    def: &WorkflowDefinition,
+    state: &mut RunState,
+    now: OffsetDateTime,
+) -> Result<Progress, ExecutionError> {
+    settle(def, state, now, Vec::new())
+}
+
 /// The awaited event arrived. Allowed until the timeout is committed, even past the deadline.
 ///
 /// # Errors
