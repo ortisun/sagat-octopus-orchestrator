@@ -11,6 +11,7 @@ mod approval_progress;
 mod approval_scheduler;
 mod approval_telemetry;
 mod approvals_http;
+mod bounded_capabilities;
 mod bounded_fences;
 mod bounded_report_provider;
 mod bounded_reports;

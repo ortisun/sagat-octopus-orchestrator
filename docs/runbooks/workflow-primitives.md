@@ -344,5 +344,31 @@ SAGAT_TEST_AS_RUNTIME_ROLE=1 cargo test --locked -p sagat-tests \
 The tests revoke unrelated iteration-history access, retain full journal replay as an oracle,
 withdraw current membership/binding, forge a step id and pause real OpenBao reads. The provider
 barriers additionally acquire the run lock independently while the scan is paused; no completion
-commits after authority withdrawal. These diagnostics do not enable scoped blob output or close
-secret/blob capability conversion, larger graph/nesting or the large resource acceptance gates.
+commits after authority withdrawal. These diagnostics do not enable scoped blob output, larger
+graph/nesting or the large resource acceptance gates.
+
+## Scoped secret and blob capabilities
+
+Scoped secret delivery and blob authorization use the current exact path. A paused OpenBao read
+holds neither the run lock nor worker authority locks. A role/binding withdrawal that commits
+during that read makes the resumed delivery fail; the resolved value is discarded. Publisher
+access, secret versions, worker pools and live lease are also checked before handoff. Secret and
+blob-read audits identify the logical scoped step UUID, so distinct iterations remain distinct
+while repeats within the same attempt collapse. Secret values and tokens never enter the audit.
+
+Blob upload for a step declaring secrets retains the existing content-scanning refusal, including
+a current cancelled attempt: this only returns a denial. Other scoped blob access requires a live,
+uncancelled attempt. Report-scope lookup requires current authority and identity but permits an
+expired lease for receipt replay; it does not authorize any bytes or a new output commit.
+
+Reproduce the bounded secret/blob checks and real-provider withdrawal barriers:
+
+```sh
+SAGAT_TEST_AS_RUNTIME_ROLE=1 cargo test --locked -p sagat-tests \
+  --test integration_workflow_primitives -- \
+  bounded_capabilities:: bounded_report_provider:: --test-threads=2 --nocapture
+```
+
+These capability checks do not exercise an object-store byte transfer. The existing blob service
+still verifies tenant/namespace, object/catalog state and bytes. Scoped blob completion remains
+closed pending its transactional writer and fault evidence.

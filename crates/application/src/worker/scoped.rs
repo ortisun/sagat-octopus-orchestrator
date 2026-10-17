@@ -8,6 +8,86 @@ where
     E: ExpressionEvaluator,
     R: Entropy,
 {
+    pub(super) async fn open_worker_path(
+        &self,
+        principal: &Principal,
+        task: &TaskRef<'_>,
+    ) -> Result<<S as PathExecutionStore>::Tx, AppError> {
+        require_supported_task(task.instance, self.store.supports_scoped_worker_protocol())?;
+        let Some(mut tx) = self
+            .store
+            .begin_current_path(
+                principal.tenant_id(),
+                task.run_id,
+                task.instance.path().clone(),
+                Lock::Wait,
+            )
+            .await?
+        else {
+            return Err(self.missing_task_error(principal, task).await);
+        };
+        let snapshot = tx.snapshot();
+        if task.step_id.is_some_and(|claimed| {
+            claimed
+                != instance_step_id(
+                    snapshot.info.version_id,
+                    snapshot.info.run_id,
+                    task.instance,
+                )
+        }) || snapshot
+            .state
+            .local_instance(task.instance.node())
+            .is_none()
+        {
+            return Err(AppError::StaleAttempt);
+        }
+        // Current authority precedes receipt lookup as well as every new report.
+        Self::ensure_path_bound(principal, &mut tx, task).await?;
+        Ok(tx)
+    }
+
+    pub(super) async fn verify_path_lease(
+        tx: &mut <S as PathExecutionStore>::Tx,
+        task: &TaskRef<'_>,
+    ) -> Result<(), AppError> {
+        if !tx
+            .lease_matches(task.instance, &Token::hash_of(task.lease_token))
+            .await?
+        {
+            return Err(AppError::StaleAttempt);
+        }
+        Ok(())
+    }
+
+    pub(super) async fn live_path_fence(
+        tx: &mut <S as PathExecutionStore>::Tx,
+        task: &TaskRef<'_>,
+        allow_cancellation: bool,
+    ) -> Result<(), AppError> {
+        Self::verify_path_lease(tx, task).await?;
+        let snapshot = tx.snapshot();
+        let valid = snapshot
+            .state
+            .local_instance(task.instance.node())
+            .is_some_and(|step| {
+                step.attempt() == task.fence.attempt
+                    && step.generation() == task.fence.generation
+                    && (allow_cancellation || !step.cancel_requested())
+            })
+            && !snapshot.state.global().status().is_terminal()
+            && (allow_cancellation
+                || task.instance.node().is_derived()
+                || snapshot.state.global().stop_reason().is_none());
+        if !valid
+            || !tx
+                .lease_unexpired(task.instance, &Token::hash_of(task.lease_token))
+                .await?
+        {
+            return Err(AppError::StaleAttempt);
+        }
+        Ok(())
+    }
+
     #[tracing::instrument(name = "worker.scoped.heartbeat", skip_all,
         fields(run_id = %task.run_id, tenant_id = %principal.tenant_id()))]
     pub(super) async fn heartbeat_path(

@@ -34,16 +34,18 @@ where
         principal: &Principal,
         task: &TaskRef<'_>,
         trace_id: Option<&str>,
-    ) -> Result<Vec<ResolvedSecret>, AppError> {
+    ) -> Result<Vec<ResolvedSecret>, AppError>
+    where
+        S: PathExecutionStore,
+    {
         principal.authorize(Permission::WorkerExecute)?;
         let Some(cipher) = &self.vault else {
             return Err(AppError::NotAllowed(
                 "secrets are not configured on this instance",
             ));
         };
-        let mut tx = self.open(principal, task, Lock::Wait).await?;
-        self.live_capability_fence(principal, &mut tx, task).await?;
-        let names = Self::declared_secrets(&mut tx, task);
+        let mut tx = self.open_secret_resolution(principal, task).await?;
+        let names = tx.declared_secrets(task);
         if names.is_empty() {
             return Ok(Vec::new());
         }
@@ -54,13 +56,13 @@ where
             let effects = self.pool_refusal_effects(
                 principal,
                 tx.info(),
-                task.instance.node(),
+                task.instance,
                 task.fence.attempt,
                 &withheld,
                 "resolve",
                 trace_id,
             );
-            tx.persist(&[], effects).await?;
+            tx.audit(effects).await?;
             tx.commit().await?;
             metrics::counter!("secret_delivery_refused_total", "stage" => "resolve").increment(1);
             return Err(AppError::SecretUnavailable {
@@ -97,7 +99,14 @@ where
                     trace_id.map(str::to_owned),
                     self.clock.now(),
                 )
-                .with_reason(reason),
+                .with_reason(if task.instance.path().is_root() {
+                    reason
+                } else {
+                    format!(
+                        "step {}: {reason}",
+                        instance_step_id(info.version_id, info.run_id, task.instance)
+                    )
+                }),
             );
             effects
         };
@@ -111,7 +120,7 @@ where
                     task.fence.attempt
                 ),
             );
-            tx.persist(&[], effects).await?;
+            tx.audit(effects).await?;
             tx.commit().await?;
             metrics::counter!("secret_resolution_denied_total").increment(1);
             return Err(AppError::SecretUnavailable {
@@ -135,8 +144,7 @@ where
             });
         }
         // Discard resolved values if lease, cancellation, binding, publisher ACL or rotation changed.
-        let mut tx = self.open(principal, task, Lock::Wait).await?;
-        self.live_capability_fence(principal, &mut tx, task).await?;
+        let mut tx = self.open_secret_resolution(principal, task).await?;
         if let Some(withheld) = tx
             .secret_pool_refusal(&names, principal.subject().as_str(), PoolCheck::Delivery)
             .await?
@@ -144,13 +152,13 @@ where
             let effects = self.pool_refusal_effects(
                 principal,
                 tx.info(),
-                task.instance.node(),
+                task.instance,
                 task.fence.attempt,
                 &withheld,
                 "resolve",
                 trace_id,
             );
-            tx.persist(&[], effects).await?;
+            tx.audit(effects).await?;
             tx.commit().await?;
             metrics::counter!("secret_delivery_refused_total", "stage" => "resolve").increment(1);
             return Err(AppError::SecretUnavailable {
@@ -175,17 +183,14 @@ where
             })
             .collect();
         if let Err(SecretProblem(name)) = check_usable(current.publisher_role, &states) {
-            tx.persist(
-                &[],
-                audit(
-                    AuditAction::SecretDenied,
-                    format!(
-                        "node {} attempt {}: access changed during resolution",
-                        task.instance.node(),
-                        task.fence.attempt
-                    ),
+            tx.audit(audit(
+                AuditAction::SecretDenied,
+                format!(
+                    "node {} attempt {}: access changed during resolution",
+                    task.instance.node(),
+                    task.fence.attempt
                 ),
-            )
+            ))
             .await?;
             tx.commit().await?;
             return Err(AppError::SecretUnavailable {
@@ -208,7 +213,7 @@ where
                 task.fence.attempt
             ),
         );
-        tx.persist(&[], effects).await?;
+        tx.audit(effects).await?;
         tx.commit().await?;
         metrics::counter!("secrets_handed_out_total").increment(resolved.len() as u64);
         Ok(resolved)

@@ -1645,3 +1645,67 @@ source boundaries are recorded in the integration notes. Pure policy, logical ou
 mandatory secret-denial audit, transactional receipt/outbox and provider I/O boundaries remain;
 no schema, wire or expected SDK output changed. Blob completion, secret/blob capabilities, broader
 body/control/nesting, the complete compatibility matrix and 10k/100k resource gates remain open.
+
+
+## 2026-10-17 — Current scoped secret and blob capabilities
+
+Refs: T014-016–017, T014-040–041, FR-014-014–017, NFR-014-001–002.
+
+Scoped secret delivery now opens current exact-path transactions in both authority phases. Root
+and scoped delivery share the same handoff algorithm through an internal transaction-lifecycle
+enum, preserving Root legacy-attempt handling and audit text. Both phases check current worker
+membership/bindings, live token/attempt/generation, cancellation, worker pools and publisher
+ACL/version inputs. Real provider I/O occurs between committed transactions. Changed authority
+or inputs discards the resolved value; a successful value-free audit commits before any handoff.
+Scoped secret success/denial and pool-refusal audits include the complete logical step UUID, so
+another iteration of the same node does not collapse into the first iteration's audit.
+
+Scoped blob access and report-scope lookup also use current exact-path state. Blob access retains
+live lease and cancellation fences. A step declaring secrets retains its typed upload scanning
+refusal, including a current cancelled attempt; that exception only returns a denial. Report-scope
+lookup intentionally permits an expired lease for receipt replay while checking current authority
+and echoed step identity. Actual catalog/object authorization remains in the existing blob service;
+these tests do not claim an object-store byte transfer, or enable scoped blob completion.
+
+Evidence:
+
+- The two new history-denial cases first failed **0/2** with `Internal`, because the old full-run
+  restoration read revoked `iteration_checkpoints` (`/tmp/sagat-completion-bounded-capabilities-red.log`).
+  A subsequent test build failed on an incorrect test-only `TenantId` constructor; it was corrected
+  and is retained at `...-green.log`, not counted as a test result.
+- Corrected focused tests passed **7/7**, 12.86 s (`...-green-fixed.log`). The same compiled cases
+  then passed **7/7**, 8.54 s using the repository's disposable PostgreSQL fixture with no external
+  database URL (`...-canonical-fixture.log`). They exercise the runtime role with two connections,
+  revoked unrelated-history access, correct secret scope, per-instance audit deduplication,
+  incorrect step/generation, foreign tenant, current membership withdrawal and full replay oracle.
+- Four of those cases use real OpenBao 2.7.1 with explicit secret migration and a wrapper that only
+  pauses the actual provider read: role/binding withdrawal during output scanning or secret
+  resolution commits independently, including a run-row lock probe. Resumption refuses the report
+  or delivery and records neither a completion nor a successful secret handoff.
+- Complete primitive integration: **356 passed /0 failed /1 ignored**, 443.78 s, four harness threads
+  (`...-workflow-regression.log`). This diagnostic used the dedicated local verification database;
+  it is not the final canonical whole-workspace release gate.
+- Fresh repository-owned disposable database fixtures, without an external database URL:
+  security **123/123**, 130.62 s; gRPC **70/70**, 83.91 s; primitive faults **87/87**, 90.13 s;
+  PostgreSQL/OpenBao aggregate **3/3**, 44.18 s. Logs are
+  `/tmp/sagat-completion-bounded-capabilities-{security,grpc,faults}-regression.log` and
+  `...-provider-all-regression.log`. Command wall times/exit codes are separately retained in
+  `...-gate-results.json`. An initial `provider::` filter selected **zero tests**; that result is
+  explicitly marked unaccepted in the manifest and was replaced by the unfiltered three-test run.
+- Strict whole-workspace/all-target Clippy passed, 3 min 09 s (`...-clippy.log`). Formatting and
+  diff checks passed. No migration, PostgreSQL adapter query, privilege grant or wire field changed.
+- All five SDKs passed the unchanged `secrets` scenario (38.79 s command wall time). The first
+  `scoped-identity` run failed after 74.23 s: .NET/Java inspected `WAITING` at version 2 while
+  TypeScript/Go/Python inspected `RUNNING` at version 4. The 500 ms sleep read different legitimate
+  scheduling milestones. Commit `6c019922` replaces it with the existing public journal admission
+  barrier. The manually reviewed golden changes only `sleep` to `awaitJournal`; the expected
+  `RUNNING` status and all other observations remain unchanged. Corrected all-five conformance
+  passed, 54.65 s, on a disposable fixture with no external database URL. Scenario/expected-document
+  validation passed **1/1**, 0.29 s. Logs and retained initial failure are in
+  `...-sdk-results.json`, `...-sdk-scoped-identity-barrier.log` and
+  `/tmp/sagat-completion-scoped-identity-{sleep-race.json,scenario-validation.log}`.
+
+This increment does not close the remaining broad body/nesting, low-capacity descendant admission,
+blob completion, full old-version compatibility, 10k/100k resource or release gates. The task
+checkboxes remain open. The ongoing flat 10k benchmark executes frozen commit `025ce8d4`, not this
+increment; its source and environment remain explicit in its own manifest.

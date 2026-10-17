@@ -69,11 +69,11 @@ where
                 if what == QuotaResource::TenantContentBytes.limit_name() =>
             {
                 metrics::counter!("quota_exceeded_total", "limit" => what).increment(1);
-                let mut tx = self.open_path_report(principal, task).await?;
+                let mut tx = self.open_worker_path(principal, task).await?;
                 if let Some(stored) = tx.replay(&idempotency).await? {
                     return Ok(parse_ack(&stored, true, task.run_id));
                 }
-                Self::verify_path_report(&mut tx, task).await?;
+                Self::verify_path_lease(&mut tx, task).await?;
                 let now = tx.now();
                 let snapshot = tx.snapshot();
                 let progress = execution::fail_path_instance(
@@ -108,83 +108,6 @@ where
         }
     }
 
-    async fn open_path_report(
-        &self,
-        principal: &Principal,
-        task: &TaskRef<'_>,
-    ) -> Result<PathTx<S>, AppError> {
-        require_supported_task(task.instance, self.store.supports_scoped_worker_protocol())?;
-        let Some(mut tx) = self
-            .store
-            .begin_current_path(
-                principal.tenant_id(),
-                task.run_id,
-                task.instance.path().clone(),
-                Lock::Wait,
-            )
-            .await?
-        else {
-            return Err(self.missing_task_error(principal, task).await);
-        };
-        let snapshot = tx.snapshot();
-        if task.step_id.is_some_and(|claimed| {
-            claimed
-                != instance_step_id(
-                    snapshot.info.version_id,
-                    snapshot.info.run_id,
-                    task.instance,
-                )
-        }) || snapshot
-            .state
-            .local_instance(task.instance.node())
-            .is_none()
-        {
-            return Err(AppError::StaleAttempt);
-        }
-        // Current authority precedes receipt lookup as well as every new report.
-        Self::ensure_path_bound(principal, &mut tx, task).await?;
-        Ok(tx)
-    }
-
-    async fn verify_path_report(tx: &mut PathTx<S>, task: &TaskRef<'_>) -> Result<(), AppError> {
-        if !tx
-            .lease_matches(task.instance, &Token::hash_of(task.lease_token))
-            .await?
-        {
-            return Err(AppError::StaleAttempt);
-        }
-        Ok(())
-    }
-
-    async fn path_scan_fence(
-        tx: &mut PathTx<S>,
-        task: &TaskRef<'_>,
-        allow_cancellation: bool,
-    ) -> Result<(), AppError> {
-        Self::verify_path_report(tx, task).await?;
-        let snapshot = tx.snapshot();
-        let valid = snapshot
-            .state
-            .local_instance(task.instance.node())
-            .is_some_and(|step| {
-                step.attempt() == task.fence.attempt
-                    && step.generation() == task.fence.generation
-                    && (allow_cancellation || !step.cancel_requested())
-            })
-            && !snapshot.state.global().status().is_terminal()
-            && (allow_cancellation
-                || task.instance.node().is_derived()
-                || snapshot.state.global().stop_reason().is_none());
-        if !valid
-            || !tx
-                .lease_unexpired(task.instance, &Token::hash_of(task.lease_token))
-                .await?
-        {
-            return Err(AppError::StaleAttempt);
-        }
-        Ok(())
-    }
-
     #[tracing::instrument(name = "secret.output.scan", skip_all)]
     async fn checked_path_report(
         &self,
@@ -193,7 +116,7 @@ where
         report: &PathReport<'_>,
         idempotency: &Idempotency,
     ) -> Result<SecretReport<PathTx<S>>, AppError> {
-        let mut tx = self.open_path_report(principal, task).await?;
+        let mut tx = self.open_worker_path(principal, task).await?;
         if let Some(stored) = tx.replay(idempotency).await? {
             return Ok(SecretReport::Replayed(parse_ack(
                 &stored,
@@ -201,7 +124,7 @@ where
                 task.run_id,
             )));
         }
-        Self::verify_path_report(&mut tx, task).await?;
+        Self::verify_path_lease(&mut tx, task).await?;
         let names = tx
             .snapshot()
             .definition
@@ -212,11 +135,11 @@ where
             return Ok(SecretReport::Ready(tx, None));
         }
         let allow_cancellation = report.acknowledges_cancellation();
-        Self::path_scan_fence(&mut tx, task, allow_cancellation).await?;
+        Self::live_path_fence(&mut tx, task, allow_cancellation).await?;
         let before = tx.secret_versions(&names).await?;
         tx.commit().await?;
         let scanned = self.secret_in_output(&before, report.scan_bytes()).await;
-        let mut tx = self.open_path_report(principal, task).await?;
+        let mut tx = self.open_worker_path(principal, task).await?;
         if let Some(stored) = tx.replay(idempotency).await? {
             return Ok(SecretReport::Replayed(parse_ack(
                 &stored,
@@ -224,7 +147,7 @@ where
                 task.run_id,
             )));
         }
-        Self::path_scan_fence(&mut tx, task, allow_cancellation).await?;
+        Self::live_path_fence(&mut tx, task, allow_cancellation).await?;
         if before != tx.secret_versions(&names).await? {
             return Err(AppError::Unavailable);
         }

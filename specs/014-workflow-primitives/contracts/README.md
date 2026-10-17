@@ -366,6 +366,15 @@ scoped tasks are eligible only for a worker that negotiated support, with unchan
 checks. SDK retry logic does not implement the workflow loop; it handles transport safely and passes
 idempotency/instance identity. The server remains authoritative about scheduling and quota.
 
+Scoped `ResolveSecrets` and blob capability checks use the exact task path, step UUID, token,
+attempt and generation plus current worker membership/bindings. Secret delivery rechecks publisher
+ACLs, pools and versions after provider I/O; it commits its value-free audit before returning any
+value. Each logical step UUID has its own delivery audit even when two iterations use the same
+node and attempt. Root addressing and audit text remain compatible. Blob upload by a step that
+declares secrets still returns the existing content-scanning refusal. Scoped blob output completion
+remains a separate unsupported operation; authorizing a read is not approval of an output commit.
+No wire field, worker minor, SDK builder or normalized expected output changes in this increment.
+
 Every SDK gains idiomatic declarative builders for the six node types/state operations plus the
 explicit approval, query/update and chain client operations. Shared names in this design indicate
 semantics, not a mandate for identical language casing. All five must emit byte-identical canonical

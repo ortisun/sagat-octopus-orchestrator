@@ -369,6 +369,20 @@ Provider output scans close the transaction before I/O, then recheck current aut
 secret version snapshots. Current membership, binding and echoed step identity precede receipt
 replay for ordinary Root and scoped reports.
 
-Secret/blob capability reads, blob completion, broader scoped control nodes, global/ancestor drain
-and root finalization still need their remaining consumer integration and larger workload/fault
-evidence. These current consumers do not establish a 10k/100k capacity claim.
+Scoped secret resolution shares one handoff policy with Root resolution over their respective
+transaction lifecycles. Both phases of a scoped resolution read only its current exact path,
+including live lease, current binding/membership, worker pools and publisher ACL/version snapshots.
+Provider reads happen between committed transactions; no value is handed out until a successful
+audit commits after rechecking authority and unchanged inputs. A scoped audit includes its complete
+logical step UUID, so repeated delivery within one attempt collapses without collapsing another
+iteration of the same definition node. Root audit text and legacy attempt semantics remain stable.
+
+Scoped blob read/upload checks and report-scope lookup also use current exact-path state. Actual
+blob bytes remain subject to the existing object/catalog service and namespace boundary. Uploads
+by steps declaring secrets retain their typed content-scanning refusal; no capability is granted
+over cancellation. Report-scope lookup intentionally needs current authority and identity without
+requiring an unexpired lease, because receipt replay has a separate lifecycle. These changes do
+not enable scoped blob completion.
+
+Blob completion, broader scoped control nodes, global/ancestor drain and root finalization still
+need their remaining consumer integration and larger workload/fault evidence. These current consumers do not establish a 10k/100k capacity claim.

@@ -11,8 +11,10 @@
 mod database;
 mod output;
 mod scoped;
+mod scoped_capabilities;
 mod scoped_claims;
 mod scoped_reports;
+mod secret_resolution;
 mod secrets;
 pub use output::BlobOutput;
 use secrets::SecretReport;
@@ -1028,7 +1030,7 @@ where
                 let effects = self.pool_refusal_effects(
                     principal,
                     tx.info(),
-                    instance.node(),
+                    &instance,
                     attempt,
                     &withheld,
                     "lease",
@@ -1527,7 +1529,10 @@ where
         &self,
         principal: &Principal,
         task: &TaskRef<'_>,
-    ) -> Result<BlobScope, AppError> {
+    ) -> Result<BlobScope, AppError>
+    where
+        S: PathExecutionStore,
+    {
         self.check_blob_access(principal, task, false, None).await
     }
 
@@ -1537,7 +1542,10 @@ where
         &self,
         principal: &Principal,
         task: &TaskRef<'_>,
-    ) -> Result<BlobScope, AppError> {
+    ) -> Result<BlobScope, AppError>
+    where
+        S: PathExecutionStore,
+    {
         self.check_blob_access(principal, task, true, None).await
     }
 
@@ -1549,7 +1557,10 @@ where
         task: &TaskRef<'_>,
         blob: BlobId,
         trace_id: Option<&str>,
-    ) -> Result<(), AppError> {
+    ) -> Result<(), AppError>
+    where
+        S: PathExecutionStore,
+    {
         self.check_blob_access(principal, task, false, Some((blob, trace_id)))
             .await
             .map(|_| ())
@@ -1561,8 +1572,16 @@ where
         task: &TaskRef<'_>,
         writing: bool,
         audit_read: Option<(BlobId, Option<&str>)>,
-    ) -> Result<BlobScope, AppError> {
+    ) -> Result<BlobScope, AppError>
+    where
+        S: PathExecutionStore,
+    {
         principal.authorize(Permission::WorkerExecute)?;
+        if !task.instance.path().is_root() {
+            return self
+                .check_path_blob_access(principal, task, writing, audit_read)
+                .await;
+        }
         let mut tx = self.open(principal, task, Lock::Wait).await?;
         self.verify(&mut tx, task).await?;
         self.ensure_bound(principal, &mut tx, task).await?;
@@ -1595,25 +1614,7 @@ where
         }
         let scope = Self::scope_of(&tx, task);
         if let Some((blob, trace_id)) = audit_read {
-            let mut effects =
-                Effects::by(Actor::Worker(principal.subject().as_str().to_owned()), None);
-            effects.audit = Some(
-                AuditRecord::by(
-                    principal,
-                    AuditAction::BlobRead,
-                    ResourceType::Blob,
-                    format!("{}/{}", scope.access.namespace_id, blob),
-                    trace_id.map(str::to_owned),
-                    self.clock.now(),
-                )
-                .with_reason(format!(
-                    "run {} node {} attempt {} generation {}",
-                    task.run_id,
-                    task.instance.node(),
-                    task.fence.attempt,
-                    task.fence.generation
-                )),
-            );
+            let effects = self.blob_read_effects(principal, task, scope, blob, trace_id);
             tx.persist(&[], effects).await?;
             tx.commit().await?;
         }
@@ -1626,8 +1627,17 @@ where
         &self,
         principal: &Principal,
         task: &TaskRef<'_>,
-    ) -> Result<BlobScope, AppError> {
+    ) -> Result<BlobScope, AppError>
+    where
+        S: PathExecutionStore,
+    {
         principal.authorize(Permission::WorkerExecute)?;
+        if !task.instance.path().is_root() {
+            let mut tx = self.open_worker_path(principal, task).await?;
+            let scope = Self::scope_from_info(&tx.snapshot().info, task);
+            tx.commit().await?;
+            return Ok(scope);
+        }
         let mut tx = self.open(principal, task, Lock::Wait).await?;
         self.ensure_bound(principal, &mut tx, task).await?;
         let scope = Self::scope_of(&tx, task);
@@ -1638,7 +1648,10 @@ where
     }
 
     fn scope_of<Tx: RunTx>(tx: &Tx, task: &TaskRef<'_>) -> BlobScope {
-        let info = tx.info();
+        Self::scope_from_info(tx.info(), task)
+    }
+
+    fn scope_from_info(info: &crate::execution::RunInfo, task: &TaskRef<'_>) -> BlobScope {
         BlobScope {
             access: BlobAccess {
                 tenant_id: info.tenant_id,
@@ -1649,6 +1662,40 @@ where
             attempt: task.fence.attempt,
             generation: task.fence.generation,
         }
+    }
+
+    fn blob_read_effects(
+        &self,
+        principal: &Principal,
+        task: &TaskRef<'_>,
+        scope: BlobScope,
+        blob: BlobId,
+        trace_id: Option<&str>,
+    ) -> Effects {
+        let mut effects = Effects::by(Actor::Worker(principal.subject().as_str().to_owned()), None);
+        effects.audit = Some(
+            AuditRecord::by(
+                principal,
+                AuditAction::BlobRead,
+                ResourceType::Blob,
+                format!("{}/{}", scope.access.namespace_id, blob),
+                trace_id.map(str::to_owned),
+                self.clock.now(),
+            )
+            .with_reason(format!(
+                "run {} node {} attempt {} generation {}{}",
+                task.run_id,
+                task.instance.node(),
+                task.fence.attempt,
+                task.fence.generation,
+                if task.instance.path().is_root() {
+                    String::new()
+                } else {
+                    format!(" step {}", scope.step_id)
+                }
+            )),
+        );
+        effects
     }
 
     async fn apply_scoped_or_root_failure(
@@ -2058,7 +2105,7 @@ where
         &self,
         principal: &Principal,
         info: &crate::execution::RunInfo,
-        node: &sagat_domain::workflow::NodeId,
+        instance: &ExecutionInstanceId,
         attempt: u32,
         withheld: &SecretName,
         stage: &str,
@@ -2077,9 +2124,15 @@ where
                 trace_id.map(str::to_owned),
                 self.clock.now(),
             )
-            .with_reason(format!(
-                "node {node} attempt {attempt}: {withheld} is not delivered outside its worker pools (at {stage})"
-            )),
+            .with_reason({
+                let node = instance.node();
+                let reason = format!("node {node} attempt {attempt}: {withheld} is not delivered outside its worker pools (at {stage})");
+                if instance.path().is_root() {
+                    reason
+                } else {
+                    format!("step {}: {reason}", instance_step_id(info.version_id, info.run_id, instance))
+                }
+            }),
         );
         effects
     }

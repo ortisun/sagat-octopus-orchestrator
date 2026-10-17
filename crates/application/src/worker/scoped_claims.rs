@@ -165,7 +165,7 @@ where
                 let effects = self.pool_refusal_effects(
                     principal,
                     &snapshot.info,
-                    instance.node(),
+                    &instance,
                     attempt,
                     &withheld,
                     "lease",

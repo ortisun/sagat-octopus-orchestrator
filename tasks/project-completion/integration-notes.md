@@ -1311,3 +1311,42 @@ and other worktrees/caches were untouched. A separate explicitly owned PostgreSQ
 server now preloads pg_stat_statements, retains default query/connection settings and has 1 GiB
 shared memory; identity/profile at `/tmp/sagat-completion-path-perf-postgres.json`. Its creation and
 the new performance executable's successful build are preparation, not completed capacity evidence.
+
+
+## 2026-10-17 — Scoped secret/blob capabilities and deterministic SDK inspection
+
+Implemented the ordinary scoped secret handoff and blob authority checks over `begin_current_path`.
+The existing Root and scoped secret handoff share one policy; a small private enum delegates only
+their transaction lifecycles. Provider I/O holds no run or authority locks; current authority, live
+lease, pools, publisher ACL and secret snapshot are checked again before committing the value-free
+audit. Scoped audit reasons include the logical step UUID (including pool refusals), preserving
+Root audit text while distinguishing separate iterations. Blob authorization stays separate from
+actual catalog/object transfer and scoped blob completion remains unsupported. The upload denial
+for steps declaring secrets remains stable over a current cancelled lease; no cancellation
+exception grants access. Shared path opening/fence helpers now live in `worker/scoped.rs`.
+
+Two real RED cases failed with full-history access revoked. Corrected new/expanded focused cases
+passed **7/7**, 12.86 s; the same cases passed **7/7**, 8.54 s on the repository's disposable
+PostgreSQL fixture without an external database URL. Four cases perform real OpenBao 2.7.1 reads
+and independently withdraw role/binding during the pause, probing that the run lock is free.
+Complete primitive integration passed **356/0/1 ignored**, 443.78 s on the dedicated diagnostic
+verification database. Fresh self-contained fixture runs passed security **123/123** (130.62 s),
+gRPC **70/70** (83.91 s), primitive faults **87/87** (90.13 s), and the unfiltered PostgreSQL/OpenBao
+aggregate **3/3** (44.18 s). An initial `provider::` filter ran zero tests and is marked unaccepted;
+its log is preserved. Strict workspace/all-target Clippy passed (3m09s); fmt/diff checks passed.
+All logs/manifests use `/tmp/sagat-completion-bounded-capabilities-…`. Constructor compile failure
+and initial runtime RED results remain recorded; no failed result was turned into a pass.
+
+The all-five `secrets` scenario passed (38.79 s wall). The first scoped-identity run failed because
+its 500 ms sleep observed pre-admission `WAITING` for .NET/Java and post-admission `RUNNING` for the
+other three languages. Exact statuses/versions are retained at
+`/tmp/sagat-completion-scoped-identity-sleep-race.json`. Separate commit **6c019922** waits for the
+public journal's collection-admission event using the existing cross-language `awaitJournal`.
+Only the golden's operation label changes; `RUNNING` remains expected. The corrected five-language
+scenario passed (54.65 s harness time) on a self-contained fixture, and scenario validation passed
+1/1. No SDK source, runner, server status policy or semantic golden was changed.
+
+The flat 10k/width1,16,256 benchmark still runs from detached frozen `025ce8d4`; its executable is
+not rebuilt while active. Its source worktree and manifest remain unchanged. Broader body graphs,
+public step-output collection sources, nesting/low quotas, scoped blob completion and the final
+compatibility/resource/release tasks remain open; no task was ticked by reducing scope.

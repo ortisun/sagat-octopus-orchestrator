@@ -55,15 +55,25 @@ impl SecretProvider for PausedRead {
 
 #[tokio::test]
 async fn role_revocation_commits_while_a_scoped_openbao_report_scan_is_paused() {
-    assert_current_authority_after_scan(true).await;
+    assert_current_authority_after_scan(true, false).await;
 }
 
 #[tokio::test]
 async fn binding_revocation_commits_while_a_scoped_openbao_report_scan_is_paused() {
-    assert_current_authority_after_scan(false).await;
+    assert_current_authority_after_scan(false, false).await;
 }
 
-async fn assert_current_authority_after_scan(revoke_role: bool) {
+#[tokio::test]
+async fn role_revocation_discards_secrets_after_a_scoped_openbao_read() {
+    assert_current_authority_after_scan(true, true).await;
+}
+
+#[tokio::test]
+async fn binding_revocation_discards_secrets_after_a_scoped_openbao_read() {
+    assert_current_authority_after_scan(false, true).await;
+}
+
+async fn assert_current_authority_after_scan(revoke_role: bool, resolving: bool) {
     let fixture = fixture("bounded-report-provider-fence").await;
     let container = GenericImage::new("openbao/openbao", "2.7.1")
         .with_wait_for(WaitFor::message_on_stdout(
@@ -140,14 +150,22 @@ async fn assert_current_authority_after_scan(revoke_role: bool) {
     let caller = workers.clone();
     let principal = fixture.session.principal.clone();
     let report = tokio::spawn(async move {
-        caller
-            .complete(
-                &principal,
-                &task_ref(&task),
-                b"{}",
-                "provider-fenced-report",
-            )
-            .await
+        if resolving {
+            caller
+                .resolve_secrets(&principal, &task_ref(&task), None)
+                .await
+                .map(|_| ())
+        } else {
+            caller
+                .complete(
+                    &principal,
+                    &task_ref(&task),
+                    b"{}",
+                    "provider-fenced-report",
+                )
+                .await
+                .map(|_| ())
+        }
     });
     tokio::time::timeout(Duration::from_secs(5), paused.entered.notified())
         .await
@@ -217,4 +235,12 @@ async fn assert_current_authority_after_scan(revoke_role: bool) {
     .await
     .expect("no committed completion");
     assert_eq!(completed, 0);
+    let deliveries: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_records WHERE tenant_id=$1 AND action='secret.resolved'",
+    )
+    .bind(fixture.session.principal.tenant_id().as_uuid())
+    .fetch_one(&fixture.world.db.pool)
+    .await
+    .expect("no successful delivery was committed");
+    assert_eq!(deliveries, 0);
 }

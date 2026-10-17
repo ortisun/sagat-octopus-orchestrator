@@ -245,3 +245,15 @@ failures are in `tasks/project-completion/integration-notes.md`.
 The production worker still uses the existing full transaction path. Complete blob/provider/
 control/drain/finalization integration and the 10,000/100,000 resource/fault criteria remain
 required; this checkpoint is not a substitute for those accepted tasks.
+
+
+### Current scoped capability increment (2026-10-17)
+
+Scoped secret handoff and blob authority now consume current exact-path state. Secret handoff
+keeps one shared Root/scoped application policy with their existing transaction lifecycles,
+commits before provider I/O, and rechecks live/current authority and publisher inputs before
+committing the handoff audit. Scoped audit deduplication addresses the complete logical step UUID.
+Blob authorization preserves scanning refusals and does not enable scoped blob output completion.
+The real-provider/history-denial and current regression evidence is recorded in
+[validation-report.md](./validation-report.md). The larger graph, descendant admission, resource,
+compatibility and release tasks retain their existing acceptance criteria and remain open.
