@@ -213,4 +213,9 @@ message ResolvedDatabase {
   DatabaseLimits limits = 7;
   ResolvedSecret credential = 8;
   int64 lease_expires_at_epoch_ms = 9;
+  // Verified scope and canonical reference for the runner's namespace destination policy.
+  string namespace_id = 10;
+  string connection_name = 11;
+  // Trusted identity scope for audit-correlated executor telemetry; not a metric label.
+  string tenant_id = 12;
 }

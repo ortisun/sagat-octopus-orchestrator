@@ -1,4 +1,7 @@
 //! Managed database targets and operations (feature 017). No driver or network I/O lives here.
+mod failure;
+pub use failure::DatabaseFailure;
+
 use crate::{identity::Slug, secrets::SecretName, workflow::Expression};
 use std::{fmt, net::IpAddr};
 

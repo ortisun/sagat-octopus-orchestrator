@@ -30,3 +30,25 @@ pub enum ExecutionError {
     #[error("database write outcome is unknown; reconciliation is required")]
     OutcomeUnknown,
 }
+
+impl ExecutionError {
+    pub const fn failure(self) -> sagat_domain::database::DatabaseFailure {
+        use sagat_domain::database::DatabaseFailure as Failure;
+        match self {
+            Self::InvalidConfiguration => Failure::Configuration,
+            Self::StatementDenied => Failure::StatementDenied,
+            Self::DestinationDenied => Failure::DestinationDenied,
+            Self::Connection => Failure::Connection,
+            Self::Tls => Failure::Tls,
+            Self::Authentication => Failure::Authentication,
+            Self::PrivilegedRole => Failure::PrivilegedRole,
+            Self::Capacity => Failure::Capacity,
+            Self::Timeout => Failure::Timeout,
+            Self::Cancelled => Failure::Cancelled,
+            Self::Statement => Failure::Statement,
+            Self::ValueType => Failure::ValueType,
+            Self::ResultLimit => Failure::ResultLimit,
+            Self::OutcomeUnknown => Failure::OutcomeUnknown,
+        }
+    }
+}

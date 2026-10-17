@@ -473,6 +473,21 @@
         "repeated": false,
         "type": "String"
       },
+      "10": {
+        "name": "namespace_id",
+        "repeated": false,
+        "type": "String"
+      },
+      "11": {
+        "name": "connection_name",
+        "repeated": false,
+        "type": "String"
+      },
+      "12": {
+        "name": "tenant_id",
+        "repeated": false,
+        "type": "String"
+      },
       "2": {
         "name": "connection_revision",
         "repeated": false,

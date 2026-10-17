@@ -23,6 +23,9 @@ pub(crate) fn response(resolved: ResolvedDatabase) -> Result<pb::ResolvedDatabas
     };
     let l = resolved.operation.limits;
     Ok(pb::ResolvedDatabase {
+        tenant_id: resolved.connection.tenant_id.to_string(),
+        namespace_id: resolved.connection.namespace_id.to_string(),
+        connection_name: resolved.connection.name.to_string(),
         connection_id: resolved.connection.id.to_string(),
         connection_revision: resolved.connection.revision,
         postgres: Some(pb::PostgresConnection {

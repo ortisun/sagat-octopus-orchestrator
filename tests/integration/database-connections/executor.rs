@@ -256,6 +256,10 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
             .is_err(),
         "blob uploads cannot bypass the gate"
     );
+    assert!(
+        w.workers.check_lease(&runner, &reference).await.is_err(),
+        "managed leases cannot fetch unrelated run blobs"
+    );
     for version in 1..=6 {
         secrets
             .put(&w.admin, ns, rotate(version), &ctx())
@@ -561,6 +565,10 @@ pub async fn grpc(provider: Arc<dyn SecretProvider>) {
         .register_version(&[MANAGED_DATABASE_ACTIVITY], "1.5")
         .await;
     let lease = worker.one_task().await;
+    assert_eq!(
+        lease.input_json, "{}",
+        "the capability owns parameter evaluation; run context stays server-side"
+    );
     let request = worker.req(Worker::resolve_secrets_message(&lease));
     let response = worker
         .client
@@ -569,6 +577,9 @@ pub async fn grpc(provider: Arc<dyn SecretProvider>) {
         .unwrap()
         .into_inner();
     assert_eq!(response.connection_revision, 1);
+    assert_eq!(response.namespace_id, ns);
+    assert_eq!(response.tenant_id, p.tenant.to_string());
+    assert_eq!(response.connection_name, "warehouse");
     assert_eq!(response.parameters.len(), 11);
     assert_eq!(
         response.parameters[2].value,

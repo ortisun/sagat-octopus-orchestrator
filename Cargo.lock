@@ -4472,6 +4472,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "sagat-database-runner"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "bytes",
+ "ipnet",
+ "metrics",
+ "sagat-api-grpc",
+ "sagat-application",
+ "sagat-domain",
+ "sagat-infra-database",
+ "sagat-infra-secrets",
+ "sagat-telemetry",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror 2.0.21",
+ "time",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tonic",
+ "tracing",
+ "url",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
 name = "sagat-dev-idp"
 version = "0.1.0"
 dependencies = [

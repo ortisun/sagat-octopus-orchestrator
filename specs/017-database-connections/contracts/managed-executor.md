@@ -78,3 +78,68 @@ of body polling, including a client that keeps making slow progress. Normal buff
 release cancels the timer. Missing native server integration fails closed. A delivery
 cutoff can occur after the audit has committed; an audit records authorized disclosure,
 not proof that a client received every byte. Generic payload inspection stays structural.
+
+## Runner process configuration (T017-015)
+
+The runner is a separate Rust process with a gRPC worker identity and protocol 1.5.
+It holds no platform SQL pool, scheduler store, local keyring or OpenBao token.
+Each configured namespace has its own registered session. A resolved capability
+includes namespace UUID and logical connection name so the runner can verify the
+scope and reconstruct the canonical operation without invented references.
+The tenant UUID is included for correlated telemetry. Managed task polls contain
+`input_json={}` and no input blob reference: the server evaluates parameters under
+the capability. Generic `ReadBlob` is refused for managed leases.
+
+An operator-owned bounded policy file declares deployment CIDRs/ports, platform
+state exclusions, deployment limits and narrower per-namespace UUID/slug scopes
+and limits. Empty scopes deny access. Policies are re-read before each attempt;
+removed/changed namespaces cannot inherit another entry. New registered namespaces
+require restart. Changes cannot retract credentials or undo an already dispatched
+customer operation. The same bounds are enforced independently by deployment
+network policy (T017-023); a file alone is not proof of process/network isolation.
+
+`SAGAT_DATABASE_RUNNER_CONFIG` selects a closed JSON document (256 KiB maximum).
+`grpcUrl` must use HTTPS; numeric loopback HTTP requires explicit development mode.
+`tokenFile` is a regular file of at most 8 KiB, re-read before each RPC for workload
+token rotation. `caFile`, if supplied, is at most 256 KiB. Redirects and credential
+URLs are not supported. The worker name is `name/namespaceSlug`, at most 120 bytes;
+give every live replica a distinct stable name. Up to 32 namespaces are configured.
+Namespace UUID and slug must match; duplicate entries are rejected.
+
+`maxConcurrent` is 1..64 per process. `pollIntervalMs` is 100..5000 and `rpcTimeoutMs`
+100..10000. Each poll has at most four receive credits; a persistent cursor fairly
+rotates namespaces when capacity fills. Deployment and namespace CIDR lists and
+port lists each have at most 256 entries. Deployment denies include operator-supplied
+platform-state addresses (nonempty outside development); hard reserved/metadata
+denials remain in the target adapter. Each of the nine limits is explicitly supplied,
+positive, and no greater than the domain ceiling. Effective limits are the component
+minimum of server capability, deployment policy and namespace policy. A shared
+per-process namespace/connection counter enforces the effective `poolSize` across
+attempts through socket cleanup; saturation fails before SQL dispatch. Distributed
+server admission uses its persisted connection limits. Narrower runner policies do
+not replace the pending server-configurable deployment/namespace admission policy.
+
+The runner registers only `sagat.database.postgresql` with protocol 1.5. Heartbeats
+start before policy/provider I/O; loss, cancellation or lease expiry cancels target
+execution. A target statement cannot outlive the capability's returned lease deadline
+or its query deadline; renewing the worker lease does not extend that captured SQL
+deadline. Each attempt dispatches SQL once. Terminal reports reuse an unchanged key,
+content and digest for up to 30 seconds, bounded by the latest valid lease. Retryable
+transport failures never trigger another SQL dispatch. Blob uploads use 64 KiB chunks
+and are not retried after an ambiguous upload response; unused objects follow upload
+TTL cleanup. A write with lost result/upload is `OUTCOME_UNKNOWN`; an ambiguous
+completion acknowledgment is handled through receipt replay or lease-expiry recovery.
+
+Managed failures accept only the closed `DatabaseFailure` codes: configuration,
+statement/destination denial, connection, TLS, authentication, privileged role,
+capacity, timeout, cancellation, SQL failure, unsupported type, result limit,
+capability/credential/result unavailability, `OUTCOME_UNKNOWN`, and `WORKER_ERROR`.
+They carry no provider/driver message and request no automatic retry. SIGTERM/SIGINT
+cancels target work and allows up to 30 seconds for reporting before aborting tasks.
+Cancellation is not proof that a dispatched write was rolled back.
+
+The runner exports W3C-correlated OTLP attempt spans, fixed outcome counters and
+attempt durations. `/metrics` listens at `SAGAT_DATABASE_RUNNER_METRICS_ADDR`
+(default `127.0.0.1:9092`); bind it only on the monitoring network. No SQL, parameter,
+credential, output, bearer token or session token is an observability field.
+The panic hook emits a fixed incident message without the panic payload.

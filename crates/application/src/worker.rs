@@ -882,7 +882,18 @@ where
             }
             // Measure the actual serialized context before granting any lease. Raw output sizes
             // do not bound it: JSON number normalization can expand a compact stored document.
-            let input = self.engine.evaluator().task_input(tx.data().await?, &node);
+            let managed = tx
+                .parts()
+                .0
+                .node(&node)
+                .is_some_and(|n| n.database_operation().is_some());
+            // Managed runners only need the fenced capability. ResolveDatabase evaluates typed
+            // parameters server-side, so unrelated run payloads never cross this boundary.
+            let input = if managed {
+                b"{}".to_vec()
+            } else {
+                self.engine.evaluator().task_input(tx.data().await?, &node)
+            };
             if input.len() > MAX_TASK_INPUT_BYTES {
                 match self
                     .reject_large_input(&mut tx, session, &node, trace_id)
@@ -897,11 +908,6 @@ where
                 // and return every lease already made in this transaction.
                 break;
             }
-            let managed = tx
-                .parts()
-                .0
-                .node(&node)
-                .is_some_and(|n| n.database_operation().is_some());
             if managed {
                 let admitted = tx.database_claim(&node, &session.subject).await;
                 let denied = match admitted {
@@ -1098,7 +1104,7 @@ where
         };
         // Borrowed, not cloned: a run's data can be megabytes and a poll leases many steps of it.
         let data = tx.data().await?;
-        let input_blob = data.input_blob;
+        let input_blob = if managed { None } else { data.input_blob };
         // The key of the forward step: what identifies the effect at the provider.
         let forward_node = forward.as_ref().unwrap_or(node);
         let forward_key = match template {
@@ -1301,10 +1307,12 @@ where
                 return Err(AppError::StaleAttempt);
             }
         }
-        if writing && Self::managed_database(&mut tx, task) {
-            return Err(AppError::NotAllowed(
-                "managed database results require content scanning",
-            ));
+        if Self::managed_database(&mut tx, task) {
+            return Err(AppError::NotAllowed(if writing {
+                "managed database results require content scanning"
+            } else {
+                "managed database inputs are resolved through the capability"
+            }));
         }
         if writing && !Self::declared_secrets(&mut tx, task).is_empty() {
             return Err(AppError::NotAllowed(
@@ -1401,10 +1409,10 @@ where
         }
         self.verify(&mut tx, task).await?;
         self.ensure_bound(principal, &mut tx, task).await?;
-        // Until managed result scanning ships, only these fixed outcomes may enter the journal.
+        // Only closed managed failures may enter the payload-free journal.
         // safe_message is discarded by the transport; an arbitrary error_code is content too.
         if Self::managed_database(&mut tx, task)
-            && !matches!(error_code, "WORKER_ERROR" | "OUTCOME_UNKNOWN")
+            && sagat_domain::database::DatabaseFailure::parse(error_code).is_none()
         {
             return Err(AppError::NotAllowed(
                 "managed database failures require a fixed code",

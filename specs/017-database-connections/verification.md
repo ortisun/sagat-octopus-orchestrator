@@ -143,3 +143,39 @@ Final evidence for this checkpoint:
 - Studio `check:api` and `typecheck`: passed. Architecture check: 23 crates passed. Formatting and diff whitespace: passed.
 
 The full feature is still incomplete. T017-015/016 runner/ad hoc/probe, all-five SDK execution, Studio execution/results, deployment, cleanup/restore and final fault/performance gates remain pending.
+
+### T017-015 isolated runner — 2026-10-17
+
+Added the separate `database-runner` process and operator policy file, authenticated
+protocol-1.5 sessions, scoped capability decoding, per-attempt policy reload, typed
+PostgreSQL dispatch, heartbeat cancellation and idempotent result/failure reporting.
+The production execution engine now supplies the previously tested credential and
+result validators. Managed polls carry no unrelated run context; managed generic
+blob reads fail closed. Namespace/connection/tenant capability fields are additive.
+
+Independent read-only review found first-namespace starvation and ineffective local
+pool narrowing across per-task adapters. A persistent polling cursor and shared
+namespace/connection session counter fix them. Real process regressions exercise
+both. Second review found no remaining Required/Critical findings; reviewer ran no
+tests. It explicitly retained active-write process interruption and shutdown/restart
+during reporting as later fault-test gaps, not proven guarantees.
+
+Actual evidence:
+
+- `cargo test -p sagat-database-runner --lib --locked`: 4 passed. Configuration,
+  capability scope/types/deadlines and shared/reloaded capacity bounds.
+- `cargo build -p sagat-database-runner --bin database-runner --locked`: passed.
+- `cargo test -p sagat-tests --test integration_database_runner --test integration_database_connections --locked`: 1 process fixture + 3 feature tests passed. The process fixture starts real PostgreSQL/OpenBao and a separate binary with its environment cleared; checks exact integer/decimal/text values, 350KB blob output, one target write despite a lost committed completion acknowledgment, durable receipt replay, live heartbeats, cancellation after heartbeat loss with socket closure, mismatched namespace refusal before write, narrower shared pool limit, policy reload, fair progress of a second namespace while the first has eight queued runs, SIGTERM drain, fixed-label metrics, exported tenant/namespace/run/parent-correlated OTLP spans and credential/SQL/parameter/result TRACE canaries.
+- Initial fixture compile errors (UUID serialization) and journal-table lookup were
+  corrected; subsequent complete commands above passed. No production guarantee is
+  inferred from those failed initial fixture runs.
+- `cargo test -p sagat-api-grpc --test compatibility --locked`: 2 passed against
+  the prior additive baseline before regeneration.
+- `cargo clippy -p sagat-database-runner -p sagat-application -p sagat-execution-engine --all-targets -- -D warnings`: passed.
+- `cargo clippy -p sagat-tests --test integration_database_runner --test integration_database_connections --locked -- -D warnings`: passed.
+- Architecture check: 24 crates passed; formatting and whitespace checks passed.
+
+See `docs/runbooks/database-runner.md` for exact configuration and reproduction.
+The process enforces local destination/resource policies; actual container/network
+isolation is still a T017-023 deployment gate. Ad hoc/probe admission, five SDKs,
+Studio execution/results, cleanup/restore and final gates remain incomplete.

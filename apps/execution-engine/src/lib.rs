@@ -106,6 +106,10 @@ pub async fn serve(
         Engine::new(JsonEvaluator),
         SystemEntropy,
         engine.worker,
+    )
+    .with_database_content(
+        Arc::new(sagat_infra_secrets::database::JsonDatabaseCredentials),
+        Arc::new(sagat_infra_ir::JsonDatabaseResultValidator),
     );
     let provider: Option<Arc<dyn sagat_application::secret_provider::SecretProvider>> =
         match &engine.openbao {

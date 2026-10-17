@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/domain", "crates/application", "crates/infra-postgres", "crates/infra-database", "crates/infra-blobstore", "crates/telemetry", "crates/api-http", "crates/api-grpc", "crates/infra-nats", "crates/infra-egress", "crates/infra-connectors", "crates/infra-secrets", "crates/infra-expr", "crates/infra-ir", "crates/infra-sandbox", "crates/infra-schema", "crates/scheduler", "apps/cli", "apps/control-plane", "apps/dev-idp", "apps/execution-engine", "apps/sandbox-runner", "tests"]
+members = ["crates/domain", "crates/application", "crates/infra-postgres", "crates/infra-database", "crates/infra-blobstore", "crates/telemetry", "crates/api-http", "crates/api-grpc", "crates/infra-nats", "crates/infra-egress", "crates/infra-connectors", "crates/infra-secrets", "crates/infra-expr", "crates/infra-ir", "crates/infra-sandbox", "crates/infra-schema", "crates/scheduler", "apps/cli", "apps/control-plane", "apps/dev-idp", "apps/execution-engine", "apps/sandbox-runner", "apps/database-runner", "tests"]
 
 [workspace.package]
 license = "MIT"
@@ -35,6 +35,7 @@ sagat-control-plane = { path = "apps/control-plane" }
 sagat-dev-idp = { path = "apps/dev-idp" }
 sagat-execution-engine = { path = "apps/execution-engine" }
 sagat-sandbox-runner = { path = "apps/sandbox-runner" }
+sagat-database-runner = { path = "apps/database-runner" }
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres", "migrate", "macros", "uuid", "time", "json"] }
 testcontainers-modules = { version = "0.15", features = ["postgres", "nats", "kafka", "elasticmq", "watchdog"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "query", "matched-path"] }
