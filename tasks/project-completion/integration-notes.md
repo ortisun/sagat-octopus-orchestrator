@@ -841,3 +841,28 @@ case compares both expiry causes for compensation and lookup and verifies journa
 Strict Clippy of domain/all targets plus the integration-test package passed, 66 s
 (`/tmp/sagat-completion-bounded-expiry-clippy.log`). The production scanner remains on full RunTx;
 these command/representation checks do not claim bounded scanner or worker execution.
+
+### Bounded scheduler fence and mutation clock checkpoint
+
+The exact-path transaction now exposes both live lease clocks and the current scheduler shard
+owner/generation. Outside-path reads return no lease; another shard, owner, generation, an
+unrepresentable generation and an expired lease cannot authorize a write. The PostgreSQL shared
+shard lock lasts through commit. A real competing update is refused with `55P03` until that commit,
+then takeover succeeds and the former generation is refused. This is a port prerequisite; the
+automatic scanner and worker still use full restoration at this checkpoint.
+
+Two real PostgreSQL lock barriers exposed a separate deadline bug: a volatile SELECT target can
+be evaluated before its `FOR UPDATE` finishes waiting. Both full and bounded mutations now sample
+`clock_timestamp()` after acquiring the run lock. The failing baselines are retained in
+`/tmp/sagat-completion-{bounded,full}-lock-clock-baseline.log`; the new assertions compare the
+transaction time with database time immediately before the competing lock is released.
+
+The first combined gate passed 15 cases and failed four during a PostgreSQL 16.15 backend SIGSEGV,
+not a product assertion (`/tmp/sagat-completion-mutation-clock-byte-regression.log`). The exclusively
+owned disposable server's image/identity/log are preserved under
+`/tmp/sagat-completion-postgres-crash-evidence/`; Docker reported no OOM and the cause is not
+established. After retiring that server, a fresh instance of the same image, without statistics
+preload, passed **19/19**, no ignored, 58.32 s, as `sagat_app`
+(`/tmp/sagat-completion-fresh-postgres-clock-byte-regression.log`). This functional profile does
+not supply performance evidence or establish that instrumentation caused the crash. The exact
+new container/image/port profile is recorded in `replacement.json` alongside the crash evidence.

@@ -651,6 +651,20 @@ pub trait PathExecutionTx: Send {
     /// Database time observed after the run lock was acquired.
     fn now(&self) -> OffsetDateTime;
 
+    /// Both expiry clocks of a live lease in this exact path. An outside path is not visible.
+    fn lease_deadlines(
+        &mut self,
+        instance: &ExecutionInstanceId,
+    ) -> impl Future<Output = Result<Option<LeaseDeadlines>, StoreError>> + Send;
+
+    /// Checks this run's shard owner/generation at database time and keeps its shared fence until
+    /// commit. A lease of another shard never authorizes this transaction.
+    fn holds_shard(
+        &mut self,
+        owner: &str,
+        lease: crate::shards::Lease,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
     fn lease_expiry(
         &mut self,
         instance: &ExecutionInstanceId,
@@ -875,8 +889,8 @@ pub enum PoolCheck {
 pub trait RunTx: Send {
     fn info(&self) -> &RunInfo;
 
-    /// The database clock when the transaction began: every deadline is computed from it, so all
-    /// instances agree regardless of their own clocks.
+    /// The database clock sampled after the required run lock is acquired: deadlines must not be
+    /// backdated by time spent waiting for a writer. All instances use the database's clock.
     fn now(&self) -> OffsetDateTime;
 
     /// The immutable definition and the mutable state, borrowed together.

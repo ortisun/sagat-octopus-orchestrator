@@ -1327,3 +1327,313 @@ async fn a_bounded_reconciliation_persists_its_companion_and_manual_review_statu
         world.assert_consistent(run).await;
     }
 }
+
+#[tokio::test]
+async fn a_bounded_scheduler_fence_lasts_to_commit_and_deadlines_are_exact_path() {
+    use sagat_application::shards::Lease;
+    use sagat_domain::sharding::{SHARDS, Shard};
+    let world = world().await;
+    allow_iterations(&world, 4).await;
+    let mut definition = collection("bounded-scheduler-fence", "input.items", 2, 2, "bodyResult");
+    definition["bodies"]["line"]["nodes"][0]["timeoutMs"] = json!(10_000);
+    let run = start_collection(&world, definition, &json!({"items":[1,2]})).await;
+    let scheduler = scheduler(&world, "bounded-scheduler-fence").await;
+    for _ in 0..3 {
+        assert_eq!(scheduler.tick().await.collections_advanced, 1);
+    }
+    let workers = scoped_workers(&world);
+    world.bind_everything(&world.worker).await;
+    let registered = workers
+        .register(
+            &world.worker,
+            "payments",
+            "bounded-fence-worker",
+            &sagat_application::worker::Capabilities {
+                activities: vec!["limits.step".into()],
+                languages: vec!["rust".into()],
+                pools: Vec::new(),
+                max_inflight: 2,
+                protocol_version: "1.5".into(),
+            },
+        )
+        .await
+        .expect("register two-slot worker");
+    let session = (
+        registered.worker_id,
+        registered.session_token.expose().to_owned(),
+    );
+    let mut tasks = workers
+        .poll(&world.worker, session.0, &session.1, 2, None)
+        .await
+        .expect("leases");
+    // A fair claim may hand out only one member of the same run per poll.
+    if tasks.len() < 2 {
+        tasks.extend(
+            workers
+                .poll(&world.worker, session.0, &session.1, 1, None)
+                .await
+                .expect("second scoped lease"),
+        );
+    }
+    assert_eq!(tasks.len(), 2);
+    let task = &tasks[0];
+    let shard = Shard::of(run.as_uuid());
+    let (owner, generation): (String, i64) =
+        sqlx::query_as("SELECT owner,generation FROM scheduler_shards WHERE shard=$1")
+            .bind(i16::from(shard.index()))
+            .fetch_one(&world.db.pool)
+            .await
+            .expect("shard lease");
+    let lease = Lease {
+        shard,
+        generation: u64::try_from(generation).expect("generation"),
+    };
+    let stamp = || {
+        sqlx::query_as::<_, (i64,i64,i64)>(
+        "SELECT run_version, (SELECT count(*) FROM run_events WHERE tenant_id=$1 AND run_id=$2), \
+         (SELECT count(*) FROM event_outbox WHERE tenant_id=$1 AND aggregate_id=$2) \
+         FROM runs WHERE tenant_id=$1 AND id=$2")
+        .bind(world.admin.tenant_id().as_uuid()).bind(run.as_uuid()).fetch_one(&world.db.pool)
+    };
+    let before = stamp().await.expect("before fence reads");
+    let snapshot = world
+        .store
+        .load_path(world.admin.tenant_id(), run, task.instance.path().clone())
+        .await
+        .expect("snapshot")
+        .expect("run");
+    let mut tx = world
+        .store
+        .begin_path(snapshot, Lock::Wait)
+        .await
+        .expect("bounded tx")
+        .expect("run");
+    let deadlines = tx
+        .lease_deadlines(&task.instance)
+        .await
+        .expect("own deadlines")
+        .expect("lease");
+    assert_eq!(deadlines.expires_at, task.expires_at);
+    assert_eq!(
+        deadlines.attempt_deadline_at,
+        Some(task.expires_at - workers.settings().lease_ttl + Duration::from_secs(10)),
+        "attempt timeout and renewable lease expiry are distinct clocks"
+    );
+    assert_eq!(
+        Some(deadlines.expires_at),
+        tx.lease_expiry(&task.instance).await.expect("expiry")
+    );
+    assert!(
+        tx.lease_deadlines(&tasks[1].instance)
+            .await
+            .expect("other path")
+            .is_none()
+    );
+    assert!(
+        tx.lease_expiry(&tasks[1].instance)
+            .await
+            .expect("other expiry")
+            .is_none()
+    );
+    assert!(
+        !tx.holds_shard("wrong-owner", lease)
+            .await
+            .expect("owner fence")
+    );
+    assert!(
+        !tx.holds_shard(
+            &owner,
+            Lease {
+                generation: u64::MAX,
+                ..lease
+            }
+        )
+        .await
+        .expect("generation range")
+    );
+    assert!(
+        !tx.holds_shard(
+            &owner,
+            Lease {
+                generation: lease.generation + 1,
+                ..lease
+            }
+        )
+        .await
+        .expect("generation fence")
+    );
+    let other = Shard::new((shard.index() + 1) % SHARDS).expect("other shard");
+    assert!(
+        !tx.holds_shard(
+            &owner,
+            Lease {
+                shard: other,
+                ..lease
+            }
+        )
+        .await
+        .expect("run shard fence")
+    );
+    assert!(
+        tx.holds_shard(&owner, lease)
+            .await
+            .expect("current shard fence")
+    );
+    let mut contender = world.db.pool.acquire().await.expect("takeover connection");
+    sqlx::query("SET lock_timeout='100ms'")
+        .execute(&mut *contender)
+        .await
+        .expect("bounded wait");
+    let blocked = sqlx::query("UPDATE scheduler_shards SET generation=generation+1 WHERE shard=$1")
+        .bind(i16::from(shard.index()))
+        .execute(&mut *contender)
+        .await
+        .expect_err("shared fence prevents takeover");
+    assert_eq!(
+        blocked
+            .as_database_error()
+            .and_then(|e| e.code())
+            .as_deref(),
+        Some("55P03")
+    );
+    sqlx::query("SET lock_timeout='0'")
+        .execute(&mut *contender)
+        .await
+        .expect("reset wait");
+    tx.commit().await.expect("release shared fence");
+    sqlx::query("UPDATE scheduler_shards SET generation=generation+1 WHERE shard=$1")
+        .bind(i16::from(shard.index()))
+        .execute(&mut *contender)
+        .await
+        .expect("takeover after commit");
+    let snapshot = world
+        .store
+        .load_path(world.admin.tenant_id(), run, task.instance.path().clone())
+        .await
+        .expect("new snapshot")
+        .expect("run");
+    let mut tx = world
+        .store
+        .begin_path(snapshot, Lock::Wait)
+        .await
+        .expect("new bounded tx")
+        .expect("run");
+    assert!(
+        !tx.holds_shard(&owner, lease)
+            .await
+            .expect("old generation refused")
+    );
+    tx.commit().await.expect("read-only commit");
+    sqlx::query("UPDATE scheduler_shards SET expires_at=clock_timestamp()-interval '1 second' WHERE shard=$1")
+        .bind(i16::from(shard.index())).execute(&mut *contender).await.expect("expire current ownership");
+    let snapshot = world
+        .store
+        .load_path(world.admin.tenant_id(), run, task.instance.path().clone())
+        .await
+        .expect("expired owner snapshot")
+        .expect("run");
+    let mut tx = world
+        .store
+        .begin_path(snapshot, Lock::Wait)
+        .await
+        .expect("expired owner tx")
+        .expect("run");
+    assert!(
+        !tx.holds_shard(
+            &owner,
+            Lease {
+                generation: lease.generation + 1,
+                ..lease
+            }
+        )
+        .await
+        .expect("expired owner refused")
+    );
+    tx.commit().await.expect("expired owner read commit");
+    assert_eq!(stamp().await.expect("after fence reads"), before);
+}
+
+#[tokio::test]
+async fn a_bounded_transaction_observes_database_time_after_waiting_for_the_run_lock() {
+    assert_transaction_clock_after_run_lock(true).await;
+}
+
+#[tokio::test]
+async fn a_full_transaction_observes_database_time_after_waiting_for_the_run_lock() {
+    assert_transaction_clock_after_run_lock(false).await;
+}
+
+async fn assert_transaction_clock_after_run_lock(bounded: bool) {
+    use sagat_application::execution::RunTx;
+    use sagat_application::runs::RunStore;
+    let world = world().await;
+    allow_iterations(&world, 4).await;
+    let run = start_collection(
+        &world,
+        collection("bounded-lock-clock", "input.items", 1, 1, "bodyResult"),
+        &json!({"items":[1]}),
+    )
+    .await;
+    let scheduler = scheduler(&world, "bounded-lock-clock").await;
+    assert_eq!(scheduler.tick().await.collections_advanced, 1);
+    assert_eq!(scheduler.tick().await.collections_advanced, 1);
+    let path = InstancePath::root()
+        .child(NodeId::parse("items").expect("owner"), 0)
+        .expect("path");
+    let snapshot = world
+        .store
+        .load_path(world.admin.tenant_id(), run, path)
+        .await
+        .expect("snapshot")
+        .expect("run");
+    let mut writer = world.db.pool.begin().await.expect("writer");
+    sqlx::query("SELECT id FROM runs WHERE id=$1 FOR UPDATE")
+        .bind(run.as_uuid())
+        .execute(&mut *writer)
+        .await
+        .expect("hold run");
+    let store = world.store.clone();
+    let tenant = world.admin.tenant_id();
+    let waiter = tokio::spawn(async move {
+        if bounded {
+            let tx = store
+                .begin_path(snapshot, Lock::Wait)
+                .await
+                .expect("waiting path tx")
+                .expect("run");
+            let observed = tx.now();
+            tx.commit().await.expect("read-only path commit");
+            observed
+        } else {
+            let tx = store
+                .begin(tenant, run, Lock::Wait)
+                .await
+                .expect("waiting full tx")
+                .expect("run");
+            let observed = tx.now();
+            tx.commit().await.expect("read-only full commit");
+            observed
+        }
+    });
+    crate::support::eventually("bounded transaction is waiting on the run row", || async {
+        let waiting: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() \
+             AND wait_event_type='Lock' AND query LIKE '%FROM runs%FOR UPDATE%')",
+        )
+        .fetch_one(&world.db.pool)
+        .await
+        .expect("observe real row-lock wait");
+        waiting.then_some(())
+    })
+    .await;
+    let released_at: time::OffsetDateTime = sqlx::query_scalar("SELECT clock_timestamp()")
+        .fetch_one(&mut *writer)
+        .await
+        .expect("release time at database");
+    writer.rollback().await.expect("release run");
+    let observed = waiter.await.expect("bounded transaction completed");
+    assert!(
+        observed >= released_at,
+        "mutation clock predates its run lock (bounded={bounded}): {observed} < {released_at}"
+    );
+}

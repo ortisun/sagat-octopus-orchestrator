@@ -11,13 +11,17 @@ impl PathExecutionTx for PgPathExecutionTx {
         self.now
     }
 
-    async fn lease_expiry(
+    async fn lease_deadlines(
         &mut self,
         instance: &ExecutionInstanceId,
-    ) -> Result<Option<OffsetDateTime>, StoreError> {
+    ) -> Result<Option<LeaseDeadlines>, StoreError> {
+        if instance.path() != self.snapshot.state.path() {
+            return Ok(None);
+        }
         let (nodes, indices) = stored_path_parts(instance.path());
-        sqlx::query_scalar(
-            "SELECT lease_expires_at FROM steps WHERE tenant_id=$1 AND run_id=$2 AND node=$3 \
+        let row = sqlx::query(
+            "SELECT lease_expires_at,attempt_deadline_at FROM steps \
+             WHERE tenant_id=$1 AND run_id=$2 AND node=$3 \
                AND instance_path_nodes=$4 AND instance_path_indices=$5 \
                AND status IN ('LEASED','RUNNING')",
         )
@@ -28,8 +32,48 @@ impl PathExecutionTx for PgPathExecutionTx {
         .bind(indices)
         .fetch_optional(&mut *self.tx)
         .await
-        .map(Option::flatten)
-        .map_err(store_error)
+        .map_err(store_error)?;
+        row.map(|row| {
+            Ok(LeaseDeadlines {
+                expires_at: col(&row, "lease_expires_at")?,
+                attempt_deadline_at: col(&row, "attempt_deadline_at")?,
+            })
+        })
+        .transpose()
+    }
+
+    async fn holds_shard(
+        &mut self,
+        owner: &str,
+        lease: sagat_application::shards::Lease,
+    ) -> Result<bool, StoreError> {
+        if lease.shard != sagat_domain::sharding::Shard::of(self.snapshot.info.run_id.as_uuid()) {
+            return Ok(false);
+        }
+        let Ok(generation) = i64::try_from(lease.generation) else {
+            return Ok(false);
+        };
+        let held: Option<i16> = sqlx::query_scalar(
+            "SELECT shard FROM scheduler_shards \
+             WHERE shard=$1 AND generation=$2 AND owner=$3 AND expires_at>clock_timestamp() \
+             FOR SHARE",
+        )
+        .bind(i16::from(lease.shard.index()))
+        .bind(generation)
+        .bind(owner)
+        .fetch_optional(&mut *self.tx)
+        .await
+        .map_err(store_error)?;
+        Ok(held.is_some())
+    }
+
+    async fn lease_expiry(
+        &mut self,
+        instance: &ExecutionInstanceId,
+    ) -> Result<Option<OffsetDateTime>, StoreError> {
+        self.lease_deadlines(instance)
+            .await
+            .map(|deadlines| deadlines.map(|lease| lease.expires_at))
     }
 
     async fn worker_drained(&mut self, subject: &str) -> Result<bool, StoreError> {

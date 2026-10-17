@@ -190,7 +190,12 @@ impl PgRunStore {
         let record = run_record(&row)?;
         let paused: bool = col(&row, "paused")?;
         let stop_code: Option<String> = col(&row, "stop_code")?;
-        let now: OffsetDateTime = col(&row, "db_now")?;
+        // A volatile SELECT target can be evaluated before FOR UPDATE finishes waiting. Sample
+        // mutation time only after the row lock is held, so contention cannot backdate deadlines.
+        let now: OffsetDateTime = sqlx::query_scalar("SELECT clock_timestamp()")
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(store_error)?;
         let input_digest: Vec<u8> = col(&row, "input_digest")?;
         let step_rows = sqlx::query(
             "SELECT node, instance_path_nodes, instance_path_indices, status, attempt, generation, cancel_requested, routed, condition, switch_case_id, \
@@ -1064,11 +1069,11 @@ impl PathExecutionStore for PgRunStore {
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         let query = match lock {
             Lock::Wait => {
-                "SELECT run_version,clock_timestamp() AS db_now FROM runs \
+                "SELECT run_version FROM runs \
                  WHERE tenant_id=$1 AND id=$2 FOR UPDATE"
             }
             Lock::SkipLocked => {
-                "SELECT run_version,clock_timestamp() AS db_now FROM runs \
+                "SELECT run_version FROM runs \
                  WHERE tenant_id=$1 AND id=$2 FOR UPDATE SKIP LOCKED"
             }
         };
@@ -1086,6 +1091,10 @@ impl PathExecutionStore for PgRunStore {
         if current != expected {
             return Err(StoreError::RevisionConflict { current });
         }
+        let now = sqlx::query_scalar("SELECT clock_timestamp()")
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(store_error)?;
         let persisted = snapshot.state.global().version();
         let stored = snapshot
             .state
@@ -1097,7 +1106,7 @@ impl PathExecutionStore for PgRunStore {
         Ok(Some(PgPathExecutionTx {
             tx,
             snapshot,
-            now: col(&row, "db_now")?,
+            now,
             breaker: self.breaker,
             persisted,
             stored,
