@@ -3599,3 +3599,159 @@ async fn a_stale_scheduler_fence_stops_every_routed_drain_step() {
     );
     rolled_back_before_finish(&fixture, version).await;
 }
+
+async fn discovered(fixture: &LoopFixture) -> bool {
+    replica(fixture)
+        .loop_candidates(&Window::everything(64))
+        .await
+        .expect("loop discovery")
+        .iter()
+        .any(|candidate| {
+            candidate.step.run_id == fixture.run && candidate.step.node.as_str() == "poll"
+        })
+}
+
+/// The scheduler can only drain what discovery shows it: a loop with nothing to do stays hidden,
+/// and an expired deadline, a failed member, a stopped run and an unfinished drain all surface.
+#[tokio::test]
+async fn expired_failed_and_draining_loops_surface_for_the_scheduler() {
+    let fixture = seed_leasable_loop_routed("loop-discovery-failures", OnError::Activity).await;
+    assert!(
+        !discovered(&fixture).await,
+        "a waiting member needs nothing"
+    );
+    let (workers, _registered, task) = lease_loop_member(&fixture).await;
+    workers
+        .heartbeat(&fixture.worker, &task_ref(&task))
+        .await
+        .expect("body starts");
+    assert!(
+        !discovered(&fixture).await,
+        "a running member needs nothing"
+    );
+
+    sqlx::query(
+        "UPDATE loop_scopes SET deadline_at=clock_timestamp() - interval '1 second' \
+         WHERE tenant_id=$1 AND run_id=$2",
+    )
+    .bind(fixture.tenant)
+    .bind(fixture.run.as_uuid())
+    .execute(&fixture.db.pool)
+    .await
+    .expect("expire the deadline");
+    assert!(discovered(&fixture).await, "an expired deadline surfaces");
+    sqlx::query(
+        "UPDATE loop_scopes SET deadline_at=clock_timestamp() + interval '1 minute' \
+         WHERE tenant_id=$1 AND run_id=$2",
+    )
+    .bind(fixture.tenant)
+    .bind(fixture.run.as_uuid())
+    .execute(&fixture.db.pool)
+    .await
+    .expect("restore the deadline");
+    assert!(!discovered(&fixture).await);
+
+    workers
+        .fail(
+            &fixture.worker,
+            &task_ref(&task),
+            "WORKER_ERROR",
+            false,
+            "loop-discovery-fail",
+        )
+        .await
+        .expect("body fails permanently");
+    assert!(discovered(&fixture).await, "a failed member surfaces");
+
+    let version = current_version(&fixture).await;
+    let started = replica(&fixture)
+        .start_drain(&drain_start(
+            &fixture,
+            version,
+            LoopDrainReason::Failed {
+                iteration: 0,
+                code: FailureCode::worker_error(),
+            },
+            crate::support::now(),
+            Uuid::now_v7(),
+        ))
+        .await
+        .expect("start drain");
+    assert_eq!(
+        settled(&fixture).await.run_status,
+        "WAITING",
+        "the run is not stopped; only its loop is waiting on the drain"
+    );
+    assert!(discovered(&fixture).await, "an unfinished drain surfaces");
+    let drained = replica(&fixture)
+        .drain_iteration(&drain_iteration_command(&fixture, started.run_version))
+        .await
+        .expect("drain");
+    assert!(
+        discovered(&fixture).await,
+        "a drained loop still needs its finish"
+    );
+    replica(&fixture)
+        .finish_drain(&drain_finish_command(&fixture, drained.run_version))
+        .await
+        .expect("finish");
+    assert!(
+        !discovered(&fixture).await,
+        "a finished loop is not revisited"
+    );
+}
+
+#[tokio::test]
+async fn a_cancelled_run_surfaces_its_loop_while_it_waits() {
+    let fixture = seed_leasable_loop_routed("loop-discovery-cancel", OnError::Activity).await;
+    assert!(!discovered(&fixture).await);
+    let requested_at = crate::support::now();
+    sqlx::query(
+        "INSERT INTO run_events \
+         (tenant_id,run_id,seq,event_type,detail,actor,occurred_at) \
+         VALUES ($1,$2,5,'run.stop_requested',$3,'loop-fixture',$4)",
+    )
+    .bind(fixture.tenant)
+    .bind(fixture.run.as_uuid())
+    .bind(json!({"reason":"CANCELLED","code":null}))
+    .bind(requested_at)
+    .execute(&fixture.db.pool)
+    .await
+    .expect("cancellation journal");
+    sqlx::query(
+        "UPDATE runs SET status='CANCELLING',stop_reason='CANCELLED',stop_code=NULL, \
+                run_version=5,updated_at=$3 WHERE tenant_id=$1 AND id=$2 AND run_version=4",
+    )
+    .bind(fixture.tenant)
+    .bind(fixture.run.as_uuid())
+    .bind(requested_at)
+    .execute(&fixture.db.pool)
+    .await
+    .expect("cancellation projection");
+    assert!(discovered(&fixture).await, "a stopped run drains its loop");
+}
+
+/// The body was admitted but no worker ever took it: the timeout cancels the unstarted member.
+#[tokio::test]
+async fn loop_timeout_before_the_body_starts_cancels_it_and_takes_the_error_edge() {
+    let fixture = seed_leasable_loop_routed("loop-error-unstarted", OnError::Activity).await;
+    let finish_version = drain_on_replicas(
+        &fixture,
+        LoopDrainReason::TimedOut,
+        crate::support::now() + Duration::minutes(2),
+    )
+    .await;
+    // drain started 5, iteration drained 6, loop finished 7, error edge routed 8, released 9.
+    assert_eq!(finish_version, 9);
+    assert_routed_to_recovery(&fixture, "RUN_TIMED_OUT", 9).await;
+    let member: (String, bool) = sqlx::query_as(
+        "SELECT status,routed FROM steps WHERE tenant_id=$1 AND run_id=$2 AND node='work'",
+    )
+    .bind(fixture.tenant)
+    .bind(fixture.run.as_uuid())
+    .fetch_one(&fixture.db.pool)
+    .await
+    .expect("unstarted member");
+    assert_eq!(member, ("CANCELLED".into(), true));
+    complete_recovery_and_finish(&fixture).await;
+}

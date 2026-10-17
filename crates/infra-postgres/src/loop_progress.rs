@@ -1172,21 +1172,36 @@ impl LoopProgressStore for PgLoopProgressStore {
                     AND timer.owner_instance_id=scope.owner_instance_id \
                     AND timer.lifecycle='WAITING' \
                   WHERE run_shard(scope.run_id)=shard.value \
-                    AND run.status IN ('RUNNING','WAITING') \
+                    AND run.status IN ('RUNNING','WAITING','CANCELLING') \
                     AND scope.tenant_id <> ALL($3::uuid[]) \
                     AND ( \
-                      (scope.lifecycle='RUNNING' AND EXISTS ( \
-                        SELECT 1 FROM loop_iterations member JOIN steps returned \
-                          ON returned.tenant_id=member.tenant_id \
-                         AND returned.run_id=member.run_id \
-                         AND returned.instance_path_nodes=member.entry_path_nodes \
-                         AND returned.instance_path_indices=member.entry_path_indices \
-                         AND returned.node=return_definition.return_node \
-                         WHERE member.tenant_id=scope.tenant_id \
-                           AND member.run_id=scope.run_id \
-                           AND member.owner_instance_id=scope.owner_instance_id \
-                           AND member.lifecycle='ADMITTED' AND returned.status='PENDING')) \
-                      OR (scope.lifecycle='DELAYING' AND timer.due_at <= clock_timestamp())) \
+                      (run.status IN ('RUNNING','WAITING') AND ( \
+                        (scope.lifecycle='RUNNING' AND EXISTS ( \
+                          SELECT 1 FROM loop_iterations member JOIN steps returned \
+                            ON returned.tenant_id=member.tenant_id \
+                           AND returned.run_id=member.run_id \
+                           AND returned.instance_path_nodes=member.entry_path_nodes \
+                           AND returned.instance_path_indices=member.entry_path_indices \
+                           AND returned.node=return_definition.return_node \
+                           WHERE member.tenant_id=scope.tenant_id \
+                             AND member.run_id=scope.run_id \
+                             AND member.owner_instance_id=scope.owner_instance_id \
+                             AND member.lifecycle='ADMITTED' AND returned.status='PENDING')) \
+                        OR (scope.lifecycle='DELAYING' AND timer.due_at <= clock_timestamp()) \
+                        OR (scope.lifecycle='RUNNING' AND scope.deadline_at <= clock_timestamp()) \
+                        OR (scope.lifecycle='RUNNING' AND EXISTS ( \
+                          SELECT 1 FROM loop_iterations member JOIN steps failed \
+                            ON failed.tenant_id=member.tenant_id \
+                           AND failed.run_id=member.run_id \
+                           AND failed.instance_path_nodes=member.entry_path_nodes \
+                           AND failed.instance_path_indices=member.entry_path_indices \
+                           WHERE member.tenant_id=scope.tenant_id \
+                             AND member.run_id=scope.run_id \
+                             AND member.owner_instance_id=scope.owner_instance_id \
+                             AND member.lifecycle='ADMITTED' AND failed.status='FAILED')))) \
+                      OR scope.lifecycle='DRAINING' \
+                      OR (run.status='CANCELLING' AND run.stop_reason='CANCELLED' \
+                          AND scope.lifecycle IN ('READY','RUNNING','DELAYING'))) \
                ) work ORDER BY work.updated_at LIMIT $1 \
              ) candidate ORDER BY candidate.updated_at LIMIT $1",
         )

@@ -6,7 +6,8 @@ use std::time::Duration;
 use reqwest::{Method, StatusCode};
 use sagat_api_grpc::pb::worker_service_client::WorkerServiceClient;
 use sagat_api_grpc::pb::{
-    CompleteStepRequest, PollTasksRequest, RegisterWorkerRequest, WorkerCapabilities,
+    CompleteStepRequest, FailStepRequest, PollTasksRequest, RegisterWorkerRequest,
+    WorkerCapabilities,
 };
 use sagat_application::entropy::SystemEntropy;
 use sagat_application::execution::Engine;
@@ -505,4 +506,367 @@ async fn publication_keeps_unproven_loop_bodies_closed() {
         json_of(published).await["details"]["reason"],
         "UNSUPPORTED_NODE"
     );
+}
+
+/// A `while` loop whose body activity can fail. With `on_error` the loop routes every failure to an
+/// `end` (D294); without it the failure fails the run. The public loop subset is a loop chain
+/// ending at `end`, so an `end` is the error target publication accepts.
+fn failing_loop_document(name: &str, on_error: bool, timeout_ms: u64) -> Value {
+    let mut nodes = vec![
+        json!({
+            "id": "poll",
+            "type": "while",
+            "condition": "carry < 1",
+            "body": "iteration",
+            "initial": "0",
+            "carry": "bodyResult",
+            "maxIterations": 3,
+            "timeoutMs": timeout_ms,
+            "next": "done"
+        }),
+        json!({"id": "done", "type": "end", "outputExpr": "steps.poll.output"}),
+    ];
+    if on_error {
+        nodes[0]["onError"] = json!("failed");
+        nodes.push(json!({"id": "failed", "type": "end"}));
+    }
+    json!({
+        "apiVersion": "sagat-octopus-orchestrator.io/v1",
+        "kind": "Workflow",
+        "metadata": {"name": name},
+        "entrypoint": "poll",
+        "bodies": {
+            "iteration": {
+                "entrypoint": "increment",
+                "nodes": [
+                    {
+                        "id": "increment",
+                        "type": "activity",
+                        "activity": "counter.increment",
+                        "next": "return-value"
+                    },
+                    {"id": "return-value", "type": "return", "result": "steps.increment.output"}
+                ]
+            }
+        },
+        "nodes": nodes
+    })
+}
+
+struct PublicLoop {
+    api: TestApi,
+    run: RunId,
+    tenant: TenantId,
+    worker: WorkerServiceClient<tonic::transport::Channel>,
+    worker_id: String,
+    session_token: String,
+}
+
+/// Publishes `document`, starts a run and registers a worker for the counter activity.
+async fn start_public_loop(document: impl Fn(&str) -> Value) -> PublicLoop {
+    static LOGGING: std::sync::Once = std::sync::Once::new();
+    LOGGING.call_once(|| {
+        if std::env::var_os("RUST_LOG").is_some() {
+            sagat_telemetry::init_logging(sagat_telemetry::LogFormat::Pretty);
+        }
+    });
+    let api = support::api::start_with(support::api::Options {
+        runtime_role: true,
+        ..support::api::Options::default()
+    })
+    .await;
+    let tenant = api.tenant("acme", "alice").await;
+    let workspace = api.create_workspace("alice", "acme", "loops").await;
+    let namespace = api
+        .create_namespace("alice", "acme", &workspace, "payments", "dev")
+        .await;
+    let name = format!("public-loop-error-{}", Uuid::now_v7());
+    let created = api
+        .as_user(Method::POST, "/workflows", "alice", "acme")
+        .header("x-octopus-namespace", "payments")
+        .header("idempotency-key", Uuid::now_v7().to_string())
+        .json(&json!({"name": name, "ir": document(&name)}))
+        .send()
+        .await
+        .expect("create loop workflow");
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let workflow = json_of(created).await["id"]
+        .as_str()
+        .expect("workflow id")
+        .to_owned();
+    let published = api
+        .as_user(
+            Method::POST,
+            &format!("/workflows/{workflow}/publish"),
+            "alice",
+            "acme",
+        )
+        .header("x-octopus-namespace", "payments")
+        .header("idempotency-key", Uuid::now_v7().to_string())
+        .json(&json!({"draftRevision": 1}))
+        .send()
+        .await
+        .expect("publish loop workflow");
+    let published_status = published.status();
+    let published_body = json_of(published).await;
+    assert_eq!(
+        published_status,
+        StatusCode::CREATED,
+        "publish loop: {published_body}"
+    );
+    let capacity = api
+        .as_user(
+            Method::PUT,
+            "/quotas/iteration_concurrency",
+            "alice",
+            "acme",
+        )
+        .json(&json!({"limit": 1}))
+        .send()
+        .await
+        .expect("configure iteration capacity");
+    assert_eq!(capacity.status(), StatusCode::OK);
+    let started = api
+        .as_user(Method::POST, "/runs", "alice", "acme")
+        .header("x-octopus-namespace", "payments")
+        .header("idempotency-key", Uuid::now_v7().to_string())
+        .json(&json!({"workflowId": workflow, "input": {}}))
+        .send()
+        .await
+        .expect("start loop run");
+    assert_eq!(started.status(), StatusCode::ACCEPTED);
+    let run: RunId = json_of(started).await["runId"]
+        .as_str()
+        .expect("run id")
+        .parse()
+        .expect("valid run id");
+    api.owner_store
+        .insert_membership(&Membership::restore(
+            tenant,
+            Subject::parse("loop-worker").expect("worker subject"),
+            Role::Worker,
+            support::now(),
+        ))
+        .await
+        .expect("worker membership");
+    let binding = api
+        .as_user(
+            Method::PUT,
+            &format!("/namespaces/{namespace}/worker-bindings/loop-worker"),
+            "alice",
+            "acme",
+        )
+        .json(&json!({"activities": ["counter.increment"]}))
+        .send()
+        .await
+        .expect("worker binding");
+    assert_eq!(binding.status(), StatusCode::OK);
+    let mut worker = WorkerServiceClient::connect(api.grpc_url.clone())
+        .await
+        .expect("connect loop worker");
+    let registered = worker
+        .register_worker(worker_request(
+            &api,
+            RegisterWorkerRequest {
+                worker_name: format!("public-loop-worker-{name}"),
+                namespace: "payments".into(),
+                capabilities: Some(WorkerCapabilities {
+                    languages: vec!["rust".into()],
+                    activities: vec!["counter.increment".into()],
+                    pools: Vec::new(),
+                    max_inflight: 1,
+                    protocol_version: "1.5".into(),
+                }),
+            },
+        ))
+        .await
+        .expect("register loop worker")
+        .into_inner();
+    PublicLoop {
+        api,
+        run,
+        tenant: TenantId::new(tenant.as_uuid()),
+        worker,
+        worker_id: registered.worker_id,
+        session_token: registered.session_token,
+    }
+}
+
+impl PublicLoop {
+    async fn poll_one(&mut self, activity: &str) -> sagat_api_grpc::pb::TaskLease {
+        let tasks = self
+            .worker
+            .poll_tasks(worker_request(
+                &self.api,
+                PollTasksRequest {
+                    worker_id: self.worker_id.clone(),
+                    session_token: self.session_token.clone(),
+                    max_tasks: 1,
+                },
+            ))
+            .await
+            .expect("poll loop task")
+            .into_inner()
+            .tasks;
+        assert_eq!(tasks.len(), 1, "exactly one {activity} task");
+        let task = tasks.into_iter().next().expect("one task");
+        assert_eq!(task.activity_name, activity);
+        task
+    }
+
+    async fn fail(&mut self, task: &sagat_api_grpc::pb::TaskLease) {
+        let failed = self
+            .worker
+            .fail_step(worker_request(
+                &self.api,
+                FailStepRequest {
+                    task_id: task.task_id.clone(),
+                    run_id: task.run_id.clone(),
+                    step_id: task.step_id.clone(),
+                    attempt: task.attempt,
+                    generation: task.generation,
+                    lease_token: task.lease_token.clone(),
+                    idempotency_key: format!("fail-public-loop-{}", Uuid::now_v7()),
+                    error_code: "WORKER_ERROR".into(),
+                    safe_message: String::new(),
+                    retryable: false,
+                    traceparent: String::new(),
+                    instance: task.instance.clone(),
+                },
+            ))
+            .await
+            .expect("fail loop task")
+            .into_inner();
+        assert_eq!(failed.step_status, "FAILED");
+    }
+
+    async fn run_state(&self) -> (String, Option<String>, Option<String>) {
+        sqlx::query_as("SELECT status,stop_reason,stop_code FROM runs WHERE id=$1")
+            .bind(self.run.as_uuid())
+            .fetch_one(&self.api.db.pool)
+            .await
+            .expect("run state")
+    }
+
+    async fn scope(&self) -> String {
+        sqlx::query_scalar("SELECT lifecycle FROM loop_scopes WHERE run_id=$1")
+            .bind(self.run.as_uuid())
+            .fetch_one(&self.api.db.pool)
+            .await
+            .expect("loop scope")
+    }
+
+    async fn verify(&self, what: &str) {
+        self.api
+            .executions
+            .verify_run(self.tenant, self.run)
+            .await
+            .unwrap_or_else(|error| panic!("{what}: {error}"));
+    }
+}
+
+/// Ticks until the loop scope is `FAILED`, returning how many loop transitions that took. The
+/// drain is three fenced transitions (start, iteration, finish); the run keeps running throughout
+/// when the loop declares `onError`.
+async fn drain_failed_loop(
+    public: &PublicLoop,
+    scheduler: &Scheduler<PgRunStore, JsonEvaluator, SystemEntropy>,
+    run_keeps_running: bool,
+) -> u32 {
+    let mut advanced = 0;
+    for _ in 0..12 {
+        if public.scope().await == "FAILED" {
+            return advanced;
+        }
+        let report = scheduler.tick().await;
+        assert_eq!(report.failed, 0, "{report:?}");
+        advanced += report.loops_advanced;
+        if run_keeps_running {
+            let (status, stop_reason, _) = public.run_state().await;
+            assert_ne!(status, "CANCELLING", "the failure must not stop the run");
+            assert_eq!(stop_reason, None);
+        }
+    }
+    panic!("the loop never finished its drain");
+}
+
+#[tokio::test]
+async fn public_loop_body_failure_routes_the_error_edge_and_the_run_completes() {
+    let mut public = start_public_loop(|name| failing_loop_document(name, true, 60_000)).await;
+    let placement = acquire_scheduler(&public.api, "error-edge").await;
+    let scheduler = scheduler(&public.api, placement);
+    let entered = scheduler.tick().await;
+    assert_eq!(entered.loops_advanced, 1, "{entered:?}");
+    let body = public.poll_one("counter.increment").await;
+    public.fail(&body).await;
+
+    // start, iteration and finish are three fenced transitions; the last one ends the run.
+    assert_eq!(drain_failed_loop(&public, &scheduler, true).await, 3);
+    let (status, stop_reason, stop_code) = public.run_state().await;
+    assert_eq!(
+        (status.as_str(), stop_reason, stop_code),
+        ("SUCCEEDED", None, None)
+    );
+    let owner: (String, bool, Option<String>) = sqlx::query_as(
+        "SELECT status,routed,failure_code FROM steps WHERE run_id=$1 AND node='poll'",
+    )
+    .bind(public.run.as_uuid())
+    .fetch_one(&public.api.db.pool)
+    .await
+    .expect("loop owner");
+    assert_eq!(owner, ("FAILED".into(), true, Some("WORKER_ERROR".into())));
+    let finished: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM run_events WHERE run_id=$1 AND event_type='run.finished'",
+    )
+    .bind(public.run.as_uuid())
+    .fetch_one(&public.api.db.pool)
+    .await
+    .expect("finish events");
+    assert_eq!(finished, 1);
+    public.verify("run finished over the error edge").await;
+}
+
+#[tokio::test]
+async fn public_loop_body_failure_without_an_error_edge_fails_the_run() {
+    let mut public = start_public_loop(|name| failing_loop_document(name, false, 60_000)).await;
+    let placement = acquire_scheduler(&public.api, "no-edge").await;
+    let scheduler = scheduler(&public.api, placement);
+    let entered = scheduler.tick().await;
+    assert_eq!(entered.loops_advanced, 1, "{entered:?}");
+    let body = public.poll_one("counter.increment").await;
+    public.fail(&body).await;
+
+    assert_eq!(drain_failed_loop(&public, &scheduler, false).await, 3);
+    let (status, stop_reason, stop_code) = public.run_state().await;
+    assert_eq!(
+        (
+            status.as_str(),
+            stop_reason.as_deref(),
+            stop_code.as_deref()
+        ),
+        ("FAILED", Some("FAILED"), Some("WORKER_ERROR"))
+    );
+    public.verify("run failed without an error edge").await;
+}
+
+#[tokio::test]
+async fn public_loop_timeout_routes_the_error_edge_and_the_run_completes() {
+    let public = start_public_loop(|name| failing_loop_document(name, true, 500)).await;
+    let placement = acquire_scheduler(&public.api, "timeout").await;
+    let scheduler = scheduler(&public.api, placement);
+    let entered = scheduler.tick().await;
+    assert_eq!(entered.loops_advanced, 1, "{entered:?}");
+    // The loop was entered with a half-second budget: the next tick finds it expired.
+    tokio::time::sleep(Duration::from_millis(700)).await;
+
+    assert_eq!(drain_failed_loop(&public, &scheduler, true).await, 3);
+    let owner: (String, Option<String>) =
+        sqlx::query_as("SELECT status,failure_code FROM steps WHERE run_id=$1 AND node='poll'")
+            .bind(public.run.as_uuid())
+            .fetch_one(&public.api.db.pool)
+            .await
+            .expect("loop owner");
+    assert_eq!(owner, ("FAILED".into(), Some("RUN_TIMED_OUT".into())));
+    assert_eq!(public.run_state().await.0, "SUCCEEDED");
+    public.verify("loop timed out over the error edge").await;
 }
