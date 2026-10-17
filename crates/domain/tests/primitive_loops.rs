@@ -6,7 +6,7 @@ use time::OffsetDateTime;
 use sagat_domain::execution::{
     AddressedRunEvent, ExecutionError, ExecutionInstanceId, FailureCode, InstancePath,
     LoopContinuation, LoopDrainReason, LoopKind, LoopOutcome, LoopPhase, Plan, RunEvent, RunId,
-    RunState, StepStatus, StopReason, lease_instance, plan, start_run,
+    RunState, RunStatus, StepStatus, StopReason, lease_instance, plan, start_run,
 };
 use sagat_domain::identity::Slug;
 use sagat_domain::workflow::{
@@ -590,4 +590,332 @@ fn an_iteration_index_is_admitted_once_per_loop_instance() {
         "a checkpointed index cannot be admitted again"
     );
     assert_eq!(state, checkpointed);
+}
+
+/// How the loop under test declares `onError`.
+#[derive(Clone, Copy)]
+enum ErrorRoute {
+    Activity,
+    End,
+}
+
+/// The loop workflow with an `onError` edge to a recovery activity or to a second `end`.
+fn definition_with_error_route(route: ErrorRoute) -> WorkflowDefinition {
+    let base = definition(LoopKind::While);
+    let body = base.body(&node("iteration")).expect("loop body").clone();
+    let target = match route {
+        ErrorRoute::Activity => Node::new(
+            node("recover"),
+            NodeKind::Activity {
+                activity: ActivityName::parse("loop.recover").expect("activity"),
+                retry: RetryPolicy::DEFAULT,
+                compensate_with: None,
+                reconcile_with: None,
+                idempotency_template: None,
+                secrets: Vec::new(),
+            },
+        )
+        .with_next(node("recovered")),
+        ErrorRoute::End => Node::new(node("recover"), NodeKind::End { output: None }),
+    };
+    let mut nodes = vec![
+        Node::new(
+            node("poll"),
+            NodeKind::While {
+                condition: Expression::parse("carry < 2").expect("condition"),
+                body: node("iteration"),
+                initial: Expression::parse("0").expect("initial"),
+                carry: Expression::parse("bodyResult").expect("carry"),
+                max_iterations: 2,
+                delay: None,
+            },
+        )
+        .with_timeout(std::time::Duration::from_secs(60))
+        .with_next(node("done"))
+        .with_on_error(node("recover")),
+        Node::new(node("done"), NodeKind::End { output: None }),
+        target,
+    ];
+    if matches!(route, ErrorRoute::Activity) {
+        nodes.push(Node::new(node("recovered"), NodeKind::End { output: None }));
+    }
+    WorkflowDefinition::new_structured(
+        Slug::parse("loop-error-route").expect("workflow name"),
+        node("poll"),
+        nodes,
+        vec![body],
+        WorkflowLimits::default(),
+    )
+    .expect("loop workflow with an error route")
+}
+
+fn drain_failed_body(state: &mut RunState, code: &FailureCode) {
+    for event in [
+        RunEvent::LoopDrainStarted {
+            node: node("poll"),
+            reason: LoopDrainReason::Failed {
+                iteration: 0,
+                code: code.clone(),
+            },
+        },
+        RunEvent::LoopIterationDrained {
+            node: node("poll"),
+            index: 0,
+        },
+        RunEvent::LoopFinished {
+            node: node("poll"),
+            outcome: LoopOutcome::Failed(code.clone()),
+        },
+    ] {
+        state.apply(&event).expect("failure drain step");
+    }
+}
+
+/// D294: a loop that declares `onError` drains a failed body on the loop scope alone. The run is
+/// never asked to stop, so the error edge is an ordinary route out of a failed step.
+#[test]
+fn a_failed_body_with_an_error_edge_drains_without_stopping_the_run() {
+    let definition = definition_with_error_route(ErrorRoute::Activity);
+    let mut state = start(LoopKind::While, 2, Some(true));
+    admit(&mut state, 0);
+    state
+        .apply(&RunEvent::LoopDrainStarted {
+            node: node("poll"),
+            reason: LoopDrainReason::Failed {
+                iteration: 0,
+                code: FailureCode::worker_error(),
+            },
+        })
+        .expect("failed body begins its drain");
+    assert_eq!(state.stop_reason(), None, "the failure is not a run stop");
+    assert_ne!(state.status(), RunStatus::Cancelling);
+    assert_eq!(
+        plan(&definition, &state, at(300)).expect("a draining loop is the scheduler's"),
+        Plan::Idle,
+        "the planner leaves the draining owner alone"
+    );
+    state
+        .apply(&RunEvent::LoopIterationDrained {
+            node: node("poll"),
+            index: 0,
+        })
+        .expect("active iteration drains");
+    state
+        .apply(&RunEvent::LoopFinished {
+            node: node("poll"),
+            outcome: LoopOutcome::Failed(FailureCode::worker_error()),
+        })
+        .expect("loop fails");
+
+    let owner = state.step(&node("poll")).expect("owner");
+    assert_eq!(owner.status(), StepStatus::Failed);
+    assert_eq!(owner.failure(), Some(&FailureCode::worker_error()));
+    assert!(
+        !owner.routed(),
+        "the store routes it in the same transaction"
+    );
+    // The error edge is the ordinary route out of a failed step, so the planner agrees with it.
+    assert_eq!(
+        plan(&definition, &state, at(300)).expect("planner routes the failed loop"),
+        Plan::Emit(RunEvent::StepRouted {
+            node: node("poll"),
+            activated: vec![node("recover")],
+        })
+    );
+}
+
+#[test]
+fn the_error_edge_activates_a_recovery_activity_and_the_run_replays_exactly() {
+    let definition = definition_with_error_route(ErrorRoute::Activity);
+    let mut state = start(LoopKind::While, 2, Some(true));
+    admit(&mut state, 0);
+    drain_failed_body(&mut state, &FailureCode::worker_error());
+    for event in [
+        RunEvent::StepRouted {
+            node: node("poll"),
+            activated: vec![node("recover")],
+        },
+        RunEvent::StepReleased {
+            node: node("recover"),
+        },
+    ] {
+        state.apply(&event).expect("error edge");
+    }
+    assert!(!state.is_finished());
+    assert_ne!(state.status(), RunStatus::Cancelling);
+    assert_eq!(
+        state.step(&node("recover")).map(|step| step.status()),
+        Some(StepStatus::Ready)
+    );
+    assert_eq!(
+        state
+            .loop_state(&loop_instance())
+            .map(|scope| scope.phase()),
+        Some(LoopPhase::Failed)
+    );
+    assert_eq!(
+        plan(&definition, &state, at(300)).expect("recovery waits for a worker"),
+        Plan::Idle
+    );
+}
+
+#[test]
+fn the_error_edge_to_an_end_finishes_the_run_through_the_normal_terminal_path() {
+    let definition = definition_with_error_route(ErrorRoute::End);
+    let mut state = start(LoopKind::While, 2, Some(true));
+    admit(&mut state, 0);
+    drain_failed_body(&mut state, &FailureCode::expression_error());
+    assert_eq!(
+        plan(&definition, &state, at(300)).expect("the failed loop routes to its end"),
+        Plan::Emit(RunEvent::StepRouted {
+            node: node("poll"),
+            activated: vec![node("recover")],
+        })
+    );
+    for event in [
+        RunEvent::StepRouted {
+            node: node("poll"),
+            activated: vec![node("recover")],
+        },
+        RunEvent::EndReached {
+            node: node("recover"),
+        },
+        RunEvent::RunFinished {
+            status: RunStatus::Succeeded,
+        },
+    ] {
+        state.apply(&event).expect("error edge to end");
+    }
+    assert!(state.is_finished());
+    assert_eq!(state.status(), RunStatus::Succeeded);
+}
+
+#[test]
+fn a_loop_timeout_with_an_error_edge_retains_its_code_and_routes() {
+    let mut state = start(LoopKind::While, 2, Some(true));
+    state
+        .apply(&RunEvent::LoopDrainStarted {
+            node: node("poll"),
+            reason: LoopDrainReason::TimedOut,
+        })
+        .expect("deadline drain without an active iteration");
+    assert_eq!(state.stop_reason(), None);
+    state
+        .apply(&RunEvent::LoopFinished {
+            node: node("poll"),
+            outcome: LoopOutcome::Failed(FailureCode::run_timed_out()),
+        })
+        .expect("timed-out loop fails");
+    state
+        .apply(&RunEvent::StepRouted {
+            node: node("poll"),
+            activated: vec![node("recover")],
+        })
+        .expect("timeout route");
+    assert_eq!(
+        state
+            .step(&node("poll"))
+            .and_then(|step| step.failure().cloned()),
+        Some(FailureCode::run_timed_out())
+    );
+    assert!(state.step(&node("recover")).is_some());
+}
+
+/// A run-level cancellation keeps finishing the run `CANCELLED`: the loop is cancelled, not
+/// failed, so its error edge does not apply and cannot be taken afterwards.
+#[test]
+fn cancellation_still_cancels_a_loop_that_declares_an_error_edge() {
+    let definition = definition_with_error_route(ErrorRoute::Activity);
+    let mut state = start(LoopKind::While, 2, Some(true));
+    admit(&mut state, 0);
+    state
+        .apply(&RunEvent::RunStopRequested {
+            reason: StopReason::Cancelled,
+            code: None,
+        })
+        .expect("cancel");
+    state
+        .apply(&RunEvent::LoopDrainStarted {
+            node: node("poll"),
+            reason: LoopDrainReason::Cancelled,
+        })
+        .expect("cancel drain");
+    assert_eq!(
+        plan(&definition, &state, at(300)).expect("a draining loop is the scheduler's"),
+        Plan::Idle,
+        "the stopping planner must not cancel the draining owner under the scheduler"
+    );
+    state
+        .apply(&RunEvent::LoopIterationDrained {
+            node: node("poll"),
+            index: 0,
+        })
+        .expect("drain");
+    state
+        .apply(&RunEvent::LoopFinished {
+            node: node("poll"),
+            outcome: LoopOutcome::Cancelled,
+        })
+        .expect("cancelled");
+    assert!(
+        state
+            .apply(&RunEvent::StepRouted {
+                node: node("poll"),
+                activated: vec![node("recover")],
+            })
+            .is_err(),
+        "a cancelled loop has no error route"
+    );
+    assert_eq!(
+        plan(&definition, &state, at(300)).expect("terminal plan"),
+        Plan::Emit(RunEvent::RunFinished {
+            status: RunStatus::Cancelled
+        })
+    );
+}
+
+/// A cancel that lands while a failure drain is in flight wins: the loop still ends `FAILED`
+/// with its code, and the run finishes `CANCELLED` without taking the error edge.
+#[test]
+fn a_cancel_during_a_failure_drain_finishes_the_run_cancelled() {
+    let definition = definition_with_error_route(ErrorRoute::Activity);
+    let mut state = start(LoopKind::While, 2, Some(true));
+    admit(&mut state, 0);
+    state
+        .apply(&RunEvent::LoopDrainStarted {
+            node: node("poll"),
+            reason: LoopDrainReason::Failed {
+                iteration: 0,
+                code: FailureCode::worker_error(),
+            },
+        })
+        .expect("failure drain");
+    state
+        .apply(&RunEvent::RunStopRequested {
+            reason: StopReason::Cancelled,
+            code: None,
+        })
+        .expect("a cancel arrives mid drain");
+    assert_eq!(
+        plan(&definition, &state, at(300)).expect("the scheduler owns the drain"),
+        Plan::Idle
+    );
+    state
+        .apply(&RunEvent::LoopIterationDrained {
+            node: node("poll"),
+            index: 0,
+        })
+        .expect("drain");
+    state
+        .apply(&RunEvent::LoopFinished {
+            node: node("poll"),
+            outcome: LoopOutcome::Failed(FailureCode::worker_error()),
+        })
+        .expect("loop failed");
+    assert_eq!(
+        plan(&definition, &state, at(300)).expect("terminal plan"),
+        Plan::Emit(RunEvent::RunFinished {
+            status: RunStatus::Cancelled
+        })
+    );
 }

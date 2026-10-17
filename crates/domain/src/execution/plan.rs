@@ -247,11 +247,18 @@ fn drain(
                 .ok_or(ExecutionError::Invariant(
                     "a loop wait has no durable scope",
                 ))?;
-            if matches!(
-                loop_state.phase(),
-                super::LoopPhase::Ready | super::LoopPhase::Running | super::LoopPhase::Delaying
-            ) {
-                return Err(ExecutionError::UnsupportedStructuredNode(node.clone()));
+            match loop_state.phase() {
+                super::LoopPhase::Ready
+                | super::LoopPhase::Running
+                | super::LoopPhase::Delaying => {
+                    return Err(ExecutionError::UnsupportedStructuredNode(node.clone()));
+                }
+                // The scheduler drains the active iteration and settles the owner under its own
+                // fence; cancelling the owner here would take the drain out from under it.
+                super::LoopPhase::Draining => continue,
+                super::LoopPhase::Succeeded
+                | super::LoopPhase::Failed
+                | super::LoopPhase::Cancelled => {}
             }
         }
         match step.status() {
