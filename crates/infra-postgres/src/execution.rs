@@ -1622,11 +1622,17 @@ impl RunTx for PgRunTx {
             (Some(reason), code) => (Some(reason.as_str()), code.map(FailureCode::as_str)),
             (None, _) => (None, None),
         };
+        // The run's result (G21): the output its `end` step was given in this transaction.
+        let result = events.iter().find_map(|event| match event {
+            RunEvent::EndReached { node } => output_digest.get(node).cloned(),
+            _ => None,
+        });
         if written > 0 {
             let updated = sqlx::query(
                 "UPDATE runs SET status = $4, run_version = $5, stop_reason = $6, stop_code = $7, \
                         paused = $8, updated_at = $9, \
-                        finished_at = CASE WHEN $10 THEN COALESCE(finished_at, $9) ELSE NULL END \
+                        finished_at = CASE WHEN $10 THEN COALESCE(finished_at, $9) ELSE NULL END, \
+                        result_digest = COALESCE($11, result_digest) \
                  WHERE tenant_id = $1 AND id = $2 AND run_version = $3",
             )
             .bind(tenant.as_uuid())
@@ -1639,6 +1645,7 @@ impl RunTx for PgRunTx {
             .bind(self.state.is_paused())
             .bind(self.now)
             .bind(self.state.status().is_terminal())
+            .bind(result)
             .execute(&mut *self.tx)
             .await
             .map_err(store_error)?

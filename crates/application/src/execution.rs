@@ -201,6 +201,17 @@ pub trait ExpressionEvaluator: Send + Sync {
         data: &RunData,
     ) -> Result<Vec<u8>, ExpressionFailure>;
 
+    /// The result of a run: the `outputExpr` of the `end` node that finishes it, evaluated over the
+    /// run's data (G21). Any JSON value.
+    ///
+    /// # Errors
+    /// [`ExpressionFailure`] when the expression fails.
+    fn run_result(
+        &self,
+        expression: &Expression,
+        data: &RunData,
+    ) -> Result<Vec<u8>, ExpressionFailure>;
+
     /// The JSON document a worker receives as the input of `node`.
     fn task_input(&self, data: &RunData, node: &NodeId) -> Vec<u8>;
 
@@ -624,8 +635,10 @@ impl<E: ExpressionEvaluator> Engine<E> {
             if rounds > limit {
                 return Err(ExecutionError::Invariant("evaluations did not settle").into());
             }
-            let (resolution, spawn) = self.resolve(tx, &evaluation).await?;
+            let (resolution, spawn, output) = self.resolve(tx, &evaluation).await?;
             effects.children.extend(spawn);
+            // A run result is the output of its `end` step, written with the step in `persist`.
+            effects.outputs.extend(output);
             progress = {
                 let (def, state) = tx.parts();
                 sagat_domain::execution::resolve(def, state, resolution, now)?
@@ -640,11 +653,11 @@ impl<E: ExpressionEvaluator> Engine<E> {
         &self,
         tx: &mut Tx,
         evaluation: &Evaluation,
-    ) -> Result<(Resolution, Option<ChildSpawn>), EngineError> {
+    ) -> Result<(Resolution, Option<ChildSpawn>, Option<(NodeId, Vec<u8>)>), EngineError> {
         let depth = tx.info().depth;
         let parent = tx.info().run_id;
         let data = tx.data().await?;
-        Ok(match evaluation {
+        let (resolution, spawn) = match evaluation {
             Evaluation::Condition { node, expression } => (
                 Resolution::Condition {
                     node: node.clone(),
@@ -707,7 +720,45 @@ impl<E: ExpressionEvaluator> Engine<E> {
                     ),
                 }
             }
-        })
+            Evaluation::Output { node, expression } => {
+                let outcome = self
+                    .evaluator
+                    .run_result(expression, data)
+                    .map_err(log_failure(node))
+                    .map_err(|()| FailureCode::expression_error())
+                    .and_then(|bytes| {
+                        // The result is kept like any step output: within one payload, and within
+                        // what a run may retain (every lease carries it).
+                        let retained: usize = data.outputs.values().map(Vec::len).sum();
+                        if bytes.len() > MAX_PAYLOAD_BYTES
+                            || retained.saturating_add(bytes.len()) > MAX_RUN_OUTPUT_BYTES
+                        {
+                            Err(FailureCode::run_data_limit())
+                        } else {
+                            Ok(bytes)
+                        }
+                    });
+                return Ok(match outcome {
+                    Ok(bytes) => (
+                        Resolution::Output {
+                            node: node.clone(),
+                            outcome: Ok(()),
+                        },
+                        None,
+                        Some((node.clone(), bytes)),
+                    ),
+                    Err(code) => (
+                        Resolution::Output {
+                            node: node.clone(),
+                            outcome: Err(code),
+                        },
+                        None,
+                        None,
+                    ),
+                });
+            }
+        };
+        Ok((resolution, spawn, None))
     }
 }
 
