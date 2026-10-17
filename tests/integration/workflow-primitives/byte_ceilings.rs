@@ -9,7 +9,7 @@ use sagat_application::execution::{
 };
 use sagat_application::runs::Lock;
 use sagat_application::worker::{MAX_TASK_INPUT_BYTES, WorkerService};
-use sagat_domain::execution::{InstancePath, RunId};
+use sagat_domain::execution::{ExecutionInstanceId, InstancePath, RunId};
 use sagat_domain::workflow::NodeId;
 use sagat_infra_ir::JsonEvaluator;
 use sagat_infra_postgres::PgRunStore;
@@ -265,6 +265,31 @@ async fn a_member_output_over_the_value_ceiling_is_refused_and_the_lease_survive
         .expect("bounded mutation fence")
         .expect("run");
     assert_eq!(fenced.snapshot().state.path(), &path);
+    let completed =
+        ExecutionInstanceId::in_path(path.clone(), NodeId::parse("work").expect("activity node"));
+    let reported_token = tasks[0].lease_token.hash();
+    assert!(
+        !fenced
+            .lease_matches(&completed, &reported_token)
+            .await
+            .expect("lease match")
+    );
+    assert!(
+        !fenced
+            .lease_unexpired(&completed, &reported_token)
+            .await
+            .expect("lease expiry")
+    );
+    assert!(
+        fenced
+            .reported_by(&completed, &reported_token)
+            .await
+            .expect("report token")
+    );
+    assert_eq!(
+        fenced.lease_expiry(&completed).await.expect("lease expiry"),
+        None
+    );
     assert!(
         world
             .store

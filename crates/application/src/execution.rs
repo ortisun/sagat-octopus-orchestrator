@@ -635,6 +635,29 @@ pub trait PathExecutionTx: Send {
     /// Database time observed after the run lock was acquired.
     fn now(&self) -> OffsetDateTime;
 
+    fn lease_expiry(
+        &mut self,
+        instance: &ExecutionInstanceId,
+    ) -> impl Future<Output = Result<Option<OffsetDateTime>, StoreError>> + Send;
+
+    fn lease_unexpired(
+        &mut self,
+        instance: &ExecutionInstanceId,
+        token_hash: &[u8],
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    fn lease_matches(
+        &mut self,
+        instance: &ExecutionInstanceId,
+        token_hash: &[u8],
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    fn reported_by(
+        &mut self,
+        instance: &ExecutionInstanceId,
+        token_hash: &[u8],
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
     fn commit(self) -> impl Future<Output = Result<(), StoreError>> + Send;
 }
 

@@ -933,8 +933,94 @@ impl PathExecutionTx for PgPathExecutionTx {
         self.now
     }
 
+    async fn lease_expiry(
+        &mut self,
+        instance: &ExecutionInstanceId,
+    ) -> Result<Option<OffsetDateTime>, StoreError> {
+        let (nodes, indices) = stored_path_parts(instance.path());
+        sqlx::query_scalar(
+            "SELECT lease_expires_at FROM steps WHERE tenant_id=$1 AND run_id=$2 AND node=$3 \
+               AND instance_path_nodes=$4 AND instance_path_indices=$5 \
+               AND status IN ('LEASED','RUNNING')",
+        )
+        .bind(self.snapshot.info.tenant_id.as_uuid())
+        .bind(self.snapshot.info.run_id.as_uuid())
+        .bind(instance.node().as_str())
+        .bind(nodes)
+        .bind(indices)
+        .fetch_optional(&mut *self.tx)
+        .await
+        .map(Option::flatten)
+        .map_err(store_error)
+    }
+
+    async fn lease_unexpired(
+        &mut self,
+        instance: &ExecutionInstanceId,
+        token_hash: &[u8],
+    ) -> Result<bool, StoreError> {
+        self.lease_token_matches(instance, token_hash, true).await
+    }
+
+    async fn lease_matches(
+        &mut self,
+        instance: &ExecutionInstanceId,
+        token_hash: &[u8],
+    ) -> Result<bool, StoreError> {
+        self.lease_token_matches(instance, token_hash, false).await
+    }
+
+    async fn reported_by(
+        &mut self,
+        instance: &ExecutionInstanceId,
+        token_hash: &[u8],
+    ) -> Result<bool, StoreError> {
+        let (nodes, indices) = stored_path_parts(instance.path());
+        sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM steps WHERE tenant_id=$1 AND run_id=$2 AND node=$3 \
+               AND instance_path_nodes=$4 AND instance_path_indices=$5 \
+               AND status NOT IN ('LEASED','RUNNING') AND reported_lease_token_hash=$6)",
+        )
+        .bind(self.snapshot.info.tenant_id.as_uuid())
+        .bind(self.snapshot.info.run_id.as_uuid())
+        .bind(instance.node().as_str())
+        .bind(nodes)
+        .bind(indices)
+        .bind(token_hash)
+        .fetch_one(&mut *self.tx)
+        .await
+        .map_err(store_error)
+    }
+
     async fn commit(self) -> Result<(), StoreError> {
         self.tx.commit().await.map_err(store_error)
+    }
+}
+
+impl PgPathExecutionTx {
+    async fn lease_token_matches(
+        &mut self,
+        instance: &ExecutionInstanceId,
+        token_hash: &[u8],
+        require_unexpired: bool,
+    ) -> Result<bool, StoreError> {
+        let (nodes, indices) = stored_path_parts(instance.path());
+        sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM steps WHERE tenant_id=$1 AND run_id=$2 AND node=$3 \
+               AND instance_path_nodes=$4 AND instance_path_indices=$5 \
+               AND status IN ('LEASED','RUNNING') AND lease_token_hash=$6 \
+               AND (NOT $7 OR lease_expires_at > clock_timestamp()))",
+        )
+        .bind(self.snapshot.info.tenant_id.as_uuid())
+        .bind(self.snapshot.info.run_id.as_uuid())
+        .bind(instance.node().as_str())
+        .bind(nodes)
+        .bind(indices)
+        .bind(token_hash)
+        .bind(require_unexpired)
+        .fetch_one(&mut *self.tx)
+        .await
+        .map_err(store_error)
     }
 }
 
