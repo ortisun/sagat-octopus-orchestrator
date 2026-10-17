@@ -4,7 +4,7 @@
 
 **Created:** 2026-10-16
 
-**Status:** Approved for implementation on 2026-10-16; implementation in progress
+**Status:** Implemented and locally verified on 2026-10-17; see [delivery evidence](verification.md#final-delivery-gates--t017-025). Production installation is operator-managed.
 
 **Input:** Configure databases in the Sagat UI, create access secrets backed by OpenBao, and reuse the configuration in SDK-authored workflows, visual workflows and ad hoc workflows/steps.
 
@@ -22,7 +22,7 @@ Reuse 001 identity/contracts, 002 durable execution, 003 ambiguity/reconciliatio
 
 The separate draft `feature/013-otel-openbao` already proposes platform-wide OpenBao adoption. The user's confirmation authorizes OpenBao integration for this delivery. Feature 017 owns the connection/credential slice: secret management facade, provider adapter, scoped resolution, migration of credentials selected for these connections, and its reproducible deployment/tests. It does not absorb platform-wide signing-key migration or telemetry replacement. Reconcile the drafts and record affected feature dependencies before implementation; do not claim that unmerged code exists. See [research](research.md).
 
-The [proposed ADR](../../docs/adr/ADR-0033-database-connections-and-managed-execution.md) records the execution, private-network and result-access decisions requiring review. Existing accepted ADRs remain authoritative until that proposal and dependent contracts are accepted.
+The [accepted ADR](../../docs/adr/ADR-0033-database-connections-and-managed-execution.md) records the execution, private-network and result-access decisions approved for this delivery. Existing transactional and isolation ADRs remain authoritative.
 
 ## User scenarios and acceptance tests
 
@@ -81,7 +81,7 @@ The [proposed ADR](../../docs/adr/ADR-0033-database-connections-and-managed-exec
 - **FR-017-021 — Limits and failures:** Enforce finite SQL/request/parameter/result sizes, row counts, connect/query deadlines, pool size/idle lifetime, per-connection/namespace/tenant concurrency, operation backlog and retained bytes. Apply the minimum of platform and namespace ceilings. Use canonical typed errors with code, retryability and trace correlation, distinguishing refusal, TLS/authentication, unavailable provider/database, quota, unsupported operation and unknown outcome without leaking diagnostics.
 - **FR-017-022 — Delivery and recovery:** Ship reproducible PostgreSQL/OpenBao development and production configuration, pinned images/dependencies, bootstrap/unseal and workload-auth instructions, provider outage/rotation/migration/backup-restore runbooks and a happy/failure demo. Production defaults must not use dev-mode OpenBao, root tokens or disabled TLS verification. Product completion requires real-service and all-five SDK evidence.
 
-## Proposed user experience
+## User experience
 
 1. Namespace → Connections → New connection → PostgreSQL.
 2. Enter name, host, port, database and TLS settings; select an authorized secret or choose Create secret.
@@ -153,13 +153,13 @@ npm --prefix frontend run build
 npm --prefix frontend run dev
 ```
 
-Integration tests require Docker/PostgreSQL and the repository's test configuration. The plan must add actual feature-specific targets, OpenBao fixture/auth setup and five-language commands when implemented; none exists yet.
+Integration tests require Docker/PostgreSQL and the repository's test configuration. Feature-specific targets, OpenBao auth/deployment checks and five-language commands are recorded in [verification.md](verification.md) and the linked runbooks.
 
-## Boundaries and remaining design review
+## Boundaries and accepted design
 
 **Always:** follow immutable definitions/revisions, tenant scope, audited authorization, durable state and real-service tests. Update spec/contracts/tests/docs in the same implementation delivery.
 
-**Review before implementation:** shared database operation schema, executor capability/network policy, database-result disclosure, exact role matrix, OpenBao provisioning reconciliation/migration and finite limits. These decisions are concrete in the proposed ADR where possible; product selection of PostgreSQL/OpenBao is already confirmed.
+**Accepted design:** shared database operation schema, executor capability/network policy, database-result disclosure, exact role matrix, OpenBao provisioning reconciliation/migration and finite limits are recorded in ADR-0033, the plan and canonical contracts. Changes require corresponding contract, evidence and dependency updates.
 
 **Never:** store plaintext credentials in workflow/operation persistence; expose raw OpenBao routing or tokens; execute submitted SQL in the control plane/scheduler; infer idempotency from a SELECT prefix or an application key alone; silently redirect retries; present pending support as shipped.
 

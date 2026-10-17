@@ -16,17 +16,17 @@
 
 ## Gates before implementation
 
-- [ ] Human review of the specification and proposed ADR completed.
-- [ ] Operation representation, executor capabilities and result disclosure accepted.
-- [ ] Approved dependencies recorded in affected feature specifications/plans.
-- [ ] Exact OpenBao lifecycle/reconciliation/migration, deployment identity and limits planned.
-- [ ] `plan.md`, canonical contract changes and traced `tasks.md` reviewed.
+- [x] Human review of the specification and proposed ADR completed.
+- [x] Operation representation, executor capabilities and result disclosure accepted.
+- [x] Approved dependencies recorded in affected feature specifications/plans.
+- [x] Exact OpenBao lifecycle/reconciliation/migration, deployment identity and limits planned.
+- [x] `plan.md`, canonical contract changes and traced `tasks.md` reviewed.
 
-## Delivery gates — all pending
+## Delivery gates — see verification.md
 
-- [ ] Real PostgreSQL/OpenBao happy/failure and recovery suites pass.
-- [ ] Tenant/namespace, private-network, secret-canary, audit-failure and revocation suites pass.
-- [ ] Crash/duplicate/lost-broker/timeout-signal/failed-compensation/restart suites pass.
-- [ ] Five SDKs pass shared contract and runtime fixtures.
-- [ ] Browser E2E proves registration, partial-save recovery, workflows and ad hoc execution.
-- [ ] Measured resource/latency evidence, runbooks and backup/restore demo recorded.
+- [x] Real PostgreSQL/OpenBao happy/failure and recovery suites pass.
+- [x] Tenant/namespace, private-network, secret-canary, audit-failure and revocation suites pass.
+- [x] Crash/duplicate/lost-broker/timeout-signal/failed-compensation/restart suites pass.
+- [x] Five SDKs pass shared contract and runtime fixtures.
+- [x] Browser E2E proves registration, partial-save recovery, workflows and ad hoc execution.
+- [x] Measured resource/latency evidence, runbooks and backup/restore demo recorded.

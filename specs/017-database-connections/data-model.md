@@ -22,7 +22,7 @@ Lock order for admission is an existing parent/root run reservation (for childre
 
 A catalog write takes the existing namespace secret-management lock, checks the current membership and OpenBao authority, then commits revision/head/audit together. Creates and rotations cannot race the count or head. Historical reads show historical settings with current lifecycle status. Catalog writes/reads are metadata operations. Probe routes admit a fixed durable execution and expose its status/revision; no API route executes customer SQL.
 
-Implementation status: the intent/version schema, immutable content-binding guard, byte-accounting trigger, explicit migration fence and provider-aware resolution have real-service evidence. The operator cleanup command supports recoverable bounded retirement; scheduled production wiring and backup/restore validation remain T017-023/024. Explicit OpenBao settings now enable management routes and runtime resolution; production deployment profiles and the database connection feature remain incomplete.
+The intent/version schema, immutable content-binding guard, byte-accounting trigger, explicit migration fence and provider-aware resolution have real-service evidence. Bounded cleanup is available as an operator command and scoped CronJob. Coordinated PostgreSQL/Raft restoration preserves values and permanent CAS fences; see [verification](verification.md) and the [recovery procedure](../../docs/runbooks/database-recovery.md).
 
 ## Private execution definitions
 

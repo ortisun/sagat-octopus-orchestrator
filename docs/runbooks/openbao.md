@@ -3,7 +3,7 @@
 Feature 017 uses OpenBao KV v2 behind Sagat's secret API. UI and SDK users use logical
 secret/connection names; only backend workload identities call OpenBao. PostgreSQL is
 the first target driver. See [managed execution](database-runner.md) and
-[UI/SDK usage](managed-database-executions.md).
+[UI/SDK usage](../guides/managed-database-executions.md).
 
 ## Production prerequisites
 
@@ -74,7 +74,7 @@ Provide these Secrets in the Sagat namespace:
 
 Generate the intent key once, share it across control-plane replicas and back it up
 with the metadata. It is separate from both target credentials and the local legacy
-key ring. See the recovery/rotation procedure before replacing it.
+key ring. See the [recovery/rotation procedure](database-recovery.md) before replacing it.
 
 Each backend has a distinct SA and OpenBao Agent. Only the agent mounts its projected
 Kubernetes JWT (audience `openbao`, 10-minute lifetime). It writes a finite provider token

@@ -29,13 +29,15 @@ an approved 4 MiB hard maximum and are collected under the existing transfer per
 canonical JSON and retained-credential scanning **before** any object reservation. General blobs
 remain streamed. Completion independently verifies and rescans stored bytes. This bounded scan does
 not evaluate workflow expressions over blobs or add a generic payload reader. Pending PUTs after a
-timeout retain ADR-0023's durable cleanup/tombstone semantics. Result-response memory and concurrency
-measurements remain release evidence in T017-025.
+timeout retain ADR-0023's durable cleanup/tombstone semantics. The native 4 MiB slow-reader fixture verifies permit recovery under an absolute deadline;
+its measured RSS and phase latency evidence are recorded in the
+[resource report](../../tests/performance/reports/database-connections.md). These measurements
+do not establish a production capacity/SLO promise.
 
 - Preserve ADR-0001 domain/adapter boundaries, ADR-0002 transactions, ADR-0004 external effects, ADR-0006 isolated execution and ADR-0007 five-language parity.
 - Extend 001 contracts, 002 task/admission capabilities, 003 external-outcome integration, 006 builders/conformance, 007 connections/secrets/ad hoc/result UI, 008 instrumentation, 009 secret-provider/network/RBAC/quotas and 011 revision/promotion semantics in the approved implementation delivery.
 - ADR-0028 remains the default for general run inspection. Decision 10 requires a distinct accepted disclosure policy and corresponding dependent-document updates before implementation.
-- The unmerged `feature/013-otel-openbao` draft owns wider secret/key migration. Reconcile its identifiers and provider contracts; this proposal is not acceptance of that whole draft.
+- The unmerged `feature/013-otel-openbao` draft owns wider secret/key migration. Reconcile its identifiers and provider contracts; this decision does not accept that whole draft; the [reconciliation note](../../specs/017-database-connections/research.md#reconciliation-with-the-separate-013-draft) identifies the interfaces it must reuse.
 
 ## Alternatives considered
 
@@ -47,7 +49,7 @@ measurements remain release evidence in T017-025.
 
 ## Review and verification gates
 
-This proposal accepts no runtime guarantee. Implementation details and finite ceilings are recorded in the [plan](../../specs/017-database-connections/plan.md); pin provider/driver versions; specify token bootstrap, migration, private-network enforcement and default resource limits. Measure the dedicated executor's operational cost and resolution/pooling latency. Prove with real PostgreSQL/OpenBao: cross-tenant denial, provider/engine/target commit faults, DNS/TLS/route refusal, ambiguous writes, stale leases, cancellation races, failed compensation, restart, secret canaries, quota exhaustion and backup/restore. All five SDKs must execute the shared fixtures, and real-browser E2E must cover registration through ad hoc outcome.
+This decision does not establish runtime guarantees without executed evidence. Implementation details and finite ceilings are recorded in the [plan](../../specs/017-database-connections/plan.md); pin provider/driver versions; specify token bootstrap, migration, private-network enforcement and default resource limits. Measure the dedicated executor's operational cost and resolution/pooling latency. Prove with real PostgreSQL/OpenBao: cross-tenant denial, provider/engine/target commit faults, DNS/TLS/route refusal, ambiguous writes, stale leases, cancellation races, failed compensation, restart, secret canaries, quota exhaustion and backup/restore. All five SDKs must execute the shared fixtures, and real-browser E2E must cover registration through ad hoc outcome.
 
 
 ### Result disclosure implementation

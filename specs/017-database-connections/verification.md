@@ -1,5 +1,9 @@
 # Verification — feature 017
 
+This is a chronological record of implementation checkpoints. Statements about pending
+work apply to their checkpoint; the final delivery gate section records the closing status.
+See [traceability.md](traceability.md) for requirement-to-evidence mapping and explicit limits.
+
 ## Inline managed result checkpoint (2026-10-17)
 
 - `cargo test -p sagat-infra-ir --test database_result -p sagat-infra-secrets --test database_credentials`: 2 schema/type tests and 2 credential-codec/scanner tests passed. Encoded-content checks failed before adding decoded Unicode/base64 and duplicate-key scanning.
@@ -427,3 +431,131 @@ coverage above; full deployment/SDK/crash gates remain T017-023/024/025.
 - Reproduction and operator responsibilities: `docs/runbooks/openbao.md`,
   `tests/e2e/database-connections/kubernetes.sh`. Production image publication, real issuer,
   cluster certificates, storage class and private CIDRs remain deployment-specific inputs.
+
+
+## Recovery, key replacement and process crash — T017-024
+
+- `integration_database_runner`: the real process was SIGKILLed after PostgreSQL confirmed
+  its insert and before the proxy forwarded CompleteStep. After the actual eight-second
+  lease expired, the scheduler retained MANUAL_REVIEW. A restarted runner executed a fresh
+  read while the original attempt stayed at one and the target effect count stayed at one.
+  Combined runner/fault suite passed in **46.24 s** before the later timing instrumentation.
+- `integration_database_connections`: **3 passed in 19.76 s**, including new runtime-role
+  intent-key replacement coverage: wrong-key pending activation refused, old-key settlement,
+  active reconciliation under the new key, unchanged credential read, old PUT replay conflict,
+  and a new rotation without duplicate original operations. Existing migration, authority,
+  ACL, cleanup and credential-rotation tests run in the same target.
+- Built-image Compose recovery passed: stop/drain the writers, take PostgreSQL custom dump,
+  Raft snapshot and matching intent key; delete actual provider metadata and recreate the
+  platform database; restore both and restart/unseal OpenBao. The retained typed result and
+  original admission receipt survive, a fresh query resolves the restored credential, and a
+  destroyed KV version still rejects delayed CAS=0 creation. Provider outage then fails closed.
+- This proves a quiesced, same-cluster recovery point. It does not establish arbitrary mixed
+  PITR, fresh-cluster force restore, missing-unseal-key recovery or reversal of customer effects.
+  `docs/runbooks/database-recovery.md` states the isolation, credential/key rotation, migration,
+  finite-token, blob-backup and external-effect reconciliation responsibilities.
+- Independent read-only review found no Required/Critical issue. Its operational-order comment
+  was applied: settle pending intents while reconciliation/cleanup remain available, then stop
+  every writer and suspend cleanup before taking the recovery point.
+
+## Final delivery gates — T017-025
+
+Closed locally on 2026-10-17. All required assertions have passing evidence. Results below
+distinguish the complete first pass from focused reruns; no failed command is described as green.
+
+### Rust workspace and failed-target reruns
+
+`cargo test --workspace --locked --no-fail-fast` completed all **181 test/doc-test targets**:
+**2,298 passed, 6 failed, 50 ignored** on its first pass. All five affected targets then passed
+in full, totaling **67 passing tests** in the reruns:
+
+| Rerun | Passed | Initial failure and correction |
+|---|---:|---|
+| `cargo test -p sagat-cli --test diagnostics --locked` | 7 | Added the missing `INVALID_DATABASE_NODE` help entry and linked user documentation. |
+| `cargo test -p sagat-tests --test contract_developer_experience --locked` | 8 | Regenerated API and workflow-schema references; ordinary unblessed comparison passes. |
+| `cargo test -p sagat-tests --test contract_rest_security_multitenancy --locked` | 17 | Supplied valid JSON for probe/ad hoc requests and a concrete node path. Foreign/missing 404, response equality and no-mutation assertions remain unchanged. |
+| `cargo test -p sagat-tests --test e2e_developer_experience --locked` | 32 | Doctor now expects server maximum protocol 1.5. Four environment-dependent examples remain ignored in this target. |
+| `cargo test -p sagat-tests --test integration_database_connections --locked` | 3 | First pass stopped during fixture startup with Docker `PortNotExposed(8200)`, before any provider assertion. Unchanged full target passed on rerun in 32.74 s. The startup failure was not reproduced or attributed to a product defect. |
+
+Thus all **2,304 nonignored tests** from the workspace inventory have a passing result after
+reruns. The whole workspace command was not repeated after these focused corrections.
+The final workspace includes real provider/target TLS, managed results, tenant/ACL/current-role
+fences, secret canaries, admission/outbox atomicity, quota/storage limits, event redelivery,
+timeout/signal races, failed compensation and restart suites. In particular,
+`integration_database_runner` passed in **37.80 s**, including SIGKILL after the target commit
+and a restarted runner with no repeat of that effect.
+
+### Five SDKs
+
+- Unit/tooling gates passed: TypeScript **113**, Python **244**, C# **421**, Java **217**;
+  Go `go test -race ./...`, vet and formatting passed. Python mypy (38 source files)/ruff,
+  C# format verification and Java verify passed.
+- Initial TS heartbeat and C# stream-stop tests depended on fixed sleeps/immediate asynchronous
+  observations. They now await the actual events with bounded existing helpers. Deadline
+  extension and the C# stop-under-two-seconds assertion are preserved; full language suites
+  passed on rerun.
+- `SAGAT_SDK_REUSE=1 cargo test -p sagat-tests --test sdk_conformance
+  --test fault_sdk_multilanguage --locked --no-fail-fast -- --ignored` ran all **20 shared
+  scenarios in all five languages**, plus **9 fault tests**. All fault tests passed. Nineteen
+  shared scenarios conformed; the managed scenario differed only because its four graph nodes
+  still said `activity` in the golden file after Studio began exposing `database`.
+- Corrected only those four golden fields and added an independent graph-type assertion.
+  `SAGAT_SDK_REUSE=1 SAGAT_SDK_SCENARIO=database-connections cargo test -p sagat-tests
+  --test sdk_conformance --locked -- --ignored` then passed all five languages in **25.27 s**.
+  Typed values, downstream consumption, one target write, denied DDL and no ordinary-worker
+  SQL dispatch remain independently asserted. All 100 scenario/language combinations now
+  have passing evidence across the full run and this focused rerun.
+- The six SDK end-to-end stories have passing evidence: five passed on the initial full target;
+  protocol negotiation initially expected 1.4 for offers above the server maximum. Corrected to
+  1.5, preserving `1.4 → 1.4`, and reran `e2e_sdk_multilanguage us04:: -- --ignored`: **1 passed
+  in 37.21 s** across all languages. No golden blessing or protocol fallback masked the mismatch.
+- `SAGAT_SDK_REUSE=1` reuses already built toolchains; it does not skip the selected scenarios.
+
+### Studio, containers and static gates
+
+- Frontend **1,133 tests in 82 files passed**; lint, application/E2E type checks, production
+  build and generated OpenAPI-client parity passed. npm audit reported zero vulnerabilities.
+- Real Chromium feature journeys: **4 passed** (catalog/secret partial save, probes/ad hoc and
+  navigation recovery, published visual nodes/current result permissions, safe failure).
+  Existing Studio journeys: **33 passed, 2 skipped** by their suite configuration.
+- Rebuilt the application/runner images after updating Rustls and reran the baseline Compose
+  smoke and managed Compose proof. Both passed. Managed proof includes verified engine/target
+  TLS, actual OpenBao credentials, typed retained results, admission replay, coordinated
+  PostgreSQL/Raft restore and fail-closed provider outage. The baseline smoke's optional
+  first-day CLI/browser path was not selected in this final invocation; browser evidence is
+  the native real-service Playwright suites above.
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`, formatting and diff
+  whitespace checks passed. After the last shared-scenario assertion, focused conformance
+  clippy also passed. Architecture checker: **24 crates**, no forbidden edges/cycles; its
+  eight unit tests passed.
+- Canonical OpenAPI lint passed with its existing seven tag-description warnings; Protobuf
+  compilation, AsyncAPI validation (one existing informational note) and IR example validation
+  passed. Canonical generated reference tests passed after regeneration.
+- `cargo audit --deny warnings` passed under the repository advisory policy. Rustls was updated
+  to **0.23.46**, addressing RUSTSEC-2026-0346 through 0349; verified TLS container proofs were
+  rerun with the updated dependency. See the [upstream release](https://github.com/rustls/rustls/releases/tag/v%2F0.23.46).
+- Independent read-only reviews covered provider boundaries, execution/retention, SDK/UI,
+  policies, deployment, recovery, measurements and final gate corrections. No Required/Critical
+  findings remain. CI now runs the managed browser suite and built-container restore proof.
+
+### Measurements and remaining operational limits
+
+- Final `integration_database_runner measure_managed_database_phase_latency -- --ignored`
+  passed in **63.57 s** after **10 warmups and 200 successful measured reads** with the patched
+  dependencies. [Phase report](../../tests/performance/reports/database-connections.md) records
+  environment, shared-host load, p50/p95/p99, boundaries and exclusions. No throughput or
+  production TLS/HA SLO is inferred.
+- [Native response resource probe](../../tests/performance/reports/database-result-memory.md)
+  records the 4 MiB slow-reader test, absolute delivery deadline, recovered transfer permit and
+  measured test-process RSS. This is not a production capacity estimate.
+- The default workspace's 50 ignored tests are explicitly environment-dependent suites or
+  benchmarks. Required SDK/browser/feature measurement gates were invoked separately above;
+  unrelated benchmark and example targets were not all executed in this delivery gate.
+- Production deployment still needs operator-supplied identities, image digests, certificates,
+  storage/routes and protected backups. The real Kubernetes auth/network proof and same-cluster
+  restore scope are described above. No production rollout, new-cluster force-restore proof,
+  dynamic database accounts, Kafka target or exactly-once external effect is claimed.
+- All tasks T017-001..025 are complete. [Traceability](traceability.md), the
+  [UI guide](../../docs/guides/managed-database-executions.md),
+  [SDK guide](../../docs/guides/managed-database-sdk.md) and
+  [recovery runbook](../../docs/runbooks/database-recovery.md) describe the delivered behavior.

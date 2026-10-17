@@ -1,7 +1,7 @@
 # PostgreSQL target adapter
 
-T017-014 implementation checkpoint; the runner process and durable probe admission remain separate
-T017-015/016 work. A passing adapter test does not mean SQL execution is enabled in Studio.
+T017-014 target adapter, used by the isolated runner and durable probe/ad hoc/published paths.
+See [managed capability](managed-executor.md) and [executed evidence](../verification.md).
 
 ## Connection and authority
 
@@ -116,8 +116,8 @@ An exact receipt needs no provider/object read; managed replay checks current ro
 original machine recorded in the immutable lease event. This also applies to application callers,
 not only the gRPC shortcut. Ordinary protocol receipt behavior is preserved.
 
-Result disclosure and production runner wiring remain pending at this checkpoint (T017-017).
-No complete result-delivery guarantee is claimed yet.
+Result disclosure uses the separately audited, bounded endpoint described in the managed
+capability contract. Deployment and recovery profiles are documented in the operator runbooks.
 
 ## Evidence and sources
 
@@ -127,7 +127,7 @@ restricted-role/authentication failures, row/frame limits, nonfinite numeric rej
 write deadlines, cancellation, capacity release, and SQL/credential/notice log canaries. A separate
 TLS fixture verifies valid private trust, wrong hostname, and untrusted CA. Unit cases exercise
 mixed DNS answers, namespace narrowing, metadata/platform denial, nested write syntax and framing.
-See `verification.md` for commands and results.
+See [verification](../verification.md) for commands and results.
 
 Driver versions: `tokio-postgres = 0.7.18`, `sqlparser = 0.63.0`, pinned in Cargo.lock.
 Official references used and dependency sources inspected:

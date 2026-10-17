@@ -1,6 +1,6 @@
 # Implementation plan — 017 database connections
 
-Status: Implementing. Product scope and ADR-0033 approved by the user on 2026-10-16.
+Status: Implemented and locally verified on 2026-10-17. Product scope and ADR-0033 approved by the user on 2026-10-16. See [verification.md](verification.md) for executed gates, reruns and limits.
 
 ## Architecture and dependency decisions
 

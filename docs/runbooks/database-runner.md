@@ -73,7 +73,8 @@ the same length/character and namespace constraints apply.
   Attempt spans carry trace, tenant, namespace and run identifiers, without content.
 - Scrape `/metrics` on `SAGAT_DATABASE_RUNNER_METRICS_ADDR` (loopback port 9092 by
   default). Counters distinguish execution outcomes, registration/poll failures,
-  report retries and unacknowledged attempts. Never expose this listener publicly.
+  report retries and unacknowledged attempts. `database_connection_seconds` measures DNS policy,
+  socket/TLS and target authentication with a fixed outcome label. Never expose this listener publicly.
 - Check the durable run journal for outcome and audited result access. A failure
   code is a category, not a raw PostgreSQL/OpenBao diagnostic.
 - `DATABASE_DESTINATION_DENIED`: inspect operator and namespace CIDRs/ports and

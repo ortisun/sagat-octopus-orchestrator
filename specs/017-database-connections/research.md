@@ -1,6 +1,7 @@
 # Feature 017 — Baseline, source notes and confirmed choices
 
-Date: 2026-10-16. Status: specification only; implementation pending. No new runtime capability has been implemented or tested.
+Baseline investigation: 2026-10-16. The repository observations below describe the starting revision.
+Implementation and executed verification are recorded in [verification.md](verification.md).
 
 ## User choices
 
@@ -50,3 +51,14 @@ Implementation is authorized. Actual checks are recorded in `verification.md`; t
 ## Target driver implementation decision (2026-10-17)
 
 Use tokio-postgres 0.7.18 with an already pinned TCP/TLS socket and sqlparser 0.63.0 for a conservative single-statement AST subset. Inspecting dependency sources identified DEBUG query logging, INFO notices and an unbounded individual frame codec; the adapter adds a pre-allocation frame/aggregate budget, discards asynchronous notices and the Sagat log layer suppresses the driver and SQL-parser targets. Use fresh sessions per attempt under distributed lease capacity and a local semaphore; zero idle lifetime avoids credential retention and untrusted session-state reuse. This refines the bounded pool implementation without changing ADR-0033 authority/execution semantics. See [adapter contract](contracts/postgres-executor.md) for sources, result format and limitations.
+
+## Reconciliation with the separate 013 draft
+
+Feature 017 implements the async `SecretProvider` boundary, fixed KV-v2 credential paths,
+durable provisioning receipts, token-file identity, explicit per-secret migration and bounded
+cleanup. The separate unmerged 013 worktree remains owned by its author and was not modified.
+When that draft is resumed, depend on 017's accepted ADR-0033 and provider contracts; reuse these
+interfaces/migrations rather than create a second authority or duplicate schema. Its wider
+signing-key migration, dynamic database credentials and telemetry replacement require their own
+approved scope and evidence. The existing mixed local/remote signing consumers now fail closed
+during provider outage; this compatibility fix does not migrate all signing keys.

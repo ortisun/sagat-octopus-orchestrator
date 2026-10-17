@@ -1,6 +1,6 @@
 # Managed database executor capability
 
-Implementation contract for T017-013..017 (pending until the recorded tests pass).
+Implementation contract for T017-013..017; executed evidence is in [verification](../verification.md).
 
 - The `database-runner` machine role grants worker execution and the dedicated database capability.
   Human administrators, ordinary workers and sandbox runners cannot claim or resolve a managed
@@ -34,19 +34,14 @@ Implementation contract for T017-013..017 (pending until the recorded tests pass
   cancellation, report idempotency and fencing remain authoritative. An ambiguous write must use
   `OUTCOME_UNKNOWN` and the existing manual-review transition, with no automatic retry.
 
-The protocol and credential-pin migration are implemented with real PostgreSQL/OpenBao and gRPC
-fence evidence. Driver SQL execution, configurable namespace/deployment ceilings, physical process
-isolation, result canaries and provider cleanup remain separate delivery gates (T017-014..025).
-This capability contract is not evidence that the SQL executor is already shipped.
-
-### Checkpoint gate
+## Result acceptance
 
 Managed inline and blob results require the configured retained-credential codec and typed result
 validator. Blob bytes are scanned before staging and verified/rescanned before atomic completion.
-Default instances without those codecs still fail closed. Production composition roots and the
-isolated runner remain pending. Managed failures currently accept only fixed `WORKER_ERROR` and
-`OUTCOME_UNKNOWN` codes; the transport discards `safe_message`. The runner delivery will add its
-closed safe failure vocabulary and integration evidence before enabling SQL execution.
+Default instances without those codecs fail closed. Production engine composition installs both;
+the isolated runner emits only the closed `DatabaseFailure` vocabulary described below. Transport
+always discards caller-supplied `safe_message`. Current policy tightening cannot turn an uncertain
+write into an automatic SQL retry.
 
 PostgreSQL adapter details and current runtime gates: [target adapter](postgres-executor.md).
 
@@ -116,8 +111,8 @@ positive, and no greater than the domain ceiling. Effective limits are the compo
 minimum of server capability, deployment policy and namespace policy. A shared
 per-process namespace/connection counter enforces the effective `poolSize` across
 attempts through socket cleanup; saturation fails before SQL dispatch. Distributed
-server admission uses its persisted connection limits. Narrower runner policies do
-not replace the pending server-configurable deployment/namespace admission policy.
+server admission intersects persisted connection limits with current operator/tenant/namespace
+quota policies. Narrower runner policies independently constrain the delivered capability.
 
 The runner registers only `sagat.database.postgresql` with protocol 1.5. Heartbeats
 start before policy/provider I/O; loss, cancellation or lease expiry cancels target
