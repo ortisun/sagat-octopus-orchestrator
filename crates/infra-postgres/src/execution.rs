@@ -10,6 +10,7 @@
 use crate::pool::BeginSafely;
 mod ad_hoc;
 mod database;
+mod path;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -941,11 +942,22 @@ impl PathExecutionStore for PgRunStore {
         if current != expected {
             return Err(StoreError::RevisionConflict { current });
         }
+        let persisted = snapshot.state.global().version();
+        let stored = snapshot
+            .state
+            .local_instances()
+            .map(|(node, _)| {
+                ExecutionInstanceId::in_path(snapshot.state.path().clone(), node.clone())
+            })
+            .collect();
         Ok(Some(PgPathExecutionTx {
             tx,
             snapshot,
             now: col(&row, "db_now")?,
             breaker: self.breaker,
+            persisted,
+            stored,
+            signals: Vec::new(),
         }))
     }
 }
@@ -956,6 +968,9 @@ pub struct PgPathExecutionTx {
     snapshot: PathExecutionSnapshot,
     now: OffsetDateTime,
     breaker: BreakerPolicy,
+    persisted: u64,
+    stored: BTreeSet<ExecutionInstanceId>,
+    signals: Vec<Signal>,
 }
 
 impl std::fmt::Debug for PgPathExecutionTx {
@@ -991,227 +1006,6 @@ async fn current_worker_authorized(
         && role
             .permissions()
             .contains(&sagat_domain::identity::Permission::WorkerExecute))
-}
-
-impl PathExecutionTx for PgPathExecutionTx {
-    fn snapshot(&mut self) -> &mut PathExecutionSnapshot {
-        &mut self.snapshot
-    }
-
-    fn now(&self) -> OffsetDateTime {
-        self.now
-    }
-
-    async fn lease_expiry(
-        &mut self,
-        instance: &ExecutionInstanceId,
-    ) -> Result<Option<OffsetDateTime>, StoreError> {
-        let (nodes, indices) = stored_path_parts(instance.path());
-        sqlx::query_scalar(
-            "SELECT lease_expires_at FROM steps WHERE tenant_id=$1 AND run_id=$2 AND node=$3 \
-               AND instance_path_nodes=$4 AND instance_path_indices=$5 \
-               AND status IN ('LEASED','RUNNING')",
-        )
-        .bind(self.snapshot.info.tenant_id.as_uuid())
-        .bind(self.snapshot.info.run_id.as_uuid())
-        .bind(instance.node().as_str())
-        .bind(nodes)
-        .bind(indices)
-        .fetch_optional(&mut *self.tx)
-        .await
-        .map(Option::flatten)
-        .map_err(store_error)
-    }
-
-    async fn worker_drained(&mut self, subject: &str) -> Result<bool, StoreError> {
-        sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))")
-            .bind(crate::operations::drain_lock_key(
-                self.snapshot.info.tenant_id,
-                self.snapshot.info.namespace_id,
-                subject,
-            ))
-            .execute(&mut *self.tx)
-            .await
-            .map_err(store_error)?;
-        sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM worker_drains \
-             WHERE tenant_id=$1 AND namespace_id=$2 AND subject=$3)",
-        )
-        .bind(self.snapshot.info.tenant_id.as_uuid())
-        .bind(self.snapshot.info.namespace_id.as_uuid())
-        .bind(subject)
-        .fetch_one(&mut *self.tx)
-        .await
-        .map_err(store_error)
-    }
-
-    async fn worker_session_room(
-        &mut self,
-        session_id: Uuid,
-        token_hash: &[u8],
-        subject: &str,
-    ) -> Result<u32, StoreError> {
-        let max_inflight: Option<i32> = sqlx::query_scalar(
-            "SELECT max_inflight FROM worker_sessions \
-             WHERE tenant_id=$1 AND namespace_id=$2 AND id=$3 AND token_hash=$4 \
-               AND subject=$5 AND expires_at > clock_timestamp() FOR UPDATE",
-        )
-        .bind(self.snapshot.info.tenant_id.as_uuid())
-        .bind(self.snapshot.info.namespace_id.as_uuid())
-        .bind(session_id)
-        .bind(token_hash)
-        .bind(subject)
-        .fetch_optional(&mut *self.tx)
-        .await
-        .map_err(store_error)?;
-        let Some(max_inflight) = max_inflight else {
-            return Ok(0);
-        };
-        let active: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM steps WHERE tenant_id=$1 \
-             AND status IN ('LEASED','RUNNING') AND leased_by=$2",
-        )
-        .bind(self.snapshot.info.tenant_id.as_uuid())
-        .bind(session_id.to_string())
-        .fetch_one(&mut *self.tx)
-        .await
-        .map_err(store_error)?;
-        let limit = u32::try_from(max_inflight).map_err(|_| corrupt("max inflight"))?;
-        Ok(limit.saturating_sub(u32::try_from(active).unwrap_or(u32::MAX)))
-    }
-
-    async fn bound_patterns(&mut self, subject: &str) -> Result<Vec<String>, StoreError> {
-        sqlx::query_scalar(
-            "SELECT pattern FROM worker_bindings \
-             WHERE tenant_id=$1 AND namespace_id=$2 AND subject=$3 ORDER BY pattern",
-        )
-        .bind(self.snapshot.info.tenant_id.as_uuid())
-        .bind(self.snapshot.info.namespace_id.as_uuid())
-        .bind(subject)
-        .fetch_all(&mut *self.tx)
-        .await
-        .map_err(store_error)
-    }
-
-    async fn current_worker_authorized(&mut self, subject: &str) -> Result<bool, StoreError> {
-        current_worker_authorized(
-            &mut self.tx,
-            self.snapshot.info.tenant_id,
-            self.snapshot.info.namespace_id,
-            subject,
-        )
-        .await
-    }
-
-    async fn required_worker_protocol_minor(&mut self) -> Result<u32, StoreError> {
-        let needs_blob_protocol: bool = sqlx::query_scalar(
-            "SELECT runs.input_blob_id IS NOT NULL OR EXISTS ( \
-                 SELECT 1 FROM blobs blob WHERE blob.tenant_id=runs.tenant_id \
-                   AND blob.namespace_id=runs.namespace_id AND blob.run_id=runs.id \
-                   AND blob.purpose='STEP_OUTPUT' AND blob.state='COMMITTED') \
-             FROM runs WHERE tenant_id=$1 AND id=$2",
-        )
-        .bind(self.snapshot.info.tenant_id.as_uuid())
-        .bind(self.snapshot.info.run_id.as_uuid())
-        .fetch_one(&mut *self.tx)
-        .await
-        .map_err(store_error)?;
-        Ok(if needs_blob_protocol {
-            sagat_application::worker::BLOB_PROTOCOL_MINOR
-        } else {
-            0
-        })
-    }
-
-    async fn activity_admitted(&mut self, activity: &ActivityName) -> Result<bool, StoreError> {
-        crate::quotas::activity_admitted(
-            &mut self.tx,
-            self.snapshot.info.tenant_id,
-            self.snapshot.info.namespace_id,
-            activity,
-        )
-        .await
-    }
-
-    async fn compensation_admitted(&mut self, activity: &ActivityName) -> Result<bool, StoreError> {
-        crate::breaker::admit(
-            &mut self.tx,
-            self.breaker,
-            self.snapshot.info.tenant_id.as_uuid(),
-            self.snapshot.info.namespace_id.as_uuid(),
-            activity.as_str(),
-        )
-        .await
-    }
-
-    async fn lease_unexpired(
-        &mut self,
-        instance: &ExecutionInstanceId,
-        token_hash: &[u8],
-    ) -> Result<bool, StoreError> {
-        self.lease_token_matches(instance, token_hash, true).await
-    }
-
-    async fn lease_matches(
-        &mut self,
-        instance: &ExecutionInstanceId,
-        token_hash: &[u8],
-    ) -> Result<bool, StoreError> {
-        self.lease_token_matches(instance, token_hash, false).await
-    }
-
-    async fn reported_by(
-        &mut self,
-        instance: &ExecutionInstanceId,
-        token_hash: &[u8],
-    ) -> Result<bool, StoreError> {
-        let (nodes, indices) = stored_path_parts(instance.path());
-        sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM steps WHERE tenant_id=$1 AND run_id=$2 AND node=$3 \
-               AND instance_path_nodes=$4 AND instance_path_indices=$5 \
-               AND status NOT IN ('LEASED','RUNNING') AND reported_lease_token_hash=$6)",
-        )
-        .bind(self.snapshot.info.tenant_id.as_uuid())
-        .bind(self.snapshot.info.run_id.as_uuid())
-        .bind(instance.node().as_str())
-        .bind(nodes)
-        .bind(indices)
-        .bind(token_hash)
-        .fetch_one(&mut *self.tx)
-        .await
-        .map_err(store_error)
-    }
-
-    async fn commit(self) -> Result<(), StoreError> {
-        self.tx.commit().await.map_err(store_error)
-    }
-}
-
-impl PgPathExecutionTx {
-    async fn lease_token_matches(
-        &mut self,
-        instance: &ExecutionInstanceId,
-        token_hash: &[u8],
-        require_unexpired: bool,
-    ) -> Result<bool, StoreError> {
-        let (nodes, indices) = stored_path_parts(instance.path());
-        sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM steps WHERE tenant_id=$1 AND run_id=$2 AND node=$3 \
-               AND instance_path_nodes=$4 AND instance_path_indices=$5 \
-               AND status IN ('LEASED','RUNNING') AND lease_token_hash=$6 \
-               AND (NOT $7 OR lease_expires_at > clock_timestamp()))",
-        )
-        .bind(self.snapshot.info.tenant_id.as_uuid())
-        .bind(self.snapshot.info.run_id.as_uuid())
-        .bind(instance.node().as_str())
-        .bind(nodes)
-        .bind(indices)
-        .bind(token_hash)
-        .bind(require_unexpired)
-        .fetch_one(&mut *self.tx)
-        .await
-        .map_err(store_error)
-    }
 }
 
 impl RunStore for PgRunStore {

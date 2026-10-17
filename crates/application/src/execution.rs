@@ -711,6 +711,14 @@ pub trait PathExecutionTx: Send {
         token_hash: &[u8],
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 
+    /// Journals and projects already-reduced exact-path events in this short transaction.
+    fn persist_addressed(
+        &mut self,
+        events: &[AddressedRunEvent],
+        outputs: &[(ExecutionInstanceId, Vec<u8>)],
+        effects: Effects,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
     fn commit(self) -> impl Future<Output = Result<(), StoreError>> + Send;
 }
 

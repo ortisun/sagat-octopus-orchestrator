@@ -6,11 +6,15 @@ use sagat_application::clock::SystemClock;
 use sagat_application::entropy::SystemEntropy;
 use sagat_application::entropy::Token;
 use sagat_application::execution::{
-    MAX_PAYLOAD_BYTES, MAX_RUN_OUTPUT_BYTES, PathExecutionStore, PathExecutionTx, ScopeInput,
+    Actor, Effects, MAX_PAYLOAD_BYTES, MAX_RUN_OUTPUT_BYTES, PathExecutionStore, PathExecutionTx,
+    ReportedLease, ScopeInput,
 };
 use sagat_application::runs::Lock;
 use sagat_application::worker::{MAX_TASK_INPUT_BYTES, WorkerService};
-use sagat_domain::execution::{ExecutionInstanceId, InstancePath, RunId};
+use sagat_domain::execution::{
+    ExecutionInstanceId, InstancePath, RunId, StepStatus, complete_path_instance,
+    heartbeat_path_instance,
+};
 use sagat_domain::workflow::{ActivityName, NodeId};
 use sagat_infra_ir::JsonEvaluator;
 use sagat_infra_postgres::PgRunStore;
@@ -349,6 +353,94 @@ async fn a_member_output_over_the_value_ceiling_is_refused_and_the_lease_survive
         world.store.begin_path(stale, Lock::Wait).await,
         Err(sagat_application::error::StoreError::RevisionConflict { .. })
     ));
+}
+
+#[tokio::test]
+async fn a_bounded_completion_commits_without_reopening_the_run_history() {
+    let world = world().await;
+    allow_iterations(&world, 4).await;
+    let run = start_collection(
+        &world,
+        collection("bounded-completion", "input.items", 1, 1, "bodyResult"),
+        &json!({"items": [1]}),
+    )
+    .await;
+    let scheduler = scheduler(&world, "bounded-completion").await;
+    let workers = scoped_workers(&world);
+    let session = register_scoped(&world, &workers).await;
+    assert_eq!(scheduler.tick().await.collections_advanced, 1);
+    assert_eq!(scheduler.tick().await.collections_advanced, 1);
+    let task = workers
+        .poll(&world.worker, session.0, &session.1, 1, None)
+        .await
+        .expect("poll")
+        .pop()
+        .expect("task");
+
+    let bounded = world
+        .store
+        .load_path(world.admin.tenant_id(), run, task.instance.path().clone())
+        .await
+        .expect("bounded path")
+        .expect("run");
+    let mut tx = world
+        .store
+        .begin_path(bounded, Lock::Wait)
+        .await
+        .expect("bounded transaction")
+        .expect("run");
+    let heartbeat = heartbeat_path_instance(&mut tx.snapshot().state, &task.instance, task.fence)
+        .expect("bounded heartbeat");
+    let definition = tx.snapshot().definition.clone();
+    let progress = complete_path_instance(
+        &definition,
+        &mut tx.snapshot().state,
+        &task.instance,
+        task.fence,
+    )
+    .expect("bounded completion");
+    let mut events = heartbeat.event.into_iter().collect::<Vec<_>>();
+    events.extend(progress.events);
+    let mut effects = Effects::by(Actor::Worker(session.0.to_string()), None);
+    effects.reported = Some(ReportedLease {
+        instance: task.instance.clone(),
+        token_hash: task.lease_token.hash(),
+    });
+    tx.persist_addressed(&events, &[(task.instance.clone(), b"{}".to_vec())], effects)
+        .await
+        .expect("bounded persist");
+    tx.commit().await.expect("bounded commit");
+
+    let persisted = world
+        .store
+        .load_path(world.admin.tenant_id(), run, task.instance.path().clone())
+        .await
+        .expect("persisted path")
+        .expect("run");
+    assert_eq!(
+        persisted
+            .state
+            .local_instance(task.instance.node())
+            .map(|step| step.status()),
+        Some(StepStatus::Succeeded)
+    );
+    assert_eq!(persisted.data.output(&task.instance), Some(&b"{}"[..]));
+    let payload_events: Vec<String> = sqlx::query_scalar(
+        "SELECT event_type FROM run_events WHERE run_id=$1 AND payload_digest IS NOT NULL \
+         ORDER BY seq",
+    )
+    .bind(run.as_uuid())
+    .fetch_all(&world.db.pool)
+    .await
+    .expect("payload journal events");
+    assert_eq!(payload_events, ["step.completed"]);
+    let charged: i64 =
+        sqlx::query_scalar("SELECT logical_output_bytes FROM run_instance_usage WHERE run_id=$1")
+            .bind(run.as_uuid())
+            .fetch_one(&world.db.pool)
+            .await
+            .expect("bounded output ledger");
+    assert_eq!(charged, 2);
 }
 
 #[tokio::test]
