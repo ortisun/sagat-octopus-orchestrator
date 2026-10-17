@@ -997,3 +997,149 @@ fn a_cancel_during_a_failure_drain_finishes_the_run_cancelled() {
         })
     );
 }
+
+/// Applies what the planner asks for until it is idle, handing the loop's own transitions (which a
+/// scheduler commits under its fence, not the planner) to `scheduler`. Returns the planned events.
+fn settle(
+    definition: &WorkflowDefinition,
+    state: &mut RunState,
+    mut scheduler: impl FnMut(&mut RunState),
+) -> Vec<RunEvent> {
+    let mut planned = Vec::new();
+    for _ in 0..20 {
+        match plan(definition, state, at(300)).expect("a stopped loop run plans") {
+            Plan::Emit(event) => {
+                state.apply(&event).expect("planned event applies");
+                planned.push(event);
+            }
+            Plan::Evaluate(_) => panic!("a stopping run evaluates nothing"),
+            Plan::Idle => {
+                if state.is_finished() {
+                    return planned;
+                }
+                scheduler(state);
+            }
+        }
+    }
+    panic!("the stopped run never finished: {planned:?}");
+}
+
+fn drain_cancelled(state: &mut RunState, active: Option<u32>) {
+    if state
+        .loop_state(&loop_instance())
+        .map(|scope| scope.phase())
+        == Some(LoopPhase::Draining)
+    {
+        return;
+    }
+    state
+        .apply(&RunEvent::LoopDrainStarted {
+            node: node("poll"),
+            reason: LoopDrainReason::Cancelled,
+        })
+        .expect("the scheduler starts the drain");
+    if let Some(index) = active {
+        state
+            .apply(&RunEvent::LoopIterationDrained {
+                node: node("poll"),
+                index,
+            })
+            .expect("the active iteration drains");
+    }
+    state
+        .apply(&RunEvent::LoopFinished {
+            node: node("poll"),
+            outcome: LoopOutcome::Cancelled,
+        })
+        .expect("the loop finishes cancelled");
+}
+
+#[test]
+fn an_outer_cancel_over_a_delaying_loop_ends_the_run_cancelled() {
+    let definition = definition(LoopKind::While);
+    let mut state = start(LoopKind::While, 3, Some(true));
+    admit(&mut state, 0);
+    return_body(&mut state, 0);
+    checkpoint(&mut state, 0, true, LoopContinuation::DelayUntil(at(400)));
+    assert_eq!(
+        state
+            .loop_state(&loop_instance())
+            .map(|scope| scope.phase()),
+        Some(LoopPhase::Delaying)
+    );
+    state
+        .apply(&RunEvent::RunStopRequested {
+            reason: StopReason::Cancelled,
+            code: None,
+        })
+        .expect("cancel requested");
+
+    let planned = settle(&definition, &mut state, |state| {
+        drain_cancelled(state, None);
+    });
+    assert_eq!(
+        planned.last(),
+        Some(&RunEvent::RunFinished {
+            status: RunStatus::Cancelled
+        })
+    );
+    assert_eq!(state.status(), RunStatus::Cancelled);
+    assert_eq!(
+        state
+            .loop_state(&loop_instance())
+            .map(|scope| scope.phase()),
+        Some(LoopPhase::Cancelled)
+    );
+    assert_eq!(
+        state.step(&node("poll")).map(|step| step.status()),
+        Some(StepStatus::Cancelled)
+    );
+}
+
+#[test]
+fn an_outer_cancel_over_an_iteration_in_flight_ends_the_run_cancelled() {
+    let definition = definition(LoopKind::While);
+    let mut state = start(LoopKind::While, 3, Some(true));
+    admit(&mut state, 0);
+    state
+        .apply(&RunEvent::RunStopRequested {
+            reason: StopReason::Cancelled,
+            code: None,
+        })
+        .expect("cancel requested");
+
+    let planned = settle(&definition, &mut state, |state| {
+        drain_cancelled(state, Some(0));
+    });
+    assert_eq!(
+        planned.last(),
+        Some(&RunEvent::RunFinished {
+            status: RunStatus::Cancelled
+        })
+    );
+    assert!(
+        !planned
+            .iter()
+            .any(|event| matches!(event, RunEvent::StepCancelled { node: cancelled } if cancelled == &node("poll"))),
+        "the planner never cancels the owner of a loop from under its drain"
+    );
+}
+
+#[test]
+fn an_outer_cancel_before_the_loop_is_entered_cancels_its_owner() {
+    let definition = definition(LoopKind::While);
+    let (mut state, _) = start_run(&definition, RunId::generate(), OffsetDateTime::UNIX_EPOCH)
+        .expect("loop run starts");
+    state
+        .apply(&RunEvent::RunStopRequested {
+            reason: StopReason::Cancelled,
+            code: None,
+        })
+        .expect("cancel requested");
+
+    let planned = settle(&definition, &mut state, |_| {
+        panic!("no loop scope exists to drain");
+    });
+    assert!(planned.contains(&RunEvent::StepCancelled { node: node("poll") }));
+    assert_eq!(state.status(), RunStatus::Cancelled);
+}
