@@ -776,11 +776,24 @@ public final class Runner {
                 if (step.path("all").asBoolean(false)) {
                     client.listAll(options).forEach(run -> ids.add(run.runId()));
                 } else {
-                    // In the order the server gave (newest first): the SDK keeps it, also across pages.
-                    client.list(options).items().forEach(run -> ids.add(run.runId()));
+                    // "waitForCount": the runs of a chain are made by the scheduler, so a scenario that needs a
+                    // hand-off to have happened waits for it by the count of runs in a status.
+                    for (int attempt = 0; ; attempt++) {
+                        ids.removeAll();
+                        // In the order the server gave (newest first): the SDK keeps it, also across pages.
+                        client.list(options).items().forEach(run -> ids.add(run.runId()));
+                        if (ids.size() >= step.path("waitForCount").asInt(0) || attempt >= 100) break;
+                        Thread.sleep(50);
+                    }
                 }
                 ObjectNode result = F.objectNode();
-                result.set("items", ids);
+                // "countOnly" answers the number alone, for runs whose ids are derived from their parent's and so
+                // sort anywhere.
+                if (step.path("countOnly").asBoolean(false)) {
+                    result.put("count", ids.size());
+                } else {
+                    result.set("items", ids);
+                }
                 return result;
             }
             case "listApprovals": {

@@ -647,8 +647,17 @@ async def run(scenario: Obj, config: Obj) -> Obj:
                     else:
                         page = await client.list(status=step.get("status"), limit=step.get("limit"))
                         ids.extend(item.run_id for item in page.items)
-                    # In the order the server gave (newest first): the SDK keeps it, also across pages.
-                    result = {"items": ids}
+                        # `waitForCount`: the runs of a chain are made by the scheduler, so a scenario that needs a
+                        # hand-off to have happened waits for it by the count of runs in a status.
+                        for _ in range(100):
+                            if len(ids) >= step.get("waitForCount", 0):
+                                break
+                            await asyncio.sleep(0.05)
+                            page = await client.list(status=step.get("status"), limit=step.get("limit"))
+                            ids = [item.run_id for item in page.items]
+                    # In the order the server gave (newest first): the SDK keeps it, also across pages. `countOnly`
+                    # answers the number alone, for runs whose ids are derived from their parent's and so sort anywhere.
+                    result = {"count": len(ids)} if step.get("countOnly") else {"items": ids}
                 elif op == "listApprovals":
                     approval_page = await client.list_approvals(
                         run_of(step),

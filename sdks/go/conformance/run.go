@@ -357,15 +357,28 @@ func playStep(ctx context.Context, step object, op string, c *client.Client, con
 				ids = append(ids, run.RunID)
 			}
 		} else {
-			page, err := c.List(ctx, options)
-			if err != nil {
-				return nil, err
-			}
-			for _, run := range page.Items {
-				ids = append(ids, run.RunID)
+			// "waitForCount": the runs of a chain are made by the scheduler, so a scenario that needs a hand-off
+			// to have happened waits for it by the count of runs in a status.
+			for attempt := 0; ; attempt++ {
+				page, err := c.List(ctx, options)
+				if err != nil {
+					return nil, err
+				}
+				ids = ids[:0]
+				for _, run := range page.Items {
+					ids = append(ids, run.RunID)
+				}
+				if len(ids) >= asInt(step["waitForCount"]) || attempt >= 100 {
+					break
+				}
+				time.Sleep(50 * time.Millisecond)
 			}
 		}
-		// In the order the server gave (newest first): the SDK keeps it, also across pages.
+		// In the order the server gave (newest first): the SDK keeps it, also across pages. "countOnly" answers
+		// the number alone, for runs whose ids are derived from their parent's and so sort anywhere.
+		if only, _ := step["countOnly"].(bool); only {
+			return object{"count": len(ids)}, nil
+		}
 		return object{"items": ids}, nil
 	case "listApprovals":
 		id, err := runOf(step)

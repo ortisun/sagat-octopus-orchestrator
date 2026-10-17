@@ -430,9 +430,17 @@ async function run(scenario: Obj, config: Obj): Promise<Obj> {
             for await (const item of client.listAll({ status: step['status'], limit: step['limit'] })) ids.push(item.runId);
           } else {
             ids.push(...(await client.list({ status: step['status'], limit: step['limit'] })).items.map((r) => r.runId));
+            // `waitForCount`: the runs of a chain are made by the scheduler, so a scenario that needs a hand-off
+            // to have happened waits for it by the count of runs in a status, as inspectChain waits for a head.
+            for (let attempt = 0; attempt < 100 && ids.length < (step['waitForCount'] ?? 0); attempt++) {
+              await new Promise((resolve) => setTimeout(resolve, 50));
+              ids.length = 0;
+              ids.push(...(await client.list({ status: step['status'], limit: step['limit'] })).items.map((r) => r.runId));
+            }
           }
-          // In the order the server gave (newest first): the SDK keeps it, also across pages.
-          result = { items: ids };
+          // In the order the server gave (newest first): the SDK keeps it, also across pages. `countOnly` answers
+          // the number alone, for runs whose ids are derived from their parent's and so sort anywhere.
+          result = step['countOnly'] ? { count: ids.length } : { items: ids };
           break;
         }
         case 'listApprovals': {

@@ -403,7 +403,7 @@ stop the scenario.
 | `start` | `workflow` (key), `input`, `idempotencyKey?`, `correlationId?`, `traceparent?`, `deadlineInMs?`, `token?` (`bad`\|`other`\|`worker`\|`operator`\|`viewer`\|`runner`\|`revoked`) | `start` | the Run |
 | `startWithBlob` | `workflow` (key), `inputBlobBytes`, `idempotencyKey?`, `correlationId?`, `traceparent?`, `deadlineInMs?` | `uploadRunInput` then `startWithBlob` | the Run; a successful upload response is refused unless the one-pass source reached EOF |
 | `get` | `run`, `token?` | `get` | the Run |
-| `list` | `status?`, `limit?`, `all?` | `list` / `listAll` | `{items: [runId…]}` in the order the server gave (newest first), also across pages |
+| `list` | `status?`, `limit?`, `all?`, `waitForCount?`, `countOnly?` | `list` / `listAll` | `{items: [runId…]}` in the order the server gave (newest first), also across pages (`countOnly`: `{count}` alone, for runs whose ids derive from their parent's and sort anywhere); `waitForCount` lists again (up to 100 times, 50 ms apart) until the page holds that many runs, for a state the scheduler produces (a hand-off) |
 | `listApprovals` | `run`, `cursor?`, `limit?`, `waitForItem?`, `traceparent?`, `token?` | `listApprovals` | the typed page in immutable opening order |
 | `cancel` | `run`, `reason`, `expectedRunVersion?` | `cancel` | `{accepted, runStatus}` |
 | `operate` | `run`, `action`, `reason`, … | `operate` | `{accepted, runStatus}` |
@@ -412,7 +412,7 @@ stop the scenario.
 | `queryChain` | `namespaceId`, `chainId`, `name`, `args`, `expectedRunId?`, `traceparent?`, `token?` | `queryChain` | `{runId, runVersion, stateRevision, result}` |
 | `update` | `run`, `name`, `args`, `updateKey`, `expectedStateRevision?`, `traceparent?`, `token?` | `update` | the normalized durable receipt |
 | `updateChain` | `namespaceId`, `chainId`, `name`, `args`, `updateKey`, `expectedRunId?`, `expectedStateRevision?`, `traceparent?`, `token?` | `updateChain` | the normalized durable receipt, including the resolved `runId` and `replayed` flag |
-| `inspectChain` | `namespaceId`, `chainId`, `traceparent?`, `token?` | `inspectChain` | current head and ordered segments |
+| `inspectChain` | `namespaceId`, `chainId`, `waitForHeadChange?`, `traceparent?`, `token?` | `inspectChain` | current head and ordered segments; `waitForHeadChange` (a `{{currentRunId:step}}`) inspects again until the head is another run |
 | `signalChain` | `namespaceId`, `chainId`, `expectedRunId`, `name`, `payload`, `idempotencyKey?`, `traceparent?`, `token?` | `signalChain` | `{deliveredTo}` |
 | `cancelChain` | `namespaceId`, `chainId`, `expectedRunId`, `reason`, `idempotencyKey?`, `traceparent?`, `token?` | `cancelChain` | `{accepted: true}` |
 | `signal` | `run`, `name`, `payload` | `signal` | `{deliveredTo}` |
