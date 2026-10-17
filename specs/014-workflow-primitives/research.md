@@ -1116,9 +1116,7 @@ poll of up to 256 tasks in reverse order.
 ### Verification of this increment (2026-10-17)
 
 `cargo fmt --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `scripts/check-architecture.py`
-pass. Suites on the final tree are listed in the delivery report; two tests failed once while the 10,000-iteration
-run and the SDK suite were loading the machine (`fault scope_compensation::a_scheduler_replica_that_takes_over_mid_compensation_finishes_it`,
-`integration operations_http::outbox_failure_rolls_back_the_http_update_and_the_same_key_can_retry`) and passed on rerun alone.
+pass. On the final tree: contract 44, integration 263 (+1 ignored: the 10,000-iteration run), platform_foundation 89, durable_execution 178, sagas_compensations 74 pass, and fault 69 of 70 (the failure is G428, pre-existing). `operations_http::outbox_failure_rolls_back_the_http_update_and_the_same_key_can_retry` failed once under load and passed alone and in the final full run.
 
 - **G428 — `scope_compensation::a_scheduler_replica_that_takes_over_mid_compensation_finishes_it` is flaky when its
   module runs in parallel.** It failed in 3 of 4 runs of `scope_compensation` (7 of 8 tests passing, the run still
