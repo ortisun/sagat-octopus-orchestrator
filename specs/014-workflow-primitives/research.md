@@ -1326,3 +1326,125 @@ pass. On the final tree: contract 44, integration 263 (+1 ignored: the 10,000-it
   `COMPENSATING` after the test's 40 ticks) and also on the base commit `a49b228` (1 of 2 runs, before any change of
   this increment); alone it passes. It is not caused by the blob source or by D427. Probable cause: the loop ticks
   without waiting for the 100 ms compensation back-off. Not fixed here.
+
+## Decisions of the compatibility and performance evidence increment
+
+Written 2026-10-17 for T014-041 and T014-042. The coordinator ticks the tasks; nothing here marks one.
+
+### Decisions
+
+- **D460 — Compatibility is proven at the PostgreSQL adapter, with the older reader injected where
+  production injects its codec.** `compatibility.rs` runs the real migrations, the real worker service and
+  the real store. The reader of an earlier release is a codec handed to `DefinitionCache`; it returns the
+  `Schema` error a pre-014 schema gives for the new top-level fields (`additionalProperties: false`). It
+  is a simulation of a build, not a second build. The facts that needed a real second build were taken
+  from one: the canonical digests of eight pre-014 documents were computed by the build at commit
+  `07d673f` (it changes no file under `crates/`) and are pinned in
+  `pre_primitive_documents_keep_the_digest_the_pre_014_build_computed`; the same build was run on the nine
+  documents of the SDK builder goldens and refused every one with `IrError::Schema`, which is why the
+  injected reader returns that error. The probe is manual (`docs/sdk-compatibility.md`, matrix 2); the
+  old build cannot be compiled from this tree.
+- **D461 — Old-worker evidence runs concurrently with scoped-ready work.** The `1`, `1.0`–`1.4` offers
+  are registered on the scoped-capable adapter against a run whose scoped iterations are ready and whose
+  activity names the old worker advertises, so a flattened scoped task would match it. A `1.5` worker then
+  leases the same two tasks, which proves the test would have seen them.
+- **D462 — Per-transition cost is measured in rows and statements, not in time.** The host was at load
+  10–47 during this work, so wall time is recorded but never used as evidence of an algorithm. Each
+  sampled collection or loop transition is bracketed by `pg_stat_statements` (rows returned or affected,
+  statement count), which does not depend on load. The benchmark therefore runs against a dedicated
+  PostgreSQL 16 container started with `shared_preload_libraries=pg_stat_statements`
+  (`SAGAT_TEST_DATABASE_URL`), with `fsync` on. Planner statistics are refreshed with `ANALYZE` every 50
+  transitions (what autovacuum does); without it the planner chose plans for empty tables and buffer
+  counts were meaningless.
+- **D463 — Collections and loops are driven through the production transition, chains and tenants
+  through the production tick.** `advance_collection` / `advance_loop` isolate one durable transition;
+  `tick()` is used where fairness or the continuation pass is the subject. A production tick adds the
+  cost of the other passes (about 25–50 ms idle in these runs). `LoopAdvance` and `LoopAdvanceError` are
+  now exported by `sagat-scheduler` because a public method returned types a caller could not name.
+- **D464 — The tenant bound is asserted against two figures.** After every scheduler round for each
+  tenant the usage counter and the count of iterations with `slot_held` must both be at most the policy
+  limit and equal each other. The starvation bound (the quiet tenant needs at most 4x its solo rounds) is
+  the benchmark's own threshold, not a product promise.
+- **D465 — Zero dedicated resources per wait is asserted, not only reported.** With 10,000 approvals and
+  1,000 timers pending the process may not gain more than four threads, PostgreSQL connections may not
+  exceed the pool of eight plus the probe, no connection may be idle in a transaction, and no worker
+  session may exist.
+- **D466 — The two quadratic findings are pinned by `#[ignore]`d red tests.** `red_*` in
+  `tests/performance/workflow-primitives/` fail today and must be un-ignored when G461 is fixed. They sit in
+  the performance target so that the suites the coordinator gates stay green.
+
+### Gaps
+
+- **G460 — A reader that cannot parse a pinned definition fails the whole poll with `Internal`.** Observed
+  in `a_reader_without_the_capability_leaves_an_active_structured_run_untouched_until_it_returns`. State
+  is preserved (the test proves it), but the answer is an internal error, not a typed refusal, and
+  `claim` allows three failed runs per poll before it gives up, so three unreadable runs ahead of
+  readable work could starve it. The second half is inferred from `MAX_CLAIM_FAILURES` and not tested.
+  A real rolled-back build negotiates at most `1.4` and would not see scoped steps, but chain successors
+  and approval runs have ready root steps whose definitions it cannot read.
+- **G461 — One collection or loop transition reads work proportional to the progress of the scope, so the
+  scope costs quadratic database work.** Evidence: statement count is constant (60–65 per collection
+  transition, 83 per loop transition) while rows returned grow linearly: about 3 rows per transition index
+  in a collection (1,536 at transition 166, 7,014 at 1,992 for 1,000 items) and 5 per iteration in a loop
+  (561 at iteration 100, 5,067 at 1,000). The statements responsible are the restore of every step of
+  the run, the load of every item payload of the collection, every iteration row, every step output and
+  every checkpoint. `advance_collection_in_view` also walks `0..next_admission` per call. Two red tests
+  fail: `red_collection_transition_rows_do_not_grow_with_progress` (218 -> 1,146 rows over 160 items) and
+  `red_loop_transition_rows_do_not_grow_with_progress` (91 -> 841 over 160 iterations). Consequence in
+  the 10,000-item workload: at maxConcurrency 1, 16 and 256 it did not complete in 600 s, and a full-length
+  run at 256 completed in 6,815 s (1 h 54 min, 47 times the 1,000-item run), the p50 of a transition
+  rising from 44 ms to 678 ms and the rows read per transition from 15,000 to 70,000. Not fixed here.
+- **G462 — A conditional chain cannot have more than about 127 segments.** The accepted expression subset
+  cannot construct an object, so the first input carries the rest of the chain as a nested `next`; the
+  run input must parse as a JSON object, and the JSON parser's recursion limit of 128 stops it. 120
+  segments ran; the start of 300 was refused with `the run input must be a JSON object`. `maxSegments`
+  allows 10,000. An unconditional `continueAsNew` with `"input": "input"` has no such limit and ends
+  `FAILED` when the limit is reached (1,000 segments measured).
+- **G463 — A collection or loop advances one durable transition per scheduler tick per run.** Per run
+  the throughput ceiling is the tick rate times one transition, plus two worker round trips per item.
+  Measured: 5–8 items/s at 1,000 items. Across runs the scheduler works in parallel (`concurrency` 8).
+- **G464 — `enter` of a 10,000-item collection is one 3.6 s transaction** in the 10,000-item run (206–240
+  ms at 1,000). It is the only transition that is proportional to the whole input by design.
+- **G465 — Not measured:** loops parked in a durable delay as a population (timers were measured, a loop
+  delay uses the same timer wait but its own path); nested loops reaching the 100,000-instance ceiling
+  (nesting is closed); approval decision throughput; more than one scheduler replica; target hardware;
+  production-sized PostgreSQL; client network latency (everything is in-process).
+- **G466 — Matrix cells without a test.** `docs/sdk-compatibility.md` marks them "not tested": loops,
+  approvals, `switch` at `1.5`, declared Query/Update and chains with an old or `1.5` worker, the root-only
+  adapter at `1.0`–`1.3`, task streaming at `1.1`–`1.3` and `1.5`.
+- **G468 — An idle scheduler tick costs work proportional to the pending waits, and it grew with
+  feature 014.** 26 ms with no waits, 42 / 75 / 142 / 186 ms with 500 / 2,000 / 5,000 / 10,000 pending
+  approvals (about 16 to 30 microseconds per pending approval per tick). Built from the harness commit
+  `42375f3` and from this branch and run alternately on the same container, the idle tick over 10,000
+  approvals and 1,000 timers took 118.7 and 118.1 ms before and 198.0 and 197.6 ms now (+67 percent) while
+  run creation did not change (194 and 203 against 191 and 191 runs/s). The new collection, loop and
+  continuation passes each add a discovery read. `pg_stat_statements` over the idle ticks of a 2,000-approval
+  run (80 calls each, 0 rows returned) puts the collection discovery query at 14.8 ms per call and the loop
+  discovery query at 14.7 ms per call, against 7.3 ms for the approval-opening query and about 3 ms for the
+  next one: the two new passes are about half of a 59 to 75 ms idle tick. Both scan the pending root steps of
+  every run and read each run's stored document as JSON to find a `forEach` node; the 10,000-approval
+  population was not repeated under statement accounting. At the default 500 ms
+  idle pause a replica would be busy for a whole interval at roughly 20,000 to 30,000 pending approvals if
+  the growth stays linear (extrapolated, not measured).
+- **G467 — Three conformance scenarios failed once under host load and passed alone.** In the first full
+  run (host load 30–47) `run-input-blobs` (java, deadline `+59s` against `+60s`), `scoped-identity` (go
+  `the worker log has 3 entries, not 6`; python `RUNNING` against `WAITING`) and `secrets` (typescript
+  and go, event 3 `step.completed` against `step.started`) differed. Each passed alone minutes later, and
+  the final full run is recorded in the matrix. These look like observation races (a snapshot taken
+  before the worker finished) but the cause was not investigated; they are not hidden.
+
+### Owner questions
+
+- **O460 — Is a quadratic collection acceptable for the first release?** With G461 open, a published
+  `maxItems` of 10,000 is correct but slow (one run took 1 h 54 min, the three budgeted runs did not finish
+  in 10 minutes). Options:
+  publish a lower ceiling until the transition is incremental, or schedule the fix before enabling
+  collections. The recommendation is to cap `maxItems` and `maxIterations` at the largest size the report
+  completed (1,000) until G461 is fixed.
+- **O461 — Should an unreadable pinned definition quarantine the run?** Today it fails the poll (G460).
+  A typed per-run skip with an alert would keep rollback safe.
+- **O462 — Should long chains be supported beyond 127 segments?** Needs an object-free way to carry
+  per-segment data (for example the declared state), or a documented ceiling of 127 for conditional chains.
+- **O463 — Is the idle tick cost an accepted ceiling on pending waits per replica?** G468 puts it near
+  20,000 to 30,000 approvals per replica at the default interval. Either publish that as the ceiling, or
+  make the discovery passes index-only and cheaper, or both.
