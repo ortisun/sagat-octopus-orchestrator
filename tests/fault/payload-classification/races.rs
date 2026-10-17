@@ -103,6 +103,146 @@ fn assert_revealed(answer: PayloadDisclosure) {
     );
 }
 
+struct PausingClassifier {
+    classifier: Classifier,
+    entered: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    resume: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+impl ClassificationInterpreter for PausingClassifier {
+    fn analyze(&self, document: &[u8]) -> ClassificationAnalysis {
+        self.classifier.analyze(document)
+    }
+
+    fn project(
+        &self,
+        request: ProjectionRequest<'_>,
+    ) -> Result<ClassifiedPayload, ProjectionFailure> {
+        if let Some(entered) = self.entered.lock().expect("entry barrier").take() {
+            entered.send(()).expect("announce pinned read");
+            self.resume
+                .lock()
+                .expect("resume barrier")
+                .recv_timeout(Duration::from_secs(30))
+                .expect("release pinned read");
+        }
+        self.classifier.project(request)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_publication_and_activation_never_reinterpret_a_pinned_disclosure() {
+    let world = world().await;
+    let source = classified_document("publication-race");
+    let (workflow, first) = world.publish(source.clone()).await;
+    let run = world
+        .start(workflow, &json!({"personal":"concurrent-pii-canary"}))
+        .await;
+    let reader = world.member("publication-reader", Role::Operator).await;
+    let grants = RevealGrantService::new(world.store.clone(), SystemClock);
+    let scope = grants
+        .prepare(&world.admin, world.namespace.id(), &ctx())
+        .await
+        .expect("grant scope");
+    grants
+        .grant(&scope, reader.subject().as_str(), &ctx())
+        .await
+        .expect("grant reader");
+    let (entered, pinned) = tokio::sync::oneshot::channel();
+    let (resume, released) = std::sync::mpsc::channel();
+    let service = PayloadDisclosureService::new(
+        world.store.clone(),
+        SystemClock,
+        PausingClassifier {
+            classifier: Classifier::default(),
+            entered: std::sync::Mutex::new(Some(entered)),
+            resume: std::sync::Mutex::new(released),
+        },
+        JsonPayloadProjector,
+    );
+    let prepared = service
+        .prepare(&reader, run, DisclosureSelector::Input, true, &ctx())
+        .await
+        .expect("prepared reveal");
+    // The synchronous interpreter barrier must not occupy a Tokio I/O worker while publication
+    // and activation need that executor to progress.
+    let runtime = tokio::runtime::Handle::current();
+    let reading = tokio::task::spawn_blocking(move || runtime.block_on(service.disclose(prepared)));
+    tokio::time::timeout(Duration::from_secs(10), pinned)
+        .await
+        .expect("read barrier timeout")
+        .expect("pinned schema loaded");
+    let mut changed = source;
+    changed["inputSchema"]["x-sagat-classification"] = json!("secret");
+    let second = tokio::time::timeout(
+        Duration::from_secs(10),
+        world.publish_new_version(workflow, changed),
+    )
+    .await
+    .expect("publish must complete while the old read is paused");
+    assert_ne!(first, second);
+    tokio::time::timeout(Duration::from_secs(10), async {
+        world
+            .publishing
+            .activate(
+                &world.admin,
+                workflow,
+                1,
+                "race baseline",
+                None,
+                false,
+                &ctx(),
+            )
+            .await
+            .expect("activate first");
+        world
+            .publishing
+            .activate(
+                &world.admin,
+                workflow,
+                2,
+                "race replacement",
+                Some(1),
+                false,
+                &ctx(),
+            )
+            .await
+            .expect("activate second");
+    })
+    .await
+    .expect("activation must complete while the old read is paused");
+    resume.send(()).expect("resume pinned disclosure");
+    let answer = reading.await.expect("read task").expect("pinned reveal");
+    let PayloadDisclosureResult::Disclosed { ref schema, .. } = answer.result else {
+        panic!("pinned disclosure")
+    };
+    assert_eq!(schema.version_number, 1);
+    assert_revealed(answer);
+    assert_eq!(reveal_audit_count(&world, &reader, run).await, 1);
+
+    let next = world
+        .start(workflow, &json!({"personal":"concurrent-pii-canary"}))
+        .await;
+    let current = disclosure(&world, Arc::new(Classifier::default()));
+    let answer = reveal(&current, &reader, next)
+        .await
+        .expect("new active-version disclosure");
+    let PayloadDisclosureResult::Disclosed {
+        schema, projection, ..
+    } = answer.result
+    else {
+        panic!("new version projection")
+    };
+    assert_eq!(schema.version_number, 2);
+    assert!(matches!(
+        projection.tree,
+        ClassifiedNode::Withheld {
+            level: sagat_domain::classification::Level::Secret,
+            ..
+        }
+    ));
+}
+
 async fn reveal_audit_count(world: &World, actor: &Principal, run: RunId) -> i64 {
     sqlx::query_scalar(
         "SELECT count(*) FROM audit_records WHERE tenant_id=$1 AND actor=$2 AND resource_id=$3 \

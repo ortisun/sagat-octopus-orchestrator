@@ -247,3 +247,22 @@ lookup, missing and foreign runs are the same typed NotFound, every closed proje
 returns no values and no success audit, and retained definition/payload Debug output exposes only
 sizes rather than schema fragments, data keys or values. Namespace admission is tested through its
 actual HTTP owner in the registered integration target, rather than inventing an application port.
+
+
+### Concurrent publication and active-version changes
+
+`cargo test --locked -p sagat-tests --test fault_payload_classification
+races::concurrent_publication -- --test-threads=1` passed 1/1 in 5.27 s
+(`/tmp/sagat-completion-publication-race-2.log`). The classifier pauses only after PostgreSQL has
+selected the pinned run/version. A new version is published and the active version is changed
+while that read remains paused. The original request still returns version-1 PII under its grant;
+a subsequent run uses version 2 and withholds its secret root. Exactly one audit accompanies the
+original successful reveal. The first harness attempt blocked a synchronous channel on a Tokio
+I/O worker and timed out; moving that barrier to spawn_blocking removed executor starvation.
+This is a test-harness correction, not a production transaction change.
+
+Together with the 4 existing transaction races/failures and the actual process death/lost-response
+case, this completes T016-050's named fault scenarios. The final integrated workspace/release gates
+remain separate tasks; an earlier combined command stopped at the first harness failure and did
+not execute its following migration target. That migration regression was then run explicitly and
+passed, as recorded in the compatibility report and feature 014 validation report.
