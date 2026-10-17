@@ -553,6 +553,23 @@ impl ApprovalFlow {
         assert_eq!(response.step_status, "SUCCEEDED");
     }
 
+    /// Leases the task of `run` that is ready, completes it with `output` and lets the scheduler
+    /// follow. Tasks of other runs stay leased until their lease lapses.
+    pub async fn work_on(&self, run: RunId, output: Value) -> TaskLease {
+        self.drive().await;
+        let mut tasks: Vec<TaskLease> = self
+            .poll()
+            .await
+            .into_iter()
+            .filter(|task| task.run_id == run.to_string())
+            .collect();
+        assert_eq!(tasks.len(), 1, "{tasks:?}");
+        let task = tasks.remove(0);
+        self.complete(&task, output).await;
+        self.drive().await;
+        task
+    }
+
     /// Leases the one task that is ready, completes it with `output` and lets the scheduler follow.
     pub async fn work(&self, output: Value) -> TaskLease {
         let mut tasks = self.poll().await;

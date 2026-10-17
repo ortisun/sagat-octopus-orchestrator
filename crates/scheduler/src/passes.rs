@@ -3027,7 +3027,9 @@ where
                         ContinuationAdvanceError::MissingChain
                         | ContinuationAdvanceError::NotContinuation
                         | ContinuationAdvanceError::Progress(ChainProgressError::Chain(
-                            sagat_domain::execution::ChainError::ContinuationConflict,
+                            sagat_domain::execution::ChainError::ContinuationConflict
+                            // The deadline pass ends this run and its chain `TIMED_OUT` (D296).
+                            | sagat_domain::execution::ChainError::DeadlineElapsed,
                         )),
                     ) => Outcome::Skipped,
                     Err(ContinuationAdvanceError::FenceUnavailable)

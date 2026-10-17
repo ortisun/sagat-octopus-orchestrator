@@ -1513,9 +1513,15 @@ impl ChainProgressStore for PgChainProgressStore {
             || run.run_version != command.expected_run_version()
             || chain.cancel_requested
             || chain.final_outcome.is_some()
-            || chain.original_deadline <= transaction_now
         {
             return Err(ChainProgressError::RuntimeNotIntegrated);
+        }
+        // A boundary that reaches its hand-off after the original deadline is not a broken
+        // projection: the deadline pass ends the run `TIMED_OUT` and the chain with it.
+        if chain.original_deadline <= transaction_now {
+            return Err(ChainProgressError::Chain(
+                sagat_domain::execution::ChainError::DeadlineElapsed,
+            ));
         }
         if chain.segment_count >= chain.max_segments {
             return Err(ChainProgressError::Chain(

@@ -537,3 +537,60 @@ async fn the_state_an_update_wrote_during_the_approval_is_what_the_next_segment_
     flow.verify(chain).await;
     flow.verify(head).await;
 }
+
+#[tokio::test]
+async fn an_approved_boundary_past_the_chains_deadline_is_ended_by_the_deadline_not_failed() {
+    let flow = ApprovalFlow::boot(&["segment.work"]).await;
+    let name = unique("appr-chain-late-boundary");
+    let workflow = flow
+        .publish(&name, short_chain(&name, 3_000))
+        .await
+        .expect("publishes");
+    let chain = flow
+        .start(&workflow, json!({"segment": 1, "next": {"segment": 2}}))
+        .await;
+    flow.drive().await;
+    flow.work(json!({"done": 1})).await;
+    let approval = flow.the_approval(chain).await;
+
+    // The decision commits in time; the scheduler does not run until the deadline has passed.
+    let (status, _) = flow
+        .decide(&approval, OPERATOR, "approved-in-time", "APPROVE")
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let deadline: time::OffsetDateTime =
+        sqlx::query_scalar("SELECT original_deadline_at FROM execution_chains WHERE chain_id = $1")
+            .bind(chain.as_uuid())
+            .fetch_one(&flow.api.db.pool)
+            .await
+            .expect("original deadline");
+    let wait = (deadline - time::OffsetDateTime::now_utc()).max(time::Duration::ZERO)
+        + time::Duration::milliseconds(200);
+    tokio::time::sleep(std::time::Duration::from_millis(
+        u64::try_from(wait.whole_milliseconds()).expect("wait"),
+    ))
+    .await;
+
+    // A hand-off past the deadline is not a failure of the scheduler: the deadline ends the chain.
+    let mut failed = 0;
+    for _ in 0..6 {
+        let report = flow.scheduler.tick().await;
+        failed += report.failed;
+        if !report.did_work() {
+            break;
+        }
+    }
+    assert_eq!(
+        failed, 0,
+        "no scheduler action may fail on a chain that simply ran out of time"
+    );
+    assert_eq!(flow.run_status(chain).await, "TIMED_OUT");
+    let inspected = flow.chain(chain).await;
+    assert_eq!(inspected["finalOutcome"], "TIMED_OUT", "{inspected}");
+    assert_eq!(
+        inspected["segments"].as_array().map(Vec::len),
+        Some(1),
+        "{inspected}"
+    );
+    flow.verify(chain).await;
+}
