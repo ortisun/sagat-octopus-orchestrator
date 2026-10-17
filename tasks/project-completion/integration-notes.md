@@ -800,3 +800,10 @@ it now explicitly offers 1.4; the isolated managed executor still offers 1.6. Th
 old-worker compatibility contract and reviewed golden rather than replacing its observations.
 The failed comparison is retained (`/tmp/sagat-completion-sdk-repair-database-connections.log`),
 and its actual repeat is recorded when complete.
+
+
+The explicitly pinned database-connections repeat passed **all five languages**, 28.75 s,
+no ignored (`/tmp/sagat-completion-sdk-repair-database-connections-2.log`). It used the runner
+resolved from the actual external Cargo profile with no SAGAT_DATABASE_RUNNER_BIN override,
+real PostgreSQL/OpenBao, a 1.6 isolated executor and the 1.4 ordinary consumer. Canonical documents
+and reviewed runtime goldens remain unchanged. The full 55-scenario matrix is repeated separately.

@@ -565,3 +565,21 @@ references. Actual script/child/worker/wait outputs and disclosure have their se
 classification integration, CLI and browser scenarios. The fast registry test requires a reviewed
 canonical document for every scenario and a reviewed runtime result for each runtime scenario,
 so a missing phase marker is caught without a full language/platform run.
+
+
+### Managed database executor prerequisite
+
+Before the full suite or `database-connections`, build the isolated executor with the same Cargo
+target and profile used for the integration test:
+
+```sh
+cargo build --locked -p sagat-database-runner --bin database-runner
+SAGAT_SDK_SCENARIO=database-connections cargo test --locked -p sagat-tests --test sdk_conformance -- --ignored --nocapture
+```
+
+The harness resolves the binary beside the actual test profile, including an external
+`CARGO_TARGET_DIR` or target triple. `SAGAT_DATABASE_RUNNER_BIN` remains an explicit override.
+The ordinary consumer in this root-work scenario explicitly offers 1.4, matching the reviewed
+golden and the established old-worker fixtures; the isolated DatabaseRunner offers 1.6 and owns
+the managed capability. Scoped/default-1.5 behavior is exercised separately by the primitive and
+protocol-negotiation scenarios.

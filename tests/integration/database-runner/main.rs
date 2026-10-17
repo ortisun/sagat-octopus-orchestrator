@@ -128,9 +128,7 @@ async fn measure_managed_database_phase_latency() {
 async fn scenario(benchmark: bool) {
     let binary = std::env::var_os("SAGAT_DATABASE_RUNNER_BIN")
         .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/debug/database-runner")
-        });
+        .unwrap_or_else(|| support::built_binary("database-runner"));
     assert!(
         binary.is_file(),
         "first run cargo build -p sagat-database-runner --bin database-runner"

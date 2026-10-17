@@ -28,6 +28,17 @@ pub mod scripts;
 pub mod signed;
 pub mod worker;
 
+/// A sibling Cargo binary from the same target and profile as the running integration test.
+/// This also works with an external CARGO_TARGET_DIR or a target triple directory.
+pub fn built_binary(name: &str) -> std::path::PathBuf {
+    std::env::current_exe()
+        .expect("test executable")
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("Cargo test profile directory")
+        .join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
+}
+
 use std::sync::{Arc, LazyLock, Mutex, Weak};
 
 use sagat_domain::identity::{Membership, Principal, Slug, Subject, Tenant, TenantId};
