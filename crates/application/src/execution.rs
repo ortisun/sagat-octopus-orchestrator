@@ -605,15 +605,37 @@ pub struct PathExecutionSnapshot {
     pub data: RunData,
 }
 
-/// Read side for bounded scoped execution. Mutation remains on [`RunTx`] until the caller rechecks
-/// the run revision, lease and authority in the write transaction.
+/// Bounded scoped execution store. Writes start from an evaluated snapshot and recheck its revision
+/// under the run lock; they never reopen the full [`RunTx`] restoration path.
 pub trait PathExecutionStore: Send + Sync {
+    type Tx: PathExecutionTx;
+
     fn load_path(
         &self,
         tenant: TenantId,
         run: RunId,
         path: InstancePath,
     ) -> impl Future<Output = Result<Option<PathExecutionSnapshot>, StoreError>> + Send;
+
+    /// Opens a short mutation transaction for an already evaluated snapshot. The adapter locks the
+    /// run and compares its revision before returning, so a caller never applies a decision made
+    /// from stale path state.
+    fn begin_path(
+        &self,
+        snapshot: PathExecutionSnapshot,
+        lock: crate::runs::Lock,
+    ) -> impl Future<Output = Result<Option<Self::Tx>, StoreError>> + Send;
+}
+
+/// One revision-fenced exact-path transaction. Scoped mutation capabilities belong on this port;
+/// [`RunTx`] intentionally remains the full replay oracle.
+pub trait PathExecutionTx: Send {
+    fn snapshot(&mut self) -> &mut PathExecutionSnapshot;
+
+    /// Database time observed after the run lock was acquired.
+    fn now(&self) -> OffsetDateTime;
+
+    fn commit(self) -> impl Future<Output = Result<(), StoreError>> + Send;
 }
 
 /// Who caused the events of one transaction (stored with every journal entry).

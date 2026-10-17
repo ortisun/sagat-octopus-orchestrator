@@ -21,8 +21,8 @@ use sagat_application::definitions::{
 use sagat_application::error::StoreError;
 use sagat_application::execution::{
     BreakerPolicy, DefinitionCache, Effects, LeaseDeadlines, MAX_RUN_OUTPUT_BYTES, ParentLink,
-    PathExecutionSnapshot, PathExecutionStore, RunData, RunInfo, RunRecord, RunSegment, RunTx,
-    ScopeInput, compensation_id, instance_compensation_id, instance_step_id,
+    PathExecutionSnapshot, PathExecutionStore, PathExecutionTx, RunData, RunInfo, RunRecord,
+    RunSegment, RunTx, ScopeInput, compensation_id, instance_compensation_id, instance_step_id,
 };
 use sagat_application::runs::{
     ApprovalView, ChainView, GraphSnapshot, JournalEntry, Lock, NewRun, RunFilter, RunStore,
@@ -398,6 +398,8 @@ fn restore_chain_outcome(value: Option<&str>) -> Result<Option<ChainFinalOutcome
 }
 
 impl PathExecutionStore for PgRunStore {
+    type Tx = PgPathExecutionTx;
+
     async fn load_path(
         &self,
         tenant: TenantId,
@@ -857,6 +859,82 @@ impl PathExecutionStore for PgRunStore {
             state,
             data,
         }))
+    }
+
+    async fn begin_path(
+        &self,
+        snapshot: PathExecutionSnapshot,
+        lock: Lock,
+    ) -> Result<Option<Self::Tx>, StoreError> {
+        let tenant = snapshot.info.tenant_id;
+        let run = snapshot.info.run_id;
+        let expected = snapshot.state.global().version();
+        if snapshot.state.global().run_id() != run {
+            return Err(StoreError::Internal {
+                detail: "bounded snapshot run identity diverged".into(),
+            });
+        }
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        let query = match lock {
+            Lock::Wait => {
+                "SELECT run_version,clock_timestamp() AS db_now FROM runs \
+                 WHERE tenant_id=$1 AND id=$2 FOR UPDATE"
+            }
+            Lock::SkipLocked => {
+                "SELECT run_version,clock_timestamp() AS db_now FROM runs \
+                 WHERE tenant_id=$1 AND id=$2 FOR UPDATE SKIP LOCKED"
+            }
+        };
+        let row = sqlx::query(query)
+            .bind(tenant.as_uuid())
+            .bind(run.as_uuid())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(store_error)?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let current = u64::try_from(col::<i64>(&row, "run_version")?)
+            .map_err(|_| corrupt("bounded run revision"))?;
+        if current != expected {
+            return Err(StoreError::RevisionConflict { current });
+        }
+        Ok(Some(PgPathExecutionTx {
+            tx,
+            snapshot,
+            now: col(&row, "db_now")?,
+        }))
+    }
+}
+
+/// One exact-path mutation transaction that never restores the full run history.
+pub struct PgPathExecutionTx {
+    tx: Transaction<'static, Postgres>,
+    snapshot: PathExecutionSnapshot,
+    now: OffsetDateTime,
+}
+
+impl std::fmt::Debug for PgPathExecutionTx {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PgPathExecutionTx")
+            .field("run", &self.snapshot.info.run_id)
+            .field("path", self.snapshot.state.path())
+            .finish_non_exhaustive()
+    }
+}
+
+impl PathExecutionTx for PgPathExecutionTx {
+    fn snapshot(&mut self) -> &mut PathExecutionSnapshot {
+        &mut self.snapshot
+    }
+
+    fn now(&self) -> OffsetDateTime {
+        self.now
+    }
+
+    async fn commit(self) -> Result<(), StoreError> {
+        self.tx.commit().await.map_err(store_error)
     }
 }
 

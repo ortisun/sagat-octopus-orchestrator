@@ -5,8 +5,9 @@
 use sagat_application::clock::SystemClock;
 use sagat_application::entropy::SystemEntropy;
 use sagat_application::execution::{
-    MAX_PAYLOAD_BYTES, MAX_RUN_OUTPUT_BYTES, PathExecutionStore, ScopeInput,
+    MAX_PAYLOAD_BYTES, MAX_RUN_OUTPUT_BYTES, PathExecutionStore, PathExecutionTx, ScopeInput,
 };
+use sagat_application::runs::Lock;
 use sagat_application::worker::{MAX_TASK_INPUT_BYTES, WorkerService};
 use sagat_domain::execution::{InstancePath, RunId};
 use sagat_domain::workflow::NodeId;
@@ -235,7 +236,7 @@ async fn a_member_output_over_the_value_ceiling_is_refused_and_the_lease_survive
         .expect("member path");
     let bounded = world
         .store
-        .load_path(world.admin.tenant_id(), run, path)
+        .load_path(world.admin.tenant_id(), run, path.clone())
         .await
         .expect("bounded path read")
         .expect("run");
@@ -255,6 +256,30 @@ async fn a_member_output_over_the_value_ceiling_is_refused_and_the_lease_survive
         Some(ScopeInput::Collection { index: 0, .. })
     ));
     assert_eq!(world.run_status(run).await.as_str(), "RUNNING");
+    let stale = bounded.clone();
+    let contended = bounded.clone();
+    let mut fenced = world
+        .store
+        .begin_path(bounded, Lock::Wait)
+        .await
+        .expect("bounded mutation fence")
+        .expect("run");
+    assert_eq!(fenced.snapshot().state.path(), &path);
+    assert!(
+        world
+            .store
+            .begin_path(contended, Lock::SkipLocked)
+            .await
+            .expect("skip locked fence")
+            .is_none(),
+        "a competing bounded writer does not wait behind the run lock"
+    );
+    fenced.commit().await.expect("read-only fenced commit");
+    assert_eq!(scheduler.tick().await.collections_advanced, 1);
+    assert!(matches!(
+        world.store.begin_path(stale, Lock::Wait).await,
+        Err(sagat_application::error::StoreError::RevisionConflict { .. })
+    ));
 }
 
 #[tokio::test]
