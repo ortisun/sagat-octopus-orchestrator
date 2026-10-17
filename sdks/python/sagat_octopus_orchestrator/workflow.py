@@ -263,6 +263,7 @@ class Flow:
         irreversible: bool | None = None,
         high_risk: bool | None = None,
         on_error: str | None = None,
+        output_schema: Mapping[str, Any] | None = None,
     ) -> _F:
         """An activity executed by a worker. ``compensate_with`` names the activity that undoes it (idempotent);
         ``reconcile_with`` the one that finds out whether it happened."""
@@ -287,6 +288,7 @@ class Flow:
             irreversible=irreversible,
             highRisk=high_risk,
             onError=on_error,
+            outputSchema=deepcopy(dict(output_schema)) if output_schema is not None else None,
         )
         self._push(node)
         return self
@@ -307,6 +309,7 @@ class Flow:
         timeout_ms: int,
         on_timeout: str | None = None,
         lookback_ms: int | None = None,
+        output_schema: Mapping[str, Any] | None = None,
     ) -> _F:
         """Waits for an event of a type with a correlation key (an expression over the run's data) or the timeout."""
         if not event_type or not correlation_expr:
@@ -320,7 +323,12 @@ class Flow:
             "correlationExpr": correlation_expr,
             "timeoutMs": timeout_ms,
         }
-        self._push(_add(node, onTimeout=on_timeout, lookbackMs=lookback_ms))
+        self._push(_add(
+            node,
+            onTimeout=on_timeout,
+            lookbackMs=lookback_ms,
+            outputSchema=deepcopy(dict(output_schema)) if output_schema is not None else None,
+        ))
         return self
 
     def invoke_child(
@@ -331,12 +339,19 @@ class Flow:
         version: int | None = None,
         input: str | None = None,
         cancel_policy: Literal["propagate", "detach", "request_cancel"] | None = None,
+        output_schema: Mapping[str, Any] | None = None,
     ) -> _F:
         """Starts another workflow of the namespace and waits for it."""
         if not workflow:
             raise invalid(f"invokeChild {node_id} needs the name of a workflow")
         node: Node = {"id": node_id, "type": "child", "workflowId": workflow}
-        self._push(_add(node, version=version, input=input, cancelPolicy=cancel_policy))
+        self._push(_add(
+            node,
+            version=version,
+            input=input,
+            cancelPolicy=cancel_policy,
+            outputSchema=deepcopy(dict(output_schema)) if output_schema is not None else None,
+        ))
         return self
 
     def condition(self: _F, node_id: str, expression: str, if_true: str, if_false: str) -> _F:
@@ -644,6 +659,7 @@ class WorkflowBuilder(Flow):
         self._input_schema: dict[str, Any] | None = None
         self._output_schema: dict[str, Any] | None = None
         self._state: dict[str, Any] | None = None
+        self._limits: dict[str, int] | None = None
         self._chain_policy: dict[str, int] | None = None
         self._bodies: dict[str, Body] = {}
 
@@ -683,11 +699,26 @@ class WorkflowBuilder(Flow):
         return self
 
     def input_schema(self, schema: Mapping[str, Any]) -> WorkflowBuilder:
-        self._input_schema = dict(schema)
+        self._input_schema = deepcopy(dict(schema))
         return self
 
     def output_schema(self, schema: Mapping[str, Any]) -> WorkflowBuilder:
-        self._output_schema = dict(schema)
+        self._output_schema = deepcopy(dict(schema))
+        return self
+
+    def limits(
+        self,
+        *,
+        max_instances: int | None = None,
+        max_depth: int | None = None,
+    ) -> WorkflowBuilder:
+        """Lowers the workflow instance and nesting ceilings; omitted fields retain platform defaults."""
+        declared: dict[str, int] = {}
+        if max_instances is not None:
+            declared["maxInstances"] = _schema_integer(max_instances, 1, 100_000, "limits maxInstances")
+        if max_depth is not None:
+            declared["maxDepth"] = _schema_integer(max_depth, 1, 8, "limits maxDepth")
+        self._limits = declared
         return self
 
     def state(self, definition: StateDefinition) -> WorkflowBuilder:
@@ -856,9 +887,11 @@ class WorkflowBuilder(Flow):
         if self._triggers:
             document["triggers"] = [dict(trigger) for trigger in self._triggers]
         if self._input_schema is not None:
-            document["inputSchema"] = self._input_schema
+            document["inputSchema"] = deepcopy(self._input_schema)
         if self._output_schema is not None:
-            document["outputSchema"] = self._output_schema
+            document["outputSchema"] = deepcopy(self._output_schema)
+        if self._limits is not None:
+            document["limits"] = dict(self._limits)
         if self._state is not None:
             document["state"] = deepcopy(self._state)
         if self._chain_policy is not None:

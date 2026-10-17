@@ -38,6 +38,8 @@ export interface RetryOptions {
 }
 
 export interface StepOptions {
+  /** The JSON Schema of the activity result carried by journal completion events. */
+  outputSchema?: Record<string, Json>;
   retry?: RetryOptions;
   timeoutMs?: number;
   /** The activity that undoes this step; it must be idempotent. */
@@ -60,12 +62,21 @@ export interface WaitOptions {
   timeoutMs: number;
   onTimeout?: string;
   lookbackMs?: number;
+  /** The JSON Schema of the event payload carried by the satisfied wait. */
+  outputSchema?: Record<string, Json>;
 }
 
 export interface ChildOptions {
   version?: number;
   input?: string;
   cancelPolicy?: 'propagate' | 'detach' | 'request_cancel';
+  /** The JSON Schema of the child result carried by the completed node. */
+  outputSchema?: Record<string, Json>;
+}
+
+export interface WorkflowLimits {
+  readonly maxInstances?: number;
+  readonly maxDepth?: number;
 }
 
 /** One ordered branch of a switch decision. */
@@ -267,8 +278,9 @@ export class Flow {
     for (const secret of options.secrets ?? []) {
       if (!SECRET.test(secret)) throw invalid(`step ${id} names a secret that is not a name: ${JSON.stringify(secret)}`);
     }
-    const { onError, ...rest } = options;
+    const { onError, outputSchema, ...rest } = options;
     const node: Node = { id, type: 'activity', activity, ...clean(rest) };
+    if (outputSchema !== undefined) node['outputSchema'] = copyJson(outputSchema);
     if (onError !== undefined) node['onError'] = onError;
     return this.push(node);
   }
@@ -283,13 +295,15 @@ export class Flow {
   waitForEvent(id: string, options: WaitOptions): this {
     if (!options.eventType || !options.correlationExpr) throw invalid(`waitForEvent ${id} needs an eventType and a correlationExpr`);
     if (!Number.isInteger(options.timeoutMs) || options.timeoutMs < 1) throw invalid(`waitForEvent ${id} needs a timeout of at least 1 ms`);
-    return this.push({ id, type: 'waitEvent', ...clean(options) });
+    const { outputSchema, ...rest } = options;
+    return this.push({ id, type: 'waitEvent', ...clean(rest), ...(outputSchema === undefined ? {} : { outputSchema: copyJson(outputSchema) }) });
   }
 
   /** InvokeChild: starts another workflow of the namespace and waits for it. */
   invokeChild(id: string, workflow: string, options: ChildOptions = {}): this {
     if (!workflow) throw invalid(`invokeChild ${id} needs the name of a workflow`);
-    return this.push({ id, type: 'child', workflowId: workflow, ...clean(options) });
+    const { outputSchema, ...rest } = options;
+    return this.push({ id, type: 'child', workflowId: workflow, ...clean(rest), ...(outputSchema === undefined ? {} : { outputSchema: copyJson(outputSchema) }) });
   }
 
   /** A decision over the run's data. */
@@ -482,6 +496,7 @@ export class WorkflowBuilder extends Flow {
   private input: Record<string, Json> | undefined;
   private output: Record<string, Json> | undefined;
   private stateDeclaration: Record<string, Json> | undefined;
+  private workflowLimits: WorkflowLimits | undefined;
   private chain: ChainPolicy | undefined;
   private readonly namedBodies = new Map<string, Body>();
 
@@ -506,12 +521,24 @@ export class WorkflowBuilder extends Flow {
   }
 
   inputSchema(schema: Record<string, Json>): this {
-    this.input = schema;
+    this.input = copyJson(schema);
     return this;
   }
 
   outputSchema(schema: Record<string, Json>): this {
-    this.output = schema;
+    this.output = copyJson(schema);
+    return this;
+  }
+
+  /** Lowers the workflow instance and nesting ceilings. */
+  limits(limits: WorkflowLimits): this {
+    if (limits.maxInstances !== undefined && (!Number.isInteger(limits.maxInstances) || limits.maxInstances < 1 || limits.maxInstances > 100_000)) {
+      throw invalid('limits maxInstances must be between 1 and 100000');
+    }
+    if (limits.maxDepth !== undefined && (!Number.isInteger(limits.maxDepth) || limits.maxDepth < 1 || limits.maxDepth > 8)) {
+      throw invalid('limits maxDepth must be between 1 and 8');
+    }
+    this.workflowLimits = { ...limits };
     return this;
   }
 
@@ -665,8 +692,9 @@ export class WorkflowBuilder extends Flow {
       nodes: nodes as Json[],
     };
     if (this.triggerList.length > 0) document['triggers'] = this.triggerList.map((t) => clean(t));
-    if (this.input) document['inputSchema'] = this.input;
-    if (this.output) document['outputSchema'] = this.output;
+    if (this.input) document['inputSchema'] = copyJson(this.input);
+    if (this.output) document['outputSchema'] = copyJson(this.output);
+    if (this.workflowLimits) document['limits'] = clean(this.workflowLimits);
     if (this.stateDeclaration) document['state'] = copyJson(this.stateDeclaration);
     if (this.chain) document['chainPolicy'] = { ...this.chain };
     if (bodyNodes.size > 0) {

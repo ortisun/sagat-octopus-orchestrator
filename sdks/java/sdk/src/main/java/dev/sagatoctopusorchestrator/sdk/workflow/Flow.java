@@ -244,6 +244,9 @@ public final class Flow {
         if (o.onError != null) {
             node.put("onError", o.onError);
         }
+        if (o.outputSchema != null) {
+            node.set("outputSchema", o.outputSchema.deepCopy());
+        }
         return push(node);
     }
 
@@ -287,6 +290,9 @@ public final class Flow {
         if (options.lookbackMs != null) {
             node.put("lookbackMs", options.lookbackMs.longValue());
         }
+        if (options.outputSchema != null) {
+            node.set("outputSchema", options.outputSchema.deepCopy());
+        }
         return push(node);
     }
 
@@ -313,6 +319,9 @@ public final class Flow {
             }
             if (options.cancelPolicy != null) {
                 node.put("cancelPolicy", options.cancelPolicy.wire());
+            }
+            if (options.outputSchema != null) {
+                node.set("outputSchema", options.outputSchema.deepCopy());
             }
         }
         return push(node);

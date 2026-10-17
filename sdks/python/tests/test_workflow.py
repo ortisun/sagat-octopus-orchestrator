@@ -15,6 +15,22 @@ def nodes_of(document: dict[str, Any]) -> list[dict[str, Any]]:
     return nodes
 
 
+def test_classified_result_schemas_and_workflow_limits_use_their_typed_carriers() -> None:
+    schema = {"type": "object", "x-sagat-classification": "internal", "properties": {"value": {"type": "string"}}}
+    document = (
+        workflow("classified-flow")
+        .limits(max_instances=23, max_depth=4)
+        .output_schema(schema)
+        .step("a", "act.a", output_schema=schema)
+        .wait_for_event("w", event_type="done", correlation_expr="input.id", timeout_ms=10, output_schema=schema)
+        .invoke_child("c", "child-flow", output_schema=schema)
+        .end("done")
+        .build()
+    )
+    assert document["limits"] == {"maxInstances": 23, "maxDepth": 4}
+    assert [node["outputSchema"] for node in nodes_of(document)[:3]] == [schema, schema, schema]
+
+
 def test_a_chain_of_steps_is_linked_in_order_and_starts_at_the_first() -> None:
     doc = (
         workflow("order-flow")

@@ -70,6 +70,7 @@ function builderOf(definition: Obj): WorkflowBuilder {
   for (const trigger of definition['triggers'] ?? []) builder.trigger(trigger);
   if (definition['inputSchema']) builder.inputSchema(definition['inputSchema']);
   if (definition['outputSchema']) builder.outputSchema(definition['outputSchema']);
+  if (definition['limits']) builder.limits(definition['limits']);
   if (definition['state']) builder.state(definition['state'] as StateDefinition);
   if (definition['chainPolicy']) builder.chainPolicy(definition['chainPolicy']);
   for (const [name, bodyDefinition] of Object.entries<Obj>(definition['bodies'] ?? {})) {

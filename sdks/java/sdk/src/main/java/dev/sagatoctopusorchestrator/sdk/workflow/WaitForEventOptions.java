@@ -1,5 +1,8 @@
 package dev.sagatoctopusorchestrator.sdk.workflow;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import dev.sagatoctopusorchestrator.sdk.Json;
+
 /** The options of a {@code waitForEvent} node. */
 public final class WaitForEventOptions {
     final String eventType;
@@ -7,6 +10,7 @@ public final class WaitForEventOptions {
     final long timeoutMs;
     String onTimeout;
     Long lookbackMs;
+    JsonNode outputSchema;
 
     private WaitForEventOptions(String eventType, String correlationExpr, long timeoutMs) {
         this.eventType = eventType;
@@ -32,6 +36,16 @@ public final class WaitForEventOptions {
     /** An event that arrived up to this long before the wait started also wakes it (once). */
     public WaitForEventOptions lookbackMs(long value) {
         this.lookbackMs = value;
+        return this;
+    }
+
+    /** The JSON Schema of the event payload carried by the satisfied wait. */
+    public WaitForEventOptions outputSchema(Object value) {
+        JsonNode node = Json.toTree(value);
+        if (!node.isObject()) {
+            throw dev.sagatoctopusorchestrator.sdk.SagatException.invalid("outputSchema is a JSON object");
+        }
+        this.outputSchema = node.deepCopy();
         return this;
     }
 }

@@ -47,6 +47,10 @@ public abstract partial class FlowBase<TSelf>
         }
 
         var node = new JsonObject { ["id"] = id, ["type"] = "activity", ["activity"] = activity };
+        if (options.OutputSchema is { } outputSchema)
+        {
+            node["outputSchema"] = outputSchema.DeepClone();
+        }
         if (options.Retry is { } retry)
         {
             node["retry"] = RetryNode(retry);
@@ -103,6 +107,10 @@ public abstract partial class FlowBase<TSelf>
         {
             node["lookbackMs"] = WholeMillis(lookback, $"waitForEvent {id} lookback");
         }
+        if (options.OutputSchema is { } outputSchema)
+        {
+            node["outputSchema"] = outputSchema.DeepClone();
+        }
 
         return Push(node);
     }
@@ -127,6 +135,10 @@ public abstract partial class FlowBase<TSelf>
                 ChildCancelPolicy.Detach => "detach",
                 _ => "request_cancel",
             };
+        }
+        if (options.OutputSchema is { } outputSchema)
+        {
+            node["outputSchema"] = outputSchema.DeepClone();
         }
 
         return Push(node);
@@ -646,6 +658,7 @@ public sealed partial class WorkflowBuilder : FlowBase<WorkflowBuilder>
     private JsonObject? input;
     private JsonObject? output;
     private JsonObject? state;
+    private JsonObject? workflowLimits;
     private JsonObject? chainPolicy;
     private readonly SortedDictionary<string, Body> bodies = new(StringComparer.Ordinal);
 
@@ -695,6 +708,30 @@ public sealed partial class WorkflowBuilder : FlowBase<WorkflowBuilder>
     public WorkflowBuilder OutputSchema(JsonObject schema)
     {
         output = (JsonObject)schema.DeepClone();
+        return this;
+    }
+
+    /// <summary>Lowers the workflow instance and nesting ceilings.</summary>
+    public WorkflowBuilder Limits(WorkflowLimitsOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        if (options.MaxInstances is < 1 or > 100_000)
+        {
+            throw Invalid("limits maxInstances must be between 1 and 100000");
+        }
+        if (options.MaxDepth is < 1 or > 8)
+        {
+            throw Invalid("limits maxDepth must be between 1 and 8");
+        }
+        workflowLimits = new JsonObject();
+        if (options.MaxInstances is { } maxInstances)
+        {
+            workflowLimits["maxInstances"] = maxInstances;
+        }
+        if (options.MaxDepth is { } maxDepth)
+        {
+            workflowLimits["maxDepth"] = maxDepth;
+        }
         return this;
     }
 
@@ -928,6 +965,11 @@ public sealed partial class WorkflowBuilder : FlowBase<WorkflowBuilder>
         if (output is not null)
         {
             document["outputSchema"] = output.DeepClone();
+        }
+
+        if (workflowLimits is not null)
+        {
+            document["limits"] = workflowLimits.DeepClone();
         }
 
         if (state is not null)
