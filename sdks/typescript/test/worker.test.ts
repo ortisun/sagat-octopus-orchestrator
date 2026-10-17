@@ -47,6 +47,12 @@ class FakeServer {
   streamFailureAfterFirst: number | undefined;
   holdStream = false;
   streamCancelled = 0;
+  /**
+   * Bumped by `reset()`. A host keeps the session token it registered with, so a host a previous test left
+   * running (still polling while it stops) cannot take the leases of the next test: its receives are
+   * answered empty and are not recorded with this test's calls.
+   */
+  private generation = 1;
   private server = new grpc.Server();
   port = 0;
 
@@ -58,6 +64,10 @@ class FakeServer {
     const impl: Record<string, any> = {};
     const reply = (method: string, answer: (request: any) => unknown): void => {
       impl[method] = (call: grpc.ServerUnaryCall<any, any>, callback: grpc.sendUnaryData<any>) => {
+        if (method === 'pollTasks' && this.stale(call.request)) {
+          callback(null, { tasks: [], retry_after_ms: this.pollRetryAfterMs });
+          return;
+        }
         this.calls.push({ method, request: call.request as Record<string, unknown>, metadata: call.metadata });
         const queued = this.failures[method]?.shift();
         if (queued) {
@@ -80,13 +90,18 @@ class FakeServer {
         callback(null, answer(call.request));
       };
     };
-    reply('registerWorker', () => ({ worker_id: 'w-1', session_token: 'session-1', accepted_protocol_version: this.acceptedVersion }));
+    reply('registerWorker', () => ({ worker_id: 'w-1', session_token: `session-${this.generation}`, accepted_protocol_version: this.acceptedVersion }));
     reply('pollTasks', (request: { max_tasks: number }) => {
       // Like the real service: no more than were asked for.
       const tasks = this.leases.splice(0, request.max_tasks);
       return { tasks, retry_after_ms: this.pollRetryAfterMs };
     });
     impl['streamTasks'] = (call: grpc.ServerWritableStream<{ max_tasks: number }, unknown>) => {
+      if (this.stale(call.request as unknown as Record<string, unknown>)) {
+        call.write({ tasks: [], retry_after_ms: this.pollRetryAfterMs });
+        call.end();
+        return;
+      }
       this.calls.push({ method: 'streamTasks', request: call.request as unknown as Record<string, unknown>, metadata: call.metadata });
       let closed = false;
       const closedOnce = (): void => {
@@ -135,11 +150,18 @@ class FakeServer {
     this.server.forceShutdown();
   }
 
+  /** A receive by a host registered before the last `reset()`. */
+  private stale(request: Record<string, unknown>): boolean {
+    const token = request['session_token'];
+    return typeof token === 'string' && token !== '' && token !== `session-${this.generation}`;
+  }
+
   of(method: string): Call[] {
     return this.calls.filter((call) => call.method === method);
   }
 
   reset(): void {
+    this.generation += 1;
     this.calls.length = 0;
     this.leases = [];
     this.failures = {};
@@ -190,7 +212,10 @@ async function until(condition: () => boolean, what: string, ms = 5000): Promise
   const attempts = Math.ceil(ms / 10);
   let attempt = 0;
   while (!condition()) {
-    if (attempt++ >= attempts) assert.fail(`timed out waiting for ${what}`);
+    if (attempt++ >= attempts) {
+      // Which calls the fake answered tells where a slow or stuck host stopped.
+      assert.fail(`timed out waiting for ${what}; calls: ${fake.calls.slice(0, 6).map((c) => `${c.method}(${String(c.request['worker_id'] ?? c.request['worker_name'] ?? '')})`).join(', ')}`);
+    }
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 }
