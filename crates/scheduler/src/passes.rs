@@ -17,7 +17,7 @@ use sagat_application::entropy::Entropy;
 use sagat_application::error::StoreError;
 use sagat_application::execution::{
     Actor, DefinitionCache, Effects, Engine, EngineError, ExpressionEvaluator, ParentLink, RunInfo,
-    RunTx,
+    RunTx, ScopeInput,
 };
 use sagat_application::loop_progress::{
     LoopCandidate, LoopCheckpointCommand, LoopDelayElapsedCommand, LoopDrainCommand,
@@ -819,7 +819,7 @@ where
             .ok_or(CollectionAdvanceError::MissingRun)?;
         let info = tx.info().clone();
         let occurred_at = tx.now();
-        let data = tx.data().await?.clone();
+        let mut data = tx.data().await?.clone();
         let (definition, state) = tx.parts();
         let definition = definition.clone();
         let state = state.clone();
@@ -1149,6 +1149,22 @@ where
                 if *stored_index != index {
                     return Err(CollectionAdvanceError::InvalidProgress);
                 }
+                // The iteration ended, so the run data no longer carries its input; the snapshot does.
+                // The result expression reads `item` and `index` as the body did.
+                let item = progress
+                    .items
+                    .get(
+                        usize::try_from(index)
+                            .map_err(|_| CollectionAdvanceError::InvalidProgress)?,
+                    )
+                    .ok_or(CollectionAdvanceError::InvalidProgress)?;
+                data.scope_inputs.insert(
+                    return_ref.return_instance().path().clone(),
+                    ScopeInput::Collection {
+                        index,
+                        item: item.clone(),
+                    },
+                );
                 let value = self
                     .engine
                     .evaluator()
