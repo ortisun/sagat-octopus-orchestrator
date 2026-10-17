@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { path } from '../../api/client';
+import { ApiError } from '../../api/errors';
 import type { components } from '../../api/schema';
 import { useApp, useCan, useNamespace, useSession } from '../../app/context';
 import type { SessionSnapshot } from '../../auth/session';
@@ -187,10 +188,13 @@ export function PayloadDisclosureView({
     setStored({ scope: scopeKey, session, state: { phase: 'loading' } });
     try {
       const body: components['schemas']['PayloadDisclosureRequest'] = reveal ? { ...selector, reveal: ['pii'] } : selector;
-      const disclosure = await api.post<PayloadDisclosure>(path`/runs/${runId}/payload-disclosures`, { body, signal: next.signal });
+      const disclosure = await api.post<PayloadDisclosure>(path`/runs/${runId}/payload-disclosures`, { body, signal: next.signal, safeNumbers: true });
       if (!next.signal.aborted && controller.current === next) setStored({ scope: scopeKey, session, state: { phase: 'loaded', disclosure } });
     } catch (error) {
-      if (!next.signal.aborted && controller.current === next) setStored({ scope: scopeKey, session, state: { phase: 'error', error } });
+      const displayError = error instanceof ApiError && error.code === 'VALIDATION_FAILED' && error.status >= 200 && error.status < 300
+        ? new ApiError({ code: 'VALIDATION_FAILED', status: error.status, message: 'This payload contains JSON numbers the Studio cannot display exactly. Use the API or CLI to read their exact representation.' })
+        : error;
+      if (!next.signal.aborted && controller.current === next) setStored({ scope: scopeKey, session, state: { phase: 'error', error: displayError } });
     }
   };
 

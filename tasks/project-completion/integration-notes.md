@@ -64,3 +64,13 @@ persist their default worker identities. The aggregate test allocates an explici
 thread stack and acquires a fresh lease immediately before the final revocation race. This
 removes the earlier default-harness stack overflow and an expired-lease barrier wait; production
 runtime stack/lease settings are unchanged. Final combined workspace gates remain pending.
+
+### Studio precision checkpoint
+
+The disclosure view now requests safe numeric parsing. A textual response containing
+`9007199254740993` reproduced the rounded display in a failing component test; the corrected view
+refuses numbers the browser cannot preserve and points the user to exact API/CLI representations.
+Seven disclosure component tests, Studio typecheck and focused ESLint passed
+(`/tmp/sagat-completion-ui-precision-{red,green,typecheck,lint}.log`). The server keeps its exact
+numeric encoder. Final classifier review still has pending numeric-applicator and hidden-child
+budget regressions; the production disclosure service remains unwired until these are corrected.

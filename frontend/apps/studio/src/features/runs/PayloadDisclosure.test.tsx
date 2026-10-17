@@ -180,3 +180,20 @@ describe('classified payload disclosure', () => {
     expect(screen.queryByText(/order-7/)).not.toBeInTheDocument();
   });
 });
+
+it('refuses a numeric projection the browser cannot display exactly', async () => {
+  const raw = JSON.stringify(disclosed({
+    tree: { kind: 'value', type: 'number', level: 'public', value: 0 },
+  })).replace('"value":0', '"value":9007199254740993');
+  const platform = fakePlatform({
+    [`POST /runs/${RUN_ID}/payload-disclosures`]: () => new Response(raw, {
+      status: 200, headers: { 'content-type': 'application/json' },
+    }),
+  });
+  const app = await signedInApp(platform.fetcher, READ);
+  renderApp(<PayloadDisclosureView runId={RUN_ID} selector={{ source: 'input' }} />, { app });
+  await userEvent.setup().click(screen.getByRole('button', { name: 'View permitted values' }));
+  expect(await screen.findByText(/payload contains JSON numbers the Studio cannot display exactly/)).toBeInTheDocument();
+  expect(screen.queryByRole('tree', { name: 'Classified payload values' })).not.toBeInTheDocument();
+  expect(screen.queryByText('9007199254740992')).not.toBeInTheDocument();
+});
