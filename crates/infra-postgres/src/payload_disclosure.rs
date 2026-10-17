@@ -450,6 +450,7 @@ fn journal_carrier(
     let source_kind = selected.get("type")?.as_str()?;
     let carries = match event_type {
         "step.completed" => matches!(source_kind, "activity" | "script" | "child"),
+        "child.finished" => source_kind == "child",
         "wait.satisfied" => source_kind == "waitEvent",
         "reconciliation.concluded" => matches!(source_kind, "activity" | "script"),
         _ => false,
@@ -467,6 +468,44 @@ fn journal_carrier(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn child_finished_requires_the_exact_child_node_in_its_declared_scope() {
+        let document = br#"{
+          "nodes":[
+            {"id":"child","type":"child"},
+            {"id":"activity","type":"activity"},
+            {"id":"script","type":"script"},
+            {"id":"wait","type":"waitEvent"},
+            {"id":"db","type":"child","database":{}},
+            {"id":"items","type":"forEach","body":"line","maxItems":2}
+          ],
+          "bodies":{"line":{"nodes":[{"id":"child","type":"child"}]}}
+        }"#;
+        assert_eq!(
+            journal_carrier(document, "child.finished", "child", None, None),
+            Some(CarrierPointer::NodeOutput(NodeId::parse("child").unwrap()))
+        );
+        assert_eq!(
+            journal_carrier(
+                document,
+                "child.finished",
+                "child",
+                Some(&["items".into()]),
+                Some(&[1]),
+            ),
+            Some(CarrierPointer::BodyNodeOutput {
+                body: NodeId::parse("line").unwrap(),
+                node: NodeId::parse("child").unwrap(),
+            })
+        );
+        for node in ["activity", "script", "wait", "db", "missing"] {
+            assert_eq!(
+                journal_carrier(document, "child.finished", node, None, None),
+                None
+            );
+        }
+    }
 
     #[test]
     fn scoped_carriers_walk_the_declared_owner_instead_of_searching_equal_ids() {

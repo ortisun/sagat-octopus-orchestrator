@@ -45,6 +45,10 @@ side of their shared worker/store modules would lose security or durable executi
    Values explicitly mapped into another supported carrier, including the workflow result,
    follow that receiving carrier under D283. This policy performs no taint tracking. A result
    selector reads only the retained run result; it never substitutes a database step output.
+   G21's `child.finished` journal payload is judged by the exact parent `child` node's
+   output schema in its pinned definition and runtime scope. The child run's own input and
+   result selectors continue to use the child version's schemas. No duplicate completion
+   event is introduced to make a child result eligible.
 
 ## Consequences and evidence
 
