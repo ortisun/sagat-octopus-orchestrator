@@ -426,3 +426,11 @@ admission and an explicit two-member database assertion fix that harness prerequ
 This does not enable a partially implemented bounded worker. Failure/reconciliation reducers,
 control progression, blobs, root finalization and the accepted large-workload evidence remain
 required before that production switch.
+
+
+Focused Clippy passed with warnings denied for `integration_workflow_primitives`,
+`contract_payload_classification` and `integration_payload_classification`
+(`/tmp/sagat-completion-focused-clippy-3.log`, 2.79 s final incremental check). Two unnecessary
+explicit dereferences at the real audit insert boundary were removed. Two test helpers now mark
+their intentional test panics/expect calls consistently with the other fixtures; production lints
+remain unchanged. This focused check is not the full workspace/all-targets T016-054 gate.

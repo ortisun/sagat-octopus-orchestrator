@@ -1,5 +1,5 @@
 //! Live REST conformance for classified run payload disclosure (T016-024).
-#![allow(clippy::expect_used)]
+#![allow(clippy::expect_used, clippy::panic)]
 
 use std::fs;
 use std::path::Path;

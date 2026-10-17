@@ -289,7 +289,7 @@ async fn append_audit(
     tx: &mut Transaction<'_, Postgres>,
     audit: &AuditRecord,
 ) -> Result<(), StoreError> {
-    insert_audit(&mut **tx, audit)
+    insert_audit(tx, audit)
         .await
         .map_err(|error| StoreError::Unavailable {
             detail: format!("payload disclosure audit could not be appended: {error}"),

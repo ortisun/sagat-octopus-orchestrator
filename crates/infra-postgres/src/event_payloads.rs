@@ -173,11 +173,11 @@ async fn finish<T>(
     let read = match result {
         Ok(value) => {
             if audit_success {
-                insert_audit(&mut *tx, &audits.revealed)
-                    .await
-                    .map_err(|e| StoreError::Unavailable {
+                insert_audit(&mut tx, &audits.revealed).await.map_err(|e| {
+                    StoreError::Unavailable {
                         detail: format!("event payload audit could not be appended: {e}"),
-                    })?;
+                    }
+                })?;
             }
             EventPayloadRead::Ready(value)
         }

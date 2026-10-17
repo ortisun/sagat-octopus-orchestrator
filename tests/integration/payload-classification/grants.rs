@@ -1,4 +1,5 @@
 //! Real PostgreSQL coverage for namespace PII reveal grants (feature 016).
+#![allow(clippy::expect_used)]
 
 use std::sync::Arc;
 use std::time::Duration;
