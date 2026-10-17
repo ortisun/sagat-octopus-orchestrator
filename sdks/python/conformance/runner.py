@@ -88,6 +88,8 @@ def apply(target: Flow, ops: list[Obj]) -> None:
         kind = op["op"]
         if kind == "step":
             target.step(op["id"], op["activity"], **snake(op.get("options")))
+        elif kind == "script":
+            target.script(op["id"], op["artifactDigest"], **snake(op.get("options")))
         elif kind == "sleep":
             target.sleep(op["id"], op["durationMs"])
         elif kind == "waitForEvent":

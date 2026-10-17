@@ -53,6 +53,7 @@ type ApprovalPolicy struct {
 }
 
 var namePattern = regexp.MustCompile(`^[a-z][a-z0-9-]{2,63}$`)
+var artifactDigestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 // Builder builds a workflow, or a nested flow (see Flow).
 type Builder struct {
@@ -219,6 +220,28 @@ func (b *Builder) Step(id, activity string, opts ...StepOption) *Builder {
 	n := node{"id": id, "type": "activity", "activity": activity}
 	for key, value := range spec.fields {
 		n[key] = value
+	}
+	return b.push(n)
+}
+
+// Script adds a pinned script artifact executed by an isolated runner.
+func (b *Builder) Script(id, artifactDigest string, opts ...ScriptOption) *Builder {
+	if b.err != nil {
+		return b
+	}
+	if !artifactDigestPattern.MatchString(artifactDigest) {
+		return b.fail(sagat.Invalid("script %s needs a sha256 artifact digest", id))
+	}
+	n := node{"id": id, "type": "script", "artifactDigest": artifactDigest}
+	for _, opt := range opts {
+		opt(n)
+	}
+	if secrets, ok := n["secrets"].([]any); ok {
+		for _, value := range secrets {
+			if name, ok := value.(string); !ok || !secretName.MatchString(name) {
+				return b.fail(sagat.Invalid("script %s names a secret that is not a name", id))
+			}
+		}
 	}
 	return b.push(n)
 }

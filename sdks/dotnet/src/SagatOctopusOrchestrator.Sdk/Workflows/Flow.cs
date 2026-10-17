@@ -24,6 +24,9 @@ public abstract partial class FlowBase<TSelf>
     [GeneratedRegex("^[a-z][a-z0-9._-]{0,63}\\z", RegexOptions.CultureInvariant)]
     private static partial Regex SecretPattern();
 
+    [GeneratedRegex("^sha256:[0-9a-f]{64}\\z", RegexOptions.CultureInvariant)]
+    private static partial Regex ArtifactDigestPattern();
+
     /// <summary>Step.Run: an activity executed by a worker.</summary>
     public TSelf Step(string id, string activity, StepOptions? options = null)
     {
@@ -82,6 +85,40 @@ public abstract partial class FlowBase<TSelf>
     {
         var ms = Millis(duration, $"sleep {id} duration");
         return Push(new JsonObject { ["id"] = id, ["type"] = "timer", ["durationMs"] = ms });
+    }
+
+    /// <summary>Runs one immutable script artifact in the platform's isolated runner.</summary>
+    public TSelf Script(string id, string artifactDigest, ScriptOptions? options = null)
+    {
+        if (!ArtifactDigestPattern().IsMatch(artifactDigest ?? string.Empty))
+        {
+            throw Invalid($"script {id} needs a sha256 artifact digest");
+        }
+        options ??= new ScriptOptions();
+        foreach (var secret in options.Secrets ?? [])
+        {
+            if (!SecretPattern().IsMatch(secret))
+            {
+                throw Invalid($"script {id} names a secret that is not a name: {Quote(secret)}");
+            }
+        }
+        var node = new JsonObject { ["id"] = id, ["type"] = "script", ["artifactDigest"] = artifactDigest };
+        Set(node, "language", options.Language);
+        if (options.Retry is { } retry)
+        {
+            node["retry"] = RetryNode(retry);
+        }
+        Set(node, "compensateWith", options.CompensateWith);
+        if (options.Secrets is { } secrets)
+        {
+            node["secrets"] = new JsonArray([.. secrets.Select(secret => (JsonNode?)JsonValue.Create(secret))]);
+        }
+        Set(node, "onError", options.OnError);
+        if (options.OutputSchema is { } outputSchema)
+        {
+            node["outputSchema"] = outputSchema.DeepClone();
+        }
+        return Push(node);
     }
 
     /// <summary>WaitForEvent: waits for an event of a type with a correlation key, or for the timeout.</summary>

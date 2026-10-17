@@ -16,10 +16,11 @@ public class WorkflowBuilderTests
         var schema = JsonNode.Parse("""{"type":"object","x-sagat-classification":"internal","properties":{"value":{"type":"string"}}}""")!.AsObject();
         var document = Workflow.Create("classified-flow").Limits(new WorkflowLimitsOptions { MaxInstances = 23, MaxDepth = 4 })
             .OutputSchema(schema).Step("a", "act.a", new StepOptions { OutputSchema = schema })
+            .Script("s", "sha256:" + new string('0', 64), new ScriptOptions { OutputSchema = schema })
             .WaitForEvent("w", new WaitForEventOptions { EventType = "done", CorrelationExpr = "input.id", Timeout = TimeSpan.FromMilliseconds(10), OutputSchema = schema })
             .InvokeChild("c", "child-flow", new ChildOptions { OutputSchema = schema }).End("done").Build();
         Assert.Equal("""{"maxDepth":4,"maxInstances":23}""", Canon(document["limits"]));
-        Assert.All(document["nodes"]!.AsArray().Take(3), node => Assert.Equal(Canon(schema), Canon(node!["outputSchema"])));
+        Assert.All(document["nodes"]!.AsArray().Take(4), node => Assert.Equal(Canon(schema), Canon(node!["outputSchema"])));
     }
 
     [Fact]

@@ -47,6 +47,23 @@
           }
         },
         {
+          "op": "script",
+          "id": "score",
+          "artifactDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+          "options": {
+            "language": "typescript",
+            "outputSchema": {
+              "type": "object",
+              "x-sagat-classification": "internal",
+              "properties": {
+                "score": {
+                  "type": "number"
+                }
+              }
+            }
+          }
+        },
+        {
           "op": "waitForEvent",
           "id": "confirmed",
           "options": {

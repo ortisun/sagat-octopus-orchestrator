@@ -161,6 +161,17 @@ internal static class BuildMode
                 case "step":
                     target.Step(id, (string)op["activity"]!, StepOptionsOf(options));
                     break;
+                case "script":
+                    target.Script(id, (string)op["artifactDigest"]!, new ScriptOptions
+                    {
+                        Language = (string?)options?["language"],
+                        Retry = RetryOf(options?["retry"] as JsonObject),
+                        CompensateWith = (string?)options?["compensateWith"],
+                        Secrets = options?["secrets"] is JsonArray secrets ? [.. secrets.Select(secret => (string)secret!)] : null,
+                        OnError = (string?)options?["onError"],
+                        OutputSchema = options?["outputSchema"]?.DeepClone().AsObject(),
+                    });
+                    break;
                 case "sleep":
                     target.Sleep(id, Ms(op["durationMs"]));
                     break;

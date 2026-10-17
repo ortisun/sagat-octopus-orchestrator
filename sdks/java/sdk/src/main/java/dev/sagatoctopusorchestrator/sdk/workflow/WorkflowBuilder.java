@@ -165,6 +165,11 @@ public final class WorkflowBuilder {
         return this;
     }
 
+    public WorkflowBuilder script(String id, String artifactDigest, ScriptOptions options) {
+        body.script(id, artifactDigest, options);
+        return this;
+    }
+
     public WorkflowBuilder waitForEvent(String id, WaitForEventOptions options) {
         body.waitForEvent(id, options);
         return this;
