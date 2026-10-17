@@ -9,6 +9,7 @@ mod macros;
 
 pub mod audit;
 pub mod binding;
+pub mod classification;
 pub mod connectors;
 pub mod database;
 pub mod definition;
