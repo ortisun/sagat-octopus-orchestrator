@@ -1069,3 +1069,34 @@ processes concurrently: each passed **1/1**, 1.28 s, both exited zero
 (`/tmp/sagat-completion-runtime-role-concurrency/`). The reproduction script is retained at
 `/tmp/sagat-completion-runtime-role-concurrency.py`; it saved identity/logs and removed only its own
 container. No production role/grant changed.
+
+### Authority and expiry after lock contention
+
+Three real lock barriers failed on the healthy 1 GiB server, independently of the earlier database
+crashes: the bounded binding read did not retain its revocation fence; both full and bounded
+scheduler predicates could authorize a lease that expired while waiting for an unchanged shard row.
+The first baseline failed **0/3**, 10.11 s; the explicit shared-memory repeat also failed **0/3**,
+11.59 s (`/tmp/sagat-completion-bounded-authority-lock-barriers-red{,-shm}.log`). These are genuine
+product assertion failures, not infrastructure failures.
+
+Full and bounded shard fences now share one adapter operation: validate the run's shard and exact
+representable generation, lock the matching owner/generation row, then sample database time and
+compare expiry. A successful check refreshes mutation time before the scheduler's deadline checks.
+Bounded and full binding reads share the transaction advisory authority lock used by revocation.
+No domain representation, schema, wire shape, external effect or grant changed.
+
+The three corrected barriers passed **3/3**, 9.39 s
+(`/tmp/sagat-completion-bounded-authority-lock-barriers-green.log`). The combined locks, byte
+ceilings, chain handoffs, scoped maintenance and loops passed **81/81**, 85.70 s
+(`/tmp/sagat-completion-current-lock-maintenance-regression.log`). Strict whole-workspace/all-target
+Clippy passed 1 min 19 s (`/tmp/sagat-completion-current-authority-workspace-clippy.log`).
+
+Runtime-role profile clarification: enabling `SAGAT_TEST_AS_RUNTIME_ROLE=1` makes World services use
+that role; low-level fixtures that explicitly construct a trusted owner store are not thereby
+converted. Earlier combined-profile notation is not a claim that every helper used a non-owner
+connection. The scoped-worker fixture now explicitly selects an eight-connection runtime pool when
+the switch is enabled. Its scoped operations plus the three barriers passed **19/19**, 22.41 s
+(`/tmp/sagat-completion-bounded-fences-runtime-role-regression.log`); the shard-wait barrier requires
+the waiting connection's actual `usename='sagat_app'`. The database-wide privilege audit passed
+**1/1**, 4.71 s (`/tmp/sagat-completion-authority-lock-runtime-privilege-audit.log`), without an added
+exception or grant. Worker claim/report conversion and large workload acceptance remain open.

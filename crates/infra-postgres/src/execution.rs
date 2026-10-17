@@ -423,6 +423,40 @@ impl PgRunStore {
     }
 }
 
+/// Lock first, then observe expiry. A volatile WHERE predicate can be evaluated before a row-lock
+/// wait, and an unchanged row need not be rechecked when that wait ends.
+async fn locked_scheduler_time(
+    tx: &mut Transaction<'_, Postgres>,
+    run: RunId,
+    owner: &str,
+    lease: sagat_application::shards::Lease,
+) -> Result<Option<OffsetDateTime>, StoreError> {
+    if lease.shard != sagat_domain::sharding::Shard::of(run.as_uuid()) {
+        return Ok(None);
+    }
+    let Ok(generation) = i64::try_from(lease.generation) else {
+        return Ok(None);
+    };
+    let expiry: Option<OffsetDateTime> = sqlx::query_scalar(
+        "SELECT expires_at FROM scheduler_shards \
+         WHERE shard=$1 AND generation=$2 AND owner=$3 FOR SHARE",
+    )
+    .bind(i16::from(lease.shard.index()))
+    .bind(generation)
+    .bind(owner)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(store_error)?;
+    let Some(expiry) = expiry else {
+        return Ok(None);
+    };
+    let now: OffsetDateTime = sqlx::query_scalar("SELECT clock_timestamp()")
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(store_error)?;
+    Ok((expiry > now).then_some(now))
+}
+
 enum RunChainLock {
     NotMember,
     Locked(LockedChainHead),
@@ -3884,20 +3918,12 @@ impl RunTx for PgRunTx {
         owner: &str,
         lease: sagat_application::shards::Lease,
     ) -> Result<bool, StoreError> {
-        // FOR SHARE: a takeover of the shard (an UPDATE of this row) waits for this transaction, and a
-        // transaction that starts after the takeover finds the new generation and no row.
-        let held: Option<i16> = sqlx::query_scalar(
-            "SELECT shard FROM scheduler_shards \
-             WHERE shard = $1 AND generation = $2 AND owner = $3 AND expires_at > clock_timestamp() \
-             FOR SHARE",
-        )
-        .bind(i16::from(lease.shard.index()))
-        .bind(i64::try_from(lease.generation).unwrap_or(i64::MAX))
-        .bind(owner)
-        .fetch_optional(&mut *self.tx)
-        .await
-        .map_err(store_error)?;
-        Ok(held.is_some())
+        let Some(now) = locked_scheduler_time(&mut self.tx, self.info.run_id, owner, lease).await?
+        else {
+            return Ok(false);
+        };
+        self.now = now;
+        Ok(true)
     }
 
     async fn worker_drained(&mut self, subject: &str) -> Result<bool, StoreError> {
@@ -3964,14 +3990,13 @@ impl RunTx for PgRunTx {
     async fn bound_patterns(&mut self, subject: &str) -> Result<Vec<String>, StoreError> {
         // Keep the authority observed by the final capability check through its audit commit.
         // A binding replacement takes this same key exclusively before changing grants or leases.
-        sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))")
-            .bind(format!(
-                "binding:{}:{}:{subject}",
-                self.info.tenant_id, self.info.namespace_id
-            ))
-            .execute(&mut *self.tx)
-            .await
-            .map_err(store_error)?;
+        crate::bindings::hold_worker_binding(
+            &mut self.tx,
+            self.info.tenant_id,
+            self.info.namespace_id,
+            subject,
+        )
+        .await?;
         sqlx::query_scalar(
             "SELECT pattern FROM worker_bindings \
              WHERE tenant_id = $1 AND namespace_id = $2 AND subject = $3",

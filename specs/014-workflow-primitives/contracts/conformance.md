@@ -92,3 +92,11 @@ exceptional retained-content quota drain uses the guarded full-run path. The Pos
 `scoped_maintenance_does_not_read_whole_run_iteration_history` revokes iteration-history SELECT
 in its isolated database, proves full restoration fails, then requires both maintenance passes
 and journal replay to succeed. Worker claim/report consumers and wider scale gates remain separate.
+
+Scheduler lease expiry must be checked **after** the shard row's shared lock is acquired. A
+predicate evaluated before a lock wait cannot authorize a lease that expired during that wait.
+The full and exact-path transactions share that post-lock check and refresh their mutation clock
+when the fence succeeds. A bounded binding read likewise holds the shared binding-authority key
+that revocation takes exclusively, until commit. `bounded_fences.rs` exercises both expiry waits
+against an unchanged locked row and a real competing binding-revocation lock. Its runtime-role
+profile also verifies that the waiting execution connection is `sagat_app`.

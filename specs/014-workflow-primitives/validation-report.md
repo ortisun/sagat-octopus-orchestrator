@@ -1536,3 +1536,38 @@ need containers and toolchains this shell did not point at (`fault_developer_exp
 `e2e_developer_experience`, `e2e_inline_code_sandbox`, ...) while the machine was under heavy load; the
 same command passed in CI, so the laptop run is not used as evidence here and I did not investigate those
 failures further.
+
+### Combined integration checkpoint: bounded maintenance and current authority
+
+The approved integration worktree records reproducible commands, failed baselines and exact
+scope in `tasks/project-completion/integration-notes.md`. Current focused evidence includes:
+
+- Exact-path automatic expiry/retry with whole-run iteration-history SELECT revoked: red first,
+  then successful recovery and projection/journal replay. Exceptional content-quota drain keeps
+  its full-run revision/fence guard; worker claims/reports are still a separate conversion.
+- Shard expiry after an actual unchanged-row lock wait, for both full and bounded transactions,
+  and binding authority through bounded commit: three real failing baselines, then **3/3** passed.
+- Combined lock/byte/chain/scoped/loop regression **81/81**; after making the scoped fixture's pool
+  explicitly follow the runtime-role switch, scoped/barrier repeat **19/19**, with the waiting
+  execution connection asserted to be `sagat_app`. Current SQL privilege audit **1/1**, no exception.
+- Full primitive fault matrix **87/87** on the explicit 1 GiB PostgreSQL shared-memory profile.
+  The previous **78/9** run suffered shared-memory exhaustion and server recovery; its failures
+  remain recorded. The same exhaustion warning precedes both preserved disposable-server crashes.
+- Real PostgreSQL/OpenBao aggregate **3/3**, including blocked-provider cancellation/rotation/
+  outage receipts; explicit cancellation acknowledgement works without granting new capabilities.
+- Additive ceiling compatibility migration: both resource families and guarded configuration-
+  preserving rollback/reapply; complete migration module **5/5**. No earlier migration was edited.
+- Shared SDK expected limits/minors and a deterministic short secrets journal repaired with four
+  individual all-five-language repeats; no auto-bless. The original 55-scenario run failed those
+  four scenarios and is not relabeled successful.
+
+The original workspace diagnostic completed 234 harnesses with **3310 passed/35 failed/61 ignored**
+and two additional rustdoc compilation failures from sources newer than compiled libraries.
+Named repaired cases/modules and successful current doctest compilation are retained; a final
+current-source whole-workspace release gate is still required. Strict all-target Clippy passed
+at the documented checkpoints. The earlier Compose/browser smoke passed on its recorded source
+boundary; the new shared-memory Compose change has a configuration check, not a rebuilt smoke.
+The moderate performance target passed **4/5 ignored**, which does not execute the separate
+10k/100k capacity workloads. The open tasks stay unchecked: broad graphs/nesting, descendants under
+low capacity, the wider compatibility matrix and the named large resource workloads are not
+established by these focused repairs.

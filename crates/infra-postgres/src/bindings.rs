@@ -11,6 +11,21 @@ use uuid::Uuid;
 use crate::execution::PgRunStore;
 use crate::identity::{insert_audit, store_error};
 
+/// Hold the same authority key that binding replacement takes exclusively, through this commit.
+pub(crate) async fn hold_worker_binding(
+    conn: &mut sqlx::PgConnection,
+    tenant: TenantId,
+    namespace: NamespaceId,
+    subject: &str,
+) -> Result<(), StoreError> {
+    sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))")
+        .bind(format!("binding:{tenant}:{namespace}:{subject}"))
+        .execute(conn)
+        .await
+        .map_err(store_error)?;
+    Ok(())
+}
+
 impl BindingStore for PgRunStore {
     async fn bindings(
         &self,

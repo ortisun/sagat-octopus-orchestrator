@@ -47,24 +47,13 @@ impl PathExecutionTx for PgPathExecutionTx {
         owner: &str,
         lease: sagat_application::shards::Lease,
     ) -> Result<bool, StoreError> {
-        if lease.shard != sagat_domain::sharding::Shard::of(self.snapshot.info.run_id.as_uuid()) {
-            return Ok(false);
-        }
-        let Ok(generation) = i64::try_from(lease.generation) else {
+        let Some(now) =
+            locked_scheduler_time(&mut self.tx, self.snapshot.info.run_id, owner, lease).await?
+        else {
             return Ok(false);
         };
-        let held: Option<i16> = sqlx::query_scalar(
-            "SELECT shard FROM scheduler_shards \
-             WHERE shard=$1 AND generation=$2 AND owner=$3 AND expires_at>clock_timestamp() \
-             FOR SHARE",
-        )
-        .bind(i16::from(lease.shard.index()))
-        .bind(generation)
-        .bind(owner)
-        .fetch_optional(&mut *self.tx)
-        .await
-        .map_err(store_error)?;
-        Ok(held.is_some())
+        self.now = now;
+        Ok(true)
     }
 
     async fn lease_expiry(
@@ -134,6 +123,13 @@ impl PathExecutionTx for PgPathExecutionTx {
     }
 
     async fn bound_patterns(&mut self, subject: &str) -> Result<Vec<String>, StoreError> {
+        crate::bindings::hold_worker_binding(
+            &mut self.tx,
+            self.snapshot.info.tenant_id,
+            self.snapshot.info.namespace_id,
+            subject,
+        )
+        .await?;
         sqlx::query_scalar(
             "SELECT pattern FROM worker_bindings \
              WHERE tenant_id=$1 AND namespace_id=$2 AND subject=$3 ORDER BY pattern",

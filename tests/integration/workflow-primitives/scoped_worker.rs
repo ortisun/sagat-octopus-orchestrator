@@ -351,7 +351,12 @@ async fn fixture_with_progress(name: &str, prepare_collection: bool) -> Fixture 
     assert_eq!(root_only.accepted_protocol_version, "1.4");
 
     let cache = DefinitionCache::new(Arc::new(StructuredJsonIrCodec), 8);
-    let store = PgRunStore::new(world.db.pool.clone(), cache).with_scoped_worker_protocol();
+    let execution_pool = if crate::support::as_runtime_role() {
+        world.db.runtime_pool_with(8).await
+    } else {
+        world.db.pool.clone()
+    };
+    let store = PgRunStore::new(execution_pool, cache).with_scoped_worker_protocol();
     let workers = WorkerService::new(
         store.clone(),
         SystemClock,
