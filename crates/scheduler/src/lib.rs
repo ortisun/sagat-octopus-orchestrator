@@ -26,8 +26,8 @@ pub use fairness::{DEFAULT_WEIGHT, ROUNDS, Selection, Weights, rest, rest_after,
 pub use monitor::{Monitor, MonitorRound, MonitorSettings};
 pub use outbox::{DispatchSettings, Dispatched, OutboxDispatcher};
 pub use passes::{
-    CollectionAdvance, CollectionAdvanceError, ContinuationAdvanceError, Report, Scheduler,
-    SchedulerSettings,
+    CollectionAdvance, CollectionAdvanceError, ContinuationAdvanceError, LoopAdvance,
+    LoopAdvanceError, Report, Scheduler, SchedulerSettings,
 };
 pub use shards::{Keeper, KeeperSettings, Placement, Round, Snapshot};
 pub use telemetry::{
