@@ -246,3 +246,59 @@ contracts (`contracts/README.md`, the OpenAPI) and only align the code or the ta
   `chain.rs`), the task is amended to the actual file when it is closed; no empty files are created.
 - **D301 — Starting a continuation chain as a child is refused with a typed error** until child
   chains are enabled, instead of failing with `INTERNAL`.
+
+## Decisions of the loop onError increment
+
+Implements D294. Evidence is in `crates/domain/tests/primitive_loops.rs`,
+`tests/integration/workflow-primitives/{loop_progress,loops_http}.rs` and
+`tests/fault/workflow-primitives/loops.rs`.
+
+- **D340 — A loop that declares `onError` drains on the loop scope alone.** A permanent body
+  failure, the loop timeout and an expression error write no `run.stop_requested` and do not move the
+  run to `CANCELLING`. The drain start, the iteration drain and the finish keep the same
+  transactions, fence checks and idempotency receipts as before; the run keeps the status its steps
+  imply (`RUNNING`/`WAITING`). Whether a drain takes this path is derived from the pinned immutable
+  definition (the owner declares `onError`), not stored, so no column is added and journals written
+  before this change replay unchanged. A loop without `onError` still stops the run with
+  `FAILED` and the failure code, then fails it after the drain.
+- **D341 — The finish settles the owner and takes the edge in one transaction.** After the last
+  iteration is drained, `finish_drain` ends the loop scope `FAILED`, settles the owner step `FAILED`
+  (code retained, `routed`), journals `loop.finished`, `step.routed` and then the successor's own
+  events, and reuses `route_loop_successor`: an activity target becomes `READY` with its
+  `task.ready` outbox row, an `end` target finishes the run through the normal terminal path
+  (`end.reached`, `run.finished`, the `run.finished` hint and the outbound fan-out), any other kind
+  becomes `PENDING` with a `loop.finished` hint whose status is now `FAILED` for an error edge. No
+  event type is added; the domain reducer and `RunState::replay` already accept the sequence.
+  Tenant iteration usage and run instance reservations are released by the iteration drain, once.
+  A duplicate delivery of the finish reports the same run version by reading the journal.
+- **D342 — A cancel that lands during a failure drain wins.** A run-level cancellation always ends
+  the run `CANCELLED` and never takes the edge. If it commits while a failure drain is in flight,
+  the drain finishes under it: the loop still ends `FAILED` with its code, the run ends `CANCELLED`.
+- **D343 — Discovery now surfaces the loops the scheduler must drain.** `loop_candidates` found only
+  a loop with a returned body or a due delay, so a failed body, an expired loop deadline, a
+  cancelled run and an unfinished drain were never seen by the scheduler. It now also returns a
+  `RUNNING` scope with a failed member or an expired deadline, any `DRAINING` scope, and a not yet
+  draining scope of a run stopped by `CANCELLED`. This also makes the no-edge failure path reach
+  the scheduler.
+- **D344 — The stopping planner leaves a draining loop owner alone.** `plan()` on a stopping run
+  emitted `StepCancelled` for a loop owner that was `WAITING` on its drain, taking the drain from
+  under the scheduler. A draining owner is now skipped, as a draining collection already was.
+- **D345 — Publication accepts an `end` as the loop `onError` target.** The public loop subset is a
+  loop chain ending at `end`, so only an `end` target can be published and run over HTTP. The
+  activity target is proven at the storage level (including a worker completing the recovery
+  activity and the run finishing), not through publication.
+- **G340 — An `onError` edge to an activity is not publishable.** Widening the public loop subset to
+  allow root activities after a loop is a separate publication decision; nothing here changes it.
+- **G341 — An expression error at loop entry is not an iteration failure.** Evaluating the initial
+  carry or condition fails before a scope or an iteration exists, so there is no drain to wait for.
+  It still stops the run `FAILED` with `EXPRESSION_ERROR`. Routing it over `onError` needs a way
+  to fail a `PENDING` owner (a new journal event or a scope created already failed); decide before
+  building it.
+- **G342 — Any other stop landing during a failure drain fails closed.** Only `CANCELLED` is
+  handled (D342). A different stop reason (for example a storage-quota stop) during a failure drain
+  leaves the finish refused with `InvalidTransition` rather than inventing a final status.
+- **G343 — A public cancel of a run whose loop is active returns 500.** `plan()` fails closed with
+  `UnsupportedStructuredNode` for a `READY`/`RUNNING`/`DELAYING` loop under a stop request, the
+  cancel transaction rolls back and the API answers `INTERNAL`. This predates D294 and is the open
+  "outer cancel through the domain planner" part of T014-019. The storage-level cancel drain is
+  proven; the public cancel is not.

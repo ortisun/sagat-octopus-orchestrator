@@ -205,11 +205,16 @@ cargo test -p sagat-tests --test integration_workflow_primitives \
 ```
 
 The test asserts that the timer and journal checkpoint survive reload, a duplicate timer fire
-does not admit another iteration, and no worker lease is retained during the delay. The full
-zero-worker production scenario remains a release gate until planner and worker wiring are enabled.
+does not admit another iteration, and no worker lease is retained during the delay. A public run
+with a `delayMs` loop (no worker leased while it waits) is not exercised yet and stays a release
+gate.
 
-The private durable drain boundary can be checked independently while the public loop gate remains
-closed:
+The restricted public loop shape is published (a loop chain ending at `end`, with a body of one
+activity and one `return`; see `contracts/README.md`). A loop failure drains the active iteration
+first and then follows the loop's `onError` edge; without an `onError` edge it fails the run after
+the drain. A cancelled run still ends `CANCELLED` and never takes the edge. Publication accepts an
+`end` as the `onError` target; an `onError` edge to an activity is proven at the storage and
+worker level only. The drain and edge boundaries can be checked independently:
 
 ```sh
 cargo test -p sagat-tests --test integration_workflow_primitives --locked \
@@ -218,12 +223,18 @@ cargo test -p sagat-tests --test integration_workflow_primitives --locked \
   loop_progress::deadline_cancels_a_suspended_timer_and_fences_the_stale_fire -- --exact --nocapture
 cargo test -p sagat-tests --test integration_workflow_primitives --locked \
   loop_progress::cancellation_drains_the_active_iteration_and_finishes_after_restart -- --exact --nocapture
+cargo test -p sagat-tests --test integration_workflow_primitives --locked \
+  loop_progress::permanent_body_failure_with_an_error_edge_routes_the_recovery_activity -- --exact --nocapture
+cargo test -p sagat-tests --test integration_workflow_primitives --locked \
+  loops_http::public_loop_body_failure_routes_the_error_edge_and_the_run_completes -- --exact --nocapture
+cargo test -p sagat-tests --test fault_workflow_primitives --locked loops:: -- --test-threads=2
 ```
 
-These checks prove the journal/projection, timer, capacity, audit, outbox and replay boundaries of
-the private adapter. They are not public runtime evidence. Carry and result payload retention must
-join the same transaction before loop publication can be enabled; otherwise a revision or
-cancellation race can retain content without committing the corresponding loop transition.
+The storage checks prove the journal/projection, timer, capacity, audit, outbox and replay
+boundaries, including restarts and duplicate deliveries at every drain step and the rollback of
+the edge when its outbox or audit record cannot be stored. The `loops_http` checks run the same
+failures through publication, the scheduler and a worker over HTTP and gRPC. Carry and result
+payloads are retained in the same transaction as the transition that records them.
 
 The other proposed node names and endpoints in `contracts/README.md` remain unavailable until their
 runtime, fault and security gates pass. These targets are registered, but their presence does not

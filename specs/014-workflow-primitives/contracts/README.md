@@ -64,7 +64,7 @@ Schema `maxLength` counts characters, so its bound is not proof of the evaluator
 | Kind / declaration | Required fields | Semantics |
 | --- | --- | --- |
 | `forEach` | `items`, `body`, `result`, `maxItems`, `maxConcurrency`, `next` | Evaluate/capture bounded array once; invoke body at each index; ordered array of `result` values. SDK `map` emits this same node. |
-| `while` | `condition`, `body`, `initial`, `carry`, `maxIterations`, `timeoutMs`, `next` | Pre-test; false initially returns initial carry; each body computes new carry before next test. |
+| `while` | `condition`, `body`, `initial`, `carry`, `maxIterations`, `timeoutMs`, `next`; optional `delayMs`, `onError` | Pre-test; false initially returns initial carry; each body computes new carry before next test. With `onError`, every loop failure follows that edge (below). |
 | `repeatUntil` | Same as `while` | Post-test; execute at least once, stop when condition becomes true. |
 | `approval` | `policy`, `timeoutMs`, `onApprove`, `onReject`, `onExpire` | Single eligible decision or expiry; all three routes declared; no activity runs while waiting. |
 | `switch` | ordered `cases[{id,when,target}]`, `default` | First boolean true wins; evaluated predicate error fails; recorded decision is replayed. The shape has no `onError` route. |
@@ -80,6 +80,19 @@ with its pinned target, or null before evaluation. Its ordered edges use `kind: 
 and `kind: default`. The journal records `switch.evaluated` once; telemetry derives
 `workflow.switch.evaluate` and a bounded `workflow_primitive_transitions_total` observation from
 that committed event. Case IDs never become metric labels.
+
+A loop that declares `onError` routes every loop failure to that edge: a permanent body failure,
+the loop `timeoutMs` and an expression error (D294), as the iteration limit already did. The active
+iteration drains first (its member steps stop, no new iteration or delay is admitted), the loop scope
+ends `FAILED` with its failure code retained on the owner step, and the run continues at the edge in
+the same transaction that finishes the drain: an activity target becomes `READY` with its task
+outbox, an `end` target finishes the run through the normal terminal path including `run.finished`
+and the outbound fan-out. The run is never asked to stop, so it stays `RUNNING`/`WAITING` and no
+`run.stop_requested` is journaled. A loop without `onError` keeps failing the run after the drain,
+and a run-level cancellation always finishes the run `CANCELLED` and never takes the edge, even when
+it lands during a failure drain. The public loop subset accepts an `end` as the `onError` target.
+An expression error while evaluating the loop's initial carry or condition at entry happens before
+any iteration exists and still fails the run (pending decision G341 in `research.md`).
 
 Loops may also specify `delayMs` in 1..31622400000, applied only between needed iterations. Absence
 means no delay. Shared run `maxInstances` and nesting limits are enforced even when individual node
