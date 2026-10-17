@@ -8,7 +8,7 @@
 use std::future::Future;
 
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
-use sagat_domain::binding::{self, BindingError, MAX_PATTERNS};
+use sagat_domain::binding::{self, BindingError, MAX_PATTERNS, PoolError};
 use sagat_domain::identity::{NamespaceId, Permission, Principal, Subject, TenantId};
 
 use crate::authz::{NamespaceDirectory, require_namespace};
@@ -30,6 +30,8 @@ pub struct Revoked {
 pub struct StoredBinding {
     pub subject: String,
     pub patterns: Vec<String>,
+    /// The worker pools the identity was granted in this namespace (G48).
+    pub pools: Vec<String>,
 }
 
 /// Storage port of the bindings. Implemented by `sagat-infra-postgres`.
@@ -41,15 +43,19 @@ pub trait BindingStore: NamespaceDirectory {
         namespace: NamespaceId,
     ) -> impl Future<Output = Result<Vec<StoredBinding>, StoreError>> + Send;
 
-    /// Replaces the patterns of one identity in one namespace (`patterns` empty removes the binding),
-    /// closes the sessions the result no longer covers and releases their attempts, and writes the
-    /// audit record, all in one transaction. `Ok(None)` when there was nothing to remove.
+    /// Replaces the patterns of one identity in one namespace (`patterns` empty removes the binding
+    /// and its pool grants), closes the sessions the result no longer covers and releases their
+    /// attempts, and writes the audit record, all in one transaction. `pools` replaces the identity's
+    /// pool grants (`Some(&[])` clears them); `None` leaves them as they are. `Ok(None)` when there
+    /// was nothing to remove.
+    #[allow(clippy::too_many_arguments)] // one change is the identity, its patterns and pools, who and why
     fn replace_binding(
         &self,
         tenant: TenantId,
         namespace: NamespaceId,
         subject: &str,
         patterns: &[String],
+        pools: Option<&[String]>,
         changed_by: &str,
         audit: &AuditRecord,
     ) -> impl Future<Output = Result<Option<Revoked>, StoreError>> + Send;
@@ -60,6 +66,7 @@ pub trait BindingStore: NamespaceDirectory {
 pub struct BindingView {
     pub subject: String,
     pub patterns: Vec<String>,
+    pub pools: Vec<String>,
     pub revoked: Revoked,
 }
 
@@ -99,22 +106,44 @@ where
             .map(|b| BindingView {
                 subject: b.subject,
                 patterns: b.patterns,
+                pools: b.pools,
                 revoked: Revoked::default(),
             })
             .collect())
     }
 
-    /// Binds `subject` to `activities` in `namespace`, replacing what it had there.
+    /// Binds `subject` to `activities` in `namespace`, replacing what it had there. The pools it was
+    /// granted are left as they are.
     ///
     /// # Errors
-    /// [`AppError::Forbidden`]; [`AppError::NotFound`]; [`AppError::NotAllowed`] for a subject or a
-    /// pattern that cannot be used.
+    /// As [`Self::bind_with_pools`].
     pub async fn bind(
         &self,
         principal: &Principal,
         namespace: NamespaceId,
         subject: &str,
         activities: &[String],
+        ctx: &RequestContext,
+    ) -> Result<BindingView, AppError> {
+        self.bind_with_pools(principal, namespace, subject, activities, None, ctx)
+            .await
+    }
+
+    /// Binds `subject` to `activities` in `namespace`, replacing what it had there, and grants it
+    /// `pools` (`Some(&[])` takes every grant away; `None` leaves them as they are). A pool is a
+    /// name a secret can list as allowed to receive it (G48): only an administrator who may bind
+    /// workers can put an identity in one.
+    ///
+    /// # Errors
+    /// [`AppError::Forbidden`]; [`AppError::NotFound`]; [`AppError::NotAllowed`] for a subject, a
+    /// pattern or a pool that cannot be used.
+    pub async fn bind_with_pools(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+        subject: &str,
+        activities: &[String],
+        pools: Option<&[String]>,
         ctx: &RequestContext,
     ) -> Result<BindingView, AppError> {
         principal.authorize(Permission::WorkerBind)?;
@@ -128,16 +157,25 @@ where
                 }
             })
         })?;
+        let pool_texts: Option<Vec<String>> = pools
+            .map(|pools| {
+                binding::parse_pools(pools).map(|p| p.iter().map(ToString::to_string).collect())
+            })
+            .transpose()
+            .map_err(|error| {
+                AppError::NotAllowed(match error {
+                    PoolError::Count => "an identity is granted at most 16 pools",
+                    PoolError::InvalidName => "a pool name is 1 to 64 letters, digits or . _ - : +",
+                })
+            })?;
         require_namespace(&self.store, &self.clock, principal, namespace, ctx).await?;
         let texts: Vec<String> = patterns.iter().map(|p| p.as_text()).collect();
         debug_assert!(texts.len() <= MAX_PATTERNS);
-        let audit = self.audit(
-            principal,
-            AuditAction::WorkerBound,
-            namespace,
-            format!("{subject}: {}", texts.join(", ")),
-            ctx,
-        );
+        let mut what = format!("{subject}: {}", texts.join(", "));
+        if let Some(pools) = &pool_texts {
+            what.push_str(&format!("; pools: {}", pools.join(", ")));
+        }
+        let audit = self.audit(principal, AuditAction::WorkerBound, namespace, what, ctx);
         let revoked = self
             .store
             .replace_binding(
@@ -145,14 +183,28 @@ where
                 namespace,
                 subject.as_str(),
                 &texts,
+                pool_texts.as_deref(),
                 principal.subject().as_str(),
                 &audit,
             )
             .await?
             .unwrap_or_default();
+        // What is in force now: the grants the caller named, or the ones left in place.
+        let pools = match pool_texts {
+            Some(pools) => pools,
+            None => self
+                .store
+                .bindings(principal.tenant_id(), namespace)
+                .await?
+                .into_iter()
+                .find(|b| b.subject == subject.as_str())
+                .map(|b| b.pools)
+                .unwrap_or_default(),
+        };
         Ok(BindingView {
             subject: subject.to_string(),
             patterns: texts,
+            pools,
             revoked,
         })
     }
@@ -185,6 +237,7 @@ where
                 namespace,
                 subject.as_str(),
                 &[],
+                None,
                 principal.subject().as_str(),
                 &audit,
             )

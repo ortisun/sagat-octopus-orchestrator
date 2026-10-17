@@ -93,6 +93,8 @@ impl From<Revoked> for RevokedBody {
 pub struct BindingBody {
     pub subject: String,
     pub activities: Vec<String>,
+    /// The worker pools the identity was granted in the namespace (G48).
+    pub pools: Vec<String>,
     /// Only in the answer to a change.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub revoked: Option<RevokedBody>,
@@ -104,6 +106,7 @@ impl BindingBody {
         Self {
             subject: view.subject.clone(),
             activities: view.patterns.clone(),
+            pools: view.pools.clone(),
             revoked: None,
         }
     }
@@ -126,6 +129,9 @@ pub struct BindingListBody {
 #[serde(deny_unknown_fields)]
 pub struct SetBindingBody {
     pub activities: Vec<String>,
+    /// Replaces the pools the identity is granted; absent leaves them as they are, `[]` clears them.
+    #[serde(default)]
+    pub pools: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -138,6 +144,10 @@ pub struct SecretBody {
     pub created_by: String,
     #[serde(with = "time::serde::rfc3339")]
     pub updated_at: time::OffsetDateTime,
+    /// The worker pools allowed to receive the secret; empty means every worker bound to the
+    /// activity (G48). Only for callers who manage secrets.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pools: Option<Vec<String>>,
 }
 
 impl From<&SecretView> for SecretBody {
@@ -148,6 +158,7 @@ impl From<&SecretView> for SecretBody {
             key_id: view.key_id.clone(),
             created_by: view.created_by.clone(),
             updated_at: view.updated_at,
+            pools: view.pools.clone(),
         }
     }
 }
@@ -162,18 +173,29 @@ pub struct SecretAccessBody {
     pub subjects: Vec<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SecretPoolsBody {
+    pub pools: Vec<String>,
+}
+
 /// The value of a secret on its way in. It is the only place the API accepts one, and it never
 /// prints.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SetSecretBody {
     pub value: String,
+    /// Replaces the pools allowed to receive the secret in the same call; absent leaves them as
+    /// they are (none on a new secret), `[]` lifts the restriction.
+    #[serde(default)]
+    pub pools: Option<Vec<String>>,
 }
 
 impl std::fmt::Debug for SetSecretBody {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SetSecretBody")
             .field("value", &"<redacted>")
+            .field("pools", &self.pools)
             .finish()
     }
 }

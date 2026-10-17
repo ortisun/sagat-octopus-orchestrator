@@ -3397,6 +3397,42 @@
       ]
     },
     {
+      "table": "secret_pools",
+      "column": "granted_by",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated identity subject, bounded to 255 non-control characters by the identity value object and by a database CHECK constraint (secret_pools_granted_by_valid). Writer/source: `crates/infra-postgres/src/secrets.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/secrets.rs"
+      ]
+    },
+    {
+      "table": "secret_pools",
+      "column": "pool",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated worker pool name, 1 to 64 characters of a closed alphabet by `sagat_domain::binding::PoolName` and by a database CHECK constraint (secret_pools_pool_valid); at most 16 per secret or per identity. Writer/source: `crates/infra-postgres/src/secrets.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/secrets.rs"
+      ]
+    },
+    {
       "table": "secret_versions",
       "column": "ciphertext",
       "sql_type": "bytea",
@@ -3697,6 +3733,24 @@
         "kind": "protected_bound",
         "expression": null,
         "evidence": "Fixed cryptographic digest/token representation (normally 32 bytes, or a bounded hexadecimal rendering). Writer/source: `crates/infra-postgres/src/execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "steps",
+      "column": "secrets",
+      "sql_type": "_text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Names of the secrets the step declares, copied from the pinned workflow version when the step is created: at most 16 names of at most 64 characters (`sagat_domain::secrets::SecretName`), bounded by the database CHECK `steps_secrets_bounded` (16 entries, 1039 bytes joined). Writer/source: `crates/infra-postgres/src/execution.rs`."
       },
       "owner_paths": [
         "crates/infra-postgres/src/execution.rs"
@@ -4060,6 +4114,60 @@
       },
       "owner_paths": [
         "crates/infra-postgres/src/outbound.rs"
+      ]
+    },
+    {
+      "table": "worker_binding_pools",
+      "column": "pool",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated worker pool name, 1 to 64 characters of a closed alphabet by `sagat_domain::binding::PoolName` and by a database CHECK constraint (worker_binding_pools_pool_valid); at most 16 per secret or per identity. Writer/source: `crates/infra-postgres/src/bindings.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/bindings.rs"
+      ]
+    },
+    {
+      "table": "worker_binding_pools",
+      "column": "subject",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated identity subject, bounded to 255 non-control characters by the identity value object and by a database CHECK constraint (worker_binding_pools_subject_valid). Writer/source: `crates/infra-postgres/src/bindings.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/bindings.rs"
+      ]
+    },
+    {
+      "table": "worker_binding_pools",
+      "column": "updated_by",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated identity subject, bounded to 255 non-control characters by the identity value object and by a database CHECK constraint (worker_binding_pools_updated_by_valid). Writer/source: `crates/infra-postgres/src/bindings.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/bindings.rs"
       ]
     },
     {

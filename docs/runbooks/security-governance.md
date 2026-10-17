@@ -12,6 +12,8 @@ were run against this repository, and what is **not** built is listed at the end
 | Worker binding | Which namespaces and activities a worker identity may serve | At registration and on every heartbeat, completion, failure and secret resolution | `PUT/DELETE /namespaces/{id}/worker-bindings/{subject}` (`worker:bind`) |
 | Secret | A named value a step may ask for while it holds a lease | Publishing a workflow that declares it; `ResolveSecrets` | `/namespaces/{id}/secrets...` (`secret:manage`, names with `secret:read`) |
 | Secret access list | Who may reference one secret from workflows they publish | Publishing, and again at every resolution | `PUT/DELETE /namespaces/{id}/secrets/{name}/access/{subject}` |
+| Worker pool grant | Which pools an identity belongs to in a namespace (what a secret's pool list is judged against) | When a step that declares a restricted secret would be leased, and again at `ResolveSecrets` | `pools` in `PUT /namespaces/{id}/worker-bindings/{subject}` (`worker:bind`) |
+| Secret pool list | Which worker pools may receive one secret; no list means every worker bound to the activity | The lease is not handed to a worker outside the list; `ResolveSecrets` refuses it again | `GET/PUT /namespaces/{id}/secrets/{name}/pools` (`secret:manage`) |
 | Quota | How much of the platform a namespace or tenant may use | Inside the transaction that creates the thing | `/quotas` and `/namespaces/{id}/quotas` (`quota:manage`; read with `quota:read`) |
 | Egress policy | Where a namespace's outbound requests may go | The script supervisor reads it before every mediated host call; other outbound features use `EgressService` | `/namespaces/{id}/egress-policy` (`egress:manage`) |
 | TLS / mTLS | Who may reach the worker API and that nobody reads it on the wire | The engine's listener | `SAGAT_GRPC_TLS_*` |
@@ -103,6 +105,59 @@ Lowering a ceiling applies at once, also to a limit the tenant had set higher: w
 smaller of the two. Granting a ceiling does not raise a limit the tenant set; with nothing set, the whole
 ceiling is available.
 
+### Restricting a secret to worker pools
+
+By default a secret goes to **any** worker bound to the activity of a step that declares it (G48). To
+keep it from a less-trusted fleet, say which pools may receive it and grant those pools to the identities
+of the trusted fleet:
+
+```sh
+# the trusted fleet's identity joins the pool `payments-trusted` (absent `pools` leaves the grants alone,
+# `[]` takes them all away; removing the binding removes them too)
+curl -X PUT "$API/v1/namespaces/$NS/worker-bindings/payments-workers" ... \
+  -d '{"activities": ["payments.*"], "pools": ["payments-trusted"]}'
+# only that pool may receive the secret (`[]` lifts the restriction)
+curl -X PUT "$API/v1/namespaces/$NS/secrets/stripe-key/pools" ... -d '{"pools": ["payments-trusted"]}'
+curl "$API/v1/namespaces/$NS/secrets/stripe-key/pools" ...
+# or create it restricted from the first instant: `pools` in the same call as the value
+curl -X PUT "$API/v1/namespaces/$NS/secrets/stripe-key" ... -d '{"value": "sk-live-...", "pools": ["payments-trusted"]}'
+```
+
+**Deleting a secret deletes its restriction.** A secret you delete and create again is a new secret:
+unless the new `PUT` names `pools`, it is delivered to every worker bound to the activity. Recreate a
+restricted secret with its `pools` in the same call. (A tombstone that restored the old list would
+restrict a new secret by something nobody can see any more; creating it restricted is explicit.) A
+`PUT` of a new version that names no `pools` keeps the list. Only holders of `secret:manage` are shown
+`pools` (a developer who merely uses a secret is not told which fleets are trusted with it).
+
+A **pool** is a name an administrator grants to a worker *identity* in one namespace. The `pools` a worker
+advertises when it registers are scaling labels and are never read for this decision, so a worker cannot
+join a pool by saying so. Names are 1 to 64 letters, digits or `. _ - : +`, at most 16 per identity and
+per secret, and mean something only inside the tenant and namespace that granted them.
+
+What happens to a worker outside the list: its poll does not return the step (it stays `READY`, no
+attempt is spent) and a worker in the list gets it; if it holds a lease from before the restriction, or
+before its grant was taken away, `ResolveSecrets` answers `SECRET_NOT_USABLE` and the value is not read.
+Both are audited as `secret.delivery_refused` (naming the secret, node, attempt and stage `lease` or
+`resolve`, never a value or a pool), **once per worker identity, run, node and attempt**: polling every
+half second does not add rows, a retry is a new attempt and so a new row, and one worker identity writes at
+most a hundred on one run. The counter `secret_delivery_refused_total{stage}` carries the rate. If a step
+stays `READY` and nothing runs it, look for `secret.delivery_refused` rows on its run, then grant a worker
+identity the pool or add the pool to the secret.
+
+**Revoking does not recall a value.** Changing a secret's pools, or taking a pool away from an identity,
+stops the *next* `ResolveSecrets` (a resolution that is committing waits for the change and then sees it),
+but an attempt that has **already resolved** the value keeps it until it ends: nothing on the worker
+can be taken back. If a value may have reached a worker that should not have had it, rotate the secret
+(`PUT` a new value), and remove the identity's bindings to close its sessions.
+
+Candidate selection leaves out the steps a worker is not entitled to (the names a step declares are
+copied onto its row when it is created), so refused steps do not hide unrestricted work from a general
+worker. For the audit, the oldest few refused steps per activity are still offered to the claim, which
+refuses and records them: the trail samples refusals, it does not hold one row per step per poll.
+Steps created before upgrading to this version carry no recorded names; they are still refused at the
+lease, but can take places in the window until they are leased or finish.
+
 ### Secrets
 
 ```sh
@@ -167,6 +222,7 @@ script path (D59); feature 004 still owns future webhook signature, replay and i
 | A worker that was working gets `NOT_BOUND` on a heartbeat or report | Its binding was removed or narrowed; its sessions are closed and its attempts released | Expected after a deliberate change; bind it again and let it re-register |
 | `403` `SECRET_NOT_USABLE` when publishing | The secret does not exist, or the publisher's role lacks `secret:use`, or they are not on its list | Check the name, then `GET .../secrets/{name}/access`; the answer is the same for missing and forbidden on purpose |
 | A worker gets `SECRET_NOT_USABLE` from `ResolveSecrets` | The secret was deleted, or the **publisher of that version** lost access, was demoted or left | Restore access, or republish the workflow as someone who has it; audit action `secret.denied` has the node and attempt |
+| A step stays `READY` and no worker takes it, or a worker gets `SECRET_NOT_USABLE` though the publisher may use the secret | The secret lists worker pools and the worker's identity holds none of them (G48) | `GET .../secrets/{name}/pools` and `GET .../worker-bindings`; audit action `secret.delivery_refused` names the node, attempt and stage. Grant the identity a pool, or change the secret's list |
 | A step failed with `SECRET_IN_OUTPUT` | The activity returned a secret it was given (in its output, or as the code it failed with, and in any version of the secret that is still stored); the output was discarded | Fix the activity; rotate that secret if the value was written anywhere the platform does not control |
 | `ResolveSecrets` answers `INVALID_ARGUMENT` "secrets are not configured" | The engine has no `SAGAT_SECRETS_KEYS` | Give it the same ring as the control plane |
 | Resolution fails with a log line "a stored secret cannot be opened" | A version is sealed under a key that is not in this process's ring | Restore the key to the ring, or `PUT` the secret again |
@@ -193,7 +249,8 @@ script path (D59); feature 004 still owns future webhook signature, replay and i
 ## 6. Observability
 
 Audit actions (immutable, redacted, never a value): `quota.changed`, `secret.stored`, `secret.deleted`,
-`secret.access_granted`, `secret.access_revoked`, `secret.resolved`, `secret.denied`,
+`secret.access_granted`, `secret.access_revoked`, `secret.pools_changed`, `secret.resolved`, `secret.denied`,
+`secret.delivery_refused`,
 `egress.policy_changed`, `egress.denied`, `script.violation`, `worker.bound`, `worker.unbound`, `worker.denied`,
 `access.denied.cross_tenant`, `access.denied.permission`.
 

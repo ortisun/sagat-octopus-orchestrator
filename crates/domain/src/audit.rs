@@ -55,6 +55,12 @@ pub enum AuditAction {
     /// A workflow referenced a secret its publisher may not use, or a lease asked for one it was
     /// not given.
     SecretDenied,
+    /// The worker pools allowed to receive a secret were replaced (G48).
+    SecretPoolsChanged,
+    /// A worker outside the pools of a secret was not handed a step that declares it, or asked for
+    /// its value with a lease it holds. Written once per worker identity, run, node and attempt:
+    /// a worker polls as often as it likes and the step stays available to others (G48).
+    SecretDeliveryRefused,
     QuotaChanged,
     /// The egress policy of a namespace was replaced.
     EgressPolicyChanged,
@@ -166,6 +172,7 @@ impl AuditAction {
             Self::BlobRead
                 | Self::SecretResolved
                 | Self::SecretDenied
+                | Self::SecretDeliveryRefused
                 | Self::EventRejected
                 | Self::ScriptViolation
                 | Self::AuditRead
@@ -196,7 +203,7 @@ impl AuditAction {
     #[must_use]
     pub const fn distinct_cap(self) -> Option<u32> {
         match self {
-            Self::ScriptViolation => Some(100),
+            Self::ScriptViolation | Self::SecretDeliveryRefused => Some(100),
             _ => None,
         }
     }
@@ -226,6 +233,8 @@ impl AuditAction {
             Self::SecretAccessRevoked => "secret.access_revoked",
             Self::SecretResolved => "secret.resolved",
             Self::SecretDenied => "secret.denied",
+            Self::SecretPoolsChanged => "secret.pools_changed",
+            Self::SecretDeliveryRefused => "secret.delivery_refused",
             Self::QuotaChanged => "quota.changed",
             Self::EgressPolicyChanged => "egress.policy_changed",
             Self::EgressDenied => "egress.denied",

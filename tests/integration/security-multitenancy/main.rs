@@ -11,4 +11,5 @@ mod durable_quotas;
 mod egress;
 mod incidents;
 mod quotas;
+mod secret_pools;
 mod secrets;
