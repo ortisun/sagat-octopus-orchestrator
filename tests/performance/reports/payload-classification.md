@@ -7,10 +7,10 @@ Measured by `tests/performance/payload-classification/main.rs`. These are observ
 - CPU: Apple M3 Max (16 logical cores)
 - OS: Darwin 25.3.0 arm64
 - Rust: rustc 1.98.0 (88d9e12ae 2026-08-18)
-- Load average when the run began: 18.77 18.15 19.23 (other work on the machine adds noise)
+- Load average when the run began: 34.50 33.23 25.75 (other work on the machine adds noise)
 - Build profile: debug (unoptimised)
-- Commit: 4ecedeac plus uncommitted changes to tracked files
-- Harness: a temporary minimal Cargo harness pinned to the repository lock; the registered target's unrelated dependencies did not compile at the measured base
+- Commit: c3f3858b plus uncommitted changes to tracked files
+- Harness: the registered `perf_payload_classification` target
 - Execution: one in-process thread, monotonic `Instant`; no database or network
 - Allocation measurement: macOS `heap <pid>` live-allocation snapshots; counts requested live nodes and bytes, not allocator fragmentation or RSS
 
@@ -25,10 +25,10 @@ Measured by `tests/performance/payload-classification/main.rs`. These are observ
 
 | Shape | Cache | Samples | p50 | p95 | p99 | Maximum encoded response | Failures |
 |---|---|---:|---:|---:|---:|---:|---:|
-| wide (128 public strings) | cold | 60 | 24.221 ms | 28.029 ms | 34.479 ms | 146241 | 0 |
-| wide (128 public strings) | warm | 300 | 7.588 ms | 8.286 ms | 10.253 ms | 146241 | 0 |
-| deep (17 nested arrays) | cold | 60 | 5.037 ms | 5.139 ms | 5.269 ms | 2381 | 0 |
-| deep (17 nested arrays) | warm | 300 | 3.025 ms | 3.294 ms | 4.335 ms | 2381 | 0 |
+| wide (128 public strings) | cold | 60 | 24.051 ms | 28.605 ms | 41.538 ms | 146241 | 0 |
+| wide (128 public strings) | warm | 300 | 7.462 ms | 9.076 ms | 13.631 ms | 146241 | 0 |
+| deep (17 nested arrays) | cold | 60 | 5.001 ms | 5.327 ms | 9.325 ms | 2381 | 0 |
+| deep (17 nested arrays) | warm | 300 | 3.013 ms | 3.232 ms | 3.920 ms | 2381 | 0 |
 
 ## Cache behavior and retained heap
 
@@ -37,11 +37,11 @@ Measured by `tests/performance/payload-classification/main.rs`. These are observ
 | wide warm hit ratio (prime included) | 99.668% (300 hits, 1 miss) |
 | deep warm hit ratio (prime included) | 99.668% (300 hits, 1 miss) |
 | logical full cache | 256 entries × 65536 bytes = 16777216 bytes |
-| baseline live heap | 7341 allocations / 2039600 bytes |
-| live heap at logical full cache | 4693936 allocations / 436399984 bytes |
-| after dropping the classifier | 7341 allocations / 2039600 bytes |
-| full-cache delta | 4686595 allocations / 434360384 bytes (414.24 MiB) |
-| live bytes released when the classifier was dropped | 434360384 bytes (414.24 MiB) |
+| baseline live heap | 7341 allocations / 2040352 bytes |
+| live heap at logical full cache | 4693937 allocations / 436400800 bytes |
+| after dropping the classifier | 7341 allocations / 2040352 bytes |
+| full-cache delta | 4686596 allocations / 434360448 bytes (414.24 MiB) |
+| live bytes released when the classifier was dropped | 434360448 bytes (414.24 MiB) |
 | 257th distinct carrier | 1 eviction |
 | revisiting the first carrier | 2 total evictions (the first was absent) |
 | emitted `classification_cache_total` during this run | hit=600, miss=380, evict=2 |
@@ -52,10 +52,10 @@ The cache retained **414.24 MiB** of allocator-requested live bytes at the logic
 
 - Both maximum payloads and both maximum carriers were accepted. All 720 measured projections succeeded.
 - Maximum encoded responses were 146241 bytes (wide) and 2381 bytes (deep), below the 262144-byte response bound. Both are truncated by documented disclosure bounds; truncation is a successful bounded response.
-- Benchmark harness failure: the registered `sagat-tests` target did not compile at the measured base because `infra-postgres` lacked `PathExecutionStore::{Tx, begin_path}` and `PathExecutionSnapshot.data`; the exact benchmark source ran through the minimal pinned harness described above.
+- Benchmark harness failure: none.
 - No latency threshold existed before this run (NFR-016-003), so the percentile table establishes a baseline rather than claiming an SLO.
 - `heap` reports requested live allocation nodes and bytes. It does not include allocator fragmentation or resident pages, and the live-byte result must not be presented as RSS.
 
 ## Gate status
 
-SC-016-008's required measurements are present for this environment: maximum payload/schema, p50/p95/p99, cache ratio, live allocation count, retained logical heap, encoded response size and failures. The numeric bounds held in this run. The compiled-cache memory finding above remains an open design correction before the 16 MiB label can mean physical memory. T016-053 should remain open until the owner accepts that interpretation or changes the cache weight.
+SC-016-008's required measurements are present for this environment: maximum payload/schema, p50/p95/p99, cache ratio, live allocation count, retained logical heap, encoded response size and failures. The numeric bounds held in this run. D281 limits serialized schema bytes, not compiled heap or RSS; no physical 16 MiB memory guarantee is inferred. The registered target and concurrent cache accounting/admission tests must pass before T016-053 closes. This measurement preserves the approved schema-weight policy and needs no new owner decision.
