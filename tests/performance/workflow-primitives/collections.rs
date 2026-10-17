@@ -294,7 +294,12 @@ pub async fn run_case(items: usize, concurrency: usize) -> CollectionResult {
         after: after.to_string(),
         peak_threads,
         peak_connections,
-        journal_bytes_per_item: journal_bytes as f64 / items as f64,
+        journal_bytes_per_item: journal_bytes as f64
+            / if complete {
+                items as f64
+            } else {
+                checkpoints.max(1) as f64
+            },
         step_rows,
         checkpoints,
         status,
@@ -328,7 +333,7 @@ pub fn fragment(result: &CollectionResult) -> String {
     let wall = result.wall.as_secs_f64();
     format!(
         "### {items} items, maxConcurrency {c}{partial}\n\n\
-         - Outcome: run status {status:?}, {complete}; wall {wall:.1} s, {transitions} scheduler transitions, {tput:.1} items/s, {tps:.1} transitions/s.\n\
+         - Outcome: run status {status:?}, {complete}; wall {wall:.1} s, {transitions} scheduler transitions, {tput:.1} items/s (items checkpointed per second), {tps:.1} transitions/s.\n\
          - Peak active iterations observed (sampled every 8 transitions): {peak}; configured maxConcurrency {c}; tenant policy slots {slots}. Both bounds were asserted at every sample.\n\
          - Scheduler errors returned by a transition: {errors}. No client retries.\n\
          - Resources before: {before}.\n\
@@ -350,7 +355,12 @@ pub fn fragment(result: &CollectionResult) -> String {
             "NOT completed within the time budget"
         },
         transitions = result.transitions,
-        tput = result.items as f64 / wall.max(f64::EPSILON),
+        tput = (if result.complete {
+            i64::try_from(result.items).unwrap_or(0)
+        } else {
+            result.checkpoints
+        }) as f64
+            / wall.max(f64::EPSILON),
         tps = result.transitions as f64 / wall.max(f64::EPSILON),
         peak = result.peak_active,
         slots = result.concurrency.max(16),

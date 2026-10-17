@@ -90,6 +90,8 @@ struct WaitMeasurements {
     approval_schedule_ms: Vec<f64>,
     timer_schedule_ms: Vec<f64>,
     idle_ticks: Vec<Duration>,
+    idle_zero: Vec<Duration>,
+    idle_approvals: Vec<Duration>,
     bytes_per_approval: i64,
     bytes_per_timer: i64,
     journal_bytes_per_approval: f64,
@@ -316,21 +318,12 @@ async fn measure_waits(world: &World) -> WaitMeasurements {
             Uuid::now_v7()
         )))
         .await;
-    let approval_started = Instant::now();
-    let (_approval_runs, approval_start_samples) =
-        start_population(world, approval_workflow, "perf-approval", approvals).await;
-    let approval_load = approval_started.elapsed();
-    resource_points.push((
-        format!("{approvals} approvals started, none opened yet"),
-        common::resources(world).await,
-    ));
-
     let placement = Placement::new(format!("perf-approval-scheduler-{}", Uuid::now_v7()));
     Keeper::new(
         world.store.clone(),
         placement.clone(),
         KeeperSettings {
-            ttl: Duration::from_secs(60),
+            ttl: Duration::from_secs(6 * 3_600),
         },
     )
     .round()
@@ -343,6 +336,31 @@ async fn measure_waits(world: &World) -> WaitMeasurements {
         SchedulerSettings::default(),
     )
     .with_placement(placement);
+    // The lease outlives the load phase, which is minutes; the scheduler opens approvals only while it
+    // holds its shards.
+    let mut idle_zero = Vec::new();
+    for _ in 0..10 {
+        let started = Instant::now();
+        let report = scheduler.tick().await;
+        idle_zero.push(started.elapsed());
+        assert!(
+            !report.did_work() && report.failed == 0,
+            "empty tick: {report:?}"
+        );
+    }
+    // A pass that found nothing rests its discovery for `discovery_rest` (100 ms by default). The
+    // runs about to be started must not be loaded inside that window, or the opening loop below
+    // would spin through empty ticks and report a stall that is only the rest.
+    tokio::time::sleep(SchedulerSettings::default().discovery_rest * 5).await;
+    let approval_started = Instant::now();
+    let (_approval_runs, approval_start_samples) =
+        start_population(world, approval_workflow, "perf-approval", approvals).await;
+    let approval_load = approval_started.elapsed();
+    resource_points.push((
+        format!("{approvals} approvals started, none opened yet"),
+        common::resources(world).await,
+    ));
+
     let approval_opened_at = Instant::now();
     let mut opened = 0usize;
     let mut approval_open_ticks = 0u32;
@@ -363,6 +381,16 @@ async fn measure_waits(world: &World) -> WaitMeasurements {
         );
     }
     let approval_open = approval_opened_at.elapsed();
+    let mut idle_approvals = Vec::new();
+    for _ in 0..10 {
+        let started = Instant::now();
+        let report = scheduler.tick().await;
+        idle_approvals.push(started.elapsed());
+        assert!(
+            !report.did_work() && report.failed == 0,
+            "tick over pending approvals: {report:?}"
+        );
+    }
     resource_points.push((
         format!("{approvals} approvals pending"),
         common::resources(world).await,
@@ -514,6 +542,8 @@ async fn measure_waits(world: &World) -> WaitMeasurements {
         approval_schedule_ms,
         timer_schedule_ms,
         idle_ticks,
+        idle_zero,
+        idle_approvals,
         bytes_per_approval: (approval_after - approval_before)
             / i64::try_from(approvals).expect("approval count"),
         bytes_per_timer: (timer_after - timer_before) / i64::try_from(timers).expect("timer count"),
@@ -871,7 +901,18 @@ fn report(waits: WaitMeasurements, slots: SlotMeasurements) -> String {
         waits.timer_schedule_ms,
     ));
     report.push_str(&duration_row(
-        "scheduler tick with all waits idle",
+        "scheduler tick, no waits exist (control)",
+        waits.idle_zero,
+    ));
+    report.push_str(&duration_row(
+        &format!("scheduler tick, {} approvals pending", waits.approvals),
+        waits.idle_approvals,
+    ));
+    report.push_str(&duration_row(
+        &format!(
+            "scheduler tick, {} approvals + {} timers pending",
+            waits.approvals, waits.timers
+        ),
         waits.idle_ticks,
     ));
     report.push_str(&duration_row(

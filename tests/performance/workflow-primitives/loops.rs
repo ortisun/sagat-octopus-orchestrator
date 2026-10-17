@@ -219,7 +219,12 @@ pub async fn run_case(iterations: usize) -> LoopResult {
         after: after.to_string(),
         peak_threads: peak_threads.max(after.threads),
         peak_connections: peak_connections.max(after.pg_connections),
-        journal_bytes_per_iteration: journal_bytes as f64 / iterations as f64,
+        journal_bytes_per_iteration: journal_bytes as f64
+            / if complete {
+                iterations as f64
+            } else {
+                transitions.saturating_sub(1).max(1) as f64
+            },
         step_rows,
         status,
         probes,
@@ -230,7 +235,7 @@ pub fn fragment(r: &LoopResult) -> String {
     let wall = r.wall.as_secs_f64();
     format!(
         "### {n} sequential iterations{partial}\n\n\
-         - Outcome: run status {status:?}, {done}; wall {wall:.1} s, {t} scheduler transitions, {ips:.1} iterations/s.\n\
+         - Outcome: run status {status:?}, {done}; wall {wall:.1} s, {t} scheduler transitions, {ips:.1} iterations/s (iterations checkpointed per second).\n\
          - Resources before: {before}.\n\
          - Resources after: {after}. Peak threads {threads}, peak PostgreSQL connections {conns}.\n\
          - Durable size: {journal:.0} journal bytes per iteration (`pg_column_size`, no index/toast), {steps} step rows.\n\
@@ -249,7 +254,12 @@ pub fn fragment(r: &LoopResult) -> String {
             "NOT completed within the time budget"
         },
         t = r.transitions,
-        ips = r.iterations as f64 / wall.max(f64::EPSILON),
+        ips = (if r.complete {
+            r.iterations
+        } else {
+            r.transitions.saturating_sub(1)
+        }) as f64
+            / wall.max(f64::EPSILON),
         before = r.before,
         after = r.after,
         threads = r.peak_threads,
