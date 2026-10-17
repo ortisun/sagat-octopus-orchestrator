@@ -1328,3 +1328,30 @@ open (`approval_progress::a_decision_cut_off_at_any_await_commits_whole_or_not_a
 on a one-connection pool, some cut off), duplicate loop-iteration admission, loop bounds at
 publication, and approval principal and key bounds over HTTP and at publication. Decisions D291–D301
 are in `research.md`.
+
+## Loop error edge, limits, byte ceilings, projection and the runtime role (2026-10-17)
+
+- **Loop `onError` (D294)**: for a loop that declares `onError` the failure drains on the loop scope
+  alone (no `run.stop_requested`), the scope ends `FAILED`, and the run continues at the edge in the
+  same transactions; a loop without the edge, and every run-level cancel, behave as before.
+  Discovery was missing for failed bodies, expired deadlines and draining loops and the planner
+  cancelled a draining owner: both fixed. Tests: domain `primitive_loops.rs` (6 new), integration
+  `loop_progress.rs` (12 error-edge cases incl. the previously untested iteration-limit route),
+  `loops_http.rs` (3), `fault/loops.rs` (5; 4 failed against the old store).
+- **Top-level `limits` (D297) and byte ceilings (T014-008)**: `research.md` D310–D316; evidence in
+  `tasks.md`.
+- **Projection (T014-045)**: approval edges and decision, unsupported journal entries, owner edges.
+- **A defect no test could see (G294)**: approval decisions and declared Query/Update locked a
+  `memberships` row, which the least-privilege runtime role cannot do, so both answered 500 in
+  production. The suites connect as the database owner. Fixed (plain read) with two tests that
+  connect as `sagat_app` and failed first; an audit of every store statement is in progress.
+- **Manifest**: 94 columns of the 014 tables were missing from `storage-classification.json` and the
+  legacy-blob migration test returned the schema past the scoped-identity migration; fixed.
+
+| Target (real PostgreSQL) | Result at `ae450b9` |
+|---|---|
+| `integration_workflow_primitives` | 200/200 |
+| `fault_workflow_primitives` | 30/30 |
+| `contract_workflow_primitives` | 29/29 |
+| `integration_security_multitenancy` | 95/95 |
+| `integration_durable_execution` | 178/178 |
