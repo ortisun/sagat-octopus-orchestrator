@@ -13,7 +13,7 @@ use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::classification::{Audience, ClassificationRules};
 use sagat_domain::definition::WorkflowVersionId;
 use sagat_domain::execution::RunId;
-use sagat_domain::identity::{NamespaceId, Permission, Principal, Role, TenantId};
+use sagat_domain::identity::{NamespaceId, Permission, Principal, Role, Subject, TenantId};
 use tracing::Instrument;
 
 use crate::classification::{
@@ -102,6 +102,11 @@ impl PreparedDisclosure {
     pub const fn reveal_pii(&self) -> bool {
         self.reveal_pii
     }
+
+    #[must_use]
+    pub fn subject(&self) -> &Subject {
+        self.principal.subject()
+    }
 }
 
 /// Immutable workflow bytes. Debug output retains only their size.
@@ -137,7 +142,8 @@ pub struct SelectedDisclosure {
     pub workflow_version: WorkflowVersionId,
     pub version_number: u32,
     pub classification_rules: ClassificationRules,
-    pub carrier: CarrierPointer,
+    /// `None` when the selected journal event is not one of the closed carrier-producing events.
+    pub carrier: Option<CarrierPointer>,
     pub node_id: Option<String>,
     pub attempt: Option<u32>,
     pub definition: StoredDefinition,
@@ -526,15 +532,48 @@ where
         let (result, audit) = match selected.payload {
             StoredPayload::Inline(bytes) => {
                 let size_bytes = u64::try_from(bytes.as_slice().len()).unwrap_or(u64::MAX);
+                let Some(carrier) = selected.carrier else {
+                    let result = if inspect {
+                        match self.structure_projector.project(bytes.as_slice()) {
+                            Ok(projection) => PayloadDisclosureResult::StructureOnly {
+                                schema: None,
+                                size_bytes,
+                                reason: StructureOnlyReason::NoSchema,
+                                projection,
+                            },
+                            Err(_) => PayloadDisclosureResult::Unavailable {
+                                reason: UnavailableDisclosureReason::UnsupportedFormat,
+                                size_bytes: Some(size_bytes),
+                            },
+                        }
+                    } else {
+                        PayloadDisclosureResult::Unavailable {
+                            reason: UnavailableDisclosureReason::NotDisclosable,
+                            size_bytes: Some(size_bytes),
+                        }
+                    };
+                    return Ok(DisclosureDecision {
+                        disclosure: PayloadDisclosure {
+                            run_id: self.prepared.run_id,
+                            run_version,
+                            selection: self.prepared.selector,
+                            node_id,
+                            attempt,
+                            caller,
+                            result,
+                        },
+                        audit: None,
+                    });
+                };
                 let schema = DisclosureSchema {
-                    carrier: (&selected.carrier).into(),
+                    carrier: (&carrier).into(),
                     version_number: selected.version_number,
                     rules: selected.classification_rules,
                 };
                 let request = ProjectionRequest {
                     cache_key: ClassificationCacheKey {
                         version: selected.workflow_version,
-                        carrier: selected.carrier,
+                        carrier,
                     },
                     rules: selected.classification_rules,
                     document: selected.definition.as_slice(),

@@ -63,7 +63,7 @@ impl FakeStore {
                 workflow_version: WorkflowVersionId::generate(),
                 version_number: 3,
                 classification_rules: ClassificationRules::CURRENT,
-                carrier: sagat_application::classification::CarrierPointer::Input,
+                carrier: Some(sagat_application::classification::CarrierPointer::Input),
                 node_id: None,
                 attempt: None,
                 definition: StoredDefinition::new(br#"{"inputSchema":{}}"#.to_vec()),
@@ -403,6 +403,50 @@ async fn schema_mismatch_is_structure_only_for_inspector_and_opaque_for_develope
             .await
             .expect("prepared");
         let answer = service.disclose(prepared).await.expect("safe answer");
+        assert_eq!(
+            matches!(answer.result, PayloadDisclosureResult::StructureOnly { .. }),
+            structure_only
+        );
+        assert_eq!(
+            matches!(answer.result, PayloadDisclosureResult::Unavailable { .. }),
+            !structure_only
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_non_carrier_journal_event_never_borrows_another_nodes_schema() {
+    for (role, structure_only) in [(Role::Operator, true), (Role::Developer, false)] {
+        let store = FakeStore::new();
+        {
+            let mut state = store.0.lock().expect("state");
+            state.current_role = role;
+            state.selected.carrier = None;
+            state.selected.node_id = Some("same-id".into());
+        }
+        let interpreter = FakeInterpreter::new(DisclosedLevels::PII);
+        let service = PayloadDisclosureService::new(
+            store.clone(),
+            FixedClock,
+            interpreter.clone(),
+            StructureProjector,
+        );
+        let prepared = service
+            .prepare(
+                &principal(store.tenant(), role),
+                store.run(),
+                DisclosureSelector::Journal { sequence: 9 },
+                false,
+                &context(),
+            )
+            .await
+            .expect("prepared");
+        let answer = service.disclose(prepared).await.expect("closed answer");
+
+        assert!(
+            interpreter.state.lock().expect("state").requests.is_empty(),
+            "an unrecognised event type has no classification carrier"
+        );
         assert_eq!(
             matches!(answer.result, PayloadDisclosureResult::StructureOnly { .. }),
             structure_only
