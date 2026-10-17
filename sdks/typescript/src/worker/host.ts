@@ -80,6 +80,15 @@ function minorOf(version: string): number {
   return match ? Number(match[1] ?? 0) : 0;
 }
 
+/**
+ * What identifies a task while it runs. The legacy task id is `run/node/generation`, so two iterations of one scope
+ * that are leased together share it: the instance identity (protocol 1.5) is what tells them apart.
+ */
+function inflightKey(lease: TaskLease): string {
+  const path = lease.instance?.instance_path ?? [];
+  return path.reduce((key, segment) => `${key}/${segment.scope_node_id}[${segment.iteration_index}]`, lease.task_id);
+}
+
 function instanceOf(lease: TaskLease, minor: number): TaskLease['instance'] {
   return minor >= 5 ? lease.instance : undefined;
 }
@@ -433,6 +442,7 @@ export class WorkerHost {
   // ------------------------------------------------------------------------------------------- tasks
 
   private dispatch(lease: TaskLease): void {
+    const key = inflightKey(lease);
     const abort = new AbortController();
     const done = this.execute(lease, abort)
       .catch((error: unknown) => {
@@ -440,11 +450,11 @@ export class WorkerHost {
         this.log.error('a task failed unexpectedly', { task: lease.task_id, error: error instanceof Error ? error.name : 'unknown' });
       })
       .finally(() => {
-      this.inflight.delete(lease.task_id);
+      this.inflight.delete(key);
       // A task finished: there is room, so the pause after an empty poll ends (SPEC §6.2).
       this.wake?.();
     });
-    this.inflight.set(lease.task_id, { abort, done });
+    this.inflight.set(key, { abort, done });
     this.#emit({ type: 'task.taken', taskId: lease.task_id, activity: lease.activity_name, attempt: lease.attempt, traceparent: lease.traceparent });
   }
 
