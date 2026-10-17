@@ -158,6 +158,14 @@ pub trait MaintenanceStore: Send + Sync {
         window: &Window,
     ) -> impl Future<Output = Result<Vec<RunRef>, StoreError>> + Send;
 
+    /// Runs that were told to stop by a durable transaction of their own (a loop that reached its
+    /// iteration limit) and that no attempt holds any more: the planner still has to drain and end
+    /// them, and no later event would.
+    fn stopped_runs(
+        &self,
+        window: &Window,
+    ) -> impl Future<Output = Result<Vec<RunRef>, StoreError>> + Send;
+
     /// `READY` steps that nobody was notified about for `older_than` (the notification may have
     /// been lost with the broker; claiming does not depend on it, but latency does).
     fn stale_hints(

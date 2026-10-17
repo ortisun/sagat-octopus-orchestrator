@@ -108,6 +108,7 @@ pub struct Report {
     pub approvals_opened: u32,
     pub approvals_expired: u32,
     pub approval_routes_released: u32,
+    pub stopped_runs_settled: u32,
     pub timers_fired: u32,
     pub waits_timed_out: u32,
     pub retries_released: u32,
@@ -253,6 +254,7 @@ impl Report {
             + self.approvals_opened
             + self.approvals_expired
             + self.approval_routes_released
+            + self.stopped_runs_settled
             + self.waits_timed_out
             + self.retries_released
             + self.leases_expired
@@ -511,6 +513,7 @@ where
         self.retries(&self.view(), &mut report).await;
         self.leases(&self.view(), &mut report).await;
         self.deadlines(&self.view(), &mut report).await;
+        self.stopped_runs(&self.view(), &mut report).await;
         self.hints(&self.view(), &mut report).await;
         self.children_start(&self.view(), &mut report).await;
         self.children_finish(&self.view(), &mut report).await;
@@ -2873,6 +2876,36 @@ where
             .await;
         for outcome in outcomes {
             Self::tally(report, outcome, |r| r.deadlines_enforced += 1);
+        }
+    }
+
+    /// Ends the runs that a transaction of their own stopped (a loop at its iteration limit): the
+    /// planner drains what is left and finishes them, which no worker report or timer would do.
+    async fn stopped_runs(&self, view: &View, report: &mut Report) {
+        let stopped = self
+            .pick(
+                view,
+                "stopped_runs",
+                report,
+                |r: &RunRef| r.tenant_id,
+                |r| r.run_id,
+                |store, window| async move { store.stopped_runs(&window).await },
+            )
+            .await;
+        let outcomes = self
+            .each(stopped, |RunRef { tenant_id, run_id }| {
+                self.apply(
+                    view,
+                    tenant_id,
+                    run_id,
+                    "stopped_run",
+                    self.effects(),
+                    |def, state, now| Ok(((), execution::release_pending(def, state, now)?)),
+                )
+            })
+            .await;
+        for outcome in outcomes {
+            Self::tally(report, outcome, |r| r.stopped_runs_settled += 1);
         }
     }
 
