@@ -237,3 +237,13 @@ the exact 1000-admitted/1001-refused expansion boundary, and generated nested an
 The existing locked proptest dependency is reused only as a schema-package dev dependency; no
 production dependency or schema acceptance policy changed. The previous 20 classifier tests remain
 covered by the package gate.
+
+
+### Application refusal and Debug completion
+
+`cargo test --locked -p sagat-application --test payload_disclosure` passed 10/10
+(`/tmp/sagat-completion-disclosure-ports.log`). Added cases prove forbidden roles perform no store
+lookup, missing and foreign runs are the same typed NotFound, every closed projector failure
+returns no values and no success audit, and retained definition/payload Debug output exposes only
+sizes rather than schema fragments, data keys or values. Namespace admission is tested through its
+actual HTTP owner in the registered integration target, rather than inventing an application port.

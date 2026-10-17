@@ -13,7 +13,7 @@ use sagat_application::identity::RequestContext;
 use sagat_application::payload_disclosure::{
     DisclosureFailure, DisclosureRead, DisclosureRun, DisclosureSelector, PayloadDisclosureResult,
     PayloadDisclosureService, PayloadDisclosureStore, PayloadDisclosureUseCase, PreparedDisclosure,
-    SelectedDisclosure, StoredDefinition,
+    SelectedDisclosure, StoredDefinition, StructureOnlyReason, UnavailableDisclosureReason,
 };
 use sagat_application::payloads::{
     PayloadProjection, PayloadProjector, PayloadStructure, StoredPayload, StoredPayloadBytes,
@@ -47,6 +47,7 @@ struct State {
     selected: SelectedDisclosure,
     audits: Vec<AuditRecord>,
     fail_audit: bool,
+    lookups: u32,
 }
 
 impl FakeStore {
@@ -73,6 +74,7 @@ impl FakeStore {
             },
             audits: Vec::new(),
             fail_audit: false,
+            lookups: 0,
         })))
     }
 
@@ -91,7 +93,8 @@ impl PayloadDisclosureStore for FakeStore {
         tenant: TenantId,
         run: RunId,
     ) -> Result<Option<DisclosureRun>, StoreError> {
-        let state = self.0.lock().expect("state");
+        let mut state = self.0.lock().expect("state");
+        state.lookups += 1;
         Ok(
             (state.tenant == tenant && state.run == run).then_some(DisclosureRun {
                 namespace_id: state.namespace,
@@ -228,6 +231,135 @@ fn context() -> RequestContext {
     RequestContext {
         trace_id: Some("trace-016".into()),
         span_id: Some("span-016".into()),
+    }
+}
+
+#[tokio::test]
+async fn forbidden_callers_never_lookup_and_missing_and_foreign_runs_stay_opaque() {
+    let store = FakeStore::new();
+    let service = PayloadDisclosureService::new(
+        store.clone(),
+        FixedClock,
+        FakeInterpreter::new(DisclosedLevels::PUBLIC),
+        StructureProjector,
+    );
+    for run in [store.run(), RunId::generate()] {
+        let result = service
+            .prepare(
+                &principal(store.tenant(), Role::Worker),
+                run,
+                DisclosureSelector::Input,
+                false,
+                &context(),
+            )
+            .await;
+        assert!(matches!(result, Err(AppError::Forbidden { .. })));
+    }
+    assert_eq!(store.0.lock().expect("state").lookups, 0);
+    for (tenant, run) in [
+        (TenantId::generate(), store.run()),
+        (store.tenant(), RunId::generate()),
+    ] {
+        assert!(matches!(
+            service
+                .prepare(
+                    &principal(tenant, Role::Viewer),
+                    run,
+                    DisclosureSelector::Input,
+                    false,
+                    &context()
+                )
+                .await,
+            Err(AppError::NotFound)
+        ));
+    }
+    assert_eq!(store.0.lock().expect("state").lookups, 2);
+}
+
+#[tokio::test]
+async fn closed_projector_failures_never_authorize_values_or_emit_a_success_audit() {
+    let cases = [
+        (
+            ProjectionFailure::LegacyVersion,
+            Some(StructureOnlyReason::LegacyVersion),
+        ),
+        (
+            ProjectionFailure::NoCarrier,
+            Some(StructureOnlyReason::NoSchema),
+        ),
+        (
+            ProjectionFailure::SchemaUnusable,
+            Some(StructureOnlyReason::SchemaUnusable),
+        ),
+        (
+            ProjectionFailure::SchemaMismatch,
+            Some(StructureOnlyReason::SchemaMismatch),
+        ),
+        (ProjectionFailure::PayloadTooLarge, None),
+        (ProjectionFailure::UnsupportedPayload, None),
+    ];
+    for (failure, expected_structure) in cases {
+        for role in [Role::Developer, Role::Operator] {
+            let store = FakeStore::new();
+            store.0.lock().expect("state").current_role = role;
+            let interpreter = FakeInterpreter::new(DisclosedLevels::PII);
+            interpreter.state.lock().expect("interpreter").failure = Some(failure);
+            let service = PayloadDisclosureService::new(
+                store.clone(),
+                FixedClock,
+                interpreter,
+                StructureProjector,
+            );
+            let prepared = service
+                .prepare(
+                    &principal(store.tenant(), role),
+                    store.run(),
+                    DisclosureSelector::Input,
+                    false,
+                    &context(),
+                )
+                .await
+                .expect("prepared");
+            let answer = service.disclose(prepared).await.expect("closed answer");
+            if let Some(expected) = expected_structure.filter(|_| role == Role::Operator) {
+                assert!(
+                    matches!(answer.result, PayloadDisclosureResult::StructureOnly { reason, .. } if reason == expected)
+                );
+            } else {
+                let expected = if expected_structure.is_some() {
+                    UnavailableDisclosureReason::NotDisclosable
+                } else {
+                    UnavailableDisclosureReason::UnsupportedFormat
+                };
+                assert!(
+                    matches!(answer.result, PayloadDisclosureResult::Unavailable { reason, .. } if reason == expected)
+                );
+            }
+            assert!(store.0.lock().expect("state").audits.is_empty());
+        }
+    }
+}
+
+#[test]
+fn selected_payload_and_definition_debug_never_print_values_keys_or_schema_fragments() {
+    let store = FakeStore::new();
+    let mut state = store.0.lock().expect("state");
+    state.selected.definition =
+        StoredDefinition::new(br#"{"debug-schema-canary":"fragment"}"#.to_vec());
+    state.selected.payload = StoredPayload::Inline(StoredPayloadBytes::new(
+        br#"{"debug-key-canary":"debug-value-canary"}"#.to_vec(),
+    ));
+    let debug = format!("{:?}", state.selected);
+    assert!(debug.contains("size_bytes"));
+    for forbidden in [
+        "debug-schema-canary",
+        "debug-key-canary",
+        "debug-value-canary",
+    ] {
+        assert!(
+            !debug.contains(forbidden),
+            "Debug exposed a payload component"
+        );
     }
 }
 
