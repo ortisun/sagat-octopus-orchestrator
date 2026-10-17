@@ -10,17 +10,20 @@ use std::sync::Arc;
 use sagat_application::definitions::{IrCodec, IrError, ParsedDefinition};
 use sagat_application::execution::{DefinitionCache, instance_step_id};
 use sagat_application::loop_progress::{
-    LoopCheckpointCommand, LoopDelayElapsedCommand, LoopNextActivity, LoopProgressError,
-    LoopProgressStore, LoopTransition,
+    LoopCheckpointCommand, LoopDelayElapsedCommand, LoopDrainCommand, LoopDrainFinishCommand,
+    LoopIterationDrainCommand, LoopNextActivity, LoopProgressError, LoopProgressStore,
+    LoopTransition,
 };
 use sagat_application::primitives::SchedulerAuthority;
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::definition::WorkflowVersionId;
-use sagat_domain::execution::{ExecutionInstanceId, InstancePath, LoopContinuation, RunId};
+use sagat_domain::execution::{
+    ExecutionInstanceId, FailureCode, InstancePath, LoopContinuation, LoopDrainReason, RunId,
+};
 use sagat_domain::identity::Subject;
 use sagat_domain::workflow::{ActivityName, Digest, NodeId};
 use sagat_infra_ir::JsonIrCodec;
-use sagat_infra_postgres::{MIGRATOR, PgLoopProgressStore};
+use sagat_infra_postgres::{MIGRATOR, PgLoopProgressStore, PgRunStore};
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
 use time::{Duration, OffsetDateTime};
@@ -125,6 +128,21 @@ fn loop_workflow(name: &str) -> serde_json::Value {
     })
 }
 
+/// The loop workflow with an `onError` edge to a recovery activity followed by an `end` (D294).
+fn loop_workflow_with_error_edge(name: &str) -> serde_json::Value {
+    let mut document = loop_workflow(name);
+    let nodes = document["nodes"].as_array_mut().expect("workflow nodes");
+    nodes[0]["onError"] = json!("recover");
+    nodes.push(json!({
+        "id": "recover",
+        "type": "activity",
+        "activity": "poll.recover",
+        "next": "recovered"
+    }));
+    nodes.push(json!({"id": "recovered", "type": "end"}));
+    document
+}
+
 async fn retain(pool: &sqlx::PgPool, tenant: Uuid, content: &[u8]) -> Digest {
     let digest = digest(content);
     sqlx::query(
@@ -172,10 +190,18 @@ struct LoopFixture {
 }
 
 async fn seed_running_loop(name: &str) -> LoopFixture {
+    seed_running_loop_with(name, loop_workflow(name)).await
+}
+
+async fn seed_running_loop_with_error_edge(name: &str) -> LoopFixture {
+    seed_running_loop_with(name, loop_workflow_with_error_edge(name)).await
+}
+
+async fn seed_running_loop_with(name: &str, workflow_document: serde_json::Value) -> LoopFixture {
     let w = world().await;
     let tenant = w.admin.tenant_id().as_uuid();
     let (workflow, _) = w.publish(chain(name)).await;
-    let document = serde_json::to_vec(&loop_workflow(name)).expect("loop document");
+    let document = serde_json::to_vec(&workflow_document).expect("loop document");
     let version = WorkflowVersionId::new(Uuid::now_v7());
     sqlx::query(
         "INSERT INTO workflow_versions \
@@ -282,8 +308,9 @@ async fn seed_running_loop(name: &str) -> LoopFixture {
         "INSERT INTO loop_scopes \
          (tenant_id,namespace_id,run_id,owner_instance_id,owner_path_nodes,owner_path_indices, \
           owner_node,kind,lifecycle,max_iterations,deadline_at,initial_carry_digest, \
-          current_carry_digest,next_iteration,active_iteration,entered_sequence,created_at,updated_at) \
-         VALUES ($1,$2,$3,$4,'{}','{}','poll','WHILE','RUNNING',3,$5,$6,$6,0,0,2,$7,$7)",
+          current_carry_digest,initial_condition,next_iteration,active_iteration,entered_sequence, \
+          created_at,updated_at) \
+         VALUES ($1,$2,$3,$4,'{}','{}','poll','WHILE','RUNNING',3,$5,$6,$6,true,0,0,2,$7,$7)",
     )
     .bind(tenant)
     .bind(w.namespace.id().as_uuid())
@@ -937,4 +964,429 @@ async fn terminal_routing_replays_and_destructive_down_migration_fails_closed() 
         .await
         .expect_err("retained loop progress must block downgrade");
     assert!(error.to_string().contains("loop progress is retained"));
+}
+
+// ---------------------------------------------------------------------------------------------
+// D294 faults: a loop failure routed over `onError` after its drain.
+// ---------------------------------------------------------------------------------------------
+
+fn drain_command(fixture: &LoopFixture, version: u64, at: OffsetDateTime) -> LoopDrainCommand {
+    LoopDrainCommand::new(
+        transition(
+            fixture,
+            version,
+            fixture.authority.clone(),
+            audit(fixture),
+            at,
+        ),
+        LoopDrainReason::Failed {
+            iteration: 0,
+            code: FailureCode::expression_error(),
+        },
+        Uuid::now_v7(),
+    )
+    .expect("failure drain")
+}
+
+fn iteration_command(
+    fixture: &LoopFixture,
+    version: u64,
+    authority: SchedulerAuthority,
+) -> LoopIterationDrainCommand {
+    LoopIterationDrainCommand::new(
+        transition(
+            fixture,
+            version,
+            authority,
+            audit(fixture),
+            crate::support::now(),
+        ),
+        0,
+        Uuid::now_v7(),
+    )
+    .expect("iteration drain")
+}
+
+fn finish_command(
+    fixture: &LoopFixture,
+    version: u64,
+    authority: SchedulerAuthority,
+    outbox: Uuid,
+) -> LoopDrainFinishCommand {
+    LoopDrainFinishCommand::new(
+        transition(
+            fixture,
+            version,
+            authority,
+            audit(fixture),
+            crate::support::now(),
+        ),
+        outbox,
+    )
+}
+
+fn store(fixture: &LoopFixture) -> PgLoopProgressStore {
+    PgLoopProgressStore::new(
+        fixture.db.pool.clone(),
+        DefinitionCache::new(Arc::new(StructuredJsonIrCodec), 8),
+    )
+}
+
+async fn verify(fixture: &LoopFixture, what: &str) {
+    PgRunStore::new(
+        fixture.db.pool.clone(),
+        DefinitionCache::new(Arc::new(StructuredJsonIrCodec), 8),
+    )
+    .verify_run(
+        sagat_domain::identity::TenantId::new(fixture.tenant),
+        fixture.run,
+    )
+    .await
+    .unwrap_or_else(|error| panic!("{what}: {error}"));
+}
+
+/// Starts and drains a failure with the loop's own error edge; the run is left one finish away.
+async fn drained_failure(fixture: &LoopFixture) -> u64 {
+    let started = store(fixture)
+        .start_drain(&drain_command(fixture, 8, crate::support::now()))
+        .await
+        .expect("start failure drain");
+    store(fixture)
+        .drain_iteration(&iteration_command(
+            fixture,
+            started.run_version,
+            fixture.authority.clone(),
+        ))
+        .await
+        .expect("drain the failed iteration")
+        .run_version
+}
+
+/// `(run status, owner status, scope, recover step, step.routed of the owner, task.ready rows)`.
+async fn edge_state(fixture: &LoopFixture) -> (String, String, String, Option<String>, i64, i64) {
+    sqlx::query_as(
+        "SELECT run.status,owner.status,scope.lifecycle, \
+                (SELECT status FROM steps WHERE tenant_id=run.tenant_id AND run_id=run.id \
+                   AND node='recover'), \
+                (SELECT count(*) FROM run_events WHERE tenant_id=run.tenant_id \
+                   AND run_id=run.id AND event_type='step.routed' AND node='poll'), \
+                (SELECT count(*) FROM event_outbox WHERE tenant_id=run.tenant_id \
+                   AND aggregate_id=run.id AND event_type='task.ready') \
+         FROM runs run JOIN loop_scopes scope ON scope.tenant_id=run.tenant_id \
+           AND scope.run_id=run.id \
+         JOIN steps owner ON owner.tenant_id=run.tenant_id AND owner.run_id=run.id \
+           AND owner.step_id=scope.owner_instance_id \
+         WHERE run.tenant_id=$1 AND run.id=$2",
+    )
+    .bind(fixture.tenant)
+    .bind(fixture.run.as_uuid())
+    .fetch_one(&fixture.db.pool)
+    .await
+    .expect("error edge state")
+}
+
+/// A failing audit insert is a different fault from a failing outbox: the owner, the scope, the
+/// recovery step, the journal and the hint must all disappear with it, and a retry must succeed.
+#[tokio::test]
+async fn audit_failure_while_taking_the_error_edge_rolls_the_whole_finish_back() {
+    let fixture = seed_running_loop_with_error_edge("loop-edge-audit").await;
+    let version = drained_failure(&fixture).await;
+    let events_before: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM run_events WHERE tenant_id=$1 AND run_id=$2")
+            .bind(fixture.tenant)
+            .bind(fixture.run.as_uuid())
+            .fetch_one(&fixture.db.pool)
+            .await
+            .expect("journal size");
+    sqlx::raw_sql(
+        "CREATE FUNCTION reject_edge_audit() RETURNS trigger LANGUAGE plpgsql AS $$ \
+         BEGIN RAISE EXCEPTION 'injected audit failure'; END $$; \
+         CREATE TRIGGER reject_edge_audit BEFORE INSERT ON audit_records \
+         FOR EACH ROW EXECUTE FUNCTION reject_edge_audit()",
+    )
+    .execute(&fixture.db.pool)
+    .await
+    .expect("install audit fault");
+    let finish = finish_command(&fixture, version, fixture.authority.clone(), Uuid::now_v7());
+    assert!(matches!(
+        store(&fixture).finish_drain(&finish).await,
+        Err(LoopProgressError::Storage(_))
+    ));
+    assert_eq!(
+        edge_state(&fixture).await,
+        (
+            "WAITING".into(),
+            "WAITING".into(),
+            "DRAINING".into(),
+            None,
+            0,
+            0
+        )
+    );
+    let events_after: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM run_events WHERE tenant_id=$1 AND run_id=$2")
+            .bind(fixture.tenant)
+            .bind(fixture.run.as_uuid())
+            .fetch_one(&fixture.db.pool)
+            .await
+            .expect("journal size after the fault");
+    assert_eq!(events_after, events_before);
+    assert_eq!(run_version(&fixture).await, version);
+    sqlx::raw_sql(
+        "DROP TRIGGER reject_edge_audit ON audit_records; DROP FUNCTION reject_edge_audit()",
+    )
+    .execute(&fixture.db.pool)
+    .await
+    .expect("remove audit fault");
+    let finished = store(&fixture)
+        .finish_drain(&finish)
+        .await
+        .expect("retry takes the edge");
+    assert!(finished.applied);
+    assert_eq!(
+        edge_state(&fixture).await,
+        (
+            "RUNNING".into(),
+            "FAILED".into(),
+            "FAILED".into(),
+            Some("READY".into()),
+            1,
+            1
+        )
+    );
+    verify(&fixture, "edge taken after the audit fault").await;
+}
+
+/// A replica that lost the scheduler shard mid-drain is fenced out; the replica that took the shard
+/// over resumes from the journal and takes the edge exactly once.
+#[tokio::test]
+async fn scheduler_takeover_mid_drain_fences_the_old_replica_and_the_new_one_finishes() {
+    let fixture = seed_running_loop_with_error_edge("loop-edge-takeover").await;
+    let started = store(&fixture)
+        .start_drain(&drain_command(&fixture, 8, crate::support::now()))
+        .await
+        .expect("old replica starts the drain");
+    // Another replica takes the shard over: the old authority's generation is now stale.
+    let successor = scheduler(&fixture.db.pool, fixture.run).await;
+    assert_eq!(
+        store(&fixture)
+            .drain_iteration(&iteration_command(
+                &fixture,
+                started.run_version,
+                fixture.authority.clone()
+            ))
+            .await,
+        Err(LoopProgressError::SchedulerFenceLost)
+    );
+    assert_eq!(
+        edge_state(&fixture).await,
+        (
+            "RUNNING".into(),
+            "WAITING".into(),
+            "DRAINING".into(),
+            None,
+            0,
+            0
+        )
+    );
+    let drained = store(&fixture)
+        .drain_iteration(&iteration_command(
+            &fixture,
+            started.run_version,
+            successor.clone(),
+        ))
+        .await
+        .expect("new replica drains");
+    let outbox = Uuid::now_v7();
+    assert_eq!(
+        store(&fixture)
+            .finish_drain(&finish_command(
+                &fixture,
+                drained.run_version,
+                fixture.authority.clone(),
+                outbox,
+            ))
+            .await,
+        Err(LoopProgressError::SchedulerFenceLost),
+        "the fenced replica cannot finish either"
+    );
+    let finish = finish_command(&fixture, drained.run_version, successor, outbox);
+    let finished = store(&fixture)
+        .finish_drain(&finish)
+        .await
+        .expect("new replica takes the edge");
+    assert!(finished.applied);
+    let replay = store(&fixture)
+        .finish_drain(&finish)
+        .await
+        .expect("redelivered finish");
+    assert!(!replay.applied);
+    assert_eq!(replay.run_version, finished.run_version);
+    assert_eq!(
+        edge_state(&fixture).await,
+        (
+            "RUNNING".into(),
+            "FAILED".into(),
+            "FAILED".into(),
+            Some("READY".into()),
+            1,
+            1
+        )
+    );
+    verify(&fixture, "edge taken once after the takeover").await;
+}
+
+/// Two replicas finish the same drain at once with ids of their own: one commits, the other is
+/// refused, and the edge is taken once.
+#[tokio::test]
+async fn concurrent_replicas_finishing_one_drain_take_the_error_edge_once() {
+    let fixture = seed_running_loop_with_error_edge("loop-edge-race").await;
+    let version = drained_failure(&fixture).await;
+    let first = finish_command(&fixture, version, fixture.authority.clone(), Uuid::now_v7());
+    let second = finish_command(&fixture, version, fixture.authority.clone(), Uuid::now_v7());
+    let (replica_one, replica_two) = (store(&fixture), store(&fixture));
+    let (left, right) = tokio::join!(
+        replica_one.finish_drain(&first),
+        replica_two.finish_drain(&second)
+    );
+    let applied = [&left, &right]
+        .iter()
+        .filter(|outcome| matches!(outcome, Ok(write) if write.applied))
+        .count();
+    assert_eq!(
+        applied, 1,
+        "exactly one replica commits: {left:?} / {right:?}"
+    );
+    assert!(
+        [&left, &right].iter().all(|outcome| matches!(
+            outcome,
+            Ok(_)
+                | Err(LoopProgressError::DuplicateMismatch
+                    | LoopProgressError::RevisionConflict { .. }
+                    | LoopProgressError::InvalidTransition)
+        )),
+        "the loser is refused, never an internal failure: {left:?} / {right:?}"
+    );
+    assert_eq!(
+        edge_state(&fixture).await,
+        (
+            "RUNNING".into(),
+            "FAILED".into(),
+            "FAILED".into(),
+            Some("READY".into()),
+            1,
+            1
+        )
+    );
+    verify(&fixture, "one edge after the race").await;
+}
+
+fn complete_checkpoint(fixture: &LoopFixture) -> LoopCheckpointCommand {
+    LoopCheckpointCommand::new(
+        transition(
+            fixture,
+            8,
+            fixture.authority.clone(),
+            audit(fixture),
+            crate::support::now(),
+        ),
+        0,
+        fixture.returned.clone(),
+        fixture.initial_carry,
+        fixture.initial_carry,
+        false,
+        crate::support::now(),
+        LoopContinuation::Complete,
+        None,
+        None,
+        Uuid::now_v7(),
+    )
+    .expect("complete checkpoint")
+}
+
+fn timeout_drain(fixture: &LoopFixture, version: u64) -> LoopDrainCommand {
+    LoopDrainCommand::new(
+        transition(
+            fixture,
+            version,
+            fixture.authority.clone(),
+            audit(fixture),
+            crate::support::now() + Duration::minutes(2),
+        ),
+        LoopDrainReason::TimedOut,
+        Uuid::now_v7(),
+    )
+    .expect("timeout drain")
+}
+
+/// The loop timeout wins the race against a completing body: the late checkpoint changes nothing.
+#[tokio::test]
+async fn a_timeout_that_commits_first_beats_a_completing_body() {
+    let fixture = seed_running_loop_with_error_edge("loop-edge-timeout-first").await;
+    let started = store(&fixture)
+        .start_drain(&timeout_drain(&fixture, 8))
+        .await
+        .expect("timeout wins");
+    assert!(matches!(
+        store(&fixture)
+            .checkpoint(&complete_checkpoint(&fixture))
+            .await,
+        Err(LoopProgressError::RevisionConflict { .. } | LoopProgressError::InvalidTransition)
+    ));
+    assert_eq!(run_version(&fixture).await, started.run_version);
+    let drained = store(&fixture)
+        .drain_iteration(&iteration_command(
+            &fixture,
+            started.run_version,
+            fixture.authority.clone(),
+        ))
+        .await
+        .expect("drain");
+    store(&fixture)
+        .finish_drain(&finish_command(
+            &fixture,
+            drained.run_version,
+            fixture.authority.clone(),
+            Uuid::now_v7(),
+        ))
+        .await
+        .expect("take the edge");
+    assert_eq!(
+        edge_state(&fixture).await,
+        (
+            "RUNNING".into(),
+            "FAILED".into(),
+            "FAILED".into(),
+            Some("READY".into()),
+            1,
+            1
+        )
+    );
+    verify(&fixture, "timeout won the race").await;
+}
+
+/// The completing body wins the race against the timeout: the loop ends through `next`, the late
+/// timeout is refused and no error edge is taken.
+#[tokio::test]
+async fn a_completing_body_that_commits_first_beats_the_timeout() {
+    let fixture = seed_running_loop_with_error_edge("loop-edge-complete-first").await;
+    let finished = store(&fixture)
+        .checkpoint(&complete_checkpoint(&fixture))
+        .await
+        .expect("completion wins");
+    assert!(finished.applied);
+    assert!(matches!(
+        store(&fixture)
+            .start_drain(&timeout_drain(&fixture, 8))
+            .await,
+        Err(LoopProgressError::RevisionConflict { .. } | LoopProgressError::InvalidTransition)
+    ));
+    assert_eq!(run_version(&fixture).await, finished.run_version);
+    let state = edge_state(&fixture).await;
+    assert_eq!(
+        (state.0.as_str(), state.1.as_str(), state.3.clone()),
+        ("SUCCEEDED", "SUCCEEDED", None),
+        "the loop completed and its error edge was not taken: {state:?}"
+    );
+    verify(&fixture, "completion won the race").await;
 }
