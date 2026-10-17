@@ -1,0 +1,1 @@
+{"inputSchema":{"type":"object","x-sagat-classification":"public","properties":{"inherits":{"type":"string"}}}}
