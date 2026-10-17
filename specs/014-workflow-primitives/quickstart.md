@@ -86,6 +86,8 @@ SAGAT_SDK_SCENARIO=collection-builders cargo test -p sagat-tests --test sdk_conf
 SAGAT_SDK_SCENARIO=collection-runtime cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
 SAGAT_SDK_SCENARIO=loop-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
 SAGAT_SDK_SCENARIO=loop-runtime cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
+SAGAT_SDK_SCENARIO=loop-cancel cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
+SAGAT_SDK_SCENARIO=loop-error-activity cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
 SAGAT_SDK_SCENARIO=approval-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
 SAGAT_SDK_SCENARIO=continuation-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
 SAGAT_SDK_SCENARIO=chain-query cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
@@ -211,16 +213,17 @@ cargo test -p sagat-tests --test integration_workflow_primitives \
 ```
 
 The test asserts that the timer and journal checkpoint survive reload, a duplicate timer fire
-does not admit another iteration, and no worker lease is retained during the delay. A public run
-with a `delayMs` loop (no worker leased while it waits) is not exercised yet and stays a release
-gate.
+does not admit another iteration, and no worker lease is retained during the delay. The public
+round trip of a `delayMs` loop with no worker connected while it waits, and its failure cases, are
+in the section "A loop that waits, is cancelled, or recovers" below.
 
 The restricted public loop shape is published (a loop chain ending at `end`, with a body of one to eight
 activities and one `return`; see `contracts/README.md`). A loop failure drains the active iteration
 first and then follows the loop's `onError` edge; without an `onError` edge it fails the run after
 the drain. A cancelled run still ends `CANCELLED` and never takes the edge. Publication accepts an
-`end` as the `onError` target; an `onError` edge to an activity is proven at the storage and
-worker level only. The drain and edge boundaries can be checked independently:
+`end` or a chain of recovery activities ending at an `end` as the `onError` target, and an
+expression error while entering the loop takes the edge too. The drain and edge boundaries can be
+checked independently:
 
 ```sh
 cargo test -p sagat-tests --test integration_workflow_primitives --locked \
@@ -288,6 +291,109 @@ The release operator follows the remaining scenarios after implementing the rele
 Complete standard formatting, Clippy, locked workspace, architecture, contract compilation, Compose
 smoke and dependency advisory gates before merge of engine changes. Rollback first disables new
 primitive publication/start; keep readers for in-flight runs using the new capabilities until they drain.
+
+## A loop that waits, is cancelled, or recovers (T014-019..021)
+
+A `while` or `repeatUntil` loop may wait between iterations with `delayMs`. While it waits the
+engine holds one durable timer and nothing else: no worker is leased, no task is ready, and the
+scheduler wakes the loop when the timer is due. These demos run against a deployment whose
+scheduler is running; `$API`, `$ADMIN` (an admin token) and a namespace `payments` are assumed, and
+the worker is any SDK worker on protocol 1.5 that serves `counter.increment` (returns the number
+`0` the first time and `1` after) and, for the recovery demo, `recover.cleanup`.
+
+Admit iterations once per tenant, then publish the happy-path loop (two iterations, 30 s apart):
+
+```sh
+curl -X PUT "$API/v1/quotas/iteration_concurrency" -H "authorization: Bearer $ADMIN" \
+  -H 'content-type: application/json' -d '{"limit": 4}'
+
+cat > delay-loop.json <<'JSON'
+{"name": "delay-loop", "ir": {
+  "apiVersion": "sagat-octopus-orchestrator.io/v1", "kind": "Workflow",
+  "metadata": {"name": "delay-loop"}, "entrypoint": "poll",
+  "bodies": {"iteration": {"entrypoint": "increment", "nodes": [
+    {"id": "increment", "type": "activity", "activity": "counter.increment", "next": "return-value"},
+    {"id": "return-value", "type": "return", "result": "steps.increment.output"}]}},
+  "nodes": [
+    {"id": "poll", "type": "while", "condition": "carry < 1", "body": "iteration",
+     "initial": "0", "carry": "bodyResult", "maxIterations": 3,
+     "delayMs": 30000, "timeoutMs": 600000, "next": "done"},
+    {"id": "done", "type": "end", "outputExpr": "steps.poll.output"}]}}
+JSON
+WF=$(curl -s -X POST "$API/v1/workflows" -H "authorization: Bearer $ADMIN" \
+  -H 'x-octopus-namespace: payments' -H "idempotency-key: $(uuidgen)" \
+  -H 'content-type: application/json' -d @delay-loop.json | jq -r .id)
+curl -X POST "$API/v1/workflows/$WF/publish" -H "authorization: Bearer $ADMIN" \
+  -H 'x-octopus-namespace: payments' -H "idempotency-key: $(uuidgen)" \
+  -H 'content-type: application/json' -d '{"draftRevision": 1}'
+RUN=$(curl -s -X POST "$API/v1/runs" -H "authorization: Bearer $ADMIN" \
+  -H 'x-octopus-namespace: payments' -H "idempotency-key: $(uuidgen)" \
+  -H 'content-type: application/json' -d "{\"workflowId\": \"$WF\", \"input\": {}}" | jq -r .runId)
+```
+
+**Happy path, no worker during the wait.** Let the worker complete the first body with `0`, then
+stop the worker (`SIGTERM`). Within a few seconds the run shows only a timer:
+
+```sh
+curl -s "$API/v1/runs/$RUN" -H "authorization: Bearer $ADMIN" | jq .status     # "WAITING"
+curl -s "$API/v1/runs/$RUN/events" -H "authorization: Bearer $ADMIN" \
+  | jq -r '.items[].type'     # ... loop.iteration_checkpointed, and no step.leased after it
+```
+
+Wait out the 30 s with no worker running. The scheduler fires the timer by itself: the journal gains
+exactly one `loop.delay_elapsed` and the next iteration becomes ready (`READY`, nothing leased). Start a
+worker again; it takes iteration 1 (`instancePath` `[{"scopeNodeId":"poll","iterationIndex":1}]`),
+completes it with `1`, the condition `carry < 1` turns false and the run ends `SUCCEEDED`. Expected: one
+`loop.delay_elapsed`, two admitted iterations, tenant iteration usage back to zero.
+
+```sh
+cargo test -p sagat-tests --test integration_workflow_primitives --locked \
+  loops_http::a_while_loop_waits_out_its_delay_with_no_worker_connected -- --exact --nocapture
+cargo test -p sagat-tests --test integration_workflow_primitives --locked \
+  loops_http::a_repeat_until_loop_waits_out_its_delay_with_no_worker_connected -- --exact --nocapture
+SAGAT_SDK_SCENARIO=loop-semantics cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
+```
+
+**Failure path 1, the budget runs out during the delay.** Publish the same document with
+`"delayMs": 5000, "timeoutMs": 9000` and `"onError": "failed"` plus an `end` node `failed`, complete
+the first body, stop the worker and wait 10 s. The timer is cancelled, the loop ends `FAILED` with
+`RUN_TIMED_OUT` and the run follows the edge to `failed` (`SUCCEEDED`). With `delayMs` larger than
+the remaining budget (for example `30000` against `timeoutMs` `6000`) no timer is created at all: the
+iteration waits and the loop times out at its deadline (D402). Without `onError` the run ends `FAILED`.
+
+**Failure path 2, cancel while it waits or while a body runs.**
+
+```sh
+curl -X POST "$API/v1/runs/$RUN/operations" -H "authorization: Bearer $ADMIN" \
+  -H 'x-octopus-namespace: payments' -H "idempotency-key: $(uuidgen)" \
+  -H 'content-type: application/json' \
+  -d '{"action":"CANCEL","reason":"stop the loop while it waits"}'      # 202, runStatus CANCELLING
+```
+
+The scheduler cancels the timer (or asks the leased body attempt to stop: its next heartbeat answers
+`cancelRequested`), drains the iteration and ends the loop and the run `CANCELLED`; no further
+iteration is admitted and tenant iteration usage returns to zero. `PAUSE` holds the run: a delay that
+falls due while paused admits nothing until `RESUME`.
+
+**Failure path 3, a loop that fails routes to an activity.** Add
+`"onError": "recover"` to the loop and two nodes
+`{"id":"recover","type":"activity","activity":"recover.cleanup","next":"recovered"}` and
+`{"id":"recovered","type":"end"}`. When a body fails for good (or the loop times out, or its initial
+expression cannot be computed) the active iteration drains, the loop ends `FAILED` with the code and
+a worker takes `recover.cleanup` as an ordinary root task; the run ends `SUCCEEDED` through `recovered`.
+A recovery activity declares no `onError`, `compensateWith`, `reconcileWith`, `irreversible` or
+`highRisk`, and an activity after the loop's success edge is still refused at publication.
+
+Faults the suites run against real PostgreSQL (restart of the scheduler during the delay, a duplicate
+fire by two replicas under one fence, a replica that lost its shards, a cancel racing the timeout in
+both orders, a signal during the delay):
+
+```sh
+cargo test -p sagat-tests --test integration_workflow_primitives --locked loops_http:: -- --test-threads=2
+cargo test -p sagat-tests --test fault_workflow_primitives --locked loops:: -- --test-threads=2
+SAGAT_SDK_SCENARIO=loop-cancel cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
+SAGAT_SDK_SCENARIO=loop-error-activity cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
+```
 
 ## Compensating a failed collection or loop
 

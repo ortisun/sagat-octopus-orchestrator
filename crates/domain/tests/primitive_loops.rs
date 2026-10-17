@@ -1,5 +1,5 @@
 //! Loop progress is derived only from explicit journal events.
-#![allow(clippy::expect_used)]
+#![allow(clippy::expect_used, clippy::panic)]
 
 use time::OffsetDateTime;
 
