@@ -98,7 +98,15 @@ impl fmt::Debug for JsonNumber {
 pub enum CarrierPointer {
     Input,
     Result,
+    /// Output of a node in the root graph.
     NodeOutput(NodeId),
+    /// Output of a body-local node. The application resolves both names from the protected runtime
+    /// instance path and pinned typed definition; neither name is accepted as a client pointer.
+    /// Iterations share this immutable carrier and therefore are deliberately absent from the key.
+    BodyNodeOutput {
+        body: NodeId,
+        node: NodeId,
+    },
 }
 
 /// Validator cache identity. Tenant is unnecessary because workflow version ids are globally unique.
@@ -587,5 +595,24 @@ mod tests {
             ProjectionFailure::NotDisclosable.to_string(),
             "the audience cannot receive the classification carrier root"
         );
+    }
+
+    #[test]
+    fn root_and_body_node_carriers_have_distinct_cache_identities() {
+        use std::collections::HashSet;
+
+        let node = NodeId::parse("shared").expect("node");
+        let carriers = HashSet::from([
+            CarrierPointer::NodeOutput(node.clone()),
+            CarrierPointer::BodyNodeOutput {
+                body: NodeId::parse("first").expect("body"),
+                node: node.clone(),
+            },
+            CarrierPointer::BodyNodeOutput {
+                body: NodeId::parse("second").expect("body"),
+                node,
+            },
+        ]);
+        assert_eq!(carriers.len(), 3);
     }
 }

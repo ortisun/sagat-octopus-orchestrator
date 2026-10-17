@@ -223,3 +223,55 @@ fn an_omitted_root_is_not_disclosable_without_synthetic_structure() {
         Err(ProjectionFailure::NotDisclosable)
     );
 }
+
+#[test]
+fn root_and_named_body_nodes_with_the_same_local_id_do_not_share_cache_entries() {
+    let doc = serde_json::to_vec(&json!({
+        "nodes": [{
+            "id": "shared", "type": "activity",
+            "outputSchema": {"type": "string", "x-sagat-classification": "public"}
+        }],
+        "bodies": {
+            "first": {"nodes": [{
+                "id": "shared", "type": "activity",
+                "outputSchema": {"type": "string", "x-sagat-classification": "pii"}
+            }]},
+            "second": {"nodes": [{
+                "id": "shared", "type": "activity",
+                "outputSchema": {"type": "string", "x-sagat-classification": "secret"}
+            }]}
+        }
+    }))
+    .expect("document");
+    let version = WorkflowVersionId::generate();
+    let node = sagat_domain::workflow::NodeId::parse("shared").expect("node");
+    let classifier = Classifier::default();
+    let carriers = [
+        (CarrierPointer::NodeOutput(node.clone()), Level::Public),
+        (
+            CarrierPointer::BodyNodeOutput {
+                body: sagat_domain::workflow::NodeId::parse("first").expect("body"),
+                node: node.clone(),
+            },
+            Level::Pii,
+        ),
+        (
+            CarrierPointer::BodyNodeOutput {
+                body: sagat_domain::workflow::NodeId::parse("second").expect("body"),
+                node,
+            },
+            Level::Secret,
+        ),
+    ];
+    for (carrier, expected) in carriers {
+        let mut input = request(&doc, br#""value""#, Audience::new(true, true, true));
+        input.cache_key = ClassificationCacheKey { version, carrier };
+        let result = classifier.project(input).expect("projection");
+        assert!(matches!(
+            result.tree,
+            ClassifiedNode::Value { level, .. }
+                | ClassifiedNode::Withheld { level, .. } if level == expected
+        ));
+    }
+    assert_eq!(classifier.cache_stats().misses, 3);
+}

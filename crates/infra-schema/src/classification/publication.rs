@@ -38,7 +38,7 @@ pub fn analyze(document: &[u8]) -> ClassificationAnalysis {
 #[must_use]
 pub fn analyze_value(document: &Value) -> ClassificationAnalysis {
     let mut analysis = Analysis::default();
-    let mut carrier_prefixes = Vec::new();
+    let mut carrier_prefixes = HashSet::new();
 
     for (field, carrier) in [
         ("inputSchema", CarrierPointer::Input),
@@ -46,37 +46,71 @@ pub fn analyze_value(document: &Value) -> ClassificationAnalysis {
     ] {
         if let Some(schema) = document.get(field) {
             let path = format!("/{field}");
-            carrier_prefixes.push(path.clone());
+            carrier_prefixes.insert(path.clone());
             analysis.carrier(schema, carrier, &path, false);
         }
     }
 
     if let Some(nodes) = document.get("nodes").and_then(Value::as_array) {
-        for (index, node) in nodes.iter().enumerate() {
-            let Some(schema) = node.get("outputSchema") else {
+        discover_node_carriers(nodes, "/nodes", None, &mut analysis, &mut carrier_prefixes);
+    }
+    if let Some(bodies) = document.get("bodies").and_then(Value::as_object) {
+        for (name, body) in bodies {
+            let Some(nodes) = body.get("nodes").and_then(Value::as_array) else {
                 continue;
             };
-            let path = format!("/nodes/{index}/outputSchema");
-            let supported = matches!(
-                node.get("type").and_then(Value::as_str),
-                Some("activity" | "script" | "waitEvent" | "child")
+            let Ok(body_name) = NodeId::parse(name) else {
+                continue;
+            };
+            discover_node_carriers(
+                nodes,
+                &format!("/bodies/{}/nodes", escape(name)),
+                Some(&body_name),
+                &mut analysis,
+                &mut carrier_prefixes,
             );
-            let carrier = node
-                .get("id")
-                .and_then(Value::as_str)
-                .and_then(|id| NodeId::parse(id).ok())
-                .map(CarrierPointer::NodeOutput);
-            if supported {
-                carrier_prefixes.push(path.clone());
-                if let Some(carrier) = carrier {
-                    analysis.carrier(schema, carrier, &path, true);
-                }
-            }
         }
     }
 
     scan_outside_carriers(document, "", &carrier_prefixes, &mut analysis);
     analysis.finish()
+}
+
+fn discover_node_carriers(
+    nodes: &[Value],
+    nodes_path: &str,
+    body: Option<&NodeId>,
+    analysis: &mut Analysis,
+    carrier_prefixes: &mut HashSet<String>,
+) {
+    for (index, candidate) in nodes.iter().enumerate() {
+        let Some(schema) = candidate.get("outputSchema") else {
+            continue;
+        };
+        if !matches!(
+            candidate.get("type").and_then(Value::as_str),
+            Some("activity" | "script" | "waitEvent" | "child")
+        ) {
+            continue;
+        }
+        let Some(node) = candidate
+            .get("id")
+            .and_then(Value::as_str)
+            .and_then(|id| NodeId::parse(id).ok())
+        else {
+            continue;
+        };
+        let carrier = match body {
+            Some(body) => CarrierPointer::BodyNodeOutput {
+                body: body.clone(),
+                node,
+            },
+            None => CarrierPointer::NodeOutput(node),
+        };
+        let path = format!("{nodes_path}/{index}/outputSchema");
+        carrier_prefixes.insert(path.clone());
+        analysis.carrier(schema, carrier, &path, true);
+    }
 }
 
 #[derive(Default)]
@@ -435,10 +469,10 @@ impl<'a, 'b> CarrierWalk<'a, 'b> {
 fn scan_outside_carriers(
     value: &Value,
     path: &str,
-    carrier_prefixes: &[String],
+    carrier_prefixes: &HashSet<String>,
     analysis: &mut Analysis,
 ) {
-    if carrier_prefixes.iter().any(|carrier| path == carrier) {
+    if carrier_prefixes.contains(path) {
         return;
     }
     match value {
@@ -500,11 +534,12 @@ fn value_depth(root: &Value) -> usize {
     maximum
 }
 
-fn carrier_sort_key(carrier: &CarrierPointer) -> (u8, &str) {
+fn carrier_sort_key(carrier: &CarrierPointer) -> (u8, &str, &str) {
     match carrier {
-        CarrierPointer::Input => (0, ""),
-        CarrierPointer::Result => (1, ""),
-        CarrierPointer::NodeOutput(id) => (2, id.as_str()),
+        CarrierPointer::Input => (0, "", ""),
+        CarrierPointer::Result => (1, "", ""),
+        CarrierPointer::NodeOutput(id) => (2, "", id.as_str()),
+        CarrierPointer::BodyNodeOutput { body, node } => (3, body.as_str(), node.as_str()),
     }
 }
 

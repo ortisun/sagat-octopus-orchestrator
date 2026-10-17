@@ -201,6 +201,15 @@ fn carrier<'a>(document: &'a Value, pointer: &CarrierPointer) -> Option<&'a Valu
             .iter()
             .find(|node| node.get("id").and_then(Value::as_str) == Some(id.as_str()))
             .and_then(|node| node.get("outputSchema")),
+        CarrierPointer::BodyNodeOutput { body, node } => document
+            .get("bodies")?
+            .as_object()?
+            .get(body.as_str())?
+            .get("nodes")?
+            .as_array()?
+            .iter()
+            .find(|candidate| candidate.get("id").and_then(Value::as_str) == Some(node.as_str()))
+            .and_then(|candidate| candidate.get("outputSchema")),
     }
 }
 
@@ -748,3 +757,5 @@ fn pointer_escape(value: &str) -> String {
 
 #[path = "classification/publication.rs"]
 mod publication;
+
+pub use publication::analyze_value;
