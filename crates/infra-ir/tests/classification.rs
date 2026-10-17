@@ -222,3 +222,89 @@ fn named_body_carriers_use_the_same_size_depth_and_reference_bounds() {
         assert!(result.findings.len() <= 20);
     }
 }
+
+#[test]
+fn items_and_additional_properties_participate_in_monotonic_publication_walks() {
+    let result = classification_check::check(&json!({
+        "inputSchema": {
+            "type": "object", "x-sagat-classification": "internal",
+            "additionalProperties": {"x-sagat-classification": "public"}
+        },
+        "outputSchema": {
+            "type": "array", "x-sagat-classification": "pii",
+            "items": {"x-sagat-classification": "internal"}
+        }
+    }));
+    for path in ["/inputSchema/additionalProperties", "/outputSchema/items"] {
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|finding| { finding.code == Code::Loosened && finding.path.as_str() == path }),
+            "missing loosened finding at {path}"
+        );
+    }
+    assert!(result.report.iter().any(|entry| {
+        entry.carrier == sagat_application::classification::CarrierPointer::Input
+            && entry.path.as_str() == "/*"
+            && entry.level == sagat_domain::classification::Level::Internal
+    }));
+    assert!(result.report.iter().any(|entry| {
+        entry.carrier == sagat_application::classification::CarrierPointer::Result
+            && entry.path.as_str() == "/*"
+            && entry.level == sagat_domain::classification::Level::Pii
+    }));
+}
+
+#[test]
+fn warning_caps_and_unrepresentable_paths_cannot_hide_publication_errors() {
+    let mut properties = serde_json::Map::new();
+    for index in 0..21 {
+        properties.insert(format!("a{index:02}"), json!({"type": "string"}));
+    }
+    properties.insert(
+        "z-invalid".into(),
+        json!({"x-sagat-classification": "restricted"}),
+    );
+    let result = classification_check::check(&json!({
+        "inputSchema": {
+            "type": "object", "x-sagat-classification": "public",
+            "properties": properties,
+            "patternProperties": {".*": {"x-sagat-classification": "pii"}}
+        }
+    }));
+    assert!(!result.is_publishable());
+    assert!(result.findings.len() <= 20);
+    assert!(
+        result
+            .findings
+            .iter()
+            .any(|finding| finding.code == Code::InvalidLevel)
+    );
+    assert!(
+        result
+            .findings
+            .iter()
+            .any(|finding| finding.code == Code::UnsupportedKeyword)
+    );
+
+    let hostile = format!("{}\u{0001}tail", "x".repeat(2_100));
+    let mut hostile_properties = serde_json::Map::new();
+    hostile_properties.insert(hostile, json!({"x-sagat-classification": "restricted"}));
+    let result = classification_check::check(&json!({
+        "inputSchema": {
+            "type": "object",
+            "properties": hostile_properties
+        }
+    }));
+    assert!(!result.is_publishable());
+    assert!(
+        result
+            .findings
+            .iter()
+            .any(|finding| finding.code == Code::InvalidLevel)
+    );
+    assert!(result.findings.iter().all(|finding| {
+        finding.path.as_str().len() <= 2_048 && !finding.path.as_str().chars().any(char::is_control)
+    }));
+}

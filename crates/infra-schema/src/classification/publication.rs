@@ -120,16 +120,21 @@ struct Analysis {
 
 impl Analysis {
     fn finding(&mut self, code: ClassificationFindingCode, path: &str) {
-        if self.result.findings.len() == MAX_CLASSIFICATION_FINDINGS {
-            self.result.findings_truncated = true;
-            return;
-        }
-        if self.result.findings.len() > MAX_CLASSIFICATION_FINDINGS {
-            return;
-        }
-        let Ok(path) = ClassificationPointer::parse(path) else {
-            self.result.findings_truncated = true;
-            return;
+        let is_error = code.severity() == sagat_application::classification::FindingSeverity::Error;
+        self.result.has_errors |= is_error;
+        let path = match ClassificationPointer::parse(path) {
+            Ok(path) => path,
+            Err(_) if is_error => {
+                let Ok(path) = ClassificationPointer::parse(safe_ancestor(path)) else {
+                    self.result.findings_truncated = true;
+                    return;
+                };
+                path
+            }
+            Err(_) => {
+                self.result.findings_truncated = true;
+                return;
+            }
         };
         if !self
             .result
@@ -137,9 +142,20 @@ impl Analysis {
             .iter()
             .any(|finding| finding.code == code && finding.path == path)
         {
-            self.result
-                .findings
-                .push(ClassificationFinding { code, path });
+            let finding = ClassificationFinding { code, path };
+            if self.result.findings.len() < MAX_CLASSIFICATION_FINDINGS {
+                self.result.findings.push(finding);
+            } else {
+                self.result.findings_truncated = true;
+                if is_error
+                    && let Some(index) = self.result.findings.iter().rposition(|existing| {
+                        existing.code.severity()
+                            == sagat_application::classification::FindingSeverity::Warning
+                    })
+                {
+                    self.result.findings[index] = finding;
+                }
+            }
         }
     }
 
@@ -340,6 +356,52 @@ impl<'a, 'b> CarrierWalk<'a, 'b> {
                 );
             }
             self.walk_location(children, &child_path, Some(effective), false, depth + 1);
+        }
+
+        let additional: Vec<_> = expanded
+            .iter()
+            .filter_map(|schema| {
+                schema
+                    .value
+                    .get("additionalProperties")
+                    .filter(|value| value.is_object())
+                    .map(|value| SchemaNode {
+                        value,
+                        document_path: format!("{}/additionalProperties", schema.document_path),
+                    })
+            })
+            .collect();
+        if !additional.is_empty() {
+            self.walk_location(
+                additional,
+                &format!("{instance_path}/*"),
+                Some(effective),
+                false,
+                depth + 1,
+            );
+        }
+
+        let items: Vec<_> = expanded
+            .iter()
+            .filter_map(|schema| {
+                schema
+                    .value
+                    .get("items")
+                    .filter(|value| value.is_object())
+                    .map(|value| SchemaNode {
+                        value,
+                        document_path: format!("{}/items", schema.document_path),
+                    })
+            })
+            .collect();
+        if !items.is_empty() {
+            self.walk_location(
+                items,
+                &format!("{instance_path}/*"),
+                Some(effective),
+                false,
+                depth + 1,
+            );
         }
     }
 
@@ -545,4 +607,21 @@ fn carrier_sort_key(carrier: &CarrierPointer) -> (u8, &str, &str) {
 
 fn escape(value: &str) -> String {
     value.replace('~', "~0").replace('/', "~1")
+}
+
+fn safe_ancestor(path: &str) -> String {
+    if path.is_empty() {
+        return String::new();
+    }
+    let mut safe = String::new();
+    for segment in path.strip_prefix('/').unwrap_or(path).split('/') {
+        if segment.chars().any(char::is_control)
+            || safe.len().saturating_add(segment.len()).saturating_add(1) > 2_048
+        {
+            break;
+        }
+        safe.push('/');
+        safe.push_str(segment);
+    }
+    safe
 }
