@@ -1,0 +1,517 @@
+{
+  "name": "approval-chain",
+  "description": "An approval inside a continuation chain (D295). An approved round hands the chain to a successor that starts from the state an Update wrote while the request was open and opens an approval of its own; a rejection in the successor ends the chain; the settled requests answer from their outcome; cancelling the chain and the chain's original deadline each settle an open request, after which no decision can revive it.",
+  "workflows": {
+    "chain": {
+      "name": "approval-chain-runtime",
+      "chainPolicy": {
+        "maxSegments": 3,
+        "timeoutMs": 86400000
+      },
+      "state": {
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "amount": {
+              "type": "string",
+              "maxLength": 64
+            }
+          },
+          "required": [
+            "amount"
+          ]
+        },
+        "initial": "input.account",
+        "queries": {
+          "amount.read": {
+            "argsSchema": {
+              "type": "object",
+              "additionalProperties": false
+            },
+            "resultSchema": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "expression": "state.amount",
+            "disclosure": "declared-business-result-v1"
+          }
+        },
+        "updates": {
+          "amount.replace": {
+            "argsSchema": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "nextState": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "amount": {
+                      "type": "string",
+                      "maxLength": 64
+                    }
+                  },
+                  "required": [
+                    "amount"
+                  ]
+                }
+              },
+              "required": [
+                "nextState"
+              ]
+            },
+            "validate": "true",
+            "state": "args.nextState",
+            "result": "newState.amount",
+            "resultSchema": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "disclosure": "declared-business-result-v1"
+          }
+        }
+      },
+      "program": [
+        {
+          "op": "step",
+          "id": "work",
+          "activity": "chain.work"
+        },
+        {
+          "op": "approval",
+          "id": "review",
+          "policy": {
+            "roles": [
+              "admin"
+            ],
+            "excludeInitiator": false
+          },
+          "timeoutMs": 86400000,
+          "onApprove": "rollover",
+          "onReject": "rejected",
+          "onExpire": "expired"
+        },
+        {
+          "op": "continueAsNew",
+          "id": "rollover",
+          "input": "input.next",
+          "state": "state"
+        },
+        {
+          "op": "end",
+          "id": "rejected"
+        },
+        {
+          "op": "end",
+          "id": "expired"
+        }
+      ]
+    },
+    "deadline": {
+      "name": "approval-chain-deadline",
+      "chainPolicy": {
+        "maxSegments": 3,
+        "timeoutMs": 6000
+      },
+      "state": {
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "amount": {
+              "type": "string",
+              "maxLength": 64
+            }
+          },
+          "required": [
+            "amount"
+          ]
+        },
+        "initial": "input.account",
+        "queries": {
+          "amount.read": {
+            "argsSchema": {
+              "type": "object",
+              "additionalProperties": false
+            },
+            "resultSchema": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "expression": "state.amount",
+            "disclosure": "declared-business-result-v1"
+          }
+        },
+        "updates": {
+          "amount.replace": {
+            "argsSchema": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "nextState": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "amount": {
+                      "type": "string",
+                      "maxLength": 64
+                    }
+                  },
+                  "required": [
+                    "amount"
+                  ]
+                }
+              },
+              "required": [
+                "nextState"
+              ]
+            },
+            "validate": "true",
+            "state": "args.nextState",
+            "result": "newState.amount",
+            "resultSchema": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "disclosure": "declared-business-result-v1"
+          }
+        }
+      },
+      "program": [
+        {
+          "op": "step",
+          "id": "work",
+          "activity": "chain.work"
+        },
+        {
+          "op": "approval",
+          "id": "review",
+          "policy": {
+            "roles": [
+              "admin"
+            ],
+            "excludeInitiator": false
+          },
+          "timeoutMs": 86400000,
+          "onApprove": "rollover",
+          "onReject": "rejected",
+          "onExpire": "expired"
+        },
+        {
+          "op": "continueAsNew",
+          "id": "rollover",
+          "input": "input.next",
+          "state": "state"
+        },
+        {
+          "op": "end",
+          "id": "rejected"
+        },
+        {
+          "op": "end",
+          "id": "expired"
+        }
+      ]
+    }
+  },
+  "workers": {
+    "current": {
+      "workerName": "approval-chain-worker",
+      "protocolVersion": "1.5",
+      "transport": "poll",
+      "maxInflight": 1,
+      "autostart": true,
+      "activities": {
+        "chain.work": {
+          "behavior": {
+            "sleepMs": 50,
+            "returns": {
+              "ok": true
+            }
+          }
+        }
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "start",
+      "op": "start",
+      "workflow": "chain",
+      "input": {
+        "account": {
+          "amount": "19.99"
+        },
+        "next": {
+          "account": {
+            "amount": "0.00"
+          }
+        }
+      },
+      "idempotencyKey": "chain-approval-{{unique}}"
+    },
+    {
+      "id": "initial",
+      "op": "inspectChain",
+      "namespaceId": "{{namespaceId}}",
+      "chainId": "{{chainId:start}}"
+    },
+    {
+      "id": "first-opened",
+      "op": "listApprovals",
+      "run": "start",
+      "limit": 1,
+      "waitForItem": true
+    },
+    {
+      "id": "first-update",
+      "op": "updateChain",
+      "namespaceId": "{{namespaceId}}",
+      "chainId": "{{chainId:start}}",
+      "expectedRunId": "{{currentRunId:initial}}",
+      "name": "amount.replace",
+      "args": {
+        "nextState": {
+          "amount": "24.99"
+        }
+      },
+      "updateKey": "chain-approval-amount-{{unique}}",
+      "expectedStateRevision": 0
+    },
+    {
+      "id": "first-decision",
+      "op": "decideApproval",
+      "approval": "first-opened",
+      "decisionKey": "chain-approve-{{unique}}",
+      "decision": "APPROVE",
+      "reasonCode": "ROUND_OK"
+    },
+    {
+      "id": "head",
+      "op": "inspectChain",
+      "namespaceId": "{{namespaceId}}",
+      "chainId": "{{chainId:start}}",
+      "waitForHeadChange": "{{currentRunId:initial}}"
+    },
+    {
+      "id": "first-done",
+      "op": "waitForCompletion",
+      "run": "start",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "transferred",
+      "op": "queryChain",
+      "namespaceId": "{{namespaceId}}",
+      "chainId": "{{chainId:start}}",
+      "expectedRunId": "{{currentRunId:head}}",
+      "name": "amount.read",
+      "args": {}
+    },
+    {
+      "id": "continued-update",
+      "op": "update",
+      "run": "start",
+      "name": "amount.replace",
+      "args": {
+        "nextState": {
+          "amount": "77.77"
+        }
+      },
+      "updateKey": "chain-approval-old-{{unique}}"
+    },
+    {
+      "id": "segments",
+      "op": "listChainRuns",
+      "namespaceId": "{{namespaceId}}",
+      "chainId": "{{chainId:start}}",
+      "limit": 10
+    },
+    {
+      "id": "second-opened",
+      "op": "listApprovals",
+      "page": "segments",
+      "index": 1,
+      "limit": 1,
+      "waitForItem": true
+    },
+    {
+      "id": "second-update",
+      "op": "updateChain",
+      "namespaceId": "{{namespaceId}}",
+      "chainId": "{{chainId:start}}",
+      "expectedRunId": "{{currentRunId:head}}",
+      "name": "amount.replace",
+      "args": {
+        "nextState": {
+          "amount": "30.00"
+        }
+      },
+      "updateKey": "chain-approval-second-{{unique}}",
+      "expectedStateRevision": 1
+    },
+    {
+      "id": "second-decision",
+      "op": "decideApproval",
+      "approval": "second-opened",
+      "decisionKey": "chain-reject-{{unique}}",
+      "decision": "REJECT",
+      "reasonCode": "ROUND_BLOCKED"
+    },
+    {
+      "id": "chain-done",
+      "op": "waitForChainCompletion",
+      "namespaceId": "{{namespaceId}}",
+      "chainId": "{{chainId:start}}",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "final-state",
+      "op": "queryChain",
+      "namespaceId": "{{namespaceId}}",
+      "chainId": "{{chainId:start}}",
+      "expectedRunId": "{{currentRunId:chain-done}}",
+      "name": "amount.read",
+      "args": {}
+    },
+    {
+      "id": "first-settled",
+      "op": "listApprovals",
+      "run": "start",
+      "limit": 1
+    },
+    {
+      "id": "second-settled",
+      "op": "listApprovals",
+      "page": "segments",
+      "index": 1,
+      "limit": 1
+    },
+    {
+      "id": "first-replay",
+      "op": "decideApproval",
+      "approval": "first-opened",
+      "decisionKey": "chain-approve-{{unique}}",
+      "decision": "APPROVE",
+      "reasonCode": "ROUND_OK"
+    },
+    {
+      "id": "first-again",
+      "op": "decideApproval",
+      "approval": "first-opened",
+      "decisionKey": "chain-approve-again-{{unique}}",
+      "decision": "APPROVE",
+      "reasonCode": "ROUND_OK"
+    },
+    {
+      "id": "cancel-start",
+      "op": "start",
+      "workflow": "chain",
+      "input": {
+        "account": {
+          "amount": "1.00"
+        },
+        "next": {
+          "account": {
+            "amount": "0.00"
+          }
+        }
+      },
+      "idempotencyKey": "chain-approval-cancel-{{unique}}"
+    },
+    {
+      "id": "cancel-opened",
+      "op": "listApprovals",
+      "run": "cancel-start",
+      "limit": 1,
+      "waitForItem": true
+    },
+    {
+      "id": "cancel-chain",
+      "op": "cancelChain",
+      "namespaceId": "{{namespaceId}}",
+      "chainId": "{{chainId:cancel-start}}",
+      "expectedRunId": "{{chainId:cancel-start}}",
+      "reason": "operator stopped the chain",
+      "idempotencyKey": "chain-approval-cancel-key-{{unique}}"
+    },
+    {
+      "id": "cancel-done",
+      "op": "waitForChainCompletion",
+      "namespaceId": "{{namespaceId}}",
+      "chainId": "{{chainId:cancel-start}}",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "cancel-settled",
+      "op": "listApprovals",
+      "run": "cancel-start",
+      "limit": 1
+    },
+    {
+      "id": "cancel-late-decision",
+      "op": "decideApproval",
+      "approval": "cancel-opened",
+      "decisionKey": "chain-after-cancel-{{unique}}",
+      "decision": "APPROVE",
+      "reasonCode": "TOO_LATE"
+    },
+    {
+      "id": "cancel-inspected",
+      "op": "inspectChain",
+      "namespaceId": "{{namespaceId}}",
+      "chainId": "{{chainId:cancel-start}}"
+    },
+    {
+      "id": "deadline-start",
+      "op": "start",
+      "workflow": "deadline",
+      "input": {
+        "account": {
+          "amount": "2.00"
+        },
+        "next": {
+          "account": {
+            "amount": "0.00"
+          }
+        }
+      },
+      "idempotencyKey": "chain-approval-deadline-{{unique}}"
+    },
+    {
+      "id": "deadline-opened",
+      "op": "listApprovals",
+      "run": "deadline-start",
+      "limit": 1,
+      "waitForItem": true
+    },
+    {
+      "id": "deadline-done",
+      "op": "waitForChainCompletion",
+      "namespaceId": "{{namespaceId}}",
+      "chainId": "{{chainId:deadline-start}}",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "deadline-settled",
+      "op": "listApprovals",
+      "run": "deadline-start",
+      "limit": 1
+    },
+    {
+      "id": "deadline-late-decision",
+      "op": "decideApproval",
+      "approval": "deadline-opened",
+      "decisionKey": "chain-after-deadline-{{unique}}",
+      "decision": "APPROVE",
+      "reasonCode": "TOO_LATE"
+    },
+    {
+      "id": "deadline-inspected",
+      "op": "inspectChain",
+      "namespaceId": "{{namespaceId}}",
+      "chainId": "{{chainId:deadline-start}}"
+    }
+  ]
+}

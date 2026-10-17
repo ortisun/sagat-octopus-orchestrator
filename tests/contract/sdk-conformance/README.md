@@ -151,6 +151,25 @@ the audit trail: the opening by the engine, one `approval.denied` for each refus
 (with its reason and the caller's trace) and the decision. A revoked member never reaches the approval, so
 authentication refuses it and no approval row exists for it.
 
+`approval-state.json` is the D295 combination of a native approval with declared run state, in all five SDKs.
+While a request is open the state is read and updated through the public calls (`balance` stays `19.99` until an
+Update sets `24.99`, the same key replays, a stale `expectedStateRevision` is `CONFLICT`/`REVISION_CONFLICT`) and the
+request stays `PENDING`. A decision, a rejection, the approval's own expiry and a cancel each end the run with the state
+exactly as the last Update left it (revision 1, readable), the request settled once (`APPROVED`, `EXPIRED`,
+`CANCELLED`), and the run no longer mutable (`RUN_NOT_MUTABLE`). A decision after the expiry or the cancel is
+`ALREADY_DECIDED`. The golden was written once with `SAGAT_SDK_BLESS=1` after reading every observation by hand and
+equals the output of the five SDKs on a rerun without bless.
+
+`approval-chain.json` is the D295 combination of a native approval with a continuation chain (an activity, then an
+approval whose approval rolls the chain over and whose rejection and expiry end it, with the declared state
+transferred). An Update through the chain address while the first request is open is what the successor segment
+starts with (`24.99` is read from the new head although its input carries `0.00`, and an Update to the predecessor is
+`RUN_CONTINUED`); the successor opens an approval of its own, is updated while it is open and ends the chain when it
+rejects. Settled requests answer from their outcome (exact replay, then `ALREADY_DECIDED`). Cancelling the chain
+settles the open request `CANCELLED` and a later decision is `ALREADY_DECIDED`; the chain's original deadline (six
+seconds in the `deadline` workflow) ends the chain `TIMED_OUT` with its open request `CANCELLED`. Segments are listed
+oldest first, so the successor is index 1.
+
 `chain-inspect-cancel.json` starts a public chain with an initial activity waiting for a worker,
 then inspects and cancels it through all five SDKs. The reviewed runtime golden requires opaque
 cross-tenant lookup, exact cancel replay and a terminal `CANCELLED` chain and run. It does not
@@ -183,6 +202,8 @@ SAGAT_SDK_SCENARIO=collection-ordering cargo test -p sagat-tests --test sdk_conf
 SAGAT_SDK_SCENARIO=loop-semantics cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=collection-compensation cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=loop-compensation cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=approval-state cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=approval-chain cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=approval-security cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=chain-inspect-cancel cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=scoped-identity cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
