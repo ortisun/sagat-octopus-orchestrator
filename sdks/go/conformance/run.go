@@ -54,6 +54,10 @@ func runJSON(run *client.Run) object {
 			"completionKind": orNull(string(run.Chain.CompletionKind)), "successorRunId": orNull(run.Chain.SuccessorRunID),
 		}
 	}
+	// Present only for a run started again from an ended one.
+	if run.RerunOf != "" {
+		observed["rerunOf"] = run.RerunOf
+	}
 	return observed
 }
 
@@ -163,7 +167,12 @@ func run(scenario, config object) (object, error) {
 			}
 			return asString(asObject(items[index])["runId"]), nil
 		}
-		id, _ := results[asString(step["run"])]["runId"].(string)
+		// A rerun answers "newRunId" and no "runId": the step then names the run it started.
+		named := results[asString(step["run"])]
+		id, _ := named["runId"].(string)
+		if id == "" {
+			id, _ = named["newRunId"].(string)
+		}
 		if id == "" {
 			return "", fmt.Errorf("step %s has no run", asString(step["run"]))
 		}
@@ -442,7 +451,12 @@ func playStep(ctx context.Context, step object, op string, c *client.Client, con
 		if err != nil {
 			return nil, err
 		}
-		return object{"accepted": result.Accepted, "runStatus": orNull(string(result.RunStatus))}, nil
+		observed := object{"accepted": result.Accepted, "runStatus": orNull(string(result.RunStatus))}
+		// "newRunId" only for the action that starts a run, so the other operations observe as they did.
+		if result.NewRunID != "" {
+			observed["newRunId"] = result.NewRunID
+		}
+		return observed, nil
 	case "decideApproval":
 		approvalID, err := approvalOf(step)
 		if err != nil {

@@ -406,7 +406,7 @@ stop the scenario.
 | `list` | `status?`, `limit?`, `all?`, `waitForCount?`, `countOnly?` | `list` / `listAll` | `{items: [runId…]}` in the order the server gave (newest first), also across pages (`countOnly`: `{count}` alone, for runs whose ids derive from their parent's and sort anywhere); `waitForCount` lists again (up to 100 times, 50 ms apart) until the page holds that many runs, for a state the scheduler produces (a hand-off) |
 | `listApprovals` | `run`, `cursor?`, `limit?`, `waitForItem?`, `traceparent?`, `token?` | `listApprovals` | the typed page in immutable opening order |
 | `cancel` | `run`, `reason`, `expectedRunVersion?` | `cancel` | `{accepted, runStatus}` |
-| `operate` | `run`, `action`, `reason`, … | `operate` | `{accepted, runStatus}` |
+| `operate` | `run`, `action`, `reason`, … | `operate` | `{accepted, runStatus}`, plus `newRunId` for `RERUN_AS_NEW`; a later step may name that run with `"run": "<this step>"` |
 | `decideApproval` | `approvalId` or `approval` (a list step), `decisionKey`, `decision`, `reasonCode?`, `traceparent?`, `token?` | `decideApproval` | the normalized durable receipt |
 | `query` | `run`, `name`, `args`, `traceparent?`, `token?` | `query` | `{runVersion, stateRevision, result}` |
 | `queryChain` | `namespaceId`, `chainId`, `name`, `args`, `expectedRunId?`, `traceparent?`, `token?` | `queryChain` | `{runId, runVersion, stateRevision, result}` |
@@ -431,7 +431,8 @@ stop the scenario.
 
 A result is a plain JSON object with the fields named here. A **Run** is exactly
 `{runId, workflowId, versionId, status, version, paused, startedBy, createdAt, updatedAt, finishedAt,
-deadline, traceId, correlationId, depth, parent}`.
+deadline, traceId, correlationId, depth, parent}`, plus `chain` for a run in a continuation chain and `rerunOf` for a
+run started again from an ended one (both only when present).
 
 ### Faults
 

@@ -695,6 +695,39 @@ async def test_cancel_and_signal_are_operations_with_a_reason_and_a_payload_and_
     assert http.seen[3].url == f"/v1/runs/{RUN}/signals/a%2Fb%20c", "a name is a path segment, whatever it holds"
 
 
+async def test_rerun_as_new_names_the_new_run_and_the_new_run_names_its_origin(
+    http: FakeHttpServer, make_client: MakeClient
+) -> None:
+    started = "0190aaaa-0000-7000-8000-000000000021"
+    http.serve(
+        lambda seen: (
+            reply(
+                202,
+                {"operationId": "op-2", "accepted": True, "runStatus": "SUCCEEDED", "runVersion": 9, "newRunId": started},
+            )
+            if seen.url.endswith("/operations")
+            else reply(200, run_body(runId=started, rerunOf=RUN))
+        )
+    )
+    client = make_client()
+    rerun = await client.rerun_as_new(RUN, "run it again after the fix", idempotency_key="rerun-key-001")
+    assert (rerun.operation_id, rerun.accepted, rerun.run_status, rerun.run_version, rerun.new_run_id) == (
+        "op-2",
+        True,
+        "SUCCEEDED",
+        9,
+        started,
+    )
+    assert http.seen[0].url == f"/v1/runs/{RUN}/operations"
+    assert http.seen[0].body == {"action": "RERUN_AS_NEW", "reason": "run it again after the fix"}
+    assert http.seen[0].headers["idempotency-key"] == "rerun-key-001"
+    assert (await client.get(started)).rerun_of == RUN
+    http.serve(lambda _seen: reply(200, run_body()))
+    assert (await client.get(RUN)).rerun_of is None
+    http.serve(lambda _seen: reply(202, {"operationId": "op-3", "accepted": True, "runStatus": "CANCELLING"}))
+    assert (await client.operate(RUN, "CANCEL", "no longer needed")).new_run_id is None
+
+
 async def test_the_journal_of_a_run_is_read_a_page_at_a_time(http: FakeHttpServer, make_client: MakeClient) -> None:
     http.serve(
         lambda _seen: reply(

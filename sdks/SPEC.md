@@ -111,8 +111,12 @@ All calls are `<apiUrl><path>` with `Authorization: Bearer <token>`, `Accept: ap
 | `publishEvent(event)` | `POST /events` with `{eventId, type, data, subject?, occurredAt?, correlationKey?, dedupeTtlSeconds?}` | `202` `{eventId, source, status: ACCEPTED \| DUPLICATE}` |
 | `waitForCompletion(runId, options)` | polls `get` every `pollInterval` (default 500 ms, ±20 % jitter) until the status is terminal or `timeout` | the final Run |
 
-Also exposed, thin: `operate(runId, action, reason, options)` for `PAUSE`, `RESUME` and the saga
-decisions, `events(runId, cursor)` for the journal. Terminal statuses: `SUCCEEDED`, `FAILED`,
+Also exposed, thin: `operate(runId, action, reason, options)` for `PAUSE`, `RESUME`, `RERUN_AS_NEW` and the saga
+decisions, `events(runId, cursor)` for the journal. `rerunAsNew(runId, reason, options)` is `operate` with
+`RERUN_AS_NEW`: it starts a new run of the same version, with the same input and correlation id, from a run that
+ended (a run that has not ended is `CONFLICT`). The `OperationResult` names it in `newRunId` (absent for every other
+action) and the new run names its origin in `Run.rerunOf` (absent for a run that is not a rerun). A rerun of a
+segment of a continuation chain is an unrelated run with a chain, a deadline and a segment 0 of its own. Terminal statuses: `SUCCEEDED`, `FAILED`,
 `CANCELLED`, `TIMED_OUT`, `COMPENSATED`, `PARTIAL`, `COMPENSATION_FAILED`.
 
 Rules:

@@ -43,7 +43,14 @@ TERMINAL_STATUSES: frozenset[str] = frozenset(
 )
 
 OperateAction = Literal[
-    "PAUSE", "RESUME", "CANCEL", "RETRY_STEP", "RETRY_COMPENSATION", "SKIP_COMPENSATION", "RESOLVE_STEP"
+    "PAUSE",
+    "RESUME",
+    "CANCEL",
+    "RETRY_STEP",
+    "RETRY_COMPENSATION",
+    "SKIP_COMPENSATION",
+    "RESOLVE_STEP",
+    "RERUN_AS_NEW",
 ]
 ApprovalDecision = Literal["APPROVE", "REJECT"]
 ApprovalStatus = Literal["PENDING", "APPROVED", "REJECTED", "EXPIRED", "CANCELLED"]
@@ -106,6 +113,8 @@ class Run:
     parent: RunParent | None = None
     chain: RunChainSegment | None = None
     """The run's segment in its continuation chain; ``None`` for a run outside any chain."""
+    rerun_of: str | None = None
+    """The ended run this one was started again from (``RERUN_AS_NEW``); ``None`` for a run that is not a rerun."""
     raw: Mapping[str, Any] = field(default_factory=dict, repr=False, compare=False)
 
     @property
@@ -125,6 +134,8 @@ class OperationResult:
     accepted: bool
     run_status: str | None
     run_version: int | None
+    new_run_id: str | None = None
+    """For ``RERUN_AS_NEW``: the run that was started, which names its origin in ``rerun_of``; else ``None``."""
     raw: Mapping[str, Any] = field(default_factory=dict, repr=False, compare=False)
 
 
@@ -322,6 +333,7 @@ def to_run(value: Any) -> Run:
             else None
         ),
         chain=_to_run_chain(raw.get("chain")),
+        rerun_of=_opt_str(raw, "rerunOf"),
         raw=raw,
     )
 
@@ -662,7 +674,7 @@ class SagatClient:
         idempotency_key: str | None = None,
         traceparent: str | None = None,
     ) -> OperationResult:
-        """An operation on a run: ``PAUSE``, ``RESUME``, ``CANCEL`` and the saga decisions."""
+        """An operation on a run: ``PAUSE``, ``RESUME``, ``CANCEL``, ``RERUN_AS_NEW`` and the saga decisions."""
         path = f"/runs/{quote(_run_id(run_id), safe='')}/operations"
         body: dict[str, Any] = {"action": action, "reason": reason}
         if step_id is not None:
@@ -689,7 +701,26 @@ class SagatClient:
             accepted=raw.get("accepted") is True,
             run_status=_opt_str(raw, "runStatus"),
             run_version=run_version if isinstance(run_version, int) and not isinstance(run_version, bool) else None,
+            new_run_id=_opt_str(raw, "newRunId"),
             raw=raw,
+        )
+
+    async def rerun_as_new(
+        self,
+        run_id: str,
+        reason: str,
+        *,
+        idempotency_key: str | None = None,
+        traceparent: str | None = None,
+    ) -> OperationResult:
+        """Starts a new run of the same version, with the same input and correlation id, from a run that ended.
+
+        Needs ``run:operate`` and ``run:start``; a run that has not ended is refused with ``CONFLICT``. The answer's
+        ``new_run_id`` is the new run, which names its origin in ``rerun_of``; a segment of a continuation chain
+        starts a run with a chain of its own.
+        """
+        return await self.operate(
+            run_id, "RERUN_AS_NEW", reason, idempotency_key=idempotency_key, traceparent=traceparent
         )
 
     async def cancel(

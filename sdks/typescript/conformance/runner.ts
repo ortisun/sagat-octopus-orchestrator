@@ -119,6 +119,8 @@ function runJson(run: Run): Obj {
     depth: run.depth, parent: run.parent,
     // Present only for a run in a chain, so the observations of every other run stay as they were.
     ...(run.chain ? { chain: run.chain } : {}),
+    // Present only for a run started again from an ended one.
+    ...(run.rerunOf ? { rerunOf: run.rerunOf } : {}),
   };
 }
 
@@ -366,8 +368,9 @@ async function run(scenario: Obj, config: Obj): Promise<Obj> {
       if (typeof id !== 'string') throw new Error(`step ${String(step['page'])} has no segment ${String(step['index'])}`);
       return id;
     }
+    // A rerun answers `newRunId` and no `runId`: the step then names the run it started.
     const result = results.get(step['run']);
-    const id = result?.['runId'];
+    const id = result?.['runId'] ?? result?.['newRunId'];
     if (typeof id !== 'string') throw new Error(`step ${String(step['run'])} has no run`);
     return id;
   };
@@ -462,7 +465,8 @@ async function run(scenario: Obj, config: Obj): Promise<Obj> {
         }
         case 'operate': {
           const r = await client.operate(runOf(step), step['action'], step['reason'], { stepId: step['stepId'], outcome: step['outcome'], errorCode: step['errorCode'] });
-          result = { accepted: r.accepted, runStatus: r.runStatus };
+          // `newRunId` only for the action that starts a run, so the other operations observe as they did.
+          result = { accepted: r.accepted, runStatus: r.runStatus, ...(r.newRunId ? { newRunId: r.newRunId } : {}) };
           break;
         }
         case 'decideApproval': {

@@ -26,6 +26,8 @@ import java.time.Instant;
  * @param chain         the run's segment in its continuation chain (nullable: a run outside any chain has none). A
  *                      segment that is {@code SUCCEEDED} with completion kind {@code CONTINUED} ended into its
  *                      successor: it is not the process outcome, which is the chain's final outcome
+ * @param rerunOf       the ended run this one was started again from ({@link OperateAction#RERUN_AS_NEW}); null for a
+ *                      run that is not a rerun
  * @param raw           the answer as sent
  */
 public record Run(
@@ -46,7 +48,32 @@ public record Run(
         int depth,
         Parent parent,
         ChainSegmentOfRun chain,
+        String rerunOf,
         JsonNode raw) {
+
+    /** A run that is not a rerun. */
+    public Run(
+            String runId,
+            String workflowId,
+            String versionId,
+            RunStatus status,
+            String statusText,
+            long version,
+            boolean paused,
+            String startedBy,
+            Instant createdAt,
+            Instant updatedAt,
+            Instant finishedAt,
+            Instant deadline,
+            String traceId,
+            String correlationId,
+            int depth,
+            Parent parent,
+            ChainSegmentOfRun chain,
+            JsonNode raw) {
+        this(runId, workflowId, versionId, status, statusText, version, paused, startedBy, createdAt, updatedAt,
+                finishedAt, deadline, traceId, correlationId, depth, parent, chain, null, raw);
+    }
 
     /** The parent of a child run. */
     public record Parent(String runId, String node, String cancelPolicy) {}

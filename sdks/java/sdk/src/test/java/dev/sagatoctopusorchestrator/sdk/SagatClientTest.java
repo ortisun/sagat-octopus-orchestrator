@@ -541,6 +541,32 @@ class SagatClientTest {
     }
 
     @Test
+    void rerunAsNewNamesTheNewRunAndTheNewRunNamesItsOrigin() {
+        String started = "0190aaaa-0000-7000-8000-000000000021";
+        server.prepare((req, reply) -> reply.send(req.path().endsWith("/operations") ? 202 : 200,
+                req.path().endsWith("/operations")
+                        ? "{\"operationId\":\"op-2\",\"accepted\":true,\"runStatus\":\"SUCCEEDED\",\"runVersion\":9,"
+                                + "\"newRunId\":\"" + started + "\"}"
+                        : run("runId", "\"" + started + "\"", "rerunOf", "\"" + RUN + "\"")));
+        OperationResult rerun = client().rerunAsNew(
+                RUN, "run it again after the fix", OperateOptions.create().idempotencyKey("rerun-key-001"));
+        assertEquals("op-2", rerun.operationId());
+        assertTrue(rerun.accepted());
+        assertEquals("SUCCEEDED", rerun.runStatus());
+        assertEquals(9L, rerun.runVersion());
+        assertEquals(started, rerun.newRunId());
+        assertEquals("/v1/runs/" + RUN + "/operations", server.seen.get(0).path());
+        assertEquals("{\"action\":\"RERUN_AS_NEW\",\"reason\":\"run it again after the fix\"}", server.seen.get(0).rawBody());
+        assertEquals("rerun-key-001", server.seen.get(0).header("idempotency-key"));
+        assertEquals(RUN, client().get(started).rerunOf());
+
+        server.prepare((req, reply) -> reply.send(200, run()));
+        assertEquals(null, client().get(RUN).rerunOf());
+        server.prepare((req, reply) -> reply.send(202, "{\"operationId\":\"op-3\",\"accepted\":true,\"runStatus\":\"CANCELLING\"}"));
+        assertEquals(null, client().cancel(RUN, "no longer needed", null).newRunId());
+    }
+
+    @Test
     void anApprovalDecisionUsesItsBodyKeyAndReturnsATypedReceipt() {
         String approvalId = "0190aaaa-0000-7000-8000-000000000099";
         server.prepare((req, reply) -> reply.send(200,

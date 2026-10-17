@@ -445,6 +445,31 @@ public sealed class ClientTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task RerunAsNewNamesTheNewRunAndTheNewRunNamesItsOrigin()
+    {
+        const string started = "0190aaaa-0000-7000-8000-000000000021";
+        server.Handler = request => request.PathAndQuery.EndsWith("/operations", StringComparison.Ordinal)
+            ? Reply(202, new JsonObject { ["operationId"] = "op-2", ["accepted"] = true, ["runStatus"] = "SUCCEEDED", ["runVersion"] = 9, ["newRunId"] = started })
+            : Reply(200, Run(run =>
+            {
+                run["runId"] = started;
+                run["rerunOf"] = Ids.Run;
+            }));
+        var client = NewClient();
+        var rerun = await client.RerunAsNewAsync(Ids.Run, "run it again after the fix", new OperateOptions { IdempotencyKey = "rerun-key-001" });
+        Assert.Equal(("op-2", true, "SUCCEEDED", 9L, started), (rerun.OperationId, rerun.Accepted, rerun.RunStatus, rerun.RunVersion, rerun.NewRunId));
+        Assert.Equal($"/v1/runs/{Ids.Run}/operations", server.Requests[0].PathAndQuery);
+        Assert.Equal("""{"action":"RERUN_AS_NEW","reason":"run it again after the fix"}""", server.Requests[0].BodyText);
+        Assert.Equal("rerun-key-001", server.Requests[0].Header("idempotency-key"));
+        Assert.Equal(Ids.Run, (await client.GetAsync(started)).RerunOf);
+
+        server.Handler = _ => Reply(200, Run());
+        Assert.Null((await NewClient().GetAsync(Ids.Run)).RerunOf);
+        server.Handler = _ => Reply(202, new JsonObject { ["operationId"] = "op-3", ["accepted"] = true, ["runStatus"] = "CANCELLING" });
+        Assert.Null((await NewClient().CancelAsync(Ids.Run, "no longer needed")).NewRunId);
+    }
+
+    [Fact]
     public async Task AnApprovalDecisionUsesItsBodyKeyAndReturnsATypedReceipt()
     {
         const string approvalId = "0190aaaa-0000-7000-8000-000000000099";

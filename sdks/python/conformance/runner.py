@@ -297,6 +297,9 @@ def run_json(run: Run) -> Obj:
             "completionKind": run.chain.completion_kind,
             "successorRunId": run.chain.successor_run_id,
         }
+    # Present only for a run started again from an ended one.
+    if run.rerun_of is not None:
+        observed["rerunOf"] = run.rerun_of
     return observed
 
 
@@ -561,7 +564,9 @@ async def run(scenario: Obj, config: Obj) -> Obj:
             if not isinstance(items, list) or not 0 <= index < len(items) or not isinstance(items[index], dict):
                 raise ValueError(f"step {step['page']} has no segment {index}")
             return str(items[index]["runId"])
-        found = results.get(step["run"], {}).get("runId")
+        # A rerun answers `newRunId` and no `runId`: the step then names the run it started.
+        named = results.get(step["run"], {})
+        found = named.get("runId", named.get("newRunId"))
         if not isinstance(found, str):
             raise ValueError(f"step {step['run']} has no run")
         return found
@@ -710,6 +715,9 @@ async def run(scenario: Obj, config: Obj) -> Obj:
                         error_code=step.get("errorCode"),
                     )
                     result = {"accepted": operated.accepted, "runStatus": operated.run_status}
+                    # `newRunId` only for the action that starts a run, so the other operations observe as they did.
+                    if operated.new_run_id is not None:
+                        result["newRunId"] = operated.new_run_id
                 elif op == "decideApproval":
                     receipt = await client.decide_approval(
                         approval_of(step),
