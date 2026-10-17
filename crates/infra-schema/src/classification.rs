@@ -96,11 +96,13 @@ impl Classifier {
                 cache.order.retain(|candidate| candidate != key);
                 cache.order.push_back(key.clone());
                 self.hits.fetch_add(1, Ordering::Relaxed);
+                metrics::counter!("classification_cache_total", "outcome" => "hit").increment(1);
                 return Ok(entry);
             }
         }
 
         self.misses.fetch_add(1, Ordering::Relaxed);
+        metrics::counter!("classification_cache_total", "outcome" => "miss").increment(1);
         let document: Value =
             serde_json::from_slice(document).map_err(|_| ProjectionFailure::SchemaUnusable)?;
         let schema = carrier(&document, &key.carrier)
@@ -149,6 +151,7 @@ impl Classifier {
             if let Some(removed) = cache.entries.remove(&oldest) {
                 cache.bytes = cache.bytes.saturating_sub(removed.bytes);
                 self.evictions.fetch_add(1, Ordering::Relaxed);
+                metrics::counter!("classification_cache_total", "outcome" => "evict").increment(1);
             }
         }
         if bytes <= MAX_CLASSIFICATION_CACHE_BYTES {
