@@ -2891,7 +2891,7 @@ where
                 return match self
                     .stop_for_storage_quota(
                         view,
-                        &hold,
+                        hold,
                         RunRef {
                             tenant_id: tenant,
                             run_id: run,

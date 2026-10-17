@@ -73,15 +73,19 @@ async fn header(
     let record = run_record(&row)?;
     let now: OffsetDateTime = col(&row, "db_now")?;
     let input_digest: Vec<u8> = col(&row, "input_digest")?;
-    let admitted: i32 = sqlx::query_scalar(
-        "SELECT admitted_instances FROM run_instance_usage WHERE tenant_id = $1 AND run_id = $2",
+    // What `RunState::charged_instances` counts: every scoped instance and each root instance that
+    // left PENDING other than by cancellation. `run_instance_usage.admitted_instances` is not that
+    // number (scoped instances are charged through reservations), and the budget proofs of the
+    // scheduler compare against this one (D522). One row comes back; only the index is walked.
+    let admitted: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM steps WHERE tenant_id = $1 AND run_id = $2 \
+           AND (cardinality(instance_path_nodes) > 0 OR status NOT IN ('PENDING', 'CANCELLED'))",
     )
     .bind(tenant.as_uuid())
     .bind(run.as_uuid())
-    .fetch_optional(&mut *conn)
+    .fetch_one(&mut *conn)
     .await
-    .map_err(store_error)?
-    .ok_or_else(|| corrupt("run instance usage"))?;
+    .map_err(store_error)?;
     let definition = store
         .definition(&mut *conn, tenant, record.info.version_id)
         .await?;
@@ -92,8 +96,7 @@ async fn header(
             version: record.version,
             stop_reason: record.stop_reason,
             definition,
-            charged_instances: usize::try_from(admitted)
-                .map_err(|_| corrupt("run instance usage"))?,
+            charged_instances: usize::try_from(admitted).map_err(|_| corrupt("instance count"))?,
         },
         input_digest,
     }))

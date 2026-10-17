@@ -799,11 +799,14 @@ async fn runs_a_reader_cannot_read_do_not_starve_the_ones_it_can() {
         let mut doc = document(
             &format!("compat-newer-{n}"),
             "a",
-            vec![with(
-                json!({ "id": "a", "type": "activity", "activity": "compat.work" }),
-                "next",
-                json!("done"),
-            ), end_node("done")],
+            vec![
+                with(
+                    json!({ "id": "a", "type": "activity", "activity": "compat.work" }),
+                    "next",
+                    json!("done"),
+                ),
+                end_node("done"),
+            ],
         );
         doc["limits"] = json!({ "maxInstances": 20 });
         let (workflow, _) = w.publish(doc).await;
@@ -813,11 +816,14 @@ async fn runs_a_reader_cannot_read_do_not_starve_the_ones_it_can() {
         .publish(document(
             "compat-readable",
             "a",
-            vec![with(
-                json!({ "id": "a", "type": "activity", "activity": "compat.work" }),
-                "next",
-                json!("done"),
-            ), end_node("done")],
+            vec![
+                with(
+                    json!({ "id": "a", "type": "activity", "activity": "compat.work" }),
+                    "next",
+                    json!("done"),
+                ),
+                end_node("done"),
+            ],
         ))
         .await;
     let readable = w.start(readable_workflow, &json!({})).await;
