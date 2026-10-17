@@ -152,10 +152,13 @@ canary reaches a caller without the grant and the audit count matches the reveal
 
 ## Performance and failure
 
-`cargo test -p sagat-tests --test perf_payload_classification -- --ignored` writes
+`SAGAT_PERF_REPORT=tests/performance/reports/payload-classification.md cargo test -p sagat-tests --test perf_payload_classification -- --ignored` writes
 `tests/performance/reports/payload-classification.md`; read its environment section before its numbers.
-`cargo test -p sagat-tests --test fault_payload_classification` injects the crashes, the audit failure
-and the races of T016-050. A skipped infrastructure test fails the run; report any such failure as it is.
+`cargo test -p sagat-tests --test fault_payload_classification` injects audit failures and transaction
+races. The separate real-process crash gate requires an absolute coordinated `CARGO_TARGET_DIR`:
+`scripts/test-payload-classification-process-faults.sh` builds the actual control plane and explicitly
+runs the ignored process case, retaining its logs and binary manifest. Service reconstruction alone
+is not process-crash evidence. A failed infrastructure prerequisite must be reported as a failure.
 
 ## What this guide does not prove
 

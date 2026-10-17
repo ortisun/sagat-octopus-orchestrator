@@ -189,3 +189,25 @@ Commands above used the coordinated warmed target, `CARGO_INCREMENTAL=0`, `CARGO
 and `RUST_MIN_STACK=16777216`. Reused worktrees can leave incompatible local-crate metadata in
 that target; refreshing the current workspace source mtimes forces its actual interfaces to
 recompile. Earlier stale-metadata compilation failures are not counted as passing tests.
+
+
+### Real process death and lost-response audit evidence
+
+The new `tests/fault/payload-classification/process.rs` launches the actual control-plane binary.
+A PostgreSQL trigger waits on an advisory lock before inserting the mandatory reveal audit. The
+test observes that database wait, kills the OS process and verifies no response body and no audit
+commit. A restarted process successfully reveals with one committed audit. A TCP proxy then holds
+all response bytes after the next upstream response/committed audit; killing the server and cutting
+the client connection preserves that second audit despite response loss. A further process restart
+and retry returns the authorized value and creates a third audit. Process logs contain no PII canary.
+
+The actual case passed 1/1 in 4.24 s as the first target in
+`/tmp/sagat-completion-process-compat-3.log`. The command selected both ignored process/compatibility
+cases; the later compatibility case failed independently, so the whole command exited nonzero.
+Retained process logs: `/Users/marcelo/Documents/Projects/sagat-octopus-process-fault-artifacts/run.retest`.
+`scripts/test-payload-classification-process-faults.sh` is the reproducible standalone command; it
+builds the binary, records a manifest and explicitly selects the ignored process case. The first
+harness attempt used an incorrect readiness path and is a failed prerequisite, not production RED.
+The corrected case uses `/v1/ready` and initializes the HTTP client's pinned crypto provider.
+
+T016-050 remains open for concurrent publication/make-active evidence and its final combined gate.

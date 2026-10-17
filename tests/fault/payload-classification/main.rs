@@ -3,5 +3,6 @@
 #[path = "../../support/mod.rs"]
 mod support;
 
+mod process;
 mod races;
 mod reveal;
