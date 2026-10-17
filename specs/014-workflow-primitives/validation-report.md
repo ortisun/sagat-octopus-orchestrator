@@ -1593,3 +1593,21 @@ matches the public SDKs' 16 MiB decoder. Its first barrier repeat exposed that d
 mismatch (**69/70**), retained alongside the earlier failures in the integration notes. Production
 stream deadlines, input credit and task bounds are unchanged. This checkpoint predates the next
 bounded-claim slice and does not establish the final project release gate.
+
+
+### Combined integration: bounded scoped claims
+
+Discovery now retains exact paths from the same quota/pool/protocol/breaker-aware query as the
+run-only API. Scoped leasing no longer restores whole-run iteration history. Real runtime-role
+barriers verify binding-before-session ordering, current role after contention and refusal after
+binding/session withdrawal. An injected later-path write failure proves an earlier committed token
+still reaches its worker. Task/forward-effect identity construction remains shared with Root.
+
+The selected worker/loop/scoped-compensation modules passed **79/79**, 69.68 s with four test
+threads, after fixing six completed-loop NULL-fence failures; the full privilege module passed
+**33/33**, 8.36 s, and strict workspace/all-target Clippy passed, 1 min 43 s. These results, failed
+baselines and exact commands/logs are recorded in the integration notes. The expanded workflow
+diagnostic remains **328/15/1 ignored**: it also exposed a distinct child-start shard fence defect
+and connection exhaustion from parallel default-thread harnesses. An isolated child-start failure
+confirms that defect independently of the exhausted profile. Final protocol/provider/SDK repeats,
+child-admission correction, report/capability conversion and large resource gates remain open.

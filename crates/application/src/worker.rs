@@ -11,6 +11,7 @@
 mod database;
 mod output;
 mod scoped;
+mod scoped_claims;
 mod secrets;
 pub use output::BlobOutput;
 use secrets::SecretReport;
@@ -259,6 +260,20 @@ pub trait WorkerStore: QuotaLookup + Send + Sync {
         token_hash: &[u8],
         ttl: Duration,
     ) -> impl Future<Output = Result<Option<SessionRecord>, StoreError>> + Send;
+
+    /// The same bounded, quota/pool/protocol-aware discovery window as `claimable_runs`, retaining
+    /// exact path coordinates so scoped claims never need whole-run restoration to find work.
+    fn claimable_paths(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        activities: &[String],
+        limit: u32,
+        accepted_protocol_minor: u32,
+        subject: &str,
+    ) -> impl Future<
+        Output = Result<Vec<(RunId, sagat_domain::execution::InstancePath)>, StoreError>,
+    > + Send;
 
     /// Runs of one namespace that have a `READY` step for one of `activities`, oldest first. Steps
     /// that declare a secret restricted to worker pools the identity `subject` holds none of are
@@ -760,7 +775,10 @@ where
         session_token: &str,
         max_tasks: u32,
         trace_id: Option<&str>,
-    ) -> Result<Vec<ClaimedTask>, AppError> {
+    ) -> Result<Vec<ClaimedTask>, AppError>
+    where
+        S: PathExecutionStore,
+    {
         self.poll_bounded(
             principal,
             worker_id,
@@ -783,7 +801,10 @@ where
         max_tasks: u32,
         max_bytes: usize,
         trace_id: Option<&str>,
-    ) -> Result<Vec<ClaimedTask>, AppError> {
+    ) -> Result<Vec<ClaimedTask>, AppError>
+    where
+        S: PathExecutionStore,
+    {
         let session = self.session(principal, worker_id, session_token).await?;
         // A drained identity keeps its session (it renews it, it reports what it holds) and is given
         // nothing new: the operator waits for what is in flight to end, then stops the process.
@@ -798,7 +819,7 @@ where
         }
         let candidates = self
             .store
-            .claimable_runs(
+            .claimable_paths(
                 session.tenant_id,
                 session.namespace_id,
                 &session.activities,
@@ -836,16 +857,19 @@ where
         principal: &Principal,
         session: &SessionRecord,
         session_token_hash: &[u8],
-        candidates: Vec<RunId>,
+        candidates: Vec<(RunId, sagat_domain::execution::InstancePath)>,
         wanted: usize,
         byte_budget: usize,
         trace_id: Option<&str>,
         claimed: &mut Vec<ClaimedTask>,
-    ) -> Result<(), AppError> {
+    ) -> Result<(), AppError>
+    where
+        S: PathExecutionStore,
+    {
         let mut bytes = 0usize;
         let mut failures = 0u8;
         let mut first_error = None;
-        for run in candidates {
+        for (run, path) in candidates {
             let remaining = wanted - claimed.len();
             if remaining == 0 || bytes >= byte_budget {
                 break;
@@ -856,6 +880,7 @@ where
                     session,
                     session_token_hash,
                     run,
+                    path,
                     remaining,
                     byte_budget,
                     trace_id,
@@ -883,7 +908,7 @@ where
 
     /// Leases up to `remaining` ready steps of one run in one transaction and commits it.
     #[allow(clippy::too_many_arguments)] // one run receives the same bounded claim context
-    async fn claim_run(
+    async fn claim_root_run(
         &self,
         principal: &Principal,
         session: &SessionRecord,
@@ -893,7 +918,10 @@ where
         byte_budget: usize,
         trace_id: Option<&str>,
         bytes: &mut usize,
-    ) -> Result<Vec<ClaimedTask>, AppError> {
+    ) -> Result<Vec<ClaimedTask>, AppError>
+    where
+        S: PathExecutionStore,
+    {
         let mut tx = match self
             .store
             .begin(session.tenant_id, run, Lock::SkipLocked)
@@ -940,10 +968,7 @@ where
             state
                 .instances()
                 .filter(|(instance, step)| {
-                    step.status() == StepStatus::Ready
-                        && (instance.path().is_root()
-                            || (self.store.supports_scoped_worker_protocol()
-                                && session.accepted_protocol_minor >= SCOPED_PROTOCOL_MINOR))
+                    step.status() == StepStatus::Ready && instance.path().is_root()
                 })
                 .filter_map(|(instance, _)| {
                     let n = def.node_for_instance(instance)?;
@@ -1001,7 +1026,7 @@ where
                     .saturating_add(1);
                 let effects = self.pool_refusal_effects(
                     principal,
-                    &tx,
+                    tx.info(),
                     instance.node(),
                     attempt,
                     &withheld,
@@ -1258,37 +1283,79 @@ where
             .lease_expiry_instance(instance)
             .await?
             .unwrap_or_else(|| tx.now() + self.settings.lease_ttl);
-        let run_id = info.run_id;
-        let version = info.version_id;
-        // The forward step a compensation or a reconciliation belongs to, and that step's template.
-        let (forward, kind, template, templated_instance) = {
-            let (def, _) = tx.parts();
-            let origin = def.node_for_instance(instance).map(|n| n.origin().clone());
-            let forward = origin.as_ref().and_then(|o| o.forward().cloned());
-            let kind = match origin {
-                Some(sagat_domain::saga::NodeOrigin::Compensation(_)) => TaskKind::Compensation,
-                Some(sagat_domain::saga::NodeOrigin::Reconciliation(_)) => TaskKind::Reconciliation,
-                _ => TaskKind::Forward,
-            };
-            let templated_instance = ExecutionInstanceId::in_path(
-                instance.path().clone(),
-                forward.as_ref().unwrap_or(instance.node()).clone(),
-            );
-            let template = match def
-                .node_for_instance(&templated_instance)
-                .map(sagat_domain::workflow::Node::kind)
-            {
-                Some(NodeKind::Activity {
-                    idempotency_template,
-                    ..
-                }) => idempotency_template.clone(),
-                _ => None,
-            };
-            (forward, kind, template, templated_instance)
-        };
-        // Borrowed, not cloned: a run's data can be megabytes and a poll leases many steps of it.
+        let template = Self::task_template(tx.parts().0, instance);
         let data = tx.data().await?;
         let input_blob = if managed { None } else { data.input_blob };
+        let (kind, idempotency_key, target) =
+            self.task_identity(template, data, &info, instance)?;
+        let run_id = info.run_id;
+        let version = info.version_id;
+        Ok(ClaimedTask {
+            run_id,
+            step_id: instance_step_id(version, run_id, instance),
+            instance: instance.clone(),
+            fence,
+            lease_token: token,
+            expires_at,
+            activity,
+            input,
+            input_blob,
+            idempotency_key,
+            trace_id: info.trace_id,
+            kind,
+            target,
+        })
+    }
+
+    fn task_template(
+        def: &sagat_domain::workflow::WorkflowDefinition,
+        instance: &ExecutionInstanceId,
+    ) -> (
+        Option<sagat_domain::workflow::NodeId>,
+        TaskKind,
+        Option<sagat_domain::workflow::Expression>,
+        ExecutionInstanceId,
+    ) {
+        // The forward step a compensation or a reconciliation belongs to, and that step's template.
+        let origin = def.node_for_instance(instance).map(|n| n.origin().clone());
+        let forward = origin.as_ref().and_then(|o| o.forward().cloned());
+        let kind = match origin {
+            Some(sagat_domain::saga::NodeOrigin::Compensation(_)) => TaskKind::Compensation,
+            Some(sagat_domain::saga::NodeOrigin::Reconciliation(_)) => TaskKind::Reconciliation,
+            _ => TaskKind::Forward,
+        };
+        let templated_instance = ExecutionInstanceId::in_path(
+            instance.path().clone(),
+            forward.as_ref().unwrap_or(instance.node()).clone(),
+        );
+        let template = match def
+            .node_for_instance(&templated_instance)
+            .map(sagat_domain::workflow::Node::kind)
+        {
+            Some(NodeKind::Activity {
+                idempotency_template,
+                ..
+            }) => idempotency_template.clone(),
+            _ => None,
+        };
+        (forward, kind, template, templated_instance)
+    }
+
+    fn task_identity(
+        &self,
+        template: (
+            Option<sagat_domain::workflow::NodeId>,
+            TaskKind,
+            Option<sagat_domain::workflow::Expression>,
+            ExecutionInstanceId,
+        ),
+        data: &crate::execution::RunData,
+        info: &crate::execution::RunInfo,
+        instance: &ExecutionInstanceId,
+    ) -> Result<(TaskKind, String, Option<TaskTarget>), AppError> {
+        let run_id = info.run_id;
+        let version = info.version_id;
+        let (forward, kind, template, templated_instance) = template;
         // The key of the forward step: what identifies the effect at the provider.
         let forward_node = forward.as_ref().unwrap_or(instance.node());
         let forward_key = match template {
@@ -1338,21 +1405,7 @@ where
             }
             _ => (forward_key, None),
         };
-        Ok(ClaimedTask {
-            run_id,
-            step_id: instance_step_id(version, run_id, instance),
-            instance: instance.clone(),
-            fence,
-            lease_token: token,
-            expires_at,
-            activity,
-            input,
-            input_blob,
-            idempotency_key,
-            trace_id: info.trace_id,
-            kind,
-            target,
-        })
+        Ok((kind, idempotency_key, target))
     }
 
     /// Renews the lease and reports whether the run asked the worker to stop.
@@ -1974,17 +2027,16 @@ where
 
     // Keep actor, execution identity and refusal stage explicit in this security audit helper.
     #[allow(clippy::too_many_arguments)]
-    fn pool_refusal_effects<Tx: RunTx>(
+    fn pool_refusal_effects(
         &self,
         principal: &Principal,
-        tx: &Tx,
+        info: &crate::execution::RunInfo,
         node: &sagat_domain::workflow::NodeId,
         attempt: u32,
         withheld: &SecretName,
         stage: &str,
         trace_id: Option<&str>,
     ) -> Effects {
-        let info = tx.info();
         let mut effects = Effects::by(
             Actor::Worker(principal.subject().as_str().to_owned()),
             trace_id.map(str::to_owned),

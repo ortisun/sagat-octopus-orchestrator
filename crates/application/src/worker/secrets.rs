@@ -53,7 +53,7 @@ where
         {
             let effects = self.pool_refusal_effects(
                 principal,
-                &tx,
+                tx.info(),
                 task.instance.node(),
                 task.fence.attempt,
                 &withheld,
@@ -143,7 +143,7 @@ where
         {
             let effects = self.pool_refusal_effects(
                 principal,
-                &tx,
+                tx.info(),
                 task.instance.node(),
                 task.fence.attempt,
                 &withheld,

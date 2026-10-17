@@ -1162,3 +1162,59 @@ complete runtime-role gRPC suite passed **70/70**, 31.87 s
 (`/tmp/sagat-completion-bounded-heartbeat-grpc-barrier-regression-2.log`). The earlier transport
 and near-deadline failures are retained above; the final passing checkpoint belongs to the
 heartbeat server and these fixture changes, before the subsequent bounded-claim implementation.
+
+### Bounded worker claim implementation and expanded regression findings
+
+The baseline `bounded_worker::scoped_claims_need_no_unrelated_iteration_history` failed **0/1**,
+1.30 s with `iteration_checkpoints` SELECT revoked from its explicit two-connection runtime pool
+(`/tmp/sagat-completion-bounded-worker-claim-red.log`). After exact-path leasing the first focused
+repeat passed **5/5**, 1.94 s (`...-green.log`, before three additional barrier/fault cases).
+The expanded workflow run subsequently passed all **8** bounded-worker cases: claim without
+history, a later-path failure preserving the earlier committed token, and current binding/role
+under actual authority-lock contention, alongside the heartbeat cases.
+
+Discovery now preserves `(run, path)` from the existing quota/pool/protocol/breaker-aware finite
+candidate query. Run-only and exact-path projections share its SQL; an earlier independent path
+hint was replaced during review because it could hide eligible activities behind capped/restricted
+work. Claims are atomic per path. Drain/binding/session/current membership/admission fences remain
+held through lease journal/projection/outbox commit. Input bytes and returned token accounting only
+include committed work. Root task identity/template construction is shared without cloning the
+whole immutable definition. Managed tasks remain root-only; report/capability conversion stays open.
+
+The nested fixed security predicate in that shared SQL template initially required extending the
+privilege extractor, including a focused extractor test; its first compilation exposed a missing
+map value annotation and is retained (`...-runtime-privilege-audit.log`). The corrected complete
+privilege module passed **33/33**, 8.36 s, including **1,035 statements in 52 files**, 653 distinct
+needs and 620 actual runtime probes, with no new grant/exception
+(`/tmp/sagat-completion-bounded-worker-claim-runtime-privilege-audit-2.log`).
+
+The first full workflow diagnostic finished **328 passed /15 failed /1 ignored**, 209.40 s
+(`/tmp/sagat-completion-bounded-worker-claim-workflow-regression.log`). Its concurrent gRPC run
+finished **68/70** with two workspace-admission HTTP 503 responses
+(`...-grpc-provider-regression.log`). Running both default-thread harnesses against the default
+100-connection disposable server exhausted connections (`53300`, setup PoolTimedOut); that
+invocation is not a resource acceptance profile. Subsequent heavy suites use four harness threads
+and run in sequence rather than raising the server's production limits. No server crash is
+inferred from connection exhaustion.
+
+Not all fifteen failures were infrastructure: six loop compensation cases exposed the bounded
+reader decoding SQL NULL as an active-iteration boolean after loop completion. Completed loops
+correctly have no active iteration; the reader now records false and retains separate durable
+saga authority for derived work. The repeated scoped compensation module covers those real failed
+cases. Eight child-chain cases exposed the strict run-shard fence being invoked on a new child's
+transaction with the parent's lease. The isolated child-start test still failed **0/1**, 1.15 s
+without competing harnesses (`...-child-chain-isolated-2.log`); its earlier isolated setup hit
+`53300` and is not product evidence. A separate explicit child-admission fence fix is required;
+ordinary full/bounded run shard validation must remain strict. Final current-source workflow,
+protocol/provider, SDK and large capacity gates remain open until their repeats are recorded.
+
+The current shared-discovery/NULL-fence implementation passed the selected bounded worker, scoped
+worker, loop and complete scoped-compensation modules **79/79**, 69.68 s with four harness threads
+(`/tmp/sagat-completion-bounded-worker-claim-focused-regression-2.log`), including all six genuine
+loop failures recorded above. An initial invocation passed multiple filters to Cargo rather than
+the test harness and executed no tests (`...-focused-regression.log`); it is not passing evidence.
+Strict whole-workspace/all-target Clippy subsequently passed, 1 min 43 s
+(`/tmp/sagat-completion-bounded-worker-claim-clippy-2.log`). Earlier interface/signature compilation
+failures are retained in `...-check{,-2}.log`. Protocol/provider and all-five current claim repeats
+are still pending at this commit; this focused checkpoint does not relabel the 328/15 diagnostic
+or close the child-admission defect or the open feature tasks.

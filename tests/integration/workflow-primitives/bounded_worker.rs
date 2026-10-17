@@ -37,6 +37,203 @@ async fn runtime_workers(fixture: &Fixture, connections: u32) -> ScopedWorkers {
 }
 
 #[tokio::test]
+async fn a_scoped_claim_waiting_for_binding_authority_holds_no_session_row() {
+    assert_claim_authority_after_binding_wait(false).await;
+}
+
+#[tokio::test]
+async fn a_scoped_claim_rechecks_current_role_after_binding_contention() {
+    assert_claim_authority_after_binding_wait(true).await;
+}
+
+async fn assert_claim_authority_after_binding_wait(revoke_role: bool) {
+    let fixture = fixture("bounded-claim-authority").await;
+    let workers = Arc::new(runtime_workers(&fixture, 2).await);
+    let mut guard = fixture.world.db.pool.begin().await.expect("binding guard");
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+        .bind(format!(
+            "binding:{}:{}:{}",
+            fixture.world.admin.tenant_id(),
+            fixture.world.namespace.id(),
+            fixture.session.principal.subject()
+        ))
+        .execute(&mut *guard)
+        .await
+        .expect("hold binding replacement authority");
+    let caller = workers.clone();
+    let principal = fixture.session.principal.clone();
+    let worker_id = fixture.session.worker_id;
+    let token = fixture.session.token.clone();
+    let poll =
+        tokio::spawn(async move { caller.poll(&principal, worker_id, &token, 2, None).await });
+    eventually(
+        "runtime claim waits for current binding authority",
+        || async {
+            let waiting: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() \
+             AND usename='sagat_app' AND wait_event_type='Lock' \
+             AND query LIKE '%pg_advisory_xact_lock_shared%'",
+            )
+            .fetch_one(&fixture.world.db.pool)
+            .await
+            .expect("binding wait barrier");
+            (waiting == 1).then_some(())
+        },
+    )
+    .await;
+    sqlx::query("SET LOCAL lock_timeout='500ms'")
+        .execute(&mut *guard)
+        .await
+        .expect("bounded guard");
+    if revoke_role {
+        sqlx::query("UPDATE memberships SET role='viewer' WHERE tenant_id=$1 AND subject=$2")
+            .bind(fixture.session.principal.tenant_id().as_uuid())
+            .bind(fixture.session.principal.subject().as_str())
+            .execute(&mut *guard)
+            .await
+            .expect("revoke the cached principal's current role");
+    } else {
+        sqlx::query(
+            "DELETE FROM worker_bindings WHERE tenant_id=$1 AND namespace_id=$2 AND subject=$3",
+        )
+        .bind(fixture.world.admin.tenant_id().as_uuid())
+        .bind(fixture.world.namespace.id().as_uuid())
+        .bind(fixture.session.principal.subject().as_str())
+        .execute(&mut *guard)
+        .await
+        .expect("withdraw bindings");
+        sqlx::query("DELETE FROM worker_sessions WHERE tenant_id=$1 AND id=$2")
+            .bind(fixture.world.admin.tenant_id().as_uuid())
+            .bind(worker_id)
+            .execute(&mut *guard)
+            .await
+            .expect("binding replacement can close its sessions without a lock cycle");
+    }
+    guard.commit().await.expect("commit authority withdrawal");
+    assert!(
+        poll.await
+            .expect("poll task")
+            .expect("authority refusal leaves work ready")
+            .is_empty()
+    );
+    let attempts: i64 =
+        sqlx::query_scalar("SELECT sum(attempt)::bigint FROM steps WHERE run_id=$1")
+            .bind(fixture.run.as_uuid())
+            .fetch_one(&fixture.world.db.pool)
+            .await
+            .expect("no lease spent");
+    assert_eq!(attempts, 0);
+}
+
+#[tokio::test]
+async fn a_later_path_failure_still_delivers_every_committed_lease() {
+    let fixture = fixture("bounded-worker-partial-claim").await;
+    let workers = runtime_workers(&fixture, 2).await;
+    sqlx::raw_sql(
+        "CREATE FUNCTION reject_later_path_lease() RETURNS trigger LANGUAGE plpgsql AS $$ \
+         BEGIN \
+           IF NEW.status='LEASED' AND EXISTS (SELECT 1 FROM steps \
+             WHERE tenant_id=NEW.tenant_id AND run_id=NEW.run_id AND status='LEASED' \
+               AND instance_path_indices<>NEW.instance_path_indices) THEN \
+             RAISE EXCEPTION 'injected later path lease failure'; \
+           END IF; \
+           RETURN NEW; \
+         END $$; \
+         CREATE TRIGGER reject_later_path_lease BEFORE UPDATE ON steps \
+           FOR EACH ROW EXECUTE FUNCTION reject_later_path_lease(); \
+         REVOKE SELECT ON iteration_checkpoints FROM sagat_app;",
+    )
+    .execute(&fixture.world.db.pool)
+    .await
+    .expect("inject a failure only after an earlier path committed");
+    let tasks = workers
+        .poll(
+            &fixture.session.principal,
+            fixture.session.worker_id,
+            &fixture.session.token,
+            2,
+            None,
+        )
+        .await
+        .expect("the already committed lease token must reach its worker");
+    assert_eq!(tasks.len(), 1);
+    assert!(tasks[0].idempotency_key.starts_with("scope:"));
+    let rows: Vec<(String, i32)> = sqlx::query_as(
+        "SELECT status,attempt FROM steps WHERE run_id=$1 AND node='a' \
+         AND cardinality(instance_path_nodes)=1 ORDER BY instance_path_indices",
+    )
+    .bind(fixture.run.as_uuid())
+    .fetch_all(&fixture.world.db.pool)
+    .await
+    .expect("both independent path projections");
+    assert_eq!(
+        rows.iter()
+            .filter(|(status, attempt)| status == "LEASED" && *attempt == 1)
+            .count(),
+        1
+    );
+    assert_eq!(
+        rows.iter()
+            .filter(|(status, attempt)| status == "READY" && *attempt == 0)
+            .count(),
+        1
+    );
+    workers
+        .heartbeat(&fixture.session.principal, &task_ref(&tasks[0]))
+        .await
+        .expect("returned token really owns its committed lease");
+    sqlx::query("GRANT SELECT ON iteration_checkpoints TO sagat_app")
+        .execute(&fixture.world.db.pool)
+        .await
+        .expect("restore replay oracle access");
+    fixture
+        .store
+        .verify_run(fixture.world.admin.tenant_id(), fixture.run)
+        .await
+        .expect("later rollback leaves the earlier journal/projection intact");
+}
+
+#[tokio::test]
+async fn scoped_claims_need_no_unrelated_iteration_history() {
+    let fixture = fixture("bounded-worker-claim").await;
+    let workers = runtime_workers(&fixture, 2).await;
+    sqlx::query("REVOKE SELECT ON iteration_checkpoints FROM sagat_app")
+        .execute(&fixture.world.db.pool)
+        .await
+        .expect("withhold unrelated iteration history before discovery");
+    let tasks = workers
+        .poll(
+            &fixture.session.principal,
+            fixture.session.worker_id,
+            &fixture.session.token,
+            1,
+            None,
+        )
+        .await
+        .expect("claim requires only the addressed current path");
+    assert_eq!(tasks.len(), 1);
+    assert!(!tasks[0].instance.path().is_root());
+    assert_eq!(tasks[0].fence.attempt, 1);
+    let started: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM run_events WHERE run_id=$1 AND event_type='step.leased'",
+    )
+    .bind(fixture.run.as_uuid())
+    .fetch_one(&fixture.world.db.pool)
+    .await
+    .expect("persisted lease");
+    assert_eq!(started, 1);
+    sqlx::query("GRANT SELECT ON iteration_checkpoints TO sagat_app")
+        .execute(&fixture.world.db.pool)
+        .await
+        .expect("restore replay oracle access");
+    fixture
+        .store
+        .verify_run(fixture.world.admin.tenant_id(), fixture.run)
+        .await
+        .expect("bounded claim agrees with full journal replay");
+}
+
+#[tokio::test]
 async fn a_scoped_heartbeat_uses_its_path_and_preserves_late_report_and_binding_fences() {
     let fixture = fixture("bounded-worker-heartbeat").await;
     let workers = runtime_workers(&fixture, 8).await;

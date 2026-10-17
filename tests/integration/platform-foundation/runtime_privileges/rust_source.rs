@@ -185,7 +185,7 @@ fn matching(tokens: &[Tok], open_at: usize, open: char, close: char) -> usize {
 /// `macro_rules! name { ($tail:literal) => { concat!("prefix", ..., $tail) }; }` -> name => prefix.
 /// The definitions are removed from the stream: their text is expanded where they are invoked.
 fn take_macros(tokens: Vec<Tok>) -> (BTreeMap<String, String>, Vec<Tok>) {
-    let mut macros = BTreeMap::new();
+    let mut macros: BTreeMap<String, String> = BTreeMap::new();
     let mut kept = Vec::new();
     let mut i = 0;
     while i < tokens.len() {
@@ -204,12 +204,24 @@ fn take_macros(tokens: Vec<Tok>) -> (BTreeMap<String, String>, Vec<Tok>) {
                 .position(|t| matches!(t, Tok::Ident(word) if word == "concat"))
                 // A macro without `concat!` is a fixed fragment: `() => { "text" }`.
                 .unwrap_or(0);
-            for token in &body[from..] {
-                match token {
+            let mut at = from;
+            while at < body.len() {
+                match &body[at] {
                     Tok::Str(text, _) => prefix.push_str(text),
                     Tok::Punct('$') => break,
+                    Tok::Ident(fixed)
+                        if macros.contains_key(fixed)
+                            && matches!(
+                                body.get(at + 1..at + 4),
+                                Some([Tok::Punct('!'), Tok::Punct('('), Tok::Punct(')')])
+                            ) =>
+                    {
+                        prefix.push_str(&macros[fixed]);
+                        at += 3;
+                    }
                     _ => {}
                 }
+                at += 1;
             }
             macros.insert(name.clone(), prefix);
             i = end + 1;
@@ -497,6 +509,21 @@ mod tests {
             found.fragments.is_empty(),
             "the tail was consumed by the expansion"
         );
+    }
+
+    #[test]
+    fn a_fixed_security_predicate_inside_a_query_template_is_not_omitted() {
+        let found = extract(
+            "macro_rules! policy { () => { \"AND EXISTS (SELECT 1 FROM secret_pools) \" }; }\n\
+             macro_rules! sel { ($tail:literal) => { concat!(\"SELECT id FROM steps WHERE true \", policy!(), $tail) }; }\n\
+             const QUERY: &str = sel!(\"ORDER BY id LIMIT $1\"); fn f() { q(QUERY); }",
+        );
+        assert_eq!(found.statements.len(), 1);
+        assert_eq!(
+            found.statements[0].text,
+            "SELECT id FROM steps WHERE true AND EXISTS (SELECT 1 FROM secret_pools) ORDER BY id LIMIT $1"
+        );
+        assert!(found.fragments.is_empty());
     }
 
     #[test]

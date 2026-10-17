@@ -241,7 +241,7 @@ impl PgRunStore {
                    AND scope.owner_path_nodes=$3 AND scope.owner_path_indices=$4 \
                    AND scope.owner_node=$5 \
                  UNION ALL \
-                 SELECT 'LOOP',scope.lifecycle,scope.active_iteration=$6 \
+                 SELECT 'LOOP',scope.lifecycle,coalesce(scope.active_iteration=$6,false) \
                  FROM loop_scopes scope WHERE scope.tenant_id=$1 AND scope.run_id=$2 \
                    AND scope.owner_path_nodes=$3 AND scope.owner_path_indices=$4 \
                    AND scope.owner_node=$5",

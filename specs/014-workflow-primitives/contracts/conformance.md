@@ -104,6 +104,28 @@ late authority loss, terminal acknowledgement, current role after a real lock wa
 concurrent renewals using two runtime-role connections. Claims, completion/failure, capability
 disclosure and large workload acceptance remain separate open gates.
 
+### Exact-path worker claims
+
+Discovery retains `(run, path)` from the existing finite quota/pool/protocol/breaker-aware candidate
+window. The run-only discovery API and the path projection share that SQL, preventing a second,
+less selective path window from hiding eligible work behind a capped or restricted activity.
+Candidates are hints: each current path is rechecked under its run lock with `SKIP LOCKED`.
+
+A scoped claim holds drain authority, then binding authority before the session row, checks current
+membership, and retains activity/breaker/script-retention admission through its atomic lease commit.
+Its full task input is measured before leasing; receive bytes include only committed returned tasks.
+Every path transaction shares that session's inflight count across paths/runs/replicas. A failure in
+a later path returns tokens already committed by earlier paths rather than silently losing them.
+Task/forward-effect identity and idempotency templates share the existing root construction rules.
+Managed database work remains root-only; reports and capability delivery retain their current gates.
+
+A completed loop has no active iteration. Its exact-path ancestor fence records `active=false`,
+while durable saga authority separately permits the derived work needed to drain that loop.
+`worker.scoped.claim` records tenant/run identity without payloads or tokens and reuses existing
+quota/refusal/unreadable-definition counters. Tests revoke unrelated history SELECT, inject a later
+lease failure and use actual binding-lock waits to check current role/session revocation and lock
+order. These checks alone do not close the full compatibility or large resource acceptance tasks.
+
 The automatic scoped lease-expiry and retry passes now use this port: load one exact path outside
 the write lock, compare the run revision under lock, hold the current shard fence and recheck live
 expiry clocks before persisting the addressed command. A revision race is skipped for later
