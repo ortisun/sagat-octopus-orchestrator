@@ -11,7 +11,7 @@ use sagat_application::execution::{
 use sagat_application::runs::Lock;
 use sagat_application::worker::{MAX_TASK_INPUT_BYTES, WorkerService};
 use sagat_domain::execution::{ExecutionInstanceId, InstancePath, RunId};
-use sagat_domain::workflow::NodeId;
+use sagat_domain::workflow::{ActivityName, NodeId};
 use sagat_infra_ir::JsonEvaluator;
 use sagat_infra_postgres::PgRunStore;
 use serde_json::{Value, json};
@@ -289,6 +289,19 @@ async fn a_member_output_over_the_value_ceiling_is_refused_and_the_lease_survive
             .await
             .expect("bindings")
             .is_empty()
+    );
+    assert_eq!(
+        fenced
+            .required_worker_protocol_minor()
+            .await
+            .expect("protocol fence"),
+        0
+    );
+    assert!(
+        fenced
+            .activity_admitted(&ActivityName::parse("limits.step").expect("activity"))
+            .await
+            .expect("activity quota")
     );
     let completed =
         ExecutionInstanceId::in_path(path.clone(), NodeId::parse("work").expect("activity node"));

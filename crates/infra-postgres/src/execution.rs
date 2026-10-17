@@ -903,6 +903,7 @@ impl PathExecutionStore for PgRunStore {
             tx,
             snapshot,
             now: col(&row, "db_now")?,
+            breaker: self.breaker,
         }))
     }
 }
@@ -912,6 +913,7 @@ pub struct PgPathExecutionTx {
     tx: Transaction<'static, Postgres>,
     snapshot: PathExecutionSnapshot,
     now: OffsetDateTime,
+    breaker: BreakerPolicy,
 }
 
 impl std::fmt::Debug for PgPathExecutionTx {
@@ -1022,6 +1024,47 @@ impl PathExecutionTx for PgPathExecutionTx {
         .fetch_all(&mut *self.tx)
         .await
         .map_err(store_error)
+    }
+
+    async fn required_worker_protocol_minor(&mut self) -> Result<u32, StoreError> {
+        let needs_blob_protocol: bool = sqlx::query_scalar(
+            "SELECT runs.input_blob_id IS NOT NULL OR EXISTS ( \
+                 SELECT 1 FROM blobs blob WHERE blob.tenant_id=runs.tenant_id \
+                   AND blob.namespace_id=runs.namespace_id AND blob.run_id=runs.id \
+                   AND blob.purpose='STEP_OUTPUT' AND blob.state='COMMITTED') \
+             FROM runs WHERE tenant_id=$1 AND id=$2",
+        )
+        .bind(self.snapshot.info.tenant_id.as_uuid())
+        .bind(self.snapshot.info.run_id.as_uuid())
+        .fetch_one(&mut *self.tx)
+        .await
+        .map_err(store_error)?;
+        Ok(if needs_blob_protocol {
+            sagat_application::worker::BLOB_PROTOCOL_MINOR
+        } else {
+            0
+        })
+    }
+
+    async fn activity_admitted(&mut self, activity: &ActivityName) -> Result<bool, StoreError> {
+        crate::quotas::activity_admitted(
+            &mut self.tx,
+            self.snapshot.info.tenant_id,
+            self.snapshot.info.namespace_id,
+            activity,
+        )
+        .await
+    }
+
+    async fn compensation_admitted(&mut self, activity: &ActivityName) -> Result<bool, StoreError> {
+        crate::breaker::admit(
+            &mut self.tx,
+            self.breaker,
+            self.snapshot.info.tenant_id.as_uuid(),
+            self.snapshot.info.namespace_id.as_uuid(),
+            activity.as_str(),
+        )
+        .await
     }
 
     async fn lease_unexpired(

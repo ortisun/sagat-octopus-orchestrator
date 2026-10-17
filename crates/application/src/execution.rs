@@ -657,6 +657,20 @@ pub trait PathExecutionTx: Send {
         subject: &str,
     ) -> impl Future<Output = Result<Vec<String>, StoreError>> + Send;
 
+    fn required_worker_protocol_minor(
+        &mut self,
+    ) -> impl Future<Output = Result<u32, StoreError>> + Send;
+
+    fn activity_admitted(
+        &mut self,
+        activity: &ActivityName,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    fn compensation_admitted(
+        &mut self,
+        activity: &ActivityName,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
     fn lease_unexpired(
         &mut self,
         instance: &ExecutionInstanceId,
