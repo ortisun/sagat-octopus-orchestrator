@@ -2187,6 +2187,23 @@ async fn expression_failure_drains_once_restarts_and_finishes_from_the_journal()
         .undo(&fixture.db.pool, BEFORE_LOOP_DRAIN)
         .await
         .expect_err("retained loop drain must block downgrade");
+    let error = if error
+        .to_string()
+        .contains("retired instance reservations cannot be refunded safely")
+    {
+        // Continue the isolated downgrade probe after acknowledging the newer lifetime-ledger
+        // guard; the older loop projection retains its own destructive rollback guard.
+        sqlx::query("UPDATE run_instance_usage SET retired_reservations=0")
+            .execute(&fixture.db.pool)
+            .await
+            .expect("clear the isolated downgrade probe's retired charge");
+        MIGRATOR
+            .undo(&fixture.db.pool, BEFORE_LOOP_DRAIN)
+            .await
+            .expect_err("retained loop drain must independently block downgrade")
+    } else {
+        error
+    };
     assert!(
         error
             .to_string()
