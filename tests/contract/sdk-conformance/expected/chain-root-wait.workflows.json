@@ -1,0 +1,34 @@
+{
+  "canonical": {
+    "chain": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"chainPolicy\":{\"maxSegments\":3,\"timeoutMs\":86400000},\"entrypoint\":\"release\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"chain-root-wait-runtime\"},\"nodes\":[{\"correlationExpr\":\"input.key\",\"eventType\":\"chain.release\",\"id\":\"release\",\"next\":\"next\",\"timeoutMs\":600000,\"type\":\"waitEvent\"},{\"id\":\"next\",\"input\":\"input\",\"type\":\"continueAsNew\"}]}"
+  },
+  "workflows": {
+    "chain": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "chainPolicy": {
+        "maxSegments": 3,
+        "timeoutMs": 86400000
+      },
+      "entrypoint": "release",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "chain-root-wait-runtime"
+      },
+      "nodes": [
+        {
+          "correlationExpr": "input.key",
+          "eventType": "chain.release",
+          "id": "release",
+          "next": "next",
+          "timeoutMs": 600000,
+          "type": "waitEvent"
+        },
+        {
+          "id": "next",
+          "input": "input",
+          "type": "continueAsNew"
+        }
+      ]
+    }
+  }
+}

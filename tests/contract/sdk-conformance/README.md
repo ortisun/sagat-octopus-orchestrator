@@ -242,8 +242,11 @@ inspection, signal and cancellation in all five SDKs. The golden requires exact 
 replay, including signal replay after rollover, changed-body key rejection, no buffering on a
 head without a matching wait, tenant opacity, successor head change, stale-head rejection and
 final cancellation.
-`chain-root-wait.json.pending` retains the separate direct-root-wait shape: successor creation
-still assumes an activity entrypoint, so that publication path is closed.
+`chain-root-wait.json` publishes `waitEvent -> continueAsNew`: a continuation whose entrypoint is an
+event wait (G372). The hand-off creates each successor already waiting (key, deadline and subscription
+commit with it), so a signal sent to the new head right after the hand-off is delivered, a command fenced
+to the old head is `CHAIN_HEAD_CHANGED`, and the chain is cancelled on its third segment. All five SDKs
+agree with the golden.
 
 `chain-query.json` exercises the typed chain Query call and expected-head fence against a public
 stateful chain in all five SDK runners. Its activity remains unserved, so the observation covers
