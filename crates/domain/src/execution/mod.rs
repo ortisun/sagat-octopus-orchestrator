@@ -27,7 +27,7 @@ pub use command::{
     AddressedProgress, Expiry, Failure, Heartbeat, InstanceHeartbeat, Progress, Resolution,
     advance_scope_compensation, complete_instance, complete_path_instance, complete_reconciliation,
     complete_reconciliation_instance, complete_reconciliation_path_instance, complete_step,
-    expire_attempt, expire_instance, fail_instance, fail_path_instance,
+    expire_attempt, expire_instance, expire_path_instance, fail_instance, fail_path_instance,
     fail_report_for_storage_quota, fail_step, fail_step_for_storage_quota, fail_unentered_loop,
     finish_child, fire_timer, heartbeat, heartbeat_instance, heartbeat_path_instance,
     lease_instance, lease_path_instance, lease_step, mark_for_review, mark_for_review_instance,

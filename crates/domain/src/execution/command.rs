@@ -1587,11 +1587,39 @@ pub fn expire_instance(
     jitter_sample: f64,
     now: OffsetDateTime,
 ) -> Result<AddressedProgress, ExecutionError> {
+    expire_scoped_attempt(def, state, instance, fence, cause, jitter_sample, now)
+}
+
+/// Ends an expired attempt using the same policy over one complete bounded path snapshot.
+///
+/// # Errors
+/// The same typed fence/policy errors as [`expire_instance`], including a different addressed path.
+pub fn expire_path_instance(
+    def: &WorkflowDefinition,
+    state: &mut PathExecutionState,
+    instance: &ExecutionInstanceId,
+    fence: Fence,
+    cause: Expiry,
+    jitter_sample: f64,
+    now: OffsetDateTime,
+) -> Result<AddressedProgress, ExecutionError> {
+    expire_scoped_attempt(def, state, instance, fence, cause, jitter_sample, now)
+}
+
+fn expire_scoped_attempt<S: ScopedAttemptState>(
+    def: &WorkflowDefinition,
+    state: &mut S,
+    instance: &ExecutionInstanceId,
+    fence: Fence,
+    cause: Expiry,
+    jitter_sample: f64,
+    now: OffsetDateTime,
+) -> Result<AddressedProgress, ExecutionError> {
     let code = match cause {
         Expiry::LeaseExpired => FailureCode::lease_expired(),
         Expiry::AttemptTimeout => FailureCode::attempt_timeout(),
     };
-    fail_instance(
+    fail_scoped_attempt(
         def,
         state,
         instance,

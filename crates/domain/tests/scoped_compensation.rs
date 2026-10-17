@@ -1501,3 +1501,46 @@ fn stopping_compensation_completion_retains_empty_routing_without_forward_work()
     scope.absorb(expected.events);
     scope.assert_replays();
 }
+
+#[test]
+fn bounded_derived_expiry_keeps_compensation_and_lookup_policy() {
+    use sagat_domain::execution::expire_path_instance;
+    for cause in [Expiry::LeaseExpired, Expiry::AttemptTimeout] {
+        for lookup in [false, true] {
+            let (mut scope, derived) = if lookup {
+                let (mut scope, forward, fence) = unknown_effect_scope();
+                scope.expire(&forward, fence, Expiry::LeaseExpired);
+                (scope, forward.reconciliation())
+            } else {
+                let mut scope = failed_after_a_completed_iteration();
+                scope.advance();
+                let derived = scope.at(0, "ship").compensation();
+                (scope, derived)
+            };
+            let fence = scope.lease(&derived);
+            let mut bounded = PathExecutionState::from_run(&scope.state, derived.path().clone())
+                .expect("bounded derived lease");
+            let expected = expire_instance(
+                &scope.def,
+                &mut scope.state,
+                &derived,
+                fence,
+                cause,
+                0.0,
+                T0,
+            )
+            .expect("full derived expiry");
+            let actual =
+                expire_path_instance(&scope.def, &mut bounded, &derived, fence, cause, 0.0, T0)
+                    .expect("bounded derived expiry");
+            assert_eq!(actual, expected);
+            assert_eq!(
+                bounded,
+                PathExecutionState::from_run(&scope.state, derived.path().clone())
+                    .expect("derived expiry oracle")
+            );
+            scope.absorb(expected.events);
+            scope.assert_replays();
+        }
+    }
+}

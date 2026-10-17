@@ -682,3 +682,103 @@ fn bounded_lookup_verdict_and_operator_commands_match_full_replay() {
         }
     }
 }
+
+#[test]
+fn bounded_expiry_matches_full_policy_for_ambiguity_cancellation_and_stale_fences() {
+    use sagat_domain::execution::{Expiry, expire_instance, expire_path_instance};
+    use time::OffsetDateTime;
+    for cause in [Expiry::LeaseExpired, Expiry::AttemptTimeout] {
+        for policy in 0..4 {
+            for cancelled in [false, true] {
+                for stale in [false, true] {
+                    let def = definition_with_policy(
+                        RetryPolicy::DEFAULT,
+                        policy & 1 != 0,
+                        policy & 2 != 0,
+                    );
+                    let mut full = state(3);
+                    let work = member(1, "work");
+                    full.apply_addressed(
+                        &AddressedRunEvent::in_path(
+                            path(1),
+                            RunEvent::StepReleased { node: id("work") },
+                        )
+                        .expect("address"),
+                    )
+                    .expect("release");
+                    let (mut fence, _) = lease_instance(&mut full, &work).expect("lease");
+                    if cancelled {
+                        full.apply_addressed(
+                            &AddressedRunEvent::in_path(
+                                path(1),
+                                RunEvent::StepCancelRequested { node: id("work") },
+                            )
+                            .expect("cancel address"),
+                        )
+                        .expect("cancel request");
+                    }
+                    let mut bounded =
+                        PathExecutionState::from_run(&full, path(1)).expect("bounded snapshot");
+                    let before_full = full.clone();
+                    let before_bounded = bounded.clone();
+                    if stale {
+                        fence.generation += 1;
+                    }
+                    let expected = expire_instance(
+                        &def,
+                        &mut full,
+                        &work,
+                        fence,
+                        cause,
+                        0.0,
+                        OffsetDateTime::UNIX_EPOCH,
+                    );
+                    let actual = expire_path_instance(
+                        &def,
+                        &mut bounded,
+                        &work,
+                        fence,
+                        cause,
+                        0.0,
+                        OffsetDateTime::UNIX_EPOCH,
+                    );
+                    assert_eq!(
+                        actual, expected,
+                        "{cause:?}, policy {policy}, cancelled {cancelled}, stale {stale}"
+                    );
+                    assert_eq!(
+                        bounded,
+                        PathExecutionState::from_run(&full, path(1)).expect("oracle")
+                    );
+                    if stale {
+                        assert!(actual.is_err());
+                        assert_eq!(full, before_full);
+                        assert_eq!(bounded, before_bounded);
+                    } else {
+                        assert!(actual.is_ok());
+                        let step = bounded.local_instance(work.node()).expect("expired step");
+                        let expected_status = if policy & 2 != 0 || policy & 1 != 0 {
+                            StepStatus::Waiting
+                        } else if cancelled {
+                            StepStatus::Cancelled
+                        } else {
+                            StepStatus::RetryWait
+                        };
+                        assert_eq!(step.status(), expected_status);
+                        if policy & 2 != 0 {
+                            assert_eq!(
+                                step.waiting_on(),
+                                Some(&sagat_domain::execution::WaitingOn::Reconciliation)
+                            );
+                        } else if policy & 1 != 0 {
+                            assert!(matches!(
+                                step.waiting_on(),
+                                Some(sagat_domain::execution::WaitingOn::Operator { .. })
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

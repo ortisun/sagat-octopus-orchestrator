@@ -82,7 +82,8 @@ worker, nested scope or root-finalization resource criteria have passed.
 ### Bounded effect progress and global work
 
 The combined path projection shares effect/review reducers and scoped attempt command policy
-with full replay. Current global status combines local work with checked existential facts about
+with full replay, including lease-expiry/attempt-timeout handling. Unknown effects retain lookup
+or operator review, and stale fences mutate neither representation. Current global status combines local work with checked existential facts about
 other paths and run-wide compensation, preserving the original status precedence. The facts are
 read in the same repeatable-read snapshot; mutation still checks the global run revision. New
 partial indexes in 20261208000000 support the probes. This changes no SDK/wire semantics and
