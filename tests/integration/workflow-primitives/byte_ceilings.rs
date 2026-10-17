@@ -3,6 +3,7 @@
 //! durable `RUN_DATA_LIMIT` failure, never a retry loop and never a silently stored oversize value.
 
 use sagat_application::clock::SystemClock;
+use sagat_application::definitions::Idempotency;
 use sagat_application::entropy::SystemEntropy;
 use sagat_application::entropy::Token;
 use sagat_application::execution::{
@@ -402,6 +403,12 @@ async fn a_bounded_completion_commits_without_reopening_the_run_history() {
     let mut events = heartbeat.event.into_iter().collect::<Vec<_>>();
     events.extend(progress.events);
     let mut effects = Effects::by(Actor::Worker(session.0.to_string()), None);
+    let idempotency = Idempotency {
+        scope: format!("bounded-test:{run}"),
+        key: "complete".into(),
+        fingerprint: vec![1, 2, 3],
+    };
+    effects.idempotency = Some((idempotency.clone(), "ack".into()));
     effects.reported = Some(ReportedLease {
         instance: task.instance.clone(),
         token_hash: task.lease_token.hash(),
@@ -441,6 +448,17 @@ async fn a_bounded_completion_commits_without_reopening_the_run_history() {
             .await
             .expect("bounded output ledger");
     assert_eq!(charged, 2);
+    let mut replay = world
+        .store
+        .begin_path(persisted, Lock::Wait)
+        .await
+        .expect("replay transaction")
+        .expect("run");
+    assert_eq!(
+        replay.replay(&idempotency).await.expect("bounded replay"),
+        Some("ack".into())
+    );
+    replay.commit().await.expect("read-only replay commit");
 }
 
 #[tokio::test]

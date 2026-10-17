@@ -102,6 +102,50 @@ impl PathExecutionTx for PgPathExecutionTx {
         .map_err(store_error)
     }
 
+    async fn secret_inputs(
+        &mut self,
+        names: &[SecretName],
+    ) -> Result<sagat_application::secrets::SecretInputs, StoreError> {
+        crate::secrets::inputs(
+            &mut self.tx,
+            self.snapshot.info.tenant_id,
+            self.snapshot.info.namespace_id,
+            self.snapshot.info.version_id.as_uuid(),
+            names,
+        )
+        .await
+    }
+
+    async fn secret_pool_refusal(
+        &mut self,
+        names: &[SecretName],
+        subject: &str,
+        check: sagat_application::execution::PoolCheck,
+    ) -> Result<Option<SecretName>, StoreError> {
+        crate::secrets::pool_refusal(
+            &mut self.tx,
+            self.snapshot.info.tenant_id,
+            self.snapshot.info.namespace_id,
+            names,
+            subject,
+            check == sagat_application::execution::PoolCheck::Delivery,
+        )
+        .await
+    }
+
+    async fn secret_versions(
+        &mut self,
+        names: &[SecretName],
+    ) -> Result<Vec<sagat_application::secrets::StoredSecret>, StoreError> {
+        crate::secrets::all_versions(
+            &mut self.tx,
+            self.snapshot.info.tenant_id,
+            self.snapshot.info.namespace_id,
+            names,
+        )
+        .await
+    }
+
     async fn current_worker_authorized(&mut self, subject: &str) -> Result<bool, StoreError> {
         current_worker_authorized(
             &mut self.tx,
@@ -189,6 +233,16 @@ impl PathExecutionTx for PgPathExecutionTx {
         .fetch_one(&mut *self.tx)
         .await
         .map_err(store_error)
+    }
+
+    async fn replay(&mut self, idempotency: &Idempotency) -> Result<Option<String>, StoreError> {
+        replay(
+            &mut self.tx,
+            self.snapshot.info.tenant_id,
+            idempotency,
+            &hash(&idempotency.fingerprint),
+        )
+        .await
     }
 
     async fn persist_addressed(

@@ -673,6 +673,23 @@ pub trait PathExecutionTx: Send {
         subject: &str,
     ) -> impl Future<Output = Result<Vec<String>, StoreError>> + Send;
 
+    fn secret_inputs(
+        &mut self,
+        names: &[SecretName],
+    ) -> impl Future<Output = Result<SecretInputs, StoreError>> + Send;
+
+    fn secret_pool_refusal(
+        &mut self,
+        names: &[SecretName],
+        subject: &str,
+        check: PoolCheck,
+    ) -> impl Future<Output = Result<Option<SecretName>, StoreError>> + Send;
+
+    fn secret_versions(
+        &mut self,
+        names: &[SecretName],
+    ) -> impl Future<Output = Result<Vec<StoredSecret>, StoreError>> + Send;
+
     /// Locks and checks the worker's current tenant authority through the bounded commit.
     fn current_worker_authorized(
         &mut self,
@@ -710,6 +727,11 @@ pub trait PathExecutionTx: Send {
         instance: &ExecutionInstanceId,
         token_hash: &[u8],
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    fn replay(
+        &mut self,
+        idempotency: &Idempotency,
+    ) -> impl Future<Output = Result<Option<String>, StoreError>> + Send;
 
     /// Journals and projects already-reduced exact-path events in this short transaction.
     fn persist_addressed(
