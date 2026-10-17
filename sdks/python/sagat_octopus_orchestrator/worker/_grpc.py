@@ -18,8 +18,15 @@ from ..retry import capped_ms, parse_ms
 from ..traceparent import is_traceparent
 
 METHODS = (
-    "RegisterWorker", "PollTasks", "StreamTasks", "Heartbeat", "CompleteStep", "FailStep", "ResolveSecrets",
-    "WriteBlob", "ReadBlob"
+    "RegisterWorker",
+    "PollTasks",
+    "StreamTasks",
+    "Heartbeat",
+    "CompleteStep",
+    "FailStep",
+    "ResolveSecrets",
+    "WriteBlob",
+    "ReadBlob",
 )
 
 
@@ -171,7 +178,9 @@ class WorkerRpc:
     async def stream_tasks(self, request: pb.PollTasksRequest) -> AsyncGenerator[pb.PollTasksResponse, None]:
         call = self._stub.StreamTasks(
             # The server window is five seconds; one extra second bounds trailer delivery.
-            request, metadata=await self._metadata(None), timeout=min(self._config.timeout, 6.0)
+            request,
+            metadata=await self._metadata(None),
+            timeout=min(self._config.timeout, 6.0),
         )
         try:
             async for response in call:
@@ -219,9 +228,7 @@ class WorkerRpc:
     async def read_blob(
         self, request: pb.ReadBlobRequest, traceparent: str | None = None
     ) -> AsyncIterator[pb.ReadBlobResponse]:
-        call = self._stub.ReadBlob(
-            request, metadata=await self._metadata(traceparent), timeout=self._config.timeout
-        )
+        call = self._stub.ReadBlob(request, metadata=await self._metadata(traceparent), timeout=self._config.timeout)
         try:
             async for response in call:
                 yield response

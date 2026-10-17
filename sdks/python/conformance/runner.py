@@ -629,7 +629,11 @@ async def run(scenario: Obj, config: Obj) -> Obj:
                     )
                 elif op == "startWithBlob":
                     workflow_id = config["workflows"][step["workflow"]]["workflowId"]
-                    blob_body = step["inputBlobText"].encode("utf-8") if "inputBlobText" in step else b"i" * step["inputBlobBytes"]
+                    blob_body = (
+                        step["inputBlobText"].encode("utf-8")
+                        if "inputBlobText" in step
+                        else b"i" * step["inputBlobBytes"]
+                    )
                     descriptor = await client.upload_run_input(
                         [blob_body], expected_size=len(blob_body), expected_sha256=hashlib.sha256(blob_body).hexdigest()
                     )
@@ -814,7 +818,7 @@ async def run(scenario: Obj, config: Obj) -> Obj:
                         cursor = results.get(cursor[len("{{nextCursor:") : -2], {}).get("nextCursor")
                         if not isinstance(cursor, str):
                             raise ValueError("the referenced step has no next page")
-                    page = await client.list_chain_runs(
+                    chain_page = await client.list_chain_runs(
                         chain_ref(step["namespaceId"]),
                         chain_ref(step["chainId"]),
                         cursor=cursor,
@@ -833,9 +837,9 @@ async def run(scenario: Obj, config: Obj) -> Obj:
                                 "createdAt": instant(item.created_at),
                                 "finishedAt": instant(item.finished_at),
                             }
-                            for item in page.items
+                            for item in chain_page.items
                         ],
-                        "nextCursor": page.next_cursor,
+                        "nextCursor": chain_page.next_cursor,
                     }
                 elif op == "inspectChain":
                     chain = await client.inspect_chain(
@@ -908,15 +912,24 @@ async def run(scenario: Obj, config: Obj) -> Obj:
                     )
                 elif op == "waitForChainCompletion":
                     chain = await client.wait_for_chain_completion(
-                        chain_ref(step["namespaceId"]), chain_ref(step["chainId"]),
-                        timeout=step.get("timeoutMs", 60_000) / 1000, poll_interval=0.1,
+                        chain_ref(step["namespaceId"]),
+                        chain_ref(step["chainId"]),
+                        timeout=step.get("timeoutMs", 60_000) / 1000,
+                        poll_interval=0.1,
                     )
                     result = {
-                        "chainId": chain.chain_id, "currentRunId": chain.current_run_id, "revision": chain.revision,
-                        "cancelRequested": chain.cancel_requested, "finalOutcome": chain.final_outcome,
+                        "chainId": chain.chain_id,
+                        "currentRunId": chain.current_run_id,
+                        "revision": chain.revision,
+                        "cancelRequested": chain.cancel_requested,
+                        "finalOutcome": chain.final_outcome,
                         "segments": [
-                            {"index": segment.index, "runId": segment.run_id,
-                             "predecessorRunId": segment.predecessor_run_id, "successorRunId": segment.successor_run_id}
+                            {
+                                "index": segment.index,
+                                "runId": segment.run_id,
+                                "predecessorRunId": segment.predecessor_run_id,
+                                "successorRunId": segment.successor_run_id,
+                            }
                             for segment in chain.segments
                         ],
                     }

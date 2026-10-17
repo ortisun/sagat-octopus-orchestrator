@@ -703,7 +703,13 @@ async def test_rerun_as_new_names_the_new_run_and_the_new_run_names_its_origin(
         lambda seen: (
             reply(
                 202,
-                {"operationId": "op-2", "accepted": True, "runStatus": "SUCCEEDED", "runVersion": 9, "newRunId": started},
+                {
+                    "operationId": "op-2",
+                    "accepted": True,
+                    "runStatus": "SUCCEEDED",
+                    "runVersion": 9,
+                    "newRunId": started,
+                },
             )
             if seen.url.endswith("/operations")
             else reply(200, run_body(runId=started, rerunOf=RUN))
@@ -868,7 +874,8 @@ async def test_a_run_in_a_chain_names_its_segment_and_a_run_outside_one_has_none
     assert (await make_client().get(RUN)).chain is None
     http.serve(
         lambda _seen: reply(
-            200, run_body(chain={"chainId": chain, "segmentIndex": 0, "completionKind": "SOMEDAY", "successorRunId": None})
+            200,
+            run_body(chain={"chainId": chain, "segmentIndex": 0, "completionKind": "SOMEDAY", "successorRunId": None}),
         )
     )
     with pytest.raises(SagatError) as error:
@@ -896,9 +903,11 @@ async def test_the_runs_of_a_chain_are_paged_in_segment_order_following_the_serv
         }
 
     http.serve(
-        lambda seen: reply(200, {"items": [item(2)], "nextCursor": None})
-        if "cursor=AAE" in seen.url
-        else reply(200, {"items": [item(0), item(1)], "nextCursor": "AAE"})
+        lambda seen: (
+            reply(200, {"items": [item(2)], "nextCursor": None})
+            if "cursor=AAE" in seen.url
+            else reply(200, {"items": [item(0), item(1)], "nextCursor": "AAE"})
+        )
     )
     client = make_client()
     collected = [segment.index async for segment in client.list_all_chain_runs(namespace_id, chain_id, limit=2)]
