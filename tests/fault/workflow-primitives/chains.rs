@@ -1296,3 +1296,286 @@ async fn the_final_outcome_of_a_child_chain_reaches_the_parent_once_despite_a_fa
     assert_eq!(again.children_finished, 0, "{again:?}");
     family.world.assert_consistent(family.parent).await;
 }
+
+// --------------------------------------------------------------------- Update against a hand-off
+
+use crate::support::worker::{Platform, platform};
+use reqwest::Method;
+
+fn stateful_chain(name: &str) -> Value {
+    json!({
+        "apiVersion": "sagat-octopus-orchestrator.io/v1",
+        "kind": "Workflow",
+        "metadata": {"name": name},
+        "entrypoint": "work",
+        "nodes": [
+            {"id": "work", "type": "activity", "activity": "chain.state", "next": "rollover"},
+            {"id": "rollover", "type": "continueAsNew", "input": "input.next", "state": "state"}
+        ],
+        "chainPolicy": {"maxSegments": 4, "timeoutMs": 3_600_000},
+        "state": {
+            "schema": {
+                "type": "object", "additionalProperties": false,
+                "properties": {"balance": {"type": "integer", "minimum": 0}},
+                "required": ["balance"]
+            },
+            "initial": "input.account",
+            "queries": {
+                "balance.read": {
+                    "argsSchema": {"type": "object", "additionalProperties": false},
+                    "resultSchema": {"type": "integer"},
+                    "expression": "state.balance",
+                    "disclosure": "declared-business-result-v1"
+                }
+            },
+            "updates": {
+                "balance.replace": {
+                    "argsSchema": {
+                        "type": "object", "additionalProperties": false,
+                        "properties": {
+                            "allowed": {"type": "boolean"},
+                            "nextState": {
+                                "type": "object", "additionalProperties": false,
+                                "properties": {"balance": {"type": "integer", "minimum": 0}},
+                                "required": ["balance"]
+                            }
+                        },
+                        "required": ["allowed", "nextState"]
+                    },
+                    "validate": "args.allowed",
+                    "state": "args.nextState",
+                    "result": "newState.balance",
+                    "resultSchema": {"type": "integer", "minimum": 0},
+                    "disclosure": "declared-business-result-v1"
+                }
+            }
+        }
+    })
+}
+
+struct StatefulChain {
+    platform: Platform,
+    namespace: String,
+    chain: RunId,
+    scheduler: Arc<Scheduler<sagat_infra_postgres::PgRunStore, JsonEvaluator, SystemEntropy>>,
+}
+
+impl StatefulChain {
+    /// A chain whose first activity is done: its boundary is pending with state `{balance: 10}`.
+    async fn at_boundary(label: &str) -> Self {
+        let platform = platform().await;
+        let name = format!("state-{label}-{}", Uuid::now_v7());
+        let workflow = platform.publish(&name, &stateful_chain(&name)).await;
+        let run = platform
+            .start(
+                &workflow,
+                &json!({"account": {"balance": 10}, "next": {"account": {"balance": 0}}}),
+            )
+            .await;
+        let mut worker = platform.worker("worker-state").await;
+        worker.register(&["chain.state"]).await;
+        let lease = worker.one_task().await;
+        worker
+            .complete(&lease, &json!({"processed": true}))
+            .await
+            .expect("complete the segment activity");
+        let placement = Placement::new(format!("chain-state-{label}-{}", Uuid::now_v7()));
+        Keeper::new(
+            platform.api.executions.clone(),
+            placement.clone(),
+            KeeperSettings {
+                ttl: Duration::from_secs(60),
+            },
+        )
+        .round()
+        .await
+        .expect("acquire scheduler shards");
+        let scheduler = Arc::new(
+            Scheduler::new(
+                platform.api.executions.clone(),
+                Engine::new(JsonEvaluator),
+                SystemEntropy,
+                SchedulerSettings::default(),
+            )
+            .with_placement(placement),
+        );
+        let namespace = platform.namespace_id().await;
+        Self {
+            platform,
+            namespace,
+            chain: run.parse().expect("run id"),
+            scheduler,
+        }
+    }
+
+    fn tenant(&self) -> Uuid {
+        self.platform.tenant.as_uuid()
+    }
+
+    fn update_path(&self) -> String {
+        format!(
+            "/namespaces/{}/chains/{}/updates/balance.replace",
+            self.namespace, self.chain
+        )
+    }
+
+    fn update_body(key: &str, balance: i64, expected_run: Option<RunId>) -> Value {
+        let mut body = json!({
+            "updateKey": key,
+            "args": {"allowed": true, "nextState": {"balance": balance}}
+        });
+        if let Some(run) = expected_run {
+            body["expectedRunId"] = json!(run.to_string());
+        }
+        body
+    }
+
+    fn handoff(
+        &self,
+    ) -> tokio::task::JoinHandle<Result<ChainHandoffWrite, ContinuationAdvanceError>> {
+        let scheduler = self.scheduler.clone();
+        let (tenant, namespace) = (
+            sagat_domain::identity::TenantId::new(self.tenant()),
+            NamespaceId::new(self.namespace.parse().expect("namespace id")),
+        );
+        let chain = self.chain;
+        tokio::spawn(async move {
+            scheduler
+                .advance_continuation(tenant, namespace, chain, &boundary())
+                .await
+        })
+    }
+
+    fn update(&self, body: Value) -> tokio::task::JoinHandle<(u16, Value)> {
+        let request = self
+            .platform
+            .api
+            .as_user(Method::POST, &self.update_path(), "alice", "acme");
+        tokio::spawn(async move {
+            let response = request.json(&body).send().await.expect("update request");
+            let status = response.status().as_u16();
+            (status, crate::support::api::json_of(response).await)
+        })
+    }
+
+    async fn head(&self) -> (Uuid, i32) {
+        sqlx::query_as(
+            "SELECT current_run_id,segment_count FROM execution_chains \
+             WHERE tenant_id=$1 AND chain_id=$2",
+        )
+        .bind(self.tenant())
+        .bind(self.chain.as_uuid())
+        .fetch_one(&self.platform.api.db.pool)
+        .await
+        .expect("chain head")
+    }
+
+    async fn state_of(&self, run: Uuid) -> (i64, serde_json::Value) {
+        sqlx::query_as(
+            "SELECT operation.state_revision, convert_from(payload.content,'UTF8')::jsonb \
+             FROM workflow_operation_states operation JOIN payloads payload \
+               ON payload.tenant_id=operation.tenant_id AND payload.digest=operation.state_digest \
+             WHERE operation.tenant_id=$1 AND operation.run_id=$2",
+        )
+        .bind(self.tenant())
+        .bind(run)
+        .fetch_one(&self.platform.api.db.pool)
+        .await
+        .expect("declared state")
+    }
+}
+
+#[tokio::test]
+async fn a_chain_update_and_a_hand_off_commit_in_either_order_without_losing_or_repeating_the_update()
+ {
+    // The update first: the successor starts from the state the update left.
+    let chain = StatefulChain::at_boundary("update-first").await;
+    let pool = &chain.platform.api.db.pool;
+    let gate = Gate::on_chain(pool, chain.tenant(), chain.chain).await;
+    let update = chain.update(StatefulChain::update_body(
+        "update-before-handoff",
+        27,
+        None,
+    ));
+    until_blocked(pool, 1).await;
+    let moving = chain.handoff();
+    until_blocked(pool, 2).await;
+    gate.release().await;
+    let (status, receipt) = update.await.expect("task");
+    assert_eq!(status, 200, "{receipt}");
+    assert_eq!(
+        receipt["runId"],
+        chain.chain.to_string(),
+        "applied on the head it found"
+    );
+    assert_eq!(receipt["replayed"], false);
+    assert!(moving.await.expect("task").is_ok());
+    let (head, segments) = chain.head().await;
+    assert_eq!(segments, 2);
+    assert_eq!(
+        chain.state_of(head).await,
+        (1, json!({"balance": 27})),
+        "the successor carries the updated state and its revision"
+    );
+
+    // The same key after the roll-over is the original receipt, not a second application.
+    let (status, replay) = chain
+        .update(StatefulChain::update_body(
+            "update-before-handoff",
+            27,
+            None,
+        ))
+        .await
+        .expect("task");
+    assert_eq!(status, 200, "{replay}");
+    assert_eq!(replay["runId"], chain.chain.to_string());
+    assert_eq!(replay["replayed"], true);
+    assert_eq!(chain.state_of(head).await.0, 1, "applied once");
+
+    // The hand-off first: the update meets the successor, or is refused by its expected head.
+    let chain = StatefulChain::at_boundary("handoff-first").await;
+    let pool = &chain.platform.api.db.pool;
+    let gate = Gate::inside_the_write(
+        pool,
+        sagat_domain::identity::TenantId::new(chain.tenant()),
+        NamespaceId::new(chain.namespace.parse().expect("namespace id")),
+    )
+    .await;
+    let moving = chain.handoff();
+    until_blocked(pool, 1).await;
+    let stale = chain.update(StatefulChain::update_body(
+        "stale-head-update",
+        31,
+        Some(chain.chain),
+    ));
+    until_blocked(pool, 2).await;
+    let open = chain.update(StatefulChain::update_body("open-head-update", 32, None));
+    until_blocked(pool, 3).await;
+    gate.release().await;
+    assert!(moving.await.expect("task").is_ok());
+    let (head, segments) = chain.head().await;
+    assert_eq!(segments, 2);
+    let (status, refused) = stale.await.expect("task");
+    assert_eq!(status, 409, "{refused}");
+    assert_eq!(refused["details"]["reason"], "CHAIN_HEAD_CHANGED");
+    let (status, applied) = open.await.expect("task");
+    assert_eq!(status, 200, "{applied}");
+    assert_eq!(
+        applied["runId"],
+        head.to_string(),
+        "applied once, on the successor"
+    );
+    assert_eq!(chain.state_of(head).await, (1, json!({"balance": 32})));
+    let receipts: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM operation_update_receipts WHERE tenant_id=$1")
+            .bind(chain.tenant())
+            .fetch_one(pool)
+            .await
+            .expect("receipts");
+    assert_eq!(receipts, 1, "the refused update left no receipt behind");
+    assert_eq!(
+        chain.state_of(chain.chain.as_uuid()).await,
+        (0, json!({"balance": 10})),
+        "the finished predecessor kept the state it ended with"
+    );
+}
