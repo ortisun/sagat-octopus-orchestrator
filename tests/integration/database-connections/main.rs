@@ -37,9 +37,15 @@ fn durable_provider_intents_reconcile_without_plaintext_or_duplicate_rotation() 
         .name("managed-secret-lifecycle".into())
         .stack_size(16 * 1024 * 1024)
         .spawn(|| {
-            tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
                 .block_on(managed_secret_lifecycle())
-        }).unwrap().join().expect("managed secret lifecycle thread");
+        })
+        .unwrap()
+        .join()
+        .expect("managed secret lifecycle thread");
 }
 
 async fn managed_secret_lifecycle() {
@@ -179,7 +185,9 @@ async fn managed_secret_lifecycle() {
         .await
         .unwrap();
     assert_eq!(resolved[0].value.expose(), b"rotated-canary-017");
-    w.complete(&session, &task, &serde_json::json!({})).await.unwrap();
+    w.complete(&session, &task, &serde_json::json!({}))
+        .await
+        .unwrap();
     // A legacy writer cannot silently switch provider authority back to local ciphertext.
     assert!(
         w.secrets
@@ -274,7 +282,9 @@ async fn managed_secret_lifecycle() {
     };
     let (result, ()) = tokio::time::timeout(Duration::from_secs(10), async {
         tokio::join!(resolving, revoking)
-    }).await.expect("provider I/O revocation race must finish within the fresh lease");
+    })
+    .await
+    .expect("provider I/O revocation race must finish within the fresh lease");
     assert!(matches!(result, Err(AppError::SecretUnavailable { .. })));
     // Stale in-memory admin principals cannot replay a management receipt either.
     assert!(service.put(&w.admin, ns, write(), &ctx()).await.is_err());

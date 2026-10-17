@@ -93,10 +93,17 @@ impl JsonIrCodec {
 }
 
 impl IrCodec for JsonIrCodec {
-    fn classification_analysis(&self, document: &[u8]) -> Option<sagat_application::classification::ClassificationAnalysis> {
-        if document.len() > MAX_IR_BYTES { return None; }
+    fn classification_analysis(
+        &self,
+        document: &[u8],
+    ) -> Option<sagat_application::classification::ClassificationAnalysis> {
+        if document.len() > MAX_IR_BYTES {
+            return None;
+        }
         let value: Value = serde_json::from_slice(document).ok()?;
-        value.is_object().then(|| classification_check::check(&value))
+        value
+            .is_object()
+            .then(|| classification_check::check(&value))
     }
 
     fn check_draft(&self, document: &[u8]) -> Result<(), IrError> {

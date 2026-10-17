@@ -7,10 +7,10 @@ fn repository_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..")
 }
 
-mod openapi;
 mod events;
+mod openapi;
 mod schema;
 
-mod validate;
 #[path = "../../support/mod.rs"]
 mod support;
+mod validate;

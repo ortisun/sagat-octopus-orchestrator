@@ -9,8 +9,8 @@ use sagat_application::clock::Clock;
 use sagat_application::connectors::{ConnectorService, ConnectorStore};
 use sagat_application::database::{ConnectionService, ConnectionStore};
 use sagat_application::egress::{EgressService, EgressStore};
-use sagat_application::events::{EventService, EventStore};
 use sagat_application::event_payloads::EventPayloadUseCase;
+use sagat_application::events::{EventService, EventStore};
 use sagat_application::identity::IdentityStore;
 use sagat_application::managed_secrets::{ManagedSecretService, ManagedSecretStore};
 use sagat_application::operations::{AlertReader, AuditStore, OperationsService, WorkerAdmin};
@@ -54,7 +54,9 @@ pub trait Governance: Core + Admission {
     fn connections(&self) -> Option<&ConnectionService<Self::Store, Self::Clock>>;
     /// `None` when no reader is configured to verify webhook secrets.
     fn events(&self) -> Option<&EventService<Self::Store, Self::Clock>>;
-    fn event_payloads(&self) -> Option<&Arc<dyn EventPayloadUseCase>> { None }
+    fn event_payloads(&self) -> Option<&Arc<dyn EventPayloadUseCase>> {
+        None
+    }
     /// `None` when the instance has no key ring (deliveries are signed): the subscription routes are
     /// then not served at all.
     fn outbound(&self) -> Option<&OutboundService<Self::Store, Self::Clock>>;
@@ -353,5 +355,7 @@ where
     type GrantStore = G;
     type GrantClock = C;
 
-    fn reveal_grants(&self) -> &RevealGrantService<G, C> { &self.reveal_grants }
+    fn reveal_grants(&self) -> &RevealGrantService<G, C> {
+        &self.reveal_grants
+    }
 }

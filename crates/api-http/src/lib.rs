@@ -748,8 +748,10 @@ where
             );
     }
     router
-        .merge(reveal_grants::routes::<B<S, C, G>, B<S, C, G>>(state.clone())
-            .layer(RequestBodyLimitLayer::new(limits.max_body_bytes)))
+        .merge(
+            reveal_grants::routes::<B<S, C, G>, B<S, C, G>>(state.clone())
+                .layer(RequestBodyLimitLayer::new(limits.max_body_bytes)),
+        )
         .route_layer(axum::middleware::from_fn_with_state(
             Arc::clone(slots),
             limits::shed_excess,
@@ -837,13 +839,21 @@ where
 
     let payload_disclosures = if state.payload_disclosures().is_some() {
         Router::new()
-            .route("/runs/{run_id}/payload-disclosures",
-                axum::routing::post(routes::payload_disclosure::disclose_payload::<B<S, C, P, X, E>>))
-            .layer(RequestBodyLimitLayer::new(routes::payload_disclosure::DISCLOSURE_MAX_BODY_BYTES))
+            .route(
+                "/runs/{run_id}/payload-disclosures",
+                axum::routing::post(
+                    routes::payload_disclosure::disclose_payload::<B<S, C, P, X, E>>,
+                ),
+            )
+            .layer(RequestBodyLimitLayer::new(
+                routes::payload_disclosure::DISCLOSURE_MAX_BODY_BYTES,
+            ))
             .route_layer(shed())
             .route_layer(from_fn(routes::database_results::no_store))
             .with_state(state.clone())
-    } else { Router::new() };
+    } else {
+        Router::new()
+    };
 
     let payload_inspections = if state.payload_inspections().is_some() {
         Router::new()

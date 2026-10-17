@@ -14,11 +14,15 @@ fn document() -> Value {
 fn production_codec_refuses_unsupported_annotations_with_closed_classification_problems() {
     let mut source = document();
     source["metadata"]["x-sagat-classification"] = json!("secret");
-    let error = JsonIrCodec.parse(&serde_json::to_vec(&source).expect("bytes"))
+    let error = JsonIrCodec
+        .parse(&serde_json::to_vec(&source).expect("bytes"))
         .expect_err("metadata is not a carrier");
     let problems = problems_of(&error);
     assert_eq!(problems[0].code, "CLASSIFICATION_NOT_APPLICABLE");
-    assert_eq!(problems[0].path.as_deref(), Some("/metadata/x-sagat-classification"));
+    assert_eq!(
+        problems[0].path.as_deref(),
+        Some("/metadata/x-sagat-classification")
+    );
     assert!(!problems[0].message.contains("secret"));
 }
 
@@ -29,7 +33,11 @@ fn production_codec_refuses_lowered_levels_and_keeps_sound_digests_stable() {
         "properties":{"reference":{"type":"string","x-sagat-classification":"public"}}});
     let bytes = serde_json::to_vec(&source).expect("bytes");
     let error = JsonIrCodec.parse(&bytes).expect_err("lowered declaration");
-    assert!(problems_of(&error).iter().any(|p| p.code == "CLASSIFICATION_LOOSENED"));
+    assert!(
+        problems_of(&error)
+            .iter()
+            .any(|p| p.code == "CLASSIFICATION_LOOSENED")
+    );
     source["inputSchema"]["properties"]["reference"]["x-sagat-classification"] = json!("secret");
     let bytes = serde_json::to_vec(&source).expect("bytes");
     let a = JsonIrCodec.parse(&bytes).expect("sound carrier");
