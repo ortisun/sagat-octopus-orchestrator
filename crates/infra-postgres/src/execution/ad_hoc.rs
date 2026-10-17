@@ -30,7 +30,7 @@ pub(super) async fn retain(
     sqlx::query("INSERT INTO workflows(id,tenant_id,namespace_id,name,draft,created_at,updated_at,draft_edited_by,internal) VALUES($1,$2,$3,$4,'{}'::jsonb,$5,$5,$6,true)")
         .bind(info.workflow_id.as_uuid()).bind(tenant.as_uuid()).bind(namespace.as_uuid()).bind(name)
         .bind(info.created_at).bind(&info.started_by).execute(&mut *conn).await.map_err(store_error)?;
-    sqlx::query("INSERT INTO workflow_versions(id,tenant_id,workflow_id,version_number,digest,document,published_by,published_at) VALUES($1,$2,$3,1,$4,$5,$6,$7)")
+    sqlx::query("INSERT INTO workflow_versions(id,tenant_id,workflow_id,version_number,digest,document,published_by,published_at,classification_rules) VALUES($1,$2,$3,1,$4,$5,$6,$7,1)")
         .bind(info.version_id.as_uuid()).bind(tenant.as_uuid()).bind(info.workflow_id.as_uuid())
         .bind(retained.digest().to_hex()).bind(retained.document()).bind(&info.started_by).bind(info.created_at)
         .execute(&mut *conn).await.map_err(store_error)?;
