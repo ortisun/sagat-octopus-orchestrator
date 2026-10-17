@@ -175,6 +175,10 @@ jobs:
       # #[ignore] in the workspace run because they need Node and Chromium. The benchmark runs only with STUDIO_PERF=1.
       - name: browser journeys
         run: cargo test -p sagat-tests --test e2e_workflow_studio --locked -- --ignored journeys
+      - name: managed PostgreSQL and OpenBao browser journeys
+        run: |
+          cargo build -p sagat-database-runner --bin database-runner --locked
+          cargo test -p sagat-tests --test e2e_database_connections --locked -- --ignored
       - name: onboarding browser failure redaction
         working-directory: frontend
         run: node --test e2e/compose-security.test.mjs
@@ -232,6 +236,10 @@ jobs:
       # engine, checks health, runs the seed twice, gets a token from the provider, publishes and runs a
       # workflow with the CLI and tears everything down (see scripts/smoke-compose.sh).
       - run: SAGAT_BIN=target/debug/sagat SAGAT_SMOKE_BROWSER=1 scripts/smoke-compose.sh
+      - name: managed database containers and coordinated restore
+        run: |
+          docker build -f infra/docker/Dockerfile --target database-runner -t sagat-octopus-orchestrator/database-runner:dev .
+          python3 tests/e2e/database-connections/compose.py
 
   observability:
     name: observability files (Prometheus rules and configuration, Collector configuration, dashboards)
