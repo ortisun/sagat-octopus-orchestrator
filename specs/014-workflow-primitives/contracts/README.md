@@ -284,7 +284,8 @@ and to `crates/api-http/src/error.rs` together, and checks each mapping against 
 ## 6. Telemetry and audit
 
 OTel span design: `workflow.scope.admit`, `workflow.iteration.commit`, `workflow.approval.decide`,
-`workflow.query`, `workflow.update`, `workflow.continue`. Link predecessor/successor traces and retain
+`workflow.query`, `workflow.update`, `workflow.continue`, `workflow.switch.evaluate` and
+`workflow.unsupported`. Link predecessor/successor traces and retain
 W3C trace context; put run/instance/chain/actor identifiers only in authorized spans or redacted logs,
 not metric labels. Tenant context is mandatory internally; metrics use bounded tenant service tier
 or a bounded authorized tenant aggregation, never unbounded raw tenant/run IDs.
@@ -299,9 +300,19 @@ ADR-0016) and the telemetry projector (ADR-0017) expose instance index, scope, s
 chain links with lag; telemetry is never the authoritative workflow graph. A Studio or projector
 that does not know a new capability shows its nodes as unsupported and keeps working (T014-045).
 Scoped graph nodes use a stable `scopeNode[index]/localNode` id and carry `nodeId` plus an ordered
-`instancePath`; only persisted scoped instances appear. Until the journal change feed identifies
-the complete path for each touched instance, a change after scoped work appears as a full `reset`
-snapshot, so clients never apply a local node update to the wrong iteration.
+`instancePath`; only persisted scoped instances appear. The journal change feed identifies the
+complete path of each touched instance, so a change after scoped work is a precise delta (`reset`
+stays false) and clients never apply a local node update to the wrong iteration.
+Routes are edges: an approval node has `approve`, `reject` and `expire` edges to its three pinned
+targets, and its `approvalDecision` (`{kind, target}`; `PENDING`, `APPROVED`, `REJECTED`, `EXPIRED`
+or `CANCELLED`) says which one the recorded outcome took. It never names the approver, the decision
+key or the reason code. A collection or loop owner has a `begin` edge to the entry step of each
+admitted iteration (`items[2]/work`), and the body's own edges are repeated per iteration.
+A journal entry of a kind the projector does not know is not dropped silently and does not stop the
+run's projection: it becomes one `workflow.unsupported` span and one
+`workflow_primitive_transitions_total{kind="unsupported",outcome="unsupported"}` increment. The span
+carries the run, the scope path and the sequence-derived span id, never the unknown event's type
+or payload.
 When chain metadata has been initialized, graph and changes responses include `chainId`,
 `segmentIndex`, `segmentCount`, `currentRunId`, predecessor/successor run IDs, completion kind and
 final outcome in `chain`. A run without retained chain metadata reports `chain: null`.

@@ -12,7 +12,9 @@
 
 use std::time::Duration;
 
-use sagat_application::telemetry::{Observation, Pending, TelemetryStore, ToProject, derive};
+use sagat_application::telemetry::{
+    Observation, Pending, TelemetryStore, ToProject, derive, derive_unsupported,
+};
 use sagat_telemetry::{ExportError, OtlpClient, SpanData, keeps};
 
 /// Tunable limits of the projector.
@@ -190,6 +192,7 @@ impl<S: TelemetryStore> TelemetryProjector<S> {
         let Some(ToProject {
             facts,
             entries,
+            unsupported,
             head_seq,
             applied_seq,
         }) = self.store.load_for_projection(note).await?
@@ -197,6 +200,10 @@ impl<S: TelemetryStore> TelemetryProjector<S> {
             return Ok(None);
         };
         let mut derived = derive(&facts, &entries, applied_seq);
+        // Entries of a kind this version does not know are shown, not dropped and not fatal.
+        let skipped = derive_unsupported(&facts, &unsupported, applied_seq);
+        derived.spans.extend(skipped.spans);
+        derived.observations.extend(skipped.observations);
         // A trace the sampler does not keep is not exported, and its progress moves all the same.
         if !keeps(facts.trace_id, self.settings.sample_ratio) {
             derived.spans.clear();

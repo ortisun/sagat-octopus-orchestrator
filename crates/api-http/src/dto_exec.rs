@@ -5,7 +5,7 @@ use sagat_application::execution::RunRecord;
 use sagat_application::runs::{GraphChanges, GraphSnapshot, JournalEntry};
 use sagat_domain::definition::WorkflowVersion;
 use sagat_domain::execution::{ExecutionInstanceId, InstancePath, SwitchSelection};
-use sagat_domain::workflow::{Node, NodeKind};
+use sagat_domain::workflow::{Node, NodeId, NodeKind};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use time::OffsetDateTime;
@@ -530,6 +530,7 @@ fn runtime_nodes(graph: &GraphSnapshot, wanted: impl Fn(&NodeView<'_>) -> bool) 
             "waitingOn": step.and_then(|s| s.waiting_on),
             "childRunId": step.and_then(|s| s.child_run).map(|r| r.to_string()),
             "switchSelection": switch_selection,
+            "approvalDecision": approval_decision_body(step.and_then(|s| s.approval.as_ref())),
         }));
     }
     for step in graph.steps.iter().filter(|step| {
@@ -563,6 +564,7 @@ fn runtime_nodes(graph: &GraphSnapshot, wanted: impl Fn(&NodeView<'_>) -> bool) 
             "waitingOn": step.waiting_on,
             "childRunId": step.child_run.map(|run| run.to_string()),
             "switchSelection": node.map_or(Value::Null, |node| switch_selection_body(node.kind(), step.switch_selection.as_ref())),
+            "approvalDecision": approval_decision_body(step.approval.as_ref()),
         });
         if !step.instance.path().is_root() {
             projected["nodeId"] = json!(step.node.as_str());
@@ -617,6 +619,18 @@ fn switch_selection_body(kind: &NodeKind, selection: Option<&SwitchSelection>) -
         }
         _ => Value::Null,
     }
+}
+
+/// How the approval request of an approval node stands: `PENDING`, then the settled outcome and the
+/// pinned target it routed to. Null until the request opens. It never names the approver, the
+/// decision key or the reason code.
+fn approval_decision_body(approval: Option<&sagat_application::runs::ApprovalView>) -> Value {
+    approval.map_or(Value::Null, |view| {
+        json!({
+            "kind": view.status.as_str(),
+            "target": view.routed_node.as_ref().map(NodeId::as_str),
+        })
+    })
 }
 
 /// What a filter over the nodes of a runtime graph can look at.
@@ -800,6 +814,18 @@ fn edges_of(node: &Node, out: &mut Vec<Value>) {
             on_timeout: Some(target),
             ..
         } => edge(out, target.as_str(), "timeout"),
+        // The three routes of an approval are all declared; the decision that took one is the
+        // node's `approvalDecision`.
+        NodeKind::Approval {
+            on_approve,
+            on_reject,
+            on_expire,
+            ..
+        } => {
+            edge(out, on_approve.as_str(), "approve");
+            edge(out, on_reject.as_str(), "reject");
+            edge(out, on_expire.as_str(), "expire");
+        }
         // The body of a saga starts where it says: without this edge the steps inside a saga look
         // like separate graphs.
         NodeKind::Saga { begin, .. } => edge(out, begin.as_str(), "begin"),
@@ -924,6 +950,7 @@ mod switch_graph_tests {
             waiting_on: None,
             child_run: None,
             switch_selection: None,
+            approval: None,
         };
         let graph = GraphSnapshot {
             run: RunRecord {
@@ -1065,5 +1092,47 @@ mod switch_graph_tests {
             json!({"kind":"DEFAULT","target":"fallback"})
         );
         assert_eq!(switch_selection_body(node.kind(), None), Value::Null);
+    }
+
+    #[test]
+    fn approval_routes_are_edges_and_the_decision_names_no_one() {
+        use sagat_application::runs::ApprovalView;
+        use sagat_domain::execution::{ApprovalPolicy, ApprovalStatus};
+        use sagat_domain::identity::Role;
+
+        let node = Node::new(
+            id("review"),
+            NodeKind::Approval {
+                policy: ApprovalPolicy::new(Vec::new(), vec![Role::Operator]).unwrap(),
+                on_approve: id("approved"),
+                on_reject: id("rejected"),
+                on_expire: id("expired"),
+            },
+        );
+        let mut edges = Vec::new();
+        edges_of(&node, &mut edges);
+        assert_eq!(
+            edges,
+            vec![
+                json!({"from":"review","to":"approved","kind":"approve"}),
+                json!({"from":"review","to":"rejected","kind":"reject"}),
+                json!({"from":"review","to":"expired","kind":"expire"}),
+            ]
+        );
+        assert_eq!(approval_decision_body(None), Value::Null);
+        assert_eq!(
+            approval_decision_body(Some(&ApprovalView {
+                status: ApprovalStatus::Pending,
+                routed_node: None,
+            })),
+            json!({"kind":"PENDING","target":null})
+        );
+        assert_eq!(
+            approval_decision_body(Some(&ApprovalView {
+                status: ApprovalStatus::Expired,
+                routed_node: Some(id("expired")),
+            })),
+            json!({"kind":"EXPIRED","target":"expired"})
+        );
     }
 }

@@ -32,10 +32,12 @@ pub enum WorkflowPrimitiveKind {
     Query,
     Update,
     Continuation,
+    /// Anything the projector cannot name: a kind written by a newer version.
+    Unsupported,
 }
 
 impl WorkflowPrimitiveKind {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Switch,
         Self::Collection,
         Self::Loop,
@@ -43,6 +45,7 @@ impl WorkflowPrimitiveKind {
         Self::Query,
         Self::Update,
         Self::Continuation,
+        Self::Unsupported,
     ];
 
     #[must_use]
@@ -55,6 +58,7 @@ impl WorkflowPrimitiveKind {
             Self::Query => "query",
             Self::Update => "update",
             Self::Continuation => "continuation",
+            Self::Unsupported => "unsupported",
         }
     }
 }
@@ -76,10 +80,11 @@ pub enum WorkflowPrimitiveOutcome {
     Expired,
     Applied,
     Continued,
+    Unsupported,
 }
 
 impl WorkflowPrimitiveOutcome {
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 15] = [
         Self::Case,
         Self::Default,
         Self::Entered,
@@ -94,6 +99,7 @@ impl WorkflowPrimitiveOutcome {
         Self::Expired,
         Self::Applied,
         Self::Continued,
+        Self::Unsupported,
     ];
 
     #[must_use]
@@ -113,6 +119,7 @@ impl WorkflowPrimitiveOutcome {
             Self::Expired => "expired",
             Self::Applied => "applied",
             Self::Continued => "continued",
+            Self::Unsupported => "unsupported",
         }
     }
 }

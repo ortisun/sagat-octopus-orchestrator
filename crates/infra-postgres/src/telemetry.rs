@@ -12,7 +12,7 @@ use std::time::Duration;
 use sagat_application::error::StoreError;
 use sagat_application::telemetry::{
     Backlog, CONTEXT_EVENTS, JournalEntry, Pending, RunFacts, RunTelemetry, TelemetryStore,
-    ToProject,
+    ToProject, UnsupportedEntry,
 };
 use sagat_domain::execution::{ExecutionInstanceId, InstancePath, RunId};
 use sagat_domain::identity::{NamespaceId, TenantId};
@@ -193,7 +193,7 @@ impl TelemetryStore for PgRunStore {
         .collect::<Result<_, StoreError>>()?;
 
         let applied = i64::try_from(pending.applied_seq).map_err(|_| corrupt("sequence"))?;
-        let (entries, last_seen) =
+        let (entries, unsupported, last_seen) =
             journal_rows(self, tenant, run, "seq > $3", applied, Some(BATCH_ENTRIES)).await?;
         let head = last_seen.unwrap_or(pending.applied_seq);
         let finishes = entries.iter().any(|e| {
@@ -246,6 +246,7 @@ impl TelemetryStore for PgRunStore {
         Ok(Some(ToProject {
             facts,
             entries: all,
+            unsupported,
             head_seq: head,
             applied_seq: pending.applied_seq,
         }))
@@ -335,7 +336,7 @@ async fn journal_rows(
     condition: &str,
     applied: i64,
     limit: Option<i64>,
-) -> Result<(Vec<JournalEntry>, Option<u64>), StoreError> {
+) -> Result<(Vec<JournalEntry>, Vec<UnsupportedEntry>, Option<u64>), StoreError> {
     let sql = format!(
         "SELECT seq, event_type, node, detail, actor, occurred_at, \
          instance_path_nodes, instance_path_indices FROM run_events \
@@ -350,11 +351,19 @@ async fn journal_rows(
         .await
         .map_err(store_error)?;
     let last_seen = rows.last().map(|row| seq(col(row, "seq")?)).transpose()?;
-    let entries = rows
-        .iter()
-        .filter_map(|r| entry_from_row(r).transpose())
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok((entries, last_seen))
+    let mut entries = Vec::with_capacity(rows.len());
+    let mut unsupported = Vec::new();
+    for row in &rows {
+        match entry_from_row(row)? {
+            Some(entry) => entries.push(entry),
+            None => unsupported.push(UnsupportedEntry {
+                seq: seq(col(row, "seq")?)?,
+                instance_path: instance_path(row)?,
+                occurred_at: col(row, "occurred_at")?,
+            }),
+        }
+    }
+    Ok((entries, unsupported, last_seen))
 }
 
 /// One journal row as an entry; `None` for an event this version does not know (a journal written

@@ -110,6 +110,7 @@ fn span_names_and_fields_are_fixed_and_carry_no_free_text() {
             "workflow.update",
             "workflow.continue",
             "workflow.switch.evaluate",
+            "workflow.unsupported",
         ]
     );
 

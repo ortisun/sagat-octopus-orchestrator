@@ -1033,6 +1033,7 @@ impl TelemetryStore for Paged {
         Ok(Some(ToProject {
             facts: self.facts.clone(),
             entries,
+            unsupported: Vec::new(),
             head_seq: head,
             applied_seq: pending.applied_seq,
         }))

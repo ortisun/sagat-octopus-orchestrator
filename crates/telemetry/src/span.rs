@@ -27,10 +27,12 @@ pub enum WorkflowPrimitiveSpan {
     Update,
     Continue,
     SwitchEvaluate,
+    /// A journal entry this version of the projector cannot interpret (a newer writer).
+    Unsupported,
 }
 
 impl WorkflowPrimitiveSpan {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::ScopeAdmit,
         Self::IterationCommit,
         Self::ApprovalDecide,
@@ -38,6 +40,7 @@ impl WorkflowPrimitiveSpan {
         Self::Update,
         Self::Continue,
         Self::SwitchEvaluate,
+        Self::Unsupported,
     ];
 
     #[must_use]
@@ -50,6 +53,7 @@ impl WorkflowPrimitiveSpan {
             Self::Update => "workflow.update",
             Self::Continue => "workflow.continue",
             Self::SwitchEvaluate => "workflow.switch.evaluate",
+            Self::Unsupported => "workflow.unsupported",
         }
     }
 }

@@ -98,6 +98,18 @@ pub struct StepView {
     pub child_run: Option<RunId>,
     /// The recorded case or default for a switch step.
     pub switch_selection: Option<sagat_domain::execution::SwitchSelection>,
+    /// The approval request an approval step opened and how it stands; none before it opens.
+    pub approval: Option<ApprovalView>,
+}
+
+/// How the approval request of an approval step stands. It names the outcome and the route that
+/// followed, never who decided or why: the principal, the decision key and the reason code stay
+/// in the approval's own audited endpoints.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApprovalView {
+    pub status: sagat_domain::execution::ApprovalStatus,
+    /// The pinned target the outcome routed to; none while pending or after cancellation.
+    pub routed_node: Option<NodeId>,
 }
 
 /// What a run knows about one of its sagas.

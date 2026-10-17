@@ -3860,7 +3860,7 @@ components:
         failureCode: {type: [string, 'null']}
         nextAttemptAt: {type: [string, 'null'], format: date-time}
         dueAt: {type: [string, 'null'], format: date-time}
-        waitingOn: {type: [string, 'null'], enum: [timer, event, branches, child, saga, reconciliation, operator, null], description: '`saga`: a saga node while its body works, compensates or waits. `reconciliation`: the lookup `<id>~r` is finding out whether the effect happened. `operator`: a person has to decide (RETRY_STEP, RETRY_COMPENSATION, SKIP_COMPENSATION or RESOLVE_STEP).'}
+        waitingOn: {type: [string, 'null'], enum: [timer, event, branches, child, saga, reconciliation, operator, loop, approval, collection, null], description: '`saga`: a saga node while its body works, compensates or waits. `reconciliation`: the lookup `<id>~r` is finding out whether the effect happened. `operator`: a person has to decide (RETRY_STEP, RETRY_COMPENSATION, SKIP_COMPENSATION or RESOLVE_STEP). `loop` and `collection`: the owner while its iterations run. `approval`: the node while its request is open.'}
         childRunId: {type: [string, 'null'], format: uuid, description: 'The child run a `child` node reserved.'}
         switchSelection:
           type: [object, 'null']
@@ -3870,6 +3870,13 @@ components:
             kind: {type: string, enum: [CASE, DEFAULT, UNKNOWN]}
             caseId: {type: string, description: 'The selected case identifier for CASE, or the unknown identifier for UNKNOWN.'}
             target: {type: [string, 'null'], description: 'The target in the pinned workflow definition, or null for UNKNOWN.'}
+        approvalDecision:
+          type: [object, 'null']
+          description: 'How the approval request of an approval node stands; null until it opens. It names the outcome and the pinned route taken, never the approver, the decision key or the reason code.'
+          required: [kind, target]
+          properties:
+            kind: {type: string, enum: [PENDING, APPROVED, REJECTED, EXPIRED, CANCELLED]}
+            target: {type: [string, 'null'], description: 'The pinned node the outcome routed to; null while pending or after cancellation.'}
         kind: {type: string, enum: [FORWARD, COMPENSATION, RECONCILIATION], description: 'Forward work, the compensation `<id>~c` of a node, or the lookup `<id>~r` that finds out whether it happened.'}
         forward: {type: [string, 'null'], description: 'For a compensation or a reconciliation: the forward node it is about.'}
         saga:
@@ -3887,7 +3894,7 @@ components:
       properties:
         from: {type: string}
         to: {type: string}
-        kind: {type: string, enum: [next, error, 'true', 'false', case, default, branch, timeout, begin, compensation, reconcile], description: '`case` and `default`: switch routes. `begin`: the first step of the body of a saga. `compensation`: the compensation at `to` waits for the one at `from`. `reconcile`: `to` finds out whether `from` happened.'}
+        kind: {type: string, enum: [next, error, 'true', 'false', case, default, branch, timeout, begin, approve, reject, expire, compensation, reconcile], description: '`case` and `default`: switch routes. `approve`, `reject` and `expire`: the three declared routes of an approval; the one taken is the node''s `approvalDecision`. `begin`: the first step of the body of a saga, or from a collection or loop owner to the entry step of one of its admitted iterations. `compensation`: the compensation at `to` waits for the one at `from`. `reconcile`: `to` finds out whether `from` happened.'}
         caseId: {type: string, description: 'The local switch case identifier when kind is case.'}
     RuntimeGraph:
       type: object

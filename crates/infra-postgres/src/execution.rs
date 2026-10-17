@@ -24,7 +24,8 @@ use sagat_application::execution::{
     RunRecord, RunTx, ScopeInput, compensation_id, instance_step_id,
 };
 use sagat_application::runs::{
-    ChainView, GraphSnapshot, JournalEntry, Lock, NewRun, RunFilter, RunStore, SagaView, StepView,
+    ApprovalView, ChainView, GraphSnapshot, JournalEntry, Lock, NewRun, RunFilter, RunStore,
+    SagaView, StepView,
 };
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::definition::{Workflow, WorkflowId, WorkflowVersion, WorkflowVersionId};
@@ -848,10 +849,17 @@ impl RunStore for PgRunStore {
         };
         let record = run_record(&row)?;
         let step_rows = sqlx::query(
-            "SELECT node, instance_path_nodes, instance_path_indices, status, attempt, generation, cancel_requested, failure_code, \
-                    next_attempt_at, due_at, waiting_kind, child_run_id, switch_case_id \
-             FROM steps WHERE tenant_id = $1 AND run_id = $2 \
-             ORDER BY instance_path_nodes, instance_path_indices, node",
+            "SELECT s.node, s.instance_path_nodes, s.instance_path_indices, s.status, s.attempt, \
+                    s.generation, s.cancel_requested, s.failure_code, s.next_attempt_at, s.due_at, \
+                    s.waiting_kind, s.child_run_id, s.switch_case_id, \
+                    a.status AS approval_status, a.routed_node AS approval_routed \
+             FROM steps s LEFT JOIN approval_requests a \
+               ON a.tenant_id = s.tenant_id AND a.run_id = s.run_id \
+              AND a.owner_path_nodes = s.instance_path_nodes \
+              AND a.owner_path_indices = s.instance_path_indices \
+              AND a.owner_node = s.node \
+             WHERE s.tenant_id = $1 AND s.run_id = $2 \
+             ORDER BY s.instance_path_nodes, s.instance_path_indices, s.node",
         )
         .bind(tenant.as_uuid())
         .bind(run.as_uuid())
@@ -946,10 +954,12 @@ impl RunStore for PgRunStore {
                         Some("OPERATOR") => Some("operator"),
                         Some("LOOP") => Some("loop"),
                         Some("APPROVAL") => Some("approval"),
+                        Some("COLLECTION") => Some("collection"),
                         _ => None,
                     },
                     child_run: col::<Option<Uuid>>(row, "child_run_id")?.map(RunId::new),
                     switch_selection: switch_selection(row)?,
+                    approval: approval_view(row)?,
                 })
             })
             .collect::<Result<Vec<_>, StoreError>>()?;
@@ -1256,6 +1266,28 @@ fn step_state(row: &PgRow) -> Result<StepState, StoreError> {
         col(row, "timed_out")?,
     )
     .with_restored_switch_selection(switch_selection(row)?))
+}
+
+fn approval_view(row: &PgRow) -> Result<Option<ApprovalView>, StoreError> {
+    use sagat_domain::execution::ApprovalStatus;
+    let Some(status) = col::<Option<String>>(row, "approval_status")? else {
+        return Ok(None);
+    };
+    let status = match status.as_str() {
+        "PENDING" => ApprovalStatus::Pending,
+        "APPROVED" => ApprovalStatus::Approved,
+        "REJECTED" => ApprovalStatus::Rejected,
+        "EXPIRED" => ApprovalStatus::Expired,
+        "CANCELLED" => ApprovalStatus::Cancelled,
+        _ => return Err(corrupt("approval request status")),
+    };
+    let routed_node = col::<Option<String>>(row, "approval_routed")?
+        .map(|node| NodeId::parse_stored(&node).map_err(|_| corrupt("approval route")))
+        .transpose()?;
+    Ok(Some(ApprovalView {
+        status,
+        routed_node,
+    }))
 }
 
 fn switch_selection(row: &PgRow) -> Result<Option<SwitchSelection>, StoreError> {

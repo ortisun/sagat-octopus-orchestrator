@@ -39,6 +39,15 @@ pub struct JournalEntry {
     pub occurred_at: OffsetDateTime,
 }
 
+/// A journal entry whose type this version cannot interpret (a newer writer). Only where it sits
+/// in the journal is kept: the type and the payload are never copied into a span or a label.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnsupportedEntry {
+    pub seq: u64,
+    pub instance_path: InstancePath,
+    pub occurred_at: OffsetDateTime,
+}
+
 /// What is known about a run apart from its journal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunFacts {
@@ -446,6 +455,60 @@ fn primitive_span_status(outcome: WorkflowPrimitiveOutcome) -> SpanStatus {
         WorkflowPrimitiveOutcome::Cancelled => SpanStatus::Error("PRIMITIVE_CANCELLED".to_owned()),
         _ => SpanStatus::Ok,
     }
+}
+
+/// The explicit representation of journal entries the projector cannot interpret: one instantaneous
+/// `workflow.unsupported` span and one bounded `unsupported` transition each. The projection moves
+/// past them instead of failing, and nothing the unknown entry carries reaches a label or an
+/// attribute.
+#[must_use]
+pub fn derive_unsupported(
+    facts: &RunFacts,
+    unsupported: &[UnsupportedEntry],
+    applied_seq: u64,
+) -> Derived {
+    let run_uuid = facts.run_id.as_uuid();
+    let run_span = run_span_id(run_uuid);
+    let mut out = Derived::default();
+    for entry in unsupported.iter().filter(|entry| entry.seq > applied_seq) {
+        let mut attributes = base_attributes(facts);
+        if let Some(path) = path_attribute(&entry.instance_path) {
+            attributes.push(("sagat.instance.path".to_owned(), AttrValue::from(path)));
+        }
+        attributes.push((
+            "sagat.scope.depth".to_owned(),
+            AttrValue::from(
+                u32::try_from(entry.instance_path.segments().len()).unwrap_or(u32::MAX),
+            ),
+        ));
+        attributes.push((
+            "sagat.primitive.kind".to_owned(),
+            AttrValue::from(WorkflowPrimitiveKind::Unsupported.as_str()),
+        ));
+        attributes.push((
+            "sagat.outcome".to_owned(),
+            AttrValue::from(WorkflowPrimitiveOutcome::Unsupported.as_str()),
+        ));
+        let at = nanos(entry.occurred_at);
+        out.spans.push(SpanData {
+            trace_id: facts.trace_id,
+            span_id: event_span_id(run_uuid, entry.seq),
+            parent: Some(run_span),
+            name: WorkflowPrimitiveSpan::Unsupported.as_str().to_owned(),
+            kind: SpanKind::Internal,
+            start_unix_nano: at,
+            end_unix_nano: at,
+            attributes,
+            events: Vec::new(),
+            links: Vec::new(),
+            status: SpanStatus::Unset,
+        });
+        out.observations.push(Observation::PrimitiveTransition {
+            kind: WorkflowPrimitiveKind::Unsupported,
+            outcome: WorkflowPrimitiveOutcome::Unsupported,
+        });
+    }
+    out
 }
 
 /// The spans and measurements of the entries after `applied_seq`. Entries at or before it are only
@@ -1157,6 +1220,8 @@ pub struct Backlog {
 pub struct ToProject {
     pub facts: RunFacts,
     pub entries: Vec<JournalEntry>,
+    /// The new entries the store could not decode, in journal order.
+    pub unsupported: Vec<UnsupportedEntry>,
     pub head_seq: u64,
     pub applied_seq: u64,
 }

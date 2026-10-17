@@ -38,6 +38,9 @@ const WAITING: Record<string, string> = {
   child: 'Waiting for the child run',
   saga: 'Waiting for the saga',
   reconciliation: 'Waiting for the lookup of whether it happened',
+  loop: 'Waiting for the loop iterations',
+  collection: 'Waiting for the collection items',
+  approval: 'Waiting for an approval decision',
 };
 
 export function waitingWords(node: RuntimeNode): string | undefined {
@@ -79,6 +82,9 @@ const EDGE_WORDS: Record<RuntimeEdge['kind'], string> = {
   branch: 'Branch',
   timeout: 'On timeout',
   begin: 'First step',
+  approve: 'If approved',
+  reject: 'If rejected',
+  expire: 'If expired',
   compensation: 'Undo after',
   reconcile: 'Lookup',
 };
