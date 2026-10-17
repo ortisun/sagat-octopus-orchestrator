@@ -1012,3 +1012,28 @@ the correctly selected baseline failed with one scheduler action failure
 capacity, timeout, routing, outbox/audit failures and the schema coexistence case. Strict whole-workspace
 Clippy passed; the separate complete fault matrix is recorded when it finishes. These are bounded
 maintenance correctness checks, not the pending 10k/100k resource acceptance.
+
+### Complete workspace diagnostic checkpoint and immutable chain admission
+
+The original `cargo test --locked --workspace --no-fail-fast` diagnostic finished: **234 completed
+test harnesses, 3310 passed, 35 failed, 61 ignored**, plus two doctest compilation failures
+(`/tmp/sagat-completion-workspace-tests.log`). Thirteen targets failed overall. Its build began
+from the earlier integration checkpoint while this work continued; it is not final-current-tree
+acceptance. The CLI/protocol/tenant/runner/worker membership/privilege/report/quota failures and
+their named focused repeats are recorded in the preceding checkpoints. The two rustdoc failures
+used current trait implementations against libraries compiled before those trait additions;
+current IR/PostgreSQL doctest compilation subsequently passed, with **zero executable examples**
+(`/tmp/sagat-completion-current-ir-postgres-doctest-compilation.log`), not two executed tests.
+The earlier primitive performance target passed **4 cases/5 ignored**, 344.08 s; its modest
+flat-transition assertions do not run the independently ignored 10k/100k capacity workloads.
+
+One remaining chain fixture attempted to change an admitted run's immutable version pin. The
+isolated baseline reproduced the correct `23001` admission-identity refusal
+(`/tmp/sagat-completion-chain-handoff-retained-quota-isolated.log`). The fixture now publishes its
+real continuation definition and admits the chain with the correct immutable version and initial
+chain metadata. Its direct handoff/rollback/replay assertions remain, without disabling a guard or
+rewriting an admitted identity. All **7/7** chain-handoff cases passed, 10.30 s
+(`/tmp/sagat-completion-chain-handoff-immutable-admission-regression-shm-2.log`). The first repeat
+hit the disposable database's recovery; a fresh-cluster repeat then exposed a separate concurrent
+test-role bootstrap race, both retained as failures. The successful repeat uses the healthy,
+explicitly sized PostgreSQL shared-memory profile recorded in the next checkpoint.
