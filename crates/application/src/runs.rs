@@ -12,8 +12,8 @@ use std::time::Duration;
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::definition::{WorkflowId, WorkflowVersionId};
 use sagat_domain::execution::{
-    self, ExecutionError, FailureCode, Progress, ReviewOutcome, RunEvent, RunId, RunStatus,
-    StepStatus, StopReason, WaitingOn,
+    self, ExecutionError, ExecutionInstanceId, FailureCode, Progress, ReviewOutcome, RunEvent,
+    RunId, RunStatus, StepStatus, StopReason, WaitingOn,
 };
 use sagat_domain::identity::{Namespace, NamespaceId, Permission, Principal, TenantId};
 use sagat_domain::workflow::{NodeId, NodeKind, WorkflowDefinition};
@@ -290,6 +290,21 @@ impl RunOperation {
             Self::Resume => "resume",
         }
     }
+}
+
+/// The text that names a step in an audit record and in the fingerprint of a decision: its node for
+/// a root step, and the iteration path before the node for a step of a scope
+/// (`lines[1]/reserve~c`).
+fn instance_label(instance: &ExecutionInstanceId) -> String {
+    let mut label = String::new();
+    for segment in instance.path().segments() {
+        label.push_str(segment.scope_node().as_str());
+        label.push('[');
+        label.push_str(&segment.iteration_index().to_string());
+        label.push_str("]/");
+    }
+    label.push_str(instance.node().as_str());
+    label
 }
 
 /// What an operator may do to a step that waits for a decision (`FR-003-005`).
@@ -1155,6 +1170,40 @@ where
         key: &str,
         ctx: &RequestContext,
     ) -> Result<RunRecord, AppError> {
+        self.review_instance(
+            principal,
+            id,
+            &ExecutionInstanceId::root(node.clone()),
+            action,
+            reason,
+            expected_version,
+            key,
+            ctx,
+        )
+        .await
+    }
+
+    /// The same decision about a step of an iteration of a collection or loop: the compensation of
+    /// one iteration that ran out of attempts, or a member whose outcome nobody could establish.
+    /// The instance names the step exactly (its scope path and its node); the permissions, the
+    /// justification, the single winner of two racing decisions and the audit are those of
+    /// [`Self::review`].
+    ///
+    /// # Errors
+    /// As [`Self::review`].
+    #[allow(clippy::too_many_arguments)]
+    pub async fn review_instance(
+        &self,
+        principal: &Principal,
+        id: RunId,
+        instance: &ExecutionInstanceId,
+        action: &ReviewAction,
+        reason: &str,
+        expected_version: Option<u64>,
+        key: &str,
+        ctx: &RequestContext,
+    ) -> Result<RunRecord, AppError> {
+        let node = instance.node();
         principal.authorize(match action {
             ReviewAction::Retry | ReviewAction::Hold => Permission::RunOperate,
             ReviewAction::Skip | ReviewAction::Resolve(_) => Permission::SagaOverride,
@@ -1174,11 +1223,12 @@ where
         if *action == ReviewAction::Skip && !node.is_compensation() {
             return Err(AppError::NotAllowed("only a compensation can be skipped"));
         }
+        let label = instance_label(instance);
         let idempotency = Idempotency {
             scope: format!("run.review:{id}"),
             key: key.to_owned(),
             fingerprint: fingerprint(&[
-                node.as_str().as_bytes(),
+                label.as_bytes(),
                 action.name().as_bytes(),
                 reason.as_bytes(),
                 &expected_version.unwrap_or(u64::MAX).to_be_bytes(),
@@ -1195,7 +1245,7 @@ where
             drop(tx);
             return self.get(principal, id, ctx).await;
         }
-        if tx.parts().1.step(node).is_none() {
+        if tx.parts().1.instance(instance).is_none() {
             return Err(AppError::NotFound);
         }
         let version = tx.parts().1.version();
@@ -1213,12 +1263,12 @@ where
             && tx
                 .parts()
                 .1
-                .step(node)
+                .instance(instance)
                 .is_some_and(|step| step.status() == StepStatus::Waiting)
             && tx
                 .parts()
                 .1
-                .step(node)
+                .instance(instance)
                 .and_then(|step| step.failure())
                 .is_some_and(FailureCode::leaves_outcome_unknown)
         {
@@ -1242,29 +1292,57 @@ where
                 principal,
                 action.audit(),
                 ResourceType::Run,
-                format!("{id}/{node}"),
+                format!("{id}/{label}"),
                 ctx.trace_id.clone(),
                 now,
             )
             .with_reason(audited),
         );
         effects.idempotency = Some((idempotency, action.name()));
-        let step = node.clone();
         let action = action.clone();
-        self.engine
-            .run(&mut tx, effects, move |def, state, now| {
-                let progress = match &action {
-                    ReviewAction::Retry => execution::retry_review(def, state, &step, now)?,
-                    ReviewAction::Hold => execution::mark_for_review(def, state, &step, now)?,
-                    ReviewAction::Skip => execution::skip_review(def, state, &step, now)?,
-                    ReviewAction::Resolve(outcome) => {
-                        execution::resolve_review(def, state, &step, outcome.clone(), now)?
-                    }
-                };
-                Ok(((), progress))
-            })
-            .await
-            .map_err(engine_error)?;
+        if instance.path().is_root() {
+            let step = node.clone();
+            self.engine
+                .run(&mut tx, effects, move |def, state, now| {
+                    let progress = match &action {
+                        ReviewAction::Retry => execution::retry_review(def, state, &step, now)?,
+                        ReviewAction::Hold => execution::mark_for_review(def, state, &step, now)?,
+                        ReviewAction::Skip => execution::skip_review(def, state, &step, now)?,
+                        ReviewAction::Resolve(outcome) => {
+                            execution::resolve_review(def, state, &step, outcome.clone(), now)?
+                        }
+                    };
+                    Ok(((), progress))
+                })
+                .await
+                .map_err(engine_error)?;
+        } else {
+            let step = instance.clone();
+            self.engine
+                .run_addressed(&mut tx, Vec::new(), effects, move |def, state, now| {
+                    let progress = match &action {
+                        ReviewAction::Retry => {
+                            execution::retry_review_instance(def, state, &step, now)?
+                        }
+                        ReviewAction::Hold => {
+                            execution::mark_for_review_instance(def, state, &step, now)?
+                        }
+                        ReviewAction::Skip => {
+                            execution::skip_review_instance(def, state, &step, now)?
+                        }
+                        ReviewAction::Resolve(outcome) => execution::resolve_review_instance(
+                            def,
+                            state,
+                            &step,
+                            outcome.clone(),
+                            now,
+                        )?,
+                    };
+                    Ok(((), progress))
+                })
+                .await
+                .map_err(engine_error)?;
+        }
         tx.commit().await?;
         self.get(principal, id, ctx).await
     }

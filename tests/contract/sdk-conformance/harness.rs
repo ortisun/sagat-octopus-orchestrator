@@ -477,6 +477,7 @@ async fn server_state(run: &Run) -> Result<Value, String> {
 /// The collection and loop events of every run, read from the journal and the payload store rather than
 /// from what an SDK reports: the order in which iterations were admitted and checkpointed, the most that
 /// were active at once, the carry of every loop checkpoint and the aggregate a collection finished with.
+/// The compensation events of a scope (`scope.compensation_planned`, `scope.compensated`) are part of it.
 /// A scenario asks for it with `"scopeEvidence": "ordered"` (every event, in journal order: for scopes that
 /// run one iteration at a time) or `"summary"` (admission order, the sorted checkpoints and the entry and
 /// finish: for scopes whose iterations complete concurrently, where the scheduler's order of looking at
@@ -489,7 +490,8 @@ async fn scope_evidence(run: &Run, state: &Value, summary: bool) -> Result<Value
         let run_id = uuid::Uuid::parse_str(id).map_err(|e| format!("run id {id}: {e}"))?;
         let rows: Vec<(String, Value)> = sqlx::query_as(
             "SELECT event_type, detail FROM run_events WHERE run_id = $1 \
-             AND (event_type LIKE 'collection.%' OR event_type LIKE 'loop.%') ORDER BY seq",
+             AND (event_type LIKE 'collection.%' OR event_type LIKE 'loop.%' \
+             OR event_type LIKE 'scope.%') ORDER BY seq",
         )
         .bind(run_id)
         .fetch_all(pool)
@@ -536,6 +538,15 @@ async fn scope_evidence(run: &Run, state: &Value, summary: bool) -> Result<Value
             ] {
                 if let Some(value) = detail.get(key).filter(|v| !v.is_null()) {
                     entry.insert(key.into(), value.clone());
+                }
+            }
+            if kind.starts_with("scope.") {
+                // The compensation of a scope: why it was planned, which instances it undoes and after
+                // which others, which effects cannot be undone, and how it ended.
+                for key in ["cause", "entries", "irreversible"] {
+                    if let Some(value) = detail.get(key).filter(|v| !v.is_null()) {
+                        entry.insert(key.into(), value.clone());
+                    }
                 }
             }
             if let Some(kind) = detail["continuation"]["kind"].as_str() {

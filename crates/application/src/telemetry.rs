@@ -1140,6 +1140,8 @@ pub fn derive(facts: &RunFacts, entries: &[JournalEntry], applied_seq: u64) -> D
                         | RunEvent::SagaAborting { .. }
                         | RunEvent::CompensationPlanned { .. }
                         | RunEvent::SagaCompensated { .. }
+                        | RunEvent::ScopeCompensationPlanned { .. }
+                        | RunEvent::ScopeCompensated { .. }
                         | RunEvent::ReconciliationRequested { .. }
                         | RunEvent::ReconciliationConcluded { .. }
                 );

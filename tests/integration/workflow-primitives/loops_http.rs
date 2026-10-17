@@ -465,15 +465,16 @@ async fn publication_keeps_unproven_loop_bodies_closed() {
             "id": "increment",
             "type": "activity",
             "activity": "counter.increment",
-            "next": "again"
+            "next": "return-value",
+            "onError": "fallback"
         },
         {
-            "id": "again",
+            "id": "fallback",
             "type": "activity",
-            "activity": "counter.increment",
+            "activity": "counter.fallback",
             "next": "return-value"
         },
-        {"id": "return-value", "type": "return", "result": "steps.again.output"}
+        {"id": "return-value", "type": "return", "result": "steps.increment.output"}
     ]);
     let created = api
         .as_user(Method::POST, "/workflows", "alice", "acme")

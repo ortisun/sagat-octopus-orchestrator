@@ -1056,6 +1056,16 @@ impl BodyDefinition {
     pub fn enclosing_scope(&self, node: &NodeId) -> Option<&Scope> {
         self.graph.scopes.get(node)
     }
+
+    /// Every region around `node` in this body, innermost first.
+    pub fn scope_chain<'a>(&'a self, node: &NodeId) -> impl Iterator<Item = &'a Scope> + use<'a> {
+        let mut current = self.graph.scopes.get(node);
+        std::iter::from_fn(move || {
+            let scope = current?;
+            current = self.graph.scopes.get(scope.owner());
+            Some(scope)
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1352,6 +1362,40 @@ impl WorkflowDefinition {
             graph = &self.bodies.get(body)?.graph;
         }
         graph.nodes.get(instance.node())
+    }
+
+    /// The closed body that the collection or loop instance `owner` runs for each of its
+    /// iterations, resolved through the owner's own scope path.
+    #[must_use]
+    pub fn scope_body(&self, owner: &ExecutionInstanceId) -> Option<&BodyDefinition> {
+        match self.node_for_instance(owner)?.kind() {
+            NodeKind::ForEach { body, .. }
+            | NodeKind::While { body, .. }
+            | NodeKind::RepeatUntil { body, .. } => self.bodies.get(body),
+            _ => None,
+        }
+    }
+
+    /// Whether the scope `owner` compensates the iterations it completed (feature 014): its body
+    /// has an activity that can be undone (`compensateWith`), cannot be undone (`irreversible`) or
+    /// must not be repeated or compensated blindly (`highRisk`). A scope with none of the three
+    /// has nothing to plan when it fails and behaves as it did before compensation existed.
+    #[must_use]
+    pub fn scope_compensates(&self, owner: &ExecutionInstanceId) -> bool {
+        self.scope_body(owner).is_some_and(|body| {
+            body.all_nodes().any(|node| {
+                (node.origin() == &NodeOrigin::Declared
+                    && matches!(
+                        node.kind(),
+                        NodeKind::Activity {
+                            compensate_with: Some(_),
+                            ..
+                        }
+                    ))
+                    || node.effect().irreversible
+                    || node.effect().high_risk
+            })
+        })
     }
 
     /// The root graph's authored nodes, ordered by local id; bodies have separate local graphs.

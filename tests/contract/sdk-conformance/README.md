@@ -122,6 +122,22 @@ case stops its worker after the first body, waits (by the journal, not by sleepi
 `loop.delay_elapsed`, and only then starts a second worker for the next body: the delay was the engine's timer
 and held no worker.
 
+`collection-compensation.json` is the WP-04 contract for a collection that stops. A `map` with concurrency one
+over bodies of several activities: when `ship` fails for good in the first iteration, the iteration's completed
+`reserve` and `charge` are undone in reverse order (the refund before the release), through `COMPENSATION` tasks
+that carry the iteration's scope identity, the forward node and the key of the effect they undo; later items are
+never started. With an `irreversible` activity in the body the run ends `PARTIAL` and only the reversible effect
+is undone. An activity with an unknown outcome in a body is looked up by the iteration's own reconciler and the
+collection goes on with the looked-up output. A compensation that fails for good leaves the run waiting for a
+person (`step.needs_review`, status `MANUAL_REVIEW`). The golden never has two iterations with something to
+undo: the contract promises no order between iterations, so no scenario pins one. `scopeEvidence: "ordered"`
+adds the journal's `scope.compensation_planned` (the instances to undo and what each waits for) and
+`scope.compensated`.
+
+`loop-compensation.json` is the WP-05 compensation case: a `while` whose three iterations each reserve and
+charge, stopped by `maxIterations: 3`, ends `FAILED` with `ITERATION_LIMIT` after undoing iteration 2, then 1,
+then 0 (and the refund before the release in each), with the plan and its outcome in the journal.
+
 `approval-security.json` is the WP-14 contract for approvals. The workflow's policy admits `admin` and `operator`
 and keeps the default exclusion of the initiator, and the run's input carries a secret-shaped value that the
 scenario lists under `mustNotLeak` and `mustNotAppear`: it must not come back in any error, observation, the
@@ -165,6 +181,8 @@ SAGAT_SDK_SCENARIO=approval-decisions cargo test -p sagat-tests --test sdk_confo
 SAGAT_SDK_SCENARIO=approval-settlement cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=collection-ordering cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=loop-semantics cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=collection-compensation cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=loop-compensation cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=approval-security cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=chain-inspect-cancel cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=scoped-identity cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture

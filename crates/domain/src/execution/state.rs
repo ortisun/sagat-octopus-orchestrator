@@ -1010,6 +1010,78 @@ impl SagaState {
     }
 }
 
+/// What the run knows about the compensation of one collection or loop scope (D380..D385). The
+/// scope's own drain is tracked by [`CollectionState`] or [`LoopState`]; this starts when every
+/// iteration has settled and ends when every compensation it planned has.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScopeSagaState {
+    phase: SagaPhase,
+    cause: FailureCode,
+    /// The forward instances being compensated, with the forward instances each waits for.
+    entries: BTreeMap<ExecutionInstanceId, Vec<ExecutionInstanceId>>,
+    /// Forward instances that completed and cannot be undone.
+    irreversible: Vec<ExecutionInstanceId>,
+    outcome: Option<SagaOutcome>,
+    /// Whether the scope ended (or was planned) while the run was being stopped: its outcome then
+    /// counts in how the run ends.
+    during_stop: bool,
+}
+
+impl ScopeSagaState {
+    /// `Compensating` while a compensation can still run, `Done` when the scope has an outcome.
+    #[must_use]
+    pub const fn phase(&self) -> SagaPhase {
+        self.phase
+    }
+
+    /// Why the scope compensates: the failure that drained it, or the stop of the run.
+    #[must_use]
+    pub const fn cause(&self) -> &FailureCode {
+        &self.cause
+    }
+
+    /// The forward instances being compensated, with the forward instances each waits for.
+    #[must_use]
+    pub const fn entries(&self) -> &BTreeMap<ExecutionInstanceId, Vec<ExecutionInstanceId>> {
+        &self.entries
+    }
+
+    #[must_use]
+    pub fn irreversible(&self) -> &[ExecutionInstanceId] {
+        &self.irreversible
+    }
+
+    #[must_use]
+    pub const fn outcome(&self) -> Option<SagaOutcome> {
+        self.outcome
+    }
+
+    #[must_use]
+    pub const fn during_stop(&self) -> bool {
+        self.during_stop
+    }
+
+    /// Rebuilds a scope saga from trusted storage.
+    #[must_use]
+    pub const fn restore(
+        phase: SagaPhase,
+        cause: FailureCode,
+        entries: BTreeMap<ExecutionInstanceId, Vec<ExecutionInstanceId>>,
+        irreversible: Vec<ExecutionInstanceId>,
+        outcome: Option<SagaOutcome>,
+        during_stop: bool,
+    ) -> Self {
+        Self {
+            phase,
+            cause,
+            entries,
+            irreversible,
+            outcome,
+            during_stop,
+        }
+    }
+}
+
 /// Everything the engine tracks about one step.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StepState {
@@ -1228,6 +1300,80 @@ impl RunChainState {
     }
 }
 
+/// The terminal status a stopped run reaches: the status of the reason, worsened by the sagas that
+/// ran while it was stopping. `failure_compensated` says that the failure that stopped the run was
+/// itself the failure a compensating scope ran into, so undoing it completely is what ends the run
+/// `COMPENSATED` rather than `FAILED`.
+fn end_status(
+    reason: StopReason,
+    failure_compensated: bool,
+    outcomes: impl Iterator<Item = SagaOutcome>,
+) -> RunStatus {
+    let own = match reason {
+        StopReason::Compensated => Some(SagaOutcome::Compensated),
+        StopReason::Partial => Some(SagaOutcome::Partial),
+        StopReason::CompensationFailed => Some(SagaOutcome::CompensationFailed),
+        StopReason::Failed if failure_compensated => Some(SagaOutcome::Compensated),
+        StopReason::Cancelled | StopReason::TimedOut | StopReason::Failed => None,
+    };
+    match own.into_iter().chain(outcomes).max() {
+        Some(SagaOutcome::CompensationFailed) => RunStatus::CompensationFailed,
+        Some(SagaOutcome::Partial) => RunStatus::Partial,
+        Some(SagaOutcome::Compensated) if own.is_some() => RunStatus::Compensated,
+        _ => reason.final_status(),
+    }
+}
+
+/// The terminal status of a run that one compensating scope stopped or ended while it was stopping:
+/// the same answer as [`RunState::final_status_for`] for a run with that one scope, for the adapters
+/// that finish the run in the transaction that finishes the scope.
+#[must_use]
+pub fn scope_final_status(
+    reason: StopReason,
+    stop_code: Option<&FailureCode>,
+    cause: &FailureCode,
+    outcome: SagaOutcome,
+    during_stop: bool,
+) -> RunStatus {
+    end_status(
+        reason,
+        Some(cause) == stop_code,
+        during_stop.then_some(outcome).into_iter(),
+    )
+}
+
+fn illegal_transition(
+    instance: &ExecutionInstanceId,
+    status: StepStatus,
+    event: &'static str,
+) -> ExecutionError {
+    if instance.path().is_root() {
+        ExecutionError::IllegalTransition {
+            node: instance.node().clone(),
+            status,
+            event,
+        }
+    } else {
+        ExecutionError::IllegalInstanceTransition {
+            instance: instance.clone(),
+            status,
+            event,
+        }
+    }
+}
+
+fn stale_attempt(instance: &ExecutionInstanceId) -> ExecutionError {
+    if instance.path().is_root() {
+        ExecutionError::StaleAttempt {
+            node: instance.node().clone(),
+        }
+    } else {
+        ExecutionError::StaleInstanceAttempt {
+            instance: instance.clone(),
+        }
+    }
+}
+
 /// The state of a run, rebuilt by folding its journal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunState {
@@ -1239,6 +1385,7 @@ pub struct RunState {
     collections: BTreeMap<ExecutionInstanceId, CollectionState>,
     loops: BTreeMap<ExecutionInstanceId, LoopState>,
     sagas: BTreeMap<NodeId, SagaState>,
+    scope_sagas: BTreeMap<ExecutionInstanceId, ScopeSagaState>,
     chain: Option<RunChainState>,
     applied: u64,
 }
@@ -1256,6 +1403,7 @@ impl RunState {
             collections: BTreeMap::new(),
             loops: BTreeMap::new(),
             sagas: BTreeMap::new(),
+            scope_sagas: BTreeMap::new(),
             chain: None,
             applied: 0,
         }
@@ -1339,6 +1487,7 @@ impl RunState {
             collections: BTreeMap::new(),
             loops: BTreeMap::new(),
             sagas,
+            scope_sagas: BTreeMap::new(),
             chain: None,
             applied: version,
         }
@@ -1579,16 +1728,18 @@ impl RunState {
                     });
                 }
                 let path = entry.path();
-                let mut scoped = self
-                    .steps
-                    .iter()
-                    .filter(|(instance, _)| instance.path() == path);
+                // The compensations of a scope that stopped are created after its iterations
+                // drain, so they are no part of what a drained iteration had settled.
+                let mut scoped = self.steps.iter().filter(|(instance, _)| {
+                    instance.path() == path && !instance.node().is_compensation()
+                });
                 if !scoped.any(|(instance, step)| {
                     step.status.is_terminal()
                         && (!instance.node().is_derived()
                             || matches!(step.status, StepStatus::Succeeded | StepStatus::Skipped))
                 }) || self.steps.iter().any(|(instance, step)| {
                     instance.path() == path
+                        && !instance.node().is_compensation()
                         && (!step.status.is_terminal()
                             || (instance.node().is_derived()
                                 && !matches!(
@@ -1977,29 +2128,60 @@ impl RunState {
         self.sagas.get(node)
     }
 
+    /// The compensation of every collection or loop scope that started one, by owner instance.
+    pub fn scope_sagas(&self) -> impl Iterator<Item = (&ExecutionInstanceId, &ScopeSagaState)> {
+        self.scope_sagas.iter()
+    }
+
+    #[must_use]
+    pub fn scope_saga(&self, owner: &ExecutionInstanceId) -> Option<&ScopeSagaState> {
+        self.scope_sagas.get(owner)
+    }
+
+    /// Restores a scope's compensation from its trusted projection without advancing the journal.
+    ///
+    /// # Errors
+    /// An invariant error when the scope is not a draining collection or loop of this run.
+    pub fn restore_scope_saga(
+        &mut self,
+        owner: ExecutionInstanceId,
+        saga: ScopeSagaState,
+    ) -> Result<(), ExecutionError> {
+        if !self.collections.contains_key(&owner) && !self.loops.contains_key(&owner) {
+            return Err(ExecutionError::UnknownInstance(owner));
+        }
+        if self.scope_sagas.insert(owner, saga).is_some() {
+            return Err(ExecutionError::Invariant(
+                "a scope compensation is restored once",
+            ));
+        }
+        Ok(())
+    }
+
     /// The status the run reaches when it finishes after being stopped for `reason`: the sagas that
     /// ran *because* the run was stopping can make it worse than the reason alone says (a
     /// cancellation whose compensation failed is not a clean cancellation, and a run that ended
     /// because one saga was compensated is not `COMPENSATED` if a sibling saga could not be).
     #[must_use]
     pub fn final_status_for(&self, reason: StopReason) -> RunStatus {
-        let own = match reason {
-            StopReason::Compensated => Some(SagaOutcome::Compensated),
-            StopReason::Partial => Some(SagaOutcome::Partial),
-            StopReason::CompensationFailed => Some(SagaOutcome::CompensationFailed),
-            StopReason::Cancelled | StopReason::TimedOut | StopReason::Failed => None,
-        };
+        // A scope whose own failure stopped the run (D385) is the saga that failure ran into: if it
+        // undid everything the run ends `COMPENSATED`, as a failure inside a `saga` node does.
+        let scope_failure = self
+            .scope_sagas
+            .values()
+            .any(|saga| Some(&saga.cause) == self.stop_code() && saga.outcome.is_some());
         let worst = self
             .sagas
             .values()
             .filter(|saga| saga.during_stop)
-            .filter_map(|saga| saga.outcome);
-        match own.into_iter().chain(worst).max() {
-            Some(SagaOutcome::CompensationFailed) => RunStatus::CompensationFailed,
-            Some(SagaOutcome::Partial) => RunStatus::Partial,
-            Some(SagaOutcome::Compensated) if own.is_some() => RunStatus::Compensated,
-            _ => reason.final_status(),
-        }
+            .filter_map(|saga| saga.outcome)
+            .chain(
+                self.scope_sagas
+                    .values()
+                    .filter(|saga| saga.during_stop)
+                    .filter_map(|saga| saga.outcome),
+            );
+        end_status(reason, scope_failure, worst)
     }
 
     /// How `saga` ends, judged from its compensations: failed or cancelled ones make it
@@ -2457,8 +2639,11 @@ impl RunState {
                     found = true;
                     let unresolved_derived = instance.node().is_derived()
                         && !matches!(step.status, StepStatus::Succeeded | StepStatus::Skipped);
-                    let safe_to_stop = step.attempt == 0
-                        && matches!(step.status, StepStatus::Pending | StepStatus::Ready);
+                    // Nothing is in flight: a step that has not started, or one that waits to retry
+                    // (or is ready to) in a run that is stopping and can no longer lease it.
+                    let safe_to_stop = (step.attempt == 0
+                        && matches!(step.status, StepStatus::Pending | StepStatus::Ready))
+                        || matches!(step.status, StepStatus::Ready | StepStatus::RetryWait);
                     if unresolved_derived || (!step.status.is_terminal() && !safe_to_stop) {
                         return Err(ExecutionError::IllegalCollectionTransition {
                             collection: collection.clone(),
@@ -2511,7 +2696,11 @@ impl RunState {
                 let all_settled = scope
                     .iterations
                     .values()
-                    .all(CollectionIterationState::is_settled);
+                    .all(CollectionIterationState::is_settled)
+                    && self
+                        .scope_sagas
+                        .get(collection)
+                        .is_none_or(|saga| saga.phase == SagaPhase::Done);
                 let valid = match (outcome, result_digest, &scope.drain_reason) {
                     (CollectionOutcome::Succeeded, Some(_), None) => {
                         scope.phase == CollectionPhase::Open
@@ -3022,6 +3211,10 @@ impl RunState {
                 };
                 let valid = scope.phase == LoopPhase::Draining
                     && scope.active.is_none()
+                    && self
+                        .scope_sagas
+                        .get(loop_instance)
+                        .is_none_or(|saga| saga.phase == SagaPhase::Done)
                     && matching_outcome;
                 if !valid {
                     return Err(ExecutionError::IllegalLoopTransition {
@@ -3539,182 +3732,17 @@ impl RunState {
                     saga.during_stop |= stopping;
                 }
             }
-            RunEvent::ReconciliationRequested { node, fence, cause } => {
-                let reconciliation = node.reconciliation();
-                let reusable = match self
-                    .steps
-                    .get(&ExecutionInstanceId::root(reconciliation.clone()))
-                {
-                    None => true,
-                    Some(step) => matches!(step.status, Succeeded | Failed),
-                };
-                if !reusable {
-                    return Err(ExecutionError::AlreadyScheduled(reconciliation));
-                }
-                let step = self.fenced_step(
-                    node,
-                    name,
-                    &[Leased, Running],
-                    fence.attempt,
-                    fence.generation,
-                )?;
-                step.status = Waiting;
-                step.waiting = Some(WaitingOn::Reconciliation);
-                step.failure = Some(cause.clone());
-                step.cancel_requested = false;
-                // A step that is reconciled again (after an attempt that was retried, or after an
-                // operator asked for another one) reopens its reconciliation: the counters go on, so
-                // the retry budget of the reconciliation is shared by every round.
-                let companion = self
-                    .steps
-                    .entry(ExecutionInstanceId::root(reconciliation))
-                    .or_insert_with(StepState::pending);
-                companion.status = Pending;
-                companion.routed = false;
-                companion.waiting = None;
-                companion.failure = None;
-                companion.cancel_requested = false;
-                companion.next_attempt_at = None;
+            RunEvent::ReconciliationRequested { node, .. }
+            | RunEvent::ReconciliationConcluded { node, .. }
+            | RunEvent::StepNeedsReview { node, .. }
+            | RunEvent::StepRetryRequested { node }
+            | RunEvent::StepSkipped { node }
+            | RunEvent::StepResolved { node, .. } => {
+                self.apply_effect_event(&ExecutionInstanceId::root(node.clone()), event)?;
             }
-            RunEvent::ReconciliationConcluded {
-                node,
-                verdict,
-                result,
-            } => {
-                let step = self.step_mut(node, name, &[Waiting])?;
-                if !matches!(step.waiting, Some(WaitingOn::Reconciliation)) {
-                    return Err(ExecutionError::IllegalTransition {
-                        node: node.clone(),
-                        status: step.status,
-                        event: name,
-                    });
-                }
-                let paired = matches!(
-                    (verdict, result),
-                    (ReconcileVerdict::Applied, ReconcileResult::Succeeded)
-                        | (
-                            ReconcileVerdict::NotApplied,
-                            ReconcileResult::RetryAt(_) | ReconcileResult::Failed(_)
-                        )
-                        | (ReconcileVerdict::Unknown, ReconcileResult::Review(_))
-                );
-                if !paired {
-                    return Err(ExecutionError::Invariant(
-                        "a reconciliation result does not follow from what it found",
-                    ));
-                }
-                step.waiting = None;
-                match result {
-                    ReconcileResult::Succeeded => {
-                        step.status = Succeeded;
-                        step.failure = None;
-                    }
-                    ReconcileResult::RetryAt(at) => {
-                        step.status = RetryWait;
-                        step.next_attempt_at = Some(*at);
-                        // The lookup said it did not happen: the step is no longer one whose outcome
-                        // is unknown, so a saga that stops while it backs off has nothing to undo.
-                        step.failure = Some(FailureCode::reconciled_not_applied());
-                    }
-                    ReconcileResult::Failed(code) => {
-                        step.status = Failed;
-                        step.failure = Some(code.clone());
-                    }
-                    ReconcileResult::Review(code) => {
-                        step.status = Waiting;
-                        step.waiting = Some(WaitingOn::Operator { code: code.clone() });
-                        step.failure = Some(code.clone());
-                    }
-                }
-            }
-            RunEvent::StepNeedsReview { node, code, fence } => {
-                let step =
-                    self.step_mut(node, name, &[Leased, Running, Waiting, Ready, RetryWait])?;
-                match (step.status.is_leased(), fence, &step.waiting) {
-                    (true, Some(f), _) if step.fenced_by(f.attempt, f.generation) => {}
-                    (true, _, _) => {
-                        return Err(ExecutionError::StaleAttempt { node: node.clone() });
-                    }
-                    (false, None, Some(WaitingOn::Reconciliation)) => {}
-                    // An operator holds a step that has not started: it waits for a decision like
-                    // the ones that ran out of attempts.
-                    (false, None, None) if matches!(step.status, Ready | RetryWait) => {}
-                    _ => {
-                        return Err(ExecutionError::IllegalTransition {
-                            node: node.clone(),
-                            status: step.status,
-                            event: name,
-                        });
-                    }
-                }
-                // An operator's hold of a step that has not started says why it waits now (the
-                // code of the waiting); it does not say what happened to its last attempt. If that
-                // attempt ended without anyone knowing whether the effect happened, the step still
-                // says so: a saga that is stopped later must undo it.
-                let held = fence.is_none() && matches!(step.status, Ready | RetryWait);
-                step.status = Waiting;
-                step.waiting = Some(WaitingOn::Operator { code: code.clone() });
-                if !(held && step.failure.is_some()) {
-                    step.failure = Some(code.clone());
-                }
-                step.cancel_requested = false;
-                step.next_attempt_at = None;
-            }
-            RunEvent::StepRetryRequested { node } => {
-                // A step that waits for a decision, or one whose retry is scheduled and an operator
-                // does not want to wait for: the scheduler's own `retry_due` finds it no longer in
-                // `RETRY_WAIT` and does nothing, so the two cannot both start an attempt.
-                let step = self.step_mut(node, name, &[Waiting, RetryWait])?;
-                if step.status == Waiting
-                    && !matches!(step.waiting, Some(WaitingOn::Operator { .. }))
-                {
-                    return Err(ExecutionError::IllegalTransition {
-                        node: node.clone(),
-                        status: step.status,
-                        event: name,
-                    });
-                }
-                step.status = Ready;
-                step.waiting = None;
-                step.next_attempt_at = None;
-            }
-            RunEvent::StepSkipped { node } => {
-                if !node.is_compensation() {
-                    return Err(ExecutionError::Invariant(
-                        "only a compensation can be skipped",
-                    ));
-                }
-                let step = self.step_mut(node, name, &[Waiting])?;
-                if !matches!(step.waiting, Some(WaitingOn::Operator { .. })) {
-                    return Err(ExecutionError::IllegalTransition {
-                        node: node.clone(),
-                        status: step.status,
-                        event: name,
-                    });
-                }
-                step.status = Skipped;
-                step.waiting = None;
-            }
-            RunEvent::StepResolved { node, outcome } => {
-                let step = self.step_mut(node, name, &[Waiting])?;
-                if !matches!(step.waiting, Some(WaitingOn::Operator { .. })) {
-                    return Err(ExecutionError::IllegalTransition {
-                        node: node.clone(),
-                        status: step.status,
-                        event: name,
-                    });
-                }
-                step.waiting = None;
-                match outcome {
-                    ReviewOutcome::Succeeded => {
-                        step.status = Succeeded;
-                        step.failure = None;
-                    }
-                    ReviewOutcome::Failed(code) => {
-                        step.status = Failed;
-                        step.failure = Some(code.clone());
-                    }
-                }
+            RunEvent::ScopeCompensationPlanned { node, .. }
+            | RunEvent::ScopeCompensated { node, .. } => {
+                self.apply_scope_saga_event(&ExecutionInstanceId::root(node.clone()), event)?;
             }
             RunEvent::StateUpdated {
                 before_revision,
@@ -4012,6 +4040,18 @@ impl RunState {
                 step.status = Succeeded;
                 step.waiting = None;
             }
+            event @ (RunEvent::ReconciliationRequested { .. }
+            | RunEvent::ReconciliationConcluded { .. }
+            | RunEvent::StepNeedsReview { .. }
+            | RunEvent::StepRetryRequested { .. }
+            | RunEvent::StepSkipped { .. }
+            | RunEvent::StepResolved { .. }) => {
+                self.apply_effect_event(&instance, event)?;
+            }
+            event @ (RunEvent::ScopeCompensationPlanned { .. }
+            | RunEvent::ScopeCompensated { .. }) => {
+                self.apply_scope_saga_event(&instance, event)?;
+            }
             event @ (RunEvent::CollectionEntered { .. }
             | RunEvent::CollectionIterationAdmitted { .. }
             | RunEvent::CollectionIterationReturned { .. }
@@ -4036,6 +4076,396 @@ impl RunState {
         self.applied += 1;
         self.refresh_status(addressed.event());
         Ok(())
+    }
+
+    /// The step at `instance`, with the error variants of its address: a root step keeps the
+    /// node-based errors the root reducer always had, a scoped one names its instance.
+    fn locate_mut(
+        &mut self,
+        instance: &ExecutionInstanceId,
+        event: &'static str,
+        allowed: &[StepStatus],
+    ) -> Result<&mut StepState, ExecutionError> {
+        let step = self.steps.get_mut(instance).ok_or_else(|| {
+            if instance.path().is_root() {
+                ExecutionError::UnknownStep(instance.node().clone())
+            } else {
+                ExecutionError::UnknownInstance(instance.clone())
+            }
+        })?;
+        if allowed.contains(&step.status) {
+            Ok(step)
+        } else {
+            Err(illegal_transition(instance, step.status, event))
+        }
+    }
+
+    fn locate_fenced(
+        &mut self,
+        instance: &ExecutionInstanceId,
+        event: &'static str,
+        allowed: &[StepStatus],
+        attempt: u32,
+        generation: u64,
+    ) -> Result<&mut StepState, ExecutionError> {
+        let step = self.locate_mut(instance, event, allowed)?;
+        if step.fenced_by(attempt, generation) {
+            Ok(step)
+        } else {
+            Err(stale_attempt(instance))
+        }
+    }
+
+    /// Reconciliation, operator holds and operator decisions about one logical instance. The root
+    /// reducer and the scoped one are this function, so the two cannot drift apart: a scoped step
+    /// differs only in the path its derived companions share.
+    fn apply_effect_event(
+        &mut self,
+        instance: &ExecutionInstanceId,
+        event: &RunEvent,
+    ) -> Result<(), ExecutionError> {
+        use StepStatus::{
+            Failed, Leased, Pending, Ready, RetryWait, Running, Skipped, Succeeded, Waiting,
+        };
+        let name = event.name();
+        let node = instance.node();
+        match event {
+            RunEvent::ReconciliationRequested { fence, cause, .. } => {
+                let reconciliation =
+                    ExecutionInstanceId::in_path(instance.path().clone(), node.reconciliation());
+                let reusable = match self.steps.get(&reconciliation) {
+                    None => true,
+                    Some(step) => matches!(step.status, Succeeded | Failed),
+                };
+                if !reusable {
+                    return Err(ExecutionError::AlreadyScheduled(
+                        reconciliation.node().clone(),
+                    ));
+                }
+                let step = self.locate_fenced(
+                    instance,
+                    name,
+                    &[Leased, Running],
+                    fence.attempt,
+                    fence.generation,
+                )?;
+                step.status = Waiting;
+                step.waiting = Some(WaitingOn::Reconciliation);
+                step.failure = Some(cause.clone());
+                step.cancel_requested = false;
+                // A step that is reconciled again (after an attempt that was retried, or after an
+                // operator asked for another one) reopens its reconciliation: the counters go on, so
+                // the retry budget of the reconciliation is shared by every round.
+                let companion = self
+                    .steps
+                    .entry(reconciliation)
+                    .or_insert_with(StepState::pending);
+                companion.status = Pending;
+                companion.routed = false;
+                companion.waiting = None;
+                companion.failure = None;
+                companion.cancel_requested = false;
+                companion.next_attempt_at = None;
+            }
+            RunEvent::ReconciliationConcluded {
+                verdict, result, ..
+            } => {
+                let step = self.locate_mut(instance, name, &[Waiting])?;
+                if !matches!(step.waiting, Some(WaitingOn::Reconciliation)) {
+                    return Err(illegal_transition(instance, step.status, name));
+                }
+                let paired = matches!(
+                    (verdict, result),
+                    (ReconcileVerdict::Applied, ReconcileResult::Succeeded)
+                        | (
+                            ReconcileVerdict::NotApplied,
+                            ReconcileResult::RetryAt(_) | ReconcileResult::Failed(_)
+                        )
+                        | (ReconcileVerdict::Unknown, ReconcileResult::Review(_))
+                );
+                if !paired {
+                    return Err(ExecutionError::Invariant(
+                        "a reconciliation result does not follow from what it found",
+                    ));
+                }
+                step.waiting = None;
+                match result {
+                    ReconcileResult::Succeeded => {
+                        step.status = Succeeded;
+                        step.failure = None;
+                    }
+                    ReconcileResult::RetryAt(at) => {
+                        step.status = RetryWait;
+                        step.next_attempt_at = Some(*at);
+                        // The lookup said it did not happen: the step is no longer one whose outcome
+                        // is unknown, so a saga that stops while it backs off has nothing to undo.
+                        step.failure = Some(FailureCode::reconciled_not_applied());
+                    }
+                    ReconcileResult::Failed(code) => {
+                        step.status = Failed;
+                        step.failure = Some(code.clone());
+                    }
+                    ReconcileResult::Review(code) => {
+                        step.status = Waiting;
+                        step.waiting = Some(WaitingOn::Operator { code: code.clone() });
+                        step.failure = Some(code.clone());
+                    }
+                }
+            }
+            RunEvent::StepNeedsReview { code, fence, .. } => {
+                let step = self.locate_mut(
+                    instance,
+                    name,
+                    &[Leased, Running, Waiting, Ready, RetryWait],
+                )?;
+                match (step.status.is_leased(), fence, &step.waiting) {
+                    (true, Some(f), _) if step.fenced_by(f.attempt, f.generation) => {}
+                    (true, _, _) => return Err(stale_attempt(instance)),
+                    (false, None, Some(WaitingOn::Reconciliation)) => {}
+                    // An operator holds a step that has not started: it waits for a decision like
+                    // the ones that ran out of attempts.
+                    (false, None, None) if matches!(step.status, Ready | RetryWait) => {}
+                    _ => return Err(illegal_transition(instance, step.status, name)),
+                }
+                // An operator's hold of a step that has not started says why it waits now (the
+                // code of the waiting); it does not say what happened to its last attempt. If that
+                // attempt ended without anyone knowing whether the effect happened, the step still
+                // says so: a saga that is stopped later must undo it.
+                let held = fence.is_none() && matches!(step.status, Ready | RetryWait);
+                step.status = Waiting;
+                step.waiting = Some(WaitingOn::Operator { code: code.clone() });
+                if !(held && step.failure.is_some()) {
+                    step.failure = Some(code.clone());
+                }
+                step.cancel_requested = false;
+                step.next_attempt_at = None;
+            }
+            RunEvent::StepRetryRequested { .. } => {
+                // A step that waits for a decision, or one whose retry is scheduled and an operator
+                // does not want to wait for: the scheduler's own `retry_due` finds it no longer in
+                // `RETRY_WAIT` and does nothing, so the two cannot both start an attempt.
+                let step = self.locate_mut(instance, name, &[Waiting, RetryWait])?;
+                if step.status == Waiting
+                    && !matches!(step.waiting, Some(WaitingOn::Operator { .. }))
+                {
+                    return Err(illegal_transition(instance, step.status, name));
+                }
+                step.status = Ready;
+                step.waiting = None;
+                step.next_attempt_at = None;
+            }
+            RunEvent::StepSkipped { .. } => {
+                if !node.is_compensation() {
+                    return Err(ExecutionError::Invariant(
+                        "only a compensation can be skipped",
+                    ));
+                }
+                let step = self.locate_mut(instance, name, &[Waiting])?;
+                if !matches!(step.waiting, Some(WaitingOn::Operator { .. })) {
+                    return Err(illegal_transition(instance, step.status, name));
+                }
+                step.status = Skipped;
+                step.waiting = None;
+            }
+            RunEvent::StepResolved { outcome, .. } => {
+                let step = self.locate_mut(instance, name, &[Waiting])?;
+                if !matches!(step.waiting, Some(WaitingOn::Operator { .. })) {
+                    return Err(illegal_transition(instance, step.status, name));
+                }
+                step.waiting = None;
+                match outcome {
+                    ReviewOutcome::Succeeded => {
+                        step.status = Succeeded;
+                        step.failure = None;
+                    }
+                    ReviewOutcome::Failed(code) => {
+                        step.status = Failed;
+                        step.failure = Some(code.clone());
+                    }
+                }
+            }
+            _ => {
+                return Err(ExecutionError::Invariant(
+                    "a non-effect event reached the effect reducer",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// The scope-level events of a compensating collection or loop (D380..D385).
+    fn apply_scope_saga_event(
+        &mut self,
+        owner: &ExecutionInstanceId,
+        event: &RunEvent,
+    ) -> Result<(), ExecutionError> {
+        let name = event.name();
+        match event {
+            RunEvent::ScopeCompensationPlanned {
+                cause,
+                entries,
+                irreversible,
+                ..
+            } => {
+                if self.scope_sagas.contains_key(owner) {
+                    return Err(ExecutionError::Invariant(
+                        "a scope plans its compensation once",
+                    ));
+                }
+                // The plan is made after the drain has settled every iteration, never before.
+                let settled = if let Some(collection) = self.collections.get(owner) {
+                    collection.phase == CollectionPhase::Draining
+                        && !collection
+                            .iterations
+                            .values()
+                            .any(CollectionIterationState::is_active)
+                } else if let Some(scope) = self.loops.get(owner) {
+                    scope.phase == LoopPhase::Draining && scope.active.is_none()
+                } else {
+                    return Err(ExecutionError::UnknownInstance(owner.clone()));
+                };
+                if !settled {
+                    return Err(ExecutionError::IllegalInstanceTransition {
+                        instance: owner.clone(),
+                        status: self
+                            .steps
+                            .get(owner)
+                            .map_or(StepStatus::Pending, |s| s.status),
+                        event: name,
+                    });
+                }
+                let named: std::collections::BTreeSet<&ExecutionInstanceId> =
+                    entries.iter().map(|entry| &entry.instance).collect();
+                let coherent = named.len() == entries.len()
+                    && entries.iter().all(|entry| {
+                        entry
+                            .after
+                            .iter()
+                            .all(|earlier| named.contains(earlier) && earlier != &entry.instance)
+                    });
+                if !coherent {
+                    return Err(ExecutionError::Invariant(
+                        "a scope plan names an instance twice or waits for one that is not in it",
+                    ));
+                }
+                // Every entry and every irreversible instance is a member of an iteration of this
+                // scope that finished its effect, or may have: nothing else can be undone.
+                for instance in entries
+                    .iter()
+                    .map(|entry| &entry.instance)
+                    .chain(irreversible.iter())
+                {
+                    if !Self::is_member_of(owner, instance) {
+                        return Err(ExecutionError::Invariant(
+                            "a scope plan names an instance outside the scope",
+                        ));
+                    }
+                    let step = self
+                        .steps
+                        .get(instance)
+                        .ok_or_else(|| ExecutionError::UnknownInstance(instance.clone()))?;
+                    let unknown = matches!(step.status, StepStatus::Cancelled | StepStatus::Failed)
+                        && step
+                            .failure
+                            .as_ref()
+                            .is_some_and(FailureCode::leaves_outcome_unknown);
+                    if step.status != StepStatus::Succeeded && !unknown {
+                        return Err(ExecutionError::Invariant(
+                            "a scope plan names an instance that has no effect to undo",
+                        ));
+                    }
+                }
+                for entry in entries {
+                    if self.steps.contains_key(&entry.instance.compensation()) {
+                        return Err(ExecutionError::AlreadyScheduled(
+                            entry.instance.node().compensation(),
+                        ));
+                    }
+                }
+                for entry in entries {
+                    self.steps
+                        .insert(entry.instance.compensation(), StepState::pending());
+                }
+                self.scope_sagas.insert(
+                    owner.clone(),
+                    ScopeSagaState {
+                        phase: SagaPhase::Compensating,
+                        cause: cause.clone(),
+                        entries: entries
+                            .iter()
+                            .map(|entry| (entry.instance.clone(), entry.after.clone()))
+                            .collect(),
+                        irreversible: irreversible.clone(),
+                        outcome: None,
+                        during_stop: self.stop.is_some(),
+                    },
+                );
+            }
+            RunEvent::ScopeCompensated { outcome, .. } => {
+                let saga = self
+                    .scope_sagas
+                    .get(owner)
+                    .filter(|saga| saga.phase == SagaPhase::Compensating)
+                    .ok_or(ExecutionError::Invariant(
+                        "a scope ends its compensation only while it compensates",
+                    ))?;
+                let settled = saga.entries.keys().all(|forward| {
+                    self.steps
+                        .get(&forward.compensation())
+                        .is_some_and(|step| step.status.is_terminal())
+                });
+                if !settled {
+                    return Err(ExecutionError::Invariant(
+                        "a scope cannot end while one of its compensations is still active",
+                    ));
+                }
+                if self.expected_scope_outcome(saga) != *outcome {
+                    return Err(ExecutionError::Invariant(
+                        "the outcome of a scope must follow from how its compensations ended",
+                    ));
+                }
+                let stopping = self.stop.is_some();
+                if let Some(saga) = self.scope_sagas.get_mut(owner) {
+                    saga.phase = SagaPhase::Done;
+                    saga.outcome = Some(*outcome);
+                    saga.during_stop |= stopping;
+                }
+            }
+            _ => {
+                return Err(ExecutionError::Invariant(
+                    "a non-scope event reached the scope compensation reducer",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether `instance` runs directly in an iteration of the scope `owner`.
+    fn is_member_of(owner: &ExecutionInstanceId, instance: &ExecutionInstanceId) -> bool {
+        let segments = instance.path().segments();
+        segments.split_last().is_some_and(|(last, parents)| {
+            last.scope_node() == owner.node() && parents == owner.path().segments()
+        })
+    }
+
+    /// How a scope ends, judged from its compensations: failed or cancelled ones make it
+    /// `COMPENSATION_FAILED`, skipped ones or an irreversible effect make it `PARTIAL`.
+    pub(super) fn expected_scope_outcome(&self, saga: &ScopeSagaState) -> SagaOutcome {
+        let (mut failed, mut skipped) = (false, false);
+        for forward in saga.entries.keys() {
+            match self.steps.get(&forward.compensation()).map(|s| s.status) {
+                Some(StepStatus::Failed | StepStatus::Cancelled) => failed = true,
+                Some(StepStatus::Skipped) => skipped = true,
+                _ => {}
+            }
+        }
+        if failed {
+            SagaOutcome::CompensationFailed
+        } else if skipped || !saga.irreversible.is_empty() {
+            SagaOutcome::Partial
+        } else {
+            SagaOutcome::Compensated
+        }
     }
 
     fn check_finish(&self, status: RunStatus) -> Result<(), ExecutionError> {
@@ -4102,7 +4532,11 @@ impl RunState {
         let compensating = self
             .sagas
             .values()
-            .any(|s| matches!(s.phase, SagaPhase::Aborting | SagaPhase::Compensating));
+            .any(|s| matches!(s.phase, SagaPhase::Aborting | SagaPhase::Compensating))
+            || self
+                .scope_sagas
+                .values()
+                .any(|s| s.phase == SagaPhase::Compensating);
         self.status = if reviewing && !self.steps.values().any(live) {
             RunStatus::ManualReview
         } else if compensating {

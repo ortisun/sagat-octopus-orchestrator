@@ -19,7 +19,9 @@ continuation, an activity and condition choosing continuation or a terminal end,
 and signal-controlled `waitEvent` followed by input-only continuation. Direct and conditional
 continuation may transfer the exact declared state snapshot; direct-root waits remain closed.
 Collections have a restricted public path: one or more root `forEach` nodes ending at `end`, with
-each referenced body containing exactly one activity followed by one `return`. Admission remains
+each referenced body containing a chain of one to eight activities followed by one `return`; a body
+activity may declare `compensateWith`, `reconcileWith`, `irreversible` and `highRisk`, and a failed or
+cancelled scope then compensates its completed iterations (FR-014-005, FR-014-006). Admission remains
 disabled until an administrator sets the tenant-wide iteration-concurrency quota. A restricted
 public loop with an activity/return body has focused PostgreSQL restart and rollback evidence.
 Other collection and loop graphs and nested scopes remain closed for general publication. The

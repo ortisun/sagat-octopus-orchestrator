@@ -28,6 +28,12 @@ membership. Goldens are reviewed against the scenario, never auto-blessed from T
 | WP-13 capability compatibility | FR-014-016, NFR-014-004 | Old active runs + old SDK minors; new capability shapes rejected on an unsupported server while apiVersion stays v1; scoped tasks withheld from old workers; no new `Error.code` value (new meaning only in `details.reason`); worker 1.5 scoped identity versus retained 1.0–1.4 forms; effective 1024-byte expressions, 64 literal/4096 constructed lists and unsupported object literals; decimal/UTC behavior identical across five SDKs. |
 | WP-14 security/telemetry | FR-014-017, NFR-014-002 | Cross-tenant opacity, revoked role, initiator exclusion, `worker`/`runner`/`viewer` cannot decide, secret marker absent; mandatory trace/error/audit, bounded metric labels; query/update capability cannot access secrets or I/O. |
 
+WP-04 (compensation per FR-003-002) and the compensation case of WP-05 have runnable shared scenarios,
+`collection-compensation` and `loop-compensation`, whose goldens were read by hand and pass in all five
+SDKs. The scenarios keep one iteration with something to undo at a time wherever the contract promises no
+order between iterations, so no golden pins one; the unordered case is proven in the Rust tests named in
+`research.md` ("As built").
+
 WP-02–14 must be run for TypeScript, Go, Python, C# and Java wherever they expose a public behavior;
 server-only fault injection is additionally exercised below. A subset run is diagnostic evidence,
 not five-language parity. Conformance checks task/heartbeat/complete instance identity through real

@@ -115,7 +115,10 @@ fn starting_a_loop_parks_its_owner_for_the_transactional_scheduler() {
 }
 
 #[test]
-fn cancellation_fails_closed_while_a_loop_scope_is_active() {
+fn cancellation_leaves_an_active_loop_to_the_scheduler_that_drains_it() {
+    // The planner does not cancel a loop owner from under the drain the scheduler runs under its own
+    // fence (a collection is left alone the same way); before this, the public cancel of a run with
+    // an active loop failed closed and answered 500 (G343).
     let definition = definition(LoopKind::While);
     let (mut state, _) = start_run(&definition, RunId::generate(), OffsetDateTime::UNIX_EPOCH)
         .expect("loop run starts");
@@ -136,6 +139,31 @@ fn cancellation_fails_closed_while_a_loop_scope_is_active() {
             code: None,
         })
         .expect("cancel requested");
+    assert_eq!(plan(&definition, &state, at(101)), Ok(Plan::Idle));
+}
+
+#[test]
+fn the_run_deadline_over_an_active_loop_still_fails_closed() {
+    let definition = definition(LoopKind::While);
+    let (mut state, _) = start_run(&definition, RunId::generate(), OffsetDateTime::UNIX_EPOCH)
+        .expect("loop run starts");
+    state
+        .apply(&RunEvent::LoopEntered {
+            node: node("poll"),
+            kind: LoopKind::While,
+            max_iterations: 2,
+            entered_at: at(100),
+            deadline: at(200),
+            initial_carry_digest: Digest::new([0x10; 32]),
+            initial_condition: Some(true),
+        })
+        .expect("loop enters");
+    state
+        .apply(&RunEvent::RunStopRequested {
+            reason: StopReason::TimedOut,
+            code: None,
+        })
+        .expect("deadline reached");
     assert_eq!(
         plan(&definition, &state, at(101)),
         Err(ExecutionError::UnsupportedStructuredNode(node("poll")))

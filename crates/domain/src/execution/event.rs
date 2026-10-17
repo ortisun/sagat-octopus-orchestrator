@@ -349,6 +349,17 @@ pub struct PlannedEntry {
     pub after: Vec<NodeId>,
 }
 
+/// One compensation of the plan a collection or loop scope records when it starts to compensate.
+/// Unlike [`PlannedEntry`] it names logical instances: the same body node runs once per iteration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScopedPlannedEntry {
+    /// The forward instance whose effect is being undone; its compensation is
+    /// `instance.compensation()`, at the same scope path.
+    pub instance: ExecutionInstanceId,
+    /// The forward instances whose compensations must have finished first.
+    pub after: Vec<ExecutionInstanceId>,
+}
+
 /// What a reconciliation led to for the step it was about.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReconcileResult {
@@ -736,6 +747,20 @@ pub enum RunEvent {
         node: NodeId,
         outcome: SagaOutcome,
     },
+    /// The iterations of a collection or loop scope have settled after it stopped, and the scope
+    /// starts to undo what they completed: the compensations to run, the instances each waits for,
+    /// and the completed instances whose effect cannot be undone. Addressed at the scope owner.
+    ScopeCompensationPlanned {
+        node: NodeId,
+        cause: FailureCode,
+        entries: Vec<ScopedPlannedEntry>,
+        irreversible: Vec<ExecutionInstanceId>,
+    },
+    /// Every compensation of the scope has finished (or been skipped by a person): how it ended.
+    ScopeCompensated {
+        node: NodeId,
+        outcome: SagaOutcome,
+    },
     /// An attempt ended without a known outcome and the step says how to find it out: its
     /// reconciliation is scheduled and the step waits for the answer.
     ReconciliationRequested {
@@ -883,6 +908,9 @@ impl AddressedRunEvent {
             } => {
                 instances.push(return_instance.clone());
             }
+            RunEvent::ScopeCompensationPlanned { entries, .. } => {
+                instances.extend(entries.iter().map(|entry| entry.instance.compensation()));
+            }
             RunEvent::LoopIterationAdmitted { entry, .. } => instances.push(entry.clone()),
             RunEvent::LoopIterationReturned {
                 return_instance, ..
@@ -949,6 +977,8 @@ impl RunEvent {
             Self::SagaAborting { .. } => "saga.aborting",
             Self::CompensationPlanned { .. } => "compensation.planned",
             Self::SagaCompensated { .. } => "saga.compensated",
+            Self::ScopeCompensationPlanned { .. } => "scope.compensation_planned",
+            Self::ScopeCompensated { .. } => "scope.compensated",
             Self::ReconciliationRequested { .. } => "reconciliation.requested",
             Self::ReconciliationConcluded { .. } => "reconciliation.concluded",
             Self::StepNeedsReview { .. } => "step.needs_review",
@@ -1014,6 +1044,8 @@ impl RunEvent {
             | Self::SagaAborting { node, .. }
             | Self::CompensationPlanned { node, .. }
             | Self::SagaCompensated { node, .. }
+            | Self::ScopeCompensationPlanned { node, .. }
+            | Self::ScopeCompensated { node, .. }
             | Self::ReconciliationRequested { node, .. }
             | Self::ReconciliationConcluded { node, .. }
             | Self::StepNeedsReview { node, .. }
@@ -1069,6 +1101,7 @@ impl RunEvent {
             Self::StepRetryScheduled { code, .. } => cause("retry", code.as_str()),
             Self::StepNeedsReview { code, .. } => cause("review", code.as_str()),
             Self::SagaAborting { cause: code, .. } => cause("abort", code.as_str()),
+            Self::ScopeCompensationPlanned { cause: code, .. } => cause("abort", code.as_str()),
             Self::ReconciliationRequested { cause: code, .. } => {
                 cause("unknown_outcome", code.as_str())
             }
