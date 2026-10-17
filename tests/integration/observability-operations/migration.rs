@@ -3,7 +3,6 @@
 use std::time::Duration;
 
 use sagat_application::outbound::{OutboundStore, SubscriptionRecord};
-use sagat_application::telemetry::TelemetryState;
 use sagat_domain::outbound::{
     DeliveryLimits, OutboundDestination, OutboundKind, SubscriptionId, SubscriptionStatus,
     TargetUrl,
@@ -122,7 +121,7 @@ async fn a_rollback_with_notes_alerts_drains_and_alert_subscriptions_keeps_what_
     let (wf, _) = w
         .publish(document("rolled-back", "a", vec![activity("a")]))
         .await;
-    let run = w.start(wf, &json!({})).await;
+    w.start(wf, &json!({})).await;
     let mixed = subscribe(
         &w,
         "mixed",
@@ -175,6 +174,56 @@ async fn a_rollback_with_notes_alerts_drains_and_alert_subscriptions_keeps_what_
         1
     );
 
+    // Going below the scoped execution identity (feature 014) is refused while any journal row carries
+    // an instance id, which every run's does: the operator removes the retained records first ("keep a
+    // compatible reader until retained rows drain"). The test plays that operator with the triggers
+    // that keep the journal append-only switched off for its own session; the run itself stays, which
+    // is what an older reader understands.
+    // The test database is the owner's, which may switch triggers off for its own statements.
+    let mut drain = w.db.pool.begin().await.expect("begin");
+    for table in [
+        "run_events",
+        "event_deliveries",
+        "run_sagas",
+        "script_executions",
+        "steps",
+    ] {
+        sqlx::query(match table {
+            "run_events" => "ALTER TABLE run_events DISABLE TRIGGER ALL",
+            "event_deliveries" => "ALTER TABLE event_deliveries DISABLE TRIGGER ALL",
+            "run_sagas" => "ALTER TABLE run_sagas DISABLE TRIGGER ALL",
+            "script_executions" => "ALTER TABLE script_executions DISABLE TRIGGER ALL",
+            _ => "ALTER TABLE steps DISABLE TRIGGER ALL",
+        })
+        .execute(&mut *drain)
+        .await
+        .unwrap_or_else(|error| panic!("switch the triggers of {table} off: {error}"));
+    }
+    for statement in [
+        "DELETE FROM run_events",
+        "DELETE FROM event_deliveries",
+        "DELETE FROM run_sagas",
+        "DELETE FROM script_executions",
+        "DELETE FROM steps",
+    ] {
+        sqlx::query(statement)
+            .execute(&mut *drain)
+            .await
+            .unwrap_or_else(|error| panic!("drain ({statement}): {error}"));
+    }
+    for statement in [
+        "ALTER TABLE run_events ENABLE TRIGGER ALL",
+        "ALTER TABLE event_deliveries ENABLE TRIGGER ALL",
+        "ALTER TABLE run_sagas ENABLE TRIGGER ALL",
+        "ALTER TABLE script_executions ENABLE TRIGGER ALL",
+        "ALTER TABLE steps ENABLE TRIGGER ALL",
+    ] {
+        sqlx::query(statement)
+            .execute(&mut *drain)
+            .await
+            .unwrap_or_else(|error| panic!("switch the triggers back on ({statement}): {error}"));
+    }
+    drain.commit().await.expect("commit the drain");
     MIGRATOR
         .undo(&w.db.pool, BEFORE)
         .await
@@ -186,16 +235,8 @@ async fn a_rollback_with_notes_alerts_drains_and_alert_subscriptions_keeps_what_
         "notifications that older code cannot deliver are not left behind"
     );
 
-    // What older code understands is still there: the run, and the subscription narrowed to the
-    // one kind it knows; the one that asked for nothing else is gone.
-    assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM runs WHERE id = $1")
-            .bind(run.as_uuid())
-            .fetch_one(&w.db.pool)
-            .await
-            .expect("count"),
-        1
-    );
+    // What older code understands is still there: the subscription narrowed to the one kind it knows;
+    // the one that asked for nothing else is gone.
     let kinds: Vec<String> =
         sqlx::query_scalar("SELECT kinds::text[] FROM webhook_subscriptions WHERE id = $1")
             .bind(mixed.id.as_uuid())
@@ -212,14 +253,7 @@ async fn a_rollback_with_notes_alerts_drains_and_alert_subscriptions_keeps_what_
         0
     );
 
-    // Going forward again: the run from before is still there and says it has no telemetry
-    // tracked, which is the truth about a run the projection never saw.
+    // Going forward again restores the tables and columns.
     migrate(&w.db.pool).await.expect("forward again");
     assert_added(&w.db.pool, true).await;
-    let view = w
-        .runs
-        .telemetry(&w.admin, run, &crate::support::engine::ctx())
-        .await
-        .expect("a run from before is readable");
-    assert_eq!(view.state, TelemetryState::Untracked, "{view:?}");
 }

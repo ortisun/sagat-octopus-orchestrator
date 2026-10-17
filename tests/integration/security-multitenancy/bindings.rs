@@ -679,6 +679,13 @@ async fn releasing_the_leases_of_closed_sessions_is_an_index_lookup_and_not_a_sc
         .execute(&mut *tx)
         .await
         .expect("set");
+    // On tables this small the planner would rather walk the partial index of open steps (G461) than
+    // look at the leases; the transaction is rolled back, so the competitor is dropped for the
+    // question only: is the lookup by session served by `steps_leased_by_idx`?
+    sqlx::query("DROP INDEX steps_run_open_idx")
+        .execute(&mut *tx)
+        .await
+        .expect("leave the lease index as the only candidate");
     let plan: Vec<String> = sqlx::query_scalar(
         "EXPLAIN UPDATE steps SET lease_expires_at = clock_timestamp() \
          WHERE tenant_id = $1 AND status IN ('LEASED', 'RUNNING') AND leased_by = ANY($2)",

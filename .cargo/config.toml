@@ -1,0 +1,3 @@
+[build]
+# Keep local builds from accumulating large incremental compilation caches.
+incremental = false

@@ -32,8 +32,8 @@ use uuid::Uuid;
 use super::identity_storage::insert_legacy_root_run;
 use super::scoped_worker::{self, Fixture};
 use crate::support::engine::{
-    World, activity, chain, child_node, condition_node, document, effect_node, parallel_node,
-    saga_node, timer_node, wait_node, with, world,
+    World, activity, chain, child_node, condition_node, document, effect_node, end_node,
+    parallel_node, saga_node, timer_node, wait_node, with, world,
 };
 
 /// The last migration before the scoped-instance storage foundation (the first of feature 014).
@@ -48,11 +48,12 @@ const TRACE: &str = "0af7651916cd43dd8448eb211c80319c";
 #[tokio::test]
 async fn an_active_pre_014_run_survives_the_migrations_and_finishes_on_the_new_engine() {
     let w = world().await;
+    let definition = w.publish(chain("legacy-active-run")).await;
     MIGRATOR
         .undo(&w.db.pool, BEFORE)
         .await
         .expect("return to the schema that predates the primitives");
-    let (run, version) = insert_legacy_root_run(&w, "legacy-active-run").await;
+    let (run, version) = insert_legacy_root_run(&w, definition).await;
     let tenant = w.admin.tenant_id().as_uuid();
 
     let old_document: Vec<u8> = sqlx::query_scalar(
@@ -572,24 +573,8 @@ async fn combinations_the_reader_does_not_enable_are_refused_with_a_typed_reason
             ),
             refusal: Ok("parallel"),
         },
-        Case {
-            label: "declared state together with approval",
-            document: {
-                let mut doc = document(
-                    "compat-state-approval",
-                    "review",
-                    vec![
-                        json!({"id": "review", "type": "approval", "timeoutMs": 86_400_000,
-                               "policy": {"roles": ["operator"]},
-                               "onApprove": "ok", "onReject": "ok", "onExpire": "ok"}),
-                        activity("ok"),
-                    ],
-                );
-                doc["state"] = json!({"schema": {"type": "integer"}, "initial": "0"});
-                doc
-            },
-            refusal: Ok("approval"),
-        },
+        // Declared state together with an approval used to be refused here; D295 enables it, and
+        // `approval_combinations` proves the combination.
     ];
 
     for case in cases {
@@ -644,6 +629,8 @@ async fn combinations_the_reader_does_not_enable_are_refused_with_a_typed_reason
 #[derive(Debug)]
 struct ReaderWithoutPrimitives;
 
+const PARSER_DIAGNOSTIC_CANARY: &str = "PRIVATE-SCHEMA-DIAGNOSTIC-CANARY";
+
 impl IrCodec for ReaderWithoutPrimitives {
     fn check_draft(&self, document: &[u8]) -> Result<(), IrError> {
         IrCodec::check_draft(&JsonIrCodec, document)
@@ -657,7 +644,7 @@ impl IrCodec for ReaderWithoutPrimitives {
             .map(|field| IrIssue {
                 path: String::new(),
                 message: format!(
-                    "Additional properties are not allowed ('{field}' was unexpected)"
+                    "Additional properties are not allowed ('{field}' was unexpected): {PARSER_DIAGNOSTIC_CANARY}"
                 ),
             })
             .collect();
@@ -766,17 +753,12 @@ async fn a_reader_without_the_capability_leaves_an_active_structured_run_untouch
             Some(TRACE),
         )
         .await;
-    match polled {
-        Ok(tasks) => assert!(
-            tasks.is_empty(),
-            "a reader that cannot read the definition must not lease its steps"
-        ),
-        // Observed on 2026-10-17: `Err(Internal)`, the poll fails as a whole when the only
-        // candidate is unreadable (G460). The state-preservation asserts below are what this test
-        // guarantees; the error class is not a promise.
-        Err(AppError::Internal) => {}
-        Err(other) => panic!("an unreadable definition produced {other:?}"),
-    }
+    // A run this build cannot read is skipped for the poll (G460): the poll succeeds with nothing.
+    let tasks = polled.expect("an unreadable run is skipped, it does not fail the poll");
+    assert!(
+        tasks.is_empty(),
+        "a reader that cannot read the definition must not lease its steps"
+    );
 
     let scheduler = Scheduler::new(
         old_store,
@@ -805,4 +787,99 @@ async fn a_reader_without_the_capability_leaves_an_active_structured_run_untouch
     // The capable reader comes back and the same run is served: its scoped work is leased.
     let tasks = scoped_worker::poll(&f, 8).await;
     assert_eq!(tasks.len(), 2, "the capable reader resumes the same run");
+}
+
+/// G460: runs this build cannot read, however many are ahead of a readable one in the poll's
+/// candidate list, neither fail the poll nor use up the failures it tolerates (three), so the
+/// readable run is still served. Before the fix the fourth candidate was never reached and the poll
+/// answered `Internal`.
+#[tokio::test]
+async fn runs_a_reader_cannot_read_do_not_starve_the_ones_it_can() {
+    let collector = crate::support::collector::Collector::start().await;
+    let (_telemetry_guard, sink, logs) = collector.install_with_logs(1.0);
+    let w = world().await;
+    let mut unreadable = Vec::new();
+    for n in 0..4 {
+        // `limits` is a field the rolled-back reader refuses (see `ReaderWithoutPrimitives`).
+        let mut doc = document(
+            &format!("compat-newer-{n}"),
+            "a",
+            vec![
+                with(
+                    json!({ "id": "a", "type": "activity", "activity": "compat.work" }),
+                    "next",
+                    json!("done"),
+                ),
+                end_node("done"),
+            ],
+        );
+        doc["limits"] = json!({ "maxInstances": 20 });
+        let (workflow, _) = w.publish(doc).await;
+        unreadable.push(w.start(workflow, &json!({})).await);
+    }
+    let (readable_workflow, _) = w
+        .publish(document(
+            "compat-readable",
+            "a",
+            vec![
+                with(
+                    json!({ "id": "a", "type": "activity", "activity": "compat.work" }),
+                    "next",
+                    json!("done"),
+                ),
+                end_node("done"),
+            ],
+        ))
+        .await;
+    let readable = w.start(readable_workflow, &json!({})).await;
+
+    let old_store = PgRunStore::new(
+        w.db.pool.clone(),
+        DefinitionCache::new(Arc::new(ReaderWithoutPrimitives), 8),
+    );
+    let old_workers: OldWorkers = WorkerService::new(
+        old_store,
+        SystemClock,
+        Engine::new(JsonEvaluator),
+        SystemEntropy,
+        WorkerSettings::default(),
+    )
+    .with_vault(w.keys.cipher());
+    let registered = old_workers
+        .register(
+            &w.worker,
+            "payments",
+            &format!("rolled-back-{}", Uuid::now_v7()),
+            &caps(&["compat.work"], "1.4"),
+        )
+        .await
+        .expect("the rolled-back build still registers workers");
+    let tasks = old_workers
+        .poll(
+            &w.worker,
+            registered.worker_id,
+            registered.session_token.expose(),
+            8,
+            Some(TRACE),
+        )
+        .await
+        .expect("unreadable runs are skipped, they do not fail the poll");
+    assert_eq!(tasks.len(), 1, "only the readable run's step is leased");
+    assert_eq!(tasks[0].run_id, readable);
+    for run in unreadable {
+        assert_eq!(
+            w.step_status(run, "a").await,
+            Some(sagat_domain::execution::StepStatus::Ready),
+            "a run the reader cannot read is left exactly as it was"
+        );
+    }
+    sink.shutdown(std::time::Duration::from_secs(5)).await;
+    assert!(
+        logs.text().contains("unreadable definition"),
+        "the skip must actually be logged"
+    );
+    assert!(
+        !logs.text().contains(PARSER_DIAGNOSTIC_CANARY),
+        "stored schema diagnostics reached logs"
+    );
 }

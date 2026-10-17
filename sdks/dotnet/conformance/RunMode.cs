@@ -538,10 +538,14 @@ internal sealed class RunMode : IAsyncDisposable
                         }, cancellationToken).ConfigureAwait(false);
                     return new JsonObject
                     {
-                        ["operation"] = updated.Operation, ["updateKey"] = updated.UpdateKey, ["status"] = updated.Status,
+                        ["operation"] = updated.Operation,
+                        ["updateKey"] = updated.UpdateKey,
+                        ["status"] = updated.Status,
                         ["result"] = JsonNode.Parse(updated.Result.GetRawText()),
-                        ["beforeStateRevision"] = updated.BeforeStateRevision, ["afterStateRevision"] = updated.AfterStateRevision,
-                        ["runVersion"] = updated.RunVersion, ["replayed"] = updated.Replayed,
+                        ["beforeStateRevision"] = updated.BeforeStateRevision,
+                        ["afterStateRevision"] = updated.AfterStateRevision,
+                        ["runVersion"] = updated.RunVersion,
+                        ["replayed"] = updated.Replayed,
                     };
                 }
 
@@ -559,12 +563,15 @@ internal sealed class RunMode : IAsyncDisposable
                         }, cancellationToken).ConfigureAwait(false);
                     return new JsonObject
                     {
-                        ["runId"] = updated.RunId, ["operation"] = updated.Operation,
-                        ["updateKey"] = updated.UpdateKey, ["status"] = updated.Status,
+                        ["runId"] = updated.RunId,
+                        ["operation"] = updated.Operation,
+                        ["updateKey"] = updated.UpdateKey,
+                        ["status"] = updated.Status,
                         ["result"] = JsonNode.Parse(updated.Result.GetRawText()),
                         ["beforeStateRevision"] = updated.BeforeStateRevision,
                         ["afterStateRevision"] = updated.AfterStateRevision,
-                        ["runVersion"] = updated.RunVersion, ["replayed"] = updated.Replayed,
+                        ["runVersion"] = updated.RunVersion,
+                        ["replayed"] = updated.Replayed,
                     };
                 }
 
@@ -813,8 +820,10 @@ internal sealed class RunMode : IAsyncDisposable
         {
             observed["chain"] = new JsonObject
             {
-                ["chainId"] = chain.ChainId, ["segmentIndex"] = chain.SegmentIndex,
-                ["completionKind"] = chain.CompletionKind, ["successorRunId"] = chain.SuccessorRunId,
+                ["chainId"] = chain.ChainId,
+                ["segmentIndex"] = chain.SegmentIndex,
+                ["completionKind"] = chain.CompletionKind,
+                ["successorRunId"] = chain.SuccessorRunId,
             };
         }
 
@@ -848,8 +857,11 @@ internal sealed class RunMode : IAsyncDisposable
 
     private static JsonObject ChainJson(ChainInspection chain) => new()
     {
-        ["chainId"] = chain.ChainId, ["currentRunId"] = chain.CurrentRunId, ["revision"] = chain.Revision,
-        ["cancelRequested"] = chain.CancelRequested, ["finalOutcome"] = chain.FinalOutcome,
+        ["chainId"] = chain.ChainId,
+        ["currentRunId"] = chain.CurrentRunId,
+        ["revision"] = chain.Revision,
+        ["cancelRequested"] = chain.CancelRequested,
+        ["finalOutcome"] = chain.FinalOutcome,
         ["segments"] = new JsonArray([.. chain.Segments.Select(item => (JsonNode?)new JsonObject
         {
             ["index"] = item.Index, ["runId"] = item.RunId, ["predecessorRunId"] = item.PredecessorRunId,

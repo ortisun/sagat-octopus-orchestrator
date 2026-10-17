@@ -92,6 +92,7 @@ struct WaitMeasurements {
     idle_ticks: Vec<Duration>,
     idle_zero: Vec<Duration>,
     idle_approvals: Vec<Duration>,
+    idle_approvals_analyzed: Vec<Duration>,
     bytes_per_approval: i64,
     bytes_per_timer: i64,
     journal_bytes_per_approval: f64,
@@ -261,6 +262,14 @@ async fn start_population(
 }
 
 async fn measure_waits(world: &World) -> WaitMeasurements {
+    // The control of the open-step indexes (G468): `SAGAT_PERF_WITHOUT_OPEN_INDEXES=1` drops them
+    // after the migrations, so one binary measures both sides on the same container.
+    if std::env::var("SAGAT_PERF_WITHOUT_OPEN_INDEXES").is_ok_and(|value| value == "1") {
+        sqlx::query("DROP INDEX steps_run_open_idx, steps_run_waiting_idx")
+            .execute(&world.db.pool)
+            .await
+            .expect("drop the open-step indexes for the control run");
+    }
     let approvals = configured_count("SAGAT_PRIMITIVES_APPROVALS", DEFAULT_APPROVALS);
     let timers = configured_count("SAGAT_PRIMITIVES_TIMERS", DEFAULT_TIMERS);
     let quota_room = u64::try_from(approvals + timers + SLOT_RUNS + 1_000).expect("quota room");
@@ -386,6 +395,22 @@ async fn measure_waits(world: &World) -> WaitMeasurements {
         let started = Instant::now();
         let report = scheduler.tick().await;
         idle_approvals.push(started.elapsed());
+        assert!(
+            !report.did_work() && report.failed == 0,
+            "tick over pending approvals: {report:?}"
+        );
+    }
+    // The same ticks once the planner has statistics for the freshly loaded tables, which is what
+    // autovacuum gives a long-lived database within a minute of a bulk load.
+    sqlx::query("ANALYZE steps, runs, approval_requests, approval_timers")
+        .execute(&world.db.pool)
+        .await
+        .expect("analyze the loaded approvals");
+    let mut idle_approvals_analyzed = Vec::new();
+    for _ in 0..10 {
+        let started = Instant::now();
+        let report = scheduler.tick().await;
+        idle_approvals_analyzed.push(started.elapsed());
         assert!(
             !report.did_work() && report.failed == 0,
             "tick over pending approvals: {report:?}"
@@ -544,6 +569,7 @@ async fn measure_waits(world: &World) -> WaitMeasurements {
         idle_ticks,
         idle_zero,
         idle_approvals,
+        idle_approvals_analyzed,
         bytes_per_approval: (approval_after - approval_before)
             / i64::try_from(approvals).expect("approval count"),
         bytes_per_timer: (timer_after - timer_before) / i64::try_from(timers).expect("timer count"),
@@ -905,8 +931,18 @@ fn report(waits: WaitMeasurements, slots: SlotMeasurements) -> String {
         waits.idle_zero,
     ));
     report.push_str(&duration_row(
-        &format!("scheduler tick, {} approvals pending", waits.approvals),
+        &format!(
+            "scheduler tick, {} approvals pending (statistics as the load left them)",
+            waits.approvals
+        ),
         waits.idle_approvals,
+    ));
+    report.push_str(&duration_row(
+        &format!(
+            "scheduler tick, {} approvals pending (after ANALYZE)",
+            waits.approvals
+        ),
+        waits.idle_approvals_analyzed,
     ));
     report.push_str(&duration_row(
         &format!(

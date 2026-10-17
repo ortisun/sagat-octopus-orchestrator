@@ -828,16 +828,16 @@ async def run(scenario: Obj, config: Obj) -> Obj:
                     result = {
                         "items": [
                             {
-                                "index": item.index,
-                                "runId": item.run_id,
-                                "status": item.status,
-                                "completionKind": item.completion_kind,
-                                "predecessorRunId": item.predecessor_run_id,
-                                "successorRunId": item.successor_run_id,
-                                "createdAt": instant(item.created_at),
-                                "finishedAt": instant(item.finished_at),
+                                "index": segment.index,
+                                "runId": segment.run_id,
+                                "status": segment.status,
+                                "completionKind": segment.completion_kind,
+                                "predecessorRunId": segment.predecessor_run_id,
+                                "successorRunId": segment.successor_run_id,
+                                "createdAt": instant(segment.created_at),
+                                "finishedAt": instant(segment.finished_at),
                             }
-                            for item in chain_page.items
+                            for segment in chain_page.items
                         ],
                         "nextCursor": chain_page.next_cursor,
                     }

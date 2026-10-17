@@ -392,11 +392,13 @@ parallelism. Namespace-dialog fixture isolation passed all six focused and 1,105
 Full-workspace Clippy, integrated 0.4.0 builds, readiness probes and four real Chromium journeys pass.
 Neither the initial failed runs nor the external publication/human-acceptance gates are marked green.
 
-## 014 — Workflow primitives and expanded SDK examples (2026-10-14)
+## 014 — Workflow primitives and expanded SDK examples (updated 2026-10-17)
 
 [Specification](../specs/014-workflow-primitives/spec.md),
 [implementation tasks](../specs/014-workflow-primitives/tasks.md), and
-[local validation evidence](../specs/014-workflow-primitives/validation-report.md).
+[local validation evidence](../specs/014-workflow-primitives/validation-report.md). Decisions and
+gaps (D/G/O numbers below) are in the feature's [research.md](../specs/014-workflow-primitives/research.md);
+the SDK version and capability matrix is [sdk-compatibility.md](sdk-compatibility.md).
 
 | Requirement / criterion | Status | Evidence / remaining work |
 |---|---|---|

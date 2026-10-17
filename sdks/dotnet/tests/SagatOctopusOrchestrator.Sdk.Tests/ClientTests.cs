@@ -569,9 +569,16 @@ public sealed class ClientTests : IAsyncLifetime
             ? Reply(200, new JsonObject { ["runId"] = Ids.Run, ["runVersion"] = 4, ["stateRevision"] = 1, ["result"] = new JsonObject { ["balance"] = 12 } })
             : Reply(200, new JsonObject
             {
-                ["runId"] = Ids.Run, ["operation"] = "account.credit", ["updateKey"] = "credit-1", ["status"] = "APPLIED",
-                ["result"] = new JsonObject { ["balance"] = 15 }, ["beforeStateRevision"] = 1, ["afterStateRevision"] = 2,
-                ["runVersion"] = 5, ["replayed"] = false, ["future"] = true,
+                ["runId"] = Ids.Run,
+                ["operation"] = "account.credit",
+                ["updateKey"] = "credit-1",
+                ["status"] = "APPLIED",
+                ["result"] = new JsonObject { ["balance"] = 15 },
+                ["beforeStateRevision"] = 1,
+                ["afterStateRevision"] = 2,
+                ["runVersion"] = 5,
+                ["replayed"] = false,
+                ["future"] = true,
             });
         var client = NewClient();
         var query = await client.QueryAsync(Ids.Run, "account.balance", new { currency = "BRL" });
@@ -608,9 +615,15 @@ public sealed class ClientTests : IAsyncLifetime
             ? Reply(503, Envelope("UNAVAILABLE", "busy", true))
             : Reply(200, new JsonObject
             {
-                ["runId"] = Ids.Run, ["operation"] = "account.credit", ["updateKey"] = "credit-1",
-                ["status"] = "APPLIED", ["result"] = 15, ["beforeStateRevision"] = 1,
-                ["afterStateRevision"] = 2, ["runVersion"] = 5, ["replayed"] = false,
+                ["runId"] = Ids.Run,
+                ["operation"] = "account.credit",
+                ["updateKey"] = "credit-1",
+                ["status"] = "APPLIED",
+                ["result"] = 15,
+                ["beforeStateRevision"] = 1,
+                ["afterStateRevision"] = 2,
+                ["runVersion"] = 5,
+                ["replayed"] = false,
             });
         await NewClient().UpdateAsync(
             Ids.Run, "account.credit", new { amount = 3 }, new UpdateOptions { UpdateKey = "credit-1" });
@@ -628,8 +641,12 @@ public sealed class ClientTests : IAsyncLifetime
             ? Reply(202, new JsonObject { ["deliveredTo"] = new JsonArray("wait") })
             : request.PathAndQuery.EndsWith("/cancel", StringComparison.Ordinal) ? Reply(202) : Reply(200, new JsonObject
             {
-                ["chainId"] = chainId, ["currentRunId"] = head, ["revision"] = 2, ["cancelRequested"] = false,
-                ["finalOutcome"] = null, ["segments"] = new JsonArray(
+                ["chainId"] = chainId,
+                ["currentRunId"] = head,
+                ["revision"] = 2,
+                ["cancelRequested"] = false,
+                ["finalOutcome"] = null,
+                ["segments"] = new JsonArray(
                     new JsonObject { ["index"] = 0, ["runId"] = chainId, ["predecessorRunId"] = null, ["successorRunId"] = head },
                     new JsonObject { ["index"] = 1, ["runId"] = head, ["predecessorRunId"] = chainId, ["successorRunId"] = null })
             });
@@ -681,9 +698,13 @@ public sealed class ClientTests : IAsyncLifetime
         string[] ids = [chainId, "0190aaaa-0000-7000-8000-000000000012", "0190aaaa-0000-7000-8000-000000000013"];
         JsonObject Item(int index) => new()
         {
-            ["index"] = index, ["runId"] = ids[index], ["status"] = index < 2 ? "SUCCEEDED" : "RUNNING",
-            ["completionKind"] = index < 2 ? "CONTINUED" : null, ["predecessorRunId"] = index == 0 ? null : ids[index - 1],
-            ["successorRunId"] = index < 2 ? ids[index + 1] : null, ["createdAt"] = "2026-10-10T10:00:00Z",
+            ["index"] = index,
+            ["runId"] = ids[index],
+            ["status"] = index < 2 ? "SUCCEEDED" : "RUNNING",
+            ["completionKind"] = index < 2 ? "CONTINUED" : null,
+            ["predecessorRunId"] = index == 0 ? null : ids[index - 1],
+            ["successorRunId"] = index < 2 ? ids[index + 1] : null,
+            ["createdAt"] = "2026-10-10T10:00:00Z",
             ["finishedAt"] = index < 2 ? "2026-10-10T10:00:01Z" : null,
         };
         server.Handler = request => request.PathAndQuery.Contains("cursor=AAE", StringComparison.Ordinal)
@@ -721,7 +742,9 @@ public sealed class ClientTests : IAsyncLifetime
         const string head = "0190aaaa-0000-7000-8000-000000000012";
         server.Handler = _ => Reply(200, new JsonObject
         {
-            ["runId"] = head, ["runVersion"] = 7, ["stateRevision"] = 3,
+            ["runId"] = head,
+            ["runVersion"] = 7,
+            ["stateRevision"] = 3,
             ["result"] = new JsonObject { ["amount"] = "19.99", ["occurredAt"] = "2026-10-15T15:34:56.789Z" },
         });
         var result = await NewClient().QueryChainAsync(

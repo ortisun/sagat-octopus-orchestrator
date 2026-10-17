@@ -39,6 +39,7 @@ mod privilege;
 mod quotas;
 mod reveal_grants;
 mod scope_compensation;
+mod scope_frontier;
 mod scripts;
 mod secrets;
 mod signals;

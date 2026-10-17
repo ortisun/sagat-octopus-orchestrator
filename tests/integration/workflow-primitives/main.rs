@@ -36,6 +36,7 @@ mod operations_http;
 mod primitive_transactions;
 mod projection;
 mod scope_compensation_http;
+mod scope_frontier;
 mod scoped_worker;
 mod security;
 mod switch_storage;

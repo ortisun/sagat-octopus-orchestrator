@@ -1,3 +1,5 @@
+#![allow(clippy::expect_used, clippy::unwrap_used)] // test fixtures/assertions fail immediately
+
 use std::collections::BTreeMap;
 
 use sagat_application::clock::Clock;

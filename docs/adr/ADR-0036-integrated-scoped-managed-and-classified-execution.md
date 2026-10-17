@@ -25,6 +25,11 @@ side of their shared worker/store modules would lose security or durable executi
    017 migrations sequentially from 20261122000000 through 20261128000000. New classification
    and grant migrations use 20261201000000 and 20261202000000. The combined profile is tested
    from the released baseline. It does not silently rewrite a standalone 017 SQLx history.
+   The later unreleased 014 open-step indexes, allocated as 20261122000000 on its scale branch,
+   use 20261206000000 in the combined profile to avoid the OpenBao migration identity. Existing
+   014 history and the 20261203000000..20261205000000 completion migrations stay unchanged.
+   A standalone scale-branch database that already applied that conflicting 20261122000000 index
+   migration also needs an explicit proven bridge; the combined migrator must refuse its history.
 3. Managed database execution remains root-only. Its credential pins reference the full
    scoped step key with explicitly empty path arrays, and every join/disclosure checks that
    root path. Reject database nodes in structured bodies and database/continuation combinations

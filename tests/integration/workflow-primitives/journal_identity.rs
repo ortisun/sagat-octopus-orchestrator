@@ -79,11 +79,12 @@ async fn newly_persisted_root_steps_and_events_share_the_typed_identity() {
 #[tokio::test]
 async fn legacy_null_journal_identity_still_replays_as_root() {
     let w = world().await;
+    let definition = w.publish(chain("legacy-null-journal-identity")).await;
     MIGRATOR
         .undo(&w.db.pool, BEFORE)
         .await
         .expect("return to the legacy journal schema");
-    let (run, _) = insert_legacy_root_run(&w, "legacy-null-journal-identity").await;
+    let (run, _) = insert_legacy_root_run(&w, definition).await;
 
     let legacy_rows: i64 =
         sqlx::query_scalar("SELECT count(*) FROM run_events WHERE tenant_id = $1 AND run_id = $2")

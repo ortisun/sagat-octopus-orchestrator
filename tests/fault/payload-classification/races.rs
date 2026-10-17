@@ -1,5 +1,5 @@
 //! Deterministic PostgreSQL race coverage for classified payload disclosure.
-#![allow(clippy::expect_used)]
+#![allow(clippy::expect_used, clippy::panic)]
 
 use std::sync::Arc;
 use std::time::Duration;

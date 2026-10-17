@@ -40,6 +40,7 @@ pub mod quotas;
 pub mod reveal_grants;
 pub mod runs;
 pub mod sandbox;
+pub mod scope_frontier;
 pub mod script_signing;
 pub mod scripts;
 pub mod secret_provider;

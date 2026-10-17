@@ -546,3 +546,49 @@ and Chromium commands in the guide have their separate executed evidence recorde
 are reused where the tested production path is unchanged, not invented reruns. The requirements
 checklist now distinguishes executed local evidence from the still-open full workspace/release
 gates. T016-056 closes for the delivered guide and traceability; T016-054 remains open.
+
+
+### Feature-014 source scale/CI integration
+
+The local source branch advanced to 8ade8f18 and records CI on its own 7d7868ff profile. Those
+records are retained as supporting source-branch evidence, not reported as execution on the
+combined tree. Integration preserves worker protocol 1.6, classification's generated error
+context, managed run origin, all database error variants and the correct Python chain-page
+iterator. The new open-step indexes are allocated at 20261206000000 to avoid OpenBao's existing
+20261122000000 identity; the source reference worktree and every existing migration remain intact.
+The feature-014 completion ticks imported from the other profile are reopened until the full
+accepted criteria and combined gates pass. No partially supported shape is substituted for those
+criteria. Bounded scope frontiers complement the exact-path worker foundation; neither alone
+closes the remaining general runtime and resource proof.
+
+
+Combined focused verification on the resolved merge:
+
+- `integration_workflow_primitives -- scope_frontier:: compatibility::
+  byte_ceilings::a_bounded identity_storage:: journal_identity:: --test-threads=1`:
+  **27/27**, no ignored tests, 62.42 s
+  (`/tmp/sagat-completion-merged-frontier-compat-3.log`). An earlier round was
+  20 passed / 1 failed: the legacy fixture called the current publisher after undoing
+  classification's column. Preparing the ordinary definition before undo and inserting only
+  the legacy run/journal afterward restores the intended upgrade boundary; all three users
+  of that fixture now use this preparation. This is synthetic schema compatibility, distinct
+  from the separately executed frozen release binary gate.
+- Strict whole-workspace/all-target Clippy passed in 22.50 s
+  (`/tmp/sagat-completion-merged-workspace-clippy-3.log`). Earlier rounds found intentional
+  fixture assertions without local test-only lint annotations; no production lint was disabled.
+  Formatting passed again after the fixture change.
+- Architecture: 24 crates; script unit tests: 8/8; generated Studio API matches canonical
+  OpenAPI. Protobuf compilation and IR example validation passed. OpenAPI lint passed with
+  seven existing documentation warnings, not a warning-free claim.
+- Changed Studio autosave target: 33/33 (5.21 s); Python mypy: 38 source files; C# SDK:
+  450/450, zero skipped (22 s), plus format verification. The first mypy command could not
+  locate a local venv; the retry used the existing interpreter with this tree's `src`.
+- Dependency audits: Cargo checked 627 dependencies against 1,338 advisories and exited zero;
+  npm reported zero vulnerabilities.
+- Byte comparison against pre-merge HEAD: all 124 existing migration files are unchanged.
+
+The added schema-diagnostic canary regression passed on the incoming implementation:
+`IrError::Schema` already renders only the number of issues. No schema log leak or failing
+red test is claimed (`/tmp/sagat-completion-reader-diagnostics-red.log` is a misleading
+historical filename). This finding does not prove every other parser diagnostic is safe.
+The default whole-run worker and the remaining large/nested runtime criteria stay open.

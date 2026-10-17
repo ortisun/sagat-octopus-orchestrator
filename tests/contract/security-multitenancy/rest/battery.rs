@@ -39,6 +39,22 @@ fn body_of(operation: &str) -> Option<Value> {
         "operateRun" => json!({"action": "CANCEL", "reason": "cross-tenant battery probe"}),
         "inspectRunPayload" => json!({"source": "input"}),
         "signalRun" => json!({"paid": true}),
+        // Feature 014: a chain is addressed by its id; the head the attacker claims to have seen
+        // is made up, so the only thing that can refuse the call is that the chain is not theirs.
+        "queryRun" => json!({"args": {}}),
+        "updateRunState" => json!({"updateKey": "battery-probe-0001", "args": {}}),
+        "decideWorkflowApproval" => {
+            json!({"decisionKey": "battery-probe-0001", "decision": "APPROVE"})
+        }
+        "queryExecutionChain" => json!({"args": {}}),
+        "updateExecutionChain" => json!({"updateKey": "battery-probe-0001", "args": {}}),
+        "signalExecutionChain" => json!({
+            "expectedRunId": "01900000-0000-7000-8000-000000000000", "payload": {"paid": true}
+        }),
+        "cancelExecutionChain" => json!({
+            "expectedRunId": "01900000-0000-7000-8000-000000000000",
+            "reason": "cross-tenant battery probe"
+        }),
         "setTenantQuota" | "setNamespaceQuota" | "setActivityQuota" => json!({"limit": 1}),
         "bindWorker" => json!({"activities": ["*"], "pools": ["attacker-pool"]}),
         "setSecretPools" => json!({"pools": ["attacker-pool"]}),
