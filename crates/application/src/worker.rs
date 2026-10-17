@@ -820,12 +820,27 @@ where
         trace_id: Option<&str>,
         bytes: &mut usize,
     ) -> Result<Vec<ClaimedTask>, AppError> {
-        let Some(mut tx) = self
+        let mut tx = match self
             .store
             .begin(session.tenant_id, run, Lock::SkipLocked)
-            .await?
-        else {
-            return Ok(Vec::new()); // locked by someone else, or gone
+            .await
+        {
+            Ok(Some(tx)) => tx,
+            Ok(None) => return Ok(Vec::new()), // locked by someone else, or gone
+            // A run pinned to a definition this build cannot read (a rolled-back build meeting a
+            // newer run) is not this poll's to serve and is not damaged. It is skipped for this
+            // poll, counted and logged, and does not use up the failures the poll tolerates, so
+            // runs this build can read are still served (G460).
+            Err(StoreError::UnreadableDefinition) => {
+                metrics::counter!(
+                    "worker_claim_skipped_total",
+                    "reason" => "definition_unreadable"
+                )
+                .increment(1);
+                tracing::warn!(%run, "a run pinned to an unreadable definition was skipped by a poll");
+                return Ok(Vec::new());
+            }
+            Err(error) => return Err(error.into()),
         };
         // The identity may have been drained after the poll looked at its session: the check is
         // made again here, under the lock a drain waits for, so a drain that has returned has

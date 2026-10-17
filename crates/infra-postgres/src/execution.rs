@@ -155,9 +155,7 @@ impl PgRunStore {
             .get_or_parse(version, &document)
             .map_err(|error| {
                 tracing::error!(%error, %version, "a stored workflow version no longer parses");
-                StoreError::Internal {
-                    detail: "a stored workflow version no longer parses".into(),
-                }
+                StoreError::UnreadableDefinition
             })
     }
 
