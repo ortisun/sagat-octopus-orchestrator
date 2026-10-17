@@ -12,6 +12,7 @@ use crate::support::api::{TestApi, json_of};
 
 mod crash;
 mod engine;
+mod mutability;
 mod races;
 
 const CANARY: &str = "sagat-secret-canary-operations-7c692e9b";
