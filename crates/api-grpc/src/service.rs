@@ -731,7 +731,8 @@ where
                 .await
                 .map_err(app)?;
             Ok(pb::HeartbeatResponse {
-                lease_expires_at_epoch_ms: epoch_ms(ack.lease_expires_at),
+                // `0` when this lease already reported the attempt (G141, SDK SPEC §6.4).
+                lease_expires_at_epoch_ms: ack.lease_expires_at.map_or(0, epoch_ms),
                 cancel_requested: ack.cancel_requested,
             })
         })
