@@ -458,15 +458,18 @@ pub struct ClassificationAnalysis {
     pub report: Vec<ClassificationReportEntry>,
     pub findings_truncated: bool,
     pub report_truncated: bool,
+    /// Set independently of the bounded finding list so truncation can never allow publication.
+    pub has_errors: bool,
 }
 
 impl ClassificationAnalysis {
     #[must_use]
     pub fn is_publishable(&self) -> bool {
-        !self
-            .findings
-            .iter()
-            .any(|finding| finding.code.severity() == FindingSeverity::Error)
+        !self.has_errors
+            && !self
+                .findings
+                .iter()
+                .any(|finding| finding.code.severity() == FindingSeverity::Error)
     }
 }
 

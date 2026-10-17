@@ -16,11 +16,17 @@ use sagat_domain::classification::{Level, Visibility, WithheldReason, visibility
 use serde_json::Value;
 
 const PATTERN_SIZE_LIMIT: usize = 1024 * 1024;
+const VALUE_NODE_BYTES: usize = 128;
+const CONTAINER_NODE_BYTES: usize = 128;
+const WITHHELD_NODE_BYTES: usize = 128;
+const CHILD_BYTES: usize = 48;
 
 struct CompiledCarrier {
     schema: Value,
     validator: jsonschema::Validator,
     bytes: usize,
+    has_numeric_constraints: bool,
+    numeric_constraints_exact: bool,
 }
 
 #[derive(Default)]
@@ -117,10 +123,14 @@ impl Classifier {
             )
             .build(&schema)
             .map_err(|_| ProjectionFailure::SchemaUnusable)?;
+        let has_numeric_constraints = has_numeric_constraints(&schema);
+        let numeric_constraints_exact = numeric_constraints_exact(&schema);
         let compiled = Arc::new(CompiledCarrier {
             schema,
             validator,
             bytes,
+            has_numeric_constraints,
+            numeric_constraints_exact,
         });
 
         let mut cache = self
@@ -166,6 +176,20 @@ impl ClassificationInterpreter for Classifier {
         let payload: Value = serde_json::from_slice(request.payload)
             .map_err(|_| ProjectionFailure::UnsupportedPayload)?;
         let numbers = NumberLexemes::parse(request.payload)?;
+        if numbers.has_numbers()
+            && (!compiled.numeric_constraints_exact
+                || (compiled.has_numeric_constraints && numbers.has_unsafe_comparison()))
+        {
+            return Err(ProjectionFailure::UnsupportedPayload);
+        }
+        let mut numeric_expansion = Expansion::new(&compiled.schema);
+        validate_integer_types(
+            &payload,
+            &[&compiled.schema],
+            "",
+            &numbers,
+            &mut numeric_expansion,
+        )?;
         if !compiled.validator.is_valid(&payload) {
             return Err(ProjectionFailure::SchemaMismatch);
         }
@@ -287,7 +311,7 @@ impl<'a> Expansion<'a> {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 struct ProjectionBudget {
     nodes: usize,
     string_bytes: usize,
@@ -297,16 +321,26 @@ struct ProjectionBudget {
 }
 
 impl ProjectionBudget {
-    fn admit(&mut self, bytes: usize) -> bool {
-        if self.nodes >= MAX_PROJECTION_NODES
-            || self.response_bytes.saturating_add(bytes) > MAX_RESPONSE_BYTES
-        {
+    fn reserve(&mut self, bytes: usize) -> bool {
+        if self.response_bytes.saturating_add(bytes) > MAX_RESPONSE_BYTES {
+            self.truncated = true;
+            return false;
+        }
+        self.response_bytes += bytes;
+        true
+    }
+
+    fn admit_node(&mut self, bytes: usize) -> bool {
+        if self.nodes >= MAX_PROJECTION_NODES || !self.reserve(bytes) {
             self.truncated = true;
             return false;
         }
         self.nodes += 1;
-        self.response_bytes += bytes;
         true
+    }
+
+    fn remaining_response_bytes(&self) -> usize {
+        MAX_RESPONSE_BYTES.saturating_sub(self.response_bytes)
     }
 
     fn disclosed(&mut self, level: Level) {
@@ -362,55 +396,78 @@ fn project_node<'a>(
     match decision {
         Visibility::Omit => return Ok(None),
         Visibility::Withhold(reason) => {
-            return Ok(budget.admit(48).then_some(ClassifiedNode::Withheld {
-                level: effective,
-                kind,
-                reason,
-            }));
+            return Ok(budget.admit_node(WITHHELD_NODE_BYTES).then_some(
+                ClassifiedNode::Withheld {
+                    level: effective,
+                    kind,
+                    reason,
+                },
+            ));
         }
-        Visibility::Disclose => budget.disclosed(effective),
-    }
-    if !budget.admit(64) {
-        return Ok(None);
+        Visibility::Disclose => {}
     }
     match value {
-        Value::Null => Ok(Some(ClassifiedNode::Value {
-            level: effective,
-            kind,
-            value: ScalarValue::Null,
-            value_truncated: false,
-            original_length: None,
-        })),
-        Value::Bool(value) => Ok(Some(ClassifiedNode::Value {
-            level: effective,
-            kind,
-            value: ScalarValue::Boolean(*value),
-            value_truncated: false,
-            original_length: None,
-        })),
-        Value::Number(value) => Ok(Some(ClassifiedNode::Value {
-            level: effective,
-            kind,
-            value: ScalarValue::Number(
-                numbers
-                    .get(path)
-                    .cloned()
-                    .or_else(|| JsonNumber::parse(&value.to_string()).ok())
-                    .ok_or(ProjectionFailure::UnsupportedPayload)?,
-            ),
-            value_truncated: false,
-            original_length: None,
-        })),
+        Value::Null => {
+            if !budget.admit_node(VALUE_NODE_BYTES) {
+                return Ok(None);
+            }
+            budget.disclosed(effective);
+            Ok(Some(ClassifiedNode::Value {
+                level: effective,
+                kind,
+                value: ScalarValue::Null,
+                value_truncated: false,
+                original_length: None,
+            }))
+        }
+        Value::Bool(value) => {
+            if !budget.admit_node(VALUE_NODE_BYTES) {
+                return Ok(None);
+            }
+            budget.disclosed(effective);
+            Ok(Some(ClassifiedNode::Value {
+                level: effective,
+                kind,
+                value: ScalarValue::Boolean(*value),
+                value_truncated: false,
+                original_length: None,
+            }))
+        }
+        Value::Number(value) => {
+            let number = numbers
+                .get(path)
+                .cloned()
+                .or_else(|| JsonNumber::parse(&value.to_string()).ok())
+                .ok_or(ProjectionFailure::UnsupportedPayload)?;
+            if !budget.admit_node(VALUE_NODE_BYTES.saturating_add(number.as_str().len())) {
+                return Ok(None);
+            }
+            budget.disclosed(effective);
+            Ok(Some(ClassifiedNode::Value {
+                level: effective,
+                kind,
+                value: ScalarValue::Number(number),
+                value_truncated: false,
+                original_length: None,
+            }))
+        }
         Value::String(value) => {
             let original = value.len();
             let remaining = MAX_DISCLOSED_STRING_BYTES.saturating_sub(budget.string_bytes);
             let maximum = MAX_STRING_BYTES.min(remaining);
-            let end = utf8_boundary(value, maximum);
+            let response = budget
+                .remaining_response_bytes()
+                .saturating_sub(VALUE_NODE_BYTES);
+            let end = escaped_prefix(value, maximum, response);
             let disclosed = value[..end].to_owned();
+            let encoded = json_string_bytes(&disclosed);
+            if !budget.admit_node(VALUE_NODE_BYTES.saturating_add(encoded)) {
+                return Ok(None);
+            }
             budget.string_bytes += disclosed.len();
-            budget.response_bytes = budget.response_bytes.saturating_add(disclosed.len());
             let truncated = end < original;
             budget.truncated |= truncated;
+            budget.disclosed(effective);
             Ok(Some(ClassifiedNode::Value {
                 level: effective,
                 kind,
@@ -420,6 +477,10 @@ fn project_node<'a>(
             }))
         }
         Value::Array(values) => {
+            if !budget.admit_node(CONTAINER_NODE_BYTES) {
+                return Ok(None);
+            }
+            budget.disclosed(effective);
             let (children, omitted) = project_array(
                 values, &expanded, effective, depth, path, numbers, request, expansion, budget,
             )?;
@@ -432,11 +493,19 @@ fn project_node<'a>(
                 level: effective,
                 kind,
                 child_count: u32::try_from(count).unwrap_or(u32::MAX),
-                omitted_children: omitted,
+                omitted_children: if request.audience.structure {
+                    omitted
+                } else {
+                    0
+                },
                 children,
             }))
         }
         Value::Object(values) => {
+            if !budget.admit_node(CONTAINER_NODE_BYTES) {
+                return Ok(None);
+            }
+            budget.disclosed(effective);
             let (children, omitted) = project_object(
                 values, &expanded, effective, depth, path, numbers, request, expansion, budget,
             )?;
@@ -449,7 +518,11 @@ fn project_node<'a>(
                 level: effective,
                 kind,
                 child_count: u32::try_from(count).unwrap_or(u32::MAX),
-                omitted_children: omitted,
+                omitted_children: if request.audience.structure {
+                    omitted
+                } else {
+                    0
+                },
                 children,
             }))
         }
@@ -478,6 +551,7 @@ fn project_object<'a>(
     for (ordinal, (name, value)) in values.iter().take(take).enumerate() {
         let mut child_schemas = Vec::new();
         let mut named = false;
+        let mut unsupported_governance = false;
         for schema in schemas {
             if let Some(property) = schema
                 .get("properties")
@@ -486,17 +560,26 @@ fn project_object<'a>(
             {
                 named = true;
                 child_schemas.push(property);
-            } else if let Some(additional) = schema.get("additionalProperties")
-                && additional.is_object()
-            {
-                child_schemas.push(additional);
+            } else {
+                let patterns = schema
+                    .get("patternProperties")
+                    .and_then(Value::as_object)
+                    .is_some_and(|patterns| !patterns.is_empty());
+                if patterns {
+                    unsupported_governance = true;
+                } else if let Some(additional) = schema.get("additionalProperties")
+                    && additional.is_object()
+                {
+                    child_schemas.push(additional);
+                }
             }
         }
-        let child_inherited = if child_schemas.is_empty() {
+        let child_inherited = if child_schemas.is_empty() || unsupported_governance {
             inherited.stricter(Level::Pii)
         } else {
             inherited
         };
+        let checkpoint = *budget;
         if let Some(node) = project_node(
             value,
             &child_schemas,
@@ -509,9 +592,21 @@ fn project_object<'a>(
             budget,
         )? {
             let disclosed = !matches!(node, ClassifiedNode::Withheld { .. });
+            let child_name = (named || disclosed).then(|| name.clone());
+            let name_bytes = child_name.as_deref().map_or(0, json_string_bytes);
+            if !budget.reserve(CHILD_BYTES.saturating_add(name_bytes)) {
+                *budget = checkpoint;
+                budget.truncated = true;
+                continue;
+            }
             children.push(ClassifiedChild {
-                ordinal: u32::try_from(ordinal).unwrap_or(u32::MAX),
-                name: (named || disclosed).then(|| name.clone()),
+                ordinal: u32::try_from(if request.audience.structure {
+                    ordinal
+                } else {
+                    children.len()
+                })
+                .unwrap_or(u32::MAX),
+                name: child_name,
                 node: Box::new(node),
             });
         }
@@ -559,6 +654,7 @@ fn project_array<'a>(
         } else {
             inherited
         };
+        let checkpoint = *budget;
         if let Some(node) = project_node(
             value,
             &child_schemas,
@@ -570,6 +666,11 @@ fn project_array<'a>(
             expansion,
             budget,
         )? {
+            if !budget.reserve(CHILD_BYTES) {
+                *budget = checkpoint;
+                budget.truncated = true;
+                continue;
+            }
             children.push(ClassifiedChild {
                 ordinal: u32::try_from(index).unwrap_or(u32::MAX),
                 name: None,
@@ -581,12 +682,34 @@ fn project_array<'a>(
     Ok((children, u32::try_from(omitted).unwrap_or(u32::MAX)))
 }
 
-fn utf8_boundary(value: &str, maximum: usize) -> usize {
-    let mut end = value.len().min(maximum);
-    while end > 0 && !value.is_char_boundary(end) {
-        end -= 1;
+fn escaped_prefix(value: &str, maximum_raw: usize, maximum_encoded: usize) -> usize {
+    if maximum_encoded < 2 {
+        return 0;
     }
-    end
+    let mut raw = 0;
+    let mut encoded = 2;
+    for character in value.chars() {
+        let next_raw = raw + character.len_utf8();
+        let next_encoded = encoded + escaped_char_bytes(character);
+        if next_raw > maximum_raw || next_encoded > maximum_encoded {
+            break;
+        }
+        raw = next_raw;
+        encoded = next_encoded;
+    }
+    raw
+}
+
+fn escaped_char_bytes(character: char) -> usize {
+    match character {
+        '"' | '\\' | '\u{0008}' | '\u{000c}' | '\n' | '\r' | '\t' => 2,
+        '\u{0000}'..='\u{001f}' => 6,
+        _ => character.len_utf8(),
+    }
+}
+
+fn json_string_bytes(value: &str) -> usize {
+    2 + value.chars().map(escaped_char_bytes).sum::<usize>()
 }
 
 fn kind_of(value: &Value) -> ValueKind {
@@ -619,6 +742,21 @@ impl NumberLexemes {
 
     fn get(&self, path: &str) -> Option<&JsonNumber> {
         self.0.get(path)
+    }
+
+    fn has_numbers(&self) -> bool {
+        !self.0.is_empty()
+    }
+
+    fn has_unsafe_comparison(&self) -> bool {
+        self.0
+            .values()
+            .any(|number| !safe_integer_comparison(number.as_str()))
+    }
+
+    fn is_integer(&self, path: &str) -> bool {
+        self.get(path)
+            .is_some_and(|number| lexical_is_integer(number.as_str()))
     }
 }
 
@@ -753,6 +891,178 @@ impl NumberScanner<'_> {
 
 fn pointer_escape(value: &str) -> String {
     value.replace('~', "~0").replace('/', "~1")
+}
+
+fn validate_integer_types<'a>(
+    value: &Value,
+    schemas: &[&'a Value],
+    path: &str,
+    numbers: &NumberLexemes,
+    expansion: &mut Expansion<'a>,
+) -> Result<(), ProjectionFailure> {
+    let expanded = expansion.expand_many(schemas)?;
+    if value.is_number()
+        && expanded
+            .iter()
+            .any(|schema| schema_requires_integer(schema))
+        && !numbers.is_integer(path)
+    {
+        return Err(ProjectionFailure::SchemaMismatch);
+    }
+    match value {
+        Value::Object(values) => {
+            for (name, value) in values {
+                let mut children = Vec::new();
+                for schema in &expanded {
+                    if let Some(property) = schema
+                        .get("properties")
+                        .and_then(Value::as_object)
+                        .and_then(|properties| properties.get(name))
+                    {
+                        children.push(property);
+                    } else {
+                        if let Some(patterns) =
+                            schema.get("patternProperties").and_then(Value::as_object)
+                        {
+                            children.extend(patterns.values());
+                        }
+                        if let Some(additional) = schema.get("additionalProperties")
+                            && additional.is_object()
+                        {
+                            children.push(additional);
+                        }
+                    }
+                }
+                validate_integer_types(
+                    value,
+                    &children,
+                    &format!("{path}/{}", pointer_escape(name)),
+                    numbers,
+                    expansion,
+                )?;
+            }
+        }
+        Value::Array(values) => {
+            for (index, value) in values.iter().enumerate() {
+                let mut children = Vec::new();
+                for schema in &expanded {
+                    if let Some(prefix) = schema.get("prefixItems").and_then(Value::as_array)
+                        && let Some(item) = prefix.get(index)
+                    {
+                        children.push(item);
+                    } else if let Some(items) = schema.get("items")
+                        && items.is_object()
+                    {
+                        children.push(items);
+                    }
+                }
+                validate_integer_types(
+                    value,
+                    &children,
+                    &format!("{path}/{index}"),
+                    numbers,
+                    expansion,
+                )?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn schema_requires_integer(schema: &Value) -> bool {
+    match schema.get("type") {
+        Some(Value::String(kind)) => kind == "integer",
+        Some(Value::Array(kinds)) => kinds.iter().any(|kind| kind.as_str() == Some("integer")),
+        _ => false,
+    }
+}
+
+fn has_numeric_constraints(schema: &Value) -> bool {
+    match schema {
+        Value::Object(object) => object.iter().any(|(keyword, value)| {
+            matches!(
+                keyword.as_str(),
+                "minimum" | "maximum" | "exclusiveMinimum" | "exclusiveMaximum" | "multipleOf"
+            ) || (matches!(keyword.as_str(), "const" | "enum") && contains_number(value))
+                || has_numeric_constraints(value)
+        }),
+        Value::Array(values) => values.iter().any(has_numeric_constraints),
+        _ => false,
+    }
+}
+
+fn numeric_constraints_exact(schema: &Value) -> bool {
+    match schema {
+        Value::Object(object) => object.iter().all(|(keyword, value)| {
+            let local = match keyword.as_str() {
+                "minimum" | "maximum" | "exclusiveMinimum" | "exclusiveMaximum" | "multipleOf" => {
+                    exact_stored_numbers(value)
+                }
+                "const" | "enum" => exact_stored_numbers(value),
+                _ => true,
+            };
+            local && numeric_constraints_exact(value)
+        }),
+        Value::Array(values) => values.iter().all(numeric_constraints_exact),
+        _ => true,
+    }
+}
+
+fn contains_number(value: &Value) -> bool {
+    match value {
+        Value::Number(_) => true,
+        Value::Array(values) => values.iter().any(contains_number),
+        Value::Object(values) => values.values().any(contains_number),
+        _ => false,
+    }
+}
+
+fn exact_stored_numbers(value: &Value) -> bool {
+    match value {
+        Value::Number(number) => number.is_i64() || number.is_u64(),
+        Value::Array(values) => values.iter().all(exact_stored_numbers),
+        Value::Object(values) => values.values().all(exact_stored_numbers),
+        _ => true,
+    }
+}
+
+fn safe_integer_comparison(value: &str) -> bool {
+    !value.contains(['.', 'e', 'E'])
+        && (value.parse::<i64>().is_ok() || value.parse::<u64>().is_ok())
+}
+
+fn lexical_is_integer(value: &str) -> bool {
+    let unsigned = value.strip_prefix('-').unwrap_or(value);
+    let exponent_at = unsigned.find(['e', 'E']);
+    let (mantissa, exponent) = exponent_at.map_or((unsigned, 0_i64), |at| {
+        let exponent = unsigned[at + 1..].parse::<i64>().unwrap_or_else(|_| {
+            if unsigned[at + 1..].starts_with('-') {
+                i64::MIN
+            } else {
+                i64::MAX
+            }
+        });
+        (&unsigned[..at], exponent)
+    });
+    let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    let digits = format!("{whole}{fraction}");
+    if digits.bytes().all(|digit| digit == b'0') {
+        return true;
+    }
+    let fractional_places = i128::try_from(fraction.len()).unwrap_or(i128::MAX);
+    let scale = fractional_places - i128::from(exponent);
+    if scale <= 0 {
+        return true;
+    }
+    usize::try_from(scale)
+        .ok()
+        .filter(|scale| *scale <= digits.len())
+        .is_some_and(|scale| {
+            digits.as_bytes()[digits.len() - scale..]
+                .iter()
+                .all(|digit| *digit == b'0')
+        })
 }
 
 #[path = "classification/publication.rs"]

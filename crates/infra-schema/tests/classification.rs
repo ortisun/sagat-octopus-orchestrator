@@ -52,7 +52,7 @@ fn effective_levels_and_withheld_reasons_follow_the_matrix() {
     };
     let result = classifier.project(input).expect("projection");
 
-    let ClassifiedNode::Container { children, .. } = result.tree else {
+    let ClassifiedNode::Container { ref children, .. } = result.tree else {
         panic!("root container")
     };
     assert_eq!(children.len(), 4);
@@ -142,7 +142,7 @@ fn strictest_combiner_and_local_ref_annotation_wins() {
             Audience::new(true, false, true),
         ))
         .expect("projection");
-    let ClassifiedNode::Container { children, .. } = result.tree else {
+    let ClassifiedNode::Container { ref children, .. } = result.tree else {
         panic!("container")
     };
     assert!(matches!(
@@ -274,4 +274,223 @@ fn root_and_named_body_nodes_with_the_same_local_id_do_not_share_cache_entries()
         ));
     }
     assert_eq!(classifier.cache_stats().misses, 3);
+}
+
+#[test]
+fn callers_without_structure_cannot_distinguish_hidden_child_counts() {
+    let object_doc = document(json!({
+        "type": "object", "x-sagat-classification": "public",
+        "properties": {
+            "visible": {"type": "string"},
+            "hidden": {"type": "string", "x-sagat-classification": "internal"}
+        }
+    }));
+    let classifier = Classifier::default();
+    let visible = classifier
+        .project(request(
+            &object_doc,
+            br#"{"visible":"same"}"#,
+            Audience::new(false, false, false),
+        ))
+        .expect("visible object");
+    let hidden = classifier
+        .project(request(
+            &object_doc,
+            br#"{"visible":"same","hidden":"private"}"#,
+            Audience::new(false, false, false),
+        ))
+        .expect("hidden object");
+    let counts = |payload: &sagat_application::classification::ClassifiedPayload| {
+        let ClassifiedNode::Container {
+            child_count,
+            omitted_children,
+            children,
+            ..
+        } = &payload.tree
+        else {
+            panic!("container")
+        };
+        (
+            *child_count,
+            *omitted_children,
+            children
+                .iter()
+                .map(|child| (child.ordinal, child.name.clone()))
+                .collect::<Vec<_>>(),
+        )
+    };
+    assert_eq!(counts(&visible), counts(&hidden));
+
+    let array_doc = document(json!({
+        "type": "array", "x-sagat-classification": "public",
+        "prefixItems": [{"type": "string"}],
+        "items": {"type": "string", "x-sagat-classification": "internal"}
+    }));
+    let visible = classifier
+        .project(request(
+            &array_doc,
+            br#"["same"]"#,
+            Audience::new(false, false, false),
+        ))
+        .expect("visible array");
+    let hidden = classifier
+        .project(request(
+            &array_doc,
+            br#"["same","private"]"#,
+            Audience::new(false, false, false),
+        ))
+        .expect("hidden array");
+    assert_eq!(counts(&visible), counts(&hidden));
+}
+
+fn wire_node(node: &ClassifiedNode) -> Value {
+    let kind = |kind| match kind {
+        sagat_application::classification::ValueKind::Object => "object",
+        sagat_application::classification::ValueKind::Array => "array",
+        sagat_application::classification::ValueKind::String => "string",
+        sagat_application::classification::ValueKind::Number => "number",
+        sagat_application::classification::ValueKind::Boolean => "boolean",
+        sagat_application::classification::ValueKind::Null => "null",
+    };
+    match node {
+        ClassifiedNode::Value {
+            level,
+            kind: value_kind,
+            value,
+            value_truncated,
+            original_length,
+        } => json!({
+            "kind": "value", "level": level.as_str(), "type": kind(*value_kind),
+            "value": match value {
+                ScalarValue::String(value) => json!(value),
+                ScalarValue::Number(value) => json!(value.as_str()),
+                ScalarValue::Boolean(value) => json!(value),
+                ScalarValue::Null => Value::Null,
+            },
+            "valueTruncated": value_truncated, "length": original_length,
+        }),
+        ClassifiedNode::Container {
+            level,
+            kind: value_kind,
+            child_count,
+            omitted_children,
+            children,
+        } => json!({
+            "kind": "container", "level": level.as_str(), "type": kind(*value_kind),
+            "childCount": child_count, "omittedChildren": omitted_children,
+            "children": children.iter().map(|child| json!({
+                "ordinal": child.ordinal, "name": child.name,
+                "node": wire_node(&child.node),
+            })).collect::<Vec<_>>(),
+        }),
+        ClassifiedNode::Withheld {
+            level,
+            kind: value_kind,
+            reason,
+        } => json!({
+            "kind": "withheld", "level": level.as_str(), "type": kind(*value_kind),
+            "reason": format!("{reason:?}"),
+        }),
+    }
+}
+
+#[test]
+fn escaped_data_keys_and_tree_overhead_stay_inside_the_response_budget() {
+    let doc = document(json!({
+        "type": "object", "x-sagat-classification": "public",
+        "additionalProperties": {"type": "null", "x-sagat-classification": "public"}
+    }));
+    let payload = Value::Object(
+        (0..128)
+            .map(|index| {
+                (
+                    format!("key-{index:03}{}", "\u{0001}".repeat(311)),
+                    Value::Null,
+                )
+            })
+            .collect(),
+    );
+    let payload = serde_json::to_vec(&payload).expect("payload");
+    assert!(payload.len() <= sagat_application::classification::MAX_PAYLOAD_BYTES);
+    let result = Classifier::default()
+        .project(request(&doc, &payload, Audience::new(false, false, false)))
+        .expect("projection");
+    let encoded = serde_json::to_vec(&wire_node(&result.tree)).expect("wire tree");
+    assert!(encoded.len() <= sagat_application::classification::MAX_RESPONSE_BYTES);
+    assert!(result.truncated);
+}
+
+#[test]
+fn numeric_validation_never_uses_a_rounded_value_as_authority() {
+    let classifier = Classifier::default();
+    let integer = document(json!({
+        "type": "integer", "x-sagat-classification": "public"
+    }));
+    assert!(
+        classifier
+            .project(request(
+                &integer,
+                b"1.0000000000000000000000000001",
+                Audience::new(false, false, false),
+            ))
+            .is_err()
+    );
+    for exact in [b"9007199254740993".as_slice(), b"1e3".as_slice()] {
+        let result = classifier
+            .project(request(&integer, exact, Audience::new(false, false, false)))
+            .expect("exact integer");
+        let ClassifiedNode::Value {
+            value: ScalarValue::Number(value),
+            ..
+        } = result.tree
+        else {
+            panic!("number")
+        };
+        assert_eq!(value.as_str().as_bytes(), exact);
+    }
+
+    for schema in [
+        json!({"type": "number", "maximum": 1, "x-sagat-classification": "public"}),
+        json!({"const": 1, "x-sagat-classification": "public"}),
+        json!({"const": 1.0000000000000000000000000001_f64, "x-sagat-classification": "public"}),
+    ] {
+        let doc = document(schema);
+        assert!(
+            classifier
+                .project(request(
+                    &doc,
+                    b"1.0000000000000000000000000001",
+                    Audience::new(false, false, false),
+                ))
+                .is_err()
+        );
+    }
+}
+
+#[test]
+fn unsupported_pattern_governance_keeps_unknown_properties_at_least_pii() {
+    let doc = document(json!({
+        "type": "object", "x-sagat-classification": "public",
+        "patternProperties": {"^s": {"type": "string"}},
+        "additionalProperties": {"type": "string", "x-sagat-classification": "public"}
+    }));
+    let result = Classifier::default()
+        .project(request(
+            &doc,
+            br#"{"sensitive":"pii-canary"}"#,
+            Audience::new(false, false, true),
+        ))
+        .expect("projection");
+    let ClassifiedNode::Container { ref children, .. } = result.tree else {
+        panic!("container")
+    };
+    assert!(matches!(
+        children[0].node.as_ref(),
+        ClassifiedNode::Withheld {
+            level: Level::Pii,
+            ..
+        }
+    ));
+    assert_eq!(children[0].name, None);
+    assert!(!format!("{result:?}").contains("pii-canary"));
 }
