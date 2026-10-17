@@ -807,3 +807,37 @@ no ignored (`/tmp/sagat-completion-sdk-repair-database-connections-2.log`). It u
 resolved from the actual external Cargo profile with no SAGAT_DATABASE_RUNNER_BIN override,
 real PostgreSQL/OpenBao, a 1.6 isolated executor and the 1.4 ordinary consumer. Canonical documents
 and reviewed runtime goldens remain unchanged. The full 55-scenario matrix is repeated separately.
+
+
+### Complete standard Studio journeys on the combined branch
+
+The real PostgreSQL/OpenBao/isolated-runner browser harness passed **4/4 Chromium journeys**,
+14.5 s browser time / 23.51 s aggregate, no ignored
+(`/tmp/sagat-completion-current-database-browser.log`). It covers catalog and secrets with a lost
+save response, keyboard/accessibility/responsive views, managed probes/ad hoc navigation identity,
+visual workflow execution, role-scoped results, connection pause and safe SQL refusal. The harness
+now uses the same actual-profile binary lookup as the SDK fixture; no binary override was supplied.
+
+The standard complete Studio harness then passed **34 browser tests, 2 skipped** in 1.5 min,
+98.89 s aggregate (`/tmp/sagat-completion-current-full-studio-browser.log`). It used real script
+sandbox runners (SAGAT_STUDIO_NO_SANDBOX and grep filters unset), actual engine/API/PostgreSQL,
+and the current built Studio. The two graphical benchmarks require STUDIO_PERF=1 and were
+explicitly skipped by their existing configuration; their timing/resource criteria are not claimed.
+No other journey was excluded. This includes authoring, script test/publish/execute, OIDC, graph,
+security/accessibility and the expanded classification/disclosure journey. It is standard browser
+acceptance, not the separate Docker Compose or large engine workload evidence.
+
+### Bounded expiry command parity
+
+Added expire_path_instance through the same scoped expiry/failure policy used by the full state.
+An initial missing-symbol fixture failed to compile (API red, not a runtime failure;
+`/tmp/sagat-completion-bounded-expiry-api-red.log`). The first focused gate passed 40/40; stronger
+assertions initially used the wrong bounded accessor and did not compile. Corrected to the local
+node accessor, then **41/41** focused tests passed, no ignored
+(`/tmp/sagat-completion-bounded-expiry-final-green-2.log`). The new forward case checks 32
+lease/attempt-timeout × high-risk/lookup × cancellation × stale-fence combinations, exact events,
+independent expected statuses/reconciliation or review waits, and no stale mutation. A separate
+case compares both expiry causes for compensation and lookup and verifies journal-only replay.
+Strict Clippy of domain/all targets plus the integration-test package passed, 66 s
+(`/tmp/sagat-completion-bounded-expiry-clippy.log`). The production scanner remains on full RunTx;
+these command/representation checks do not claim bounded scanner or worker execution.
