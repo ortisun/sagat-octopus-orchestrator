@@ -195,6 +195,29 @@ async fn a_member_output_over_the_value_ceiling_is_refused_and_the_lease_survive
         )
         .await
         .expect("exactly 256 KiB is allowed");
+    let charged: i64 =
+        sqlx::query_scalar("SELECT logical_output_bytes FROM run_instance_usage WHERE run_id=$1")
+            .bind(run.as_uuid())
+            .fetch_one(&world.db.pool)
+            .await
+            .expect("logical output ledger");
+    assert_eq!(charged, MAX_PAYLOAD_BYTES as i64);
+    workers
+        .complete(
+            &world.worker,
+            &task_ref(&tasks[0]),
+            fits.as_bytes(),
+            "at-the-ceiling",
+        )
+        .await
+        .expect("completion replay");
+    let replayed: i64 =
+        sqlx::query_scalar("SELECT logical_output_bytes FROM run_instance_usage WHERE run_id=$1")
+            .bind(run.as_uuid())
+            .fetch_one(&world.db.pool)
+            .await
+            .expect("logical output ledger after replay");
+    assert_eq!(replayed, charged, "a replay charges zero bytes");
     assert_eq!(world.run_status(run).await.as_str(), "RUNNING");
 }
 
@@ -225,6 +248,17 @@ async fn member_outputs_that_pass_four_mib_in_all_fail_the_run_with_run_data_lim
     }
     const { assert!(16 * 250_000 < MAX_RUN_OUTPUT_BYTES && 17 * 250_000 > MAX_RUN_OUTPUT_BYTES) };
     assert_failed_with(&world, run, "RUN_DATA_LIMIT").await;
+    let charged: i64 =
+        sqlx::query_scalar("SELECT logical_output_bytes FROM run_instance_usage WHERE run_id=$1")
+            .bind(run.as_uuid())
+            .fetch_one(&world.db.pool)
+            .await
+            .expect("logical output ledger");
+    assert_eq!(
+        charged,
+        16 * 250_000,
+        "equal payload contents are charged once for every logical output reference"
+    );
 }
 
 #[tokio::test]

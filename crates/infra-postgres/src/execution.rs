@@ -20,9 +20,9 @@ use sagat_application::definitions::{
 };
 use sagat_application::error::StoreError;
 use sagat_application::execution::{
-    BreakerPolicy, DefinitionCache, Effects, LeaseDeadlines, ParentLink, RunData, RunInfo,
-    RunRecord, RunSegment, RunTx, ScopeInput, compensation_id, instance_compensation_id,
-    instance_step_id,
+    BreakerPolicy, DefinitionCache, Effects, LeaseDeadlines, MAX_RUN_OUTPUT_BYTES, ParentLink,
+    RunData, RunInfo, RunRecord, RunSegment, RunTx, ScopeInput, compensation_id,
+    instance_compensation_id, instance_step_id,
 };
 use sagat_application::runs::{
     ApprovalView, ChainView, GraphSnapshot, JournalEntry, Lock, NewRun, RunFilter, RunStore,
@@ -2534,6 +2534,68 @@ impl std::fmt::Debug for PgRunTx {
     }
 }
 
+impl PgRunTx {
+    async fn charge_logical_output_bytes(
+        &mut self,
+        outputs: &[(ExecutionInstanceId, usize)],
+    ) -> Result<(), StoreError> {
+        let mut seen = BTreeSet::new();
+        let mut charge = 0_i64;
+        for (instance, bytes) in outputs {
+            if !seen.insert(instance) {
+                return Err(StoreError::Internal {
+                    detail: "one logical step staged more than one output".into(),
+                });
+            }
+            let (path_nodes, path_indices) = stored_path_parts(instance.path());
+            let retained: Option<bool> = sqlx::query_scalar(
+                "SELECT output_digest IS NOT NULL FROM steps \
+                 WHERE tenant_id=$1 AND run_id=$2 AND instance_path_nodes=$3 \
+                   AND instance_path_indices=$4 AND node=$5 FOR UPDATE",
+            )
+            .bind(self.info.tenant_id.as_uuid())
+            .bind(self.info.run_id.as_uuid())
+            .bind(path_nodes)
+            .bind(path_indices)
+            .bind(instance.node().as_str())
+            .fetch_optional(&mut *self.tx)
+            .await
+            .map_err(store_error)?;
+            match retained {
+                Some(true) => {}
+                Some(false) => {
+                    charge = charge
+                        .checked_add(i64::try_from(*bytes).map_err(|_| corrupt("output bytes"))?)
+                        .ok_or_else(|| corrupt("output byte ledger"))?;
+                }
+                None => return Err(corrupt("output step projection")),
+            }
+        }
+        if charge == 0 {
+            return Ok(());
+        }
+        let updated = sqlx::query(
+            "UPDATE run_instance_usage \
+             SET logical_output_bytes=logical_output_bytes+$3 \
+             WHERE tenant_id=$1 AND run_id=$2 \
+               AND logical_output_bytes+$3 <= $4",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.run_id.as_uuid())
+        .bind(charge)
+        .bind(i64::try_from(MAX_RUN_OUTPUT_BYTES).map_err(|_| corrupt("run output limit"))?)
+        .execute(&mut *self.tx)
+        .await
+        .map_err(store_error)?;
+        if updated.rows_affected() != 1 {
+            return Err(StoreError::Internal {
+                detail: "the logical run output byte limit was exceeded".into(),
+            });
+        }
+        Ok(())
+    }
+}
+
 fn micros(duration: Duration) -> i64 {
     i64::try_from(duration.as_micros()).unwrap_or(i64::MAX)
 }
@@ -3237,6 +3299,12 @@ impl RunTx for PgRunTx {
         let run = self.info.run_id;
 
         // 1. Outputs: content-addressed payloads, remembered per root node.
+        let output_charges = effects
+            .outputs
+            .iter()
+            .map(|(node, bytes)| (ExecutionInstanceId::root(node.clone()), bytes.len()))
+            .collect::<Vec<_>>();
+        self.charge_logical_output_bytes(&output_charges).await?;
         let mut output_digest: BTreeMap<&NodeId, Vec<u8>> = BTreeMap::new();
         for (node, bytes) in &effects.outputs {
             let digest = Sha256::digest(bytes).to_vec();
@@ -3983,6 +4051,17 @@ impl PgRunTx {
                 .flatten()
             })
             .collect::<BTreeSet<_>>();
+        let mut output_charges = Vec::with_capacity(outputs.len());
+        let mut charged_instances = BTreeSet::new();
+        for (instance, bytes) in outputs {
+            if !completed.contains(instance) || !charged_instances.insert(instance) {
+                return Err(StoreError::Internal {
+                    detail: "a scoped output has no unique completion event".into(),
+                });
+            }
+            output_charges.push((instance.clone(), bytes.len()));
+        }
+        self.charge_logical_output_bytes(&output_charges).await?;
         let mut output_digest = BTreeMap::new();
         for (instance, bytes) in outputs {
             if !completed.contains(instance) || output_digest.contains_key(instance) {
