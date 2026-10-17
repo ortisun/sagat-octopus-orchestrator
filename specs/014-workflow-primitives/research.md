@@ -246,3 +246,53 @@ contracts (`contracts/README.md`, the OpenAPI) and only align the code or the ta
   `chain.rs`), the task is amended to the actual file when it is closed; no empty files are created.
 - **D301 — Starting a continuation chain as a child is refused with a typed error** until child
   chains are enabled, instead of failing with `INTERNAL`.
+
+## Decisions of the SDK scenario increment
+
+Taken while extending the shared five-SDK conformance (WP-03, WP-05, WP-06, WP-14). Each one comes from
+a scenario or a fault test that failed first; none changes a contract, they make the runtime do what the
+contracts already say.
+
+- **D330 — The scheduler releases the route a settled approval chose.** A decision or an expiry commits
+  the chosen route as a `PENDING` root step and nothing else; before this the successor never ran in a
+  served engine, so a run stayed `RUNNING` after its approval was decided. The `approval_routes` scheduler
+  pass finds those steps and releases them through the planner (`release_pending`), once, under the shard
+  lease; a crash between the outcome and the release is found again by the next pass.
+- **D331 — A settled request answers from its outcome whatever the run did next.** A decision for a
+  request that has its outcome replays the receipt (same key, same body), answers `IDEMPOTENCY_KEY_REUSED`
+  (same key, other body) or `ALREADY_DECIDED`, also when the run already ended. Only a request still open
+  on an ended run stays `UNAVAILABLE`.
+- **D332 — A collection's `result` expression reads `item` and `index`.** The contract allows it; the
+  aggregate was built from run data that no longer held the ended iterations' inputs. The scheduler restores
+  them from the captured snapshot before evaluating.
+- **D333 — A run stopped by its own transaction is ended by the scheduler.** A loop at its iteration limit
+  records `CANCELLING` with its code and leaves the draining to the planner; the `stopped_runs` pass settles
+  such runs when no attempt holds them, so the run ends `FAILED` with `ITERATION_LIMIT`.
+- **D334 — A task in flight is keyed by its task id and its instance path.** The legacy task id is
+  `run/node/generation`; iterations of one scope that are leased together share it. The Java host dropped
+  the second lease as already in flight (it lapsed and was redelivered), the TypeScript host counted one
+  slot for two. Both now include the instance path (protocol 1.5).
+- **D335 — An approval deadline cannot be moved by the control endpoint.** The deadline is part of the
+  journal's `approval.opened` event, which the projection check compares; changing the row alone makes the
+  request unreadable. Expiry is observed with a short real timeout, and the order "decision first" with a
+  later run that expires after it.
+- **D336 — The shared suite pins what a revoked member sees.** After its membership is removed the member
+  is `UNAUTHENTICATED` (401) for listing and deciding, and no approval audit row is written for it because
+  the call never reaches the approval. The store-level fault test keeps the `NOT_ELIGIBLE` denial for a
+  principal that is resolved but not eligible.
+
+Open, recorded rather than closed:
+
+- **G320 — Report idempotency keys of scoped iterations.** `sdks/SPEC.md` derives `done-<taskId>` from the
+  legacy task id, which iterations of one scope share. The server accepts the reports (its idempotency is
+  scoped by step identity), so nothing fails today; the key should carry the instance path in the next
+  protocol minor.
+- **G321 — A failing collection `result` expression still stalls the run.** The expression error is
+  returned to the scheduler pass, logged and retried; it neither fails the run nor reaches the caller.
+  D332 removes the one cause the scenarios found; the general case needs a durable failure.
+- **G322 — The commit order of a decision racing an expiry is not observable through an SDK.** The shared
+  scenarios cover both orders by sequence; the race itself is exercised by the barrier tests in
+  `tests/fault/workflow-primitives/approvals.rs`.
+- **G323 — Not done in this increment:** scoped compensation and reverse-iteration compensation (WP-04,
+  WP-05), limit scenarios (WP-12), child chains (WP-11), direct-root `waitEvent`, and `onError` routing of
+  loop body failures (D294).
