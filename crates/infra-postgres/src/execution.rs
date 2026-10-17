@@ -458,7 +458,7 @@ impl PathExecutionStore for PgRunStore {
             "SELECT id,tenant_id,namespace_id,workflow_id,workflow_version_id,status,run_version, \
                     stop_reason,stop_code,paused,correlation_id,started_by,trace_id,deadline_at, \
                     created_at,updated_at,finished_at,parent_run_id,root_run_id,parent_node, \
-                    cancel_policy,depth,trace_parent_span,rerun_of \
+                    cancel_policy,depth,trace_parent_span,rerun_of,origin \
              FROM runs WHERE tenant_id=$1 AND id=$2 FOR SHARE",
         )
         .bind(tenant.as_uuid())
@@ -968,6 +968,31 @@ impl std::fmt::Debug for PgPathExecutionTx {
     }
 }
 
+async fn current_worker_authorized(
+    tx: &mut PgConnection,
+    tenant: TenantId,
+    namespace: NamespaceId,
+    subject: &str,
+) -> Result<bool, StoreError> {
+    crate::quotas::lock_secrets(tx, tenant, namespace).await?;
+    let role: Option<String> =
+        sqlx::query_scalar("SELECT role FROM public.sagat_lock_memberships($1, ARRAY[$2::text])")
+            .bind(tenant.as_uuid())
+            .bind(subject)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(store_error)?;
+    let Some(role) = role else {
+        return Ok(false);
+    };
+    let role: sagat_domain::identity::Role =
+        role.parse().map_err(|_| corrupt("membership role"))?;
+    Ok(role != sagat_domain::identity::Role::DatabaseRunner
+        && role
+            .permissions()
+            .contains(&sagat_domain::identity::Permission::WorkerExecute))
+}
+
 impl PathExecutionTx for PgPathExecutionTx {
     fn snapshot(&mut self) -> &mut PathExecutionSnapshot {
         &mut self.snapshot
@@ -1066,6 +1091,16 @@ impl PathExecutionTx for PgPathExecutionTx {
         .fetch_all(&mut *self.tx)
         .await
         .map_err(store_error)
+    }
+
+    async fn current_worker_authorized(&mut self, subject: &str) -> Result<bool, StoreError> {
+        current_worker_authorized(
+            &mut self.tx,
+            self.snapshot.info.tenant_id,
+            self.snapshot.info.namespace_id,
+            subject,
+        )
+        .await
     }
 
     async fn required_worker_protocol_minor(&mut self) -> Result<u32, StoreError> {
@@ -3830,25 +3865,13 @@ impl RunTx for PgRunTx {
     }
 
     async fn current_worker_authorized(&mut self, subject: &str) -> Result<bool, StoreError> {
-        crate::quotas::lock_secrets(&mut self.tx, self.info.tenant_id, self.info.namespace_id)
-            .await?;
-        let role: Option<String> = sqlx::query_scalar(
-            "SELECT role FROM public.sagat_lock_memberships($1, ARRAY[$2::text])",
+        current_worker_authorized(
+            &mut self.tx,
+            self.info.tenant_id,
+            self.info.namespace_id,
+            subject,
         )
-        .bind(self.info.tenant_id.as_uuid())
-        .bind(subject)
-        .fetch_optional(&mut *self.tx)
         .await
-        .map_err(store_error)?;
-        let Some(role) = role else {
-            return Ok(false);
-        };
-        let role: sagat_domain::identity::Role =
-            role.parse().map_err(|_| corrupt("membership role"))?;
-        Ok(role != sagat_domain::identity::Role::DatabaseRunner
-            && role
-                .permissions()
-                .contains(&sagat_domain::identity::Permission::WorkerExecute))
     }
 
     async fn secret_versions(

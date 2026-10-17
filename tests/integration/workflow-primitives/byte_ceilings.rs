@@ -290,6 +290,12 @@ async fn a_member_output_over_the_value_ceiling_is_refused_and_the_lease_survive
             .expect("bindings")
             .is_empty()
     );
+    assert!(
+        fenced
+            .current_worker_authorized(world.worker.subject().as_str())
+            .await
+            .expect("current worker authority")
+    );
     assert_eq!(
         fenced
             .required_worker_protocol_minor()

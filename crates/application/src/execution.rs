@@ -673,6 +673,12 @@ pub trait PathExecutionTx: Send {
         subject: &str,
     ) -> impl Future<Output = Result<Vec<String>, StoreError>> + Send;
 
+    /// Locks and checks the worker's current tenant authority through the bounded commit.
+    fn current_worker_authorized(
+        &mut self,
+        subject: &str,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
     fn required_worker_protocol_minor(
         &mut self,
     ) -> impl Future<Output = Result<u32, StoreError>> + Send;
