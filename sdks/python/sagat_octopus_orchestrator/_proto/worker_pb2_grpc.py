@@ -88,6 +88,11 @@ class WorkerServiceStub:
                 request_serializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.ResolveSecretsRequest.SerializeToString,
                 response_deserializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.ResolveSecretsResponse.FromString,
                 _registered_method=True)
+        self.ResolveDatabase = channel.unary_unary(
+                '/sagat_octopus_orchestrator.v1.WorkerService/ResolveDatabase',
+                request_serializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.ResolveSecretsRequest.SerializeToString,
+                response_deserializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.ResolvedDatabase.FromString,
+                _registered_method=True)
         self.WriteBlob = channel.stream_unary(
                 '/sagat_octopus_orchestrator.v1.WorkerService/WriteBlob',
                 request_serializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.WriteBlobRequest.SerializeToString,
@@ -173,6 +178,17 @@ class WorkerServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ResolveDatabase(self, request, context):
+        """Added in 1.5. Only the current database-runner machine that owns this managed lease may
+        resolve it. The connection revision is pinned at run admission; current state/ACLs and the
+        lease are checked before and after provider I/O. Expressions use server semantics and arrive
+        as typed literals. SQL, parameters and credential bytes must never be logged or persisted by
+        the executor. The response contains no provider routing, provider token or platform key.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def WriteBlob(self, request_iterator, context):
         """Added in 1.3 (additive, FR-002-008): payloads too large to travel in a message. The engine never
         carries them; a step's input holds a small descriptor `{"$blob": {"id", "size", "sha256",
@@ -238,6 +254,11 @@ def add_WorkerServiceServicer_to_server(servicer, server):
                     servicer.ResolveSecrets,
                     request_deserializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.ResolveSecretsRequest.FromString,
                     response_serializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.ResolveSecretsResponse.SerializeToString,
+            ),
+            'ResolveDatabase': grpc.unary_unary_rpc_method_handler(
+                    servicer.ResolveDatabase,
+                    request_deserializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.ResolveSecretsRequest.FromString,
+                    response_serializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.ResolvedDatabase.SerializeToString,
             ),
             'WriteBlob': grpc.stream_unary_rpc_method_handler(
                     servicer.WriteBlob,
@@ -458,6 +479,33 @@ class WorkerService:
             '/sagat_octopus_orchestrator.v1.WorkerService/ResolveSecrets',
             sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.ResolveSecretsRequest.SerializeToString,
             sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.ResolveSecretsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ResolveDatabase(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/sagat_octopus_orchestrator.v1.WorkerService/ResolveDatabase',
+            sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.ResolveSecretsRequest.SerializeToString,
+            sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.ResolvedDatabase.FromString,
             options,
             channel_credentials,
             insecure,

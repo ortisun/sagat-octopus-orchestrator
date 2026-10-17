@@ -318,3 +318,10 @@ plus plain HTTP for the control endpoint), `proto/worker.proto` (a copy). The ge
 ## License
 
 MIT. `LICENSE.txt` is included in the NuGet package.
+
+## Managed PostgreSQL connections
+
+Use the database builder with a logical connection created in Sagat. See the
+[five-language guide](../../docs/guides/managed-database-sdk.md) for typed parameters,
+result consumption, permissions and the shared real-service scenario. Credentials
+are resolved by the separate managed executor.

@@ -30,8 +30,8 @@ Status: Implementing after user approval on 2026-10-16. Check a task only after 
 
 ## D. SDK and Studio
 
-- [ ] T017-018 Add TypeScript and Go builders and shared conformance scenarios. FR-017-010,016.
-- [ ] T017-019 Add Python, C# and Java builders; execute all five against shared server scenarios. FR-017-010,016.
+- [x] T017-018 Add TypeScript and Go builders and shared conformance scenarios. FR-017-010,016. Evidence: shared typed fixture, 14 invalid authoring cases, SDK regressions, byte-identical canonical documents and real PostgreSQL/OpenBao/runner execution with exact results and downstream consumption.
+- [x] T017-019 Add Python, C# and Java builders; execute all five against shared server scenarios. FR-017-010,016. Evidence: all five SDKs passed the database-connections scenario, including expression parameters, inline results, one write and refused DDL; independent assertions guard golden updates. Ordinary worker protocol remains 1.4.
 - [x] T017-020 UI catalog and inline/standalone OpenBao secret create/rotate/select, with partial-save recovery. FR-017-001..009.
 - [ ] T017-021 UI database step editor, probe, ad hoc execution and permission-gated result viewer. FR-017-010,014..017,019.
 - [ ] T017-022 Real-browser happy/failure verification; accessibility and generated-client checks. SC-017-001,003,004,010.

@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, TypeVar
 
 from ._json import canonical_json
+from .database import ConnectionRef, DatabaseLimits, DatabaseParameter, database_node
 from .errors import invalid
 
 _NAME = re.compile(r"[a-z][a-z0-9-]{2,63}")
@@ -150,6 +151,29 @@ class Flow:
             onError=on_error,
         )
         self._push(node)
+        return self
+
+    def database(
+        self: _F,
+        node_id: str,
+        *,
+        connection_ref: ConnectionRef,
+        operation: Literal["query", "execute"],
+        statement: str,
+        parameters: Sequence[DatabaseParameter] | None = None,
+        limits: DatabaseLimits | None = None,
+        timeout_ms: int | None = None,
+        on_error: str | None = None,
+    ) -> _F:
+        """A managed database operation using a scoped connection. Credentials stay in the executor.
+
+        Integer/decimal literals use exact strings; SQL, access, policy and retry semantics are server-owned.
+        """
+        self._push(database_node(node_id, _add(
+            {"connectionRef": connection_ref, "operation": operation, "statement": statement},
+            parameters=list(parameters) if parameters is not None else None,
+            limits=limits, timeoutMs=timeout_ms, onError=on_error,
+        )))
         return self
 
     def sleep(self: _F, node_id: str, duration_ms: int) -> _F:

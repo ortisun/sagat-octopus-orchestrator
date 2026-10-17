@@ -30,6 +30,7 @@ function apply(target: Flow, ops: Obj[]): void {
   for (const op of ops) {
     switch (op['op']) {
       case 'step': target.step(op['id'], op['activity'], op['options']); break;
+      case 'database': target.database(op['id'], op['options']); break;
       case 'sleep': target.sleep(op['id'], op['durationMs']); break;
       case 'waitForEvent': target.waitForEvent(op['id'], op['options']); break;
       case 'invokeChild': target.invokeChild(op['id'], op['workflow'], op['options']); break;

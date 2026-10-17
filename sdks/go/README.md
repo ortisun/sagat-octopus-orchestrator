@@ -291,3 +291,10 @@ only the pending receive promptly, then follows the existing handler drain. A lo
 can leave a committed lease until expiry; critical effects still need idempotency.
 
 Streaming receive failures emit `worker.EventReceiveFailed` (`receive.failed`) with the canonical `Code` and `Retryable` fields, without remote error text or payloads. Explicit streaming remains refused if re-registration negotiates an older minor; it never silently switches to polling.
+
+## Managed PostgreSQL connections
+
+Use the database builder with a logical connection created in Sagat. See the
+[five-language guide](../../docs/guides/managed-database-sdk.md) for typed parameters,
+result consumption, permissions and the shared real-service scenario. Credentials
+are resolved by the separate managed executor.

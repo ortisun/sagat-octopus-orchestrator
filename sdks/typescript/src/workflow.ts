@@ -1,5 +1,6 @@
 import { SagatError, invalid } from './errors.js';
 import { canonicalJson } from './json.js';
+import { databaseNode, type DatabaseOptions } from './database.js';
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 type Node = Record<string, Json>;
@@ -72,6 +73,10 @@ function clean(options: object | undefined): Record<string, Json> {
 
 /** A chain of nodes: the body of a workflow, of a parallel branch or of a saga. */
 export class Flow {
+  /** Managed PostgreSQL; credentials and SQL execution stay in the isolated Sagat runner. */
+  database(id: string, options: DatabaseOptions): this {
+    return this.push(databaseNode(id, options));
+  }
   /** @internal */
   readonly nodes: Node[] = [];
 

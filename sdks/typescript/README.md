@@ -149,3 +149,10 @@ cargo test -p sagat-tests --test sdk_conformance -- --ignored   # the conformanc
 ```
 
 License: MIT. The package includes the license text in `LICENSE`.
+
+## Managed PostgreSQL connections
+
+Use the database builder with a logical connection created in Sagat. See the
+[five-language guide](../../docs/guides/managed-database-sdk.md) for typed parameters,
+result consumption, permissions and the shared real-service scenario. Credentials
+are resolved by the separate managed executor.

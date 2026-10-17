@@ -6,6 +6,8 @@
 
 #[path = "control.rs"]
 mod control;
+#[path = "database.rs"]
+mod database;
 #[path = "normalize.rs"]
 mod normalize;
 
@@ -240,6 +242,7 @@ struct Run {
     tasks: Vec<tokio::task::JoinHandle<()>>,
     /// Both server processes use this directory, so it must outlive them.
     _blob_dir: TempBlobDir,
+    database: Option<database::Fixture>,
 }
 
 struct TempBlobDir(PathBuf);
@@ -293,7 +296,13 @@ fn token(platform: &Platform, subject: &str, tenant: &str) -> String {
 async fn boot(scenario: &Value) -> Run {
     let lease = scenario["server"]["leaseTtlSeconds"].as_u64().unwrap_or(30);
     let blob_dir = TempBlobDir::create();
+    let mut database = if scenario["server"]["managedDatabase"] == true {
+        Some(database::Fixture::start().await)
+    } else {
+        None
+    };
     let platform = platform_with(Options {
+        secret_provider: database.as_ref().map(|db| db.provider()),
         worker: WorkerSettings {
             lease_ttl: Duration::from_secs(lease),
             ..WorkerSettings::default()
@@ -322,7 +331,7 @@ async fn boot(scenario: &Value) -> Run {
     let ring = format!("k1:{}", platform.api.key_k1);
     let lease_secs = lease.to_string();
     let blob_root = blob_dir.path().to_string_lossy().into_owned();
-    let engine = RunningEngine::start(engine_env(
+    let mut env = engine_env(
         &platform.api.db,
         &platform.api.idp,
         &[
@@ -333,8 +342,14 @@ async fn boot(scenario: &Value) -> Run {
             ("SAGAT_BLOB_PROVIDER", "fs"),
             ("SAGAT_BLOB_FS_ROOT", blob_root.as_str()),
         ],
-    ))
-    .await;
+    );
+    if let Some(db) = &database {
+        env.extend(db.engine_env());
+    }
+    let engine = RunningEngine::start(env).await;
+    if let Some(db) = &mut database {
+        db.configure(&platform, &engine.grpc_url).await;
+    }
     let platform = Arc::new(platform);
     let (control, serving) = control::serve(Arc::clone(&platform)).await;
     Run {
@@ -347,6 +362,7 @@ async fn boot(scenario: &Value) -> Run {
         engine,
         tasks: vec![serving],
         _blob_dir: blob_dir,
+        database,
     }
 }
 
@@ -911,6 +927,12 @@ async fn play(
                     match server_state(&run).await {
                         Ok(state) => out["serverState"] = state,
                         Err(e) => failures.push(format!("{name}/{lang}: {e}")),
+                    }
+                    if let Some(db) = &run.database {
+                        match db.evidence(&run.platform, &out).await {
+                            Ok(evidence) => out["databaseEvidence"] = evidence,
+                            Err(error) => failures.push(format!("{name}/{lang}: {error}")),
+                        }
                     }
                     if name == "blobs" {
                         match blob_evidence(&run).await {

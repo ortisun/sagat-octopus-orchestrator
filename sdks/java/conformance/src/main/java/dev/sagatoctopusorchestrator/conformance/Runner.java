@@ -33,6 +33,7 @@ import dev.sagatoctopusorchestrator.sdk.worker.WorkerConfig;
 import dev.sagatoctopusorchestrator.sdk.worker.WorkerHost;
 import dev.sagatoctopusorchestrator.sdk.workflow.ChildOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.Flow;
+import dev.sagatoctopusorchestrator.sdk.workflow.DatabaseOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.RetryOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.SagaOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.StepOptions;
@@ -175,10 +176,44 @@ public final class Runner {
         return options;
     }
 
+    private static int databaseInt(JsonNode node) {
+        if (!node.isIntegralNumber() || !node.canConvertToInt()) throw SagatException.invalid("invalid managed database operation");
+        return node.intValue();
+    }
+
+    private static DatabaseOptions databaseOptionsOf(JsonNode node) {
+        try {
+            JsonNode ref = node.path("connectionRef");
+            DatabaseOptions options = DatabaseOptions.create(new DatabaseOptions.ConnectionRef(ref.path("name").asText(null), ref.has("revision") ? databaseInt(ref.path("revision")) : null),
+                DatabaseOptions.Operation.valueOf(node.path("operation").asText().toUpperCase(java.util.Locale.ROOT)), node.path("statement").asText(null));
+            if (node.has("parameters")) {
+                List<DatabaseOptions.Parameter> parameters = new ArrayList<>();
+                for (JsonNode p : node.path("parameters")) {
+                    JsonNode literal = p.get("literal");
+                    parameters.add(literal != null
+                        ? DatabaseOptions.Parameter.literal(DatabaseOptions.Type.valueOf(literal.path("type").asText().toUpperCase(java.util.Locale.ROOT)), literal.get("value"))
+                        : DatabaseOptions.Parameter.expression(DatabaseOptions.Type.valueOf(p.path("type").asText().toUpperCase(java.util.Locale.ROOT)), p.path("expression").asText()));
+                }
+                options.parameters(parameters);
+            }
+            if (node.has("limits")) {
+                Map<String, Integer> limits = new LinkedHashMap<>();
+                node.path("limits").fields().forEachRemaining(p -> limits.put(p.getKey(), databaseInt(p.getValue())));
+                options.limits(limits);
+            }
+            if (node.has("timeoutMs")) options.timeoutMs(databaseInt(node.path("timeoutMs")));
+            if (node.has("onError")) options.onError(node.path("onError").asText());
+            return options;
+        } catch (IllegalArgumentException error) {
+            throw SagatException.invalid("invalid managed database operation");
+        }
+    }
+
     private static void apply(Flow target, JsonNode ops) {
         for (JsonNode op : ops) {
             String id = op.path("id").asText(null);
             switch (op.path("op").asText()) {
+                case "database" -> target.database(id, databaseOptionsOf(op.path("options")));
                 case "step" -> target.step(id, op.path("activity").asText(null), stepOptionsOf(op.get("options")));
                 case "sleep" -> target.sleepMs(id, op.path("durationMs").asLong());
                 case "waitForEvent" -> {

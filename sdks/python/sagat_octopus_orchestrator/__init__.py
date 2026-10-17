@@ -22,6 +22,7 @@ from .client import (
     to_run,
 )
 from .config import LANGUAGE, PROTOCOL_VERSION, SDK_VERSION, ClientConfig, TlsOptions, TokenSource, TraceContext
+from .database import ConnectionRef, DatabaseLimits, DatabaseParameter, DatabaseType, DatabaseValue
 from .errors import (
     ERROR_CODES,
     ErrorCode,
@@ -69,6 +70,11 @@ __all__ = [
     "CancelReason",
     "CancellationToken",
     "ClientConfig",
+    "ConnectionRef",
+    "DatabaseLimits",
+    "DatabaseParameter",
+    "DatabaseType",
+    "DatabaseValue",
     "ErrorCode",
     "EventAccepted",
     "Flow",

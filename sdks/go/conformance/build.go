@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -125,6 +126,16 @@ func apply(b *workflow.Builder, ops []any) {
 		id := asString(op["id"])
 		options := asObject(op["options"])
 		switch asString(op["op"]) {
+		case "database":
+			var database workflow.DatabaseOptions
+			raw, err := json.Marshal(options)
+			if err != nil {
+				panic(sagat.Invalid("invalid managed database operation"))
+			}
+			if err = json.Unmarshal(raw, &database); err != nil {
+				panic(sagat.Invalid("invalid managed database operation"))
+			}
+			b.Database(id, database)
 		case "step":
 			b.Step(id, asString(op["activity"]), stepOptions(options)...)
 		case "sleep":
@@ -244,12 +255,30 @@ func builderOf(definition object) *workflow.Builder {
 	return b
 }
 
+// Numeric fixture values that cannot inhabit a typed public option are validation errors.
+func tryBuilderOf(definition object) (builder *workflow.Builder, err error) {
+	defer func() {
+		if problem := recover(); problem != nil {
+			if validation, ok := problem.(*sagat.Error); ok {
+				err = validation
+			} else {
+				panic(problem)
+			}
+		}
+	}()
+	builder = builderOf(definition)
+	return
+}
+
 // build builds every workflow of the scenario with the SDK's builders, and records what the
 // builders raise for the invalid ones.
 func build(scenario object) (object, error) {
 	workflows, canonical := object{}, object{}
 	for key, definition := range asObject(scenario["workflows"]) {
-		builder := builderOf(asObject(definition))
+		builder, err := tryBuilderOf(asObject(definition))
+		if err != nil {
+			return nil, err
+		}
 		document, err := builder.Build()
 		if err != nil {
 			return nil, fmt.Errorf("workflow %s: %w", key, err)
@@ -267,8 +296,10 @@ func build(scenario object) (object, error) {
 	for key, item := range asObject(scenario["invalidWorkflows"]) {
 		invalid := asObject(item)
 		// Built with the builders and written as canonical text: the refusal may come from either.
-		builder := builderOf(asObject(invalid["workflow"]))
-		_, err := builder.Build()
+		builder, err := tryBuilderOf(asObject(invalid["workflow"]))
+		if err == nil {
+			_, err = builder.Build()
+		}
 		if err == nil {
 			_, err = builder.JSON()
 		}

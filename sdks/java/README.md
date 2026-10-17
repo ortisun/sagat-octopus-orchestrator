@@ -313,3 +313,10 @@ Layout: `sdk/` is the library (`dev.sagatoctopusorchestrator.sdk` for the client
 API of the library only. The unit tests run offline against an in-process HTTP server and an in-process gRPC
 `WorkerService`, with the test JVM in the zone `Asia/Kolkata` so that any use of local time shows. The TLS tests
 generate throw-away identities with the JDK's `keytool`; no private key is kept in the repository.
+
+## Managed PostgreSQL connections
+
+Use the database builder with a logical connection created in Sagat. See the
+[five-language guide](../../docs/guides/managed-database-sdk.md) for typed parameters,
+result consumption, permissions and the shared real-service scenario. Credentials
+are resolved by the separate managed executor.

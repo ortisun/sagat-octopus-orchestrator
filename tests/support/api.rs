@@ -399,9 +399,9 @@ pub async fn start_with(options: Options) -> TestApi {
                 executions.clone(),
                 SystemClock,
                 provider.clone(),
-                sagat_domain::secrets::SecretValue::new(vec![43; 32]).unwrap(),
+                sagat_domain::secrets::SecretValue::new(vec![43; 32]).expect("fixture intent key"),
             )
-            .unwrap()
+            .expect("fixture managed secret service")
             .with_legacy_cipher(keys.cipher()),
         );
     }

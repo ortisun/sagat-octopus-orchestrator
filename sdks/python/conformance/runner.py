@@ -81,6 +81,8 @@ def apply(target: Flow, ops: list[Obj]) -> None:
         kind = op["op"]
         if kind == "step":
             target.step(op["id"], op["activity"], **snake(op.get("options")))
+        elif kind == "database":
+            target.database(op["id"], **snake(op["options"]))
         elif kind == "sleep":
             target.sleep(op["id"], op["durationMs"])
         elif kind == "waitForEvent":

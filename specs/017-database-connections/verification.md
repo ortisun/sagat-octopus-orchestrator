@@ -179,3 +179,51 @@ See `docs/runbooks/database-runner.md` for exact configuration and reproduction.
 The process enforces local destination/resource policies; actual container/network
 isolation is still a T017-023 deployment gate. Ad hoc/probe admission, five SDKs,
 Studio execution/results, cleanup/restore and final gates remain incomplete.
+
+
+### T017-018/019 five SDK builders and real execution — 2026-10-17
+
+Added public managed database builders in TypeScript, Go, Python, C# and Java;
+explicit literal/expression parameters, scoped connection references, bounded
+optional limits and snapshots of caller values. No SDK receives credentials or
+runs SQL. Synchronized canonical worker protocol copies/generated stubs while
+retaining ordinary SDK protocol 1.4. Added a five-language guide, SDK specification
+and CI prerequisite builds of the isolated executor.
+
+The shared `database-connections` scenario compares exact canonical documents and
+14 invalid authoring vectors. Each SDK then uses a separate real platform, OpenBao
+2.7.1, target PostgreSQL 16 and a separate database-runner process. It starts typed
+queries, binds a later database parameter to an earlier result, consumes those
+inline results in an ordinary SDK handler, writes one exact decimal row and rejects
+DDL with no retry. Independent hard assertions verify success/failure, exact values,
+target effects and that no managed task/credential reaches an ordinary SDK worker,
+even during golden regeneration. Blob expansion is not claimed by this scenario;
+large results retain descriptors and require explicit verified reading by ordinary
+handlers, as the guide now explains.
+
+Initial focused tests failed for missing public builders as intended. Initial Go
+and Python full regressions detected stale protocol copies; regenerating with the
+repository scripts resolved them. Initial clippy found two earlier fixture unwraps;
+these now use descriptive expects. Independent review caught Java fixture numeric
+truncation and TypeScript final-newline acceptance; exact conversions/full matches
+and shared invalid vectors fix both. Second pass reported no Required/Critical code
+findings and requested the inline/blob documentation qualification, now addressed.
+The reviewer ran no tests.
+
+Actual evidence:
+
+- TypeScript `npm test`: 113 passed; focused database tests: 2 passed after the
+  final full-match correction. Canonical scenario includes the new newline cases.
+- Go `go test ./...`: passed; `go vet ./...` and gofmt checks passed.
+- Python pytest: 244 passed; strict mypy: 38 source files passed; Ruff passed.
+- C# `dotnet test`: 421 passed on net10.0; conformance builds for net10.0 and net8.0
+  passed; `dotnet format --verify-no-changes --no-restore` passed.
+- Java `./mvnw -q -B verify`: passed; SDK unit reports: 217 tests, zero failed,
+  errored or skipped.
+- `SAGAT_SDK_SCENARIO=database-connections SAGAT_SDK_REUSE=1 cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture`: passed all five languages in 26.51s against reviewed goldens. TypeScript-only initial real execution also passed before the five-language comparison.
+- `cargo clippy -p sagat-tests --test sdk_conformance --locked -- -D warnings`:
+  passed; Rust formatting and diff whitespace checks passed.
+
+This closes the SDK slice, not the feature. Retained ad hoc/probe admission,
+Studio execution/results, deployment isolation, cleanup/restore and final feature
+regression/fault gates remain pending.

@@ -16,6 +16,14 @@ SAGAT_SDK_REUSE=1 …                                                           
 
 `--ignored` because the suite needs the five toolchains (Node, Python, Go, .NET and a JDK) and Docker, which `cargo test --workspace` cannot assume; the `sdks` job of CI sets them up and runs the suite with `--ignored`. `SAGAT_SDK_REUSE=1` also skips the build of the runners, so run once without it after changing an SDK or a runner.
 
+The `database-connections` scenario also requires a prebuilt isolated executor:
+`cargo build -p sagat-database-runner --bin database-runner --locked` (or set
+`SAGAT_DATABASE_RUNNER_BIN`). Its fixture starts OpenBao 2.7.1 and target PostgreSQL
+16 for each language and gives the executor only its capability token and policy.
+The five ordinary SDK workers consume typed results and never execute managed SQL.
+Independent assertions check precise values, target effects and safe failure codes
+before goldens can be blessed. The CI SDK job builds the executable first.
+
 ## What each SDK ships
 
 `sdks/<language>/conformance/` with two executables (shell scripts, `chmod +x`):

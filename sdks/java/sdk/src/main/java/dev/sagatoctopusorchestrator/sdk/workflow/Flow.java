@@ -184,6 +184,12 @@ public final class Flow {
         return step(id, activity, null);
     }
 
+    /** A managed operation executed by the dedicated database runner. */
+    public Flow database(String id, DatabaseOptions options) {
+        if (options == null) throw DatabaseOptions.invalid();
+        return push(options.toNode(id));
+    }
+
     /** An activity executed by a worker. */
     public Flow step(String id, String activity, StepOptions options) {
         if (activity == null || activity.isEmpty()) {
