@@ -813,7 +813,8 @@ pub async fn initialize_chain_in_transaction(
 ) -> Result<(), ChainProgressError> {
     let scope = initialization.scope();
     let row = sqlx::query(
-        "SELECT namespace_id, workflow_version_id, started_by, deadline_at, run_version, created_at \
+        "SELECT namespace_id, workflow_version_id, started_by, deadline_at, run_version, created_at, \
+                trace_id \
          FROM runs WHERE tenant_id = $1 AND id = $2 FOR UPDATE",
     )
     .bind(scope.tenant_id().as_uuid())
@@ -830,6 +831,7 @@ pub async fn initialize_chain_in_transaction(
     let version = sagat_domain::definition::WorkflowVersionId::new(row.get("workflow_version_id"));
     let started_by: String = row.get("started_by");
     let created_at: time::OffsetDateTime = row.get("created_at");
+    let trace_id: Option<String> = row.get("trace_id");
     let run_version = stored_u64(row.get("run_version"), "initial run version")?;
     if run_version == 0 {
         return Err(ChainProgressError::RuntimeNotIntegrated);
@@ -869,7 +871,7 @@ pub async fn initialize_chain_in_transaction(
     let metadata = JournalMetadata {
         tenant_id: scope.tenant_id(),
         actor: &started_by,
-        trace_id: None,
+        trace_id: trace_id.as_deref(),
         occurred_at: created_at,
     };
     append_event(

@@ -91,6 +91,21 @@ async fn public_activity_completion_is_handed_to_a_successor_by_the_scheduler() 
     let chain = world
         .start(workflow, &json!({"segment": 1, "next": {"segment": 2}}))
         .await;
+    // Every journal event of a traced run carries its trace, the chain's first one included.
+    let (run_trace, started_trace): (Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT r.trace_id, e.trace_id FROM runs r JOIN run_events e \
+           ON e.tenant_id = r.tenant_id AND e.run_id = r.id AND e.event_type = 'execution_chain.started' \
+         WHERE r.id = $1",
+    )
+    .bind(chain.as_uuid())
+    .fetch_one(&world.db.pool)
+    .await
+    .expect("chain start event");
+    assert!(
+        run_trace.is_some(),
+        "a run started through the API has a trace"
+    );
+    assert_eq!(started_trace, run_trace);
     let session = world.session(&["segment.work"]).await;
     let task = world.one_task(&session).await;
     world

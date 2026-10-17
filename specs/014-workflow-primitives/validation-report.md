@@ -1311,5 +1311,7 @@ are unchanged, so the task stays open.
 | `cargo clippy -p sagat-infra-postgres -p sagat-api-http -p sagat-telemetry -p sagat-tests --all-targets --locked -- -D warnings`, `cargo fmt --all -- --check` | clean |
 
 Not run here: the five-SDK conformance matrix (the SDKs did not change), Compose smoke and the
-dependency advisory audit. The `chain.started` journal event is still written without the run's
-trace id (`chain_progress.rs`, `initialize_chain_in_transaction`); recorded, not changed.
+dependency advisory audit. The `execution_chain.started` journal event was written without the
+run's trace id; `initialize_chain_in_transaction` now copies it from the run row, and
+`chain_handoff::public_activity_completion_is_handed_to_a_successor_by_the_scheduler` asserts it
+(it failed with `None` first). Integration 144/144 and fault 25/25 after the change.
