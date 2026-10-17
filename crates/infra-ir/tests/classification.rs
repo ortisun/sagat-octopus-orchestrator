@@ -120,3 +120,105 @@ fn defect_corpus_covers_every_closed_publication_code() {
         );
     }
 }
+
+#[test]
+fn named_body_output_schemas_are_carriers_only_on_output_producers() {
+    use sagat_application::classification::CarrierPointer;
+    use sagat_domain::classification::Level;
+
+    let document = json!({
+        "nodes": [{"id": "shared", "type": "activity", "outputSchema": {
+            "type": "string", "x-sagat-classification": "public"
+        }}],
+        "bodies": {
+            "first": {"nodes": [
+                {"id": "shared", "type": "activity", "outputSchema": {
+                    "type": "string", "x-sagat-classification": "pii"
+                }},
+                {"id": "script", "type": "script", "outputSchema": {
+                    "type": "string", "x-sagat-classification": "internal"
+                }},
+                {"id": "wait", "type": "waitEvent", "outputSchema": {
+                    "type": "string", "x-sagat-classification": "pii"
+                }},
+                {"id": "child", "type": "child", "outputSchema": {
+                    "type": "string", "x-sagat-classification": "secret"
+                }},
+                {"id": "timer", "type": "timer", "outputSchema": {
+                    "x-sagat-classification": "public"
+                }}
+            ]},
+            "second": {"nodes": [{"id": "shared", "type": "activity", "outputSchema": {
+                "type": "string", "x-sagat-classification": "secret"
+            }}]}
+        },
+        "state": {"schema": {"x-sagat-classification": "public"}},
+        "database": {"outputSchema": {"x-sagat-classification": "public"}},
+        "control": {"outputSchema": {"x-sagat-classification": "public"}},
+        "humanApproval": {"formSchema": {"x-sagat-classification": "public"}}
+    });
+    let result = classification_check::check(&document);
+    assert!(result.report.iter().any(|entry| matches!(
+        &entry.carrier,
+        CarrierPointer::NodeOutput(node)
+            if node.as_str() == "shared" && entry.level == Level::Public
+    )));
+    assert!(result.report.iter().any(|entry| matches!(
+        &entry.carrier,
+        CarrierPointer::BodyNodeOutput { body, node }
+            if body.as_str() == "first" && node.as_str() == "shared" && entry.level == Level::Pii
+    )));
+    assert!(result.report.iter().any(|entry| matches!(
+        &entry.carrier,
+        CarrierPointer::BodyNodeOutput { body, node }
+            if body.as_str() == "second" && node.as_str() == "shared" && entry.level == Level::Secret
+    )));
+    for path in [
+        "/bodies/first/nodes/4/outputSchema/x-sagat-classification",
+        "/state/schema/x-sagat-classification",
+        "/database/outputSchema/x-sagat-classification",
+        "/control/outputSchema/x-sagat-classification",
+        "/humanApproval/formSchema/x-sagat-classification",
+    ] {
+        assert!(
+            result.findings.iter().any(|finding| {
+                finding.code == Code::NotApplicable && finding.path.as_str() == path
+            }),
+            "missing NOT_APPLICABLE at {path}"
+        );
+    }
+}
+
+#[test]
+fn named_body_carriers_use_the_same_size_depth_and_reference_bounds() {
+    let mut deep = json!({"type": "string", "x-sagat-classification": "pii"});
+    for _ in 0..33 {
+        deep = json!({"type": "object", "properties": {"next": deep}});
+    }
+    let cases = [
+        json!({
+            "x-sagat-classification": "pii",
+            "description": "x".repeat(65 * 1024)
+        }),
+        deep,
+        json!({
+            "x-sagat-classification": "pii",
+            "$ref": "#/$defs/cycle",
+            "$defs": {"cycle": {"$ref": "#/$defs/cycle"}}
+        }),
+    ];
+    for schema in cases {
+        let result = classification_check::check(&json!({
+            "bodies": {"loop": {"nodes": [{
+                "id": "same", "type": "activity", "outputSchema": schema
+            }]}}
+        }));
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|finding| finding.code == Code::TooComplex)
+        );
+        assert!(result.findings.len() <= 20);
+    }
+}
