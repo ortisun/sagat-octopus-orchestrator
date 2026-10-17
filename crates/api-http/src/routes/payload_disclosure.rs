@@ -1,11 +1,13 @@
 //! HTTP representation of classified run payload disclosure (FR-016-006..009).
 
+use std::collections::BTreeMap;
 use std::num::NonZeroU64;
 
 use axum::body::Body;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Request, State};
 use axum::http::{HeaderValue, StatusCode, header};
-use axum::response::Response;
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Response};
 use sagat_application::classification::{
     ClassifiedNode, JsonNumber, MAX_RESPONSE_BYTES, ScalarValue, ValueKind,
 };
@@ -30,15 +32,21 @@ use crate::extract::{ApiJson, Caller};
 pub const DISCLOSURE_MAX_BODY_BYTES: usize = 1024;
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct DisclosureRequestBody {
     source: String,
     sequence: Option<serde_json::Value>,
     reveal: Option<Vec<String>>,
+    #[serde(flatten)]
+    unexpected: BTreeMap<String, serde::de::IgnoredAny>,
 }
 
 impl DisclosureRequestBody {
     fn parse(self) -> Result<(DisclosureSelector, bool), ApiError> {
+        if !self.unexpected.is_empty() {
+            return Err(ApiError::bad_request(
+                "request body contains an unknown field",
+            ));
+        }
         let sequence = self.sequence.map(|value| {
             value
                 .as_u64()
@@ -114,6 +122,21 @@ pub async fn disclose_payload<B: Exec>(
         .map_err(disclosure_error)?;
     let bytes = encode_disclosure(&disclosure)?;
     Ok(disclosure_response(bytes))
+}
+
+/// Keep every response private, including body-limit rejections produced before the handler.
+pub async fn no_store(request: Request, next: Next) -> Response {
+    let response = next.run(request).await;
+    let mut response = if response.status() == StatusCode::PAYLOAD_TOO_LARGE {
+        ApiError::from(AppError::PayloadTooLarge("payload disclosure request")).into_response()
+    } else {
+        response
+    };
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-store"),
+    );
+    response
 }
 
 fn disclosure_response(bytes: Vec<u8>) -> Response {
@@ -630,6 +653,7 @@ mod tests {
     fn request_validation_keeps_selectors_closed() {
         let parsed = DisclosureRequestBody {
             source: "journal".into(),
+            unexpected: BTreeMap::new(),
             sequence: Some(serde_json::json!(42)),
             reveal: Some(vec!["pii".into()]),
         }
@@ -640,22 +664,47 @@ mod tests {
         for body in [
             DisclosureRequestBody {
                 source: "journal".into(),
+                unexpected: BTreeMap::new(),
                 sequence: Some(serde_json::json!(0)),
                 reveal: None,
             },
             DisclosureRequestBody {
                 source: "input".into(),
+                unexpected: BTreeMap::new(),
                 sequence: Some(serde_json::json!(1)),
                 reveal: None,
             },
             DisclosureRequestBody {
                 source: "input".into(),
+                unexpected: BTreeMap::new(),
                 sequence: None,
                 reveal: Some(vec!["secret".into()]),
             },
         ] {
             assert!(body.parse().is_err());
         }
+    }
+
+    #[test]
+    fn unknown_fields_are_bad_requests_without_echoing_their_names() {
+        use axum::response::IntoResponse;
+        let body: DisclosureRequestBody =
+            serde_json::from_str(r#"{"source":"input","ERROR-REFLECTION-CANARY":"ignored"}"#)
+                .expect("syntactically valid request");
+        assert_eq!(
+            body.parse()
+                .expect_err("closed fields")
+                .into_response()
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert!(
+            serde_json::from_str::<DisclosureRequestBody>(
+                r#"{"source":"input","bad":"ERROR-REFLECTION-CANARY"#,
+            )
+            .expect_err("truncated string")
+            .is_eof()
+        );
     }
 
     #[test]

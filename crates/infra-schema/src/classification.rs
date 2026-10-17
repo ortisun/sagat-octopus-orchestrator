@@ -96,11 +96,13 @@ impl Classifier {
                 cache.order.retain(|candidate| candidate != key);
                 cache.order.push_back(key.clone());
                 self.hits.fetch_add(1, Ordering::Relaxed);
+                metrics::counter!("classification_cache_total", "outcome" => "hit").increment(1);
                 return Ok(entry);
             }
         }
 
         self.misses.fetch_add(1, Ordering::Relaxed);
+        metrics::counter!("classification_cache_total", "outcome" => "miss").increment(1);
         let document: Value =
             serde_json::from_slice(document).map_err(|_| ProjectionFailure::SchemaUnusable)?;
         let schema = carrier(&document, &key.carrier)
@@ -149,6 +151,7 @@ impl Classifier {
             if let Some(removed) = cache.entries.remove(&oldest) {
                 cache.bytes = cache.bytes.saturating_sub(removed.bytes);
                 self.evictions.fetch_add(1, Ordering::Relaxed);
+                metrics::counter!("classification_cache_total", "outcome" => "evict").increment(1);
             }
         }
         if bytes <= MAX_CLASSIFICATION_CACHE_BYTES {
@@ -1071,7 +1074,8 @@ fn has_numeric_constraints(schema: &Value) -> bool {
             matches!(
                 keyword.as_str(),
                 "minimum" | "maximum" | "exclusiveMinimum" | "exclusiveMaximum" | "multipleOf"
-            ) || (matches!(keyword.as_str(), "const" | "enum") && contains_number(value))
+            ) || (keyword == "uniqueItems" && value.as_bool() == Some(true))
+                || (matches!(keyword.as_str(), "const" | "enum") && contains_number(value))
                 || has_numeric_constraints(value)
         }),
         Value::Array(values) => values.iter().any(has_numeric_constraints),
@@ -1083,7 +1087,12 @@ fn numeric_constraints_exact(schema: &Value) -> bool {
     match schema {
         Value::Object(object) => object.iter().all(|(keyword, value)| {
             let local = match keyword.as_str() {
-                "minimum" | "maximum" | "exclusiveMinimum" | "exclusiveMaximum" | "multipleOf" => {
+                // The dependency compiles an integer divisor through f64. Keep it in the
+                // exact integer-modulo branch; larger divisors would validate a rounded schema.
+                "multipleOf" => value
+                    .as_u64()
+                    .is_some_and(|divisor| divisor > 0 && divisor <= 9_007_199_254_740_991),
+                "minimum" | "maximum" | "exclusiveMinimum" | "exclusiveMaximum" => {
                     exact_stored_numbers(value)
                 }
                 "const" | "enum" => exact_stored_numbers(value),
@@ -1155,4 +1164,6 @@ fn lexical_is_integer(value: &str) -> bool {
 #[path = "classification/publication.rs"]
 mod publication;
 
-pub use publication::analyze_value;
+pub use publication::{
+    analyze_value, resolve_classification_location, visit_classification_locations,
+};

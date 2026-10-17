@@ -54,8 +54,20 @@ fn every_code_the_platform_returns_has_help_and_the_help_names_no_code_the_platf
         platform.len() >= 30,
         "the codes were not read out of the source: {platform:?}"
     );
-    // Found by the platform's validation of the draft against a namespace, not by the codec.
-    let server_only: BTreeSet<String> = ["SECRET_UNAVAILABLE".to_owned()].into();
+    // Some codes are returned through an enum's closed string table outside the source region this
+    // lightweight consistency check scans; SECRET_UNAVAILABLE is found only by server validation.
+    let outside_scanned_region: BTreeSet<String> = [
+        "SECRET_UNAVAILABLE",
+        "CLASSIFICATION_INVALID_LEVEL",
+        "CLASSIFICATION_LOOSENED",
+        "CLASSIFICATION_UNSUPPORTED_KEYWORD",
+        "CLASSIFICATION_UNRESOLVED_REF",
+        "CLASSIFICATION_NOT_APPLICABLE",
+        "CLASSIFICATION_INHERITED_OPEN",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
     let known: BTreeSet<String> = CATALOG.iter().map(|(code, _)| (*code).to_owned()).collect();
     assert_eq!(known.len(), CATALOG.len(), "a code is in the catalog twice");
     let without_help: Vec<_> = platform.difference(&known).collect();
@@ -65,7 +77,7 @@ fn every_code_the_platform_returns_has_help_and_the_help_names_no_code_the_platf
     );
     let stale: Vec<_> = known
         .difference(&platform)
-        .filter(|c| !server_only.contains(*c))
+        .filter(|c| !outside_scanned_region.contains(*c))
         .collect();
     assert!(
         stale.is_empty(),

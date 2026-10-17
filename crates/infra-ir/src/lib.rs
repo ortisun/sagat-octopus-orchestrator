@@ -8,6 +8,7 @@
 mod payload_projection;
 pub use payload_projection::JsonPayloadProjector;
 mod canonical;
+mod carrier_schema_check;
 mod classification_check;
 mod continuation;
 mod convert;
@@ -93,10 +94,17 @@ impl JsonIrCodec {
 }
 
 impl IrCodec for JsonIrCodec {
-    fn classification_analysis(&self, document: &[u8]) -> Option<sagat_application::classification::ClassificationAnalysis> {
-        if document.len() > MAX_IR_BYTES { return None; }
+    fn classification_analysis(
+        &self,
+        document: &[u8],
+    ) -> Option<sagat_application::classification::ClassificationAnalysis> {
+        if document.len() > MAX_IR_BYTES {
+            return None;
+        }
         let value: Value = serde_json::from_slice(document).ok()?;
-        value.is_object().then(|| classification_check::check(&value))
+        value
+            .is_object()
+            .then(|| classification_check::check(&value))
     }
 
     fn check_draft(&self, document: &[u8]) -> Result<(), IrError> {
@@ -229,6 +237,10 @@ fn validated_document(document: &[u8]) -> Result<Value, IrError> {
         return Err(IrError::Classification(classification.findings));
     }
     let issues = schema::issues(&value);
+    if !issues.is_empty() {
+        return Err(IrError::Schema(issues));
+    }
+    let issues = carrier_schema_check::issues(&value);
     if !issues.is_empty() {
         return Err(IrError::Schema(issues));
     }

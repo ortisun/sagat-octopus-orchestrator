@@ -1,2 +1,6 @@
-//! Fault-injection target reserved by T016-003. Crash and race cases are introduced with the
-//! transactional implementation they exercise, so this target makes no unproven guarantee.
+//! Real PostgreSQL failures at the reveal transaction boundary.
+
+#[path = "../../support/mod.rs"]
+mod support;
+
+mod reveal;

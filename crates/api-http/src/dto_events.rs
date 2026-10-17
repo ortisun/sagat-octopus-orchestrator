@@ -1,6 +1,10 @@
 //! Wire types of the event routes.
 
-use sagat_application::events::{Delivery, EndpointRecord, Received, StoredEvent};
+use sagat_application::event_payloads::{
+    DeadLetterData, DeadLetterRead, DeadLetterStructure, EventData, InboxEventRead,
+};
+use sagat_application::events::{Delivery, EndpointRecord, Received};
+use sagat_application::payloads::PayloadStructure;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -210,12 +214,30 @@ pub struct EventBody {
         with = "time::serde::rfc3339::option"
     )]
     pub dispatched_at: Option<time::OffsetDateTime>,
-    pub data: Value,
+    pub data_disclosure: &'static str,
+    pub data_size_bytes: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data_structure: Option<PayloadStructureBody>,
     pub deliveries: Vec<EventDeliveryBody>,
 }
 
-impl From<&StoredEvent> for EventBody {
-    fn from(event: &StoredEvent) -> Self {
+impl From<&InboxEventRead> for EventBody {
+    fn from(read: &InboxEventRead) -> Self {
+        let event = &read.event;
+        let (data_disclosure, data, data_structure) = match &read.data {
+            EventData::Revealed(bytes) => (
+                "revealed",
+                serde_json::from_slice(bytes.as_slice()).ok(),
+                None,
+            ),
+            EventData::Structure(projection) => (
+                "structure-only",
+                None,
+                Some(PayloadStructureBody::from(&projection.tree)),
+            ),
+        };
         Self {
             event_id: event.envelope.key.event_id.to_string(),
             source: event.envelope.key.source.to_string(),
@@ -233,7 +255,10 @@ impl From<&StoredEvent> for EventBody {
             attempts: event.attempts,
             last_error: event.last_error.clone(),
             dispatched_at: event.dispatched_at,
-            data: serde_json::from_slice(&event.payload).unwrap_or(Value::Null),
+            data_disclosure,
+            data_size_bytes: read.data_size_bytes,
+            data,
+            data_structure,
             deliveries: event
                 .deliveries
                 .iter()
@@ -642,7 +667,7 @@ pub struct RedrivenBody {
 
 // ------------------------------------------------------------------------------ connectors
 
-use sagat_application::connectors::{ConnectorRecord, DeadLetterRecord};
+use sagat_application::connectors::ConnectorRecord;
 use sagat_domain::connectors::{ConnectorSettings, StartFrom};
 
 #[derive(Debug, Deserialize)]
@@ -810,25 +835,123 @@ pub struct DeadLetterBody {
     pub id: String,
     pub position: String,
     pub reason: &'static str,
-    pub headers: std::collections::BTreeMap<String, String>,
+    pub body_disclosure: &'static str,
+    pub body_size_bytes: usize,
+    pub header_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub headers: Option<std::collections::BTreeMap<String, String>>,
     /// What the message carried, as text (cut at 64 KiB: see `truncated`).
-    pub body: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body_structure: Option<PayloadStructureBody>,
     pub truncated: bool,
     #[serde(with = "time::serde::rfc3339")]
     pub received_at: time::OffsetDateTime,
 }
 
-impl From<&DeadLetterRecord> for DeadLetterBody {
-    fn from(letter: &DeadLetterRecord) -> Self {
+impl From<&DeadLetterRead> for DeadLetterBody {
+    fn from(read: &DeadLetterRead) -> Self {
+        let letter = &read.letter;
+        let (body_disclosure, headers, body, body_structure) = match &read.data {
+            DeadLetterData::Revealed { headers, body } => (
+                "revealed",
+                Some(headers.clone()),
+                Some(String::from_utf8_lossy(body.as_slice()).into_owned()),
+                None,
+            ),
+            DeadLetterData::Structure(structure) => (
+                "structure-only",
+                None,
+                None,
+                Some(match structure {
+                    DeadLetterStructure::Json(projection) => {
+                        PayloadStructureBody::from(&projection.tree)
+                    }
+                    DeadLetterStructure::Opaque => PayloadStructureBody::Opaque { kind: "opaque" },
+                }),
+            ),
+        };
         Self {
             id: letter.id.to_string(),
             position: letter.position.clone(),
             reason: letter.reason.as_str(),
-            headers: letter.headers.clone(),
-            body: String::from_utf8_lossy(&letter.body).into_owned(),
+            body_disclosure,
+            body_size_bytes: read.body_size_bytes,
+            header_count: read.header_count,
+            headers,
+            body,
+            body_structure,
             truncated: letter.truncated,
             received_at: letter.received_at,
         }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum PayloadStructureBody {
+    Structure(PayloadTreeBody),
+    Opaque { kind: &'static str },
+}
+
+#[derive(Debug, Serialize)]
+#[serde(
+    tag = "type",
+    rename_all = "lowercase",
+    rename_all_fields = "camelCase"
+)]
+pub enum PayloadTreeBody {
+    Object {
+        child_count: u32,
+        children: Vec<PayloadStructureBody>,
+        omitted_children: u32,
+    },
+    Array {
+        child_count: u32,
+        children: Vec<PayloadStructureBody>,
+        omitted_children: u32,
+    },
+    String {
+        redacted: bool,
+    },
+    Number {
+        redacted: bool,
+    },
+    Boolean {
+        redacted: bool,
+    },
+    Null {
+        redacted: bool,
+    },
+}
+
+impl From<&PayloadStructure> for PayloadStructureBody {
+    fn from(value: &PayloadStructure) -> Self {
+        Self::Structure(match value {
+            PayloadStructure::Object {
+                child_count,
+                children,
+                omitted_children,
+            } => PayloadTreeBody::Object {
+                child_count: *child_count,
+                children: children.iter().map(Self::from).collect(),
+                omitted_children: *omitted_children,
+            },
+            PayloadStructure::Array {
+                child_count,
+                children,
+                omitted_children,
+            } => PayloadTreeBody::Array {
+                child_count: *child_count,
+                children: children.iter().map(Self::from).collect(),
+                omitted_children: *omitted_children,
+            },
+            PayloadStructure::String => PayloadTreeBody::String { redacted: true },
+            PayloadStructure::Number => PayloadTreeBody::Number { redacted: true },
+            PayloadStructure::Boolean => PayloadTreeBody::Boolean { redacted: true },
+            PayloadStructure::Null => PayloadTreeBody::Null { redacted: true },
+        })
     }
 }
 

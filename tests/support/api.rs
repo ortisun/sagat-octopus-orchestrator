@@ -353,6 +353,13 @@ pub async fn start_with(options: Options) -> TestApi {
         EgressService::new(executions.clone(), SystemClock),
         sagat_application::reveal_grants::RevealGrantService::new(executions.clone(), SystemClock),
     )
+    .with_event_payloads(Arc::new(
+        sagat_application::event_payloads::EventPayloadService::new(
+            executions.clone(),
+            SystemClock,
+            sagat_infra_ir::JsonPayloadProjector,
+        ),
+    ))
     .with_operations(sagat_application::operations::OperationsService::new(
         executions.clone(),
         SystemClock,
@@ -468,6 +475,14 @@ pub async fn start_with(options: Options) -> TestApi {
             SystemClock,
             sagat_infra_ir::JsonDatabaseResultValidator,
             blobs.clone(),
+        ),
+    ))
+    .with_payload_disclosures(Arc::new(
+        sagat_application::payload_disclosure::PayloadDisclosureService::new(
+            executions.clone(),
+            SystemClock,
+            sagat_infra_schema::classification::Classifier::default(),
+            sagat_infra_ir::JsonPayloadProjector,
         ),
     ))
     .with_payload_inspections(Arc::new(PayloadInspectionService::new(

@@ -21,6 +21,7 @@ mod definitions;
 mod dispatch;
 mod egress;
 mod event_codec;
+mod event_payloads;
 mod events;
 mod execution;
 mod identity;

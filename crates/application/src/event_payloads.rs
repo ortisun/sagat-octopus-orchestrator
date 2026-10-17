@@ -139,6 +139,7 @@ pub enum EventData {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InboxEventRead {
     pub event: SelectedInboxEvent,
+    pub data_size_bytes: usize,
     pub data: EventData,
 }
 
@@ -172,6 +173,8 @@ impl std::fmt::Debug for DeadLetterData {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeadLetterRead {
     pub letter: SelectedDeadLetter,
+    pub body_size_bytes: usize,
+    pub header_count: usize,
     pub data: DeadLetterData,
 }
 
@@ -377,9 +380,9 @@ impl<S: EventPayloadStore, C: Clock, P: PayloadProjector> EventPayloadService<S,
             denied: make(AuditAction::PayloadRevealDenied, "permission".into()),
         }
     }
-    fn audits_letter(&self, p: &PreparedDeadLetter) -> EventPayloadAudits {
+    fn audits_letter(&self, p: &PreparedDeadLetter) -> Result<EventPayloadAudits, AppError> {
         let id = p.connector_id.to_string();
-        let letter = p.letter_id.expect("detail preparation has a letter");
+        let letter = p.letter_id.ok_or(AppError::NotFound)?;
         let make = |action, reason: String| {
             AuditRecord::by(
                 &p.principal,
@@ -391,13 +394,13 @@ impl<S: EventPayloadStore, C: Clock, P: PayloadProjector> EventPayloadService<S,
             )
             .with_reason(reason)
         };
-        EventPayloadAudits {
+        Ok(EventPayloadAudits {
             revealed: make(
                 AuditAction::PayloadPiiRevealed,
                 format!("dead-letter:{letter}:reveal=pii"),
             ),
             denied: make(AuditAction::PayloadRevealDenied, "permission".into()),
-        }
+        })
     }
     fn evaluator<'a>(&'a self, reveal: EventReveal) -> Evaluator<'a, P> {
         Evaluator {
@@ -454,18 +457,36 @@ impl<S: EventPayloadStore + 'static, C: Clock + 'static, P: PayloadProjector + '
                 .read_event(&p, &self.evaluator(p.reveal), &a)
                 .await
                 .map_err(AppError::from)?;
-            Self::finish(read)
+            let result = Self::finish(read);
+            record_read(
+                "event",
+                match &result {
+                    Ok(read) if matches!(read.data, EventData::Revealed(_)) => "revealed",
+                    Ok(_) => "structure_only",
+                    Err(_) => "denied",
+                },
+            );
+            result
         })
     }
     fn dead_letter<'a>(&'a self, p: PreparedDeadLetter) -> EventReadFuture<'a, DeadLetterRead> {
         Box::pin(async move {
-            let a = self.audits_letter(&p);
+            let a = self.audits_letter(&p)?;
             let read = self
                 .store
                 .read_dead_letter(&p, &self.evaluator(p.reveal), &a)
                 .await
                 .map_err(AppError::from)?;
-            Self::finish(read)
+            let result = Self::finish(read);
+            record_read(
+                "dead_letter",
+                match &result {
+                    Ok(read) if matches!(read.data, DeadLetterData::Revealed { .. }) => "revealed",
+                    Ok(_) => "structure_only",
+                    Err(_) => "denied",
+                },
+            );
+            result
         })
     }
     fn dead_letters<'a>(
@@ -480,7 +501,16 @@ impl<S: EventPayloadStore + 'static, C: Clock + 'static, P: PayloadProjector + '
                 .list_dead_letters(&p, b, l, &self.evaluator(EventReveal::Structure))
                 .await
                 .map_err(AppError::from)?;
-            Self::finish(read)
+            let result = Self::finish(read);
+            record_read(
+                "dead_letter",
+                if result.is_ok() {
+                    "structure_only"
+                } else {
+                    "denied"
+                },
+            );
+            result
         })
     }
 }
@@ -492,42 +522,46 @@ struct Evaluator<'a, P> {
 impl<P: PayloadProjector> EventPayloadEvaluator for Evaluator<'_, P> {
     fn event(
         &self,
-        selected: SelectedInboxEvent,
+        mut selected: SelectedInboxEvent,
         role: Role,
         grant: bool,
     ) -> Result<InboxEventRead, EventPayloadFailure> {
         authorize(role, self.reveal, grant)?;
+        let payload = std::mem::replace(&mut selected.payload, StoredPayloadBytes::new(Vec::new()));
+        let data_size_bytes = payload.as_slice().len();
         let data = match self.reveal {
-            EventReveal::Pii => EventData::Revealed(selected.payload.clone()),
+            EventReveal::Pii => EventData::Revealed(payload),
             EventReveal::Structure => EventData::Structure(
                 self.projector
-                    .project(selected.payload.as_slice())
+                    .project(payload.as_slice())
                     .map_err(|_| EventPayloadFailure::EventReadNotGranted)?,
             ),
         };
         Ok(InboxEventRead {
             event: selected,
+            data_size_bytes,
             data,
         })
     }
     fn dead_letter(
         &self,
-        selected: SelectedDeadLetter,
+        mut selected: SelectedDeadLetter,
         role: Role,
         grant: bool,
     ) -> Result<DeadLetterRead, EventPayloadFailure> {
         authorize(role, self.reveal, grant)?;
+        let headers = std::mem::take(&mut selected.headers);
+        let body = std::mem::replace(&mut selected.body, StoredPayloadBytes::new(Vec::new()));
+        let body_size_bytes = body.as_slice().len();
+        let header_count = headers.len();
         let data = match self.reveal {
-            EventReveal::Pii => DeadLetterData::Revealed {
-                headers: selected.headers.clone(),
-                body: selected.body.clone(),
-            },
+            EventReveal::Pii => DeadLetterData::Revealed { headers, body },
             EventReveal::Structure => {
                 let s = if selected.truncated {
                     DeadLetterStructure::Opaque
                 } else {
                     self.projector
-                        .project(selected.body.as_slice())
+                        .project(body.as_slice())
                         .map(DeadLetterStructure::Json)
                         .unwrap_or(DeadLetterStructure::Opaque)
                 };
@@ -536,6 +570,8 @@ impl<P: PayloadProjector> EventPayloadEvaluator for Evaluator<'_, P> {
         };
         Ok(DeadLetterRead {
             letter: selected,
+            body_size_bytes,
+            header_count,
             data,
         })
     }
@@ -548,4 +584,9 @@ fn authorize(role: Role, reveal: EventReveal, grant: bool) -> Result<(), EventPa
         return Err(EventPayloadFailure::PiiRevealNotGranted);
     }
     Ok(())
+}
+
+fn record_read(surface: &'static str, outcome: &'static str) {
+    metrics::counter!("event_value_reads_total", "surface" => surface, "outcome" => outcome)
+        .increment(1);
 }

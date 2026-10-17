@@ -111,7 +111,10 @@ async fn rules_tenant_boundary_self_grant_and_membership_cascade_are_enforced() 
     .fetch_one(&w.db.pool)
     .await
     .expect("grant audits");
-    assert_eq!(grant_audits, 2, "idempotent PUT and refused writes add no audit");
+    assert_eq!(
+        grant_audits, 2,
+        "idempotent PUT and refused writes add no audit"
+    );
 }
 
 #[tokio::test]
@@ -201,7 +204,11 @@ async fn a_stale_admin_snapshot_cannot_list_grant_or_revoke() {
     assert!(is_forbidden(&list));
     assert!(is_forbidden(&grant));
     assert!(is_forbidden(&revoke));
-    assert_eq!(grant_count(&w, namespace).await, 1, "stale revoke changed nothing");
+    assert_eq!(
+        grant_count(&w, namespace).await,
+        1,
+        "stale revoke changed nothing"
+    );
 }
 
 #[tokio::test]
@@ -301,7 +308,10 @@ async fn an_effective_grant_read_fences_revoke_until_disclosure_commit() {
         "revoke committed while disclosure still held the shared fence"
     );
 
-    disclosure.commit().await.expect("disclosure audit/commit boundary");
+    disclosure
+        .commit()
+        .await
+        .expect("disclosure audit/commit boundary");
     assert!(
         tokio::time::timeout(Duration::from_secs(5), revoke)
             .await
@@ -350,16 +360,26 @@ async fn http_repeated_delete_returns_not_found_and_responses_are_not_cached() {
         .create_namespace("admin", "grants-http", &workspace, "sandbox", "dev")
         .await;
     let path = format!("/namespaces/{namespace}/payload-reveal-grants/admin");
-    let put = api.as_user(Method::PUT, &path, "admin", "grants-http")
-        .send().await.expect("grant HTTP");
-    let oversized = api.as_user(Method::PUT, &path, "admin", "grants-http")
-        .body(vec![b'x'; 1025]).send().await.expect("oversized grant HTTP");
+    let put = api
+        .as_user(Method::PUT, &path, "admin", "grants-http")
+        .send()
+        .await
+        .expect("grant HTTP");
+    let oversized = api
+        .as_user(Method::PUT, &path, "admin", "grants-http")
+        .body(vec![b'x'; 1025])
+        .send()
+        .await
+        .expect("oversized grant HTTP");
     assert_eq!(oversized.status(), StatusCode::PAYLOAD_TOO_LARGE);
     assert_eq!(put.status(), StatusCode::OK);
     assert_eq!(put.headers()["cache-control"], "no-store");
     for expected in [StatusCode::OK, StatusCode::NOT_FOUND] {
-        let response = api.as_user(Method::DELETE, &path, "admin", "grants-http")
-            .send().await.expect("revoke HTTP");
+        let response = api
+            .as_user(Method::DELETE, &path, "admin", "grants-http")
+            .send()
+            .await
+            .expect("revoke HTTP");
         assert_eq!(response.status(), expected);
     }
 }

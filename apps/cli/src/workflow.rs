@@ -3,11 +3,13 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use serde::Deserialize;
+use serde_json::value::RawValue;
 use serde_json::{Value, json};
 
 use crate::args::Common;
 use crate::client::{CallError, Client};
-use crate::diagnostics::{Diagnostic, of_document};
+use crate::diagnostics::Diagnostic;
 use crate::manifest::{self, DocumentError};
 use crate::{
     EXIT_DONE, EXIT_FAILED, EXIT_TIMEOUT, Env, Io, credentials, namespace_of, remote, resolve,
@@ -60,8 +62,17 @@ pub(crate) async fn validate(
             return Ok(EXIT_FAILED);
         }
     };
-    let diagnostics = of_document(&loaded.document);
+    let (diagnostics, classification) = crate::diagnostics::analyze_document(&loaded.document);
     say_diagnostics(io, &diagnostics);
+    if let Some(analysis) = classification {
+        for line in crate::diagnostics::classification_report(
+            &loaded.entry.name,
+            &analysis.report,
+            analysis.report_truncated,
+        ) {
+            io.say(line);
+        }
+    }
     let errors = diagnostics.iter().filter(|d| !d.warning).count();
     if errors > 0 {
         io.warn(format!(
@@ -306,16 +317,265 @@ pub(crate) async fn runs(
     Ok(EXIT_DONE)
 }
 
+pub(crate) struct InspectAsk<'a> {
+    pub(crate) run: &'a str,
+    pub(crate) values: bool,
+    pub(crate) reveal_pii: bool,
+    pub(crate) sequence: Option<u64>,
+}
+
 pub(crate) async fn inspect(
     common: &Common,
     env: &Env,
-    run: &str,
+    ask: &InspectAsk<'_>,
     io: &mut Io<'_>,
 ) -> Result<u8, String> {
     let namespace = namespace_of(common, env)?;
     let session = session(common, env, &namespace)?;
-    inspect_run(&session.client, run, io).await?;
+    inspect_run(&session.client, ask.run, io).await?;
+    if ask.values {
+        inspect_values(&session.client, ask, io).await?;
+    }
     Ok(EXIT_DONE)
+}
+
+fn disclosure_error(error: CallError) -> String {
+    match error {
+        CallError::Transport(reason) => format!("the platform could not be reached ({reason})"),
+        CallError::Refused(failure) => {
+            let reason = failure
+                .reason
+                .as_deref()
+                .map(|value| format!(", {}", crate::one_line(value)))
+                .unwrap_or_default();
+            let trace = failure
+                .trace_id
+                .as_deref()
+                .map(|value| format!(" Trace {}.", crate::one_line(value)))
+                .unwrap_or_default();
+            format!(
+                "payload values were refused (HTTP {}, {}{reason}).{trace}",
+                failure.status,
+                crate::one_line(&failure.code)
+            )
+        }
+    }
+}
+
+async fn inspect_values(
+    client: &Client,
+    ask: &InspectAsk<'_>,
+    io: &mut Io<'_>,
+) -> Result<(), String> {
+    let selectors = ask.sequence.map_or_else(
+        || {
+            vec![
+                ("input".to_owned(), json!({"source": "input"})),
+                ("result".to_owned(), json!({"source": "result"})),
+            ]
+        },
+        |sequence| {
+            vec![(
+                format!("journal {sequence}"),
+                json!({"source": "journal", "sequence": sequence}),
+            )]
+        },
+    );
+    let mut answers = Vec::with_capacity(selectors.len());
+    for (label, mut selector) in selectors {
+        if ask.reveal_pii {
+            selector["reveal"] = json!(["pii"]);
+        }
+        let (_, answer) = client
+            .call_raw(
+                "POST",
+                &format!("/runs/{}/payload-disclosures", ask.run),
+                Some(&selector),
+                None,
+            )
+            .await
+            .map_err(disclosure_error)?;
+        answers.push((label, answer));
+    }
+    for (label, answer) in answers {
+        render_disclosure(&label, &answer, io)?;
+    }
+    Ok(())
+}
+
+fn closed_text<'a>(value: &'a Value, allowed: &[&str]) -> Option<&'a str> {
+    value.as_str().filter(|value| allowed.contains(value))
+}
+
+#[derive(Deserialize)]
+struct RawDisclosure {
+    tree: RawNode,
+}
+
+#[derive(Deserialize)]
+struct RawChild {
+    ordinal: u64,
+    name: Option<String>,
+    node: RawNode,
+}
+
+#[derive(Deserialize)]
+struct RawNode {
+    kind: String,
+    level: String,
+    #[serde(rename = "type")]
+    value_type: Option<String>,
+    value: Option<Box<RawValue>>,
+    #[serde(rename = "omittedChildren")]
+    omitted_children: Option<u64>,
+    children: Option<Vec<RawChild>>,
+}
+
+fn render_disclosure(label: &str, bytes: &[u8], io: &mut Io<'_>) -> Result<(), String> {
+    let invalid = || "the platform's disclosure answer is not valid".to_owned();
+    let answer: Value = serde_json::from_slice(bytes).map_err(|_| invalid())?;
+    match answer
+        .get("kind")
+        .and_then(Value::as_str)
+        .ok_or_else(invalid)?
+    {
+        "disclosed" => {
+            let tree = serde_json::from_slice::<RawDisclosure>(bytes)
+                .map_err(|_| invalid())?
+                .tree;
+            let mut lines = Vec::new();
+            let mut nodes = 0_usize;
+            render_node(&tree, 1, &mut nodes, &mut lines)?;
+            io.say(format!("{label} values:"));
+            for line in lines {
+                io.say(line);
+            }
+        }
+        "structure-only" => {
+            let reason = closed_text(
+                answer.get("reason").ok_or_else(invalid)?,
+                &[
+                    "NO_SCHEMA",
+                    "SCHEMA_MISMATCH",
+                    "LEGACY_VERSION",
+                    "SCHEMA_UNUSABLE",
+                ],
+            )
+            .ok_or_else(invalid)?;
+            io.say(format!("{label} values: [structure only: {reason}]"));
+        }
+        "external" => {
+            let reason = closed_text(
+                answer.get("reason").ok_or_else(invalid)?,
+                &["EXTERNAL_CONTENT_NOT_INSPECTED"],
+            )
+            .ok_or_else(invalid)?;
+            io.say(format!("{label} values: [external: {reason}]"));
+        }
+        "unavailable" => {
+            let reason = closed_text(
+                answer.get("reason").ok_or_else(invalid)?,
+                &[
+                    "NO_RETAINED_PAYLOAD",
+                    "UNSUPPORTED_FORMAT",
+                    "NOT_DISCLOSABLE",
+                ],
+            )
+            .ok_or_else(invalid)?;
+            io.say(format!("{label} values: [unavailable: {reason}]"));
+        }
+        _ => return Err(invalid()),
+    }
+    Ok(())
+}
+
+fn render_node(
+    node: &RawNode,
+    depth: usize,
+    nodes: &mut usize,
+    lines: &mut Vec<String>,
+) -> Result<(), String> {
+    const MAX_DEPTH: usize = 16;
+    const MAX_NODES: usize = 1024;
+    let invalid = || "the platform's disclosure answer is not valid".to_owned();
+    if depth > MAX_DEPTH || *nodes >= MAX_NODES {
+        return Err(invalid());
+    }
+    *nodes += 1;
+    let indent = "  ".repeat(depth);
+    match node.kind.as_str() {
+        "withheld" => {
+            if !matches!(node.level.as_str(), "internal" | "pii" | "secret") {
+                return Err(invalid());
+            }
+            lines.push(format!("{indent}[withheld: {}]", node.level));
+        }
+        "value" => {
+            if !matches!(node.level.as_str(), "public" | "internal" | "pii") {
+                return Err(invalid());
+            }
+            let value_type = node.value_type.as_deref().ok_or_else(invalid)?;
+            let value = node.value.as_deref().ok_or_else(invalid)?;
+            let raw = value.get();
+            let rendered = match value_type {
+                "string" => {
+                    let text: String = serde_json::from_str(raw).map_err(|_| invalid())?;
+                    serde_json::to_string(crate::printable(&text).as_ref())
+                        .map_err(|_| invalid())?
+                }
+                "number" if sagat_application::classification::JsonNumber::parse(raw).is_ok() => {
+                    raw.to_owned()
+                }
+                "boolean" if matches!(raw, "true" | "false") => raw.to_owned(),
+                "null" if raw == "null" => raw.to_owned(),
+                _ => return Err(invalid()),
+            };
+            lines.push(format!("{indent}[{}] {rendered}", node.level));
+        }
+        "container" => {
+            if !matches!(node.level.as_str(), "public" | "internal" | "pii") {
+                return Err(invalid());
+            }
+            let kind = node.value_type.as_deref().ok_or_else(invalid)?;
+            if !matches!(kind, "object" | "array") {
+                return Err(invalid());
+            }
+            let children = node.children.as_deref().ok_or_else(invalid)?;
+            if children.len() > 128 {
+                return Err(invalid());
+            }
+            lines.push(format!(
+                "{indent}[{}] {}",
+                node.level,
+                if kind == "object" { "{" } else { "[" }
+            ));
+            for child in children {
+                let child_indent = "  ".repeat(depth + 1);
+                let name = match &child.name {
+                    Some(name) if kind == "object" => {
+                        serde_json::to_string(name).map_err(|_| invalid())?
+                    }
+                    None => format!("#{}", child.ordinal),
+                    _ => return Err(invalid()),
+                };
+                lines.push(format!("{child_indent}{name}:"));
+                render_node(&child.node, depth + 2, nodes, lines)?;
+            }
+            let omitted_children = node.omitted_children.ok_or_else(invalid)?;
+            if omitted_children > 0 {
+                lines.push(format!(
+                    "{}... {omitted_children} omitted",
+                    "  ".repeat(depth + 1)
+                ));
+            }
+            lines.push(format!(
+                "{indent}{}",
+                if kind == "object" { "}" } else { "]" }
+            ));
+        }
+        _ => return Err(invalid()),
+    }
+    Ok(())
 }
 
 /// The status, the journal and the attempts of a run: what it did, in order, and where it failed.

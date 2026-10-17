@@ -21,8 +21,14 @@ def test_real_otel_sdk_exports_parented_safe_span_and_metrics() -> None:
     with trace.use_span(traces.get_tracer("test").start_span("parent"), end_on_exit=True) as parent:
         traceparent = bridge.trace_context()
         assert traceparent and parent.get_span_context().trace_id == int(traceparent.split("-")[1], 16)
-        bridge.on_event(WorkerEvent("task.taken", task_id="secret-task", activity="secret-activity", attempt=2, traceparent=traceparent))
-        bridge.on_event(WorkerEvent("task.failed", task_id="secret-task", code="PAYMENT_DECLINED", retryable=False, duration_ms=4))
+        bridge.on_event(
+            WorkerEvent(
+                "task.taken", task_id="secret-task", activity="secret-activity", attempt=2, traceparent=traceparent
+            )
+        )
+        bridge.on_event(
+            WorkerEvent("task.failed", task_id="secret-task", code="PAYMENT_DECLINED", retryable=False, duration_ms=4)
+        )
     task = next(span for span in exporter.get_finished_spans() if span.name == "sagat.worker.task")
     assert task.parent and task.parent.span_id == parent.get_span_context().span_id
     assert task.attributes == {"sagat.task.attempt": 2, "sagat.outcome": "failed", "error.type": "PAYMENT_DECLINED"}

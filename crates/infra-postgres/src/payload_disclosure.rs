@@ -21,7 +21,7 @@ use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::execution::PgRunStore;
-use crate::identity::{col, corrupt, insert_audit, store_error};
+use crate::identity::{best_effort_denial_audit, col, corrupt, insert_audit, store_error};
 use crate::pool::BeginSafely;
 use crate::reveal_grants::has_effective_payload_reveal_grant;
 
@@ -240,18 +240,10 @@ impl PayloadDisclosureStore for PgRunStore {
                 DisclosureRead::Ready(decision.disclosure)
             }
             Err(DisclosureFailure::PiiRevealNotGranted) => {
-                if let Err(error) = append_audit(&mut tx, &audits.reveal_denied).await {
-                    tracing::error!(
-                        error = %error,
-                        action = %audits.reveal_denied.action(),
-                        "failed to record payload reveal denial"
-                    );
-                    tx.rollback().await.map_err(store_error)?;
-                    return Ok(DisclosureRead::Refused(
-                        DisclosureFailure::PiiRevealNotGranted,
-                    ));
-                }
-                DisclosureRead::Refused(DisclosureFailure::PiiRevealNotGranted)
+                best_effort_denial_audit(tx, &audits.reveal_denied).await;
+                return Ok(DisclosureRead::Refused(
+                    DisclosureFailure::PiiRevealNotGranted,
+                ));
             }
             Err(DisclosureFailure::RunReadNotGranted) => {
                 DisclosureRead::Refused(DisclosureFailure::RunReadNotGranted)
