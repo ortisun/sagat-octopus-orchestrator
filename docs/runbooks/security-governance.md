@@ -176,6 +176,7 @@ script path (D59); feature 004 still owns future webhook signature, replay and i
 | A developer lists fewer secrets than the namespace holds | By design: anyone but an administrator sees only the secrets whose access list names them, so that names cannot be probed | An administrator grants access (`PUT .../secrets/{name}/access/{subject}`) |
 | Engine exits 2 naming a `SAGAT_GRPC_TLS_*` variable | Missing pair, unreadable or non-PEM file | Fix the named variable |
 | TLS clients fail with a certificate error | The client does not trust the CA, the name differs from the certificate, or (mTLS) it presents no certificate signed by the client CA | Check the chain and the SAN; `grpc_connections_total` stops rising for them |
+| One caller gets many `403`s | A client with too low a role, or someone trying calls their role does not allow | `SELECT created_at, resource_id, reason, trace_id FROM audit_records WHERE action = 'access.denied.permission' AND actor = '<subject>' ORDER BY created_at DESC` (one row per refused call; `resource_id` is the route or RPC, `reason` the missing permission). An administrator also reads them with `GET /audit?action=access.denied.permission`. Volume is bounded by the per-subject request budget |
 | Cross-tenant `404`s from one caller | Someone is probing identifiers of another tenant | `SELECT * FROM audit_records WHERE action = 'access.denied.cross_tenant'` (one row per caller and resource per window) |
 | A script gets `denied` from `octopus.fetch` | Its artifact disables egress, or the current namespace policy refuses the scheme, host, port or resolved address | Query `script.violation` for that run and attempt. Its reason is one of the seven closed categories; change the namespace policy only if the destination is intended |
 | A script host call fails as unavailable and `script_incidents_total` does not rise | The supervisor could not read current policy or could not commit the incident before acknowledging it | Check control-plane reachability, the runner's current lease/binding and PostgreSQL. The outbound request was not made; retry through the workflow policy after the control plane recovers |
@@ -194,13 +195,14 @@ script path (D59); feature 004 still owns future webhook signature, replay and i
 Audit actions (immutable, redacted, never a value): `quota.changed`, `secret.stored`, `secret.deleted`,
 `secret.access_granted`, `secret.access_revoked`, `secret.resolved`, `secret.denied`,
 `egress.policy_changed`, `egress.denied`, `script.violation`, `worker.bound`, `worker.unbound`, `worker.denied`,
-`access.denied.cross_tenant`.
+`access.denied.cross_tenant`, `access.denied.permission`.
 
 Metrics (labels are closed sets; no tenant, subject, run, namespace or secret is ever a label):
 
 | Metric | Meaning |
 |---|---|
 | `security_denials_total{action}` | Every denial that is audited as `access.denied.cross_tenant`, `worker.denied` or `egress.denied`, counted per attempt **before** the audit write. The audit table keeps one row per caller and resource per window and may drop events under flood; this counter does not, so it is the one to alert on |
+| `access_denial_audits_total{outcome}` | Writes of `access.denied.permission`, one per `403` / `PERMISSION_DENIED`: `recorded`, or `failed` when the write failed or took over five seconds. The caller got the same refusal either way, so `failed` means the trail has a gap, not that anything was let through. The attempt is also counted in `security_denials_total{action="access.denied.permission"}` |
 | `script_incidents_total{category}` | Sandbox supervisor incident reports accepted after the fenced audit transaction committed; categories are a closed set and carry no destination or tenant label |
 | `quota_exceeded_total{limit}` | Requests refused by a limit, by which limit (`active runs in the namespace`, `worker sessions of the tenant`, ...); the same refusals appear as `429` in `http_requests_total` |
 | `secrets_handed_out_total` | Secret values given to workers through `ResolveSecrets`, counted after the resolution and its audit record committed |

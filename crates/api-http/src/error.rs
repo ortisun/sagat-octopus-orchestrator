@@ -9,7 +9,7 @@ use axum::body::Body;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use sagat_application::definitions::IrError;
-use sagat_application::error::{AppError, ConflictKind};
+use sagat_application::error::{AccessDenial, AppError, ConflictKind};
 use sagat_domain::scripts::ScriptError;
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -168,6 +168,8 @@ pub struct ApiError {
     parts: ErrorParts,
     retry_after: Option<u32>,
     www_authenticate: Option<&'static str>,
+    /// Why the call was refused with `403`, for the audit of the denial (gap G9). Never shown.
+    denial: Option<AccessDenial>,
 }
 
 impl ApiError {
@@ -182,6 +184,7 @@ impl ApiError {
             },
             retry_after: None,
             www_authenticate: None,
+            denial: None,
         }
     }
 
@@ -313,6 +316,16 @@ impl ApiError {
         &self.parts
     }
 
+    /// Why the caller was refused, when the answer is a `403` / `PERMISSION_DENIED`: what the audit
+    /// of the denial records. Any `403` has one, so a refusal added later is audited too.
+    #[must_use]
+    pub fn access_denial(&self) -> Option<AccessDenial> {
+        self.denial.or_else(|| {
+            (self.parts.status == StatusCode::FORBIDDEN)
+                .then_some(AccessDenial::Refused("FORBIDDEN"))
+        })
+    }
+
     /// Whole seconds after which the caller may retry, when the error says so.
     #[must_use]
     pub fn retry_after_seconds(&self) -> Option<u32> {
@@ -415,6 +428,15 @@ impl From<sagat_application::error::Refusal> for ApiError {
 
 impl From<AppError> for ApiError {
     fn from(error: AppError) -> Self {
+        let denial = error.denial();
+        let mut api = Self::from_app(error);
+        api.denial = denial;
+        api
+    }
+}
+
+impl ApiError {
+    fn from_app(error: AppError) -> Self {
         match error {
             AppError::Unauthenticated => Self::invalid_credentials(),
             AppError::Forbidden { permission } => {
@@ -599,6 +621,11 @@ impl IntoResponse for ApiError {
             response
                 .headers_mut()
                 .insert(header::RETRY_AFTER, HeaderValue::from(seconds));
+        }
+        if let Some(denial) = self.access_denial() {
+            response
+                .extensions_mut()
+                .insert(crate::denial::Denied(denial));
         }
         response.extensions_mut().insert(self.parts);
         response
