@@ -8,6 +8,7 @@ fn repository_root() -> PathBuf {
 }
 
 mod openapi;
+mod events;
 mod schema;
 
 mod validate;
