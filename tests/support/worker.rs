@@ -291,7 +291,10 @@ impl Platform {
     pub async fn connect_at(&self, url: String, sub: &str, tenant: &str) -> Worker<'_> {
         let client = WorkerServiceClient::connect(url)
             .await
-            .expect("connect to the worker service");
+            .expect("connect to the worker service")
+            // Match the public SDK transports: one bounded poll can carry 8 MiB of input plus
+            // protobuf metadata, exceeding Tonic's default 4 MiB receive limit.
+            .max_decoding_message_size(16 * 1024 * 1024);
         Worker {
             platform: self,
             subject: sub.to_owned(),

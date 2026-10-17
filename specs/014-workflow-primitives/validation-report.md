@@ -1585,3 +1585,11 @@ Two whole gRPC repeats each passed **69/70** with different near-deadline stream
 the byte-credit case passed separately with runtime privileges. Those failures remain under
 investigation, so this checkpoint does not approve the complete gRPC or release gate. Claims,
 completion/failure and the large resource workloads remain open.
+
+
+The heartbeat gRPC follow-up passed the complete suite **70/70**, 31.87 s, with runtime-role
+connections. Real row-lock barriers replace near-deadline REST admissions; the test transport now
+matches the public SDKs' 16 MiB decoder. Its first barrier repeat exposed that default-decoder
+mismatch (**69/70**), retained alongside the earlier failures in the integration notes. Production
+stream deadlines, input credit and task bounds are unchanged. This checkpoint predates the next
+bounded-claim slice and does not establish the final project release gate.

@@ -1144,3 +1144,21 @@ The correctly selected current `secrets` all-five repeat subsequently passed **1
 (`/tmp/sagat-completion-bounded-heartbeat-sdk-secrets-2.log`). Current SQL privilege audit passed
 **1/1**, 4.67 s: 1,034 statements in 52 files, 653 distinct needs, 620 real runtime-role probes,
 no additional exception (`/tmp/sagat-completion-bounded-heartbeat-runtime-privilege-audit.log`).
+
+### Deterministic stream work admission and real SDK receive limits
+
+The byte-credit contract now admits both waves before opening the finite stream, holds the second
+wave behind actual run row locks, checks the first frame belongs to the first wave, then releases
+the barrier. The watchdog survivor similarly prepares its delayed work before opening its stream
+and releases its run lock after the old deadline, retaining the 4.1 s delayed-work assertion.
+No production stream deadline, capacity or receive credit changed.
+
+The first barrier repeat exposed a previously hidden fixture limit: the second frame was
+6,172,012 bytes, above Tonic's default 4 MiB decoder. The actual public SDK transports already
+allow 16 MiB for the protocol's finite 8 MiB input budget plus metadata; the Rust test worker now
+uses that same decoder bound. The failed repeat is retained
+(`/tmp/sagat-completion-bounded-heartbeat-grpc-barrier-regression.log`, **69/70**). The corrected
+complete runtime-role gRPC suite passed **70/70**, 31.87 s
+(`/tmp/sagat-completion-bounded-heartbeat-grpc-barrier-regression-2.log`). The earlier transport
+and near-deadline failures are retained above; the final passing checkpoint belongs to the
+heartbeat server and these fixture changes, before the subsequent bounded-claim implementation.
