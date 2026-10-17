@@ -64,8 +64,18 @@ marks the segment `FINAL` and latches the chain outcome so another tick cannot r
 An input/state transfer expression that fails evaluation stops the same current run with durable
 `EXPRESSION_ERROR`, audit and `FINAL` in one fenced transaction; a stale evaluated snapshot cannot
 fail a newer run version.
-Arbitrary state transfer, bodies, triggers, `onError`, non-activity entrypoints and all wider graph
-combinations remain rejected at publication; top-level `limits` are accepted.
+Arbitrary state transfer, bodies, triggers, `onError`, entrypoints other than an activity or an event wait,
+and all wider graph combinations remain rejected at publication; top-level `limits` are accepted.
+
+An event wait may be the entrypoint (G372): `waitEvent -> continueAsNew`, or `waitEvent -> condition ->
+continueAsNew | end`, with no `onTimeout`, no look-back (`lookbackMs` absent or `0`) and no declared state.
+The hand-off creates the successor already `WAITING`: the scheduler evaluates the correlation expression over
+the successor's input, and the write transaction stores the key, the wait deadline (the node's `timeoutMs`
+counted from that transaction) and the event subscription with `wait.started` as the successor's third journal
+event, so no `task.ready` hint is written. The run keeps the chain's original deadline. A signal or event that
+arrived before the hand-off is not held back for the successor (the wait does not look back); one that arrives
+after it finds the wait. A correlation expression that cannot be evaluated over the successor's input fails the
+predecessor's run with `EXPRESSION_ERROR` and finalizes the chain `FAILED`, like a failing transfer expression.
 
 The document adds a `bodies` map, optional `state` declarations, `chainPolicy` and optional
 `limits: {maxInstances,maxDepth}`. Omitted limit fields default to 100000 and 8 respectively;

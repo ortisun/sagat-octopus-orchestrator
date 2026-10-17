@@ -112,6 +112,9 @@ public sealed record Run
     /// </summary>
     public RunChainSegment? Chain { get; init; }
 
+    /// <summary>The ended run this one was started again from (<see cref="RunAction.RerunAsNew"/>); <c>null</c> for a run that is not a rerun.</summary>
+    public string? RerunOf { get; init; }
+
     /// <summary>The answer as the server sent it.</summary>
     public JsonElement Raw { get; init; }
 
@@ -152,6 +155,12 @@ public enum RunAction
 
     /// <summary>Resolve a step by hand.</summary>
     ResolveStep,
+
+    /// <summary>
+    /// Start a new run of the same version, with the same input and correlation id, from a run that ended (needs
+    /// <c>run:operate</c> and <c>run:start</c>; a run that has not ended is refused with <c>CONFLICT</c>).
+    /// </summary>
+    RerunAsNew,
 }
 
 /// <summary>The outcome an operator gives a step in <see cref="RunAction.ResolveStep"/>.</summary>
@@ -165,7 +174,11 @@ public enum StepOutcome
 }
 
 /// <summary>What the server answers to an operation.</summary>
-public sealed record OperationResult(string OperationId, bool Accepted, string? RunStatus, long? RunVersion, JsonElement Raw);
+public sealed record OperationResult(string OperationId, bool Accepted, string? RunStatus, long? RunVersion, JsonElement Raw)
+{
+    /// <summary>For <see cref="RunAction.RerunAsNew"/>: the run that was started, which names its origin in <see cref="Run.RerunOf"/>; <c>null</c> for any other action.</summary>
+    public string? NewRunId { get; init; }
+}
 
 /// <summary>A decision an eligible actor records for an approval request.</summary>
 public enum ApprovalDecision

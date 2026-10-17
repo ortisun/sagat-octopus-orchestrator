@@ -675,7 +675,7 @@ where
         let info = tx.info().clone();
         let occurred_at = tx.now();
         let data = tx.data().await?.clone();
-        let (input_expression, state_expression, expected_run_version) = {
+        let (input_expression, state_expression, entry_correlation, expected_run_version) = {
             let (definition, state) = tx.parts();
             let step = state
                 .step(boundary)
@@ -691,7 +691,20 @@ where
             if let Some(blocker) = execution::Quiescence::of_run(state, boundary).blocker() {
                 return Err(ContinuationAdvanceError::Waiting(blocker));
             }
-            (input.clone(), next.clone(), state.version())
+            // A successor that starts with an event wait needs the key it subscribes with.
+            let entry_correlation = match definition
+                .node(definition.entrypoint())
+                .map(|node| node.kind())
+            {
+                Some(NodeKind::WaitEvent { correlation, .. }) => Some(correlation.clone()),
+                _ => None,
+            };
+            (
+                input.clone(),
+                next.clone(),
+                entry_correlation,
+                state.version(),
+            )
         };
         tx.commit().await?;
 
@@ -710,9 +723,25 @@ where
                         .map_err(|_| ContinuationAdvanceError::Expression)
                 })
                 .transpose()?;
-            Ok::<_, ContinuationAdvanceError>((input, state))
+            // The successor's data is its input and its transferred state: nothing has run yet.
+            let correlation = entry_correlation
+                .as_ref()
+                .map(|expression| {
+                    let successor_data = sagat_application::execution::RunData {
+                        input: input.clone(),
+                        state: state.clone(),
+                        state_revision: data.state_revision,
+                        ..Default::default()
+                    };
+                    self.engine
+                        .evaluator()
+                        .correlation_key(expression, &successor_data)
+                        .map_err(|_| ContinuationAdvanceError::Expression)
+                })
+                .transpose()?;
+            Ok::<_, ContinuationAdvanceError>((input, state, correlation))
         })();
-        let (input, state) = match evaluated {
+        let (input, state, correlation) = match evaluated {
             Ok(values) => values,
             Err(ContinuationAdvanceError::Expression) => {
                 self.finalize_continuation_expression(
@@ -730,8 +759,11 @@ where
         if state.is_some() != data.state_revision.is_some() {
             return Err(ContinuationAdvanceError::NotContinuation);
         }
-        let selection =
+        let mut selection =
             ContinuationSelection::new(boundary.clone(), input, state, data.state_revision)?;
+        if let Some(key) = correlation {
+            selection = selection.with_correlation_key(key);
+        }
         let transfer = selection.transfer();
         let successor = RunId::generate();
         let audit = AuditRecord::engine(

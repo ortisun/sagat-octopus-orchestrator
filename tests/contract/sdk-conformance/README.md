@@ -259,8 +259,11 @@ inspection, signal and cancellation in all five SDKs. The golden requires exact 
 replay, including signal replay after rollover, changed-body key rejection, no buffering on a
 head without a matching wait, tenant opacity, successor head change, stale-head rejection and
 final cancellation.
-`chain-root-wait.json.pending` retains the separate direct-root-wait shape: successor creation
-still assumes an activity entrypoint, so that publication path is closed.
+`chain-root-wait.json` publishes `waitEvent -> continueAsNew`: a continuation whose entrypoint is an
+event wait (G372). The hand-off creates each successor already waiting (key, deadline and subscription
+commit with it), so a signal sent to the new head right after the hand-off is delivered, a command fenced
+to the old head is `CHAIN_HEAD_CHANGED`, and the chain is cancelled on its third segment. All five SDKs
+agree with the golden.
 
 `chain-query.json` exercises the typed chain Query call and expected-head fence against a public
 stateful chain in all five SDK runners. Its activity remains unserved, so the observation covers
@@ -417,16 +420,16 @@ stop the scenario.
 | `start` | `workflow` (key), `input`, `idempotencyKey?`, `correlationId?`, `traceparent?`, `deadlineInMs?`, `token?` (`bad`\|`other`\|`worker`\|`operator`\|`viewer`\|`runner`\|`revoked`) | `start` | the Run |
 | `startWithBlob` | `workflow` (key), `inputBlobBytes` (that many `i` bytes) or `inputBlobText` (these exact UTF-8 bytes), `idempotencyKey?`, `correlationId?`, `traceparent?`, `deadlineInMs?` | `uploadRunInput` then `startWithBlob` | the Run; a successful upload response is refused unless the one-pass source reached EOF |
 | `get` | `run`, `token?` | `get` | the Run |
-| `list` | `status?`, `limit?`, `all?` | `list` / `listAll` | `{items: [runId…]}` in the order the server gave (newest first), also across pages |
+| `list` | `status?`, `limit?`, `all?`, `waitForCount?`, `countOnly?` | `list` / `listAll` | `{items: [runId…]}` in the order the server gave (newest first), also across pages (`countOnly`: `{count}` alone, for runs whose ids derive from their parent's and sort anywhere); `waitForCount` lists again (up to 100 times, 50 ms apart) until the page holds that many runs, for a state the scheduler produces (a hand-off) |
 | `listApprovals` | `run`, `cursor?`, `limit?`, `waitForItem?`, `traceparent?`, `token?` | `listApprovals` | the typed page in immutable opening order |
 | `cancel` | `run`, `reason`, `expectedRunVersion?` | `cancel` | `{accepted, runStatus}` |
-| `operate` | `run`, `action`, `reason`, … | `operate` | `{accepted, runStatus}` |
+| `operate` | `run`, `action`, `reason`, … | `operate` | `{accepted, runStatus}`, plus `newRunId` for `RERUN_AS_NEW`; a later step may name that run with `"run": "<this step>"` |
 | `decideApproval` | `approvalId` or `approval` (a list step), `decisionKey`, `decision`, `reasonCode?`, `traceparent?`, `token?` | `decideApproval` | the normalized durable receipt |
 | `query` | `run`, `name`, `args`, `traceparent?`, `token?` | `query` | `{runVersion, stateRevision, result}` |
 | `queryChain` | `namespaceId`, `chainId`, `name`, `args`, `expectedRunId?`, `traceparent?`, `token?` | `queryChain` | `{runId, runVersion, stateRevision, result}` |
 | `update` | `run`, `name`, `args`, `updateKey`, `expectedStateRevision?`, `traceparent?`, `token?` | `update` | the normalized durable receipt |
 | `updateChain` | `namespaceId`, `chainId`, `name`, `args`, `updateKey`, `expectedRunId?`, `expectedStateRevision?`, `traceparent?`, `token?` | `updateChain` | the normalized durable receipt, including the resolved `runId` and `replayed` flag |
-| `inspectChain` | `namespaceId`, `chainId`, `traceparent?`, `token?` | `inspectChain` | current head and ordered segments |
+| `inspectChain` | `namespaceId`, `chainId`, `waitForHeadChange?`, `traceparent?`, `token?` | `inspectChain` | current head and ordered segments; `waitForHeadChange` (a `{{currentRunId:step}}`) inspects again until the head is another run |
 | `signalChain` | `namespaceId`, `chainId`, `expectedRunId`, `name`, `payload`, `idempotencyKey?`, `traceparent?`, `token?` | `signalChain` | `{deliveredTo}` |
 | `cancelChain` | `namespaceId`, `chainId`, `expectedRunId`, `reason`, `idempotencyKey?`, `traceparent?`, `token?` | `cancelChain` | `{accepted: true}` |
 | `signal` | `run`, `name`, `payload` | `signal` | `{deliveredTo}` |
@@ -445,7 +448,8 @@ stop the scenario.
 
 A result is a plain JSON object with the fields named here. A **Run** is exactly
 `{runId, workflowId, versionId, status, version, paused, startedBy, createdAt, updatedAt, finishedAt,
-deadline, traceId, correlationId, depth, parent}`.
+deadline, traceId, correlationId, depth, parent}`, plus `chain` for a run in a continuation chain and `rerunOf` for a
+run started again from an ended one (both only when present).
 
 ### Faults
 

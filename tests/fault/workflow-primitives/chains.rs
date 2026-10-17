@@ -1634,3 +1634,313 @@ async fn a_lost_wake_of_the_parent_after_a_child_chain_ends_is_found_again_and_r
     );
     family.world.assert_consistent(family.parent).await;
 }
+
+// -------------------------------------------------- a continuation that starts with an event wait
+
+use sagat_application::events::PublishRequest;
+use sagat_domain::events::EventId;
+use sagat_domain::execution::CorrelationKey;
+use sagat_domain::workflow::EventType;
+
+fn root_wait(name: &str) -> Value {
+    json!({
+        "apiVersion": "sagat-octopus-orchestrator.io/v1",
+        "kind": "Workflow",
+        "metadata": {"name": name},
+        "entrypoint": "release",
+        "nodes": [
+            {
+                "id": "release", "type": "waitEvent", "eventType": "chain.release",
+                "correlationExpr": "input.key", "timeoutMs": 600_000, "next": "rollover"
+            },
+            {"id": "rollover", "type": "continueAsNew", "input": "input.next"}
+        ],
+        "chainPolicy": {"maxSegments": 4, "timeoutMs": 3_600_000}
+    })
+}
+
+/// A chain whose entry wait was woken by a signal: the boundary is pending and no wait is open.
+async fn woken_wait(name: &str) -> (Arc<crate::support::engine::World>, RunId, Arc<Sched>) {
+    let world = world().await;
+    let workflow_name = format!("chain-{name}-{}", Uuid::now_v7());
+    let (workflow, _) = world.publish(root_wait(&workflow_name)).await;
+    let chain = world
+        .start(
+            workflow,
+            &json!({"key": "order-1", "next": {"key": "order-2", "next": {"key": "order-3"}}}),
+        )
+        .await;
+    commands(&world)
+        .signal(
+            &world.admin,
+            world.namespace.id(),
+            chain,
+            Some(chain),
+            "chain.release",
+            br#"{"released":true}"#,
+            &format!("woken-{name}"),
+            &ctx(),
+        )
+        .await
+        .expect("wake the entry wait");
+    let placement = placement(&world, name).await;
+    let scheduler = Arc::new(scheduler(&world, placement));
+    (Arc::new(world), chain, scheduler)
+}
+
+fn release_signal(
+    world: Arc<crate::support::engine::World>,
+    chain: RunId,
+    expected: Option<RunId>,
+    key: &'static str,
+) -> tokio::task::JoinHandle<Result<Vec<NodeId>, AppError>> {
+    tokio::spawn(async move {
+        commands(&world)
+            .signal(
+                &world.admin,
+                world.namespace.id(),
+                chain,
+                expected,
+                "chain.release",
+                br#"{"released":true}"#,
+                key,
+                &ctx(),
+            )
+            .await
+    })
+}
+
+async fn subscriptions(world: &crate::support::engine::World, chain: RunId) -> i64 {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM steps WHERE tenant_id=$1 AND status='WAITING' \
+           AND waiting_kind='EVENT' AND run_id<>$2 AND run_id IN \
+           (SELECT run_id FROM chain_segments WHERE tenant_id=$1 AND chain_id=$2)",
+    )
+    .bind(world.admin.tenant_id().as_uuid())
+    .bind(chain.as_uuid())
+    .fetch_one(&world.db.pool)
+    .await
+    .expect("subscriptions of the successors")
+}
+
+#[tokio::test]
+async fn a_signal_and_the_hand_off_of_a_wait_chain_commit_in_either_order_and_the_next_signal_is_not_lost()
+ {
+    // Signal first: the boundary has no open wait, so the signal is refused and not buffered; the
+    // hand-off then commits, and a signal sent to the new head finds the wait the hand-off opened.
+    let (world, chain, scheduler) = woken_wait("wait-signal-first").await;
+    let gate = Gate::on_chain(&world.db.pool, world.admin.tenant_id().as_uuid(), chain).await;
+    let early = release_signal(world.clone(), chain, Some(chain), "wait-race-early");
+    until_blocked(&world.db.pool, 1).await;
+    let moving = tokio::spawn(handoff(scheduler, world.clone(), chain));
+    until_blocked(&world.db.pool, 2).await;
+    gate.release().await;
+    assert_eq!(
+        early.await.expect("task"),
+        Err(AppError::StateConflict(
+            "the chain head is not waiting for that signal"
+        ))
+    );
+    assert!(moving.await.expect("task").is_ok());
+    let (head, segments, _, _) = chain_state(&world, chain).await;
+    let successor = RunId::new(head);
+    assert_eq!(segments, 2);
+    assert_eq!(count_events(&world, successor, "wait.satisfied").await, 0);
+    assert_eq!(subscriptions(&world, chain).await, 1);
+    let delivered = release_signal(world.clone(), chain, Some(successor), "wait-race-late")
+        .await
+        .expect("task")
+        .expect("the successor's wait is open at once");
+    assert_eq!(delivered.len(), 1);
+    assert_eq!(count_events(&world, successor, "wait.satisfied").await, 1);
+    world.assert_consistent(successor).await;
+
+    // Hand-off first: a signal fenced to the old head finds it replaced; one that names no head,
+    // queued behind the hand-off, reaches the wait the hand-off opened. Neither is lost or doubled.
+    let (world, chain, scheduler) = woken_wait("wait-handoff-first").await;
+    let gate = Gate::inside_the_write(
+        &world.db.pool,
+        world.admin.tenant_id(),
+        world.namespace.id(),
+    )
+    .await;
+    let moving = tokio::spawn(handoff(scheduler, world.clone(), chain));
+    until_blocked(&world.db.pool, 1).await;
+    let stale = release_signal(world.clone(), chain, Some(chain), "wait-race-stale");
+    until_blocked(&world.db.pool, 2).await;
+    let unfenced = release_signal(world.clone(), chain, None, "wait-race-unfenced");
+    until_blocked(&world.db.pool, 3).await;
+    gate.release().await;
+    assert!(moving.await.expect("task").is_ok());
+    assert_eq!(
+        stale.await.expect("task"),
+        Err(AppError::StateConflict("the chain head changed"))
+    );
+    let delivered = unfenced
+        .await
+        .expect("task")
+        .expect("the signal queued behind the hand-off reaches the successor's wait");
+    assert_eq!(delivered.len(), 1);
+    let (head, segments, _, _) = chain_state(&world, chain).await;
+    let successor = RunId::new(head);
+    assert_eq!(segments, 2);
+    assert_eq!(count_events(&world, successor, "wait.satisfied").await, 1);
+    assert_eq!(
+        count_events(&world, chain, "wait.satisfied").await,
+        1,
+        "the predecessor's wait was satisfied once, by the signal that woke it"
+    );
+    world.assert_consistent(successor).await;
+}
+
+#[tokio::test]
+async fn a_failed_hand_off_of_a_wait_chain_leaves_no_subscription_and_the_retry_writes_one() {
+    let (world, chain, scheduler) = woken_wait("wait-rollback").await;
+    sqlx::raw_sql(
+        "CREATE FUNCTION reject_wait_handoff_outbox() RETURNS trigger LANGUAGE plpgsql AS $$ \
+         BEGIN RAISE EXCEPTION 'injected handoff outbox failure'; END $$; \
+         CREATE TRIGGER reject_wait_handoff_outbox BEFORE INSERT ON event_outbox \
+         FOR EACH ROW WHEN (NEW.event_type='run.continued') \
+         EXECUTE FUNCTION reject_wait_handoff_outbox()",
+    )
+    .execute(&world.db.pool)
+    .await
+    .expect("install the hand-off fault");
+    assert!(
+        handoff(scheduler.clone(), world.clone(), chain)
+            .await
+            .is_err()
+    );
+    // The step row, the run and the journal of the successor were written before the fault, and
+    // all of them are gone: no subscription survives a hand-off that did not commit.
+    assert_eq!(subscriptions(&world, chain).await, 0);
+    assert_eq!(
+        chain_state(&world, chain).await,
+        (chain.as_uuid(), 1, false, None)
+    );
+    let strays: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM steps WHERE tenant_id=$1 AND waiting_kind='EVENT' AND run_id<>$2",
+    )
+    .bind(world.admin.tenant_id().as_uuid())
+    .bind(chain.as_uuid())
+    .fetch_one(&world.db.pool)
+    .await
+    .expect("stray waits");
+    assert_eq!(strays, 0);
+
+    sqlx::raw_sql(
+        "DROP TRIGGER reject_wait_handoff_outbox ON event_outbox; \
+         DROP FUNCTION reject_wait_handoff_outbox()",
+    )
+    .execute(&world.db.pool)
+    .await
+    .expect("remove the hand-off fault");
+    let committed = handoff(scheduler.clone(), world.clone(), chain)
+        .await
+        .expect("retry");
+    assert!(!committed.replayed());
+    assert_eq!(subscriptions(&world, chain).await, 1);
+    assert_eq!(chain_state(&world, chain).await.1, 2);
+    let repeat = handoff(scheduler, world.clone(), chain).await;
+    assert!(
+        matches!(repeat, Err(ContinuationAdvanceError::NotContinuation)),
+        "{repeat:?}"
+    );
+    assert_eq!(subscriptions(&world, chain).await, 1, "still one");
+    world.assert_consistent(chain).await;
+}
+
+#[tokio::test]
+async fn a_restart_between_the_hand_off_and_the_event_still_wakes_the_successor_once() {
+    let (world, chain, scheduler) = woken_wait("wait-restart").await;
+    assert!(handoff(scheduler, world.clone(), chain).await.is_ok());
+    let successor = RunId::new(chain_state(&world, chain).await.0);
+    let hints: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM event_outbox WHERE tenant_id=$1 AND aggregate_id=$2 \
+           AND event_type='task.ready'",
+    )
+    .bind(world.admin.tenant_id().as_uuid())
+    .bind(successor.as_uuid())
+    .fetch_one(&world.db.pool)
+    .await
+    .expect("hints");
+    assert_eq!(
+        hints, 0,
+        "there is no hint to lose: the wait is the row itself"
+    );
+
+    // Everything in memory is gone: a new process, new pools, new scheduler shards and a new
+    // dispatcher find the wait in the database and nowhere else.
+    let restarted = world.replica().await;
+    sqlx::query(
+        "UPDATE scheduler_shards SET expires_at=clock_timestamp()-interval '1 second' \
+         WHERE expires_at>clock_timestamp()",
+    )
+    .execute(&world.db.pool)
+    .await
+    .expect("expire the crashed scheduler leases");
+    // Its membership lapses with the leases. A dead process that still counts as a live replica
+    // leaves the new one entitled to about half of the shards, and the chain may be in the other half.
+    sqlx::query("UPDATE scheduler_members SET expires_at=now()-interval '1 second'")
+        .execute(&world.db.pool)
+        .await
+        .expect("expire the crashed scheduler membership");
+    let restarted_placement =
+        Placement::new(format!("chain-fault-wait-restart-{}", Uuid::now_v7()));
+    Keeper::new(
+        restarted.store.clone(),
+        restarted_placement.clone(),
+        KeeperSettings {
+            ttl: Duration::from_secs(60),
+        },
+    )
+    .round()
+    .await
+    .expect("restart acquires the scheduler shards");
+    let dispatcher = sagat_scheduler::EventDispatcher::new(
+        restarted.store.clone(),
+        Engine::new(JsonEvaluator),
+        SystemEntropy,
+        sagat_application::execution::DefinitionCache::new(
+            Arc::new(sagat_infra_ir::JsonIrCodec),
+            64,
+        ),
+        sagat_scheduler::EventDispatchSettings::default(),
+    );
+    world
+        .events
+        .publish(
+            &world.admin,
+            PublishRequest {
+                namespace: "payments".to_owned(),
+                event_id: Some(EventId::parse("restart-event").expect("id")),
+                event_type: EventType::parse("chain.release").expect("type"),
+                subject: None,
+                correlation_key: Some(CorrelationKey::parse("order-2").expect("key")),
+                occurred_at: None,
+                data: br#"{"released":true}"#.to_vec(),
+                dedupe_ttl: None,
+            },
+            &ctx(),
+        )
+        .await
+        .expect("the event arrives after the restart");
+    let round = dispatcher.tick().await;
+    assert_eq!(round.steps_woken, 1, "{round:?}");
+    let again = dispatcher.tick().await;
+    assert_eq!(again.steps_woken, 0, "{again:?}");
+    assert_eq!(count_events(&world, successor, "wait.satisfied").await, 1);
+    let next = Scheduler::new(
+        restarted.store.clone(),
+        Engine::new(JsonEvaluator),
+        SystemEntropy,
+        SchedulerSettings::default(),
+    )
+    .with_placement(restarted_placement)
+    .tick()
+    .await;
+    assert_eq!(next.continuations_advanced, 1, "{next:?}");
+    assert_eq!(next.failed, 0, "{next:?}");
+    assert_eq!(chain_state(&world, chain).await.1, 3);
+    world.assert_consistent(successor).await;
+}

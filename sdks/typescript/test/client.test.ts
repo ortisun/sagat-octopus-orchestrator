@@ -376,12 +376,32 @@ test('no answer at all is a retryable transport error, and a lost answer is retr
 test('cancel and signal are operations with a reason and a payload and the result is typed', async () => {
   prepare((req, res) => (req.url.endsWith('/operations') ? reply(res, 202, { operationId: 'op-1', accepted: true, runStatus: 'CANCELLING', runVersion: 9 }) : reply(res, 202, { deliveredTo: ['wait'] })));
   const cancelled = await client().cancel('0190aaaa-0000-7000-8000-000000000001', 'no longer needed', { expectedRunVersion: 3 });
-  assert.deepEqual({ ...cancelled, raw: undefined }, { operationId: 'op-1', accepted: true, runStatus: 'CANCELLING', runVersion: 9, raw: undefined });
+  assert.deepEqual({ ...cancelled, raw: undefined }, { operationId: 'op-1', accepted: true, runStatus: 'CANCELLING', runVersion: 9, newRunId: null, raw: undefined });
   assert.deepEqual(seen[0]?.body, { action: 'CANCEL', reason: 'no longer needed', expectedRunVersion: 3 });
   const signalled = await client().signal('0190aaaa-0000-7000-8000-000000000001', 'payment-confirmed', { paymentId: 'p-1' });
   assert.deepEqual(signalled.deliveredTo, ['wait']);
   assert.equal(seen[1]?.url, '/v1/runs/0190aaaa-0000-7000-8000-000000000001/signals/payment-confirmed');
   assert.deepEqual(seen[1]?.body, { paymentId: 'p-1' });
+});
+
+test('RERUN_AS_NEW is an operation whose answer names the new run, and the new run names its origin', async () => {
+  const ended = '0190aaaa-0000-7000-8000-000000000001';
+  const started = '0190aaaa-0000-7000-8000-000000000021';
+  prepare((req, res) => (req.url.endsWith('/operations')
+    ? reply(res, 202, { operationId: 'op-2', accepted: true, runStatus: 'SUCCEEDED', runVersion: 9, newRunId: started })
+    : reply(res, 200, run({ runId: started, rerunOf: ended }))));
+  const rerun = await client().rerunAsNew(ended, 'run it again after the fix', { idempotencyKey: 'rerun-key-001' });
+  assert.deepEqual({ ...rerun, raw: undefined }, { operationId: 'op-2', accepted: true, runStatus: 'SUCCEEDED', runVersion: 9, newRunId: started, raw: undefined });
+  assert.equal(seen[0]?.url, `/v1/runs/${ended}/operations`);
+  assert.deepEqual(seen[0]?.body, { action: 'RERUN_AS_NEW', reason: 'run it again after the fix' });
+  assert.equal(seen[0]?.headers['idempotency-key'], 'rerun-key-001');
+  const again = await client().get(started);
+  assert.equal(again.rerunOf, ended);
+  prepare((_req, res) => reply(res, 200, run()));
+  assert.equal((await client().get(started)).rerunOf, null);
+  // `operate` takes the same action by name.
+  prepare((_req, res) => reply(res, 202, { operationId: 'op-3', accepted: true, runStatus: 'SUCCEEDED', runVersion: 9, newRunId: started }));
+  assert.equal((await client().operate(ended, 'RERUN_AS_NEW', 'run it again after the fix')).newRunId, started);
 });
 
 test('waiting for completion polls until the run is terminal', async () => {

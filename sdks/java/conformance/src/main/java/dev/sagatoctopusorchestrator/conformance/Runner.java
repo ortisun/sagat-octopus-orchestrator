@@ -467,6 +467,10 @@ public final class Runner {
             if (run.chain().completionKind() == null) chain.putNull("completionKind"); else chain.put("completionKind", run.chain().completionKind());
             if (run.chain().successorRunId() == null) chain.putNull("successorRunId"); else chain.put("successorRunId", run.chain().successorRunId());
         }
+        // Present only for a run started again from an ended one.
+        if (run.rerunOf() != null) {
+            out.put("rerunOf", run.rerunOf());
+        }
         return out;
     }
 
@@ -670,8 +674,9 @@ public final class Runner {
             }
             return items.get(index).get("runId").textValue();
         }
+        // A rerun answers "newRunId" and no "runId": the step then names the run it started.
         JsonNode result = results.get(step.path("run").asText());
-        JsonNode id = result == null ? null : result.get("runId");
+        JsonNode id = result == null ? null : (result.has("runId") ? result.get("runId") : result.get("newRunId"));
         if (id == null || !id.isTextual()) {
             throw new IllegalStateException("step " + step.path("run").asText() + " has no run");
         }
@@ -781,11 +786,24 @@ public final class Runner {
                 if (step.path("all").asBoolean(false)) {
                     client.listAll(options).forEach(run -> ids.add(run.runId()));
                 } else {
-                    // In the order the server gave (newest first): the SDK keeps it, also across pages.
-                    client.list(options).items().forEach(run -> ids.add(run.runId()));
+                    // "waitForCount": the runs of a chain are made by the scheduler, so a scenario that needs a
+                    // hand-off to have happened waits for it by the count of runs in a status.
+                    for (int attempt = 0; ; attempt++) {
+                        ids.removeAll();
+                        // In the order the server gave (newest first): the SDK keeps it, also across pages.
+                        client.list(options).items().forEach(run -> ids.add(run.runId()));
+                        if (ids.size() >= step.path("waitForCount").asInt(0) || attempt >= 100) break;
+                        Thread.sleep(50);
+                    }
                 }
                 ObjectNode result = F.objectNode();
-                result.set("items", ids);
+                // "countOnly" answers the number alone, for runs whose ids are derived from their parent's and so
+                // sort anywhere.
+                if (step.path("countOnly").asBoolean(false)) {
+                    result.put("count", ids.size());
+                } else {
+                    result.set("items", ids);
+                }
                 return result;
             }
             case "listApprovals": {
@@ -1157,6 +1175,10 @@ public final class Runner {
         ObjectNode result = F.objectNode();
         result.put("accepted", r.accepted());
         result.put("runStatus", r.runStatus());
+        // "newRunId" only for the action that starts a run, so the other operations observe as they did.
+        if (r.newRunId() != null) {
+            result.put("newRunId", r.newRunId());
+        }
         return result;
     }
 

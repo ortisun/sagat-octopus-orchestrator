@@ -297,6 +297,9 @@ def run_json(run: Run) -> Obj:
             "completionKind": run.chain.completion_kind,
             "successorRunId": run.chain.successor_run_id,
         }
+    # Present only for a run started again from an ended one.
+    if run.rerun_of is not None:
+        observed["rerunOf"] = run.rerun_of
     return observed
 
 
@@ -561,7 +564,9 @@ async def run(scenario: Obj, config: Obj) -> Obj:
             if not isinstance(items, list) or not 0 <= index < len(items) or not isinstance(items[index], dict):
                 raise ValueError(f"step {step['page']} has no segment {index}")
             return str(items[index]["runId"])
-        found = results.get(step["run"], {}).get("runId")
+        # A rerun answers `newRunId` and no `runId`: the step then names the run it started.
+        named = results.get(step["run"], {})
+        found = named.get("runId", named.get("newRunId"))
         if not isinstance(found, str):
             raise ValueError(f"step {step['run']} has no run")
         return found
@@ -647,8 +652,17 @@ async def run(scenario: Obj, config: Obj) -> Obj:
                     else:
                         page = await client.list(status=step.get("status"), limit=step.get("limit"))
                         ids.extend(item.run_id for item in page.items)
-                    # In the order the server gave (newest first): the SDK keeps it, also across pages.
-                    result = {"items": ids}
+                        # `waitForCount`: the runs of a chain are made by the scheduler, so a scenario that needs a
+                        # hand-off to have happened waits for it by the count of runs in a status.
+                        for _ in range(100):
+                            if len(ids) >= step.get("waitForCount", 0):
+                                break
+                            await asyncio.sleep(0.05)
+                            page = await client.list(status=step.get("status"), limit=step.get("limit"))
+                            ids = [item.run_id for item in page.items]
+                    # In the order the server gave (newest first): the SDK keeps it, also across pages. `countOnly`
+                    # answers the number alone, for runs whose ids are derived from their parent's and so sort anywhere.
+                    result = {"count": len(ids)} if step.get("countOnly") else {"items": ids}
                 elif op == "listApprovals":
                     approval_page = await client.list_approvals(
                         run_of(step),
@@ -701,6 +715,9 @@ async def run(scenario: Obj, config: Obj) -> Obj:
                         error_code=step.get("errorCode"),
                     )
                     result = {"accepted": operated.accepted, "runStatus": operated.run_status}
+                    # `newRunId` only for the action that starts a run, so the other operations observe as they did.
+                    if operated.new_run_id is not None:
+                        result["newRunId"] = operated.new_run_id
                 elif op == "decideApproval":
                     receipt = await client.decide_approval(
                         approval_of(step),

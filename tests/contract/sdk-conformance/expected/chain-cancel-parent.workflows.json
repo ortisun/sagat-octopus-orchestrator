@@ -1,0 +1,79 @@
+{
+  "canonical": {
+    "kid": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"chainPolicy\":{\"maxSegments\":3,\"timeoutMs\":86400000},\"entrypoint\":\"hold\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"chain-hold-kid-runtime\"},\"nodes\":[{\"correlationExpr\":\"input.key\",\"eventType\":\"chain.hold\",\"id\":\"hold\",\"next\":\"roll\",\"timeoutMs\":600000,\"type\":\"waitEvent\"},{\"id\":\"roll\",\"input\":\"input\",\"type\":\"continueAsNew\"}]}",
+    "loose": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"kid\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"chain-hold-loose-runtime\"},\"nodes\":[{\"cancelPolicy\":\"detach\",\"id\":\"kid\",\"input\":\"input.kid\",\"next\":\"done\",\"type\":\"child\",\"workflowId\":\"chain-hold-kid-runtime\"},{\"id\":\"done\",\"type\":\"end\"}]}",
+    "mother": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"kid\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"chain-hold-mother-runtime\"},\"nodes\":[{\"id\":\"kid\",\"input\":\"input.kid\",\"next\":\"done\",\"type\":\"child\",\"workflowId\":\"chain-hold-kid-runtime\"},{\"id\":\"done\",\"type\":\"end\"}]}"
+  },
+  "workflows": {
+    "kid": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "chainPolicy": {
+        "maxSegments": 3,
+        "timeoutMs": 86400000
+      },
+      "entrypoint": "hold",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "chain-hold-kid-runtime"
+      },
+      "nodes": [
+        {
+          "correlationExpr": "input.key",
+          "eventType": "chain.hold",
+          "id": "hold",
+          "next": "roll",
+          "timeoutMs": 600000,
+          "type": "waitEvent"
+        },
+        {
+          "id": "roll",
+          "input": "input",
+          "type": "continueAsNew"
+        }
+      ]
+    },
+    "loose": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "kid",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "chain-hold-loose-runtime"
+      },
+      "nodes": [
+        {
+          "cancelPolicy": "detach",
+          "id": "kid",
+          "input": "input.kid",
+          "next": "done",
+          "type": "child",
+          "workflowId": "chain-hold-kid-runtime"
+        },
+        {
+          "id": "done",
+          "type": "end"
+        }
+      ]
+    },
+    "mother": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "kid",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "chain-hold-mother-runtime"
+      },
+      "nodes": [
+        {
+          "id": "kid",
+          "input": "input.kid",
+          "next": "done",
+          "type": "child",
+          "workflowId": "chain-hold-kid-runtime"
+        },
+        {
+          "id": "done",
+          "type": "end"
+        }
+      ]
+    }
+  }
+}

@@ -40,6 +40,8 @@ export interface Run {
    * process outcome, which is the chain's `finalOutcome` (`waitForChainCompletion`).
    */
   chain: RunChainSegment | null;
+  /** The ended run this one was started again from (`RERUN_AS_NEW`), or null for a run that is not a rerun. */
+  rerunOf: string | null;
   /** The answer as the server sent it, so a field of a newer server is reachable. */
   raw: Record<string, unknown>;
 }
@@ -94,6 +96,8 @@ export interface OperationResult {
   accepted: boolean;
   runStatus: string | null;
   runVersion: number | null;
+  /** For `RERUN_AS_NEW`: the run that was started, which names its origin in `rerunOf`. Null for any other action. */
+  newRunId: string | null;
   raw: Record<string, unknown>;
 }
 
@@ -364,6 +368,7 @@ export function toRun(value: unknown): Run {
       ? { runId: String(parent['runId']), node: String(parent['node']), cancelPolicy: String(parent['cancelPolicy']) }
       : null,
     chain: toRunChain(raw['chain']),
+    rerunOf: optStr(raw, 'rerunOf'),
     raw,
   };
 }
@@ -556,7 +561,7 @@ export class SagatClient {
 
   async operate(
     runId: string,
-    action: 'PAUSE' | 'RESUME' | 'CANCEL' | 'RETRY_STEP' | 'RETRY_COMPENSATION' | 'SKIP_COMPENSATION' | 'RESOLVE_STEP',
+    action: 'PAUSE' | 'RESUME' | 'CANCEL' | 'RETRY_STEP' | 'RETRY_COMPENSATION' | 'SKIP_COMPENSATION' | 'RESOLVE_STEP' | 'RERUN_AS_NEW',
     reason: string,
     options: CallOptions & { stepId?: string; outcome?: 'SUCCEEDED' | 'FAILED'; errorCode?: string; expectedRunVersion?: number } = {},
   ): Promise<OperationResult> {
@@ -579,8 +584,19 @@ export class SagatClient {
       accepted: raw['accepted'] === true,
       runStatus: optStr(raw, 'runStatus'),
       runVersion: typeof raw['runVersion'] === 'number' ? raw['runVersion'] : null,
+      newRunId: optStr(raw, 'newRunId'),
       raw,
     };
+  }
+
+  /**
+   * Starts a new run of the same version, with the same input and correlation id, from a run that ended
+   * (needs `run:operate` and `run:start`; a run that has not ended is refused with `CONFLICT`). The answer's
+   * `newRunId` is the new run, which names its origin in `rerunOf`; a segment of a continuation chain starts
+   * a run with a chain of its own.
+   */
+  rerunAsNew(runId: string, reason: string, options: CallOptions = {}): Promise<OperationResult> {
+    return this.operate(runId, 'RERUN_AS_NEW', reason, options);
   }
 
   /** Cancels a run (the server's reason has 8 to 2000 characters). */

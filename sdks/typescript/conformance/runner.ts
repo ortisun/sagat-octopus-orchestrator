@@ -119,6 +119,8 @@ function runJson(run: Run): Obj {
     depth: run.depth, parent: run.parent,
     // Present only for a run in a chain, so the observations of every other run stay as they were.
     ...(run.chain ? { chain: run.chain } : {}),
+    // Present only for a run started again from an ended one.
+    ...(run.rerunOf ? { rerunOf: run.rerunOf } : {}),
   };
 }
 
@@ -366,8 +368,9 @@ async function run(scenario: Obj, config: Obj): Promise<Obj> {
       if (typeof id !== 'string') throw new Error(`step ${String(step['page'])} has no segment ${String(step['index'])}`);
       return id;
     }
+    // A rerun answers `newRunId` and no `runId`: the step then names the run it started.
     const result = results.get(step['run']);
-    const id = result?.['runId'];
+    const id = result?.['runId'] ?? result?.['newRunId'];
     if (typeof id !== 'string') throw new Error(`step ${String(step['run'])} has no run`);
     return id;
   };
@@ -430,9 +433,17 @@ async function run(scenario: Obj, config: Obj): Promise<Obj> {
             for await (const item of client.listAll({ status: step['status'], limit: step['limit'] })) ids.push(item.runId);
           } else {
             ids.push(...(await client.list({ status: step['status'], limit: step['limit'] })).items.map((r) => r.runId));
+            // `waitForCount`: the runs of a chain are made by the scheduler, so a scenario that needs a hand-off
+            // to have happened waits for it by the count of runs in a status, as inspectChain waits for a head.
+            for (let attempt = 0; attempt < 100 && ids.length < (step['waitForCount'] ?? 0); attempt++) {
+              await new Promise((resolve) => setTimeout(resolve, 50));
+              ids.length = 0;
+              ids.push(...(await client.list({ status: step['status'], limit: step['limit'] })).items.map((r) => r.runId));
+            }
           }
-          // In the order the server gave (newest first): the SDK keeps it, also across pages.
-          result = { items: ids };
+          // In the order the server gave (newest first): the SDK keeps it, also across pages. `countOnly` answers
+          // the number alone, for runs whose ids are derived from their parent's and so sort anywhere.
+          result = step['countOnly'] ? { count: ids.length } : { items: ids };
           break;
         }
         case 'listApprovals': {
@@ -454,7 +465,8 @@ async function run(scenario: Obj, config: Obj): Promise<Obj> {
         }
         case 'operate': {
           const r = await client.operate(runOf(step), step['action'], step['reason'], { stepId: step['stepId'], outcome: step['outcome'], errorCode: step['errorCode'] });
-          result = { accepted: r.accepted, runStatus: r.runStatus };
+          // `newRunId` only for the action that starts a run, so the other operations observe as they did.
+          result = { accepted: r.accepted, runStatus: r.runStatus, ...(r.newRunId ? { newRunId: r.newRunId } : {}) };
           break;
         }
         case 'decideApproval': {
