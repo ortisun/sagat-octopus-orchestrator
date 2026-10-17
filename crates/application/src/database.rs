@@ -27,6 +27,25 @@ pub struct ConnectionRecord {
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
+/// Metadata selected under current run/ACL locks. It is compared again after provider I/O.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DatabaseInput {
+    pub connection: ConnectionRecord,
+    pub operation: sagat_domain::database::DatabaseOperation,
+    pub secret: crate::secrets::StoredSecret,
+    /// Current authority even when the attempt has pinned an older retained credential.
+    pub current_secret_version: Uuid,
+}
+
+/// A lease-bound capability for the isolated executor. Provider routing stays in the server.
+#[derive(Debug)]
+pub struct ResolvedDatabase {
+    pub connection: ConnectionRecord,
+    pub operation: sagat_domain::database::DatabaseOperation,
+    pub credential: crate::worker::ResolvedSecret,
+    pub expires_at: OffsetDateTime,
+}
+
 #[derive(Debug, Clone)]
 pub struct ConnectionWrite {
     pub name: Slug,

@@ -8,6 +8,8 @@
 //! [`AppError::StaleAttempt`] and changes nothing, although the external effect it describes may
 //! have happened (hence idempotency keys).
 
+mod database;
+
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
@@ -16,7 +18,7 @@ use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::execution::{
     self, FailureCode, Fence, Progress, RunEvent, RunId, RunStatus, StepStatus,
 };
-use sagat_domain::identity::{NamespaceId, Permission, Principal, Slug, TenantId};
+use sagat_domain::identity::{NamespaceId, Permission, Principal, Role, Slug, TenantId};
 use sagat_domain::workflow::{ActivityName, NodeId, NodeKind};
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -41,12 +43,29 @@ use sagat_domain::secrets::{SecretCipher, SecretName, SecretValue};
 /// The newest minor version of worker protocol 1 this server speaks. Every minor version adds fields
 /// and calls and removes none, so a worker of any minor version of protocol 1 can be served
 /// (`negotiate_protocol`). 1.1 added the step identity to `Heartbeat`, 1.2 `task_kind` and
-/// `ResolveSecrets`; 1.3 adds streaming blob upload/download; 1.4 adds bounded task streams.
-pub const PROTOCOL_MINOR: u32 = 4;
+/// `ResolveSecrets`; 1.3 adds streaming blobs; 1.4 bounded task streams; 1.5 managed database capabilities.
+pub const PROTOCOL_MINOR: u32 = 5;
+/// Managed database capabilities first became available in protocol 1.5.
+pub const DATABASE_PROTOCOL_MINOR: u32 = 5;
 /// Streaming blob references first became safe to hand to workers in protocol 1.3.
 pub const BLOB_PROTOCOL_MINOR: u32 = 3;
 /// Server-streaming task receive first became available in protocol 1.4.
 pub const STREAM_PROTOCOL_MINOR: u32 = 4;
+
+/// Reserved managed activities require the dedicated machine identity and capability protocol.
+#[must_use]
+pub fn managed_capabilities_allowed(role: Role, activities: &[String], minor: u32) -> bool {
+    use sagat_domain::database::{MANAGED_DATABASE_ACTIVITY, MANAGED_DATABASE_PREFIX};
+    if role == Role::DatabaseRunner {
+        minor >= DATABASE_PROTOCOL_MINOR
+            && !activities.is_empty()
+            && activities.iter().all(|a| a == MANAGED_DATABASE_ACTIVITY)
+    } else {
+        activities
+            .iter()
+            .all(|a| !a.starts_with(MANAGED_DATABASE_PREFIX))
+    }
+}
 
 /// What registration says when it refuses the protocol version (a stable reason for SDKs).
 pub const UNSUPPORTED_PROTOCOL: &str = "unsupported protocol version";
@@ -468,6 +487,13 @@ where
                 "an advertised activity name is invalid",
             ));
         }
+        if !managed_capabilities_allowed(
+            principal.role(),
+            &capabilities.activities,
+            accepted_protocol_minor,
+        ) {
+            return Err(AppError::NotBound);
+        }
         if !(1..=1000).contains(&capabilities.max_inflight) {
             return Err(AppError::NotAllowed(
                 "max_inflight must be between 1 and 1000",
@@ -801,9 +827,9 @@ where
                 .filter(|(_, step)| step.status() == StepStatus::Ready)
                 .filter_map(|(node, _)| {
                     let n = def.node(node)?;
-                    // T017-013 opens this path only for the dedicated managed executor, under a
-                    // current-role/capability fence. Ordinary sessions cannot lease this IR type.
-                    if n.database_operation().is_some() {
+                    if n.database_operation().is_some()
+                        && session.accepted_protocol_minor < DATABASE_PROTOCOL_MINOR
+                    {
                         return None;
                     }
                     match n.kind() {
@@ -852,6 +878,46 @@ where
                 // This task fits a fresh response. Leave it READY, without consuming an attempt,
                 // and return every lease already made in this transaction.
                 break;
+            }
+            let managed = tx
+                .parts()
+                .0
+                .node(&node)
+                .is_some_and(|n| n.database_operation().is_some());
+            if managed {
+                let admitted = tx.database_claim(&node, &session.subject).await;
+                let denied = match admitted {
+                    Ok(true) => false,
+                    Ok(false)
+                    | Err(StoreError::DatabaseUnavailable | StoreError::DatabaseLimit) => true,
+                    Err(error) => return Err(error.into()),
+                };
+                if denied {
+                    metrics::counter!("database_claims_total", "outcome" => "refused").increment(1);
+                    let actor = Principal::new(
+                        session.tenant_id,
+                        sagat_domain::identity::Subject::parse(&session.subject)
+                            .map_err(|_| AppError::Internal)?,
+                        Role::DatabaseRunner,
+                    );
+                    let mut effects = Effects::by(
+                        Actor::Worker(session.subject.clone()),
+                        trace_id.map(str::to_owned),
+                    );
+                    effects.audit = Some(
+                        AuditRecord::by(
+                            &actor,
+                            AuditAction::DatabaseDenied,
+                            ResourceType::Run,
+                            run.to_string(),
+                            trace_id.map(str::to_owned),
+                            self.clock.now(),
+                        )
+                        .with_reason("managed database claim refused"),
+                    );
+                    tx.persist(&[], effects).await?;
+                    continue;
+                }
             }
             // The quota decision and READY -> LEASED transition share this run transaction. Its
             // activity-scoped lock makes concurrent pollers exact; a full activity stays ready so
@@ -1247,6 +1313,11 @@ where
                 return Err(AppError::StaleAttempt);
             }
         }
+        if writing && Self::managed_database(&mut tx, task) {
+            return Err(AppError::NotAllowed(
+                "managed database results require content scanning",
+            ));
+        }
         if writing && !Self::declared_secrets(&mut tx, task).is_empty() {
             return Err(AppError::NotAllowed(
                 "blob outputs with declared secrets require content scanning",
@@ -1334,6 +1405,13 @@ where
         }
         self.verify(&mut tx, task).await?;
         self.ensure_bound(principal, &mut tx, task).await?;
+        // T017-017 enables completion only after the pinned credential's fields and all result
+        // transports have a fail-closed scanner. A capability alone must not open result storage.
+        if Self::managed_database(&mut tx, task) {
+            return Err(AppError::NotAllowed(
+                "managed database results require content scanning",
+            ));
+        }
         if blob.is_some() {
             if task.node.is_reconciliation() || task.node.is_compensation() {
                 return Err(AppError::NotAllowed(
@@ -1622,6 +1700,15 @@ where
         }
         self.verify(&mut tx, task).await?;
         self.ensure_bound(principal, &mut tx, task).await?;
+        // Until managed result scanning ships, only these fixed outcomes may enter the journal.
+        // safe_message is discarded by the transport; an arbitrary error_code is content too.
+        if Self::managed_database(&mut tx, task)
+            && !matches!(error_code, "WORKER_ERROR" | "OUTCOME_UNKNOWN")
+        {
+            return Err(AppError::NotAllowed(
+                "managed database failures require a fixed code",
+            ));
+        }
         let mut effects = Effects::by(Actor::Worker(principal.subject().as_str().to_owned()), None);
         // The code is stored in the journal and shown to everyone who reads the run, and a
         // credential fits the characters and the length it may have (`[A-Za-z0-9_.:-]`, 64): a
@@ -1802,6 +1889,13 @@ where
             .replay(idempotency)
             .await?
             .map(|stored| parse_ack(&stored, true, task.run_id)))
+    }
+
+    fn managed_database<Tx: RunTx>(tx: &mut Tx, task: &TaskRef<'_>) -> bool {
+        tx.parts()
+            .0
+            .node(task.node)
+            .is_some_and(|n| n.database_operation().is_some())
     }
 
     /// The secrets the step declares, from its definition.
@@ -2045,6 +2139,18 @@ where
         tx: &mut Tx,
         task: &TaskRef<'_>,
     ) -> Result<(), AppError> {
+        let managed = tx
+            .parts()
+            .0
+            .node(task.node)
+            .is_some_and(|n| n.database_operation().is_some());
+        if managed
+            && !tx
+                .database_executor_owns(task.node, principal.subject().as_str())
+                .await?
+        {
+            return Err(AppError::NotBound);
+        }
         let activity = {
             let (def, _) = tx.parts();
             match def.node(task.node).map(sagat_domain::workflow::Node::kind) {

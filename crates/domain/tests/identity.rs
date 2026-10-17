@@ -10,6 +10,30 @@ use time::OffsetDateTime;
 
 const NOW: OffsetDateTime = OffsetDateTime::UNIX_EPOCH;
 
+#[test]
+fn database_executor_is_a_separate_machine_identity() {
+    let role = "database-runner"
+        .parse::<Role>()
+        .expect("managed database role");
+    assert!(role.grants(Permission::WorkerExecute));
+    assert!(role.grants(Permission::DatabaseExecute));
+    assert_ne!(role, Role::Worker);
+    assert_ne!(role, Role::Runner);
+    for permission in [
+        Permission::DatabaseManage,
+        Permission::DatabaseUse,
+        Permission::DatabaseAdHoc,
+        Permission::DatabaseWrite,
+        Permission::DatabaseResultRead,
+        Permission::SecretManage,
+        Permission::SecretUse,
+        Permission::DefinitionWrite,
+        Permission::RunStart,
+    ] {
+        assert!(!role.grants(permission), "{permission}");
+    }
+}
+
 fn slug(s: &str) -> Slug {
     Slug::parse(s).expect("valid slug")
 }
@@ -160,13 +184,14 @@ fn a_reserved_subject_violation_explains_itself() {
 
 // ------------------------------------------------------------------ RBAC
 
-const ALL_ROLES: [Role; 6] = [
+const ALL_ROLES: [Role; 7] = [
     Role::Admin,
     Role::Developer,
     Role::Operator,
     Role::Viewer,
     Role::Worker,
     Role::Runner,
+    Role::DatabaseRunner,
 ];
 
 /// The authoritative matrix, written out by hand (not derived from `Role::permissions`).
@@ -234,6 +259,7 @@ fn expected(role: Role) -> Vec<Permission> {
         ],
         Role::Worker => vec![WorkerExecute],
         Role::Runner => vec![WorkerExecute, ScriptBuild, ScriptExecute],
+        Role::DatabaseRunner => vec![WorkerExecute, Permission::DatabaseExecute],
     }
 }
 

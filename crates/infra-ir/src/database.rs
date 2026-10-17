@@ -37,8 +37,12 @@ fn value_type(kind: &str) -> Result<DatabaseType, DatabaseError> {
 
 fn literal(node: &Map<String, Value>) -> Result<TypedValue, DatabaseError> {
     let value = node.get("value").ok_or_else(invalid)?;
+    typed_value(value_type(field(node, "type")?)?, value)
+}
+
+pub(crate) fn typed_value(kind: DatabaseType, value: &Value) -> Result<TypedValue, DatabaseError> {
     let string = || value.as_str().ok_or_else(invalid);
-    let result = match value_type(field(node, "type")?)? {
+    let result = match kind {
         DatabaseType::Null if value.is_null() => TypedValue::Null,
         DatabaseType::Null => return Err(invalid()),
         DatabaseType::Boolean => TypedValue::Boolean(value.as_bool().ok_or_else(invalid)?),

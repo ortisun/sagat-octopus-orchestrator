@@ -163,3 +163,60 @@ fn typed_parameters_and_utf8_byte_ceilings_fail_closed() {
             .is_err()
     );
 }
+
+#[test]
+fn expression_parameters_preserve_precision_and_never_report_sensitive_input() {
+    use sagat_application::execution::{ExpressionEvaluator, RunData};
+    use sagat_domain::workflow::Expression;
+    use sagat_infra_ir::JsonEvaluator;
+    let parameter = |kind| Parameter::Expression {
+        value_type: kind,
+        expression: Expression::parse("input.value").expect("expression"),
+    };
+    let input = |value| RunData {
+        input: serde_json::to_vec(&json!({"value":value})).expect("json"),
+        ..RunData::default()
+    };
+    assert_eq!(
+        JsonEvaluator
+            .database_parameter(
+                &parameter(DatabaseType::Integer),
+                &input(json!("9223372036854775807"))
+            )
+            .expect("integer"),
+        TypedValue::Integer("9223372036854775807".into())
+    );
+    assert_eq!(
+        JsonEvaluator
+            .database_parameter(
+                &parameter(DatabaseType::Decimal),
+                &input(json!("12345678901234567890.123456789"))
+            )
+            .expect("decimal"),
+        TypedValue::Decimal("12345678901234567890.123456789".into())
+    );
+    for value in [
+        json!(9223372036854775807_i64),
+        json!("SENSITIVE_CANARY"),
+        json!(null),
+    ] {
+        let error = JsonEvaluator
+            .database_parameter(&parameter(DatabaseType::Integer), &input(value))
+            .expect_err("invalid integer");
+        assert!(!format!("{error:?}").contains("SENSITIVE_CANARY"));
+    }
+    assert!(
+        JsonEvaluator
+            .database_parameter(
+                &parameter(DatabaseType::Timestamp),
+                &input(json!("2026-02-30T00:00:00Z"))
+            )
+            .is_err()
+    );
+    assert_eq!(
+        JsonEvaluator
+            .database_parameter(&parameter(DatabaseType::Binary), &input(json!("AP8=")))
+            .expect("binary"),
+        TypedValue::Binary(vec![0, 255])
+    );
+}

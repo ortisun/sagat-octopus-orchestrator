@@ -707,6 +707,36 @@ where
         .await
     }
 
+    async fn resolve_database(
+        &self,
+        request: Request<pb::ResolveSecretsRequest>,
+    ) -> Result<Response<pb::ResolvedDatabase>, Status> {
+        let trace = trace_of(&request);
+        observe("ResolveDatabase", trace, async {
+            let auth = self.authenticate(&request).await?;
+            let m = request.get_ref();
+            let attempt = Attempt::parse(
+                &m.task_id,
+                &m.run_id,
+                &m.step_id,
+                m.attempt,
+                m.generation,
+                &m.lease_token,
+            )?;
+            let resolved = self
+                .workers
+                .resolve_database(
+                    &auth.session.principal,
+                    &attempt.task_ref(),
+                    Some(&trace.trace_id().to_string()),
+                )
+                .await
+                .map_err(app)?;
+            crate::database::response(resolved).map_err(app)
+        })
+        .await
+    }
+
     async fn heartbeat(
         &self,
         request: Request<pb::HeartbeatRequest>,

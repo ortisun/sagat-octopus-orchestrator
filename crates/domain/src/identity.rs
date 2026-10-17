@@ -344,11 +344,13 @@ pub enum Permission {
     DatabaseAdHoc,
     DatabaseWrite,
     DatabaseResultRead,
+    /// Resolve only a leased managed database capability; additionally requires the machine role.
+    DatabaseExecute,
 }
 
 impl Permission {
     /// Every permission, used to grant the admin role and to test the full matrix.
-    pub const ALL: [Self; 41] = [
+    pub const ALL: [Self; 42] = [
         Self::WorkspaceRead,
         Self::WorkspaceCreate,
         Self::NamespaceRead,
@@ -390,6 +392,7 @@ impl Permission {
         Self::DatabaseAdHoc,
         Self::DatabaseWrite,
         Self::DatabaseResultRead,
+        Self::DatabaseExecute,
     ];
 
     #[must_use]
@@ -436,6 +439,7 @@ impl Permission {
             Self::DatabaseAdHoc => "database:adhoc",
             Self::DatabaseWrite => "database:write",
             Self::DatabaseResultRead => "database:result:read",
+            Self::DatabaseExecute => "database:execute",
         }
     }
 }
@@ -459,6 +463,8 @@ pub enum Role {
     /// nothing else. Kept apart from [`Self::Worker`] so that a worker that serves activities
     /// never reads the source of a script.
     Runner,
+    /// Isolated executor for managed database operations. No catalog or general secret access.
+    DatabaseRunner,
 }
 
 impl Role {
@@ -471,6 +477,7 @@ impl Role {
             Self::Viewer => "viewer",
             Self::Worker => "worker",
             Self::Runner => "runner",
+            Self::DatabaseRunner => "database-runner",
         }
     }
 
@@ -538,6 +545,7 @@ impl Role {
             ],
             Self::Worker => &[WorkerExecute],
             Self::Runner => &[WorkerExecute, ScriptBuild, ScriptExecute],
+            Self::DatabaseRunner => &[WorkerExecute, Permission::DatabaseExecute],
         }
     }
 
@@ -565,6 +573,7 @@ impl FromStr for Role {
             "viewer" => Ok(Self::Viewer),
             "worker" => Ok(Self::Worker),
             "runner" => Ok(Self::Runner),
+            "database-runner" => Ok(Self::DatabaseRunner),
             other => Err(IdentityError::UnknownRole(clip(other))),
         }
     }

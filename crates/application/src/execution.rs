@@ -201,6 +201,21 @@ pub trait ExpressionEvaluator: Send + Sync {
         data: &RunData,
     ) -> Result<Vec<u8>, ExpressionFailure>;
 
+    /// Evaluates a typed database parameter with the same bounded expression semantics as the
+    /// workflow. Integer/decimal inputs must be strings so SDK numeric coercion cannot lose bits.
+    fn database_parameter(
+        &self,
+        parameter: &sagat_domain::database::Parameter,
+        _data: &RunData,
+    ) -> Result<sagat_domain::database::TypedValue, ExpressionFailure> {
+        match parameter {
+            sagat_domain::database::Parameter::Literal(value) => Ok(value.clone()),
+            sagat_domain::database::Parameter::Expression { .. } => Err(ExpressionFailure(
+                "database parameter evaluation unavailable".into(),
+            )),
+        }
+    }
+
     /// The JSON document a worker receives as the input of `node`.
     fn task_input(&self, data: &RunData, node: &NodeId) -> Vec<u8>;
 
@@ -476,6 +491,51 @@ pub trait RunTx: Send {
         node: &NodeId,
         token_hash: &[u8],
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    /// Exact current machine role/session ownership; ordinary workers cannot borrow a managed lease.
+    fn database_executor_owns(
+        &mut self,
+        _node: &NodeId,
+        _subject: &str,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
+        async { Ok(false) }
+    }
+
+    /// Current connection/publisher/initiator admission and exact connection/namespace/tenant
+    /// concurrency reservation in the lease transaction. Unsupported stores fail closed.
+    fn database_claim(
+        &mut self,
+        _node: &NodeId,
+        _subject: &str,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
+        async { Ok(false) }
+    }
+
+    /// Selected immutable connection and credential metadata; no provider I/O occurs here.
+    fn database_input(
+        &mut self,
+        _node: &NodeId,
+        _subject: &str,
+    ) -> impl Future<Output = Result<crate::database::DatabaseInput, StoreError>> + Send {
+        async { Err(StoreError::DatabaseUnavailable) }
+    }
+
+    /// Records the credential before returning its value. The pin is immutable for this attempt.
+    fn pin_database_credential(
+        &mut self,
+        _node: &NodeId,
+        _secret: &StoredSecret,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        async { Err(StoreError::DatabaseUnavailable) }
+    }
+
+    /// Credential evidence survives logical rotation/deletion until attempt/result retention ends.
+    fn database_credential(
+        &mut self,
+        _node: &NodeId,
+    ) -> impl Future<Output = Result<Option<StoredSecret>, StoreError>> + Send {
+        async { Ok(None) }
+    }
 
     /// Whether the circuit breaker of the compensations of `activity` lets one be leased now.
     ///

@@ -2300,7 +2300,7 @@ export interface components {
             tenant: string;
             subject: string;
             /** @enum {string} */
-            role: "admin" | "developer" | "operator" | "viewer";
+            role: "admin" | "developer" | "operator" | "viewer" | "worker" | "runner" | "database-runner";
             permissions: string[];
             traceId: string;
         };

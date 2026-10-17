@@ -453,17 +453,18 @@ pub async fn start_with(options: Options) -> TestApi {
         exec = exec.with_stream_limits(limits);
     }
     // The worker protocol shares the REST API's identity, budgets and database.
-    let mut grpc = WorkerGrpc::new(
-        exec.clone(),
-        WorkerService::new(
-            executions.clone(),
-            SystemClock,
-            Engine::new(JsonEvaluator),
-            SystemEntropy,
-            options.worker,
-        )
-        .with_vault(keys.cipher()),
-    );
+    let mut workers = WorkerService::new(
+        executions.clone(),
+        SystemClock,
+        Engine::new(JsonEvaluator),
+        SystemEntropy,
+        options.worker,
+    )
+    .with_vault(keys.cipher());
+    if let Some(provider) = &options.secret_provider {
+        workers = workers.with_secret_provider(provider.clone());
+    }
+    let mut grpc = WorkerGrpc::new(exec.clone(), workers);
     if let Some(blobs) = &blobs {
         grpc = grpc.with_blobs(blobs.clone(), options.blob_transfer);
     }

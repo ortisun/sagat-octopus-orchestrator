@@ -3294,7 +3294,7 @@ components:
       properties:
         tenant: {type: string, description: Slug of the caller's tenant.}
         subject: {type: string}
-        role: {type: string, enum: [admin, developer, operator, viewer]}
+        role: {type: string, enum: [admin, developer, operator, viewer, worker, runner, database-runner]}
         permissions:
           type: array
           items: {type: string, example: 'workspace:read'}

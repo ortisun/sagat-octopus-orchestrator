@@ -109,10 +109,26 @@ pub async fn run(
         .unwrap();
     assert_eq!(revision(w, run).await, 1);
     rollback_and_acl_fence(w, run, developer.subject().as_str()).await;
-    let session = w.session(&[MANAGED_DATABASE_ACTIVITY]).await;
+    w.bind_everything(&w.worker).await;
     assert!(
-        w.poll(&session, 1).await.is_empty(),
-        "ordinary wildcard worker cannot lease a database node"
+        matches!(
+            w.workers
+                .register(
+                    &w.worker,
+                    "payments",
+                    "ordinary-database-worker",
+                    &sagat_application::worker::Capabilities {
+                        activities: vec![MANAGED_DATABASE_ACTIVITY.into()],
+                        languages: vec![],
+                        pools: vec![],
+                        max_inflight: 1,
+                        protocol_version: "1.5".into()
+                    }
+                )
+                .await,
+            Err(AppError::NotBound)
+        ),
+        "ordinary wildcard worker cannot register a managed activity"
     );
 
     write.expected_revision = 1;
