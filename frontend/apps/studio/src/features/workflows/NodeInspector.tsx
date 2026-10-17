@@ -9,6 +9,7 @@ import { Button } from '../../ui/Button';
 import { Field } from '../../ui/Field';
 import { FieldEditor } from './fields';
 import type { Change } from './fields';
+import { DatabaseFields } from './DatabaseFields';
 import { ScriptPicker } from './ScriptPicker';
 
 export interface NodeNote {
@@ -178,6 +179,8 @@ export const NodeInspector = forwardRef(function NodeInspector(
       {spec && !spec.runs ? <Banner tone="warn">The platform cannot run this node yet; you can draw it but not publish it.</Banner> : null}
 
       <RenameField node={node} disabled={disabled} rename={actions.rename} />
+
+      {node.type === 'database' ? <DatabaseFields node={node} disabled={disabled} change={actions.change} /> : null}
 
       {(spec?.fields ?? []).map((field) => (
         <div key={field.name}>

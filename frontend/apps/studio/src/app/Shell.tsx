@@ -9,6 +9,7 @@ const NAV = [
   { to: '/runs', label: 'Runs' },
   { to: '/operations', label: 'Operations' },
   { to: '/scripts', label: 'Scripts' },
+  { to: '/database-executions', label: 'Ad hoc database' },
   { to: '/connections', label: 'Connections' },
   { to: '/secrets', label: 'Secrets' },
   { to: '/integrations', label: 'Integrations' },

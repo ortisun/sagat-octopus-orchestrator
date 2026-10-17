@@ -283,3 +283,51 @@ retain the same transaction and lock order. No UPDATE privileges were added.
 - Clippy for both integration targets passed after the privilege assertions.
 - Independent review of the functions and all call sites found no Required/Critical
   findings; the reviewer did not run tests.
+
+## 2026-10-17 — Studio managed authoring, execution and results (T017-021/022)
+
+- Registered the canonical database node in the existing visual editor, with a namespace catalog
+  picker, revision, query/write choice, SQL, typed bindings and limits. Nested expression bindings
+  follow node renames and participate in dangling-reference advice. Invalid/inexact JSON cannot
+  silently submit an older or rounded value. Selected draft/version API responses also reject
+  unsafe numbers before the editor can autosave them.
+- Added a temporary ad hoc list/inspector editor (supported kinds, links, input, deadline,
+  undo/redo) and connection probe/status dialog. Origins label/filter private runs without trying
+  to read their hidden normal definitions. Runtime graph exposes authored type `database`, with
+  no statement, values or connection credential reference; real HTTP assertions cover this.
+- The initial independent review found a wrong timeout field, unsafe numeric conversion,
+  uncertainty lost after later refusals/navigation, and missing success-receipt validation.
+  These are fixed. Session-scoped immutable intents retain body/key across navigation, preserve
+  ambiguity after 403/404/429, cap retained requests, clear on session end, and require a run
+  receipt before accepting success. Tests include empty 201 bodies and remount recovery.
+- Result reads require explicit permission/action; owned component state is cleared on close,
+  identity/namespace/run changes. Complete responses are capped at 4 MiB/30 seconds; error bodies
+  are capped at 64 KiB and 401 clears the session without reading a body. Review caught and fixed
+  the initial unbounded error-body path. A chunked never-ending 502 test proves bounded cancellation.
+  Results preserve exact numeric tokens, duplicate column names and escaped text, paginate rows/
+  columns and bound long-cell previews. No result data enters React Query or browser storage.
+- Added pinned MIT `lossless-json@4.3.2` for pre-conversion authoring validation and lossless result
+  display, following its [primary API documentation](https://github.com/josdejong/lossless-json).
+- Studio regression before the final selected-response/error-body additions: **1,131 passed**
+  across **82 files** (24.14 s). Focused authoring/command/result/API tests after safe draft parsing:
+  **24 passed** (1.47 s). Final result/error-body focused suite: **5 passed** (0.69 s).
+- Real HTTP feature regression after the runtime node-kind change: **3 passed** (12.69 s).
+- Real Chromium harness with PostgreSQL 16, OpenBao 2.7.1, runtime-role API and separate runner:
+  **4 journeys passed** (13.9 s; Rust harness 18.23 s). Covered catalog partial-save recovery,
+  active probe success, paused probe refusal, write committed then empty acknowledgement, SPA
+  navigation/retry returning the same run (target independently has exactly one row), reload/run
+  recovery, a two-query workflow with input/output expressions and exact integer/decimal/JSON
+  results, a published UI-authored node, viewer/developer permissions, and refused DDL with safe
+  durable failure. Zero page errors in monitored journeys; Axe checks at 320/768/1440 px passed
+  with no page overflow. Result-table and mobile editor screenshots were visually inspected.
+- Generated OpenAPI/Studio parity passed. Production build passed. Initial regression failures
+  were three expected navigation/palette-count changes; assertions were updated. Initial lint
+  caught unsafe object stringification and redundant test casts; both were corrected.
+- Independent read-only review reported no remaining Required/Critical findings after the bounded
+  error-body fix; reviewer ran no builds/tests. Deployment, cleanup, remaining policy ceilings and
+  final whole-delivery gates are still tracked separately below.
+
+Final checks for this Studio checkpoint: **1,133 tests passed** across **82 files** (22.75 s),
+TypeScript typecheck and ESLint passed, and Clippy with `-D warnings` passed for the HTTP crate and
+both modified Rust integration/browser targets. The final bounded error path has its focused unit
+coverage above; full deployment/SDK/crash gates remain T017-023/024/025.

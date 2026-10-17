@@ -91,3 +91,43 @@ audit and request receipt share one transaction. `database_executions_total` lab
 closed origin/outcome set; `database_execution_denials_total` counts safe refusals. Existing
 admission and runner metrics/traces describe capacity, authorization and actual execution.
 The runner deployment requirements remain in the [runner runbook](../runbooks/database-runner.md).
+
+## Use the Studio
+
+1. In **Connections**, create or select a PostgreSQL connection and its OpenBao secret. Activate
+   the connection when it is ready for execution. **Probe / status** shows the latest tested
+   revision; **Start probe** creates a durable read-only check.
+2. In a normal workflow editor, add a **Database** node. Select the connection, optional revision,
+   query/write operation, SQL and typed parameter bindings. Publish through the usual workflow
+   controls. The resulting definition uses the same contract as the five SDKs.
+3. In **Ad hoc database**, choose a single step or workflow. Workflows support the existing node
+   list, connection controls, rename, undo/redo and inspector. **Add node** offers only the supported
+   ad hoc kinds. Provide JSON input and run timeout, then choose **Run execution**.
+4. Open the accepted run. In its graph or table, select a succeeded database node and choose
+   **Read database result**. This button requires explicit result-reading permission; run metadata
+   permission alone does not show rows. **Origin** in the Runs list finds ad hoc/probe executions.
+
+Parameters are an ordered JSON array. Use quoted strings for exact integers and decimals:
+
+```json
+[
+  {"literal": {"type": "integer", "value": "9223372036854775807"}},
+  {"type": "text", "expression": "input.customerName"}
+]
+```
+
+The editor refuses numeric JSON tokens it cannot represent exactly. Existing SDK/API definitions
+with such numbers are refused before editing/autosave; adjust their exact numeric representation
+through the SDK/API first. Database result cells retain their numeric text, including JSON values.
+The result table pages through 25 rows and 12 columns; long cell previews explicitly show their
+2,000-character display limit. This does not indicate server truncation of the retained result.
+There is no export action. Closing the view or changing session/namespace clears its displayed
+contents; result rows are not stored in the query cache or browser storage.
+
+If an acknowledgement is uncertain, **Retry same execution** resends the original body and key.
+The fields remain fixed. The request survives navigation and namespace switches within the same
+session, with at most eight pending requests of 2 MiB each. A later permission/rate refusal cannot
+unlock a potentially committed write. After successful recovery, **New execution** explicitly
+starts a new intent. Signing out or reloading clears session memory; use Runs to locate/reconcile
+an earlier execution before submitting another write. Credentials, SQL and input are not persisted
+in browser storage for recovery.

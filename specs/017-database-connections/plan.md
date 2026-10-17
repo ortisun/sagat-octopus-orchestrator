@@ -89,3 +89,24 @@ authorized and audited.
 See `tasks.md`. Each checkpoint records actual commands and outcomes in `verification.md`; unchecked tasks are not shipped guarantees. Start with provider configuration/path/error/redaction tests and real OpenBao CAS/retry behavior. Then durable provisioning and catalog tests against PostgreSQL, then managed execution, API, SDK parity and UI. Add integration/fault targets under `tests` and reuse the repository's Postgres fixtures. Reuse the same contract fixtures in all five SDKs.
 
 Required release evidence: current tenant/ACL checks; crash before/after provider write and activation; concurrent rotation; provider outage with no fallback; legacy migration fence; connection revision pinning; ordinary-worker denial; query/write/cancellation/unknown outcome; result disclosure and canary checks; real browser save/probe/ad hoc flow; shared TypeScript/Go/Python/C#/Java conformance; bounded telemetry; production network/TLS profile and restore drill. Do not label pending tests successful.
+
+## Studio managed execution controls (T017-021/022)
+
+- Register the authored `database` node in the shared visual editor. Use the same
+  connection reference, typed parameter JSON and finite limits contract as the SDKs.
+  Incomplete JSON remains an invalid draft; it must never submit an older valid value.
+  Nested parameter expressions participate in rename and dangling-reference checks.
+- Compose the ad hoc editor from the existing node list/inspector/connect controls;
+  omit triggers, autosave and public workflow identity. Preserve uncertain requests
+  (body + idempotency key) in bounded session memory across SPA/namespace navigation.
+  Later access/rate refusals cannot resolve prior uncertainty. Clear on session end;
+  browser reload does not retain SQL and requires locating/reconciling the existing run.
+- Probe controls submit only a connection revision and show the durable probe run,
+  safe failure and tested revision. Saving or admitting a probe is not a health claim.
+- Runtime graph nodes expose authored type `database`, without SQL, values or credential
+  references. Private run origins replace broken normal-definition links and permit
+  run-list filtering. Ordinary metadata views still disclose no database results.
+- Results are fetched only on explicit authorized action into ephemeral component
+  state. Bound the complete response to 4 MiB/30 seconds, clear on close/scope/session
+  change, paginate rows/columns and bound cell previews. Preserve numeric JSON tokens
+  using pinned lossless-json; reject unsafe authoring numbers before conversion.

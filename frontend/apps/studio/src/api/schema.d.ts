@@ -2758,6 +2758,7 @@ export interface components {
         };
         RuntimeNode: {
             id: string;
+            /** @description Authored node kind. Managed PostgreSQL operations use database; their internal activity name, SQL and values are not disclosed. */
             type: string;
             /** @enum {string} */
             status: "NOT_STARTED" | "PENDING" | "READY" | "LEASED" | "RUNNING" | "WAITING" | "RETRY_WAIT" | "SUCCEEDED" | "FAILED" | "CANCELLED" | "SKIPPED";

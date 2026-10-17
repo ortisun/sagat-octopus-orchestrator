@@ -3767,7 +3767,7 @@ components:
       required: [id, type, status]
       properties:
         id: {type: string}
-        type: {type: string}
+        type: {type: string, description: 'Authored node kind. Managed PostgreSQL operations use database; their internal activity name, SQL and values are not disclosed.'}
         status: {type: string, enum: [NOT_STARTED, PENDING, READY, LEASED, RUNNING, WAITING, RETRY_WAIT, SUCCEEDED, FAILED, CANCELLED, SKIPPED]}
         attempt: {type: integer}
         generation: {type: integer}

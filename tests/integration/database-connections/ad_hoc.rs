@@ -567,6 +567,28 @@ pub async fn http(api: &crate::support::api::TestApi, ns: &str, mut connection: 
     assert_eq!(response.status(), 201);
     let value = response.json::<serde_json::Value>().await.unwrap();
     assert_eq!(value["origin"], "AD_HOC_STEP");
+    let graph: serde_json::Value = api
+        .as_user(
+            Method::GET,
+            &format!("/runs/{}/graph", value["runId"].as_str().unwrap()),
+            "owner",
+            "bao-http",
+        )
+        .header("X-Octopus-Namespace", "database")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(graph["nodes"][0]["type"], "database");
+    let graph_text = graph.to_string();
+    assert!(
+        !graph_text.contains("SELECT")
+            && !graph_text.contains("statement")
+            && !graph_text.contains("orders-db")
+    );
+
     let retained: Vec<u8> =
         sqlx::query_scalar("SELECT document FROM workflow_versions WHERE tenant_id=$1 AND id=$2")
             .bind(tenant.as_uuid())

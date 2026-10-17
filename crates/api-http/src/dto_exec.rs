@@ -490,7 +490,7 @@ fn runtime_nodes(graph: &GraphSnapshot, wanted: impl Fn(&NodeView<'_>) -> bool) 
         let origin = node.origin();
         nodes.push(json!({
             "id": id,
-            "type": node.kind().label(),
+            "type": if node.database_operation().is_some() { "database" } else { node.kind().label() },
             "kind": if node.id().is_compensation() {
                 "COMPENSATION"
             } else if node.id().is_reconciliation() {
