@@ -151,3 +151,19 @@ fn a_disclosure_error_never_echoes_a_token_or_server_supplied_payload_value() {
         "{err}"
     );
 }
+
+#[test]
+fn disclosed_numbers_keep_the_exact_server_lexeme() {
+    let mut replies = metadata_replies();
+    replies.push(Reply::ok(
+        r#"{"kind":"disclosed","tree":{"kind":"container","type":"array","level":"public","childCount":2,"omittedChildren":0,"children":[{"ordinal":0,"node":{"kind":"value","type":"number","level":"public","value":9007199254740993}},{"ordinal":1,"node":{"kind":"value","type":"number","level":"public","value":1.0000000000000000000000000001}}]}}"#,
+    ));
+    replies.push(Reply::ok(
+        r#"{"kind":"unavailable","reason":"NO_RETAINED_PAYLOAD"}"#,
+    ));
+    let (code, out, err, _) = run(&["workflow", "inspect", RUN, "--values"], replies);
+    assert_eq!(code, 0, "{out}\n{err}");
+    assert!(out.contains("9007199254740993"), "{out}");
+    assert!(out.contains("1.0000000000000000000000000001"), "{out}");
+    assert!(!out.contains("9007199254740992"), "{out}");
+}

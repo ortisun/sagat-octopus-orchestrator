@@ -3,11 +3,13 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use serde::Deserialize;
+use serde_json::value::RawValue;
 use serde_json::{Value, json};
 
 use crate::args::Common;
 use crate::client::{CallError, Client};
-use crate::diagnostics::{Diagnostic, of_document};
+use crate::diagnostics::Diagnostic;
 use crate::manifest::{self, DocumentError};
 use crate::{
     EXIT_DONE, EXIT_FAILED, EXIT_TIMEOUT, Env, Io, credentials, namespace_of, remote, resolve,
@@ -60,8 +62,17 @@ pub(crate) async fn validate(
             return Ok(EXIT_FAILED);
         }
     };
-    let diagnostics = of_document(&loaded.document);
+    let (diagnostics, classification) = crate::diagnostics::analyze_document(&loaded.document);
     say_diagnostics(io, &diagnostics);
+    if let Some(analysis) = classification {
+        for line in crate::diagnostics::classification_report(
+            &loaded.entry.name,
+            &analysis.report,
+            analysis.report_truncated,
+        ) {
+            io.say(line);
+        }
+    }
     let errors = diagnostics.iter().filter(|d| !d.warning).count();
     if errors > 0 {
         io.warn(format!(
@@ -376,7 +387,7 @@ async fn inspect_values(
             selector["reveal"] = json!(["pii"]);
         }
         let (_, answer) = client
-            .call(
+            .call_raw(
                 "POST",
                 &format!("/runs/{}/payload-disclosures", ask.run),
                 Some(&selector),
@@ -396,18 +407,45 @@ fn closed_text<'a>(value: &'a Value, allowed: &[&str]) -> Option<&'a str> {
     value.as_str().filter(|value| allowed.contains(value))
 }
 
-fn render_disclosure(label: &str, answer: &Value, io: &mut Io<'_>) -> Result<(), String> {
+#[derive(Deserialize)]
+struct RawDisclosure {
+    tree: RawNode,
+}
+
+#[derive(Deserialize)]
+struct RawChild {
+    ordinal: u64,
+    name: Option<String>,
+    node: RawNode,
+}
+
+#[derive(Deserialize)]
+struct RawNode {
+    kind: String,
+    level: String,
+    #[serde(rename = "type")]
+    value_type: Option<String>,
+    value: Option<Box<RawValue>>,
+    #[serde(rename = "omittedChildren")]
+    omitted_children: Option<u64>,
+    children: Option<Vec<RawChild>>,
+}
+
+fn render_disclosure(label: &str, bytes: &[u8], io: &mut Io<'_>) -> Result<(), String> {
     let invalid = || "the platform's disclosure answer is not valid".to_owned();
+    let answer: Value = serde_json::from_slice(bytes).map_err(|_| invalid())?;
     match answer
         .get("kind")
         .and_then(Value::as_str)
         .ok_or_else(invalid)?
     {
         "disclosed" => {
-            let tree = answer.get("tree").ok_or_else(invalid)?;
+            let tree = serde_json::from_slice::<RawDisclosure>(bytes)
+                .map_err(|_| invalid())?
+                .tree;
             let mut lines = Vec::new();
             let mut nodes = 0_usize;
-            render_node(tree, 1, &mut nodes, &mut lines)?;
+            render_node(&tree, 1, &mut nodes, &mut lines)?;
             io.say(format!("{label} values:"));
             for line in lines {
                 io.say(line);
@@ -452,7 +490,7 @@ fn render_disclosure(label: &str, answer: &Value, io: &mut Io<'_>) -> Result<(),
 }
 
 fn render_node(
-    node: &Value,
+    node: &RawNode,
     depth: usize,
     nodes: &mut usize,
     lines: &mut Vec<String>,
@@ -465,83 +503,70 @@ fn render_node(
     }
     *nodes += 1;
     let indent = "  ".repeat(depth);
-    let level = closed_text(
-        node.get("level").ok_or_else(invalid)?,
-        &["public", "internal", "pii", "secret"],
-    )
-    .ok_or_else(invalid)?;
-    match node
-        .get("kind")
-        .and_then(Value::as_str)
-        .ok_or_else(invalid)?
-    {
+    match node.kind.as_str() {
         "withheld" => {
-            if !matches!(level, "internal" | "pii" | "secret") {
+            if !matches!(node.level.as_str(), "internal" | "pii" | "secret") {
                 return Err(invalid());
             }
-            lines.push(format!("{indent}[withheld: {level}]"));
+            lines.push(format!("{indent}[withheld: {}]", node.level));
         }
         "value" => {
-            if level == "secret" {
+            if !matches!(node.level.as_str(), "public" | "internal" | "pii") {
                 return Err(invalid());
             }
-            let kind = closed_text(
-                node.get("type").ok_or_else(invalid)?,
-                &["string", "number", "boolean", "null"],
-            )
-            .ok_or_else(invalid)?;
-            let value = node.get("value").ok_or_else(invalid)?;
-            let rendered = match (kind, value) {
-                ("string", Value::String(text)) => {
-                    serde_json::to_string(crate::printable(text).as_ref()).map_err(|_| invalid())?
+            let value_type = node.value_type.as_deref().ok_or_else(invalid)?;
+            let value = node.value.as_deref().ok_or_else(invalid)?;
+            let raw = value.get();
+            let rendered = match value_type {
+                "string" => {
+                    let text: String = serde_json::from_str(raw).map_err(|_| invalid())?;
+                    serde_json::to_string(crate::printable(&text).as_ref())
+                        .map_err(|_| invalid())?
                 }
-                ("number", Value::Number(_))
-                | ("boolean", Value::Bool(_))
-                | ("null", Value::Null) => value.to_string(),
+                "number" if sagat_application::classification::JsonNumber::parse(raw).is_ok() => {
+                    raw.to_owned()
+                }
+                "boolean" if matches!(raw, "true" | "false") => raw.to_owned(),
+                "null" if raw == "null" => raw.to_owned(),
                 _ => return Err(invalid()),
             };
-            lines.push(format!("{indent}[{level}] {rendered}"));
+            lines.push(format!("{indent}[{}] {rendered}", node.level));
         }
         "container" => {
-            if level == "secret" {
+            if !matches!(node.level.as_str(), "public" | "internal" | "pii") {
                 return Err(invalid());
             }
-            let kind = closed_text(node.get("type").ok_or_else(invalid)?, &["object", "array"])
-                .ok_or_else(invalid)?;
-            let children = node
-                .get("children")
-                .and_then(Value::as_array)
-                .ok_or_else(invalid)?;
+            let kind = node.value_type.as_deref().ok_or_else(invalid)?;
+            if !matches!(kind, "object" | "array") {
+                return Err(invalid());
+            }
+            let children = node.children.as_deref().ok_or_else(invalid)?;
             if children.len() > 128 {
                 return Err(invalid());
             }
             lines.push(format!(
-                "{indent}[{level}] {}",
+                "{indent}[{}] {}",
+                node.level,
                 if kind == "object" { "{" } else { "[" }
             ));
             for child in children {
-                let ordinal = child
-                    .get("ordinal")
-                    .and_then(Value::as_u64)
-                    .ok_or_else(invalid)?;
-                let child_node = child.get("node").ok_or_else(invalid)?;
                 let child_indent = "  ".repeat(depth + 1);
-                let name = match child.get("name") {
-                    Some(Value::String(name)) if kind == "object" => {
+                let name = match &child.name {
+                    Some(name) if kind == "object" => {
                         serde_json::to_string(name).map_err(|_| invalid())?
                     }
-                    None => format!("#{ordinal}"),
+                    None => format!("#{}", child.ordinal),
                     _ => return Err(invalid()),
                 };
                 lines.push(format!("{child_indent}{name}:"));
-                render_node(child_node, depth + 2, nodes, lines)?;
+                render_node(&child.node, depth + 2, nodes, lines)?;
             }
-            let omitted = node
-                .get("omittedChildren")
-                .and_then(Value::as_u64)
-                .ok_or_else(invalid)?;
-            if omitted > 0 {
-                lines.push(format!("{}... {omitted} omitted", "  ".repeat(depth + 1)));
+            let omitted_children = node.omitted_children.ok_or_else(invalid)?;
+            if omitted_children > 0 {
+                lines.push(format!(
+                    "{}... {omitted_children} omitted",
+                    "  ".repeat(depth + 1)
+                ));
             }
             lines.push(format!(
                 "{indent}{}",

@@ -167,3 +167,24 @@ fn namespace_resolution_failure_does_not_echo_server_text_or_the_token() {
         "{err}"
     );
 }
+
+#[test]
+fn namespace_resolution_follows_bounded_pages() {
+    let (exit, out, err, requests) = run(
+        &["namespace", "reveal-grants", "list"],
+        vec![
+            Reply::ok(r#"{"items":[],"nextCursor":"second page"}"#),
+            namespace_reply(),
+            Reply::ok(r#"{"items":[]}"#),
+        ],
+    );
+    assert_eq!(exit, 0, "{out}\n{err}");
+    let lines: Vec<_> = requests
+        .iter()
+        .map(|request| request_line(&request).to_owned())
+        .collect();
+    assert_eq!(
+        lines[1],
+        "GET /v1/namespaces?limit=50&cursor=second%20page HTTP/1.1"
+    );
+}

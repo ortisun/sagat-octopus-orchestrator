@@ -9,6 +9,7 @@ use crate::{EXIT_DONE, Env, Io, namespace_of, one_line, session};
 const PAGE_SIZE: &str = "200";
 const MAX_PAGES: usize = 2;
 const MAX_GRANTS: usize = 256;
+const MAX_NAMESPACE_PAGES: usize = 100;
 
 fn closed_error(error: CallError) -> String {
     match error {
@@ -39,21 +40,41 @@ async fn client_for_namespace(
 ) -> Result<(Client, String, String), String> {
     let namespace = namespace_of(common, env)?;
     let client = session(common, env, &namespace)?.client;
-    let (_, page) = client
-        .call("GET", "/namespaces?limit=50", None, None)
-        .await
-        .map_err(closed_error)?;
-    let id = page
-        .get("items")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "the platform's namespace page is not valid".to_owned())?
-        .iter()
-        .find(|known| known.get("slug").and_then(Value::as_str) == Some(namespace.as_str()))
-        .and_then(|known| known.get("id"))
-        .and_then(Value::as_str)
-        .filter(|id| uuid_shaped(id))
-        .map(str::to_owned)
-        .ok_or_else(|| format!("the tenant has no namespace '{namespace}'"))?;
+    let mut cursor: Option<String> = None;
+    let mut id = None;
+    for _ in 0..MAX_NAMESPACE_PAGES {
+        let mut query = vec![("limit", "50")];
+        if let Some(value) = cursor.as_deref() {
+            query.push(("cursor", value));
+        }
+        let (_, page) = client
+            .call("GET", &with_query("/namespaces", &query), None, None)
+            .await
+            .map_err(closed_error)?;
+        let items = page
+            .get("items")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "the platform's namespace page is not valid".to_owned())?;
+        id = items
+            .iter()
+            .find(|known| known.get("slug").and_then(Value::as_str) == Some(namespace.as_str()))
+            .and_then(|known| known.get("id"))
+            .and_then(Value::as_str)
+            .filter(|id| uuid_shaped(id))
+            .map(str::to_owned);
+        if id.is_some() {
+            break;
+        }
+        cursor = page
+            .get("nextCursor")
+            .and_then(Value::as_str)
+            .filter(|next| next.len() <= 1_024)
+            .map(str::to_owned);
+        if cursor.is_none() {
+            break;
+        }
+    }
+    let id = id.ok_or_else(|| format!("the tenant has no namespace '{namespace}'"))?;
     Ok((client, namespace, id))
 }
 
