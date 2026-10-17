@@ -754,10 +754,16 @@ async fn a_run_read_names_its_segment_and_whether_it_continued() {
 }
 
 #[tokio::test]
-async fn a_run_outside_any_chain_has_no_chain_key() {
-    let fixture = fixture("http-chain-plain", activity_document("http-chain-plain")).await;
-    // `fixture` made the run a chain on purpose; a second workflow run is not.
-    let name = "http-chain-plain-run";
+async fn a_continued_segment_is_an_ordinary_succeeded_run_for_a_client_that_knows_no_chains() {
+    let fixture = fixture_with_segments(
+        "http-chain-old-client",
+        activity_document("http-chain-old-client"),
+        10,
+    )
+    .await;
+    grow_chain_to(&fixture, 2).await;
+    // A run of another workflow that no chain ever touched.
+    let name = "http-chain-old-client-plain";
     let created = fixture
         .api
         .as_user(Method::POST, "/workflows", "alice", "acme")
@@ -797,14 +803,98 @@ async fn a_run_outside_any_chain_has_no_chain_key() {
             .expect("start"),
     )
     .await;
-    let run = fixture
+    let plain = json_of(
+        fixture
+            .api
+            .get_as(
+                &format!("/runs/{}", started["runId"].as_str().expect("id")),
+                "alice",
+                "acme",
+            )
+            .await,
+    )
+    .await;
+    assert!(plain.get("chain").is_none(), "{plain}");
+
+    let continued = json_of(
+        fixture
+            .api
+            .get_as(&format!("/runs/{}", fixture.chain), "alice", "acme")
+            .await,
+    )
+    .await;
+    // The predecessor reads SUCCEEDED, as it always did; nothing about its status changed...
+    assert_eq!(continued["status"], "SUCCEEDED");
+    assert_eq!(continued["chain"]["completionKind"], "CONTINUED");
+    // ...and the only difference a client that ignores unknown fields can see is the extra key.
+    let keys = |body: &Value| -> std::collections::BTreeSet<String> {
+        body.as_object().expect("object").keys().cloned().collect()
+    };
+    let extra: Vec<String> = keys(&continued)
+        .difference(&keys(&plain))
+        .cloned()
+        .collect();
+    let missing: Vec<String> = keys(&plain)
+        .difference(&keys(&continued))
+        .cloned()
+        .collect();
+    assert_eq!(extra, ["chain"]);
+    assert_eq!(missing, ["rerunOf"; 0], "no key a client parses went away");
+}
+
+#[tokio::test]
+async fn chain_commands_take_a_key_of_eight_to_one_hundred_sixty_printable_characters() {
+    // D293: the shared Idempotency-Key rule, not the 1..128 of an update or decision key.
+    let fixture = fixture("http-chain-key", waiting_document("http-chain-key")).await;
+    let path = format!("{}/signals/chain.release", chain_path(&fixture));
+    let body = json!({"expectedRunId": fixture.chain.to_string(), "payload": {"ok": true}});
+    let send = |key: String| {
+        let (fixture, path, body) = (&fixture, path.clone(), body.clone());
+        async move {
+            fixture
+                .api
+                .as_user(Method::POST, &path, "alice", "acme")
+                .header("idempotency-key", key)
+                .json(&body)
+                .send()
+                .await
+                .expect("signal")
+                .status()
+        }
+    };
+    assert_eq!(send("k".repeat(7)).await, StatusCode::BAD_REQUEST);
+    assert_eq!(send("k".repeat(161)).await, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        send("bad key 12".to_owned()).await,
+        StatusCode::BAD_REQUEST,
+        "a space"
+    );
+    assert_eq!(
+        send("k".repeat(8)).await,
+        StatusCode::ACCEPTED,
+        "eight is the least"
+    );
+    // The wait is consumed; a 160-character key passes validation and meets the head state.
+    assert_eq!(
+        send("k".repeat(160)).await,
+        StatusCode::CONFLICT,
+        "160 is the most"
+    );
+    let cancel = fixture
         .api
-        .get_as(
-            &format!("/runs/{}", started["runId"].as_str().expect("id")),
+        .as_user(
+            Method::POST,
+            &format!("{}/cancel", chain_path(&fixture)),
             "alice",
             "acme",
         )
-        .await;
-    let run = json_of(run).await;
-    assert!(run.get("chain").is_none(), "{run}");
+        .json(&json!({"expectedRunId": fixture.chain.to_string(), "reason": "key bounds"}))
+        .send()
+        .await
+        .expect("cancel without a key");
+    assert_eq!(
+        cancel.status(),
+        StatusCode::BAD_REQUEST,
+        "the key is required"
+    );
 }

@@ -827,7 +827,7 @@ async fn finished_chains_links_and_payloads_survive_every_housekeeping_pass() {
         family.scheduler.tick().await;
     }
     assert_eq!(family.chain_row().await.4.as_deref(), Some("SUCCEEDED"));
-    assert_eq!(family.link().await.2, true);
+    assert!(family.link().await.2);
 
     let ticking = crate::limits::scheduler_with(
         &family.world,
@@ -913,4 +913,283 @@ async fn finished_chains_links_and_payloads_survive_every_housekeeping_pass() {
             assert!(!may_delete, "the runtime role may delete from {table}");
         }
     }
+}
+
+fn sqlstate(error: &sqlx::Error) -> Option<String> {
+    error
+        .as_database_error()
+        .and_then(|error| error.code())
+        .map(|code| code.into_owned())
+}
+
+#[tokio::test]
+async fn the_store_itself_refuses_a_second_successor_a_second_predecessor_and_bad_bounds() {
+    let boundary = Boundary::reach("lineage").await;
+    let scheduler = scheduler(&boundary.world, "lineage").await;
+    let report = scheduler.tick().await;
+    assert_eq!(report.continuations_advanced, 1, "{report:?}");
+    let (head, count, _, _) = boundary.chain_row().await;
+    assert_eq!(count, 2);
+    let tenant = boundary.world.admin.tenant_id().as_uuid();
+    let namespace = boundary.world.namespace.id().as_uuid();
+    let pool = &boundary.world.db.pool;
+
+    // A third run claiming the first segment as its predecessor: one successor per segment.
+    let stray = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO runs (id,tenant_id,namespace_id,workflow_id,workflow_version_id,status, \
+                           run_version,input_digest,started_by,created_at,updated_at,root_run_id,depth) \
+         SELECT $3,tenant_id,namespace_id,workflow_id,workflow_version_id,'RUNNING',0,input_digest, \
+                started_by,now(),now(),$3,0 FROM runs WHERE tenant_id=$1 AND id=$2",
+    )
+    .bind(tenant)
+    .bind(head)
+    .bind(stray)
+    .execute(pool)
+    .await
+    .expect("stray run");
+    let second_successor = sqlx::query(
+        "INSERT INTO chain_segments (tenant_id,namespace_id,chain_id,segment_index,run_id, \
+                                     predecessor_run_id,created_at) \
+         VALUES ($1,$2,$3,2,$4,$5,now())",
+    )
+    .bind(tenant)
+    .bind(namespace)
+    .bind(boundary.chain.as_uuid())
+    .bind(stray)
+    .bind(boundary.chain.as_uuid())
+    .execute(pool)
+    .await
+    .expect_err("a segment has one successor");
+    assert_eq!(sqlstate(&second_successor).as_deref(), Some("23505"));
+
+    // The segment index and the limit stay inside their ranges.
+    let index = sqlx::query(
+        "INSERT INTO chain_segments (tenant_id,namespace_id,chain_id,segment_index,run_id, \
+                                     predecessor_run_id,created_at) \
+         VALUES ($1,$2,$3,10000,$4,$5,now())",
+    )
+    .bind(tenant)
+    .bind(namespace)
+    .bind(boundary.chain.as_uuid())
+    .bind(stray)
+    .bind(head)
+    .execute(pool)
+    .await
+    .expect_err("index 10000 does not exist");
+    assert_eq!(sqlstate(&index).as_deref(), Some("23514"));
+    let overrun = sqlx::query(
+        "UPDATE execution_chains SET segment_count=segment_count+5 \
+         WHERE tenant_id=$1 AND chain_id=$2",
+    )
+    .bind(tenant)
+    .bind(boundary.chain.as_uuid())
+    .execute(pool)
+    .await
+    .expect_err("more segments than the limit");
+    assert_eq!(sqlstate(&overrun).as_deref(), Some("23514"));
+
+    // The identity of a chain and the completion of a segment never change after the fact.
+    for statement in [
+        "UPDATE execution_chains SET max_segments=max_segments+1 WHERE tenant_id=$1 AND chain_id=$2",
+        "UPDATE execution_chains SET original_deadline_at=original_deadline_at+interval '1 hour' \
+         WHERE tenant_id=$1 AND chain_id=$2",
+        "UPDATE chain_segments SET completion_kind='FINAL',successor_run_id=NULL,\
+         transfer_input_digest=NULL WHERE tenant_id=$1 AND chain_id=$2 AND segment_index=0",
+    ] {
+        let refused = sqlx::query(statement)
+            .bind(tenant)
+            .bind(boundary.chain.as_uuid())
+            .execute(pool)
+            .await
+            .expect_err(statement);
+        assert!(
+            matches!(sqlstate(&refused).as_deref(), Some("23514")),
+            "{statement}: {refused}"
+        );
+    }
+    assert_eq!(boundary.chain_row().await.1, 2, "nothing changed");
+}
+
+impl Boundary {
+    /// Persists an active-run limit for the namespace, or for the whole tenant.
+    async fn limit_active_runs(&self, tenant_wide: bool, max: i64) {
+        let (resource, namespace) = if tenant_wide {
+            ("tenant_active_runs", None)
+        } else {
+            ("active_runs", Some(self.world.namespace.id().as_uuid()))
+        };
+        sqlx::query(
+            "INSERT INTO quota_limits (tenant_id,namespace_id,resource,max_value,updated_by,updated_at) \
+             VALUES ($1,$2,$3,$4,$5,now()) \
+             ON CONFLICT (tenant_id,coalesce(namespace_id,'00000000-0000-0000-0000-000000000000'::uuid),resource) \
+             DO UPDATE SET max_value=EXCLUDED.max_value,updated_at=now()",
+        )
+        .bind(self.world.admin.tenant_id().as_uuid())
+        .bind(namespace)
+        .bind(resource)
+        .bind(max)
+        .bind(self.world.admin.subject().as_str())
+        .execute(&self.world.db.pool)
+        .await
+        .expect("persist the active-run limit");
+    }
+}
+
+#[tokio::test]
+async fn a_continuation_never_outgrows_the_active_run_quota_and_waits_for_room() {
+    for tenant_wide in [false, true] {
+        let boundary = Boundary::reach(if tenant_wide {
+            "quota-tenant"
+        } else {
+            "quota-ns"
+        })
+        .await;
+        let scheduler = scheduler(&boundary.world, "quota").await;
+        let before = boundary.chain_row().await;
+
+        // No room at all: the successor would be one more active run than the limit allows.
+        boundary.limit_active_runs(tenant_wide, 0).await;
+        let report = scheduler.tick().await;
+        assert_eq!(
+            report.continuations_advanced, 0,
+            "tenant_wide={tenant_wide}: {report:?}"
+        );
+        assert_eq!(
+            report.failed, 0,
+            "waiting for room is not a failure: {report:?}"
+        );
+        assert_eq!(report.continuations_waiting, 1, "{report:?}");
+        assert_eq!(boundary.chain_row().await, before, "no partial write");
+        assert_eq!(
+            boundary.world.run_status(boundary.chain).await,
+            RunStatus::Running
+        );
+
+        // Room for exactly the run that is active: the successor replaces it, it does not add to it.
+        boundary.limit_active_runs(tenant_wide, 1).await;
+        let report = scheduler.tick().await;
+        assert_eq!(
+            report.continuations_advanced, 1,
+            "tenant_wide={tenant_wide}: {report:?}"
+        );
+        assert_eq!(boundary.chain_row().await.1, 2);
+        let active: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM chain_segments segment JOIN runs run \
+               ON run.tenant_id=segment.tenant_id AND run.id=segment.run_id \
+             WHERE segment.tenant_id=$1 AND segment.chain_id=$2 AND run.finished_at IS NULL",
+        )
+        .bind(boundary.world.admin.tenant_id().as_uuid())
+        .bind(boundary.chain.as_uuid())
+        .fetch_one(&boundary.world.db.pool)
+        .await
+        .expect("active runs of the chain");
+        assert_eq!(active, 1, "one active run before and after the hand-off");
+    }
+}
+
+#[tokio::test]
+async fn rerun_as_new_of_a_segment_starts_an_unrelated_run_with_its_own_chain() {
+    let boundary = Boundary::reach("rerun").await;
+    let scheduler = scheduler(&boundary.world, "rerun").await;
+    let report = scheduler.tick().await;
+    assert_eq!(report.continuations_advanced, 1, "{report:?}");
+    let (head, count, revision, outcome) = boundary.chain_row().await;
+    let original_deadline: time::OffsetDateTime = sqlx::query_scalar(
+        "SELECT original_deadline_at FROM execution_chains WHERE tenant_id=$1 AND chain_id=$2",
+    )
+    .bind(boundary.world.admin.tenant_id().as_uuid())
+    .bind(boundary.chain.as_uuid())
+    .fetch_one(&boundary.world.db.pool)
+    .await
+    .expect("original deadline");
+
+    // The head is still running: starting it again would do its work twice.
+    let running = boundary
+        .world
+        .runs
+        .rerun(
+            &boundary.world.admin,
+            RunId::new(head),
+            "operator asked for a rerun",
+            &format!("rerun-head-{}", Uuid::now_v7()),
+            &crate::support::engine::ctx(),
+        )
+        .await;
+    assert!(
+        matches!(
+            running,
+            Err(sagat_application::error::AppError::StateConflict(_))
+        ),
+        "{running:?}"
+    );
+
+    // The continued predecessor has ended; a rerun of it starts a run of its own.
+    let again = boundary
+        .world
+        .runs
+        .rerun(
+            &boundary.world.admin,
+            boundary.chain,
+            "operator asked for a rerun",
+            &format!("rerun-first-{}", Uuid::now_v7()),
+            &crate::support::engine::ctx(),
+        )
+        .await
+        .expect("rerun of a continued segment");
+    let fresh = again.info.run_id;
+    assert_ne!(fresh, boundary.chain);
+    assert_eq!(again.info.rerun_of, Some(boundary.chain));
+    assert_eq!(again.info.parent, None);
+    assert_eq!(
+        again.info.version_id,
+        boundary
+            .world
+            .run_record(boundary.chain)
+            .await
+            .expect("first")
+            .info
+            .version_id
+    );
+
+    // Chain lineage is a separate link: the rerun is not a member of the chain it was copied from,
+    // and that chain did not move.
+    assert_eq!(boundary.chain_row().await, (head, count, revision, outcome));
+    let member: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM chain_segments WHERE tenant_id=$1 AND chain_id=$2 AND run_id=$3)",
+    )
+    .bind(boundary.world.admin.tenant_id().as_uuid())
+    .bind(boundary.chain.as_uuid())
+    .bind(fresh.as_uuid())
+    .fetch_one(&boundary.world.db.pool)
+    .await
+    .expect("membership");
+    assert!(!member);
+    let (own_chain, own_segments, own_deadline): (Uuid, i32, time::OffsetDateTime) =
+        sqlx::query_as(
+            "SELECT chain_id,segment_count,original_deadline_at FROM execution_chains \
+         WHERE tenant_id=$1 AND chain_id=$2",
+        )
+        .bind(boundary.world.admin.tenant_id().as_uuid())
+        .bind(fresh.as_uuid())
+        .fetch_one(&boundary.world.db.pool)
+        .await
+        .expect("the rerun starts a chain of its own");
+    assert_eq!((own_chain, own_segments), (fresh.as_uuid(), 1));
+    assert!(
+        own_deadline > original_deadline,
+        "its timeout counts from its own start, not from the original chain's"
+    );
+    // The old chain's commands still address only the old chain.
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM chain_segments WHERE tenant_id=$1 AND run_id=$2"
+        )
+        .bind(boundary.world.admin.tenant_id().as_uuid())
+        .bind(fresh.as_uuid())
+        .fetch_one(&boundary.world.db.pool)
+        .await
+        .expect("segments of the rerun"),
+        1
+    );
 }

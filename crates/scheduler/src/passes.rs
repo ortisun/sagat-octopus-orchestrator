@@ -2822,6 +2822,17 @@ where
                         waiting = true;
                         Outcome::Skipped
                     }
+                    // A full namespace or tenant is a reason to wait for room, not a failure: the
+                    // successor replaces the predecessor and never takes room it does not have.
+                    Err(ContinuationAdvanceError::Progress(ChainProgressError::AtCapacity)) => {
+                        metrics::counter!(
+                            "scheduler_continuation_waits_total",
+                            "blocker" => "capacity"
+                        )
+                        .increment(1);
+                        waiting = true;
+                        Outcome::Skipped
+                    }
                     Err(
                         ContinuationAdvanceError::MissingChain
                         | ContinuationAdvanceError::NotContinuation
