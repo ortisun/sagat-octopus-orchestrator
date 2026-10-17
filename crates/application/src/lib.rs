@@ -23,6 +23,7 @@ pub mod egress;
 pub mod entropy;
 pub mod error;
 pub mod events;
+pub mod event_payloads;
 pub mod execution;
 pub mod identity;
 pub mod loop_progress;
