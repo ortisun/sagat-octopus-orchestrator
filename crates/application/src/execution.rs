@@ -460,6 +460,17 @@ pub trait RunTx: Send {
         names: &[SecretName],
     ) -> impl Future<Output = Result<SecretInputs, StoreError>> + Send;
 
+    /// The first of the declared `names` (in the order given) that lists worker pools none of
+    /// which has been granted to the worker identity `subject` in this run's namespace; `None`
+    /// when every one may be delivered to it (a secret that lists no pool, or that no longer
+    /// exists, never refuses). Read on the transaction's own connection, from the stored grants at
+    /// this moment (G48).
+    fn secret_pool_refusal(
+        &mut self,
+        names: &[SecretName],
+        subject: &str,
+    ) -> impl Future<Output = Result<Option<SecretName>, StoreError>> + Send;
+
     /// Every stored version of the declared `names` (a handful each), newest first, with the
     /// secrets that no longer exist simply absent: what an output is searched for. A value handed
     /// out earlier in the attempt may have been replaced since, so the current one is not enough.

@@ -63,10 +63,12 @@ async fn every_governance_operation_conforms_to_the_contract_on_its_normal_and_e
     let sec_t = "/namespaces/{namespaceId}/secrets";
     let sec_one_t = "/namespaces/{namespaceId}/secrets/{secretName}";
     let sec_access_t = "/namespaces/{namespaceId}/secrets/{secretName}/access";
+    let sec_pools_t = "/namespaces/{namespaceId}/secrets/{secretName}/pools";
     let sec_grant_t = "/namespaces/{namespaceId}/secrets/{secretName}/access/{subject}";
     let sec_path = format!("/namespaces/{ns}/secrets");
     let sec_one = |name: &str| format!("/namespaces/{ns}/secrets/{name}");
     let sec_access = |name: &str| format!("/namespaces/{ns}/secrets/{name}/access");
+    let sec_pools = |name: &str| format!("/namespaces/{ns}/secrets/{name}/pools");
     let sec_grant = |name: &str, who: &str| format!("/namespaces/{ns}/secrets/{name}/access/{who}");
     let incident_t = "/script-runner/incidents";
 
@@ -370,6 +372,46 @@ async fn every_governance_operation_conforms_to_the_contract_on_its_normal_and_e
             "PUT",
             bind_one_t,
             &bind_one("worker-7"),
+            alice.clone(),
+            Some(json!({"activities": ["payments.*"], "pools": ["trusted", "gpu"]})),
+            200,
+        ),
+        scenario(
+            "PUT",
+            bind_one_t,
+            &bind_one("worker-7"),
+            alice.clone(),
+            Some(json!({"activities": ["payments.*"], "pools": []})),
+            200,
+        ),
+        scenario(
+            "PUT",
+            bind_one_t,
+            &bind_one("worker-7"),
+            alice.clone(),
+            Some(json!({"activities": ["payments.*"], "pools": ["has space"]})),
+            422,
+        ),
+        scenario(
+            "PUT",
+            bind_one_t,
+            &bind_one("worker-7"),
+            alice.clone(),
+            Some(json!({"activities": ["payments.*"], "pools": "trusted"})),
+            422,
+        ),
+        scenario(
+            "PUT",
+            bind_one_t,
+            &bind_one("worker-7"),
+            dave.clone(),
+            Some(json!({"activities": ["*"], "pools": ["trusted"]})),
+            403,
+        ),
+        scenario(
+            "PUT",
+            bind_one_t,
+            &bind_one("worker-7"),
             dave.clone(),
             Some(json!({"activities": ["*"]})),
             403,
@@ -596,6 +638,112 @@ async fn every_governance_operation_conforms_to_the_contract_on_its_normal_and_e
             alice.clone(),
             None,
             404,
+        ),
+        // ---- the worker pools allowed to receive a secret
+        scenario(
+            "GET",
+            sec_pools_t,
+            &sec_pools("stripe-key"),
+            alice.clone(),
+            None,
+            200,
+        ),
+        scenario(
+            "PUT",
+            sec_pools_t,
+            &sec_pools("stripe-key"),
+            alice.clone(),
+            Some(json!({"pools": ["trusted", "gpu"]})),
+            200,
+        ),
+        scenario(
+            "GET",
+            sec_pools_t,
+            &sec_pools("stripe-key"),
+            alice.clone(),
+            None,
+            200,
+        ),
+        scenario("GET", sec_t, &sec_path, alice.clone(), None, 200),
+        scenario(
+            "GET",
+            sec_pools_t,
+            &sec_pools("stripe-key"),
+            dave.clone(),
+            None,
+            403,
+        ),
+        scenario(
+            "GET",
+            sec_pools_t,
+            &sec_pools("stripe-key"),
+            bob.clone(),
+            None,
+            404,
+        ),
+        scenario(
+            "GET",
+            sec_pools_t,
+            &sec_pools("missing-key"),
+            alice.clone(),
+            None,
+            404,
+        ),
+        scenario(
+            "PUT",
+            sec_pools_t,
+            &sec_pools("stripe-key"),
+            dave.clone(),
+            Some(json!({"pools": ["x"]})),
+            403,
+        ),
+        scenario(
+            "PUT",
+            sec_pools_t,
+            &sec_pools("stripe-key"),
+            bob.clone(),
+            Some(json!({"pools": ["x"]})),
+            404,
+        ),
+        scenario(
+            "PUT",
+            sec_pools_t,
+            &sec_pools("missing-key"),
+            alice.clone(),
+            Some(json!({"pools": ["x"]})),
+            404,
+        ),
+        scenario(
+            "PUT",
+            sec_pools_t,
+            &sec_pools("stripe-key"),
+            alice.clone(),
+            Some(json!({"pools": ["has space"]})),
+            422,
+        ),
+        scenario(
+            "PUT",
+            sec_pools_t,
+            &sec_pools("stripe-key"),
+            alice.clone(),
+            Some(json!({"pools": ["x"], "extra": 1})),
+            422,
+        ),
+        scenario(
+            "PUT",
+            sec_pools_t,
+            &sec_pools("stripe-key"),
+            alice.clone(),
+            Some(json!({})),
+            422,
+        ),
+        scenario(
+            "PUT",
+            sec_pools_t,
+            &sec_pools("stripe-key"),
+            As::Anonymous,
+            Some(json!({"pools": []})),
+            401,
         ),
         scenario(
             "DELETE",

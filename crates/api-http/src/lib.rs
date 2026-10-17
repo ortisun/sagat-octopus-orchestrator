@@ -381,6 +381,10 @@ where
                 get(gov::list_secret_access::<B<S, C, G>>),
             )
             .route(
+                "/namespaces/{namespace_id}/secrets/{name}/pools",
+                get(gov::list_secret_pools::<B<S, C, G>>).put(gov::set_secret_pools::<B<S, C, G>>),
+            )
+            .route(
                 "/namespaces/{namespace_id}/secrets/{name}/access/{subject}",
                 axum::routing::put(gov::grant_secret_access::<B<S, C, G>>)
                     .delete(gov::revoke_secret_access::<B<S, C, G>>),

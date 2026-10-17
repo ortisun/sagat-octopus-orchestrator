@@ -13,7 +13,7 @@ use crate::admission::admit;
 use crate::dto_gov::{
     ActivityQuotaBody, ActivityQuotaListBody, BindingBody, BindingListBody, EgressPolicyBody,
     QuotaBody, QuotaListBody, RevokedBody, SecretAccessBody, SecretBody, SecretListBody,
-    SetBindingBody, SetEgressPolicyBody, SetQuotaBody, SetSecretBody,
+    SecretPoolsBody, SetBindingBody, SetEgressPolicyBody, SetQuotaBody, SetSecretBody,
 };
 use crate::error::ApiError;
 use crate::extract::{ApiJson, Caller};
@@ -231,11 +231,12 @@ pub async fn bind_worker<B: Governance>(
         admitted_namespace(&state, &caller, &namespace, ApiOperation::WorkerBind).await?;
     let view = state
         .bindings()
-        .bind(
+        .bind_with_pools(
             &caller.session.principal,
             namespace,
             &subject,
             &body.activities,
+            body.pools.as_deref(),
             &caller.ctx,
         )
         .await?;
@@ -323,6 +324,39 @@ pub async fn list_secret_access<B: Governance>(
         .access(&caller.session.principal, namespace, &name, &caller.ctx)
         .await?;
     Ok(Json(SecretAccessBody { subjects }))
+}
+
+pub async fn list_secret_pools<B: Governance>(
+    caller: Caller,
+    State(state): State<B>,
+    Path((namespace, name)): Path<(String, String)>,
+) -> Result<Json<SecretPoolsBody>, ApiError> {
+    let namespace =
+        admitted_namespace(&state, &caller, &namespace, ApiOperation::SecretManage).await?;
+    let pools = secrets(&state)?
+        .pools(&caller.session.principal, namespace, &name, &caller.ctx)
+        .await?;
+    Ok(Json(SecretPoolsBody { pools }))
+}
+
+pub async fn set_secret_pools<B: Governance>(
+    caller: Caller,
+    State(state): State<B>,
+    Path((namespace, name)): Path<(String, String)>,
+    ApiJson(body): ApiJson<SecretPoolsBody>,
+) -> Result<Json<SecretPoolsBody>, ApiError> {
+    let namespace =
+        admitted_namespace(&state, &caller, &namespace, ApiOperation::SecretManage).await?;
+    let pools = secrets(&state)?
+        .set_pools(
+            &caller.session.principal,
+            namespace,
+            &name,
+            &body.pools,
+            &caller.ctx,
+        )
+        .await?;
+    Ok(Json(SecretPoolsBody { pools }))
 }
 
 pub async fn grant_secret_access<B: Governance>(

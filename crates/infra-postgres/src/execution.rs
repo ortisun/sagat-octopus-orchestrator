@@ -1164,6 +1164,21 @@ impl RunTx for PgRunTx {
         .await
     }
 
+    async fn secret_pool_refusal(
+        &mut self,
+        names: &[SecretName],
+        subject: &str,
+    ) -> Result<Option<SecretName>, StoreError> {
+        crate::secrets::pool_refusal(
+            &mut self.tx,
+            self.info.tenant_id,
+            self.info.namespace_id,
+            names,
+            subject,
+        )
+        .await
+    }
+
     async fn secret_inputs(
         &mut self,
         names: &[SecretName],

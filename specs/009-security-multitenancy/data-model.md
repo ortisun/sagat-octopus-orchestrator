@@ -17,9 +17,11 @@ Data ownership follows the bounded contexts of `docs/architecture/overview.md`, 
 | Secret | `secrets` | `(tenant, namespace, name)` unique; `current_version`; no value. Target of the composite foreign keys below. |
 | Secret version | `secret_versions` | `id` (part of the associated data), `version`, `key_id`, 12-byte `nonce`, `ciphertext` (value plus 16-byte tag, at most 16 400 bytes). The last five versions are kept. Deleted with its secret. |
 | Secret access | `secret_access` | `(secret, subject)`: who, besides administrators, may reference the secret from a workflow they publish. Deleted with its secret. |
+| Secret pool | `secret_pools` | `(secret, pool)`: a worker pool allowed to receive the secret (G48). No row means no restriction. At most 16 per secret, name `^[A-Za-z0-9._:+-]{1,64}$`. Deleted with its secret. |
+| Worker pool grant | `worker_binding_pools` | `(tenant, namespace, subject, pool)`: the pools an administrator granted to a worker identity in a namespace (G48). Replaced with the binding call that names `pools`, removed with the binding. Composite key on `(tenant, namespace)`. |
 | Egress policy | `egress_policies` | At most one row per namespace: `rules` (canonical text), `ports`, `allow_http`. No row means everything is denied. |
 | Live-lease index | `steps_leased_by_idx` | Partial index `(tenant_id, leased_by) WHERE status IN ('LEASED', 'RUNNING')`: what releasing the attempts of closed sessions reads. |
-| Audit | `audit_records` (existing) | New actions: `quota.changed`, `secret.stored`, `secret.deleted`, `secret.access_granted`, `secret.access_revoked`, `secret.resolved`, `secret.denied`, `egress.policy_changed`, `egress.denied`, `worker.bound`, `worker.unbound`, `worker.denied`; new resource types `secret`, `quota`, `egress_policy`, `worker_binding`. None carries a value. |
+| Audit | `audit_records` (existing) | New actions: `quota.changed`, `secret.stored`, `secret.deleted`, `secret.access_granted`, `secret.access_revoked`, `secret.resolved`, `secret.denied`, `secret.pools_changed`, `secret.delivery_refused`, `egress.policy_changed`, `egress.denied`, `worker.bound`, `worker.unbound`, `worker.denied`; new resource types `secret`, `quota`, `egress_policy`, `worker_binding`. None carries a value. |
 
 The workflow IR gains an optional `secrets` array on `activity` nodes (names only, at most 16, unique, `^[a-z][a-z0-9._-]{0,63}$`); it is part of the canonical document and therefore of the version's digest.
 

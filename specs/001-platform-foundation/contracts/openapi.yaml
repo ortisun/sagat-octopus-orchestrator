@@ -931,7 +931,7 @@ paths:
       tags: [Governance]
       x-implemented: '009'
       description: |
-        Replaces what the identity was bound to in this namespace. Each entry is an activity name (`payments.charge`), a prefix ending in `.*` (`payments.*`, which does not cover `payments` itself) or `*`. Sessions the new binding no longer covers are closed and the attempts they hold are released. Needs `worker:bind`. Audited.
+        Replaces what the identity was bound to in this namespace. `pools` (optional) replaces the worker pools the identity is granted: absent leaves them as they are, an empty list takes them away, and removing the binding removes them. A pool is what a secret lists to say which workers may receive it (see `setSecretPools`); repeats are dropped. Each entry is an activity name (`payments.charge`), a prefix ending in `.*` (`payments.*`, which does not cover `payments` itself) or `*`. Sessions the new binding no longer covers are closed and the attempts they hold are released. Needs `worker:bind`. Audited.
       parameters:
         - {$ref: '#/components/parameters/NamespaceId'}
         - {$ref: '#/components/parameters/WorkerSubject'}
@@ -1040,6 +1040,49 @@ paths:
         - {$ref: '#/components/parameters/SecretName'}
       responses:
         '200': {description: 'The identities on the list', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/SecretAccess'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/secrets/{secretName}/pools:
+    get:
+      operationId: listSecretPools
+      summary: The worker pools allowed to receive the secret
+      tags: [Governance]
+      x-implemented: '009'
+      description: Needs `secret:manage`. An empty list means the secret is not restricted to pools.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/SecretName'}
+      responses:
+        '200': {description: 'The pools', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/SecretPools'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    put:
+      operationId: setSecretPools
+      summary: Restrict delivery of the secret to workers of some pools
+      tags: [Governance]
+      x-implemented: '009'
+      description: |
+        Needs `secret:manage`. Replaces the list; an empty list lifts the restriction and the secret goes, as before, to every worker bound to the activity of a step that declares it. With a list, a step that declares the secret is not leased to a worker whose identity was not granted one of the pools (see `bindWorker`); the step stays available to a worker that was, and the refusal is audited (`secret.delivery_refused`, once per worker identity, run, node and attempt). `ResolveSecrets` refuses the value again on the grants of that moment, so a lease handed out earlier carries nothing. A pool is a name an administrator grants to an identity in one namespace; the `pools` a worker advertises at registration are scaling labels and play no part. Audited.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/SecretName'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SecretPools'}
+      responses:
+        '200': {description: 'The pools now in force', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/SecretPools'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '422': {$ref: '#/components/responses/ValidationError'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -3591,6 +3634,7 @@ components:
       properties:
         subject: {type: string}
         activities: {type: array, items: {type: string}, description: 'Activity names, `<prefix>.*` or `*`.'}
+        pools: {type: array, items: {type: string}, description: 'The worker pools the identity was granted in this namespace; a secret that lists pools is delivered only to identities that hold one of them.'}
         revoked: {$ref: '#/components/schemas/RevokedWorkers'}
     WorkerBindingList:
       type: object
@@ -3603,6 +3647,7 @@ components:
       required: [activities]
       properties:
         activities: {type: array, minItems: 1, maxItems: 64, items: {type: string, minLength: 1, maxLength: 130}}
+        pools: {type: array, maxItems: 16, items: {type: string, minLength: 1, maxLength: 64, pattern: '^[A-Za-z0-9._:+-]+$'}, description: 'Replaces the pools the identity is granted. Absent leaves them as they are; an empty list takes them all away. Removing the binding removes them too.'}
     Secret:
       type: object
       required: [name, version, keyId, createdBy, updatedAt]
@@ -3612,6 +3657,13 @@ components:
         keyId: {type: string, description: 'The key of the ring the current version is sealed under.'}
         createdBy: {type: string}
         updatedAt: {type: string, format: date-time}
+        pools: {type: array, items: {type: string}, description: 'The worker pools allowed to receive the secret; empty means every worker bound to the activity (see `setSecretPools`).'}
+    SecretPools:
+      type: object
+      additionalProperties: false
+      required: [pools]
+      properties:
+        pools: {type: array, maxItems: 16, items: {type: string, minLength: 1, maxLength: 64, pattern: '^[A-Za-z0-9._:+-]+$'}}
     SecretList:
       type: object
       required: [items]

@@ -16,6 +16,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
+use sagat_domain::binding::PoolError;
 use sagat_domain::identity::{NamespaceId, Permission, Principal, Role, Subject, TenantId};
 use sagat_domain::quota::QuotaResource;
 use sagat_domain::secrets::{
@@ -45,6 +46,9 @@ pub struct SecretView {
     pub key_id: String,
     pub created_by: String,
     pub updated_at: OffsetDateTime,
+    /// The worker pools allowed to receive the secret; empty means every worker bound to the
+    /// activity (G48).
+    pub pools: Vec<String>,
 }
 
 impl From<&SecretMeta> for SecretView {
@@ -55,6 +59,7 @@ impl From<&SecretMeta> for SecretView {
             key_id: meta.key_id.clone(),
             created_by: meta.created_by.clone(),
             updated_at: meta.created_at,
+            pools: Vec::new(),
         }
     }
 }
@@ -196,6 +201,35 @@ pub trait SecretStore: NamespaceDirectory + QuotaLookup {
         name: &SecretName,
     ) -> impl Future<Output = Result<Option<Vec<String>>, StoreError>> + Send;
 
+    /// The worker pools allowed to receive the secret (empty: no restriction); `None` when the
+    /// secret does not exist.
+    fn secret_pools(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        name: &SecretName,
+    ) -> impl Future<Output = Result<Option<Vec<String>>, StoreError>> + Send;
+
+    /// The pools of every restricted secret of a namespace, by secret name. A secret with no
+    /// restriction is absent.
+    fn restricted_secrets(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+    ) -> impl Future<Output = Result<Vec<(String, Vec<String>)>, StoreError>> + Send;
+
+    /// Replaces the pools allowed to receive the secret (`pools` empty lifts the restriction), with
+    /// its audit record, in one transaction. `false` when the secret does not exist.
+    fn replace_secret_pools(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        name: &SecretName,
+        pools: &[String],
+        changed_by: &str,
+        audit: &AuditRecord,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
     /// The names of the secrets of the namespace whose access list holds `subject`.
     fn names_usable_by(
         &self,
@@ -316,7 +350,13 @@ where
                 &audit,
             )
             .await?;
-        Ok(SecretView::from(&meta))
+        let mut view = SecretView::from(&meta);
+        view.pools = self
+            .store
+            .secret_pools(tenant, namespace, &name)
+            .await?
+            .unwrap_or_default();
+        Ok(view)
     }
 
     /// The secrets of a namespace, by name, without values. An administrator sees all of them;
@@ -337,8 +377,16 @@ where
         require_namespace(&self.store, &self.clock, principal, namespace, ctx).await?;
         let tenant = principal.tenant_id();
         let all = self.store.list_secrets(tenant, namespace).await?;
+        let restricted = self.store.restricted_secrets(tenant, namespace).await?;
+        let view = |secret: &SecretMeta| {
+            let mut view = SecretView::from(secret);
+            if let Some((_, pools)) = restricted.iter().find(|(n, _)| n == secret.name.as_str()) {
+                view.pools.clone_from(pools);
+            }
+            view
+        };
         if principal.authorize(Permission::SecretManage).is_ok() {
-            return Ok(all.iter().map(SecretView::from).collect());
+            return Ok(all.iter().map(view).collect());
         }
         let usable = self
             .store
@@ -347,7 +395,7 @@ where
         Ok(all
             .iter()
             .filter(|secret| usable.iter().any(|name| name == secret.name.as_str()))
-            .map(SecretView::from)
+            .map(view)
             .collect())
     }
 
@@ -487,6 +535,83 @@ where
             .access_list(principal.tenant_id(), namespace, &name)
             .await?
             .ok_or(AppError::NotFound)
+    }
+
+    /// The worker pools allowed to receive the secret; empty when it is not restricted.
+    ///
+    /// # Errors
+    /// As [`Self::delete`].
+    pub async fn pools(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+        name: &str,
+        ctx: &RequestContext,
+    ) -> Result<Vec<String>, AppError> {
+        principal.authorize(Permission::SecretManage)?;
+        let name = SecretName::parse(name).map_err(|_| AppError::NotFound)?;
+        require_namespace(&self.store, &self.clock, principal, namespace, ctx).await?;
+        self.store
+            .secret_pools(principal.tenant_id(), namespace, &name)
+            .await?
+            .ok_or(AppError::NotFound)
+    }
+
+    /// Restricts delivery of the secret to workers granted one of `pools` (an empty list lifts the
+    /// restriction). A step that declares the secret is not leased to a worker outside them, and
+    /// such a worker is refused its value even with a lease it already holds (G48). Replaces the
+    /// list; audited.
+    ///
+    /// # Errors
+    /// As [`Self::delete`], and [`AppError::NotAllowed`] for a pool name that cannot be used.
+    pub async fn set_pools(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+        name: &str,
+        pools: &[String],
+        ctx: &RequestContext,
+    ) -> Result<Vec<String>, AppError> {
+        principal.authorize(Permission::SecretManage)?;
+        let name = SecretName::parse(name).map_err(|_| AppError::NotFound)?;
+        let parsed = sagat_domain::binding::parse_pools(pools).map_err(|error| {
+            AppError::NotAllowed(match error {
+                PoolError::Count => "a secret lists at most 16 pools",
+                PoolError::InvalidName => "a pool name is 1 to 64 letters, digits or . _ - : +",
+            })
+        })?;
+        require_namespace(&self.store, &self.clock, principal, namespace, ctx).await?;
+        let texts: Vec<String> = parsed.iter().map(ToString::to_string).collect();
+        let audit = self
+            .audit(
+                principal,
+                AuditAction::SecretPoolsChanged,
+                namespace,
+                &name,
+                None,
+                ctx,
+            )
+            .with_reason(if texts.is_empty() {
+                "pools: none (not restricted)".to_owned()
+            } else {
+                format!("pools: {}", texts.join(", "))
+            });
+        if self
+            .store
+            .replace_secret_pools(
+                principal.tenant_id(),
+                namespace,
+                &name,
+                &texts,
+                principal.subject().as_str(),
+                &audit,
+            )
+            .await?
+        {
+            Ok(texts)
+        } else {
+            Err(AppError::NotFound)
+        }
     }
 
     /// Re-seals up to `limit` versions, after the cursor `after`, that are sealed under a key other

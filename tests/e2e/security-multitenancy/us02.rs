@@ -212,3 +212,87 @@ async fn without_a_binding_a_worker_cannot_even_register_and_the_status_says_why
     assert_eq!(status.code(), tonic::Code::PermissionDenied);
     assert_eq!(machine_code(&status), "NOT_BOUND");
 }
+
+#[tokio::test]
+async fn a_secret_restricted_to_a_worker_pool_is_leased_and_resolved_only_by_workers_of_that_pool()
+{
+    let p = platform().await;
+    let ns = p.namespace_id().await;
+    let (status, _) = p
+        .rest(
+            Method::PUT,
+            &format!("/namespaces/{ns}/secrets/stripe-key"),
+            Some(&json!({"value": CANARY})),
+        )
+        .await;
+    assert_eq!(status, 200);
+    let (status, set) = p
+        .rest(
+            Method::PUT,
+            &format!("/namespaces/{ns}/secrets/stripe-key/pools"),
+            Some(&json!({"pools": ["trusted"]})),
+        )
+        .await;
+    assert_eq!((status, set), (200, json!({"pools": ["trusted"]})));
+    let (_, listed) = p
+        .rest(Method::GET, &format!("/namespaces/{ns}/secrets"), None)
+        .await;
+    assert_eq!(listed["items"][0]["pools"], json!(["trusted"]));
+    let id = p
+        .publish("charge-flow", &charge_ir("charge-flow", &["stripe-key"]))
+        .await;
+    let run = p.start(&id, &json!({})).await;
+
+    // A worker bound to the activity but granted no pool is handed nothing, however often it asks.
+    let mut outsider = p.worker("oscar").await;
+    outsider.register(&["act.a"]).await;
+    for _ in 0..3 {
+        assert!(outsider.poll(8).await.is_empty());
+    }
+    assert_eq!(p.status(&run).await, "RUNNING");
+
+    // An administrator puts another identity in the pool; it takes the same step and the value.
+    let (status, bound) = p
+        .rest(
+            Method::PUT,
+            &format!("/namespaces/{ns}/worker-bindings/wendy"),
+            Some(&json!({"activities": ["*"], "pools": ["trusted"]})),
+        )
+        .await;
+    assert_eq!(status, 200, "{bound}");
+    assert_eq!(bound["pools"], json!(["trusted"]));
+    let mut insider = p.worker("wendy").await;
+    insider.register(&["act.a"]).await;
+    let lease = insider.one_task().await;
+    let secrets = insider.resolve_secrets(&lease).await.expect("resolve");
+    assert_eq!(secrets[0].value, CANARY.as_bytes());
+
+    // Taking the pool away stops the lease it holds from yielding the value again.
+    let (status, _) = p
+        .rest(
+            Method::PUT,
+            &format!("/namespaces/{ns}/worker-bindings/wendy"),
+            Some(&json!({"activities": ["*"], "pools": []})),
+        )
+        .await;
+    assert_eq!(status, 200);
+    let refused = insider
+        .resolve_secrets(&lease)
+        .await
+        .expect_err("left the pool");
+    assert_eq!(refused.code(), tonic::Code::PermissionDenied);
+    assert_eq!(machine_code(&refused), "SECRET_NOT_USABLE");
+    assert!(!refused.message().contains(CANARY));
+
+    // The refusals are on the trail, once per worker identity and stage, without the value.
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT actor, reason FROM audit_records WHERE action = 'secret.delivery_refused' \
+         ORDER BY actor, reason",
+    )
+    .fetch_all(&p.api.db.pool)
+    .await
+    .expect("audit");
+    let actors: Vec<_> = rows.iter().map(|(a, _)| a.as_str()).collect();
+    assert_eq!(actors, ["oscar", "wendy"], "{rows:?}");
+    assert!(rows.iter().all(|(_, r)| !r.contains(CANARY)));
+}

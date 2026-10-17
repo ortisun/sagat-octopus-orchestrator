@@ -674,6 +674,7 @@ where
             .await?;
         let mut claimed = Vec::new();
         self.claim(
+            principal,
             &session,
             &Token::hash_of(session_token),
             candidates,
@@ -697,6 +698,7 @@ where
     #[allow(clippy::too_many_arguments)] // task, byte and authority budgets travel together
     async fn claim(
         &self,
+        principal: &Principal,
         session: &SessionRecord,
         session_token_hash: &[u8],
         candidates: Vec<RunId>,
@@ -715,6 +717,7 @@ where
             }
             match self
                 .claim_run(
+                    principal,
                     session,
                     session_token_hash,
                     run,
@@ -747,6 +750,7 @@ where
     #[allow(clippy::too_many_arguments)] // one run receives the same bounded claim context
     async fn claim_run(
         &self,
+        principal: &Principal,
         session: &SessionRecord,
         session_token_hash: &[u8],
         run: RunId,
@@ -817,6 +821,27 @@ where
             // breaker holds back must not use up the place of one that can run.
             if *bytes + run_bytes >= byte_budget || leased.len() >= remaining {
                 break;
+            }
+            // A secret that lists worker pools is not delivered to a worker outside them, so the
+            // step is not handed to it either: it stays READY, without spending an attempt, for a
+            // worker that may have the value (G48). Judged on the grants as they are in this
+            // transaction, before any quota is reserved for the step.
+            let declared = Self::declared_secrets_of(&mut tx, &node);
+            if !declared.is_empty()
+                && let Some(withheld) = tx.secret_pool_refusal(&declared, &session.subject).await?
+            {
+                let attempt = tx
+                    .parts()
+                    .1
+                    .step(&node)
+                    .map_or(0, sagat_domain::execution::StepState::attempt)
+                    .saturating_add(1);
+                let effects = self.pool_refusal_effects(
+                    principal, &tx, &node, attempt, &withheld, "lease", trace_id,
+                );
+                tx.persist(&[], effects).await?;
+                metrics::counter!("secret_delivery_refused_total", "stage" => "lease").increment(1);
+                continue;
             }
             // Measure the actual serialized context before granting any lease. Raw output sizes
             // do not bound it: JSON number normalization can expand a compact stored document.
@@ -1788,10 +1813,51 @@ where
 
     /// The secrets the step declares, from its definition.
     fn declared_secrets<Tx: RunTx>(tx: &mut Tx, task: &TaskRef<'_>) -> Vec<SecretName> {
+        Self::declared_secrets_of(tx, task.node)
+    }
+
+    fn declared_secrets_of<Tx: RunTx>(tx: &mut Tx, node: &NodeId) -> Vec<SecretName> {
         let (def, _) = tx.parts();
-        def.node(task.node)
+        def.node(node)
             .map(|node| node.secrets().to_vec())
             .unwrap_or_default()
+    }
+
+    /// The audit of a secret withheld from a worker outside its pools. It names the secret, the
+    /// node and the attempt and never a value or a pool. The audit table keeps the first of
+    /// identical events (same worker identity, run, node, attempt and stage), so a worker that
+    /// polls every half second leaves one row, not one per poll, and a retry (a new attempt) is a
+    /// new event; at most a hundred different ones per worker and run.
+    #[allow(clippy::too_many_arguments)] // one refusal is described by who, what, which and when
+    fn pool_refusal_effects<Tx: RunTx>(
+        &self,
+        principal: &Principal,
+        tx: &Tx,
+        node: &NodeId,
+        attempt: u32,
+        withheld: &SecretName,
+        stage: &str,
+        trace_id: Option<&str>,
+    ) -> Effects {
+        let info = tx.info();
+        let mut effects = Effects::by(
+            Actor::Worker(principal.subject().as_str().to_owned()),
+            trace_id.map(str::to_owned),
+        );
+        effects.audit = Some(
+            AuditRecord::by(
+                principal,
+                AuditAction::SecretDeliveryRefused,
+                ResourceType::Secret,
+                format!("{}/run {}", info.namespace_id, info.run_id),
+                trace_id.map(str::to_owned),
+                self.clock.now(),
+            )
+            .with_reason(format!(
+                "node {node} attempt {attempt}: {withheld} is not delivered outside its worker pools (at {stage})"
+            )),
+        );
+        effects
     }
 
     /// Hands a worker the values of the secrets its step declares, for the length of the attempt it
@@ -1834,6 +1900,29 @@ where
         let names = Self::declared_secrets(&mut tx, task);
         if names.is_empty() {
             return Ok(Vec::new());
+        }
+        // The pools are judged again here, on the grants of this moment: a lease handed out before a
+        // secret was restricted, or before the worker's grant was taken away, does not carry the
+        // value (G48).
+        if let Some(withheld) = tx
+            .secret_pool_refusal(&names, principal.subject().as_str())
+            .await?
+        {
+            let effects = self.pool_refusal_effects(
+                principal,
+                &tx,
+                task.node,
+                task.fence.attempt,
+                &withheld,
+                "resolve",
+                trace_id,
+            );
+            tx.persist(&[], effects).await?;
+            tx.commit().await?;
+            metrics::counter!("secret_delivery_refused_total", "stage" => "resolve").increment(1);
+            return Err(AppError::SecretUnavailable {
+                name: withheld.to_string(),
+            });
         }
         let info = tx.info().clone();
         let inputs = tx.secret_inputs(&names).await?;
