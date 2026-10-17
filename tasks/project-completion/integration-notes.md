@@ -434,3 +434,21 @@ Focused Clippy passed with warnings denied for `integration_workflow_primitives`
 explicit dereferences at the real audit insert boundary were removed. Two test helpers now mark
 their intentional test panics/expect calls consistently with the other fixtures; production lints
 remain unchanged. This focused check is not the full workspace/all-targets T016-054 gate.
+
+
+### Expanded Chromium disclosure lifetime gate
+
+The expanded real-browser journey passed 1/1 (2.6 s browser / 6.24 s actual API/PG harness) in
+`/tmp/sagat-completion-disclosure-browser-expanded-2.log`. It repeats explicit confirmed reveals
+and verifies clearing on panel close, navigation, run change, session replacement and tenant
+replacement. It reads actual IndexedDB records as well as local/session storage and checks every
+captured completed JSON API response for the secret canary. The original role matrix (viewer,
+developer, operator, granted developer) remains asserted. The new foreign-tenant transition first
+encountered an expected workflow-list 404 because that fixture had no namespace; the fixture now
+creates its own namespace via the foreign administrator API, preserving the no-browser-errors gate.
+The source compiles with `npm run typecheck --workspace @sagat/e2e`.
+
+Command: `SAGAT_STUDIO_NO_SANDBOX=1 SAGAT_STUDIO_REBUILD=0
+SAGAT_STUDIO_GREP='viewer, developer, operator and revealer' cargo test --locked
+-p sagat-tests --test e2e_workflow_studio -- --ignored journeys --nocapture`. As before, the
+unrelated sandbox journey is explicitly excluded; this is not full Studio acceptance.
