@@ -445,3 +445,77 @@ class in the statements the stores issue today; the audit exists for the next on
   dead code that would fail as the runtime role. Both are allowlisted with that reason. If the weight
   should be settable with the runtime role, `tenant_scheduling` needs a column-level `INSERT`/`UPDATE` and
   a `DELETE` grant in a new migration and the entries come out of `ALLOWED`.
+
+## Decisions of the operations fault increment
+
+Task T014-033. The fault cases live in `tests/fault/workflow-primitives/operations.rs` and its child
+modules in `tests/fault/workflow-primitives/operations/` (`races`, `crash`, `mutability`, `query_invariance`,
+`redaction`, with the shared fixture in `engine`). They do not repeat an integration test: each is a
+separate scenario against real PostgreSQL.
+
+- **D360 — A race is ordered by the database's lock queue, never by a sleep.** The test takes the row
+  lock of the run in a transaction of its own, starts the first contender, waits until PostgreSQL reports a
+  backend in a `Lock` wait (`pg_stat_activity.wait_event_type`), starts the second, waits for two, and only
+  then lets go. The first contender is queued ahead of the second, so both commit orders are forced and
+  each is observable: an Update that ran first returns `0` for a step that completed after it and `7` for
+  one that completed before, and the journal carries `state.updated` before or after `step.completed`,
+  `timer.fired` or `wait.timed_out`. Contenders: Update against a worker completion, a firing timer and a
+  wait timeout (both orders each), and two deliveries of one update key. A contender that finishes while
+  the row is held fails the test, so a contender that never queued cannot pass.
+- **D361 — A crash is the two ways the database sees a client die.** (a) The Update future is dropped
+  after its Nth pending poll for every N from one until the update completes (33 cut points today, 10 of
+  them after the commit and 23 before), on a one-connection pool, each on a run of its own. (b) The
+  connection is ended with `pg_terminate_backend`, once while the Update waits for the run lock and once
+  inside the serialized section after the decision is made (a gate in the evaluate callback, on a thread
+  and runtime of its own because the gate blocks its thread). After every case: the state revision,
+  receipt, `state.updated` event, outbox row and applied-update audit row stand or fall together, no
+  session is idle in a transaction and `now()` moves on the connection, and a new pool and store replay the
+  same key to exactly one receipt (`replayed` is true exactly when the first attempt had committed) and
+  `verify_run` agrees.
+- **D362 — Query invariance is proven against a control run, not against a list of columns.** Two runs
+  of one workflow take the same three writers (a completion, a firing timer, the final completion); the
+  probed run has a burst of Queries queued on the run lock together with each writer and so races it. After
+  every writer the probed run's status, run version, journal, step rows, row count of every table with a
+  `run_id` column, outbox and non-Query audit rows equal the control's. With the writers quiet, a further
+  burst leaves every row of every such table, and the run row, byte for byte as it was (`updated_at`
+  included). Every answer is a committed version and one coherent snapshot: the completed result shows
+  from the version that committed it on. A second test shows the two detectors see a one-microsecond
+  timestamp change and one extra journal event.
+- **D363 — The Query access audit collapses repeats.** `insert_audit` writes an identical repeated access
+  once, so a burst of Queries leaves one `run.queried` row per operation asked, not one per Query. The
+  test asserts that (one row for `balance.read`, one for `work.read`, none for the control run). The audit
+  therefore cannot be used to count how often a run was read.
+- **D364 — A refused Update is not remembered, and a receipt outlives the run.** In every status except
+  `RUNNING` and `WAITING` (taken from `RunStatus::ALL`, so a new status is tried automatically) the HTTP
+  answer is `409 CONFLICT` with reason `RUN_NOT_MUTABLE`, and the run version, state revision, receipts,
+  journal, `state.updated` events, outbox and `run.updated` audit rows are unchanged; a Query still
+  answers from the last snapshot. The same key is refused again for the same reason, and once the run is
+  back in `WAITING` it applies; after the run ends, that applied key replays its receipt.
+- **D365 — The redaction sweep reads stored bytes and proves it can.** A worker resolves a real secret
+  for a step of the run that is then queried and updated, and a credential-shaped marker goes through
+  every refusal path (query argument, operation name, update property, value, key, validator, stale
+  revision, key reuse). Neither string appears in a response or error body, in any table (searched as text
+  and as the hex a `bytea` prints, so the payload store is covered), or in the spans (with their events),
+  log lines or metrics of the requests. The control: the run's own input, stored in `payloads`, is found by
+  the same sweep. The fake collector gained `install_with_logs`, which adds a log buffer to the span
+  exporter in one subscriber.
+
+- **G360 — No process death, no server crash.** A test cannot kill its own process, and the container
+  is shared. The dropped future and the ended connection are what PostgreSQL observes of a dead client; a
+  crash of the PostgreSQL server (recovery from the write-ahead log) and a power loss are not exercised
+  here. The failover suite (`tests/fault/failover`) is where a server restart belongs.
+- **G361 — Update against a worker, a timer and a wait timeout is proven at the store and scheduler, not
+  over HTTP.** The Update runs through `PgDeclaredOperationStore` and the production evaluator exactly as
+  the route calls them (apply, then the retained result); the worker completion and the scheduler tick are
+  the production services. The HTTP-level Update against a signal is the existing
+  `update_and_signal_race_serialize_without_losing_either_transition`.
+- **G362 — The order of two lock waiters is PostgreSQL's, not a contract.** The tests depend on a row
+  lock being granted to waiters in the order they queued. That holds for the row lock queue today; if it
+  stopped holding, the order assertions (the `0`/`7` result and the journal position) fail instead of
+  passing, so the dependency is loud.
+- **G363 — Telemetry text is what the test process exports.** Spans reach a fake OTLP collector, log lines
+  are captured on the test's own runtime thread, and metrics are read from the process-wide registry. A real
+  collector, a log shipper and a metrics scrape are not in the loop.
+- **G364 — Non-mutable statuses are set with SQL.** The engine's own paths into each status (pause,
+  cancel, compensation, manual review, each terminal) are proven by their features' tests. What is proven
+  here is that the Update refuses every status and writes nothing, not that the engine reaches it.
