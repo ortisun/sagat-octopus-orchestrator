@@ -868,7 +868,7 @@ impl From<&DeadLetterRead> for DeadLetterBody {
                     DeadLetterStructure::Json(projection) => {
                         PayloadStructureBody::from(&projection.tree)
                     }
-                    DeadLetterStructure::Opaque => PayloadStructureBody::Opaque,
+                    DeadLetterStructure::Opaque => PayloadStructureBody::Opaque { kind: "opaque" },
                 }),
             ),
         };
@@ -889,16 +889,27 @@ impl From<&DeadLetterRead> for DeadLetterBody {
 }
 
 #[derive(Debug, Serialize)]
-#[serde(tag = "kind", rename_all = "lowercase")]
+#[serde(untagged)]
 pub enum PayloadStructureBody {
+    Structure(PayloadTreeBody),
+    Opaque { kind: &'static str },
+}
+
+#[derive(Debug, Serialize)]
+#[serde(
+    tag = "type",
+    rename_all = "lowercase",
+    rename_all_fields = "camelCase"
+)]
+pub enum PayloadTreeBody {
     Object {
         child_count: u32,
-        children: Vec<Self>,
+        children: Vec<PayloadStructureBody>,
         omitted_children: u32,
     },
     Array {
         child_count: u32,
-        children: Vec<Self>,
+        children: Vec<PayloadStructureBody>,
         omitted_children: u32,
     },
     String {
@@ -910,18 +921,19 @@ pub enum PayloadStructureBody {
     Boolean {
         redacted: bool,
     },
-    Null,
-    Opaque,
+    Null {
+        redacted: bool,
+    },
 }
 
 impl From<&PayloadStructure> for PayloadStructureBody {
     fn from(value: &PayloadStructure) -> Self {
-        match value {
+        Self::Structure(match value {
             PayloadStructure::Object {
                 child_count,
                 children,
                 omitted_children,
-            } => Self::Object {
+            } => PayloadTreeBody::Object {
                 child_count: *child_count,
                 children: children.iter().map(Self::from).collect(),
                 omitted_children: *omitted_children,
@@ -930,16 +942,16 @@ impl From<&PayloadStructure> for PayloadStructureBody {
                 child_count,
                 children,
                 omitted_children,
-            } => Self::Array {
+            } => PayloadTreeBody::Array {
                 child_count: *child_count,
                 children: children.iter().map(Self::from).collect(),
                 omitted_children: *omitted_children,
             },
-            PayloadStructure::String => Self::String { redacted: true },
-            PayloadStructure::Number => Self::Number { redacted: true },
-            PayloadStructure::Boolean => Self::Boolean { redacted: true },
-            PayloadStructure::Null => Self::Null,
-        }
+            PayloadStructure::String => PayloadTreeBody::String { redacted: true },
+            PayloadStructure::Number => PayloadTreeBody::Number { redacted: true },
+            PayloadStructure::Boolean => PayloadTreeBody::Boolean { redacted: true },
+            PayloadStructure::Null => PayloadTreeBody::Null { redacted: true },
+        })
     }
 }
 

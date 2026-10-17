@@ -457,7 +457,16 @@ impl<S: EventPayloadStore + 'static, C: Clock + 'static, P: PayloadProjector + '
                 .read_event(&p, &self.evaluator(p.reveal), &a)
                 .await
                 .map_err(AppError::from)?;
-            Self::finish(read)
+            let result = Self::finish(read);
+            record_read(
+                "event",
+                match &result {
+                    Ok(read) if matches!(read.data, EventData::Revealed(_)) => "revealed",
+                    Ok(_) => "structure_only",
+                    Err(_) => "denied",
+                },
+            );
+            result
         })
     }
     fn dead_letter<'a>(&'a self, p: PreparedDeadLetter) -> EventReadFuture<'a, DeadLetterRead> {
@@ -468,7 +477,16 @@ impl<S: EventPayloadStore + 'static, C: Clock + 'static, P: PayloadProjector + '
                 .read_dead_letter(&p, &self.evaluator(p.reveal), &a)
                 .await
                 .map_err(AppError::from)?;
-            Self::finish(read)
+            let result = Self::finish(read);
+            record_read(
+                "dead_letter",
+                match &result {
+                    Ok(read) if matches!(read.data, DeadLetterData::Revealed { .. }) => "revealed",
+                    Ok(_) => "structure_only",
+                    Err(_) => "denied",
+                },
+            );
+            result
         })
     }
     fn dead_letters<'a>(
@@ -483,7 +501,16 @@ impl<S: EventPayloadStore + 'static, C: Clock + 'static, P: PayloadProjector + '
                 .list_dead_letters(&p, b, l, &self.evaluator(EventReveal::Structure))
                 .await
                 .map_err(AppError::from)?;
-            Self::finish(read)
+            let result = Self::finish(read);
+            record_read(
+                "dead_letter",
+                if result.is_ok() {
+                    "structure_only"
+                } else {
+                    "denied"
+                },
+            );
+            result
         })
     }
 }
@@ -557,4 +584,9 @@ fn authorize(role: Role, reveal: EventReveal, grant: bool) -> Result<(), EventPa
         return Err(EventPayloadFailure::PiiRevealNotGranted);
     }
     Ok(())
+}
+
+fn record_read(surface: &'static str, outcome: &'static str) {
+    metrics::counter!("event_value_reads_total", "surface" => surface, "outcome" => outcome)
+        .increment(1);
 }
