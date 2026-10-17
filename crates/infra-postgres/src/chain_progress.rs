@@ -473,6 +473,7 @@ async fn lock_chain(
     if row.get::<uuid::Uuid, _>("namespace_id") != command.scope().namespace_id().as_uuid() {
         return Err(ChainProgressError::Missing);
     }
+    hold_parent(conn, command.scope().tenant_id(), command.chain_id()).await?;
     Ok(LockedChain {
         namespace_id: NamespaceId::new(row.get("namespace_id")),
         current_run_id: RunId::new(row.get("current_run_id")),
@@ -487,6 +488,30 @@ async fn lock_chain(
         cancel_requested: row.get("cancel_requested"),
         final_outcome: row.get("final_outcome"),
     })
+}
+
+/// A child chain's successor is a run whose parent is the chain's parent, so inserting it takes a
+/// key-share lock on the parent's row (the foreign key). Every writer of a child run locks the
+/// parent first (`claim_reservation`, the parent's own commands); a hand-off holds the chain and the
+/// head run and would take the parent last, which deadlocks against a parent that is writing the
+/// child's run (found by the ordered parent-cancellation race). Taking the same lock here, before
+/// the head run is locked, keeps one order: parent, then chain, then runs.
+async fn hold_parent(
+    conn: &mut PgConnection,
+    tenant_id: TenantId,
+    chain_id: RunId,
+) -> Result<(), ChainProgressError> {
+    sqlx::query(
+        "SELECT parent.id FROM runs first JOIN runs parent \
+           ON parent.tenant_id = first.tenant_id AND parent.id = first.parent_run_id \
+         WHERE first.tenant_id = $1 AND first.id = $2 FOR KEY SHARE OF parent",
+    )
+    .bind(tenant_id.as_uuid())
+    .bind(chain_id.as_uuid())
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(store_error)?;
+    Ok(())
 }
 
 async fn lock_run(

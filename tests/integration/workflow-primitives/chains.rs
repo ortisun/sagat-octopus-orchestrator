@@ -170,8 +170,20 @@ impl Boundary {
     async fn write_directly(
         &self,
     ) -> Result<sagat_application::chain_progress::ChainHandoffWrite, ChainProgressError> {
+        self.write_as(ChainScope::new(
+            self.world.admin.tenant_id(),
+            self.world.namespace.id(),
+        ))
+        .await
+    }
+
+    /// The same write, claimed by `claimed`: the tenant and namespace the command says it is for.
+    async fn write_as(
+        &self,
+        claimed: ChainScope,
+    ) -> Result<sagat_application::chain_progress::ChainHandoffWrite, ChainProgressError> {
         let tenant = self.world.admin.tenant_id();
-        let scope = ChainScope::new(tenant, self.world.namespace.id());
+        let scope = claimed;
         let (revision, version): (i64, i64) = sqlx::query_as(
             "SELECT chain.revision,run.run_version FROM execution_chains chain \
                JOIN runs run ON run.tenant_id=chain.tenant_id AND run.id=chain.current_run_id \
@@ -218,7 +230,7 @@ impl Boundary {
             None,
             occurred_at,
             AuditRecord::engine(
-                tenant,
+                scope.tenant_id(),
                 AuditAction::RunContinued,
                 ResourceType::Run,
                 self.chain.to_string(),
@@ -1192,4 +1204,32 @@ async fn rerun_as_new_of_a_segment_starts_an_unrelated_run_with_its_own_chain() 
         .expect("segments of the rerun"),
         1
     );
+}
+
+#[tokio::test]
+async fn a_hand_off_claimed_for_another_tenant_or_namespace_moves_nothing() {
+    let boundary = Boundary::reach("tenant-claim").await;
+    let before = boundary.chain_row().await;
+    let journal = boundary.journal_len().await;
+    let world = &boundary.world;
+    for (label, scope) in [
+        (
+            "another tenant",
+            ChainScope::new(world.other_admin.tenant_id(), world.other_namespace.id()),
+        ),
+        (
+            "the tenant's other namespace",
+            ChainScope::new(world.admin.tenant_id(), world.other_namespace.id()),
+        ),
+    ] {
+        let result = boundary.write_as(scope).await;
+        assert!(
+            matches!(result, Err(ChainProgressError::Missing)),
+            "{label}: {result:?}"
+        );
+        assert_eq!(boundary.chain_row().await, before, "{label}");
+        assert_eq!(boundary.journal_len().await, journal, "{label}");
+    }
+    // The rightful scope still hands off once.
+    boundary.write_directly().await.expect("hand-off in scope");
 }
