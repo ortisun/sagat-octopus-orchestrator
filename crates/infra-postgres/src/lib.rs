@@ -32,6 +32,7 @@ mod pool;
 mod primitives;
 mod privilege;
 mod quotas;
+mod reveal_grants;
 mod scope_compensation;
 mod scripts;
 mod secrets;
@@ -51,6 +52,7 @@ pub use operations::{MONITOR_LEASE, READ_AUDIT_SQL};
 pub use pool::{BeginSafely, PoolConfig, connect, spawn_pool_metrics};
 pub use primitives::PgCollectionStore;
 pub use privilege::{LeastPrivilegeError, PrivilegeFinding};
+pub use reveal_grants::has_effective_payload_reveal_grant;
 pub use sqlx::PgPool;
 pub use telemetry::PROJECTOR_LEASE;
 /// The query that finds the runs a worker may claim, exposed so a test can check its plan.
