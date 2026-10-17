@@ -77,7 +77,14 @@ durable validator rejection, authentication and opaque cross-tenant lookup. Ever
 the body `updateKey`; no idempotency header is synthesized. Its lost-response fault proves that the
 same update is replayed instead of applied twice. Decimal values and instants stay exact JSON strings,
 including the UTC `Z`, under the harness's non-UTC process timezone. The language unit suites cancel an
-in-flight update and prove that cancellation does not trigger a hidden retry.
+in-flight update and prove that cancellation does not trigger a hidden retry. Since 2026-10-17 it also
+checks, in all five SDKs, a stale revision as `CONFLICT`/`REVISION_CONFLICT` (409), the same key with a
+different body as `CONFLICT`/`IDEMPOTENCY_KEY_REUSED`, arguments outside the declared schema as
+`VALIDATION_FAILED`/`INVALID_ARGUMENTS` (422), an Update to a cancelled run as
+`CONFLICT`/`RUN_NOT_MUTABLE`, and a Query to that terminal run, which still reads the last snapshot.
+`chain-query-handoff.json` adds an Update addressed to the predecessor segment after the hand-off,
+`CONFLICT`/`RUN_CONTINUED`. The goldens were reviewed by hand (the `stale` entry changed from
+`VALIDATION_FAILED` to `CONFLICT`, D291) and all five SDKs match them.
 
 `approval-decisions.json` publishes and starts native approval workflows, discovers each request through
 the public run approval page, and calls the public decision route from all five SDKs. It covers

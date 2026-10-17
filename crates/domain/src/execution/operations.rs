@@ -773,6 +773,8 @@ pub enum OperationError {
     UpdateKeyReused,
     #[error("the run is {0} and does not admit a new update")]
     RunNotMutable(RunStatus),
+    #[error("the run was continued by a successor segment; address the chain")]
+    RunContinued,
     #[error("state revision is exhausted")]
     RevisionExhausted,
     #[error("declared operation evaluation failed")]

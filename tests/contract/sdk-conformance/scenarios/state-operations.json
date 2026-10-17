@@ -84,6 +84,12 @@
     { "id": "rejected", "op": "update", "run": "start", "name": "balance.replace", "updateKey": "rejected-{{unique}}", "expectedStateRevision": 1, "args": { "allowed": false, "nextState": { "balance": 30, "amount": "30.00", "occurredAt": "2026-10-15T17:00:00.000Z" } } },
     { "id": "rejected-replay", "op": "update", "run": "start", "name": "balance.replace", "updateKey": "rejected-{{unique}}", "expectedStateRevision": 1, "args": { "allowed": false, "nextState": { "balance": 30, "amount": "30.00", "occurredAt": "2026-10-15T17:00:00.000Z" } } },
     { "id": "unauthenticated", "op": "query", "token": "bad", "run": "start", "name": "balance.read", "args": 0 },
-    { "id": "other-tenant", "op": "query", "token": "other", "run": "start", "name": "balance.read", "args": 0 }
+    { "id": "other-tenant", "op": "query", "token": "other", "run": "start", "name": "balance.read", "args": 0 },
+    { "id": "changed-body", "op": "update", "run": "start", "name": "balance.replace", "updateKey": "replace-{{unique}}", "expectedStateRevision": 0, "args": { "allowed": true, "nextState": { "balance": 21, "amount": "21.00", "occurredAt": "2026-10-15T16:00:00.000Z" } } },
+    { "id": "bad-args", "op": "update", "run": "start", "name": "balance.replace", "updateKey": "bad-args-{{unique}}", "args": { "allowed": "yes", "nextState": { "balance": 22, "amount": "22.00", "occurredAt": "2026-10-15T16:00:00.000Z" } } },
+    { "id": "stop", "op": "cancel", "run": "start", "reason": "state-operations scenario" },
+    { "id": "stopped", "op": "waitForCompletion", "run": "start", "timeoutMs": 20000 },
+    { "id": "after-stop-update", "op": "update", "run": "start", "name": "balance.replace", "updateKey": "after-stop-{{unique}}", "args": { "allowed": true, "nextState": { "balance": 23, "amount": "23.00", "occurredAt": "2026-10-15T16:00:00.000Z" } } },
+    { "id": "after-stop-query", "op": "query", "run": "start", "name": "balance.read", "args": 2 }
   ]
 }

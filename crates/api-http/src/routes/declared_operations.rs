@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use axum::extract::{Path, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, header};
 use axum::routing::post;
 use axum::{Json, Router};
 use sagat_application::api_admission::{
@@ -237,18 +237,18 @@ fn operation_error(error: OperationError) -> ApiError {
                 .with_reason("INVALID_ARGUMENTS")
         }
         OperationError::UpdateKeyReused => {
-            ApiError::validation("this update key was already used for different request content")
-                .with_status(StatusCode::CONFLICT)
+            ApiError::conflict("this update key was already used for different request content")
                 .with_reason("IDEMPOTENCY_KEY_REUSED")
         }
-        OperationError::RunNotMutable(_) => {
-            ApiError::validation("the run does not admit a new update")
-                .with_status(StatusCode::CONFLICT)
-                .with_reason("RUN_NOT_MUTABLE")
+        OperationError::RunContinued => {
+            ApiError::conflict("the run was continued by a successor").with_reason("RUN_CONTINUED")
         }
-        OperationError::RevisionExhausted => ApiError::validation("the run revision is exhausted")
-            .with_status(StatusCode::CONFLICT)
-            .with_reason("REVISION_EXHAUSTED"),
+        OperationError::RunNotMutable(_) => {
+            ApiError::conflict("the run does not admit a new update").with_reason("RUN_NOT_MUTABLE")
+        }
+        OperationError::RevisionExhausted => {
+            ApiError::conflict("the run revision is exhausted").with_reason("REVISION_EXHAUSTED")
+        }
         OperationError::EvaluationFailed
         | OperationError::StateSchemaChanged
         | OperationError::ValueTooLarge
@@ -286,8 +286,7 @@ fn store_error(error: DeclaredOperationStoreError, permission: Permission) -> Ap
         DeclaredOperationStoreError::Operation(error) => operation_error(error),
         DeclaredOperationStoreError::Storage(error) => ApiError::from(AppError::from(error)),
         DeclaredOperationStoreError::AddressUnavailable => {
-            ApiError::validation("the operation address is unavailable")
-                .with_status(StatusCode::CONFLICT)
+            ApiError::conflict("the operation address is unavailable")
                 .with_reason("ADDRESS_UNAVAILABLE")
         }
         DeclaredOperationStoreError::ChainHeadChanged => {
@@ -643,17 +642,17 @@ async fn update_operation<B: DeclaredOperationApi>(
     if resolution.receipt().status() == UpdateReceiptStatus::Rejected {
         let details =
             RejectedUpdateDetails::from_receipt(resolution.receipt(), resolution.replayed());
-        let status = if details.reason == "REVISION_CONFLICT" {
-            StatusCode::CONFLICT
+        // A revision conflict is the state moving under the caller (CONFLICT, 409, D291); a
+        // validator that said no is the request being refused (VALIDATION_FAILED, 422).
+        let rejected = if details.reason == "REVISION_CONFLICT" {
+            ApiError::conflict("the declared update was rejected")
         } else {
-            StatusCode::UNPROCESSABLE_ENTITY
+            ApiError::validation("the declared update was rejected")
         };
         tracing::info!(operation = %operation, run_id = %run_id, outcome = "rejected", "declared update resolved");
-        return Err(ApiError::validation("the declared update was rejected")
-            .with_status(status)
-            .with_details(
-                serde_json::to_value(details).map_err(|_| ApiError::from(AppError::Internal))?,
-            ));
+        return Err(rejected.with_details(
+            serde_json::to_value(details).map_err(|_| ApiError::from(AppError::Internal))?,
+        ));
     }
     let result = state
         .operation_store()
@@ -759,17 +758,17 @@ async fn update_chain_operation<B: DeclaredOperationApi>(
     if resolution.receipt().status() == UpdateReceiptStatus::Rejected {
         let details =
             RejectedUpdateDetails::from_receipt(resolution.receipt(), resolution.replayed());
-        let status = if details.reason == "REVISION_CONFLICT" {
-            StatusCode::CONFLICT
+        // A revision conflict is the state moving under the caller (CONFLICT, 409, D291); a
+        // validator that said no is the request being refused (VALIDATION_FAILED, 422).
+        let rejected = if details.reason == "REVISION_CONFLICT" {
+            ApiError::conflict("the declared update was rejected")
         } else {
-            StatusCode::UNPROCESSABLE_ENTITY
+            ApiError::validation("the declared update was rejected")
         };
         tracing::info!(operation = %operation, chain_id = %chain_id, run_id = %resolution.receipt().resolved_run_id(), outcome = "rejected", "chain declared update resolved");
-        return Err(ApiError::validation("the declared update was rejected")
-            .with_status(status)
-            .with_details(
-                serde_json::to_value(details).map_err(|_| ApiError::from(AppError::Internal))?,
-            ));
+        return Err(rejected.with_details(
+            serde_json::to_value(details).map_err(|_| ApiError::from(AppError::Internal))?,
+        ));
     }
     let result = state
         .operation_store()

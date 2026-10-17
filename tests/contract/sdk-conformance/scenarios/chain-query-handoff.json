@@ -76,6 +76,7 @@
     { "id": "updated", "op": "queryChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "expectedRunId": "{{currentRunId:head}}", "name": "amount.read", "args": {} },
     { "id": "stale-update", "op": "updateChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "expectedRunId": "{{currentRunId:initial}}", "name": "amount.replace", "args": { "nextState": { "amount": "99.99" } }, "updateKey": "stale-amount-{{unique}}", "expectedStateRevision": 1 },
     { "id": "stale", "op": "queryChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "expectedRunId": "{{currentRunId:initial}}", "name": "amount.read", "args": {} },
+    { "id": "continued-update", "op": "update", "run": "start", "name": "amount.replace", "args": { "nextState": { "amount": "77.77" } }, "updateKey": "continued-{{unique}}" },
     { "id": "early-wait", "op": "waitForChainCompletion", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "timeoutMs": 100 },
     { "id": "cancel-chain", "op": "cancelChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "expectedRunId": "{{currentRunId:head}}", "reason": "completed verification", "idempotencyKey": "cancel-{{unique}}" },
     { "id": "chain-done", "op": "waitForChainCompletion", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "timeoutMs": 10000 }

@@ -984,6 +984,20 @@ impl DeclaredOperationStore for PgDeclaredOperationStore {
             return Ok(resolution);
         }
         if !matches!(run.status, RunStatus::Running | RunStatus::Waiting) {
+            // A segment that handed off to its successor is not "ended": the update was meant for
+            // the chain's current head (RUN_CONTINUED), not refused for the run's state.
+            let continued: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM chain_segments WHERE tenant_id = $1 AND run_id = $2 \
+                                AND completion_kind = 'CONTINUED')",
+            )
+            .bind(request.scope().tenant_id().as_uuid())
+            .bind(resolved_run_id.as_uuid())
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(store_error)?;
+            if continued {
+                return Err(OperationError::RunContinued.into());
+            }
             return Err(OperationError::RunNotMutable(run.status).into());
         }
         let query_snapshot = state.query_snapshot(resolved_run_id, run.run_version);

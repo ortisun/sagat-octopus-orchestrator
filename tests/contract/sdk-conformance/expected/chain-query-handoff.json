@@ -195,6 +195,21 @@
     },
     {
       "error": {
+        "code": "CONFLICT",
+        "message": "<text>",
+        "reason": "RUN_CONTINUED",
+        "remediation": "The request conflicts with the current state: read the resource again and decide; do not repeat it unchanged.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 409,
+        "traceId": "<trace:4>"
+      },
+      "id": "continued-update",
+      "ok": false,
+      "op": "update"
+    },
+    {
+      "error": {
         "code": "TRANSPORT",
         "message": "<text>",
         "reason": "WAIT_TIMEOUT",

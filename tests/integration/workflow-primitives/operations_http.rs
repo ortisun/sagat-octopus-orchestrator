@@ -883,10 +883,12 @@ async fn update_commits_once_and_replays_the_durable_result() {
         )
         .await;
     assert_eq!(changed.status(), StatusCode::CONFLICT);
+    let changed = json_of(changed).await;
     assert_eq!(
-        json_of(changed).await["details"]["reason"],
-        "IDEMPOTENCY_KEY_REUSED"
+        changed["code"], "CONFLICT",
+        "a reused key is a conflict (D291)"
     );
+    assert_eq!(changed["details"]["reason"], "IDEMPOTENCY_KEY_REUSED");
     let changed_operation = fixture
         .api
         .post_as(
@@ -966,6 +968,10 @@ async fn validator_and_revision_rejections_are_stable_and_do_not_schedule_work()
         .await;
     assert_eq!(revision.status(), StatusCode::CONFLICT);
     let revision = json_of(revision).await;
+    assert_eq!(
+        revision["code"], "CONFLICT",
+        "a revision conflict is a conflict (D291)"
+    );
     assert_eq!(revision["details"]["reason"], "REVISION_CONFLICT");
     assert_eq!(revision["details"]["expectedStateRevision"], 9);
     assert_eq!(revision["details"]["actualStateRevision"], 0);
@@ -1099,4 +1105,58 @@ async fn current_permissions_and_tenant_boundary_guard_results_and_replays() {
     assert_eq!(foreign["code"], "NOT_FOUND");
     assert!(!foreign.to_string().contains("payments"));
     assert!(!foreign.to_string().contains("acme"));
+}
+
+/// An Update addressed to a run whose chain segment handed off is `RUN_CONTINUED` (the caller meant
+/// the head), not `RUN_NOT_MUTABLE` (the run's state refuses it) — D291/T014-032.
+#[tokio::test]
+async fn update_to_a_continued_segment_is_run_continued() {
+    let fixture = fixture("http-update-continued").await;
+    attach_singleton_chain(&fixture).await;
+    let body = json!({
+        "updateKey": "after-handoff",
+        "args": {"allowed": true, "nextState": {"balance": 33}}
+    });
+    let successor = seed_successor(&fixture, 50).await;
+    advance_chain(&fixture, successor).await;
+
+    let continued = fixture
+        .api
+        .post_as(&update_path(&fixture), "alice", "acme", &body)
+        .await;
+    assert_eq!(continued.status(), StatusCode::CONFLICT);
+    let continued = json_of(continued).await;
+    assert_eq!(continued["code"], "CONFLICT");
+    assert_eq!(continued["details"]["reason"], "RUN_CONTINUED");
+}
+
+/// A run that simply ended, outside any hand-off, keeps the state-based refusal (D291).
+#[tokio::test]
+async fn update_to_a_finished_run_is_not_mutable() {
+    let fixture = fixture("http-update-finished").await;
+    sqlx::query(
+        "UPDATE runs SET status = 'SUCCEEDED', finished_at = now(), updated_at = now() \
+         WHERE tenant_id = $1 AND id = $2",
+    )
+    .bind(fixture.tenant.as_uuid())
+    .bind(fixture.run.as_uuid())
+    .execute(&fixture.api.db.pool)
+    .await
+    .expect("finish the run");
+    let finished = fixture
+        .api
+        .post_as(
+            &update_path(&fixture),
+            "alice",
+            "acme",
+            &json!({
+                "updateKey": "after-the-end",
+                "args": {"allowed": true, "nextState": {"balance": 34}}
+            }),
+        )
+        .await;
+    assert_eq!(finished.status(), StatusCode::CONFLICT);
+    let finished = json_of(finished).await;
+    assert_eq!(finished["code"], "CONFLICT");
+    assert_eq!(finished["details"]["reason"], "RUN_NOT_MUTABLE");
 }

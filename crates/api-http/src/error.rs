@@ -264,6 +264,12 @@ impl ApiError {
         Self::new(StatusCode::BAD_REQUEST, ErrorCode::BadRequest, message)
     }
 
+    /// The request is well formed but conflicts with the current state of the resource (409).
+    #[must_use]
+    pub fn conflict(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::CONFLICT, ErrorCode::Conflict, message)
+    }
+
     #[must_use]
     pub fn validation(message: impl Into<String>) -> Self {
         Self::new(

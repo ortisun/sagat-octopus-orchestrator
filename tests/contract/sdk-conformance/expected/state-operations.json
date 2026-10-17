@@ -97,10 +97,10 @@
     },
     {
       "error": {
-        "code": "VALIDATION_FAILED",
+        "code": "CONFLICT",
         "message": "<text>",
         "reason": "REVISION_CONFLICT",
-        "remediation": "A field is invalid: the reason names it. Fix the input; repeating it fails the same way.",
+        "remediation": "The request conflicts with the current state: read the resource again and decide; do not repeat it unchanged.",
         "retryAfterMs": null,
         "retryable": false,
         "status": 409,
@@ -169,6 +169,92 @@
       "id": "other-tenant",
       "ok": false,
       "op": "query"
+    },
+    {
+      "error": {
+        "code": "CONFLICT",
+        "message": "<text>",
+        "reason": "IDEMPOTENCY_KEY_REUSED",
+        "remediation": "The request conflicts with the current state: read the resource again and decide; do not repeat it unchanged.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 409,
+        "traceId": "<trace:7>"
+      },
+      "id": "changed-body",
+      "ok": false,
+      "op": "update"
+    },
+    {
+      "error": {
+        "code": "VALIDATION_FAILED",
+        "message": "<text>",
+        "reason": "INVALID_ARGUMENTS",
+        "remediation": "A field is invalid: the reason names it. Fix the input; repeating it fails the same way.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 422,
+        "traceId": "<trace:8>"
+      },
+      "id": "bad-args",
+      "ok": false,
+      "op": "update"
+    },
+    {
+      "id": "stop",
+      "ok": true,
+      "op": "cancel",
+      "result": {
+        "accepted": true,
+        "runStatus": "CANCELLED"
+      }
+    },
+    {
+      "id": "stopped",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "CANCELLED",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "error": {
+        "code": "CONFLICT",
+        "message": "<text>",
+        "reason": "RUN_NOT_MUTABLE",
+        "remediation": "The request conflicts with the current state: read the resource again and decide; do not repeat it unchanged.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 409,
+        "traceId": "<trace:9>"
+      },
+      "id": "after-stop-update",
+      "ok": false,
+      "op": "update"
+    },
+    {
+      "id": "after-stop-query",
+      "ok": true,
+      "op": "query",
+      "result": {
+        "result": 22,
+        "runVersion": 6,
+        "stateRevision": 1
+      }
     }
   ],
   "serverState": [
@@ -181,14 +267,14 @@
           "forward": null,
           "id": "hold",
           "kind": "FORWARD",
-          "status": "READY",
+          "status": "CANCELLED",
           "type": "activity",
           "waitingOn": null
         }
       ],
       "paused": false,
       "runId": "<uuid:1>",
-      "status": "RUNNING"
+      "status": "CANCELLED"
     }
   ],
   "workerLog": {}
