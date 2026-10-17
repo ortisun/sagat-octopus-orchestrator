@@ -90,7 +90,7 @@ fn stored_legacy_schema_extensions_do_not_change_execution_restore() {
         std::fs::read(fixtures.join("v0.1.0-workflow.schema.json")).expect("frozen release schema");
     use sha2::{Digest as _, Sha256};
     assert_eq!(
-        format!("{:x}", Sha256::digest(&old_schema_bytes)),
+        sagat_domain::workflow::Digest::new(Sha256::digest(&old_schema_bytes).into()).to_hex(),
         "5035e781a2a531da0317594cd8b082fb9291d8e3f0a7b0322625c2260d89bff4",
         "the frozen release contract must not drift"
     );

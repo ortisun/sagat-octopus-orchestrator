@@ -774,3 +774,29 @@ bytes/digest/version pins and rules-0 opacity. The same fixture against retained
 scope are in `tests/integration/payload-classification/compatibility-report.md`. The frozen schema
 checksum is now asserted too. This is actual process evidence; it does not claim the later routing
 fix or the whole combined release was exercised by that copied control plane.
+
+
+### Current static gates and repaired five-language scenarios
+
+Final restore-cache/declared-state/operation checks passed **16/16**, no ignored
+(`/tmp/sagat-completion-legacy-restore-final-unit-2.log`). The first extra checksum assertion used
+LowerHex on sha2 0.11's array type and did not compile; it now uses the existing domain Digest's
+hex encoding. Both failed compiler logs are retained. Current whole-workspace/all-target strict
+Clippy then passed in **23.62 s**
+(`/tmp/sagat-completion-restoration-routing-workspace-clippy-2.log`), formatting/diff and the
+24-crate architecture check passed, cargo audit passed its checked-in policy (627 dependencies /
+1338 advisories; `/tmp/sagat-completion-restoration-audit.log`), and all four canonical contract
+checks passed: OpenAPI (seven documentation warnings), protobuf compile, AsyncAPI (one info,
+zero errors/warnings), IR example validation (`/tmp/sagat-completion-restoration-*.log`).
+This closes the specifically static T016-054 gate, not the independent full runtime release gate.
+
+The repaired collection-compensation scenario passed in **all five languages**, 43.69 s
+(`/tmp/sagat-completion-sdk-repair-collection-compensation.log`), with its reviewed golden unchanged.
+The runner path correction let the database scenario execute real PostgreSQL/OpenBao work in every
+language. Its first comparison then found only the ordinary consumer's default 1.5 protocol and
+two corresponding root identity fields versus the existing 1.4 golden; typed database evidence,
+errors, effects and all other observations matched. Like the documented established root fixtures,
+it now explicitly offers 1.4; the isolated managed executor still offers 1.6. This preserves the
+old-worker compatibility contract and reviewed golden rather than replacing its observations.
+The failed comparison is retained (`/tmp/sagat-completion-sdk-repair-database-connections.log`),
+and its actual repeat is recorded when complete.
