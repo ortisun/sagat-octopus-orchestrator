@@ -108,6 +108,9 @@ pub struct Report {
     pub collections_advanced: u32,
     pub loops_advanced: u32,
     pub continuations_advanced: u32,
+    /// Continuation boundaries that were examined and are waiting for open work to settle (D296).
+    /// Waiting is not work: it is left out of [`Report::did_work`].
+    pub continuations_waiting: u32,
     pub approvals_opened: u32,
     pub approvals_expired: u32,
     pub timers_fired: u32,
@@ -234,6 +237,10 @@ pub enum ContinuationAdvanceError {
     FenceUnavailable,
     #[error("the requested node is not a pending continuation boundary")]
     NotContinuation,
+    /// Open work (`{0:?}`) keeps the boundary pending. It is not a failure: the boundary is tried
+    /// again and the run's original deadline still ends it (D296).
+    #[error("the continuation boundary waits for open work: {0:?}")]
+    Waiting(sagat_domain::execution::QuiescenceBlocker),
     #[error("continuation expression evaluation failed")]
     Expression,
     #[error("the continuation expression failed and finalized the chain")]
@@ -626,6 +633,9 @@ where
             if step.status() != execution::StepStatus::Pending {
                 return Err(ContinuationAdvanceError::NotContinuation);
             }
+            if let Some(blocker) = execution::Quiescence::of_run(state, boundary).blocker() {
+                return Err(ContinuationAdvanceError::Waiting(blocker));
+            }
             (input.clone(), next.clone(), state.version())
         };
         tx.commit().await?;
@@ -740,6 +750,14 @@ where
                     .await?;
                 tx.commit().await?;
                 Err(ContinuationAdvanceError::ChainLimitFinalized)
+            }
+            Err(ChainProgressError::Chain(error)) if error.awaited_blocker().is_some() => {
+                // Work appeared between the evaluation and the write locks: wait, do not fail.
+                Err(ContinuationAdvanceError::Waiting(
+                    error
+                        .awaited_blocker()
+                        .unwrap_or(sagat_domain::execution::QuiescenceBlocker::SiblingWork),
+                ))
             }
             Err(error) => Err(error.into()),
         }
@@ -2772,6 +2790,7 @@ where
             .await;
         let outcomes = self
             .each(candidates, |candidate| async move {
+                let mut waiting = false;
                 let outcome = match self
                     .advance_continuation_in_view(
                         view,
@@ -2787,6 +2806,16 @@ where
                         ContinuationAdvanceError::ChainLimitFinalized
                         | ContinuationAdvanceError::ExpressionFinalized,
                     ) => Outcome::Done,
+                    Err(ContinuationAdvanceError::Waiting(blocker)) => {
+                        metrics::counter!(
+                            "scheduler_continuation_waits_total",
+                            "blocker" => blocker.label()
+                        )
+                        .increment(1);
+                        // Not an error and not skipped work: the boundary is examined again.
+                        waiting = true;
+                        Outcome::Skipped
+                    }
                     Err(
                         ContinuationAdvanceError::MissingChain
                         | ContinuationAdvanceError::NotContinuation
@@ -2812,18 +2841,22 @@ where
                 metrics::counter!(
                     "scheduler_actions_total",
                     "kind" => "continuation",
-                    "outcome" => outcome.label()
+                    "outcome" => if waiting { "waiting" } else { outcome.label() }
                 )
                 .increment(1);
                 if outcome == Outcome::Fenced {
                     metrics::counter!("scheduler_fenced_total", "kind" => "continuation")
                         .increment(1);
                 }
-                outcome
+                (outcome, waiting)
             })
             .await;
-        for outcome in outcomes {
-            Self::tally(report, outcome, |value| value.continuations_advanced += 1);
+        for (outcome, waiting) in outcomes {
+            if waiting {
+                report.continuations_waiting += 1;
+            } else {
+                Self::tally(report, outcome, |value| value.continuations_advanced += 1);
+            }
         }
     }
 

@@ -15,7 +15,7 @@ use sagat_application::runs::Lock;
 use sagat_domain::audit::{AuditAction, ResourceType};
 use sagat_domain::execution::{
     ChainFinalOutcome, ChainScope, ChildOutcome, ContinuationTransfer, ExecutionInstanceId,
-    RunEvent, RunId, RunState, RunStatus, SegmentCompletionKind,
+    QuiescenceBlocker, RunEvent, RunId, RunState, RunStatus, SegmentCompletionKind,
 };
 use sagat_domain::identity::{NamespaceId, Subject, TenantId};
 use sagat_domain::outbound::OutboundKind;
@@ -746,37 +746,70 @@ async fn segment_quiescent(
     .map_err(ChainProgressError::from)
 }
 
-async fn typed_segment_quiescent(
+/// The first obligation (most significant first) the run still holds besides its boundary step, as
+/// a word of [`QuiescenceBlocker::label`], or `Ok(None)` when it is quiescent. A boundary that is no
+/// longer a pending root step is not an obligation: the caller's snapshot is stale.
+async fn typed_segment_blocker(
     conn: &mut PgConnection,
     command: &EvaluatedChainHandoffCommand,
-) -> Result<bool, ChainProgressError> {
+) -> Result<Result<Option<QuiescenceBlocker>, BoundaryGone>, ChainProgressError> {
     let handoff = command.handoff();
-    sqlx::query_scalar(
+    let (pending, blocker): (bool, Option<String>) = sqlx::query_as(
         "SELECT \
            EXISTS (SELECT 1 FROM steps WHERE tenant_id=$1 AND run_id=$2 AND node=$3 \
              AND instance_path_nodes='{}' AND instance_path_indices='{}' \
              AND status='PENDING' AND routed=false AND waiting_kind IS NULL \
-             AND lease_token_hash IS NULL) \
-           AND NOT EXISTS (SELECT 1 FROM steps WHERE tenant_id=$1 AND run_id=$2 \
-             AND (node<>$3 OR instance_path_nodes<>'{}' OR instance_path_indices<>'{}') \
-             AND (status<>'SUCCEEDED' OR routed=false)) \
-           AND NOT EXISTS (SELECT 1 FROM run_sagas WHERE tenant_id=$1 AND run_id=$2 \
-             AND phase<>'DONE') \
-           AND NOT EXISTS (SELECT 1 FROM approval_requests WHERE tenant_id=$1 AND run_id=$2 \
-             AND status='PENDING') \
-           AND NOT EXISTS (SELECT 1 FROM runs WHERE tenant_id=$1 AND parent_run_id=$2 \
-             AND parent_settled=false) \
-           AND NOT EXISTS (SELECT 1 FROM child_chain_links WHERE tenant_id=$1 AND parent_run_id=$2 \
-             AND (final_outcome IS NULL OR settled=false))",
+             AND lease_token_hash IS NULL), \
+           CASE \
+             WHEN EXISTS (SELECT 1 FROM run_sagas WHERE tenant_id=$1 AND run_id=$2 \
+               AND phase<>'DONE') THEN 'compensation' \
+             WHEN EXISTS (SELECT 1 FROM steps WHERE tenant_id=$1 AND run_id=$2 \
+               AND (node<>$3 OR instance_path_nodes<>'{}' OR instance_path_indices<>'{}') \
+               AND status='WAITING' AND waiting_kind='RECONCILIATION') THEN 'unknown_effect' \
+             WHEN EXISTS (SELECT 1 FROM approval_requests WHERE tenant_id=$1 AND run_id=$2 \
+               AND status='PENDING') \
+               OR EXISTS (SELECT 1 FROM steps WHERE tenant_id=$1 AND run_id=$2 \
+               AND status='WAITING' AND waiting_kind='APPROVAL') THEN 'approval' \
+             WHEN EXISTS (SELECT 1 FROM runs WHERE tenant_id=$1 AND parent_run_id=$2 \
+               AND parent_settled=false) \
+               OR EXISTS (SELECT 1 FROM child_chain_links WHERE tenant_id=$1 AND parent_run_id=$2 \
+               AND (final_outcome IS NULL OR settled=false)) \
+               OR EXISTS (SELECT 1 FROM steps WHERE tenant_id=$1 AND run_id=$2 \
+               AND status='WAITING' AND waiting_kind='CHILD') THEN 'child' \
+             WHEN EXISTS (SELECT 1 FROM steps WHERE tenant_id=$1 AND run_id=$2 \
+               AND (node<>$3 OR instance_path_nodes<>'{}' OR instance_path_indices<>'{}') \
+               AND status IN ('LEASED','RUNNING')) THEN 'lease' \
+             WHEN EXISTS (SELECT 1 FROM steps WHERE tenant_id=$1 AND run_id=$2 \
+               AND status='WAITING' AND waiting_kind='TIMER') THEN 'timer' \
+             WHEN EXISTS (SELECT 1 FROM steps WHERE tenant_id=$1 AND run_id=$2 \
+               AND status='WAITING' AND waiting_kind='EVENT') THEN 'subscription' \
+             WHEN EXISTS (SELECT 1 FROM steps WHERE tenant_id=$1 AND run_id=$2 \
+               AND (node<>$3 OR instance_path_nodes<>'{}' OR instance_path_indices<>'{}') \
+               AND (status<>'SUCCEEDED' OR routed=false)) THEN 'sibling_work' \
+           END",
     )
     .bind(handoff.scope().tenant_id().as_uuid())
     .bind(handoff.expected_head().as_uuid())
     .bind(command.boundary().as_str())
     .fetch_one(&mut *conn)
     .await
-    .map_err(store_error)
-    .map_err(ChainProgressError::from)
+    .map_err(store_error)?;
+    if !pending {
+        return Ok(Err(BoundaryGone));
+    }
+    let blocker = blocker
+        .map(|label| {
+            QuiescenceBlocker::ALL
+                .into_iter()
+                .find(|candidate| candidate.label() == label)
+                .ok_or_else(|| corrupt("quiescence blocker"))
+        })
+        .transpose()?;
+    Ok(Ok(blocker))
 }
+
+/// The boundary step is not a pending root step any more.
+struct BoundaryGone;
 
 async fn ensure_tree_capacity_for_successor(
     conn: &mut PgConnection,
@@ -1456,13 +1489,17 @@ impl ChainProgressStore for PgChainProgressStore {
         if !matches!(
             definition.node(prepared.boundary()).map(|node| node.kind()),
             Some(NodeKind::ContinueAsNew { .. })
-        ) || !typed_segment_quiescent(&mut tx, prepared).await?
-        {
-            return Err(ChainProgressError::Chain(
-                sagat_domain::execution::ChainError::NotQuiescent(
-                    sagat_domain::execution::QuiescenceBlocker::SiblingWork,
-                ),
-            ));
+        ) {
+            return Err(ChainProgressError::RuntimeNotIntegrated);
+        }
+        match typed_segment_blocker(&mut tx, prepared).await? {
+            Err(BoundaryGone) => return Err(ChainProgressError::RuntimeNotIntegrated),
+            Ok(Some(blocker)) => {
+                return Err(ChainProgressError::Chain(
+                    sagat_domain::execution::ChainError::NotQuiescent(blocker),
+                ));
+            }
+            Ok(None) => {}
         }
         let entrypoint = definition.entrypoint().clone();
         let activity = match definition.node(&entrypoint).map(|node| node.kind()) {

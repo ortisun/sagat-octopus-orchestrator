@@ -98,6 +98,9 @@ fn window_params(window: &Window) -> (i64, Vec<i16>, Vec<Uuid>) {
 }
 
 impl MaintenanceStore for PgRunStore {
+    /// Boundaries that can be handed off now. A run that still holds open work is not a candidate: it
+    /// would sit at the head of the oldest-first list and keep the others from being examined
+    /// (D296). The store proves quiescence again under the chain and run locks.
     async fn continuation_candidates(
         &self,
         window: &Window,
@@ -118,6 +121,25 @@ impl MaintenanceStore for PgRunStore {
                  AND step.status='PENDING' AND cardinality(step.instance_path_nodes)=0 \
                  AND chain.cancel_requested=false AND chain.final_outcome IS NULL \
                  AND step.tenant_id <> ALL($3::uuid[]) \
+                 AND NOT EXISTS ( \
+                   SELECT 1 FROM steps open \
+                   WHERE open.tenant_id=step.tenant_id AND open.run_id=step.run_id \
+                     AND (open.node<>step.node OR cardinality(open.instance_path_nodes)>0) \
+                     AND (open.status<>'SUCCEEDED' OR open.routed=false)) \
+                 AND NOT EXISTS ( \
+                   SELECT 1 FROM run_sagas saga WHERE saga.tenant_id=step.tenant_id \
+                     AND saga.run_id=step.run_id AND saga.phase<>'DONE') \
+                 AND NOT EXISTS ( \
+                   SELECT 1 FROM approval_requests approval \
+                   WHERE approval.tenant_id=step.tenant_id AND approval.run_id=step.run_id \
+                     AND approval.status='PENDING') \
+                 AND NOT EXISTS ( \
+                   SELECT 1 FROM runs child WHERE child.tenant_id=step.tenant_id \
+                     AND child.parent_run_id=step.run_id AND child.parent_settled=false) \
+                 AND NOT EXISTS ( \
+                   SELECT 1 FROM child_chain_links link WHERE link.tenant_id=step.tenant_id \
+                     AND link.parent_run_id=step.run_id \
+                     AND (link.final_outcome IS NULL OR link.settled=false)) \
                ORDER BY step.updated_at LIMIT $1 \
              ) candidate ORDER BY candidate.updated_at LIMIT $1",
         )

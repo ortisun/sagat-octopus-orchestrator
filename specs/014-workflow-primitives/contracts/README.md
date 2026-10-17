@@ -297,7 +297,7 @@ error codes.
 | `reasonCode` outside 1..64 machine characters, or free text | — | `VALIDATION_FAILED` (422) | `INVALID_REASON_CODE` | false |
 | Mutation targets an ineligible state or an old segment | — | `CONFLICT` (409) | `RUN_NOT_MUTABLE`; `RUN_CONTINUED` | false |
 | Signal to a head that is not waiting for it | — | `CONFLICT` (409) | `STATE_CONFLICT` (existing) | false |
-| Boundary reached with unresolved obligations | `CONTINUATION_NOT_QUIESCENT` | — | — | false |
+| Boundary reached with unresolved obligations | — (the boundary waits, D296; `CONTINUATION_NOT_QUIESCENT` is a scheduler wait reason, never a stored failure) | — | — | — |
 | Rate or temporary capacity | — | `RATE_LIMITED` / `QUOTA_EXCEEDED` (429, Retry-After) | existing | true; reuse the same key |
 | Worker or scheduler no longer owns the attempt/transition | existing stale-fence handling | existing worker error | — | false |
 

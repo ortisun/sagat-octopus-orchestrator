@@ -13,6 +13,7 @@ mod byte_ceilings;
 mod chain_handoff;
 mod chain_progress;
 mod chain_storage;
+mod chains;
 mod chains_http;
 mod collection_restore;
 mod collections_http;
