@@ -11,9 +11,12 @@
 
 The release did not publish control-plane, execution-engine or Studio artifacts. The harness builds
 them from the tagged commit with its checked-in `Cargo.lock`, `rust-toolchain.toml` and frontend
-lockfile. It records SHA256 digests for both binaries, the lock files, toolchain file and every
-Studio asset before starting the compatibility test. The release source is a detached worktree and
-must remain clean. The Studio build uses a `git archive` copy because npm writes `node_modules`.
+lockfile. Both old and current Rust builds use the caller-supplied coordinated Cargo target and the
+default debug profile. Before the current build can replace the target's binary names, the harness
+copies the old binaries to unique immutable names. It records SHA256 digests for both binaries, the
+lock files, toolchain file and every Studio asset before starting the compatibility test. The release
+source is a detached worktree and must remain clean. The Studio build uses a `git archive` copy
+because npm writes `node_modules`.
 
 ## Scenarios
 
@@ -45,21 +48,19 @@ Command:
 ```console
 CARGO_TARGET_DIR=<coordinated-target> \
 CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=3 \
-SAGAT_COMPAT_BUILD_WINDOW=granted \
 scripts/test-payload-classification-compat.sh
 ```
 
 Result: **pending an explicitly granted shared-target build window**. No Cargo or npm build was run
 while the target was reserved. Update this section only with the actual command output, SHA256
 manifest path and observed old-binary failure if the release cannot read the intervening schema.
+T016-052 remains open while that process evidence and the browser/SDK limits below are unresolved.
 
 ## Limits
 
 - Reconstructing a current service is not accepted as release-process evidence; this gate launches
   the actual binaries produced from the immutable release commit.
-- This gate builds the old Studio bundle and proves that the current server can return its index from
-  the configured static mount. A full browser journey and its API interactions remain separate
-  browser-suite evidence.
-- The five old SDK worker bundles require their existing multi-language protocol conformance gate;
-  this HTTP and database compatibility case does not relabel a source checkout as packaged-client
-  evidence.
+- This gate builds the old Studio bundle and reads its index over HTTP from the current server's
+  configured static mount. It does not launch Chromium or exercise the bundle's browser behavior.
+- The five old SDK bundles are not built or executed by this gate. Their compatibility remains
+  separate multi-language protocol conformance evidence.
