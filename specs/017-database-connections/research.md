@@ -1,0 +1,48 @@
+# Feature 017 — Baseline, source notes and confirmed choices
+
+Date: 2026-10-16. Status: specification only; implementation pending. No new runtime capability has been implemented or tested.
+
+## User choices
+
+- Configure existing database connections and create/select their secrets in Sagat's UI.
+- Reuse connections in SDK-authored workflows, visual workflows and ad hoc workflows/steps.
+- First delivery: PostgreSQL, with a boundary for additional drivers.
+- Integrate OpenBao now. After discussing alternatives and API support, the user explicitly confirmed continuing with OpenBao.
+
+## Repository evidence
+
+The feature worktree was cut from fetched `origin/develop` at `6ede1c7`. The original workspace remains on `feature/workflow-primitives`; its changes were not copied. Identifier 017 avoids the 013/014 drafts and the existing feature/016 reservation visible in local branches.
+
+- [Integration UI](../../frontend/apps/studio/src/features/integrations/IntegrationsPage.tsx) and [events runbook](../../docs/runbooks/events.md) configure inbound brokers and separate outbound subscriptions. Neither is a generic database-connection API.
+- [Secret service](../../crates/application/src/secrets.rs), [secret types](../../crates/domain/src/secrets.rs) and [security runbook](../../docs/runbooks/security-governance.md) provide names, authorization, sealed local versions and lease-bound resolution. A cipher interface is not already an asynchronous OpenBao lifecycle adapter.
+- [Workflow contract](../001-platform-foundation/contracts/workflow.schema.json) has activity/script secret declarations. No database node or generic connection-reference contract is accepted at this baseline.
+- [ADR-0028](../../docs/adr/ADR-0028-authorized-structural-payload-inspection.md) authorizes structural inspection, not unrestricted SQL-result disclosure. The proposed database result action needs its own reviewed permission/disclosure contract.
+- The separate local worktree `sagat-octopus-orchestrator-013-otel-openbao`, branch `feature/013-otel-openbao`, contains an uncommitted `specs/013-otel-openbao/spec.md` draft and no plan/tasks. It proposes OpenBao authority, workload identities, cross-system reconciliation and migration. Its proposed ADR-0022 number collides with the integrated supervisor-denial ADR; do not link that number as accepted or silently copy its constitution changes.
+- Separate work on secret worker pools, result retention, payload classification and workflow primitives is not assumed merged. Reconcile exact capabilities during planning instead of relying on branch names as proof.
+
+## Official sources consulted
+
+### OpenBao interfaces and secret lifecycle
+
+- [HTTP API](https://openbao.org/api-docs/): JSON/HTTP operations under `/v1/`, authenticated over TLS. Proposal: the Rust adapter exposes a small application-owned interface; it does not forward arbitrary browser-selected paths. Pin the deployed version and verify required endpoints rather than assume full compatibility from the `/v1` prefix.
+- [Official Go API client](https://pkg.go.dev/github.com/openbao/openbao/api/v2): available for Go integrations. The Rust service can call the HTTP API directly; a Go sidecar is not required merely to use the provider.
+- [KV v2](https://openbao.org/docs/secrets/kv/kv-v2/): supports secret versions, version-aware writes and distinct data/metadata access. Proposal: use this engine for initial user-supplied credentials and test reconciliation instead of treating provider writes as PostgreSQL transactions.
+- [Lease semantics](https://openbao.org/docs/concepts/lease/): dynamic credentials have provider leases; ordinary KV values do not. Proposal: keep Sagat task leases, provider authentication tokens and future database-credential leases distinct.
+- [PostgreSQL engine](https://openbao.org/docs/secrets/databases/postgresql/): supports dynamic and static roles. This enables a later credential-generation mode, but it does not prove Sagat integration or authorize automatic account provisioning in feature 017.
+
+### Alternative considered at the user's request
+
+OpenBao's [MPL-2.0 license](https://github.com/openbao/openbao/blob/main/LICENSE) and database capability fit an infrastructure backend behind Sagat's own UI. Infisical offers [self-hosted deployment](https://infisical.com/docs/self-hosting/overview), but its [license](https://github.com/Infisical/infisical/blob/main/LICENSE) distinguishes MIT code from Enterprise directories, and its [current plans](https://infisical.com/pricing) list dynamic secrets as a paid capability. These facts support retaining OpenBao for this project; they do not establish a universal product ranking or a performance comparison.
+
+## Design risks to resolve in the plan
+
+1. **Provider operation evidence:** Define how the same-key/same-content write is recognized after a lost response without persisting plaintext or leaking credential equality through public metadata. New values that never reached OpenBao require secure resubmission after a crash.
+2. **Network enforcement:** The existing general egress path rejects private addresses. Customer database access needs an explicit deployment-scoped executor route; a preflight DNS check alone is insufficient.
+3. **SQL semantics:** Read-only mode, functions, type conversion, database permissions and unknown writes need real database proofs. An SQL prefix check is not an authorization boundary.
+4. **Result disclosure:** Finalize who can inspect bounded database results and which retained outputs are eligible; preserve generic run-inspection restrictions.
+5. **Identity and deployment:** Pin OpenBao and PostgreSQL driver versions; select production workload authentication, trust, seal/bootstrap/recovery and finite pool/timeout limits. Dev fixtures cannot become production defaults.
+6. **Migration concurrency:** Prevent local/OpenBao double authority while rotation, revocation and active runs race cutover. Retire legacy versions only after their dependencies and restore behavior are verified.
+
+## Evidence status
+
+Only document consistency checks apply to this delivery. No driver, API, migration, UI, SDK builder or OpenBao deployment is implemented here. Feature 017 runtime suites and their conformance fixtures must be created in the approved implementation work; existing tests are not evidence for this new feature.

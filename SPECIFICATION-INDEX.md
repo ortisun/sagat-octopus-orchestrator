@@ -31,6 +31,8 @@ The requirement-level authority is `docs/traceability.md`. Material gaps include
 
 ## Pending product and validation decisions
 
+- [017 Database Connections](specs/017-database-connections/spec.md): PostgreSQL connections configured in the UI, OpenBao secrets in the first delivery, and shared SDK/visual/ad hoc execution. Product scope confirmed; [ADR-0033](docs/adr/ADR-0033-database-connections-and-managed-execution.md) and detailed design await review. No runtime support is claimed.
+
 - Choose registry ownership, signing and release policy for the five SDK packages and the `sagat` binary.
 - Choose production identity/KMS/object-storage providers and the retention/classification tiers.
 - Define a distributed performance testbed that separates workers, API and PostgreSQL; the checked-in reports are single-machine evidence and do not prove 5 000 transitions/s.
