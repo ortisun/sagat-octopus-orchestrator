@@ -1,0 +1,414 @@
+{
+  "name": "collection-compensation",
+  "description": "WP-04: a collection whose iteration fails for good undoes what that iteration completed, inside the iteration and in reverse order (the refund before the release), through COMPENSATION tasks that carry the typed scope identity of the iteration and the key of the effect they undo. An irreversible effect is never undone: the run ends PARTIAL. An effect whose outcome is unknown inside an iteration is reconciled by that iteration's own lookup before it is repeated. A compensation that keeps failing leaves the scope waiting for an operator and the run in MANUAL_REVIEW. Concurrency is one so that the order the golden pins is the order the contract promises: reverse topological inside an iteration; between iterations the contract promises none and the scenario never has two with something to undo.",
+  "server": {
+    "iterationConcurrency": 4
+  },
+  "scopeEvidence": "ordered",
+  "workflows": {
+    "failed": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "name": "collection-compensation-failed",
+      "bodies": {
+        "unit": {
+          "program": [
+            {
+              "op": "step",
+              "id": "reserve",
+              "activity": "coll.reserve",
+              "options": {
+                "compensateWith": "coll.release"
+              }
+            },
+            {
+              "op": "step",
+              "id": "charge",
+              "activity": "coll.charge",
+              "options": {
+                "compensateWith": "coll.refund"
+              }
+            },
+            {
+              "op": "step",
+              "id": "ship",
+              "activity": "coll.ship"
+            },
+            {
+              "op": "return",
+              "id": "returned",
+              "result": "steps.ship.output"
+            }
+          ]
+        }
+      },
+      "program": [
+        {
+          "op": "map",
+          "id": "lines",
+          "items": "input.items",
+          "body": "unit",
+          "result": "item.label",
+          "maxItems": 4,
+          "maxConcurrency": 1
+        },
+        {
+          "op": "end",
+          "id": "done",
+          "options": {
+            "outputExpr": "steps.lines.output"
+          }
+        }
+      ]
+    },
+    "partial": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "name": "collection-compensation-partial",
+      "bodies": {
+        "unit": {
+          "program": [
+            {
+              "op": "step",
+              "id": "reserve",
+              "activity": "coll.reserve",
+              "options": {
+                "compensateWith": "coll.release"
+              }
+            },
+            {
+              "op": "step",
+              "id": "notify",
+              "activity": "coll.notify",
+              "options": {
+                "irreversible": true
+              }
+            },
+            {
+              "op": "step",
+              "id": "ship",
+              "activity": "coll.ship"
+            },
+            {
+              "op": "return",
+              "id": "returned",
+              "result": "steps.ship.output"
+            }
+          ]
+        }
+      },
+      "program": [
+        {
+          "op": "map",
+          "id": "lines",
+          "items": "input.items",
+          "body": "unit",
+          "result": "item.label",
+          "maxItems": 4,
+          "maxConcurrency": 1
+        },
+        {
+          "op": "end",
+          "id": "done",
+          "options": {
+            "outputExpr": "steps.lines.output"
+          }
+        }
+      ]
+    },
+    "reconciled": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "name": "collection-reconciliation",
+      "bodies": {
+        "unit": {
+          "program": [
+            {
+              "op": "step",
+              "id": "pay",
+              "activity": "coll.pay",
+              "options": {
+                "reconcileWith": "coll.lookup",
+                "retry": {
+                  "maxAttempts": 1
+                }
+              }
+            },
+            {
+              "op": "return",
+              "id": "returned",
+              "result": "steps.pay.output"
+            }
+          ]
+        }
+      },
+      "program": [
+        {
+          "op": "map",
+          "id": "lines",
+          "items": "input.items",
+          "body": "unit",
+          "result": "item.label",
+          "maxItems": 4,
+          "maxConcurrency": 1
+        },
+        {
+          "op": "end",
+          "id": "done",
+          "options": {
+            "outputExpr": "steps.lines.output"
+          }
+        }
+      ]
+    },
+    "stuck": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "name": "collection-compensation-stuck",
+      "bodies": {
+        "unit": {
+          "program": [
+            {
+              "op": "step",
+              "id": "reserve",
+              "activity": "coll.reserve",
+              "options": {
+                "compensateWith": "coll.release-broken",
+                "compensationRetry": {
+                  "maxAttempts": 1
+                }
+              }
+            },
+            {
+              "op": "step",
+              "id": "ship",
+              "activity": "coll.ship"
+            },
+            {
+              "op": "return",
+              "id": "returned",
+              "result": "steps.ship.output"
+            }
+          ]
+        }
+      },
+      "program": [
+        {
+          "op": "map",
+          "id": "lines",
+          "items": "input.items",
+          "body": "unit",
+          "result": "item.label",
+          "maxItems": 4,
+          "maxConcurrency": 1
+        },
+        {
+          "op": "end",
+          "id": "done",
+          "options": {
+            "outputExpr": "steps.lines.output"
+          }
+        }
+      ]
+    }
+  },
+  "workers": {
+    "w1": {
+      "workerName": "collection-compensation",
+      "protocolVersion": "1.5",
+      "transport": "poll",
+      "maxInflight": 1,
+      "autostart": false,
+      "activities": {
+        "coll.reserve": {
+          "behavior": {
+            "returns": {
+              "reservation": "r"
+            }
+          }
+        },
+        "coll.release": {
+          "as": "compensation",
+          "behavior": {
+            "returns": {
+              "released": true
+            }
+          }
+        },
+        "coll.charge": {
+          "behavior": {
+            "returns": {
+              "charge": "c"
+            }
+          }
+        },
+        "coll.refund": {
+          "as": "compensation",
+          "behavior": {
+            "returns": {
+              "refunded": true
+            }
+          }
+        },
+        "coll.ship": {
+          "behavior": {
+            "fails": {
+              "code": "NO_STOCK",
+              "message": "nothing to ship",
+              "retryable": false
+            }
+          }
+        },
+        "coll.notify": {
+          "behavior": {
+            "returns": {
+              "notified": true
+            }
+          }
+        },
+        "coll.release-broken": {
+          "as": "compensation",
+          "behavior": {
+            "fails": {
+              "code": "PROVIDER_DOWN",
+              "message": "cannot release",
+              "retryable": false
+            }
+          }
+        },
+        "coll.pay": {
+          "behavior": {
+            "outcomeUnknown": "the provider did not answer"
+          }
+        },
+        "coll.lookup": {
+          "as": "reconciler",
+          "behavior": {
+            "verdict": "applied",
+            "output": {
+              "paymentId": "p-9"
+            }
+          }
+        }
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "start-worker",
+      "op": "startWorker",
+      "worker": "w1"
+    },
+    {
+      "id": "failed",
+      "op": "start",
+      "workflow": "failed",
+      "input": {
+        "items": [
+          {
+            "label": "a"
+          },
+          {
+            "label": "b"
+          }
+        ]
+      }
+    },
+    {
+      "id": "failed-done",
+      "op": "waitForCompletion",
+      "run": "failed",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "failed-journal",
+      "op": "events",
+      "run": "failed"
+    },
+    {
+      "id": "partial",
+      "op": "start",
+      "workflow": "partial",
+      "input": {
+        "items": [
+          {
+            "label": "a"
+          },
+          {
+            "label": "b"
+          }
+        ]
+      }
+    },
+    {
+      "id": "partial-done",
+      "op": "waitForCompletion",
+      "run": "partial",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "partial-journal",
+      "op": "events",
+      "run": "partial"
+    },
+    {
+      "id": "reconciled",
+      "op": "start",
+      "workflow": "reconciled",
+      "input": {
+        "items": [
+          {
+            "label": "a"
+          },
+          {
+            "label": "b"
+          }
+        ]
+      }
+    },
+    {
+      "id": "reconciled-done",
+      "op": "waitForCompletion",
+      "run": "reconciled",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "reconciled-journal",
+      "op": "events",
+      "run": "reconciled"
+    },
+    {
+      "id": "stuck",
+      "op": "start",
+      "workflow": "stuck",
+      "input": {
+        "items": [
+          {
+            "label": "a"
+          },
+          {
+            "label": "b"
+          }
+        ]
+      }
+    },
+    {
+      "id": "stuck-review",
+      "op": "awaitJournal",
+      "run": "stuck",
+      "eventType": "step.needs_review",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "stuck-state",
+      "op": "get",
+      "run": "stuck"
+    },
+    {
+      "id": "stuck-journal",
+      "op": "events",
+      "run": "stuck"
+    },
+    {
+      "id": "stop-worker",
+      "op": "stopWorker",
+      "worker": "w1"
+    }
+  ]
+}
