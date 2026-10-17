@@ -53,3 +53,14 @@ TypeScript 130 tests, Python workflow 14, .NET builders 80, Java builder 24, and
 package passed. All five classification outputs matched the golden: 1,474 canonical carrier
 bytes, SHA-256 `0700a0eb7dfff6baed1a3173e14f77e2a178a33db30d7b9cb4222dfd42dcb046`.
 This focused proof does not replace the final complete protocol/runtime conformance matrix.
+
+### Managed secret capability checkpoint
+
+`integration_database_connections` passed all 3 top-level tests on the combined publication tree
+(`/tmp/sagat-completion-database-integration-4.log`, 65.03 s), including its aggregated real
+OpenBao lifecycle, database executor, pool revocation/provider-I/O races, output and blob cases.
+Worker registration now requires persisted current membership with WorkerExecute; test worlds
+persist their default worker identities. The aggregate test allocates an explicit 16 MiB test
+thread stack and acquires a fresh lease immediately before the final revocation race. This
+removes the earlier default-harness stack overflow and an expired-lease barrier wait; production
+runtime stack/lease settings are unchanged. Final combined workspace gates remain pending.

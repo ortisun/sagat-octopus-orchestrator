@@ -29,8 +29,20 @@ use testcontainers_modules::testcontainers::{
 };
 use uuid::Uuid;
 
-#[tokio::test]
-async fn durable_provider_intents_reconcile_without_plaintext_or_duplicate_rotation() {
+// This aggregate lifecycle contains deeply nested adapter futures. Keep its explicit test-only
+// stack allocation local; the worker and control-plane runtimes keep their normal settings.
+#[test]
+fn durable_provider_intents_reconcile_without_plaintext_or_duplicate_rotation() {
+    std::thread::Builder::new()
+        .name("managed-secret-lifecycle".into())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
+                .block_on(managed_secret_lifecycle())
+        }).unwrap().join().expect("managed secret lifecycle thread");
+}
+
+async fn managed_secret_lifecycle() {
     let mut w = world().await;
     let container = GenericImage::new("openbao/openbao", "2.7.1")
         .with_wait_for(WaitFor::message_on_stdout(
@@ -167,6 +179,7 @@ async fn durable_provider_intents_reconcile_without_plaintext_or_duplicate_rotat
         .await
         .unwrap();
     assert_eq!(resolved[0].value.expose(), b"rotated-canary-017");
+    w.complete(&session, &task, &serde_json::json!({})).await.unwrap();
     // A legacy writer cannot silently switch provider authority back to local ciphertext.
     assert!(
         w.secrets
@@ -217,20 +230,26 @@ async fn durable_provider_intents_reconcile_without_plaintext_or_duplicate_rotat
     let authority: String = sqlx::query_scalar("SELECT authority FROM secrets WHERE tenant_id=$1 AND namespace_id=$2 AND name='legacy-credential'")
         .bind(w.admin.tenant_id().as_uuid()).bind(ns.as_uuid()).fetch_one(&w.db.pool).await.unwrap();
     assert_eq!(authority, "openbao");
-    managed_http_facade(provider.clone()).await;
+    Box::pin(managed_http_facade(provider.clone())).await;
     connection_catalog(&w).await;
-    ad_hoc::run(&w).await;
-    admission::run(&w, &service).await;
-    cleanup::run(provider.clone()).await;
-    cleanup_retention::run(provider.clone()).await;
-    key_rotation::run(provider.clone()).await;
-    consumers::run(provider.clone()).await;
-    signing_consumers::run(provider.clone()).await;
-    policies::run(provider.clone()).await;
-    executor::run(provider.clone()).await;
-    executor::grpc(provider.clone()).await;
-    output::run(provider.clone()).await;
-    output_blobs::run(provider.clone()).await;
+    Box::pin(ad_hoc::run(&w)).await;
+    Box::pin(admission::run(&w, &service)).await;
+    Box::pin(cleanup::run(provider.clone())).await;
+    Box::pin(cleanup_retention::run(provider.clone())).await;
+    Box::pin(key_rotation::run(provider.clone())).await;
+    Box::pin(consumers::run(provider.clone())).await;
+    Box::pin(signing_consumers::run(provider.clone())).await;
+    Box::pin(policies::run(provider.clone())).await;
+    Box::pin(executor::run(provider.clone())).await;
+    Box::pin(executor::grpc(provider.clone())).await;
+    Box::pin(output::run(provider.clone())).await;
+    Box::pin(output_blobs::run(provider.clone())).await;
+
+    // The preceding independent scenarios can outlast a lease. Acquire a fresh one so this
+    // race exercises revocation during provider I/O rather than an already expired capability.
+    w.start(workflow, &serde_json::json!({})).await;
+    let session = w.session(&["act.a"]).await;
+    let task = w.one_task(&session).await;
 
     // An ACL/membership change during provider I/O must discard the value already read.
     let gated = Arc::new(ReadBarrier {
@@ -253,7 +272,9 @@ async fn durable_provider_intents_reconcile_without_plaintext_or_duplicate_rotat
             .unwrap();
         gated.resume.wait().await;
     };
-    let (result, ()) = tokio::join!(resolving, revoking);
+    let (result, ()) = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(resolving, revoking)
+    }).await.expect("provider I/O revocation race must finish within the fresh lease");
     assert!(matches!(result, Err(AppError::SecretUnavailable { .. })));
     // Stale in-memory admin principals cannot replay a management receipt either.
     assert!(service.put(&w.admin, ns, write(), &ctx()).await.is_err());

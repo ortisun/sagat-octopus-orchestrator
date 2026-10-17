@@ -238,6 +238,11 @@ pub async fn world_with_breaker(
         store,
         db,
     };
+    // Real authentication requires current tenant membership for machine identities. Persist the
+    // default fixture identities too, so capability tests exercise that authority rather than a
+    // synthetic Principal with no membership row.
+    world.member("worker-1", Role::Worker).await;
+    world.member("runner-1", Role::Runner).await;
     // The worker identity of the first tenant is bound to its namespace, as an operator would.
     world.bind_everything(&world.worker).await;
     world

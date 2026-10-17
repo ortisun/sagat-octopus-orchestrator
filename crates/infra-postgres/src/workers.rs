@@ -237,7 +237,8 @@ impl WorkerStore for PgRunStore {
             .activities
             .iter()
             .any(|a| a.starts_with(sagat_domain::database::MANAGED_DATABASE_PREFIX));
-        if (managed && role != Some(sagat_domain::identity::Role::DatabaseRunner))
+        if !role.is_some_and(|role| role.grants(sagat_domain::identity::Permission::WorkerExecute))
+            || (managed && role != Some(sagat_domain::identity::Role::DatabaseRunner))
             || role.is_some_and(|role| {
                 !sagat_application::worker::managed_capabilities_allowed(
                     role,
