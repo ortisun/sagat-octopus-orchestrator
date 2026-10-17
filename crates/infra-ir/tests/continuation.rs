@@ -554,3 +554,117 @@ fn publication_keeps_other_approval_continuation_shapes_closed() {
             .push(second);
     });
 }
+
+fn root_wait_document() -> Value {
+    json!({
+        "apiVersion": "sagat-octopus-orchestrator.io/v1",
+        "kind": "Workflow",
+        "metadata": {"name": "root-wait-continuation-published"},
+        "entrypoint": "release",
+        "nodes": [
+            {
+                "id": "release", "type": "waitEvent", "eventType": "chain.release",
+                "correlationExpr": "input.key", "timeoutMs": 600000, "next": "rollover"
+            },
+            {"id": "rollover", "type": "continueAsNew", "input": "input.next"}
+        ],
+        "chainPolicy": {"maxSegments": 3, "timeoutMs": 86_400_000}
+    })
+}
+
+fn root_wait_conditional_document() -> Value {
+    json!({
+        "apiVersion": "sagat-octopus-orchestrator.io/v1",
+        "kind": "Workflow",
+        "metadata": {"name": "root-wait-conditional-published"},
+        "entrypoint": "release",
+        "nodes": [
+            {
+                "id": "release", "type": "waitEvent", "eventType": "chain.release",
+                "correlationExpr": "input.key", "timeoutMs": 600000, "next": "again"
+            },
+            {
+                "id": "again", "type": "condition", "expression": "input.continue",
+                "ifTrue": "rollover", "ifFalse": "done"
+            },
+            {"id": "rollover", "type": "continueAsNew", "input": "input.next"},
+            {"id": "done", "type": "end"}
+        ],
+        "chainPolicy": {"maxSegments": 3, "timeoutMs": 86_400_000}
+    })
+}
+
+#[test]
+fn publishes_an_event_wait_entrypoint_followed_by_a_continuation_or_one_condition() {
+    for document in [root_wait_document(), root_wait_conditional_document()] {
+        let parsed = JsonIrCodec
+            .parse(document.to_string().as_bytes())
+            .expect("a wait entrypoint is publishable");
+        assert!(matches!(
+            parsed
+                .definition
+                .node(&NodeId::parse("release").expect("node"))
+                .expect("entry")
+                .kind(),
+            NodeKind::WaitEvent { .. }
+        ));
+        assert_eq!(parsed.definition.entrypoint().as_str(), "release");
+    }
+}
+
+#[test]
+fn publication_keeps_every_other_wait_entrypoint_shape_closed_with_a_typed_refusal() {
+    let closed = |edit: &dyn Fn(&mut Value)| {
+        let mut document = root_wait_document();
+        edit(&mut document);
+        assert!(
+            matches!(
+                JsonIrCodec.parse(document.to_string().as_bytes()),
+                Err(IrError::Unsupported { .. } | IrError::Invalid(_))
+            ),
+            "{document}"
+        );
+    };
+    // The wait routes its own timeout, or looks back at an event that may be the one that ended the
+    // predecessor's wait.
+    closed(&|document| document["nodes"][0]["onTimeout"] = json!("rollover"));
+    closed(&|document| document["nodes"][0]["lookbackMs"] = json!(1));
+    // Declared state does not travel to a successor that begins by waiting.
+    closed(&|document| {
+        document["state"] = json!({"schema": {"type": "integer"}, "initial": "0"});
+        document["nodes"][1]["state"] = json!("state");
+    });
+    // A second wait, an activity, an approval or an extra node between the wait and the boundary.
+    closed(&|document| {
+        document["nodes"][0]["next"] = json!("second");
+        document["nodes"].as_array_mut().expect("nodes").insert(
+            1,
+            json!({
+                "id": "second", "type": "waitEvent", "eventType": "chain.again",
+                "correlationExpr": "input.key", "timeoutMs": 600000, "next": "rollover"
+            }),
+        );
+    });
+    closed(&|document| {
+        document["nodes"]
+            .as_array_mut()
+            .expect("nodes")
+            .push(json!({"id": "done", "type": "end"}));
+    });
+    // Other node kinds as the entrypoint stay closed with the message that names the two allowed.
+    let mut timer = root_wait_document();
+    timer["nodes"][0] =
+        json!({"id": "release", "type": "timer", "durationMs": 1000, "next": "rollover"});
+    assert!(matches!(
+        JsonIrCodec.parse(timer.to_string().as_bytes()),
+        Err(IrError::Unsupported { kind, reason, .. })
+            if kind == "timer" && reason.contains("activity or an event wait")
+    ));
+    let mut stateful_condition = root_wait_conditional_document();
+    stateful_condition["state"] = json!({"schema": {"type": "integer"}, "initial": "0"});
+    stateful_condition["nodes"][2]["state"] = json!("state");
+    assert!(matches!(
+        JsonIrCodec.parse(stateful_condition.to_string().as_bytes()),
+        Err(IrError::Unsupported { kind, .. }) if kind == "waitEvent"
+    ));
+}

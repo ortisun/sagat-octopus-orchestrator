@@ -9,8 +9,8 @@ use std::future::Future;
 
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::execution::{
-    self, ChainError, ChainFinalOutcome, ChainPolicy, ChainScope, ContinuationTransfer, Progress,
-    RunId, RunStatus, StepStatus, StopReason, WaitingOn,
+    self, ChainError, ChainFinalOutcome, ChainPolicy, ChainScope, ContinuationTransfer,
+    CorrelationKey, Progress, RunId, RunStatus, StepStatus, StopReason, WaitingOn,
 };
 use sagat_domain::identity::{NamespaceId, Permission, Principal, Subject, TenantId};
 use sagat_domain::workflow::{Digest, NodeId, NodeKind};
@@ -250,6 +250,7 @@ pub struct EvaluatedChainHandoffCommand {
     input: Vec<u8>,
     state: Option<Vec<u8>>,
     expected_state_revision: Option<u64>,
+    correlation: Option<CorrelationKey>,
 }
 
 /// Bounded values selected from one immutable run snapshot before the handoff lock is reacquired.
@@ -259,6 +260,7 @@ pub struct ContinuationSelection {
     input: Vec<u8>,
     state: Option<Vec<u8>>,
     expected_state_revision: Option<u64>,
+    correlation: Option<CorrelationKey>,
 }
 
 impl ContinuationSelection {
@@ -286,7 +288,24 @@ impl ContinuationSelection {
             input,
             state,
             expected_state_revision,
+            correlation: None,
         })
+    }
+
+    /// Selects the correlation key the successor's entry `waitEvent` waits on, evaluated over the
+    /// transferred input. The successor is then created already waiting (G372): the key, the wait
+    /// deadline and the event subscription commit with the hand-off. A selection without a key is
+    /// for a successor that starts with an activity; the write refuses a selection that does not
+    /// match the entry the definition declares.
+    #[must_use]
+    pub fn with_correlation_key(mut self, key: CorrelationKey) -> Self {
+        self.correlation = Some(key);
+        self
+    }
+
+    #[must_use]
+    pub const fn correlation_key(&self) -> Option<&CorrelationKey> {
+        self.correlation.as_ref()
     }
 
     #[must_use]
@@ -312,6 +331,7 @@ impl ContinuationSelection {
             input: self.input,
             state: self.state,
             expected_state_revision: self.expected_state_revision,
+            correlation: self.correlation,
         })
     }
 }
@@ -356,6 +376,12 @@ impl EvaluatedChainHandoffCommand {
     #[must_use]
     pub const fn expected_state_revision(&self) -> Option<u64> {
         self.expected_state_revision
+    }
+
+    /// The key the successor's entry wait subscribes with; `None` for an activity entrypoint.
+    #[must_use]
+    pub const fn correlation_key(&self) -> Option<&CorrelationKey> {
+        self.correlation.as_ref()
     }
 }
 
