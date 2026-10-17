@@ -664,30 +664,39 @@ fn drain_refuses_to_hide_failed_derived_obligations() {
             BTreeMap::new(),
             state.version(),
         );
-        assert_eq!(
-            restored.restore_collection_progress(
-                collection(),
-                CollectionPhase::Draining,
-                1,
-                1,
-                1,
-                Digest::new([0x51; 32]),
-                None,
-                Some(reason),
-                vec![
-                    sagat_domain::execution::CollectionIterationRestore::drained(
-                        0,
-                        body(0),
-                        Digest::new([0; 32]),
-                    )
-                ],
-            ),
-            Err(ExecutionError::IllegalCollectionTransition {
-                collection: collection(),
-                event: "collection.restore",
-            })
+        let restore = restored.restore_collection_progress(
+            collection(),
+            CollectionPhase::Draining,
+            1,
+            1,
+            1,
+            Digest::new([0x51; 32]),
+            None,
+            Some(reason),
+            vec![
+                sagat_domain::execution::CollectionIterationRestore::drained(
+                    0,
+                    body(0),
+                    Digest::new([0; 32]),
+                ),
+            ],
         );
-        assert!(restored.collection(&collection()).is_none());
+        if derived_node.is_compensation() {
+            // A compensation of a drained iteration belongs to the scope's own compensation
+            // (D389): the scope decides what a failed one means, and the collection cannot finish
+            // while it is open (`a_collection_cannot_finish_while_its_compensation_is_open`).
+            assert_eq!(restore, Ok(()));
+            assert!(restored.collection(&collection()).is_some());
+        } else {
+            assert_eq!(
+                restore,
+                Err(ExecutionError::IllegalCollectionTransition {
+                    collection: collection(),
+                    event: "collection.restore",
+                })
+            );
+            assert!(restored.collection(&collection()).is_none());
+        }
     }
 }
 
