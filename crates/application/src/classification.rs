@@ -693,7 +693,10 @@ mod tests {
         let literal_star = vec![ClassificationSegment::Property("*".into())];
         let literal_zero = vec![ClassificationSegment::Property("0".into())];
 
-        assert_ne!(literal_star, vec![ClassificationSegment::AdditionalProperty]);
+        assert_ne!(
+            literal_star,
+            vec![ClassificationSegment::AdditionalProperty]
+        );
         assert_ne!(literal_zero, vec![ClassificationSegment::Index(0)]);
         assert_ne!(
             vec![ClassificationSegment::AdditionalProperty],

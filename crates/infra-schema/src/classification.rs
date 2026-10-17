@@ -1155,4 +1155,6 @@ fn lexical_is_integer(value: &str) -> bool {
 #[path = "classification/publication.rs"]
 mod publication;
 
-pub use publication::analyze_value;
+pub use publication::{
+    analyze_value, resolve_classification_location, visit_classification_locations,
+};
