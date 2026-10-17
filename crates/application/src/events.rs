@@ -1051,11 +1051,16 @@ where
             })?;
         let mut values = Vec::with_capacity(versions.len());
         for stored in &versions {
-            // A version no key opens is skipped, and so is one too short to mean anything: the
-            // others may still verify the request.
-            if let Ok(value) = self.cipher.resolve(stored).await
-                && signing::usable(value.expose())
-            {
+            let value = match self.cipher.resolve(stored).await {
+                Ok(value) => value,
+                // Migration grace must never turn an unavailable provider into local authority.
+                Err(_) if matches!(stored.value, crate::secrets::StoredValue::OpenBao(_)) => {
+                    return Err(Unverified::Store(AppError::Unavailable));
+                }
+                // Preserve the legacy key-ring grace behavior for local-only versions.
+                Err(_) => continue,
+            };
+            if signing::usable(value.expose()) {
                 values.push(value);
             }
         }

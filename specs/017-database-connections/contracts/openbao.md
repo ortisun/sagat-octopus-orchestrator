@@ -77,3 +77,24 @@ The integration form retains only the request UUID across a failed submission; t
 stays in its existing transient form state. Editing credential fields allocates a new request.
 Successful secret creation clears these fields and retains the logical reference if connector
 creation fails. Closing the form discards both form content and the pending request UUID.
+
+## Existing consumers
+
+Ordinary worker secret resolution takes a scoped metadata snapshot, commits, resolves values
+outside the run transaction, then reopens the run and checks the live lease/generation, current
+binding, cancellation and publisher ACL/version snapshot before auditing and returning anything.
+Completion and failure-code scanning use the same two-transaction structure around provider I/O;
+a concurrent rotation requires a fresh scan. Durable report receipts replay before consulting the
+provider and are checked again after I/O. Heartbeats and cancellation can commit during a slow
+provider read. A cancellation discards the pending disclosure/output. Derived compensation and
+reconciliation tasks retain the domain's permission to run while their saga is stopping.
+
+The ordinary output contract remains raw/JSON-escaped UTF-8 scanning for retained declared-secret
+versions of at least eight bytes. Managed database output uses its separate typed/encoded scanner
+and attempt credential pins. This change does not broaden ordinary blob-output permissions.
+
+Inbound HMAC verifies retained migration/grace versions only after every referenced OpenBao value
+has resolved successfully. Any provider read failure returns retryable unavailable, admitting no
+event. Outbound signing similarly sends nothing and records its existing durable retry when a
+remote version cannot be read. Local-only key-ring grace behavior remains supported. Broker
+credentials continue to resolve only the selected current version with no local fallback.

@@ -10,7 +10,9 @@
 
 mod database;
 mod output;
+mod secrets;
 pub use output::BlobOutput;
+use secrets::SecretReport;
 
 use std::future::Future;
 use std::sync::Arc;
@@ -1423,10 +1425,17 @@ where
         // credential fits the characters and the length it may have (`[A-Za-z0-9_.:-]`, 64): a
         // worker that reports its own secret as the reason it failed fails for good instead.
         let mut retryable = retryable;
-        if let Some(name) = self
-            .secret_in_output(&mut tx, task, error_code.as_bytes())
+        let leaked = match self
+            .checked_secret_report(principal, task, tx, &idempotency, error_code.as_bytes())
             .await?
         {
+            SecretReport::Ready(current, leaked) => {
+                tx = current;
+                leaked
+            }
+            SecretReport::Replayed(ack) => return Ok(ack),
+        };
+        if let Some(name) = leaked {
             metrics::counter!("secret_output_detected_total").increment(1);
             effects.audit = Some(self.leak_audit(principal, &tx, task, &name, "failure code"));
             code = FailureCode::secret_in_output();
@@ -1637,230 +1646,6 @@ where
             .unwrap_or_default()
     }
 
-    /// Hands a worker the values of the secrets its step declares, for the length of the attempt it
-    /// holds the lease of (FR-009-002, US02).
-    ///
-    /// The lease is the temporary capability: it must be current, the identity still bound to the
-    /// activity, and the *publisher* of the workflow version must still be allowed to use every
-    /// secret, now and not only when they published (an access list that changed is honoured by the
-    /// next resolution). All or nothing: one unusable secret and the worker gets none. The
-    /// resolution is audited in the same transaction that read the values, with names and never
-    /// values, so a value cannot be handed out without a record.
-    ///
-    /// # Errors
-    /// [`AppError::StaleAttempt`], [`AppError::NotBound`], [`AppError::SecretUnavailable`] (a secret
-    /// is gone or its publisher may no longer use it; audited), [`AppError::NotAllowed`] when this
-    /// instance has no key ring.
-    pub async fn resolve_secrets(
-        &self,
-        principal: &Principal,
-        task: &TaskRef<'_>,
-        trace_id: Option<&str>,
-    ) -> Result<Vec<ResolvedSecret>, AppError> {
-        principal.authorize(Permission::WorkerExecute)?;
-        let Some(cipher) = &self.vault else {
-            return Err(AppError::NotAllowed(
-                "secrets are not configured on this instance",
-            ));
-        };
-        let mut tx = self.open(principal, task, Lock::Wait).await?;
-        self.verify(&mut tx, task).await?;
-        self.ensure_bound(principal, &mut tx, task).await?;
-        // The capability ends when the lease does, not when the scheduler gets round to reclaiming
-        // the attempt: a worker that stopped renewing no longer gets to read secrets.
-        if !tx
-            .lease_unexpired(task.node, &Token::hash_of(task.lease_token))
-            .await?
-        {
-            return Err(AppError::StaleAttempt);
-        }
-        let names = Self::declared_secrets(&mut tx, task);
-        if names.is_empty() {
-            return Ok(Vec::new());
-        }
-        let info = tx.info().clone();
-        let inputs = tx.secret_inputs(&names).await?;
-        let states: Vec<_> = inputs
-            .items
-            .iter()
-            .map(|item| {
-                let state = if item.stored.is_some() {
-                    SecretState::Present {
-                        granted: item.granted,
-                    }
-                } else {
-                    SecretState::Missing
-                };
-                (item.name.clone(), state)
-            })
-            .collect();
-        let audit = |action, reason: String| {
-            let mut effects = Effects::by(
-                Actor::Worker(principal.subject().as_str().to_owned()),
-                trace_id.map(str::to_owned),
-            );
-            effects.audit = Some(
-                AuditRecord::by(
-                    principal,
-                    action,
-                    ResourceType::Secret,
-                    format!("{}/run {}", info.namespace_id, info.run_id),
-                    trace_id.map(str::to_owned),
-                    self.clock.now(),
-                )
-                .with_reason(reason),
-            );
-            effects
-        };
-        if let Err(SecretProblem(name)) = check_usable(inputs.publisher_role, &states) {
-            // The denial is written and committed: it is the trail of why a worker got nothing.
-            let effects = audit(
-                AuditAction::SecretDenied,
-                format!(
-                    "node {} attempt {}: {name} not usable by its publisher",
-                    task.node, task.fence.attempt
-                ),
-            );
-            tx.persist(&[], effects).await?;
-            tx.commit().await?;
-            metrics::counter!("secret_resolution_denied_total").increment(1);
-            return Err(AppError::SecretUnavailable {
-                name: name.to_string(),
-            });
-        }
-        let mut resolved = Vec::with_capacity(names.len());
-        for name in &names {
-            let stored = inputs
-                .items
-                .iter()
-                .find(|item| &item.name == name)
-                .and_then(|item| item.stored.as_ref())
-                .ok_or(AppError::Internal)?;
-            let value = cipher.resolve(stored).await?;
-            resolved.push(ResolvedSecret {
-                name: name.clone(),
-                version: stored.meta.version,
-                value,
-            });
-        }
-        // Provider I/O can outlive a lease or an ACL. Check again before committing the audit
-        // and handing out any value, and discard values if rotation raced the read.
-        if !tx
-            .lease_unexpired(task.node, &Token::hash_of(task.lease_token))
-            .await?
-        {
-            return Err(AppError::StaleAttempt);
-        }
-        self.ensure_bound(principal, &mut tx, task).await?;
-        let current = tx.secret_inputs(&names).await?;
-        let states: Vec<_> = current
-            .items
-            .iter()
-            .map(|item| {
-                (
-                    item.name.clone(),
-                    if item.stored.is_some() {
-                        SecretState::Present {
-                            granted: item.granted,
-                        }
-                    } else {
-                        SecretState::Missing
-                    },
-                )
-            })
-            .collect();
-        if let Err(SecretProblem(name)) = check_usable(current.publisher_role, &states) {
-            tx.persist(
-                &[],
-                audit(
-                    AuditAction::SecretDenied,
-                    format!(
-                        "node {} attempt {}: access changed during resolution",
-                        task.node, task.fence.attempt
-                    ),
-                ),
-            )
-            .await?;
-            tx.commit().await?;
-            return Err(AppError::SecretUnavailable {
-                name: name.to_string(),
-            });
-        }
-        if current
-            .items
-            .iter()
-            .zip(&inputs.items)
-            .any(|(now, before)| {
-                now.stored.as_ref().map(|s| s.meta.id) != before.stored.as_ref().map(|s| s.meta.id)
-            })
-        {
-            return Err(AppError::Unavailable);
-        }
-        let listed = resolved
-            .iter()
-            .map(|r| format!("{} v{}", r.name, r.version))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let effects = audit(
-            AuditAction::SecretResolved,
-            format!(
-                "node {} attempt {}: {listed}",
-                task.node, task.fence.attempt
-            ),
-        );
-        tx.persist(&[], effects).await?;
-        tx.commit().await?;
-        metrics::counter!("secrets_handed_out_total").increment(resolved.len() as u64);
-        Ok(resolved)
-    }
-
-    /// The name of a secret the step declares whose value appears in `output`, if one does. Only
-    /// steps that declare secrets pay for the check, and only values of at least eight bytes are
-    /// looked for (a shorter one would match ordinary text); a value that is not UTF-8 is not
-    /// looked for either. Both the value and its JSON-escaped form are searched, for every version
-    /// of the secret that is still stored: a value handed out earlier in the attempt may have been
-    /// replaced since.
-    async fn secret_in_output<Tx: RunTx>(
-        &self,
-        tx: &mut Tx,
-        task: &TaskRef<'_>,
-        output: &[u8],
-    ) -> Result<Option<SecretName>, AppError> {
-        let Some(cipher) = &self.vault else {
-            return Ok(None);
-        };
-        let names = Self::declared_secrets(tx, task);
-        if names.is_empty() {
-            return Ok(None);
-        }
-        let versions = tx.secret_versions(&names).await?;
-        let Ok(text) = std::str::from_utf8(output) else {
-            return Ok(None);
-        };
-        for stored in &versions {
-            let value = match cipher.resolve(stored).await {
-                Ok(value) => value,
-                Err(error) if matches!(stored.value, crate::secrets::StoredValue::OpenBao(_)) => {
-                    return Err(error);
-                }
-                Err(_) => continue,
-            };
-            if value.len() < MIN_SCANNED_SECRET_BYTES {
-                continue;
-            }
-            let Ok(plain) = std::str::from_utf8(value.expose()) else {
-                continue;
-            };
-            if text.contains(plain)
-                || text.contains(&json_escaped(plain, false))
-                || text.contains(&json_escaped(plain, true))
-            {
-                return Ok(Some(stored.meta.name.clone()));
-            }
-        }
-        Ok(None)
-    }
-
     /// The caller must still be bound to the activity of the step it reports on. Evaluated at use,
     /// not only at registration: a binding that is removed stops a worker that already holds a
     /// lease from renewing it or reporting on it, with no session to wait for to expire.
@@ -1912,6 +1697,31 @@ where
     }
 
     /// The presented token must be the one hashed into the step's current lease.
+    async fn live_capability_fence<Tx: RunTx>(
+        &self,
+        principal: &Principal,
+        tx: &mut Tx,
+        task: &TaskRef<'_>,
+    ) -> Result<(), AppError> {
+        self.verify(tx, task).await?;
+        self.ensure_bound(principal, tx, task).await?;
+        let legacy_attempt = task.fence.attempt == 0 && !Self::managed_database(tx, task);
+        let valid_step = tx.parts().1.step(task.node).is_some_and(|s| {
+            (legacy_attempt || s.attempt() == task.fence.attempt)
+                && s.generation() == task.fence.generation
+                && !s.cancel_requested()
+        }) && (tx.parts().1.stop_reason().is_none() || task.node.is_derived())
+            && !tx.parts().1.is_finished();
+        if !valid_step
+            || !tx
+                .lease_unexpired(task.node, &Token::hash_of(task.lease_token))
+                .await?
+        {
+            return Err(AppError::StaleAttempt);
+        }
+        Ok(())
+    }
+
     async fn verify<Tx: RunTx>(&self, tx: &mut Tx, task: &TaskRef<'_>) -> Result<(), AppError> {
         // A step id that does not belong to this run and node is a misdirected report.
         if let Some(claimed) = task.step_id {

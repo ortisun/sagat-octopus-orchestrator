@@ -52,7 +52,7 @@ where
         let reader = self.vault.as_ref().ok_or(AppError::Unavailable)?;
         let before = {
             let mut tx = self.open(principal, task, Lock::Wait).await?;
-            self.database_fence(principal, &mut tx, task).await?;
+            self.live_capability_fence(principal, &mut tx, task).await?;
             let snapshot = tx
                 .database_input(task.node, principal.subject().as_str())
                 .await?;
@@ -62,7 +62,7 @@ where
         };
         let value = reader.resolve(&before.secret).await?;
         let mut tx = self.open(principal, task, Lock::Wait).await?;
-        self.database_fence(principal, &mut tx, task).await?;
+        self.live_capability_fence(principal, &mut tx, task).await?;
         let after = tx
             .database_input(task.node, principal.subject().as_str())
             .await?;
@@ -190,7 +190,7 @@ where
         ),
         AppError,
     > {
-        self.database_fence(principal, tx, task).await?;
+        self.live_capability_fence(principal, tx, task).await?;
         let secret = tx
             .database_credential(task.node)
             .await?
@@ -260,29 +260,5 @@ where
         let scope = Self::scope_of(&tx, task);
         tx.commit().await?;
         Ok(scope)
-    }
-
-    async fn database_fence<Tx: RunTx>(
-        &self,
-        principal: &Principal,
-        tx: &mut Tx,
-        task: &TaskRef<'_>,
-    ) -> Result<(), AppError> {
-        self.verify(tx, task).await?;
-        self.ensure_bound(principal, tx, task).await?;
-        let valid_step = tx.parts().1.step(task.node).is_some_and(|s| {
-            s.attempt() == task.fence.attempt
-                && s.generation() == task.fence.generation
-                && !s.cancel_requested()
-        }) && tx.parts().1.stop_reason().is_none()
-            && !tx.parts().1.is_finished();
-        if !valid_step
-            || !tx
-                .lease_unexpired(task.node, &Token::hash_of(task.lease_token))
-                .await?
-        {
-            return Err(AppError::StaleAttempt);
-        }
-        Ok(())
     }
 }

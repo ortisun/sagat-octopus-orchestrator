@@ -545,23 +545,34 @@ where
         let timestamp = self.clock.now().unix_timestamp();
         let mut parts = Vec::with_capacity(versions.len());
         for stored in &versions {
-            if let Ok(value) = self.cipher.resolve(stored).await {
-                // The receiver is told the type in a header, so the signature covers it.
-                let covered = signing::Covered {
-                    timestamp,
-                    event_id: &delivery.event_id,
-                    event_type: delivery.kind.as_str(),
-                    subject: "",
-                    correlation_key: "",
-                };
-                // A secret too short to sign anything signs nothing; the others may.
-                parts.extend(signing::sign(
-                    signing::Direction::Outbound,
-                    value.expose(),
-                    &covered,
-                    &delivery.payload,
-                ));
-            }
+            let value = match self.cipher.resolve(stored).await {
+                Ok(value) => value,
+                // The pending delivery retries durably; do not send using only a local grace key.
+                Err(_)
+                    if matches!(
+                        stored.value,
+                        sagat_application::secrets::StoredValue::OpenBao(_)
+                    ) =>
+                {
+                    return None;
+                }
+                Err(_) => continue,
+            };
+            // The receiver is told the type in a header, so the signature covers it.
+            let covered = signing::Covered {
+                timestamp,
+                event_id: &delivery.event_id,
+                event_type: delivery.kind.as_str(),
+                subject: "",
+                correlation_key: "",
+            };
+            // A secret too short to sign anything signs nothing; the others may.
+            parts.extend(signing::sign(
+                signing::Direction::Outbound,
+                value.expose(),
+                &covered,
+                &delivery.payload,
+            ));
         }
         if parts.is_empty() {
             return None;

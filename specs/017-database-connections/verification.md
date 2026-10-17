@@ -377,3 +377,14 @@ coverage above; full deployment/SDK/crash gates remain T017-023/024/025.
 - Independent read-only review: no Required/Critical findings.
 - Test development caught an off-by-one rotation fixture and cancellation still awaiting lease expiry; both fixtures were corrected to exercise the actual lifecycle. No failing test is claimed as evidence.
 - Production scheduling, coordinated backup/restore and final regression remain separate open tasks. OpenBao metadata tombstones accumulate permanently; only value bytes and unreferenced PostgreSQL receipts are reclaimed.
+
+## Existing consumer I/O checkpoint
+
+- Regression tests first reproduced both defects: a blocked provider read blocked heartbeat (1-second timeout), and migrated HMAC verification accepted an old local key while OpenBao was unavailable.
+- Ordinary resolution and completion/failure-code scanning now commit their snapshot transaction before provider I/O, then reacquire and recheck current lease, generation, cancellation, binding and relevant secret metadata. Receipt replay precedes provider access and is repeated after I/O.
+- Real-service feature suite passes with blocked-read heartbeat/cancellation for resolve/complete/fail, rotation-during-scan refusal followed by a fresh successful scan, report receipt replay with the provider unavailable, healthy HMAC migration grace, no event admission or outbound send during outage, and durable outbound retry after recovery.
+- Independent review caught the initial shared fence rejecting derived saga recovery during stopping. Corrected to match domain semantics; a cancelled saga's secret-bearing compensation and reconciliation both resolve/report and finish consistently. No Required/Critical findings remain after review.
+- `cargo test -p sagat-tests --test integration_security_multitenancy secrets --locked`: 31 passed, 64 filtered (20.01 s).
+- `cargo test -p sagat-tests --test integration_events_webhooks_messaging --locked`: 111 passed (18.64 s).
+- Final combined database-connections and sagas-compensations integration run: all passed (3 feature tests and 74 saga tests; saga suite 9.63 s). Application/scheduler clippy with warnings denied, formatting and diff whitespace passed.
+- Existing ordinary raw/JSON-escaped UTF-8 scanning scope is unchanged; managed result scanning/pins remain separate. Deployment and remaining recovery/final gates are still open.

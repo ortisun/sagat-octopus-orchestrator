@@ -3,11 +3,13 @@ mod ad_hoc;
 mod admission;
 mod cleanup;
 mod cleanup_retention;
+mod consumers;
 mod executor;
 mod output;
 mod output_blobs;
 mod policies;
 mod results;
+mod signing_consumers;
 #[path = "../../support/mod.rs"]
 mod support;
 
@@ -220,6 +222,8 @@ async fn durable_provider_intents_reconcile_without_plaintext_or_duplicate_rotat
     admission::run(&w, &service).await;
     cleanup::run(provider.clone()).await;
     cleanup_retention::run(provider.clone()).await;
+    consumers::run(provider.clone()).await;
+    signing_consumers::run(provider.clone()).await;
     policies::run(provider.clone()).await;
     executor::run(provider.clone()).await;
     executor::grpc(provider.clone()).await;

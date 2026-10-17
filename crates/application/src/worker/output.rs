@@ -188,7 +188,16 @@ where
         let leaked_secret = if database_secret_in_output.is_some() {
             database_secret_in_output
         } else {
-            self.secret_in_output(&mut tx, task, output).await?
+            match self
+                .checked_secret_report(principal, task, tx, &idempotency, output)
+                .await?
+            {
+                SecretReport::Ready(current, leaked) => {
+                    tx = current;
+                    leaked
+                }
+                SecretReport::Replayed(ack) => return Ok(ack),
+            }
         };
         if let Some(name) = leaked_secret {
             return self

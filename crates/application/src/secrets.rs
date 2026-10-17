@@ -182,7 +182,7 @@ pub fn check_usable(
 }
 
 /// One secret a step declares, as the store found it for the publisher of the workflow.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SecretInput {
     pub name: SecretName,
     /// `None` when the secret does not exist (any more).
@@ -192,7 +192,7 @@ pub struct SecretInput {
 }
 
 /// What a step's declared secrets resolve to, read in the step's own transaction.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SecretInputs {
     /// Who published the version of the workflow the run is pinned to.
     pub publisher: String,

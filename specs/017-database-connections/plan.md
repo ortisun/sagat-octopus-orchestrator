@@ -160,3 +160,15 @@ no data:read or metadata:delete grant. Tombstones contain no secret values but a
 provider; do not claim their count is bounded. Back up/restore them with OpenBao, and do not purge
 metadata while old workloads/requests could still resume. This refines retention, without changing
 logical provider authority or the immutable operation paths. Source: OpenBao KV v2 API semantics.
+
+## Existing consumer provider I/O (T017-006)
+
+Keep provider I/O outside ordinary worker run transactions, using a relevant metadata snapshot
+and final current authority/lease/cancellation/version recheck before audit/disclosure or output
+commit. Complete/fail receipt replay precedes provider access and is repeated after reacquiring
+the run lock. Preserve the domain's derived-node recovery during run stopping and ordinary legacy
+attempt=0 protocol compatibility. Preserve existing ordinary scanning semantics; managed typed
+results retain their dedicated scanner/pins. HMAC consumers fail the entire operation on remote
+resolution failure, including mixed local/remote migration grace, so provider outages cannot
+reactivate local authority. Exercise heartbeat/cancellation during blocked reads, snapshot rotation,
+durable receipt replay during provider outages and secret-bearing saga recovery.
