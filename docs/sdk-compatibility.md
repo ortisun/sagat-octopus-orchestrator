@@ -106,6 +106,10 @@ Goldens were not blessed (`SAGAT_SDK_BLESS` was not set in any run). The five SD
 scenarios and must give identical normalized results, so the SDK dimension is one row of results per
 scenario (table 4), not five copies of the other tables: where a cell depends on an SDK, table 4 names it.
 
+SDK version skew (an SDK older or newer than the server) is not tested: `0.1.0` is the only SDK release
+and every SDK offers `1.5` by default, which a server that speaks less negotiates down to its own minor
+(table 1).
+
 Test names are `file::name` in the `integration_workflow_primitives` target unless another target or
 a scenario is named. The new T014-041 tests live in
 `tests/integration/workflow-primitives/compatibility.rs` (`compatibility::`).
