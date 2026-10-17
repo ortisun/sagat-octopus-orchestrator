@@ -3732,18 +3732,30 @@ impl PgRunTx {
         .execute(&mut *self.tx)
         .await
         .map_err(store_error)?;
-        let audit = effects
-            .audit
-            .as_ref()
-            .ok_or_else(|| StoreError::Internal {
-                detail: "approval cancellation requires its enclosing run audit".into(),
-            })?
-            .follow_up(
+        // An operator's cancel brings the audit of the run with it; a stop the platform makes by
+        // itself (the run's or the chain's deadline, a parent that cancels its child) has no
+        // principal, and the request is audited as the engine's own act in the same transaction.
+        let request_resource = ApprovalRequestId::new(request_id).to_string();
+        let audit = match effects.audit.as_ref() {
+            Some(run_audit) => run_audit.follow_up(
                 AuditAction::ApprovalCancelled,
                 ResourceType::ApprovalRequest,
-                ApprovalRequestId::new(request_id).to_string(),
+                request_resource,
                 "approval cancelled with its run",
-            );
+            ),
+            None => AuditRecord::engine(
+                self.info.tenant_id,
+                AuditAction::ApprovalCancelled,
+                ResourceType::ApprovalRequest,
+                request_resource,
+                "approval cancelled with its run",
+                effects
+                    .trace_id
+                    .clone()
+                    .or_else(|| self.info.trace_id.clone()),
+                self.now,
+            ),
+        };
         insert_audit(&mut self.tx, &audit).await?;
         Ok(())
     }

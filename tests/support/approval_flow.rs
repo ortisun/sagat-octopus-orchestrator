@@ -36,6 +36,7 @@ pub const VIEWER: &str = "vera";
 pub struct ApprovalFlow {
     pub api: TestApi,
     pub tenant: TenantId,
+    pub namespace: String,
     pub scheduler: Sched,
     worker: WorkerServiceClient<Channel>,
     worker_id: String,
@@ -123,6 +124,13 @@ impl ApprovalFlow {
     /// A platform with one namespace, the roles above, a scheduler holding every shard and a worker
     /// bound to `activities`.
     pub async fn boot(activities: &[&str]) -> Self {
+        // `RUST_LOG=debug cargo test ...` shows the causes the API deliberately hides from clients.
+        static LOGGING: std::sync::Once = std::sync::Once::new();
+        LOGGING.call_once(|| {
+            if std::env::var_os("RUST_LOG").is_some() {
+                sagat_telemetry::init_logging(sagat_telemetry::LogFormat::Pretty);
+            }
+        });
         let api = super::api::start_with(Options::default()).await;
         let tenant = api.tenant("acme", INITIATOR).await;
         let workspace = api.create_workspace(INITIATOR, "acme", "approvals").await;
@@ -206,6 +214,7 @@ impl ApprovalFlow {
         Self {
             api,
             tenant,
+            namespace,
             scheduler,
             worker,
             worker_id: registered.worker_id,
@@ -345,6 +354,55 @@ impl ApprovalFlow {
         (status, json_of(response).await)
     }
 
+    /// A Query addressed to the chain (its current head), the way a client reads a chain's state.
+    pub async fn chain_query(&self, chain: RunId, args: i64) -> (StatusCode, Value) {
+        let response = self
+            .api
+            .post_as(
+                &format!(
+                    "/namespaces/{}/chains/{chain}/queries/balance.read",
+                    self.namespace
+                ),
+                INITIATOR,
+                "acme",
+                &json!({"args": args}),
+            )
+            .await;
+        let status = response.status();
+        (status, json_of(response).await)
+    }
+
+    /// An Update addressed to the chain; `expected_head` fences it to one segment.
+    pub async fn chain_update(
+        &self,
+        chain: RunId,
+        key: &str,
+        balance: i64,
+        expected_head: Option<RunId>,
+    ) -> (StatusCode, Value) {
+        let mut body = json!({
+            "updateKey": key,
+            "args": {"allowed": true, "nextState": {"balance": balance}}
+        });
+        if let Some(head) = expected_head {
+            body["expectedRunId"] = json!(head.to_string());
+        }
+        let response = self
+            .api
+            .post_as(
+                &format!(
+                    "/namespaces/{}/chains/{chain}/updates/balance.replace",
+                    self.namespace
+                ),
+                INITIATOR,
+                "acme",
+                &body,
+            )
+            .await;
+        let status = response.status();
+        (status, json_of(response).await)
+    }
+
     pub async fn cancel(&self, run: RunId) -> (StatusCode, Value) {
         let response = self
             .api
@@ -362,6 +420,55 @@ impl ApprovalFlow {
             .expect("cancel");
         let status = response.status();
         (status, json_of(response).await)
+    }
+
+    /// `GET /namespaces/{ns}/chains/{chain}`.
+    pub async fn chain(&self, chain: RunId) -> Value {
+        let response = self
+            .api
+            .get_as(
+                &format!("/namespaces/{}/chains/{chain}", self.namespace),
+                INITIATOR,
+                "acme",
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        json_of(response).await
+    }
+
+    /// The head run of `chain` now.
+    pub async fn head(&self, chain: RunId) -> RunId {
+        self.chain(chain).await["currentRunId"]
+            .as_str()
+            .expect("head")
+            .parse()
+            .expect("head run id")
+    }
+
+    /// Cancels the chain through its head; the status and the body.
+    pub async fn cancel_chain(&self, chain: RunId, expected_head: RunId) -> (StatusCode, Value) {
+        let response = self
+            .api
+            .as_user(
+                Method::POST,
+                &format!("/namespaces/{}/chains/{chain}/cancel", self.namespace),
+                INITIATOR,
+                "acme",
+            )
+            .header(
+                "idempotency-key",
+                format!("chain-cancel-{}", Uuid::now_v7()),
+            )
+            .json(&json!({
+                "expectedRunId": expected_head.to_string(),
+                "reason": "operator stopped the chain"
+            }))
+            .send()
+            .await
+            .expect("cancel chain");
+        let status = response.status();
+        let text = response.text().await.expect("cancel body");
+        (status, serde_json::from_str(&text).unwrap_or(Value::Null))
     }
 
     pub async fn run_status(&self, run: RunId) -> String {
@@ -472,4 +579,41 @@ fn approval_worker_request<T>(api: &TestApi, message: T) -> tonic::Request<T> {
 #[must_use]
 pub fn reason_of(body: &Value) -> &str {
     body["details"]["reason"].as_str().unwrap_or("")
+}
+
+/// `work` (an activity) then `review` (an approval): an approval rolls the chain over to the next
+/// segment, a rejection or an expiry ends it. The segment limit is `max_segments`.
+#[must_use]
+pub fn approval_chain(name: &str, timeout_ms: u64, max_segments: u32) -> Value {
+    json!({
+        "apiVersion": "sagat-octopus-orchestrator.io/v1",
+        "kind": "Workflow",
+        "metadata": {"name": name},
+        "entrypoint": "work",
+        "nodes": [
+            {"id": "work", "type": "activity", "activity": "segment.work", "next": "review"},
+            {
+                "id": "review",
+                "type": "approval",
+                "timeoutMs": timeout_ms,
+                "policy": {"roles": ["admin", "operator"], "excludeInitiator": true},
+                "onApprove": "rollover",
+                "onReject": "rejected",
+                "onExpire": "expired"
+            },
+            {"id": "rollover", "type": "continueAsNew", "input": "input.next"},
+            {"id": "rejected", "type": "end"},
+            {"id": "expired", "type": "end"}
+        ],
+        "chainPolicy": {"maxSegments": max_segments, "timeoutMs": 3_600_000}
+    })
+}
+
+/// `approval_chain` that also declares the balance state and transfers it exactly to the successor.
+#[must_use]
+pub fn approval_chain_with_state(name: &str, timeout_ms: u64, max_segments: u32) -> Value {
+    let mut document = approval_chain(name, timeout_ms, max_segments);
+    document["state"] = state_block();
+    document["nodes"][2]["state"] = json!("state");
+    document
 }

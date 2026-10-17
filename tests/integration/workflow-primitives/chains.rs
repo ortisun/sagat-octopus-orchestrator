@@ -454,6 +454,202 @@ async fn a_blocked_boundary_does_not_hold_back_the_boundaries_behind_it() {
     );
 }
 
+// ------------------------------------------------------------------------------------ approvals
+
+use sagat_application::approval_progress::{
+    ApprovalAddress, ApprovalDecisionAttempt, ApprovalOpening, ApprovalProgressStore,
+    ApprovalRoutes,
+};
+use sagat_application::execution::instance_step_id;
+use sagat_domain::execution::{
+    ApprovalDecision, ApprovalDecisionCommand, ApprovalPolicy, ApprovalReceiptId, ApprovalRequest,
+    ApprovalRequestId, DecisionKey, ExecutionInstanceId,
+};
+use sagat_domain::identity::Role;
+use sagat_domain::workflow::Digest;
+
+impl Boundary {
+    /// An approval that is open on the run when the boundary is reached: a step `ghost` waiting for
+    /// a person, with a real request, timer and journal entry written by the approval store. The
+    /// published `approval -> continueAsNew` shape never has both (the approval settles first), so
+    /// this is the defence the quiescence rule keeps for any shape that does (decision D296).
+    async fn open_an_approval(&self) -> ApprovalRequestId {
+        let tenant = self.world.admin.tenant_id();
+        let namespace = self.world.namespace.id();
+        let (version, run_version): (Uuid, i64) = sqlx::query_as(
+            "SELECT workflow_version_id,run_version FROM runs WHERE tenant_id=$1 AND id=$2",
+        )
+        .bind(tenant.as_uuid())
+        .bind(self.chain.as_uuid())
+        .fetch_one(&self.world.db.pool)
+        .await
+        .expect("run");
+        let owner = ExecutionInstanceId::root(NodeId::parse("ghost").expect("ghost"));
+        sqlx::query(
+            "INSERT INTO steps (tenant_id,run_id,node,step_id,namespace_id,status,updated_at,kind, \
+                                instance_path_nodes,instance_path_indices) \
+             VALUES ($1,$2,'ghost',$3,$4,'PENDING',now(),'FORWARD','{}','{}')",
+        )
+        .bind(tenant.as_uuid())
+        .bind(self.chain.as_uuid())
+        .bind(instance_step_id(
+            sagat_domain::definition::WorkflowVersionId::new(version),
+            self.chain,
+            &owner,
+        ))
+        .bind(namespace.as_uuid())
+        .execute(&self.world.db.pool)
+        .await
+        .expect("the owner step");
+        // The fence the scheduler already holds for this run: opening is a scheduler write.
+        let (owner_name, generation): (String, i64) = sqlx::query_as(
+            "SELECT owner,generation FROM scheduler_shards WHERE shard=run_shard($1)",
+        )
+        .bind(self.chain.as_uuid())
+        .fetch_one(&self.world.db.pool)
+        .await
+        .expect("scheduler fence");
+        let at = crate::support::now();
+        let request = ApprovalRequest::open(
+            ApprovalRequestId::generate(),
+            tenant,
+            namespace,
+            self.chain,
+            owner,
+            ApprovalPolicy::new(Vec::new(), vec![Role::Operator]).expect("policy"),
+            self.world.admin.subject().clone(),
+            u64::try_from(run_version).expect("version") + 1,
+            at + StdDuration::from_secs(3600),
+        );
+        let audit = AuditRecord::engine(
+            tenant,
+            AuditAction::ApprovalOpened,
+            ResourceType::ApprovalRequest,
+            request.id().to_string(),
+            "approval opened",
+            None,
+            at,
+        );
+        let id = request.id();
+        self.world
+            .store
+            .open(&ApprovalOpening::new(
+                request,
+                ApprovalRoutes::new(
+                    NodeId::parse("ghost-approved").expect("route"),
+                    NodeId::parse("ghost-rejected").expect("route"),
+                    NodeId::parse("ghost-expired").expect("route"),
+                ),
+                SchedulerAuthority::for_run(
+                    &owner_name,
+                    self.chain,
+                    u64::try_from(generation).expect("generation"),
+                ),
+                audit,
+                Uuid::now_v7(),
+                at,
+            ))
+            .await
+            .expect("open the approval");
+        id
+    }
+
+    async fn decide(&self, request: ApprovalRequestId, decision: ApprovalDecision) {
+        let operator = self.world.member("chain-approver", Role::Operator).await;
+        let at = crate::support::now();
+        self.world
+            .store
+            .decide(&ApprovalDecisionAttempt::new(
+                ApprovalAddress::new(
+                    self.world.admin.tenant_id(),
+                    self.world.namespace.id(),
+                    request,
+                ),
+                operator.subject().clone(),
+                ApprovalReceiptId::generate(),
+                ApprovalDecisionCommand::new(
+                    DecisionKey::parse("chain-decision").expect("key"),
+                    Digest::new([7; 32]),
+                    decision,
+                    None,
+                ),
+                AuditRecord::by(
+                    &operator,
+                    AuditAction::ApprovalDecided,
+                    ResourceType::ApprovalRequest,
+                    request.to_string(),
+                    None,
+                    at,
+                ),
+                Uuid::now_v7(),
+                at,
+            ))
+            .await
+            .expect("decide the approval");
+    }
+}
+
+#[tokio::test]
+async fn the_store_proves_an_open_approval_again_under_the_locks() {
+    let boundary = Boundary::reach("approval-direct").await;
+    let _holding_the_shards = scheduler(&boundary.world, "approval-direct").await;
+    boundary.open_an_approval().await;
+    let before = boundary.chain_row().await;
+    let written = boundary.write_directly().await;
+    assert!(
+        matches!(
+            &written,
+            Err(ChainProgressError::Chain(ChainError::NotQuiescent(
+                QuiescenceBlocker::Approval
+            )))
+        ),
+        "{written:?}"
+    );
+    assert_eq!(boundary.chain_row().await, before);
+}
+
+#[tokio::test]
+async fn a_boundary_with_an_open_approval_waits_until_the_decision_settles_the_request() {
+    let boundary = Boundary::reach("approval-wait").await;
+    let tenant = boundary.world.admin.tenant_id();
+    let namespace = boundary.world.namespace.id();
+    let scheduler = scheduler(&boundary.world, "approval-wait").await;
+    let request = boundary.open_an_approval().await;
+    let before = boundary.chain_row().await;
+
+    let direct = scheduler
+        .advance_continuation(tenant, namespace, boundary.chain, &boundary_node())
+        .await;
+    assert!(
+        matches!(
+            &direct,
+            Err(ContinuationAdvanceError::Waiting(
+                QuiescenceBlocker::Approval
+            ))
+        ),
+        "an open approval is open work, named as such: {direct:?}"
+    );
+    let report = scheduler.tick().await;
+    assert_eq!(report.continuations_advanced, 0, "{report:?}");
+    assert_eq!(report.failed, 0, "{report:?}");
+    assert_eq!(boundary.chain_row().await, before, "nothing moved");
+
+    // The decision settles the request and routes its owner. The request no longer blocks; the route
+    // it chose is open work until it runs, so the boundary still waits and still moves nothing.
+    boundary.decide(request, ApprovalDecision::Approve).await;
+    let settled = scheduler
+        .advance_continuation(tenant, namespace, boundary.chain, &boundary_node())
+        .await;
+    assert!(
+        matches!(
+            &settled,
+            Err(ContinuationAdvanceError::Waiting(blocker)) if *blocker != QuiescenceBlocker::Approval
+        ),
+        "a settled request is not the blocker any more: {settled:?}"
+    );
+    assert_eq!(boundary.chain_row().await, before);
+}
+
 // ------------------------------------------------------------------------------------ children
 
 use sagat_application::execution::child_run_id;
