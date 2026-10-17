@@ -28,7 +28,7 @@ use uuid::Uuid;
 use crate::support::blob_collections::*;
 use crate::support::engine::task_ref;
 use crate::support::subject;
-use crate::support::worker::{Platform, TENANT};
+use crate::support::worker::Platform;
 
 const ITEMS: usize = 10_000;
 
@@ -214,7 +214,7 @@ async fn ten_thousand_items_are_admitted_concurrently_aggregated_in_order_and_bo
                 }
                 Ok(_) => {
                     advances += 1;
-                    if advances % 250 == 0 {
+                    if advances.is_multiple_of(250) {
                         eprintln!(
                             "  {advances} transitions in {:?}, rss {} MiB",
                             started.elapsed(),
@@ -310,5 +310,4 @@ async fn ten_thousand_items_are_admitted_concurrently_aggregated_in_order_and_bo
         .verify_run(p.tenant, RunId::new(run))
         .await
         .expect("journal and projection agree after 10,000 iterations");
-    let _ = TENANT;
 }
