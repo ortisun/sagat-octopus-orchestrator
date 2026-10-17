@@ -150,6 +150,7 @@ pub fn compared(out: &Value, normalizer: &mut Normalizer) -> Value {
         "blobEvidence",
         "runInputBlobEvidence",
         "scopeEvidence",
+        "auditEvidence",
     ] {
         if let Some(value) = out.get(key) {
             doc.insert(key.to_owned(), normalizer.value(value));

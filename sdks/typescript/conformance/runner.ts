@@ -330,6 +330,13 @@ async function run(scenario: Obj, config: Obj): Promise<Obj> {
     default: clientFor(config['clientToken']),
     bad: clientFor(config['badToken']),
     other: clientFor(config['otherTenantToken']),
+    // Members of the tenant with one role each (`operator`, `viewer`, `runner`), the worker identity, and an
+    // operator the scenario revokes: the scenarios about who may do what.
+    worker: clientFor(config['workerToken']),
+    operator: clientFor(config['operatorToken']),
+    viewer: clientFor(config['viewerToken']),
+    runner: clientFor(config['runnerToken']),
+    revoked: clientFor(config['revokedToken']),
   };
   const logs: Record<string, Obj[]> = {};
   const measurements: Record<string, { active: number; peakInflight: number; deliveries: Obj[] }> = {};

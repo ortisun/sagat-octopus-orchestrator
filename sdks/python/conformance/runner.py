@@ -517,6 +517,12 @@ async def run(scenario: Obj, config: Obj) -> Obj:
         "default": client_for(config["clientToken"]),
         "bad": client_for(config["badToken"]),
         "other": client_for(config["otherTenantToken"]),
+        # Members of the tenant with one role each, the worker identity, and an operator the scenario revokes.
+        "worker": client_for(config["workerToken"]),
+        "operator": client_for(config["operatorToken"]),
+        "viewer": client_for(config["viewerToken"]),
+        "runner": client_for(config["runnerToken"]),
+        "revoked": client_for(config["revokedToken"]),
     }
     logs: dict[str, list[Obj]] = {}
     measurements: dict[str, Obj] = {}

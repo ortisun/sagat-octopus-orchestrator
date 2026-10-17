@@ -1,0 +1,383 @@
+{
+  "auditEvidence": [
+    {
+      "action": "approval.opened",
+      "actor": "system:engine",
+      "reason": "approval opened",
+      "resourceType": "approval_request",
+      "traceId": "<trace:1>"
+    },
+    {
+      "action": "approval.denied",
+      "actor": "alice",
+      "reason": "INITIATOR_CANNOT_DECIDE",
+      "resourceType": "approval_request",
+      "traceId": "<given-trace>"
+    },
+    {
+      "action": "approval.denied",
+      "actor": "conformance-viewer",
+      "reason": "NOT_ELIGIBLE",
+      "resourceType": "approval_request",
+      "traceId": "<given-trace>"
+    },
+    {
+      "action": "approval.denied",
+      "actor": "conformance-worker",
+      "reason": "NOT_ELIGIBLE",
+      "resourceType": "approval_request",
+      "traceId": "<given-trace>"
+    },
+    {
+      "action": "approval.denied",
+      "actor": "conformance-runner",
+      "reason": "NOT_ELIGIBLE",
+      "resourceType": "approval_request",
+      "traceId": "<given-trace>"
+    },
+    {
+      "action": "approval.decided",
+      "actor": "conformance-operator",
+      "reason": null,
+      "resourceType": "approval_request",
+      "traceId": "<given-trace>"
+    }
+  ],
+  "faultsApplied": [],
+  "observations": [
+    {
+      "id": "run",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "opened",
+      "ok": true,
+      "op": "listApprovals",
+      "result": {
+        "items": [
+          {
+            "approvalId": "<uuid:4>",
+            "deadline": "<time>",
+            "instancePath": [],
+            "nodeId": "review",
+            "runId": "<uuid:1>",
+            "settledAt": null,
+            "status": "PENDING"
+          }
+        ],
+        "nextCursor": null
+      }
+    },
+    {
+      "error": {
+        "code": "FORBIDDEN",
+        "message": "<text>",
+        "reason": "INITIATOR_CANNOT_DECIDE",
+        "remediation": "The identity may not do this: ask an administrator for the role or permission the call needs.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 403,
+        "traceId": "<given-trace>"
+      },
+      "id": "initiator-decides",
+      "ok": false,
+      "op": "decideApproval"
+    },
+    {
+      "id": "viewer-lists",
+      "ok": true,
+      "op": "listApprovals",
+      "result": {
+        "items": [
+          {
+            "approvalId": "<uuid:4>",
+            "deadline": "<time>",
+            "instancePath": [],
+            "nodeId": "review",
+            "runId": "<uuid:1>",
+            "settledAt": null,
+            "status": "PENDING"
+          }
+        ],
+        "nextCursor": null
+      }
+    },
+    {
+      "error": {
+        "code": "FORBIDDEN",
+        "message": "<text>",
+        "reason": "NOT_ELIGIBLE",
+        "remediation": "The identity may not do this: ask an administrator for the role or permission the call needs.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 403,
+        "traceId": "<given-trace>"
+      },
+      "id": "viewer-decides",
+      "ok": false,
+      "op": "decideApproval"
+    },
+    {
+      "error": {
+        "code": "FORBIDDEN",
+        "message": "<text>",
+        "reason": null,
+        "remediation": "The identity may not do this: ask an administrator for the role or permission the call needs.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 403,
+        "traceId": "<given-trace>"
+      },
+      "id": "worker-lists",
+      "ok": false,
+      "op": "listApprovals"
+    },
+    {
+      "error": {
+        "code": "FORBIDDEN",
+        "message": "<text>",
+        "reason": "NOT_ELIGIBLE",
+        "remediation": "The identity may not do this: ask an administrator for the role or permission the call needs.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 403,
+        "traceId": "<given-trace>"
+      },
+      "id": "worker-decides",
+      "ok": false,
+      "op": "decideApproval"
+    },
+    {
+      "error": {
+        "code": "FORBIDDEN",
+        "message": "<text>",
+        "reason": null,
+        "remediation": "The identity may not do this: ask an administrator for the role or permission the call needs.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 403,
+        "traceId": "<given-trace>"
+      },
+      "id": "runner-lists",
+      "ok": false,
+      "op": "listApprovals"
+    },
+    {
+      "error": {
+        "code": "FORBIDDEN",
+        "message": "<text>",
+        "reason": "NOT_ELIGIBLE",
+        "remediation": "The identity may not do this: ask an administrator for the role or permission the call needs.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 403,
+        "traceId": "<given-trace>"
+      },
+      "id": "runner-decides",
+      "ok": false,
+      "op": "decideApproval"
+    },
+    {
+      "id": "revoked-lists",
+      "ok": true,
+      "op": "listApprovals",
+      "result": {
+        "items": [
+          {
+            "approvalId": "<uuid:4>",
+            "deadline": "<time>",
+            "instancePath": [],
+            "nodeId": "review",
+            "runId": "<uuid:1>",
+            "settledAt": null,
+            "status": "PENDING"
+          }
+        ],
+        "nextCursor": null
+      }
+    },
+    {
+      "id": "revoke",
+      "ok": true,
+      "op": "control"
+    },
+    {
+      "error": {
+        "code": "UNAUTHENTICATED",
+        "message": "<text>",
+        "reason": null,
+        "remediation": "The token was refused: check its issuer, audience, tenant claim and expiry, and that the token provider returns a fresh one.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 401,
+        "traceId": "<given-trace>"
+      },
+      "id": "revoked-decides",
+      "ok": false,
+      "op": "decideApproval"
+    },
+    {
+      "error": {
+        "code": "UNAUTHENTICATED",
+        "message": "<text>",
+        "reason": null,
+        "remediation": "The token was refused: check its issuer, audience, tenant claim and expiry, and that the token provider returns a fresh one.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 401,
+        "traceId": "<given-trace>"
+      },
+      "id": "revoked-lists-again",
+      "ok": false,
+      "op": "listApprovals"
+    },
+    {
+      "id": "still-pending",
+      "ok": true,
+      "op": "listApprovals",
+      "result": {
+        "items": [
+          {
+            "approvalId": "<uuid:4>",
+            "deadline": "<time>",
+            "instancePath": [],
+            "nodeId": "review",
+            "runId": "<uuid:1>",
+            "settledAt": null,
+            "status": "PENDING"
+          }
+        ],
+        "nextCursor": null
+      }
+    },
+    {
+      "id": "operator-decides",
+      "ok": true,
+      "op": "decideApproval",
+      "result": {
+        "actor": "conformance-operator",
+        "approvalId": "<uuid:4>",
+        "decidedAt": "<time>",
+        "decision": "APPROVE",
+        "decisionKey": "security-operator-{{unique}}",
+        "outcomeSequence": 3,
+        "reasonCode": "POLICY_OK",
+        "receiptId": "<uuid:5>",
+        "replayed": false
+      }
+    },
+    {
+      "id": "done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "SUCCEEDED",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "settled",
+      "ok": true,
+      "op": "listApprovals",
+      "result": {
+        "items": [
+          {
+            "approvalId": "<uuid:4>",
+            "deadline": "<time>",
+            "instancePath": [],
+            "nodeId": "review",
+            "runId": "<uuid:1>",
+            "settledAt": "<time>",
+            "status": "APPROVED"
+          }
+        ],
+        "nextCursor": null
+      }
+    }
+  ],
+  "serverState": [
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "approved",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "expired",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "rejected",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "review",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "approval",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:1>",
+      "status": "SUCCEEDED"
+    }
+  ],
+  "workerLog": {}
+}

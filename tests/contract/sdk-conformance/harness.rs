@@ -236,6 +236,12 @@ struct Run {
     other_token: String,
     /// A worker identity with no binding: the platform refuses to register its activities.
     unbound_token: String,
+    /// Members of the tenant with one role each, for the scenarios that test who may do what.
+    operator_token: String,
+    viewer_token: String,
+    runner_token: String,
+    /// An operator the scenario revokes with the control endpoint.
+    revoked_token: String,
     /// The control endpoint, which holds the platform until it is stopped.
     tasks: Vec<tokio::task::JoinHandle<()>>,
     /// Both server processes use this directory, so it must outlive them.
@@ -333,6 +339,14 @@ async fn boot(scenario: &Value) -> Run {
     platform
         .grant(platform.tenant, "conformance-unbound", Role::Worker)
         .await;
+    for (subject, role) in [
+        ("conformance-operator", Role::Operator),
+        ("conformance-viewer", Role::Viewer),
+        ("conformance-runner", Role::Runner),
+        ("conformance-revoked", Role::Operator),
+    ] {
+        platform.grant(platform.tenant, subject, role).await;
+    }
     // The engine the worker protocol is served by: timers, retries, leases that ran out and the wake-ups
     // (also the events that release a wait) are its loops, as in production.
     let ring = format!("k1:{}", platform.api.key_k1);
@@ -358,6 +372,10 @@ async fn boot(scenario: &Value) -> Run {
         worker_token: token(&platform, "conformance-worker", TENANT),
         other_token: token(&platform, "bob", "globex"),
         unbound_token: token(&platform, "conformance-unbound", TENANT),
+        operator_token: token(&platform, "conformance-operator", TENANT),
+        viewer_token: token(&platform, "conformance-viewer", TENANT),
+        runner_token: token(&platform, "conformance-runner", TENANT),
+        revoked_token: token(&platform, "conformance-revoked", TENANT),
         control: format!("http://{control}"),
         platform,
         engine,
@@ -539,6 +557,30 @@ async fn scope_evidence(run: &Run, state: &Value, summary: bool) -> Result<Value
     Ok(Value::Array(runs))
 }
 
+/// The approval audit rows of the tenant, in the order they were written, from the audit trail itself:
+/// who was refused or allowed, with the trace of the call that caused it. A scenario asks for it with
+/// `"auditEvidence": true`.
+async fn audit_evidence(run: &Run) -> Result<Value, String> {
+    let rows: Vec<(String, String, String, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT action, actor, resource_type, reason, trace_id FROM audit_records \
+         WHERE tenant_id = $1 AND action LIKE 'approval.%' ORDER BY created_at, id",
+    )
+    .bind(run.platform.tenant.as_uuid())
+    .fetch_all(&run.platform.api.db.pool)
+    .await
+    .map_err(|e| format!("reading the approval audit trail: {e}"))?;
+    Ok(Value::Array(
+        rows.into_iter()
+            .map(|(action, actor, resource_type, reason, trace)| {
+                json!({
+                    "action": action, "actor": actor, "resourceType": resource_type,
+                    "reason": reason, "traceId": trace,
+                })
+            })
+            .collect(),
+    ))
+}
+
 /// The JSON payload stored under a hex SHA-256 digest.
 async fn payload_json(pool: &sqlx::PgPool, digest: &str) -> Result<Value, String> {
     let content: Option<Vec<u8>> =
@@ -699,6 +741,10 @@ fn leaks(out: &Value, config: &Value, scenario: &Value) -> Vec<String> {
         "otherTenantToken",
         "unboundWorkerToken",
         "badToken",
+        "operatorToken",
+        "viewerToken",
+        "runnerToken",
+        "revokedToken",
     ]
     .iter()
     .filter_map(|key| config[*key].as_str().map(str::to_owned))
@@ -754,6 +800,50 @@ fn leaks(out: &Value, config: &Value, scenario: &Value) -> Vec<String> {
                         marker.chars().take(12).collect::<String>()
                     ));
                 }
+            }
+        }
+    }
+    found
+}
+
+/// Where a text the scenario listed under `mustNotAppear` (a secret-shaped value it put into a run's input)
+/// shows up in what the run reports: the observations, the server state and the evidence read from the
+/// journal and the audit trail. The worker's log is not searched: a handler is meant to see its input.
+fn marker_appearances(out: &Value, scenario: &Value) -> Vec<String> {
+    fn walk(value: &Value, path: &str, marker: &str, found: &mut Vec<String>) {
+        match value {
+            Value::String(text) if text.contains(marker) => found.push(path.to_owned()),
+            Value::Array(items) => items
+                .iter()
+                .enumerate()
+                .for_each(|(i, v)| walk(v, &format!("{path}[{i}]"), marker, found)),
+            Value::Object(map) => map
+                .iter()
+                .for_each(|(k, v)| walk(v, &format!("{path}.{k}"), marker, found)),
+            _ => {}
+        }
+    }
+    let mut found = Vec::new();
+    for marker in scenario["mustNotAppear"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|marker| !marker.is_empty())
+    {
+        for key in [
+            "observations",
+            "serverState",
+            "auditEvidence",
+            "scopeEvidence",
+        ] {
+            let mut at = Vec::new();
+            walk(&out[key], key, marker, &mut at);
+            for path in at {
+                found.push(format!(
+                    "{path} repeats \"{}…\", which the scenario marked as never to appear",
+                    marker.chars().take(8).collect::<String>()
+                ));
             }
         }
     }
@@ -1045,6 +1135,12 @@ async fn play(
                         Ok(state) => out["serverState"] = state,
                         Err(e) => failures.push(format!("{name}/{lang}: {e}")),
                     }
+                    if scenario["auditEvidence"].as_bool() == Some(true) {
+                        match audit_evidence(&run).await {
+                            Ok(evidence) => out["auditEvidence"] = evidence,
+                            Err(e) => failures.push(format!("{name}/{lang}: {e}")),
+                        }
+                    }
                     if let Some(mode) = scenario["scopeEvidence"].as_str() {
                         match scope_evidence(&run, &out["serverState"], mode == "summary").await {
                             Ok(evidence) => out["scopeEvidence"] = evidence,
@@ -1062,6 +1158,9 @@ async fn play(
                             Ok(evidence) => out["runInputBlobEvidence"] = evidence,
                             Err(e) => failures.push(format!("{name}/{lang}: {e}")),
                         }
+                    }
+                    for appearance in marker_appearances(&out, &scenario) {
+                        failures.push(format!("{name}/{lang}: {appearance}"));
                     }
                     let mut normalizer = Normalizer::new(&unique, given_traces(&scenario));
                     let doc = compared(&out, &mut normalizer);

@@ -106,7 +106,11 @@ func run(scenario, config object) (object, error) {
 			client.WithRetry(sagat.RetryPolicy{InitialDelay: 20 * time.Millisecond, MaxDelay: 200 * time.Millisecond}))
 	}
 	clients := map[string]*client.Client{}
-	for name, key := range map[string]string{"default": "clientToken", "bad": "badToken", "other": "otherTenantToken"} {
+	for name, key := range map[string]string{
+		"default": "clientToken", "bad": "badToken", "other": "otherTenantToken",
+		// Members of the tenant with one role each, the worker identity, and an operator the scenario revokes.
+		"worker": "workerToken", "operator": "operatorToken", "viewer": "viewerToken", "runner": "runnerToken", "revoked": "revokedToken",
+	} {
 		if clients[name], err = clientFor(asString(config[key])); err != nil {
 			return nil, err
 		}
@@ -351,7 +355,11 @@ func playStep(ctx context.Context, step object, op string, c *client.Client, con
 		if err != nil {
 			return nil, broken("%v", err)
 		}
-		page, err := c.ListApprovals(ctx, id, client.ApprovalListOptions{Cursor: asString(step["cursor"]), Limit: asInt(step["limit"])})
+		var listOpts []client.CallOption
+		if v := asString(step["traceparent"]); v != "" {
+			listOpts = append(listOpts, client.WithTraceparent(v))
+		}
+		page, err := c.ListApprovals(ctx, id, client.ApprovalListOptions{Cursor: asString(step["cursor"]), Limit: asInt(step["limit"])}, listOpts...)
 		if err != nil {
 			return nil, err
 		}
@@ -361,7 +369,7 @@ func playStep(ctx context.Context, step object, op string, c *client.Client, con
 				return nil, ctx.Err()
 			case <-time.After(50 * time.Millisecond):
 			}
-			page, err = c.ListApprovals(ctx, id, client.ApprovalListOptions{Cursor: asString(step["cursor"]), Limit: asInt(step["limit"])})
+			page, err = c.ListApprovals(ctx, id, client.ApprovalListOptions{Cursor: asString(step["cursor"]), Limit: asInt(step["limit"])}, listOpts...)
 			if err != nil {
 				return nil, err
 			}
