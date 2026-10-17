@@ -302,3 +302,79 @@ Implements D294. Evidence is in `crates/domain/tests/primitive_loops.rs`,
   cancel transaction rolls back and the API answers `INTERNAL`. This predates D294 and is the open
   "outer cancel through the domain planner" part of T014-019. The storage-level cancel drain is
   proven; the public cancel is not.
+
+## Decisions of the limits/projection increment
+
+Taken while implementing D297 (publishable top-level `limits`), the byte ceilings of T014-008 and
+the graph/telemetry projection of T014-045. D298 is respected: nothing is deleted, and a test
+asserts that no scheduled job removes primitive data.
+
+- **D310 — The planner enforces the author's instance limit on root activations.** When a
+  definition lowers `maxInstances` below the platform's 100000, the planner counts the instances the
+  run has charged (every scoped instance, and each root instance that left `Pending` other than by
+  cancellation, the `end` node included) and, instead of activating the next pending root node,
+  stops the run with the durable code `INSTANCE_LIMIT`. The check is skipped while the limit is the
+  platform's, so no old document pays for it and none changes behavior. The store's trigger stays
+  the last guard for budgets that tenant policy lowered.
+- **D311 — Run creation captures the effective limits; they only go down.** The row of
+  `run_instance_usage` starts at 100000/8 and is set to `least(row, author)` when the run is
+  created, the chain successor included. A later definition can never raise what tenant policy
+  lowered. `maxInstances` bounds each segment of a chain; a chain-wide instance budget is not
+  claimed.
+- **D312 — Collections are refused before they start.** Entry refuses a collection whose
+  iterations cannot all be admitted (`consumed + 1 + items x body nodes > budget`) with
+  `INSTANCE_LIMIT`, and a collection given more items than `maxItems` with `ITERATION_LIMIT`; both
+  stop the run at entry, with nothing admitted. A tenant policy that lowers the budget *after*
+  entry pauses further admission (counted in `scheduler_admission_paused_total`), keeps the
+  accepted work and resumes if the budget is raised; it is not a failure.
+- **D313 — A loop stops on the instance budget with its own checkpoint continuation.**
+  `LoopContinuation::InstanceLimit` is recorded, like `IterationLimit`, when the next body (or, once
+  the loop is done, the node that follows it) cannot be admitted; the completed iterations are kept.
+  The scheduler decides it from the author's limit before any delay is scheduled, and falls back to
+  it when the store reports a budget tenant policy lowered. The store re-proves it against the real
+  budget. It is not routed to `onError`, which would need an instance of its own, and it reuses the
+  `loop.iteration_limit` hint (AsyncAPI description updated) so no new subject appears.
+- **D314 — Inline values keep the existing 256 KiB / 4 MiB / 8 MiB ceilings.** A collection snapshot,
+  an iteration result, the aggregate, a loop's initial carry, result and carry are each at most
+  256 KiB; the aggregate or the carry that ends a loop must also fit with the outputs the run
+  retains (4 MiB). The aggregate is checked as a dry run when the last iteration is checkpointed,
+  while that iteration can still fail; nothing oversize is written. Over a ceiling the failure is
+  `RUN_DATA_LIMIT`. Member outputs were already held to 256 KiB and 4 MiB by the worker path, for
+  scoped instances too; this is now tested. A scoped task context holds the run input, state, the
+  item or carry and the iteration's own outputs, so it stays far below 8 MiB (tested with
+  250 KiB input and carry).
+- **D315 — A result that cannot be produced fails its iteration instead of retrying forever.** A
+  collection whose `return` expression fails, or whose result is over a ceiling, drains with that
+  iteration's `EXPRESSION_ERROR` or `RUN_DATA_LIMIT`; the store accepts the claim when the
+  iteration's entry succeeded and its `return` is still pending, as it already did for loops.
+- **D316 — The graph names approval routes and decisions, and the projector names what it cannot
+  read.** Approval nodes get `approve`, `reject` and `expire` edges and an `approvalDecision`
+  (`PENDING`, `APPROVED`, `REJECTED`, `EXPIRED`, `CANCELLED` with the pinned target), never the
+  approver, key or reason. `waitingOn` also reports `collection`. A journal entry of an unknown kind
+  becomes one `workflow.unsupported` span and one `unsupported` transition (the closed label sets
+  grow by one value each); its type and payload are never copied.
+- **G294 — The approval decision fails under the least-privilege runtime role.**
+  `approval_progress.rs` reads the decider's membership with `SELECT ... FOR SHARE`, which needs
+  `UPDATE` on `memberships`; `sagat_app` has `SELECT` only, so a decision over HTTP answers 500
+  (`permission denied for table memberships`) when the API connects as the runtime role. The
+  decision tests connect as the owner. The fix needs a decision: grant the lock, or check
+  eligibility without it.
+- **G295 — The iteration-limit checkpoint that takes an `onError` edge needs a spare instance.**
+  The loop store charges the error route's node when the checkpoint for `ITERATION_LIMIT` routes
+  there (`terminal.is_some()` in `checkpoint`), so with the run's instance budget exhausted that
+  checkpoint cannot commit and the scheduler retries it. D340 (the drain routes) was built on the
+  base branch and this increment did not change that charge; `INSTANCE_LIMIT` itself is never
+  routed. If the edge must survive an exhausted budget, the route needs a reserved instance.
+- **G296 — Mid-flight collection exhaustion by other work waits.** Collection entry proves the whole
+  collection fits, so only a tenant reduction or other root work spending the budget can pause
+  admission later; the public shapes cannot do the latter. If a shape ever can, the pause needs a
+  deadline-bound failure.
+- **G297 — A collection `result` expression cannot read `item` or `index` once the iteration is
+  done.** `contracts/README.md` says the expression reads `bodyResult`, `item` and `index`, but the
+  run data loads scope inputs only for iterations still `ADMITTED`
+  (`infra-postgres/src/execution.rs`, `collection_inputs`), so `result: "index"` fails on every
+  finished member. Before this increment the finish retried that for ever; it now fails the scope
+  with `EXPRESSION_ERROR` at the last checkpoint (D315). Making the contract true needs the
+  scope inputs of checkpointed iterations loaded too (bounded by the 256 KiB snapshot); it is left
+  for the collection owner.
+

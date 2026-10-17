@@ -468,7 +468,7 @@ async fn telemetry_advances_past_an_unknown_journal_event() {
 // HTTP projection of approvals and scoped owners (T014-045)
 // ---------------------------------------------------------------------------------------------
 
-fn approval_document(name: &str) -> Value {
+pub(crate) fn approval_document(name: &str) -> Value {
     json!({
         "apiVersion": "sagat-octopus-orchestrator.io/v1",
         "kind": "Workflow",

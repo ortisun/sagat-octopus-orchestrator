@@ -9,6 +9,7 @@ mod support;
 mod approval_progress;
 mod approval_scheduler;
 mod approvals_http;
+mod byte_ceilings;
 mod chain_handoff;
 mod chain_progress;
 mod chain_storage;

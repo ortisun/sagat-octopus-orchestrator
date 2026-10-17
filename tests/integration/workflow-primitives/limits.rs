@@ -38,7 +38,10 @@ fn chain_of_two(name: &str, limits: Option<Value>) -> Value {
     )
 }
 
-async fn usage(world: &World, run: sagat_domain::execution::RunId) -> (i32, i16, i32, i32) {
+pub(crate) async fn usage(
+    world: &World,
+    run: sagat_domain::execution::RunId,
+) -> (i32, i16, i32, i32) {
     let row = sqlx::query(
         "SELECT max_instances,max_depth,admitted_instances,reserved_instances \
          FROM run_instance_usage WHERE tenant_id=$1 AND run_id=$2",
@@ -159,9 +162,17 @@ async fn the_instance_beyond_the_limit_fails_the_run_with_instance_limit() {
 // Scoped admission: collections and loops
 // ---------------------------------------------------------------------------------------------
 
-async fn scheduler(
+pub(crate) async fn scheduler(
     world: &World,
     name: &str,
+) -> Scheduler<PgRunStore, JsonEvaluator, SystemEntropy> {
+    scheduler_with(world, name, SchedulerSettings::default()).await
+}
+
+pub(crate) async fn scheduler_with(
+    world: &World,
+    name: &str,
+    settings: SchedulerSettings,
 ) -> Scheduler<PgRunStore, JsonEvaluator, SystemEntropy> {
     let placement = Placement::new(format!("limits-scheduler-{name}-{}", Uuid::now_v7()));
     Keeper::new(
@@ -178,13 +189,13 @@ async fn scheduler(
         world.store.clone(),
         Engine::new(JsonEvaluator),
         SystemEntropy,
-        SchedulerSettings::default(),
+        settings,
     )
     .with_children(world.cache.clone())
     .with_placement(placement)
 }
 
-async fn allow_iterations(world: &World, limit: u64) {
+pub(crate) async fn allow_iterations(world: &World, limit: u64) {
     QuotaService::set(
         &world.quotas,
         &world.admin,
@@ -221,7 +232,7 @@ fn collection(name: &str, max_items: u32, limits: Option<Value>) -> Value {
 }
 
 /// Ticks until the run is finished (a stopped run needs a pass or two to drain and finish).
-async fn settle(
+pub(crate) async fn settle(
     scheduler: &Scheduler<PgRunStore, JsonEvaluator, SystemEntropy>,
     world: &World,
     run: sagat_domain::execution::RunId,
@@ -237,7 +248,11 @@ async fn settle(
 
 /// A run stopped by a loop checkpoint is `CANCELLING` with its durable failure until the engine
 /// consumes the committed hint; one stopped by the planner is already `FAILED`.
-async fn assert_failed_with(world: &World, run: sagat_domain::execution::RunId, code: &str) {
+pub(crate) async fn assert_failed_with(
+    world: &World,
+    run: sagat_domain::execution::RunId,
+    code: &str,
+) {
     let status = world.run_status(run).await;
     assert!(
         matches!(status.as_str(), "CANCELLING" | "FAILED"),
@@ -255,7 +270,10 @@ async fn assert_failed_with(world: &World, run: sagat_domain::execution::RunId, 
     assert_eq!(stop_code(world, run).await.as_deref(), Some(code));
 }
 
-async fn stop_code(world: &World, run: sagat_domain::execution::RunId) -> Option<String> {
+pub(crate) async fn stop_code(
+    world: &World,
+    run: sagat_domain::execution::RunId,
+) -> Option<String> {
     sqlx::query_scalar("SELECT stop_code FROM runs WHERE tenant_id=$1 AND id=$2")
         .bind(world.admin.tenant_id().as_uuid())
         .bind(run.as_uuid())
@@ -264,7 +282,7 @@ async fn stop_code(world: &World, run: sagat_domain::execution::RunId) -> Option
         .expect("stop code")
 }
 
-async fn scopes(world: &World, run: sagat_domain::execution::RunId) -> i64 {
+pub(crate) async fn scopes(world: &World, run: sagat_domain::execution::RunId) -> i64 {
     sqlx::query_scalar("SELECT count(*) FROM iteration_scopes WHERE tenant_id=$1 AND run_id=$2")
         .bind(world.admin.tenant_id().as_uuid())
         .bind(run.as_uuid())
@@ -410,7 +428,12 @@ async fn a_policy_reduction_midway_pauses_admission_without_failing_or_killing_a
 
 /// `again` runs its body while `carry < 3`; the body returns the activity's output. One iteration
 /// charges two instances (the activity and its return), the owner one, the `end` node one.
-fn looping(name: &str, max_iterations: u32, delay_ms: Option<u64>, limits: Option<Value>) -> Value {
+pub(crate) fn looping(
+    name: &str,
+    max_iterations: u32,
+    delay_ms: Option<u64>,
+    limits: Option<Value>,
+) -> Value {
     let mut owner = json!({
         "id": "again", "type": "while", "condition": "carry < 3", "body": "iteration",
         "initial": "0", "carry": "bodyResult", "maxIterations": max_iterations,
@@ -436,7 +459,7 @@ fn looping(name: &str, max_iterations: u32, delay_ms: Option<u64>, limits: Optio
     document
 }
 
-fn scoped_workers(
+pub(crate) fn scoped_workers(
     world: &World,
 ) -> WorkerService<PgRunStore, SystemClock, JsonEvaluator, SystemEntropy> {
     WorkerService::new(
@@ -450,7 +473,7 @@ fn scoped_workers(
 }
 
 /// Completes the one task the loop's current iteration offers, with `output`.
-async fn finish_iteration(
+pub(crate) async fn finish_iteration(
     world: &World,
     workers: &WorkerService<PgRunStore, SystemClock, JsonEvaluator, SystemEntropy>,
     session: &(uuid::Uuid, String),
@@ -478,7 +501,7 @@ async fn finish_iteration(
         .expect("complete the iteration");
 }
 
-async fn register_scoped(
+pub(crate) async fn register_scoped(
     world: &World,
     workers: &WorkerService<PgRunStore, SystemClock, JsonEvaluator, SystemEntropy>,
 ) -> (uuid::Uuid, String) {

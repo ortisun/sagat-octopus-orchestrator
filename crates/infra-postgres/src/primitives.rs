@@ -1687,6 +1687,9 @@ impl CollectionStore for PgCollectionStore {
                 }
             }
             CollectionDrainReason::Failed { iteration, code } => {
+                // Either a member failed with this code, or the iteration's body is done and its
+                // result boundary (the pending `return`) cannot be evaluated or retained: an
+                // expression error or a value over a ceiling, which no worker report can show.
                 let failed: bool = sqlx::query_scalar(
                     "SELECT EXISTS (SELECT 1 FROM collection_iterations i JOIN steps s \
                        ON s.tenant_id=i.tenant_id AND s.run_id=i.run_id \
@@ -1694,7 +1697,14 @@ impl CollectionStore for PgCollectionStore {
                       AND s.instance_path_indices=i.entry_path_indices \
                      WHERE i.tenant_id=$1 AND i.run_id=$2 AND i.scope_id=$3 \
                        AND i.iteration_index=$4 AND i.lifecycle='ADMITTED' \
-                       AND s.status='FAILED' AND s.failure_code=$5)",
+                       AND ((s.status='FAILED' AND s.failure_code=$5) \
+                         OR ($5 IN ('EXPRESSION_ERROR','RUN_DATA_LIMIT') \
+                             AND s.status='PENDING' AND s.attempt=0 AND s.node<>i.entry_node \
+                             AND EXISTS (SELECT 1 FROM steps e \
+                                WHERE e.tenant_id=i.tenant_id AND e.run_id=i.run_id \
+                                  AND e.instance_path_nodes=i.entry_path_nodes \
+                                  AND e.instance_path_indices=i.entry_path_indices \
+                                  AND e.node=i.entry_node AND e.status='SUCCEEDED'))))",
                 )
                 .bind(drain.transition.tenant_id().as_uuid())
                 .bind(drain.transition.run_id().as_uuid())

@@ -25,10 +25,10 @@ use crate::support::engine::{
     World, activity, child_node, ctx, document, end_node, wait_node, with, world,
 };
 
-struct ChainFixture {
-    world: World,
+pub(crate) struct ChainFixture {
+    pub(crate) world: World,
     store: PgChainProgressStore,
-    chain: RunId,
+    pub(crate) chain: RunId,
     input: sagat_domain::workflow::Digest,
     run_version: u64,
     deadline: OffsetDateTime,
@@ -55,7 +55,7 @@ async fn scheduler(pool: &sqlx::PgPool, run: RunId) -> SchedulerAuthority {
     )
 }
 
-async fn seed_quiescent_chain(name: &str, deadline_after: Duration) -> ChainFixture {
+pub(crate) async fn seed_quiescent_chain(name: &str, deadline_after: Duration) -> ChainFixture {
     let world = world().await;
     let (workflow, _) = world
         .publish(document(name, "work", vec![activity("work")]))

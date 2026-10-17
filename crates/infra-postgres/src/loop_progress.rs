@@ -2623,7 +2623,10 @@ impl LoopProgressStore for PgLoopProgressStore {
                     let member_code = member.get::<Option<String>, _>("failure_code");
                     let failed =
                         status == "FAILED" && member_code.as_deref() == Some(code.as_str());
-                    let expression_boundary = code == &FailureCode::expression_error()
+                    // The pending `return` is the result boundary: its value could not be
+                    // evaluated, or was over a ceiling.
+                    let expression_boundary = (code == &FailureCode::expression_error()
+                        || code == &FailureCode::run_data_limit())
                         && status == "PENDING"
                         && NodeId::parse_stored(&member.get::<String, _>("node")).is_ok_and(
                             |node| {

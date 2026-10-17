@@ -16,8 +16,8 @@ use sagat_application::definitions::{Applied, DefinitionStore, Idempotency};
 use sagat_application::entropy::Entropy;
 use sagat_application::error::StoreError;
 use sagat_application::execution::{
-    Actor, DefinitionCache, Effects, Engine, EngineError, ExpressionEvaluator, ParentLink, RunInfo,
-    RunTx,
+    Actor, DefinitionCache, Effects, Engine, EngineError, ExpressionEvaluator, MAX_PAYLOAD_BYTES,
+    MAX_RUN_OUTPUT_BYTES, ParentLink, RunInfo, RunTx,
 };
 use sagat_application::loop_progress::{
     LoopCandidate, LoopCheckpointCommand, LoopDelayElapsedCommand, LoopDrainCommand,
@@ -876,6 +876,19 @@ where
                 .map_err(|_| CollectionAdvanceError::Expression)?;
             let snapshot =
                 serde_json::to_vec(&json_items).map_err(|_| CollectionAdvanceError::Expression)?;
+            // The captured membership is one value: over the ceiling nothing of it is retained.
+            if snapshot.len() > MAX_PAYLOAD_BYTES {
+                return self
+                    .stop_collection_for_limit(
+                        view,
+                        &hold,
+                        tenant,
+                        run,
+                        state.version(),
+                        FailureCode::run_data_limit(),
+                    )
+                    .await;
+            }
             let limits = CollectionLimits::new(
                 *max_items,
                 *max_concurrency,
@@ -1093,11 +1106,59 @@ where
             else {
                 return Err(CollectionAdvanceError::InvalidProgress);
             };
-            let returned = self
-                .engine
-                .evaluator()
-                .collection_return(return_expression, &data, return_instance)
-                .map_err(|_| CollectionAdvanceError::Expression)?;
+            let returned = match self.engine.evaluator().collection_return(
+                return_expression,
+                &data,
+                return_instance,
+            ) {
+                Ok(returned) => returned,
+                // A result that cannot be computed fails this iteration, typed, the way a failed
+                // member does; the scope drains instead of being retried forever.
+                Err(_) => {
+                    return self
+                        .fail_collection_iteration(
+                            transition(state.version()),
+                            progress.scope_id,
+                            index,
+                            FailureCode::expression_error(),
+                        )
+                        .await;
+                }
+            };
+            // The iteration's result and, when this is the last one, the aggregate that the
+            // finish will store are values too: over 256 KiB, or past what the run may retain,
+            // the scope fails here, while the iteration can still fail, and nothing oversize is
+            // written. An aggregate that cannot be computed fails the same way, as an expression
+            // error, instead of being retried at the finish for ever.
+            let refusal = if returned.len() > MAX_PAYLOAD_BYTES {
+                Some(FailureCode::run_data_limit())
+            } else if progress.results.len() + 1
+                == usize::try_from(collection.item_count())
+                    .map_err(|_| CollectionAdvanceError::InvalidProgress)?
+            {
+                self.aggregate_refusal(
+                    result,
+                    &data,
+                    collection
+                        .ordered_results()
+                        .map(|(position, reference)| (position, reference.return_instance()))
+                        .zip(progress.results.iter().map(|(_, bytes)| bytes.as_slice()))
+                        .map(|((position, instance), bytes)| (position, instance, bytes)),
+                    (index, return_instance, returned.as_slice()),
+                )
+            } else {
+                None
+            };
+            if let Some(code) = refusal {
+                return self
+                    .fail_collection_iteration(
+                        transition(state.version()),
+                        progress.scope_id,
+                        index,
+                        code,
+                    )
+                    .await;
+            }
             let checkpoint = CollectionCheckpoint::from_result(
                 transition(state.version()),
                 progress.scope_id,
@@ -1246,6 +1307,65 @@ where
         }
 
         Ok(CollectionAdvance::Waiting)
+    }
+
+    /// Fails one admitted iteration whose result cannot be produced or retained: the scope drains
+    /// with that iteration's typed failure, as it does for a failed member.
+    async fn fail_collection_iteration(
+        &self,
+        transition: CollectionTransition,
+        scope_id: CollectionScopeId,
+        index: u32,
+        code: FailureCode,
+    ) -> Result<CollectionAdvance, CollectionAdvanceError> {
+        self.store
+            .start_collection_drain(&CollectionDrain::new(
+                transition,
+                scope_id,
+                execution::CollectionDrainReason::Failed {
+                    iteration: index,
+                    code,
+                },
+                uuid::Uuid::now_v7(),
+            ))
+            .await?;
+        Ok(CollectionAdvance::DrainStarted)
+    }
+
+    /// Why the aggregate the collection would store, given the results so far and the one being
+    /// checkpointed, must not be stored: it cannot be computed (an expression error), it is over
+    /// the 256 KiB value ceiling, or it would push the run's retained outputs past 4 MiB (both
+    /// `RUN_DATA_LIMIT`). `None` when it fits.
+    fn aggregate_refusal<'a>(
+        &self,
+        result: &sagat_domain::workflow::Expression,
+        data: &sagat_application::execution::RunData,
+        stored: impl Iterator<Item = (u32, &'a ExecutionInstanceId, &'a [u8])>,
+        current: (u32, &'a ExecutionInstanceId, &'a [u8]),
+    ) -> Option<FailureCode> {
+        let mut members: Vec<_> = stored.collect();
+        members.push(current);
+        members.sort_by_key(|(position, _, _)| *position);
+        let mut mapped = Vec::with_capacity(members.len());
+        for (_, instance, body_result) in members {
+            let value = self
+                .engine
+                .evaluator()
+                .collection_member_result(result, data, instance, body_result)
+                .ok()
+                .and_then(|value| serde_json::from_slice::<serde_json::Value>(&value).ok());
+            let Some(value) = value else {
+                return Some(FailureCode::expression_error());
+            };
+            mapped.push(value);
+        }
+        let Ok(aggregate) = serde_json::to_vec(&mapped) else {
+            return Some(FailureCode::expression_error());
+        };
+        let retained: usize = data.outputs.values().map(Vec::len).sum();
+        (aggregate.len() > MAX_PAYLOAD_BYTES
+            || retained.saturating_add(aggregate.len()) > MAX_RUN_OUTPUT_BYTES)
+            .then(FailureCode::run_data_limit)
     }
 
     /// Stops the run before its collection starts because a declared hard budget does not allow
@@ -1463,6 +1583,32 @@ where
                     };
                 }
             };
+            // The initial carry is a value: over the ceiling nothing of it is retained.
+            if evaluated.carry.len() > MAX_PAYLOAD_BYTES {
+                return match self
+                    .stop_for_limit(
+                        view,
+                        &hold,
+                        RunRef {
+                            tenant_id: tenant,
+                            run_id: run,
+                        },
+                        WorkflowPrimitiveKind::Loop,
+                        FailureCode::run_data_limit(),
+                        state.version(),
+                    )
+                    .await?
+                {
+                    Outcome::Done => Ok(LoopAdvance::LimitStopped),
+                    Outcome::Skipped => Ok(LoopAdvance::Waiting),
+                    Outcome::Fenced => Err(LoopAdvanceError::FenceUnavailable),
+                    Outcome::Failed | Outcome::QuotaStopped => Err(LoopAdvanceError::Engine(
+                        EngineError::Store(StoreError::Internal {
+                            detail: "unexpected loop limit recovery outcome".to_owned(),
+                        }),
+                    )),
+                };
+            }
             let needs_body = kind == LoopKind::RepeatUntil || evaluated.condition == Some(true);
             let first_activity = needs_body.then(|| next_activity(0)).transpose()?;
             let entry = LoopEntryCommand::from_carry(
@@ -1724,6 +1870,27 @@ where
             LoopKind::While => evaluated.condition,
             LoopKind::RepeatUntil => !evaluated.condition,
         };
+        // The result and the carry are values: over 256 KiB nothing is retained and the loop fails
+        // at this iteration's result boundary, as it does for an expression that cannot be
+        // computed. The carry that ends the loop becomes its output, which the run must be able to
+        // retain beside every other output.
+        let retained: usize = data.outputs.values().map(Vec::len).sum();
+        if evaluated.result.len() > MAX_PAYLOAD_BYTES
+            || evaluated.carry.len() > MAX_PAYLOAD_BYTES
+            || (!continues && retained.saturating_add(evaluated.carry.len()) > MAX_RUN_OUTPUT_BYTES)
+        {
+            self.store
+                .start_drain(&LoopDrainCommand::new(
+                    transition(state.version()),
+                    execution::LoopDrainReason::Failed {
+                        iteration: index,
+                        code: FailureCode::run_data_limit(),
+                    },
+                    uuid::Uuid::now_v7(),
+                )?)
+                .await?;
+            return Ok(LoopAdvance::DrainStarted);
+        }
         // What the next body would charge: one instance per node, charged when it is admitted.
         let budget = definition.limits().max_instances();
         let next_charge = body.nodes().count();

@@ -541,3 +541,503 @@ async fn tenant_collection_capacity_serializes_admission_across_runs() {
     .expect("cross-run capacity projection");
     assert_eq!(projection, (1, 1, 0));
 }
+
+// ---------------------------------------------------------------------------------------------
+// Loops, approvals, chains and retention (T014-008)
+// ---------------------------------------------------------------------------------------------
+
+use sagat_application::approval_progress::{
+    ApprovalAddress, ApprovalDecisionAttempt, ApprovalProgressError, ApprovalProgressStore,
+};
+use sagat_application::chain_progress::ChainCommandService;
+use sagat_application::clock::SystemClock;
+use sagat_application::execution::Engine;
+use sagat_application::loop_progress::{
+    LoopDrainCommand, LoopProgressError, LoopProgressStore, LoopTransition,
+};
+use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
+use sagat_domain::execution::{
+    ApprovalDecision, ApprovalDecisionCommand, ApprovalReceiptId, ApprovalRequestId, DecisionKey,
+    LoopDrainReason,
+};
+use sagat_domain::identity::Role;
+use sagat_infra_ir::JsonEvaluator;
+
+use crate::limits::{allow_iterations, looping, register_scoped, scheduler, scoped_workers};
+
+/// Copies a row of `table` to the other tenant, keeping every other value: the composite
+/// foreign keys that carry the tenant must refuse it.
+async fn assert_row_cannot_cross_tenants(
+    world: &World,
+    table: &str,
+    owner_run: RunId,
+    foreign_key_override: &str,
+) {
+    let error = sqlx::query(sqlx::AssertSqlSafe(format!(
+        "INSERT INTO {table} \
+         SELECT (jsonb_populate_record(NULL::{table}, to_jsonb(s) || \
+                 jsonb_build_object('tenant_id', $3::uuid{foreign_key_override}))).* \
+         FROM {table} s WHERE s.tenant_id = $1 AND s.run_id = $2 LIMIT 1"
+    )))
+    .bind(world.admin.tenant_id().as_uuid())
+    .bind(owner_run.as_uuid())
+    .bind(world.other_admin.tenant_id().as_uuid())
+    .execute(&world.db.pool)
+    .await
+    .expect_err(&format!(
+        "a {table} row cannot point across the tenant boundary"
+    ));
+    assert_eq!(
+        error
+            .as_database_error()
+            .and_then(|error| error.code())
+            .as_deref(),
+        Some("23503"),
+        "{table}: {error}"
+    );
+    let leaked: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "SELECT count(*) FROM {table} WHERE tenant_id = $1 AND run_id = $2"
+    )))
+    .bind(world.other_admin.tenant_id().as_uuid())
+    .bind(owner_run.as_uuid())
+    .fetch_one(&world.db.pool)
+    .await
+    .expect("foreign rows");
+    assert_eq!(leaked, 0, "{table}");
+}
+
+#[tokio::test]
+async fn loop_state_is_tenant_bound_and_foreign_probes_look_missing() {
+    let world = world().await;
+    allow_iterations(&world, 2).await;
+    let (workflow, _) = world
+        .publish(looping("security-loop-tenant", 3, None, None))
+        .await;
+    let run = world.start(workflow, &json!({})).await;
+    let scheduler = scheduler(&world, "security-loop").await;
+    assert_eq!(scheduler.tick().await.loops_advanced, 1);
+    let version = world.run_record(run).await.expect("run").version;
+
+    // Reads of the run by another tenant are indistinguishable from an absent run.
+    assert_eq!(
+        world
+            .runs
+            .graph(&world.other_admin, run, &ctx())
+            .await
+            .map(|_| ()),
+        Err(AppError::NotFound)
+    );
+    assert_eq!(
+        world
+            .runs
+            .graph_changes(&world.other_admin, run, 0, &ctx())
+            .await
+            .map(|_| ()),
+        Err(AppError::NotFound)
+    );
+
+    // A scheduler command that names the other tenant for this run finds nothing and changes
+    // nothing, whatever fence it holds.
+    let foreign = world.other_admin.tenant_id();
+    let drain = LoopDrainCommand::new(
+        LoopTransition::new(
+            foreign,
+            world.other_namespace.id(),
+            run,
+            version,
+            ExecutionInstanceId::root(NodeId::parse("again").expect("owner")),
+            authority(&world, run).await,
+            Subject::engine(),
+            None,
+            crate::support::now(),
+            AuditRecord::engine(
+                foreign,
+                AuditAction::RunUpdated,
+                ResourceType::Run,
+                run.to_string(),
+                "foreign loop probe",
+                None,
+                crate::support::now(),
+            ),
+        ),
+        LoopDrainReason::Cancelled,
+        Uuid::now_v7(),
+    )
+    .expect("drain command");
+    assert_eq!(
+        world.store.start_drain(&drain).await.map(|_| ()),
+        Err(LoopProgressError::Missing)
+    );
+    assert_eq!(world.run_record(run).await.expect("run").version, version);
+
+    for table in ["loop_scopes", "loop_iterations"] {
+        assert_row_cannot_cross_tenants(&world, table, run, "").await;
+    }
+    world.assert_consistent(run).await;
+}
+
+#[tokio::test]
+async fn approval_state_is_tenant_bound_and_foreign_decisions_look_missing() {
+    let world = world().await;
+    let (workflow, _) = world
+        .publish(crate::projection::approval_document(
+            "security-approval-tenant",
+        ))
+        .await;
+    let run = world.start(workflow, &json!({})).await;
+    let scheduler = scheduler(&world, "security-approval").await;
+    assert_eq!(scheduler.tick().await.approvals_opened, 1);
+    let request = ApprovalRequestId::new(
+        sqlx::query_scalar(
+            "SELECT request_id FROM approval_requests WHERE tenant_id=$1 AND run_id=$2",
+        )
+        .bind(world.admin.tenant_id().as_uuid())
+        .bind(run.as_uuid())
+        .fetch_one(&world.db.pool)
+        .await
+        .expect("opened request"),
+    );
+
+    let foreign = world.other_admin.tenant_id();
+    let address = ApprovalAddress::new(foreign, world.other_namespace.id(), request);
+    assert!(matches!(
+        world.store.load(address).await,
+        Err(ApprovalProgressError::NotFound)
+    ));
+    let at = crate::support::now();
+    let attempt = ApprovalDecisionAttempt::new(
+        address,
+        world.other_admin.subject().clone(),
+        ApprovalReceiptId::generate(),
+        ApprovalDecisionCommand::new(
+            DecisionKey::parse("foreign-decision").expect("decision key"),
+            digest(b"foreign"),
+            ApprovalDecision::Approve,
+            None,
+        ),
+        AuditRecord::by(
+            &world.other_admin,
+            AuditAction::ApprovalDecided,
+            ResourceType::ApprovalRequest,
+            request.to_string(),
+            None,
+            at,
+        ),
+        Uuid::now_v7(),
+        at,
+    );
+    assert!(
+        matches!(
+            world.store.decide(&attempt).await,
+            Err(ApprovalProgressError::NotFound)
+        ),
+        "another tenant's decision is as opaque as an absent request"
+    );
+    let (status, receipts): (String, i64) = sqlx::query_as(
+        "SELECT status,(SELECT count(*) FROM approval_decision_receipts \
+                        WHERE tenant_id=$1 AND request_id=$2) \
+         FROM approval_requests WHERE tenant_id=$1 AND request_id=$2",
+    )
+    .bind(world.admin.tenant_id().as_uuid())
+    .bind(request.as_uuid())
+    .fetch_one(&world.db.pool)
+    .await
+    .expect("request after foreign attempt");
+    assert_eq!((status.as_str(), receipts), ("PENDING", 0));
+
+    assert_row_cannot_cross_tenants(
+        &world,
+        "approval_requests",
+        run,
+        ", 'request_id', gen_random_uuid(), 'open_outbox_id', gen_random_uuid()",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn chain_state_is_tenant_bound_and_foreign_commands_look_missing() {
+    let fixture = crate::chain_progress::seed_quiescent_chain(
+        "security-chain-tenant",
+        time::Duration::hours(1),
+    )
+    .await;
+    let world = &fixture.world;
+    let service =
+        ChainCommandService::new(world.store.clone(), SystemClock, Engine::new(JsonEvaluator));
+    let foreign = &world.other_admin;
+    let namespace = world.other_namespace.id();
+    assert_eq!(
+        service
+            .signal(
+                foreign,
+                namespace,
+                fixture.chain,
+                None,
+                "go",
+                b"{}",
+                "foreign-signal",
+                &ctx()
+            )
+            .await,
+        Err(AppError::NotFound)
+    );
+    assert_eq!(
+        service
+            .cancel(
+                foreign,
+                namespace,
+                fixture.chain,
+                None,
+                "nope",
+                "foreign-cancel",
+                &ctx()
+            )
+            .await,
+        Err(AppError::NotFound)
+    );
+    let (head, outcome): (Uuid, Option<String>) = sqlx::query_as(
+        "SELECT current_run_id,final_outcome FROM execution_chains \
+         WHERE tenant_id=$1 AND chain_id=$2",
+    )
+    .bind(world.admin.tenant_id().as_uuid())
+    .bind(fixture.chain.as_uuid())
+    .fetch_one(&world.db.pool)
+    .await
+    .expect("chain after foreign commands");
+    assert_eq!((head, outcome), (fixture.chain.as_uuid(), None));
+
+    let error = sqlx::query(
+        "INSERT INTO chain_segments \
+         SELECT (jsonb_populate_record(NULL::chain_segments, to_jsonb(s) || \
+                 jsonb_build_object('tenant_id', $2::uuid))).* \
+         FROM chain_segments s WHERE s.tenant_id = $1 AND s.chain_id = $3 LIMIT 1",
+    )
+    .bind(world.admin.tenant_id().as_uuid())
+    .bind(world.other_admin.tenant_id().as_uuid())
+    .bind(fixture.chain.as_uuid())
+    .execute(&world.db.pool)
+    .await
+    .expect_err("a chain segment cannot point across the tenant boundary");
+    assert_eq!(
+        error
+            .as_database_error()
+            .and_then(|error| error.code())
+            .as_deref(),
+        Some("23503")
+    );
+}
+
+#[tokio::test]
+async fn no_maintenance_job_removes_primitive_data() {
+    // D298: retention of finished runs is a pending decision. Nothing the platform runs on a
+    // schedule may remove what a collection, loop or approval left behind, even when every
+    // retention window is zero.
+    let world = world().await;
+    allow_iterations(&world, 4).await;
+    // One scheduler does the work and, with every retention window at zero, the housekeeping.
+    let ticking = crate::limits::scheduler_with(
+        &world,
+        "security-retention",
+        sagat_scheduler::SchedulerSettings {
+            idempotency_retention: std::time::Duration::ZERO,
+            ..sagat_scheduler::SchedulerSettings::default()
+        },
+    )
+    .await;
+    let workers = scoped_workers(&world);
+    let session = register_scoped(&world, &workers).await;
+
+    // A finished collection, a finished loop and a finished approval.
+    let (collection, _) = world
+        .publish(crate::byte_ceilings::collection(
+            "retention-collection",
+            "input.items",
+            2,
+            1,
+            "bodyResult",
+        ))
+        .await;
+    let collection_run = world.start(collection, &json!({"items": [1]})).await;
+    assert_eq!(ticking.tick().await.collections_advanced, 1);
+    for _ in 0..6 {
+        ticking.tick().await;
+        crate::byte_ceilings::answer(&world, &workers, &session, "1").await;
+        ticking.tick().await;
+    }
+    let (looped, _) = world
+        .publish(looping("retention-loop", 3, None, None))
+        .await;
+    let loop_run = world.start(looped, &json!({})).await;
+    assert_eq!(ticking.tick().await.loops_advanced, 1);
+    crate::limits::finish_iteration(&world, &workers, &session, 3).await;
+    ticking.tick().await;
+    let (approval, _) = world
+        .publish(crate::projection::approval_document("retention-approval"))
+        .await;
+    let approval_run = world.start(approval, &json!({})).await;
+    assert_eq!(ticking.tick().await.approvals_opened, 1);
+    let approver = world.member("retention-approver", Role::Operator).await;
+    let request = ApprovalRequestId::new(
+        sqlx::query_scalar("SELECT request_id FROM approval_requests WHERE run_id=$1")
+            .bind(approval_run.as_uuid())
+            .fetch_one(&world.db.pool)
+            .await
+            .expect("request"),
+    );
+    let at = crate::support::now();
+    world
+        .store
+        .decide(&ApprovalDecisionAttempt::new(
+            ApprovalAddress::new(world.admin.tenant_id(), world.namespace.id(), request),
+            approver.subject().clone(),
+            ApprovalReceiptId::generate(),
+            ApprovalDecisionCommand::new(
+                DecisionKey::parse("retention-decision").expect("decision key"),
+                digest(b"retention"),
+                ApprovalDecision::Approve,
+                None,
+            ),
+            AuditRecord::by(
+                &approver,
+                AuditAction::ApprovalDecided,
+                ResourceType::ApprovalRequest,
+                request.to_string(),
+                None,
+                at,
+            ),
+            Uuid::now_v7(),
+            at,
+        ))
+        .await
+        .expect("decide");
+    for finished in [collection_run, loop_run] {
+        assert_eq!(
+            world.run_status(finished).await.as_str(),
+            "SUCCEEDED",
+            "the retention question is about runs that are over"
+        );
+    }
+
+    let tables = [
+        "iteration_scopes",
+        "collection_scope_items",
+        "collection_iterations",
+        "loop_scopes",
+        "loop_iterations",
+        "loop_checkpoints",
+        "approval_requests",
+        "approval_decision_receipts",
+        "run_instance_usage",
+        "run_events",
+        "payloads",
+    ];
+    let census = || async {
+        let mut counts = Vec::new();
+        for table in tables {
+            let count: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+                "SELECT count(*) FROM {table} WHERE tenant_id = $1"
+            )))
+            .bind(world.admin.tenant_id().as_uuid())
+            .fetch_one(&world.db.pool)
+            .await
+            .expect("table census");
+            counts.push((table, count));
+        }
+        counts
+    };
+    let before = census().await;
+    assert!(
+        before.iter().filter(|(_, count)| *count > 0).count() >= 8,
+        "the fixture must leave primitive rows behind: {before:?}"
+    );
+
+    ticking.housekeeping().await;
+    world
+        .store
+        .purge_projected(std::time::Duration::ZERO, 10_000)
+        .await
+        .expect("purge projected telemetry notes");
+    assert_eq!(
+        census().await,
+        before,
+        "maintenance must not delete primitive data"
+    );
+}
+
+#[tokio::test]
+async fn a_tenant_reduction_never_stops_accepted_loops_and_holds_back_new_ones() {
+    let world = world().await;
+    allow_iterations(&world, 2).await;
+    let (workflow, _) = world
+        .publish(looping("security-loop-reduction", 5, None, None))
+        .await;
+    let first = world.start(workflow, &json!({})).await;
+    let second = world.start(workflow, &json!({})).await;
+    let scheduler = scheduler(&world, "security-loop-reduction").await;
+    let workers = scoped_workers(&world);
+    let session = register_scoped(&world, &workers).await;
+    let entered = scheduler.tick().await;
+    assert_eq!(entered.loops_advanced, 2, "{entered:?}");
+
+    // The ceiling drops below what the two running loops already hold.
+    allow_iterations(&world, 1).await;
+    let third = world.start(workflow, &json!({})).await;
+    let held_back = scheduler.tick().await;
+    assert_eq!(held_back.failed, 0, "{held_back:?}");
+    assert_eq!(held_back.loops_advanced, 0, "{held_back:?}");
+    let scopes = |run: RunId| {
+        let world = &world;
+        async move {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM loop_scopes WHERE tenant_id=$1 AND run_id=$2",
+            )
+            .bind(world.admin.tenant_id().as_uuid())
+            .bind(run.as_uuid())
+            .fetch_one(&world.db.pool)
+            .await
+            .expect("loop scope count")
+        }
+    };
+    assert_eq!(scopes(third).await, 0, "a new loop waits for capacity");
+
+    // The accepted loops are not killed: each finishes its iteration and carries on to the next.
+    for _ in 0..2 {
+        assert_eq!(
+            crate::byte_ceilings::answer(&world, &workers, &session, "1").await,
+            1
+        );
+    }
+    let continued = scheduler.tick().await;
+    assert_eq!(continued.failed, 0, "{continued:?}");
+    assert_eq!(continued.loops_advanced, 2, "{continued:?}");
+    for run in [first, second] {
+        let admitted: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM loop_iterations WHERE tenant_id=$1 AND run_id=$2",
+        )
+        .bind(world.admin.tenant_id().as_uuid())
+        .bind(run.as_uuid())
+        .fetch_one(&world.db.pool)
+        .await
+        .expect("iterations");
+        assert_eq!(
+            admitted, 2,
+            "the second iteration was admitted under the reduction"
+        );
+    }
+    assert_eq!(scopes(third).await, 0);
+
+    // Once they are done the held-back loop gets in.
+    for _ in 0..2 {
+        assert_eq!(
+            crate::byte_ceilings::answer(&world, &workers, &session, "3").await,
+            1
+        );
+    }
+    scheduler.tick().await;
+    scheduler.tick().await;
+    assert_eq!(
+        scopes(third).await,
+        1,
+        "capacity returned, the waiting loop entered"
+    );
+}
