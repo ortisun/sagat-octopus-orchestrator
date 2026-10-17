@@ -11,6 +11,8 @@
 #![allow(dead_code, clippy::expect_used, clippy::panic)]
 
 pub mod api;
+pub mod approval_flow;
+pub mod blob_collections;
 pub mod brokers;
 pub mod collector;
 pub mod contract;
@@ -21,6 +23,7 @@ pub mod nats;
 pub mod oidc;
 pub mod receiver;
 pub mod scale;
+pub mod scope_flow;
 pub mod scripts;
 pub mod signed;
 pub mod worker;
@@ -91,8 +94,19 @@ async fn start_server() -> Server {
             admin_url,
         };
     }
+    // `pg_stat_statements` is preloaded so that a test can count the rows and buffers a statement
+    // touched (the work-per-transition assertions of the performance target, G461). It records
+    // nothing until a database creates the extension.
     let container = Postgres::default()
         .with_tag("16-alpine")
+        .with_cmd([
+            "-c",
+            "shared_preload_libraries=pg_stat_statements",
+            "-c",
+            "pg_stat_statements.track=all",
+            "-c",
+            "pg_stat_statements.max=10000",
+        ])
         .start()
         .await
         .expect("start PostgreSQL (is Docker running? or set SAGAT_TEST_DATABASE_URL)");
@@ -268,6 +282,13 @@ where
 pub const RUNTIME_ROLE: &str = "sagat_app";
 pub const RUNTIME_ROLE_PASSWORD: &str = "runtime-role-test-password";
 
+/// Whether the suites were asked to run the services under test as the runtime role
+/// (`SAGAT_TEST_AS_RUNTIME_ROLE=1`): a sweep for privilege gaps the owner-connected suites cannot
+/// see (G294). The fixtures are still seeded by the owner.
+pub fn as_runtime_role() -> bool {
+    std::env::var_os("SAGAT_TEST_AS_RUNTIME_ROLE").is_some()
+}
+
 /// Creates the runtime role once per cluster. It must exist before migrations run so they can grant
 /// to it, exactly as an operator would provision it.
 async fn ensure_runtime_role(admin_url: &str) {
@@ -284,6 +305,23 @@ async fn ensure_runtime_role(admin_url: &str) {
 }
 
 impl TestDb {
+    /// A pool connected as the least-privilege runtime role (`sagat_app`), the role the control
+    /// plane and the engine are required to run as. Seed with `pool` (the owner), run the code under
+    /// test on this one: the owner can do anything, so a statement the runtime role may not run
+    /// passes every test that connects as the owner (G294).
+    pub async fn runtime_pool(&self) -> PgPool {
+        self.runtime_pool_with(2).await
+    }
+
+    /// [`Self::runtime_pool`] with room for `max_connections`.
+    pub async fn runtime_pool_with(&self, max_connections: u32) -> PgPool {
+        PgPoolOptions::new()
+            .max_connections(max_connections)
+            .connect(&self.url_for(RUNTIME_ROLE, RUNTIME_ROLE_PASSWORD))
+            .await
+            .expect("connect as the runtime role")
+    }
+
     /// The connection URL of this database for another user.
     pub fn url_for(&self, user: &str, password: &str) -> String {
         let (_, rest) = self.url.split_once('@').expect("credentials in url");

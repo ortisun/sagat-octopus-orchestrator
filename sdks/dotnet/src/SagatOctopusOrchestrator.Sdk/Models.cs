@@ -104,12 +104,30 @@ public sealed record Run
     /// <summary>The parent of a child run.</summary>
     public ParentRun? Parent { get; init; }
 
+    /// <summary>
+    /// The run's segment in its continuation chain; <c>null</c> for a run outside any chain. A segment that is
+    /// <c>SUCCEEDED</c> with <see cref="RunChainSegment.CompletionKind"/> <c>CONTINUED</c> ended into its
+    /// successor: it is not the process outcome, which is the chain's final outcome
+    /// (<see cref="ISagatClient.WaitForChainCompletionAsync"/>).
+    /// </summary>
+    public RunChainSegment? Chain { get; init; }
+
+    /// <summary>The ended run this one was started again from (<see cref="RunAction.RerunAsNew"/>); <c>null</c> for a run that is not a rerun.</summary>
+    public string? RerunOf { get; init; }
+
     /// <summary>The answer as the server sent it.</summary>
     public JsonElement Raw { get; init; }
 
     /// <summary>True when <see cref="Status"/> is final.</summary>
     public bool IsTerminal => RunStatuses.IsTerminal(Status);
 }
+
+/// <summary>Where a run sits in its continuation chain.</summary>
+/// <param name="ChainId">The chain, which is its first run's id.</param>
+/// <param name="SegmentIndex">0-based position of the run in the chain.</param>
+/// <param name="CompletionKind"><c>CONTINUED</c> or <c>FINAL</c>; <c>null</c> while the segment is open.</param>
+/// <param name="SuccessorRunId">The next segment when the run was continued.</param>
+public sealed record RunChainSegment(string ChainId, int SegmentIndex, string? CompletionKind, string? SuccessorRunId);
 
 /// <summary>A page of runs.</summary>
 public sealed record RunPage(IReadOnlyList<Run> Items, string? NextCursor);
@@ -137,6 +155,12 @@ public enum RunAction
 
     /// <summary>Resolve a step by hand.</summary>
     ResolveStep,
+
+    /// <summary>
+    /// Start a new run of the same version, with the same input and correlation id, from a run that ended (needs
+    /// <c>run:operate</c> and <c>run:start</c>; a run that has not ended is refused with <c>CONFLICT</c>).
+    /// </summary>
+    RerunAsNew,
 }
 
 /// <summary>The outcome an operator gives a step in <see cref="RunAction.ResolveStep"/>.</summary>
@@ -150,10 +174,181 @@ public enum StepOutcome
 }
 
 /// <summary>What the server answers to an operation.</summary>
-public sealed record OperationResult(string OperationId, bool Accepted, string? RunStatus, long? RunVersion, JsonElement Raw);
+public sealed record OperationResult(string OperationId, bool Accepted, string? RunStatus, long? RunVersion, JsonElement Raw)
+{
+    /// <summary>For <see cref="RunAction.RerunAsNew"/>: the run that was started, which names its origin in <see cref="Run.RerunOf"/>; <c>null</c> for any other action.</summary>
+    public string? NewRunId { get; init; }
+}
+
+/// <summary>A decision an eligible actor records for an approval request.</summary>
+public enum ApprovalDecision
+{
+    /// <summary>Approve the request.</summary>
+    Approve,
+
+    /// <summary>Reject the request.</summary>
+    Reject,
+}
+
+/// <summary>Options that identify one safely retryable approval decision.</summary>
+public sealed record ApprovalDecisionOptions
+{
+    /// <summary>One to 128 printable ASCII characters, reused only for the same decision.</summary>
+    public required string DecisionKey { get; init; }
+
+    /// <summary>An optional machine-readable reason code.</summary>
+    public string? ReasonCode { get; init; }
+
+    /// <summary>An explicit W3C <c>traceparent</c>.</summary>
+    public string? Traceparent { get; init; }
+}
+
+/// <summary>The durable receipt for an approval decision.</summary>
+public sealed record ApprovalDecisionReceipt(
+    string ReceiptId,
+    string ApprovalId,
+    string DecisionKey,
+    ApprovalDecision Decision,
+    string? ReasonCode,
+    string Actor,
+    DateTimeOffset DecidedAt,
+    long OutcomeSequence,
+    bool Replayed,
+    JsonElement Raw);
+
+/// <summary>The lifecycle state of a native approval request.</summary>
+public enum ApprovalStatus
+{
+    Pending,
+    Approved,
+    Rejected,
+    Expired,
+    Cancelled,
+}
+
+/// <summary>One bounded collection or loop scope in an approval instance identity.</summary>
+public sealed record ApprovalScope(string ScopeNodeId, int IterationIndex);
+
+/// <summary>One approval request visible on a run, without eligibility or actor disclosure.</summary>
+public sealed record ApprovalListItem(
+    string ApprovalId,
+    string RunId,
+    string NodeId,
+    IReadOnlyList<ApprovalScope> InstancePath,
+    ApprovalStatus Status,
+    DateTimeOffset Deadline,
+    DateTimeOffset? SettledAt,
+    JsonElement Raw);
+
+/// <summary>One bounded approval page in immutable opening order.</summary>
+public sealed record ApprovalPage(IReadOnlyList<ApprovalListItem> Items, string? NextCursor);
+
+/// <summary>Options for one approval page.</summary>
+public sealed record ApprovalListOptions
+{
+    public string? Cursor { get; init; }
+    public int? Limit { get; init; }
+    public string? Traceparent { get; init; }
+}
+
+/// <summary>The result of a declared query and the committed revisions it observed.</summary>
+public sealed record QueryResult(string RunId, long RunVersion, long StateRevision, JsonElement Result, JsonElement Raw);
+
+/// <summary>Options for resolving and querying a continuation chain head.</summary>
+public sealed record ChainQueryOptions
+{
+    /// <summary>Require this run to remain the current head while the query is evaluated.</summary>
+    public string? ExpectedRunId { get; init; }
+
+    /// <summary>An explicit W3C <c>traceparent</c>.</summary>
+    public string? Traceparent { get; init; }
+}
+
+/// <summary>Options that identify one durable state update.</summary>
+public sealed record UpdateOptions
+{
+    /// <summary>One to 128 printable ASCII characters, preserved across retries.</summary>
+    public required string UpdateKey { get; init; }
+
+    /// <summary>Apply only at this committed state revision.</summary>
+    public long? ExpectedStateRevision { get; init; }
+
+    /// <summary>An explicit W3C <c>traceparent</c>.</summary>
+    public string? Traceparent { get; init; }
+}
+
+/// <summary>Options that identify one chain-scoped durable state update.</summary>
+public sealed record ChainUpdateOptions
+{
+    /// <summary>One to 128 printable ASCII characters, preserved across retries.</summary>
+    public required string UpdateKey { get; init; }
+
+    /// <summary>Require this run to remain the current head for a new update.</summary>
+    public string? ExpectedRunId { get; init; }
+
+    /// <summary>Apply only at this committed state revision.</summary>
+    public long? ExpectedStateRevision { get; init; }
+
+    /// <summary>An explicit W3C <c>traceparent</c>.</summary>
+    public string? Traceparent { get; init; }
+}
+
+/// <summary>The durable result of an applied or replayed declared update.</summary>
+public sealed record UpdateReceipt(
+    string RunId,
+    string Operation,
+    string UpdateKey,
+    string Status,
+    JsonElement Result,
+    long BeforeStateRevision,
+    long AfterStateRevision,
+    long RunVersion,
+    bool Replayed,
+    JsonElement Raw);
 
 /// <summary>What the server answers to a signal: the steps that were waiting for it.</summary>
 public sealed record SignalResult(IReadOnlyList<string> DeliveredTo);
+
+/// <summary>One immutable run link in an execution chain.</summary>
+public sealed record ChainSegment(int Index, string RunId, string? PredecessorRunId, string? SuccessorRunId);
+
+/// <summary>One segment as the paged list of a chain's runs gives it: lineage and lifecycle, never a payload.</summary>
+public sealed record ChainRun(
+    int Index, string RunId, string Status, string? CompletionKind, string? PredecessorRunId, string? SuccessorRunId,
+    DateTimeOffset CreatedAt, DateTimeOffset? FinishedAt, JsonElement Raw);
+
+/// <summary>One bounded page of a chain's runs in segment order.</summary>
+public sealed record ChainRunPage(IReadOnlyList<ChainRun> Items, string? NextCursor);
+
+/// <summary>Options for one page of a chain's runs.</summary>
+public sealed record ChainRunListOptions
+{
+    /// <summary>The <c>NextCursor</c> of the previous page; opaque.</summary>
+    public string? Cursor { get; init; }
+
+    /// <summary>1 to 200; the server clamps values outside that range.</summary>
+    public int? Limit { get; init; }
+
+    public string? Traceparent { get; init; }
+}
+
+/// <summary>One committed snapshot of an execution chain.</summary>
+public sealed record ChainInspection(
+    string ChainId, string CurrentRunId, long Revision, bool CancelRequested, string? FinalOutcome,
+    IReadOnlyList<ChainSegment> Segments, JsonElement Raw);
+
+/// <summary>Options for a command against an observed chain head.</summary>
+public sealed record ChainCommandOptions
+{
+    /// <summary>The current run id observed by the caller.</summary>
+    public required string ExpectedRunId { get; init; }
+
+    /// <summary>8 to 160 printable ASCII characters, preserved across retries.</summary>
+    public string? IdempotencyKey { get; init; }
+
+    /// <summary>An explicit W3C <c>traceparent</c>.</summary>
+    public string? Traceparent { get; init; }
+}
 
 /// <summary>An event to publish to the inbox of the namespace.</summary>
 public sealed record PublishEventRequest
@@ -269,7 +464,7 @@ public sealed record OperateOptions
     public long? ExpectedRunVersion { get; init; }
 }
 
-/// <summary>Options of <see cref="ISagatClient.WaitForCompletionAsync"/>.</summary>
+/// <summary>Options of run and chain completion waits.</summary>
 public sealed record WaitOptions
 {
     /// <summary>How long to wait for a terminal status. 60 s by default.</summary>

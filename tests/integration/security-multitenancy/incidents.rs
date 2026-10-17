@@ -243,7 +243,7 @@ async fn categories_are_bounded_per_attempt_and_never_store_destination_canaries
                 namespace_id: w.namespace.id(),
                 digest: digest_of_activity(task.activity.as_str()).expect("script activity"),
                 run_id: Some(task.run_id.as_uuid()),
-                node: Some(task.node.as_str().to_owned()),
+                node: Some(task.instance.node().as_str().to_owned()),
                 attempt: Some(task.fence.attempt),
                 status: ExecutionStatus::Failed,
                 failure: Some(Failure::Denied),
@@ -302,11 +302,11 @@ async fn an_incident_on_one_node_does_not_suppress_another_nodes_terminal_audit(
     assert_eq!(tasks.len(), 2);
     let left = tasks
         .iter()
-        .find(|task| task.node.as_str() == "left")
+        .find(|task| task.instance.node().as_str() == "left")
         .expect("left");
     let right = tasks
         .iter()
-        .find(|task| task.node.as_str() == "right")
+        .find(|task| task.instance.node().as_str() == "right")
         .expect("right");
     assert_eq!((left.run_id, right.run_id), (run, run));
     assert_eq!((left.fence.attempt, right.fence.attempt), (1, 1));
@@ -328,7 +328,7 @@ async fn an_incident_on_one_node_does_not_suppress_another_nodes_terminal_audit(
                 namespace_id: w.namespace.id(),
                 digest: digest_of_activity(right.activity.as_str()).expect("script activity"),
                 run_id: Some(right.run_id.as_uuid()),
-                node: Some(right.node.as_str().to_owned()),
+                node: Some(right.instance.node().as_str().to_owned()),
                 attempt: Some(right.fence.attempt),
                 status: ExecutionStatus::Failed,
                 failure: Some(Failure::Denied),
@@ -369,9 +369,11 @@ async fn a_delayed_terminal_report_finds_incident_evidence_after_the_lease_advan
         .await
         .expect("incident committed before the old lease ended");
 
-    w.age_lease(old_task.run_id, old_task.node.as_str()).await;
+    w.age_lease(old_task.run_id, old_task.instance.node().as_str())
+        .await;
     assert_eq!(w.scheduler.tick().await.leases_expired, 1);
-    w.age_retry(old_task.run_id, old_task.node.as_str()).await;
+    w.age_retry(old_task.run_id, old_task.instance.node().as_str())
+        .await;
     assert_eq!(w.scheduler.tick().await.retries_released, 1);
     let replacement_session = w
         .session_as(&w.runner_identity, &[old_task.activity.as_str()], 1)
@@ -392,7 +394,7 @@ async fn a_delayed_terminal_report_finds_incident_evidence_after_the_lease_advan
                 namespace_id: w.namespace.id(),
                 digest: digest_of_activity(old_task.activity.as_str()).expect("script activity"),
                 run_id: Some(old_task.run_id.as_uuid()),
-                node: Some(old_task.node.as_str().to_owned()),
+                node: Some(old_task.instance.node().as_str().to_owned()),
                 attempt: Some(old_task.fence.attempt),
                 status: ExecutionStatus::Failed,
                 failure: Some(Failure::Denied),

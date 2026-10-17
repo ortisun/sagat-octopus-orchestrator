@@ -12,8 +12,8 @@ use std::time::Duration;
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::definition::{WorkflowId, WorkflowVersionId};
 use sagat_domain::execution::{
-    self, ExecutionError, FailureCode, Progress, ReviewOutcome, RunEvent, RunId, RunStatus,
-    StepStatus, StopReason, WaitingOn,
+    self, ExecutionError, ExecutionInstanceId, FailureCode, Progress, ReviewOutcome, RunEvent,
+    RunId, RunStatus, StepStatus, StopReason, WaitingOn,
 };
 use sagat_domain::identity::{Namespace, NamespaceId, Permission, Principal, TenantId};
 use sagat_domain::workflow::{NodeId, NodeKind, WorkflowDefinition};
@@ -74,15 +74,17 @@ pub struct JournalEntry {
     /// The span of the attempt the event belongs to (16 hex), for the events of an attempt: the span
     /// the worker was given, which a trace backend shows.
     pub span_id: Option<String>,
-    /// Every step the event created or changed: the one it names and the ones it activated
-    /// (`RunEvent::changed_nodes`). The journal view shows `node` only; the changes of the graph
-    /// need all of them. `None` for an event this build cannot decode, whose effect is not known.
-    pub touched: Option<Vec<String>>,
+    /// Every logical instance the event created or changed. The journal view still shows the local
+    /// `node`; graph deltas need the complete scope path to distinguish repeated activations.
+    /// `None` means this build could not decode the event and must return a full reset.
+    pub touched: Option<Vec<sagat_domain::execution::ExecutionInstanceId>>,
 }
 
 /// One step as the runtime graph shows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StepView {
+    /// Full logical identity of the projected execution; `node` remains the local definition name.
+    pub instance: sagat_domain::execution::ExecutionInstanceId,
     pub node: NodeId,
     pub status: StepStatus,
     pub attempt: u32,
@@ -94,6 +96,20 @@ pub struct StepView {
     pub waiting_on: Option<&'static str>,
     /// The child run a `child` step reserved.
     pub child_run: Option<RunId>,
+    /// The recorded case or default for a switch step.
+    pub switch_selection: Option<sagat_domain::execution::SwitchSelection>,
+    /// The approval request an approval step opened and how it stands; none before it opens.
+    pub approval: Option<ApprovalView>,
+}
+
+/// How the approval request of an approval step stands. It names the outcome and the route that
+/// followed, never who decided or why: the principal, the decision key and the reason code stay
+/// in the approval's own audited endpoints.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApprovalView {
+    pub status: sagat_domain::execution::ApprovalStatus,
+    /// The pinned target the outcome routed to; none while pending or after cancellation.
+    pub routed_node: Option<NodeId>,
 }
 
 /// What a run knows about one of its sagas.
@@ -117,6 +133,20 @@ pub struct GraphSnapshot {
     pub definition: Arc<WorkflowDefinition>,
     pub steps: Vec<StepView>,
     pub sagas: Vec<SagaView>,
+    pub chain: Option<ChainView>,
+}
+
+/// The durable chain links visible for this run at the graph snapshot's revision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChainView {
+    pub chain_id: RunId,
+    pub segment_index: u32,
+    pub segment_count: u32,
+    pub current_run_id: RunId,
+    pub predecessor_run_id: Option<RunId>,
+    pub successor_run_id: Option<RunId>,
+    pub completion_kind: Option<String>,
+    pub final_outcome: Option<String>,
 }
 
 /// Most journal events a [`GraphChanges`] carries; a client further behind than this is given the
@@ -262,6 +292,21 @@ impl RunOperation {
     }
 }
 
+/// The text that names a step in an audit record and in the fingerprint of a decision: its node for
+/// a root step, and the iteration path before the node for a step of a scope
+/// (`lines[1]/reserve~c`).
+fn instance_label(instance: &ExecutionInstanceId) -> String {
+    let mut label = String::new();
+    for segment in instance.path().segments() {
+        label.push_str(segment.scope_node().as_str());
+        label.push('[');
+        label.push_str(&segment.iteration_index().to_string());
+        label.push_str("]/");
+    }
+    label.push_str(instance.node().as_str());
+    label
+}
+
 /// What an operator may do to a step that waits for a decision (`FR-003-005`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReviewAction {
@@ -403,6 +448,22 @@ where
     #[must_use]
     pub fn input_blobs(&self) -> Option<&crate::blobs::BlobService> {
         self.input_blobs.as_ref().map(|(service, _)| service)
+    }
+
+    /// Builds the chain command facade from the same store, clock and engine semantics.
+    #[must_use]
+    pub fn chain_commands(&self) -> crate::chain_progress::ChainCommandService<S, C, E>
+    where
+        S: Clone + crate::chain_progress::ChainCommandStore,
+        <S as RunStore>::Tx: crate::chain_progress::ChainRunTx,
+        C: Clone,
+        E: Clone,
+    {
+        crate::chain_progress::ChainCommandService::new(
+            self.store.clone(),
+            self.clock.clone(),
+            self.engine.clone(),
+        )
     }
 
     /// Authorizes the namespace of a pre-run upload before its stream is read.
@@ -598,6 +659,21 @@ where
                 ));
             }
         }
+        let chain_deadline = definition
+            .continuation_policy()
+            .map(|policy| {
+                time::Duration::try_from(policy.timeout())
+                    .ok()
+                    .and_then(|timeout| now.checked_add(timeout))
+                    .ok_or(AppError::NotAllowed(
+                        "the chain timeout exceeds the supported deadline",
+                    ))
+            })
+            .transpose()?;
+        let effective_deadline = match (request.deadline, chain_deadline) {
+            (Some(requested), Some(chain)) => Some(requested.min(chain)),
+            (requested, chain) => requested.or(chain),
+        };
         let run_id = RunId::generate();
         let info = RunInfo {
             run_id,
@@ -610,7 +686,7 @@ where
             trace_id: ctx.trace_id.clone(),
             parent_span: ctx.span_id.clone(),
             rerun_of: rerun.map(|r| r.of),
-            deadline_at: request.deadline,
+            deadline_at: effective_deadline,
             created_at: now,
             parent: None,
             depth: 0,
@@ -697,6 +773,14 @@ where
             ),
         };
         let limits = RunLimits::of(&self.store, principal.tenant_id(), namespace.id()).await?;
+        self.cache
+            .initial_declared_state(&version.document, &input)
+            .map_err(|error| {
+                tracing::debug!(%error, version = %version.version.id(), "declared initial state rejected the run input");
+                AppError::NotAllowed(
+                    "the run input does not produce a valid declared initial state",
+                )
+            })?;
         let new = NewRun {
             limits,
             info,
@@ -1039,6 +1123,9 @@ where
             .with_reason(reason.chars().take(512).collect::<String>()),
         );
         effects.idempotency = Some((idempotency, operation.name().to_owned()));
+        if operation == RunOperation::Cancel {
+            tx.latch_chain_cancel().await?;
+        }
         self.engine
             .run(&mut tx, effects, |def, state, now| {
                 let progress = match operation {
@@ -1083,6 +1170,40 @@ where
         key: &str,
         ctx: &RequestContext,
     ) -> Result<RunRecord, AppError> {
+        self.review_instance(
+            principal,
+            id,
+            &ExecutionInstanceId::root(node.clone()),
+            action,
+            reason,
+            expected_version,
+            key,
+            ctx,
+        )
+        .await
+    }
+
+    /// The same decision about a step of an iteration of a collection or loop: the compensation of
+    /// one iteration that ran out of attempts, or a member whose outcome nobody could establish.
+    /// The instance names the step exactly (its scope path and its node); the permissions, the
+    /// justification, the single winner of two racing decisions and the audit are those of
+    /// [`Self::review`].
+    ///
+    /// # Errors
+    /// As [`Self::review`].
+    #[allow(clippy::too_many_arguments)]
+    pub async fn review_instance(
+        &self,
+        principal: &Principal,
+        id: RunId,
+        instance: &ExecutionInstanceId,
+        action: &ReviewAction,
+        reason: &str,
+        expected_version: Option<u64>,
+        key: &str,
+        ctx: &RequestContext,
+    ) -> Result<RunRecord, AppError> {
+        let node = instance.node();
         principal.authorize(match action {
             ReviewAction::Retry | ReviewAction::Hold => Permission::RunOperate,
             ReviewAction::Skip | ReviewAction::Resolve(_) => Permission::SagaOverride,
@@ -1102,11 +1223,12 @@ where
         if *action == ReviewAction::Skip && !node.is_compensation() {
             return Err(AppError::NotAllowed("only a compensation can be skipped"));
         }
+        let label = instance_label(instance);
         let idempotency = Idempotency {
             scope: format!("run.review:{id}"),
             key: key.to_owned(),
             fingerprint: fingerprint(&[
-                node.as_str().as_bytes(),
+                label.as_bytes(),
                 action.name().as_bytes(),
                 reason.as_bytes(),
                 &expected_version.unwrap_or(u64::MAX).to_be_bytes(),
@@ -1123,7 +1245,7 @@ where
             drop(tx);
             return self.get(principal, id, ctx).await;
         }
-        if tx.parts().1.step(node).is_none() {
+        if tx.parts().1.instance(instance).is_none() {
             return Err(AppError::NotFound);
         }
         let version = tx.parts().1.version();
@@ -1141,12 +1263,12 @@ where
             && tx
                 .parts()
                 .1
-                .step(node)
+                .instance(instance)
                 .is_some_and(|step| step.status() == StepStatus::Waiting)
             && tx
                 .parts()
                 .1
-                .step(node)
+                .instance(instance)
                 .and_then(|step| step.failure())
                 .is_some_and(FailureCode::leaves_outcome_unknown)
         {
@@ -1170,29 +1292,57 @@ where
                 principal,
                 action.audit(),
                 ResourceType::Run,
-                format!("{id}/{node}"),
+                format!("{id}/{label}"),
                 ctx.trace_id.clone(),
                 now,
             )
             .with_reason(audited),
         );
         effects.idempotency = Some((idempotency, action.name()));
-        let step = node.clone();
         let action = action.clone();
-        self.engine
-            .run(&mut tx, effects, move |def, state, now| {
-                let progress = match &action {
-                    ReviewAction::Retry => execution::retry_review(def, state, &step, now)?,
-                    ReviewAction::Hold => execution::mark_for_review(def, state, &step, now)?,
-                    ReviewAction::Skip => execution::skip_review(def, state, &step, now)?,
-                    ReviewAction::Resolve(outcome) => {
-                        execution::resolve_review(def, state, &step, outcome.clone(), now)?
-                    }
-                };
-                Ok(((), progress))
-            })
-            .await
-            .map_err(engine_error)?;
+        if instance.path().is_root() {
+            let step = node.clone();
+            self.engine
+                .run(&mut tx, effects, move |def, state, now| {
+                    let progress = match &action {
+                        ReviewAction::Retry => execution::retry_review(def, state, &step, now)?,
+                        ReviewAction::Hold => execution::mark_for_review(def, state, &step, now)?,
+                        ReviewAction::Skip => execution::skip_review(def, state, &step, now)?,
+                        ReviewAction::Resolve(outcome) => {
+                            execution::resolve_review(def, state, &step, outcome.clone(), now)?
+                        }
+                    };
+                    Ok(((), progress))
+                })
+                .await
+                .map_err(engine_error)?;
+        } else {
+            let step = instance.clone();
+            self.engine
+                .run_addressed(&mut tx, Vec::new(), effects, move |def, state, now| {
+                    let progress = match &action {
+                        ReviewAction::Retry => {
+                            execution::retry_review_instance(def, state, &step, now)?
+                        }
+                        ReviewAction::Hold => {
+                            execution::mark_for_review_instance(def, state, &step, now)?
+                        }
+                        ReviewAction::Skip => {
+                            execution::skip_review_instance(def, state, &step, now)?
+                        }
+                        ReviewAction::Resolve(outcome) => execution::resolve_review_instance(
+                            def,
+                            state,
+                            &step,
+                            outcome.clone(),
+                            now,
+                        )?,
+                    };
+                    Ok(((), progress))
+                })
+                .await
+                .map_err(engine_error)?;
+        }
         tx.commit().await?;
         self.get(principal, id, ctx).await
     }

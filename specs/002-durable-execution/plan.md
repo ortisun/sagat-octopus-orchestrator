@@ -112,3 +112,16 @@ current token/ownership/expiry, binding and available durable capacity are reche
 The fence is held only for the claim transaction, never for an idle receive window. See
 [execution semantics](../../docs/architecture/execution-semantics.md#worker-session-claim-admission)
 and the feature-006 completion contract and named concurrency/recovery evidence.
+
+
+## Approved workflow-primitives dependency (2026-10-14)
+
+[ADR-0030](../../docs/adr/ADR-0030-structured-instances-and-continuation-chains.md) and
+[ADR-0031](../../docs/adr/ADR-0031-declared-operation-result-disclosure.md) accept the feature-014
+architecture and separate declared-result disclosure policy.
+[ADR-0032](../../docs/adr/ADR-0032-additive-workflow-ir.md) keeps the workflow IR at v1 and
+supersedes the earlier separate-revision allocation. Execution may adopt typed scoped instances, root-compatible replay, bounded admission and the shared reducer/store transaction. Chain-capable run chain-before-run and durable child-instance link locking must preserve legacy parent-first behavior and worker-session admission; lifetime tree counting survives retention.
+
+This approves the described dependency for implementation, not a runtime guarantee. Canonical
+contracts, migration/replay, tenant/fault tests and applicable five-SDK evidence remain the
+feature-014 release gates; existing feature behavior stays supported.

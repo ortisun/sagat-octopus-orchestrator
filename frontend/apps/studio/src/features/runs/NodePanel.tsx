@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 import { Link } from 'react-router';
 import type { RuntimeEdge, RuntimeNode } from '../../api/types';
 import type { RunModel } from '../../model/runGraph';
-import { kindOf } from '../../model/registry';
 import { nodeStatus } from '../../model/status';
 import { Banner } from '../../ui/Banner';
 import { ErrorState } from '../../ui/ErrorState';
@@ -23,7 +22,7 @@ import { PayloadInspector } from './PayloadInspection';
 
 function detailedKind(node: RuntimeNode): string {
   const summary = kindView(node);
-  if (summary.variant === 'forward') return kindOf(node.type)?.label ?? node.type;
+  if (summary.variant === 'forward') return summary.label;
   const suffix = summary.variant === 'undo' ? /~c$/ : /~r$/;
   const forward = node.forward ?? node.id.replace(suffix, '');
   return summary.variant === 'undo' ? `Undo of ${forward}` : `Lookup for ${forward}`;

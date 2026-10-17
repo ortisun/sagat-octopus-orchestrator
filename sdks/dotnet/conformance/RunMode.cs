@@ -79,7 +79,18 @@ internal sealed class RunMode : IAsyncDisposable
         {
             ApiUrl = (string)config["apiUrl"]!,
             Namespace = (string)config["namespace"]!,
-            Token = (string)config[token switch { "bad" => "badToken", "other" => "otherTenantToken", _ => "clientToken" }]!,
+            Token = (string)config[token switch
+            {
+                "bad" => "badToken",
+                "other" => "otherTenantToken",
+                // Members of the tenant with one role each, the worker identity, and an operator the scenario revokes.
+                "worker" => "workerToken",
+                "operator" => "operatorToken",
+                "viewer" => "viewerToken",
+                "runner" => "runnerToken",
+                "revoked" => "revokedToken",
+                _ => "clientToken",
+            }]!,
             HttpMessageHandler = new FaultHandler(plan, apiPath, new SocketsHttpHandler { AllowAutoRedirect = false }),
         };
         options.Retry.InitialDelay = TimeSpan.FromMilliseconds(20);
@@ -162,10 +173,66 @@ internal sealed class RunMode : IAsyncDisposable
 
     private string RunOf(JsonObject step)
     {
+        if (step["page"] is JsonValue pageKey && pageKey.TryGetValue<string>(out var page))
+        {
+            // A segment of a page of listChainRuns, by position.
+            var index = (int?)step["index"] ?? 0;
+            return results.TryGetValue(page, out var listed) && listed["items"] is JsonArray items && index >= 0 && index < items.Count
+                && items[index] is JsonObject segment && segment["runId"] is JsonValue segmentId && segmentId.TryGetValue<string>(out var segmentRun)
+                ? segmentRun
+                : throw new InvalidOperationException($"step {page} has no segment {index}");
+        }
+
+        // A rerun answers "newRunId" and no "runId": the step then names the run it started.
         var key = (string)step["run"]!;
-        return results.TryGetValue(key, out var result) && result["runId"] is JsonValue id && id.TryGetValue<string>(out var text)
+        return results.TryGetValue(key, out var result) && (result["runId"] ?? result["newRunId"]) is JsonValue id && id.TryGetValue<string>(out var text)
             ? text
             : throw new InvalidOperationException($"step {key} has no run");
+    }
+
+    private string ApprovalOf(JsonObject step)
+    {
+        if (step["approvalId"] is JsonValue direct && direct.TryGetValue<string>(out var approvalId))
+        {
+            return approvalId;
+        }
+
+        var key = (string)step["approval"]!;
+        return results.TryGetValue(key, out var result)
+            && result["items"] is JsonArray { Count: > 0 } items
+            && items[0] is JsonObject item
+            && item["approvalId"] is JsonValue id
+            && id.TryGetValue<string>(out var text)
+            ? text
+            : throw new InvalidOperationException($"step {key} has no approval");
+    }
+
+    private string ChainRef(JsonNode? value)
+    {
+        var text = (string)value!;
+        if (text == "{{namespaceId}}")
+        {
+            return (string)config["namespaceId"]!;
+        }
+        string? field = null;
+        string? key = null;
+        if (text.StartsWith("{{chainId:", StringComparison.Ordinal) && text.EndsWith("}}", StringComparison.Ordinal))
+        {
+            field = "runId";
+            key = text[10..^2];
+        }
+        else if (text.StartsWith("{{currentRunId:", StringComparison.Ordinal) && text.EndsWith("}}", StringComparison.Ordinal))
+        {
+            field = "currentRunId";
+            key = text[15..^2];
+        }
+        if (field is null)
+        {
+            return text;
+        }
+        return results.TryGetValue(key!, out var result) && result[field] is JsonValue id && id.TryGetValue<string>(out var resolved)
+            ? resolved
+            : throw new InvalidOperationException($"step {key} has no {field}");
     }
 
     internal async Task<JsonObject> PlayAsync(CancellationToken cancellationToken)
@@ -274,7 +341,7 @@ internal sealed class RunMode : IAsyncDisposable
             case "startWithBlob":
                 {
                     var workflowId = (string)config["workflows"]![(string)step["workflow"]!]!["workflowId"]!;
-                    var body = Enumerable.Repeat((byte)'i', (int)step["inputBlobBytes"]!).ToArray();
+                    var body = step["inputBlobText"] is { } text ? System.Text.Encoding.UTF8.GetBytes((string)text!) : Enumerable.Repeat((byte)'i', (int)step["inputBlobBytes"]!).ToArray();
                     await using var source = new MemoryStream(body, writable: false);
                     var descriptor = await client.UploadRunInputAsync(source, new RunInputBlobOptions(
                         ExpectedSize: body.Length,
@@ -310,14 +377,67 @@ internal sealed class RunMode : IAsyncDisposable
                     }
                     else
                     {
-                        foreach (var item in (await client.ListAsync(options, cancellationToken).ConfigureAwait(false)).Items)
+                        // "waitForCount": the runs of a chain are made by the scheduler, so a scenario that needs a
+                        // hand-off to have happened waits for it by the count of runs in a status.
+                        for (var attempt = 0; ; attempt++)
                         {
-                            ids.Add(item.RunId);
+                            ids = new JsonArray();
+                            foreach (var item in (await client.ListAsync(options, cancellationToken).ConfigureAwait(false)).Items)
+                            {
+                                ids.Add(item.RunId);
+                            }
+
+                            if (ids.Count >= ((int?)step["waitForCount"] ?? 0) || attempt >= 100)
+                            {
+                                break;
+                            }
+
+                            await Task.Delay(50, cancellationToken).ConfigureAwait(false);
                         }
                     }
 
-                    // In the order the server gave (newest first): the SDK keeps it, also across pages.
+                    // In the order the server gave (newest first): the SDK keeps it, also across pages. "countOnly"
+                    // answers the number alone, for runs whose ids are derived from their parent's and so sort anywhere.
+                    if ((bool?)step["countOnly"] == true)
+                    {
+                        return new JsonObject { ["count"] = ids.Count };
+                    }
+
                     return new JsonObject { ["items"] = ids };
+                }
+
+            case "listApprovals":
+                {
+                    var page = await client.ListApprovalsAsync(
+                        RunOf(step),
+                        new ApprovalListOptions { Cursor = (string?)step["cursor"], Limit = (int?)step["limit"], Traceparent = (string?)step["traceparent"] },
+                        cancellationToken).ConfigureAwait(false);
+                    for (var attempt = 0; (bool?)step["waitForItem"] == true && page.Items.Count == 0 && attempt < 100; attempt++)
+                    {
+                        await Task.Delay(50, cancellationToken).ConfigureAwait(false);
+                        page = await client.ListApprovalsAsync(
+                            RunOf(step),
+                            new ApprovalListOptions { Cursor = (string?)step["cursor"], Limit = (int?)step["limit"], Traceparent = (string?)step["traceparent"] },
+                            cancellationToken).ConfigureAwait(false);
+                    }
+                    return new JsonObject
+                    {
+                        ["items"] = new JsonArray([.. page.Items.Select(item => (JsonNode?)new JsonObject
+                        {
+                            ["approvalId"] = item.ApprovalId,
+                            ["runId"] = item.RunId,
+                            ["nodeId"] = item.NodeId,
+                            ["instancePath"] = new JsonArray([.. item.InstancePath.Select(scope => (JsonNode?)new JsonObject
+                            {
+                                ["scopeNodeId"] = scope.ScopeNodeId,
+                                ["iterationIndex"] = scope.IterationIndex,
+                            })]),
+                            ["status"] = item.Status.ToString().ToUpperInvariant(),
+                            ["deadline"] = item.Deadline.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", System.Globalization.CultureInfo.InvariantCulture),
+                            ["settledAt"] = item.SettledAt?.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", System.Globalization.CultureInfo.InvariantCulture),
+                        })]),
+                        ["nextCursor"] = page.NextCursor,
+                    };
                 }
 
             case "cancel":
@@ -339,8 +459,182 @@ internal sealed class RunMode : IAsyncDisposable
                             ErrorCode = (string?)step["errorCode"],
                         },
                         cancellationToken).ConfigureAwait(false);
-                    return new JsonObject { ["accepted"] = operated.Accepted, ["runStatus"] = operated.RunStatus };
+                    var observed = new JsonObject { ["accepted"] = operated.Accepted, ["runStatus"] = operated.RunStatus };
+                    // "newRunId" only for the action that starts a run, so the other operations observe as they did.
+                    if (operated.NewRunId is { } newRunId)
+                    {
+                        observed["newRunId"] = newRunId;
+                    }
+
+                    return observed;
                 }
+
+            case "decideApproval":
+                {
+                    var receipt = await client.DecideApprovalAsync(
+                        ApprovalOf(step),
+                        (string)step["decision"]! == "APPROVE" ? ApprovalDecision.Approve : ApprovalDecision.Reject,
+                        new ApprovalDecisionOptions
+                        {
+                            DecisionKey = (string)step["decisionKey"]!,
+                            ReasonCode = (string?)step["reasonCode"],
+                            Traceparent = (string?)step["traceparent"],
+                        },
+                        cancellationToken).ConfigureAwait(false);
+                    return new JsonObject
+                    {
+                        ["receiptId"] = receipt.ReceiptId,
+                        ["approvalId"] = receipt.ApprovalId,
+                        ["decisionKey"] = receipt.DecisionKey,
+                        ["decision"] = receipt.Decision == ApprovalDecision.Approve ? "APPROVE" : "REJECT",
+                        ["reasonCode"] = receipt.ReasonCode,
+                        ["actor"] = receipt.Actor,
+                        ["decidedAt"] = receipt.DecidedAt.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", System.Globalization.CultureInfo.InvariantCulture),
+                        ["outcomeSequence"] = receipt.OutcomeSequence,
+                        ["replayed"] = receipt.Replayed,
+                    };
+                }
+
+            case "query":
+                {
+                    var queried = await client.QueryAsync(
+                        RunOf(step), (string)step["name"]!, step["args"]?.DeepClone(),
+                        new RequestOptions { Traceparent = (string?)step["traceparent"] }, cancellationToken).ConfigureAwait(false);
+                    return new JsonObject
+                    {
+                        ["runVersion"] = queried.RunVersion,
+                        ["stateRevision"] = queried.StateRevision,
+                        ["result"] = JsonNode.Parse(queried.Result.GetRawText()),
+                    };
+                }
+
+            case "queryChain":
+                {
+                    var queried = await client.QueryChainAsync(
+                        ChainRef(step["namespaceId"]), ChainRef(step["chainId"]), (string)step["name"]!, step["args"]?.DeepClone(),
+                        new ChainQueryOptions
+                        {
+                            ExpectedRunId = step["expectedRunId"] is null ? null : ChainRef(step["expectedRunId"]),
+                            Traceparent = (string?)step["traceparent"],
+                        }, cancellationToken).ConfigureAwait(false);
+                    return new JsonObject
+                    {
+                        ["runId"] = queried.RunId,
+                        ["runVersion"] = queried.RunVersion,
+                        ["stateRevision"] = queried.StateRevision,
+                        ["result"] = JsonNode.Parse(queried.Result.GetRawText()),
+                    };
+                }
+
+            case "update":
+                {
+                    var updated = await client.UpdateAsync(
+                        RunOf(step), (string)step["name"]!, step["args"]?.DeepClone(),
+                        new UpdateOptions
+                        {
+                            UpdateKey = (string)step["updateKey"]!,
+                            ExpectedStateRevision = (long?)step["expectedStateRevision"],
+                            Traceparent = (string?)step["traceparent"],
+                        }, cancellationToken).ConfigureAwait(false);
+                    return new JsonObject
+                    {
+                        ["operation"] = updated.Operation,
+                        ["updateKey"] = updated.UpdateKey,
+                        ["status"] = updated.Status,
+                        ["result"] = JsonNode.Parse(updated.Result.GetRawText()),
+                        ["beforeStateRevision"] = updated.BeforeStateRevision,
+                        ["afterStateRevision"] = updated.AfterStateRevision,
+                        ["runVersion"] = updated.RunVersion,
+                        ["replayed"] = updated.Replayed,
+                    };
+                }
+
+            case "updateChain":
+                {
+                    var updated = await client.UpdateChainAsync(
+                        ChainRef(step["namespaceId"]), ChainRef(step["chainId"]),
+                        (string)step["name"]!, step["args"]?.DeepClone(),
+                        new ChainUpdateOptions
+                        {
+                            UpdateKey = (string)step["updateKey"]!,
+                            ExpectedRunId = step["expectedRunId"] is null ? null : ChainRef(step["expectedRunId"]),
+                            ExpectedStateRevision = (long?)step["expectedStateRevision"],
+                            Traceparent = (string?)step["traceparent"],
+                        }, cancellationToken).ConfigureAwait(false);
+                    return new JsonObject
+                    {
+                        ["runId"] = updated.RunId,
+                        ["operation"] = updated.Operation,
+                        ["updateKey"] = updated.UpdateKey,
+                        ["status"] = updated.Status,
+                        ["result"] = JsonNode.Parse(updated.Result.GetRawText()),
+                        ["beforeStateRevision"] = updated.BeforeStateRevision,
+                        ["afterStateRevision"] = updated.AfterStateRevision,
+                        ["runVersion"] = updated.RunVersion,
+                        ["replayed"] = updated.Replayed,
+                    };
+                }
+
+            case "listChainRuns":
+                {
+                    var cursor = (string?)step["cursor"];
+                    if (cursor is not null && cursor.StartsWith("{{nextCursor:", StringComparison.Ordinal) && cursor.EndsWith("}}", StringComparison.Ordinal))
+                    {
+                        var reference = cursor["{{nextCursor:".Length..^2];
+                        cursor = results.TryGetValue(reference, out var earlier) && earlier["nextCursor"] is JsonValue next && next.TryGetValue<string>(out var text)
+                            ? text
+                            : throw new InvalidOperationException($"step {reference} has no next page");
+                    }
+
+                    var page = await client.ListChainRunsAsync(
+                        ChainRef(step["namespaceId"]), ChainRef(step["chainId"]),
+                        new ChainRunListOptions { Cursor = cursor, Limit = (int?)step["limit"], Traceparent = (string?)step["traceparent"] },
+                        cancellationToken).ConfigureAwait(false);
+                    return new JsonObject
+                    {
+                        ["items"] = new JsonArray([.. page.Items.Select(item => (JsonNode?)new JsonObject
+                        {
+                            ["index"] = item.Index, ["runId"] = item.RunId, ["status"] = item.Status,
+                            ["completionKind"] = item.CompletionKind, ["predecessorRunId"] = item.PredecessorRunId,
+                            ["successorRunId"] = item.SuccessorRunId, ["createdAt"] = Iso(item.CreatedAt), ["finishedAt"] = Iso(item.FinishedAt),
+                        })]),
+                        ["nextCursor"] = page.NextCursor,
+                    };
+                }
+
+            case "inspectChain":
+                {
+                    var namespaceId = ChainRef(step["namespaceId"]);
+                    var chainId = ChainRef(step["chainId"]);
+                    var options = new RequestOptions { Traceparent = (string?)step["traceparent"] };
+                    var chain = await client.InspectChainAsync(namespaceId, chainId, options, cancellationToken).ConfigureAwait(false);
+                    if (step["waitForHeadChange"] is not null)
+                    {
+                        var previous = ChainRef(step["waitForHeadChange"]);
+                        for (var attempt = 0; chain.CurrentRunId == previous && attempt < 100; attempt++)
+                        {
+                            await Task.Delay(50, cancellationToken).ConfigureAwait(false);
+                            chain = await client.InspectChainAsync(namespaceId, chainId, options, cancellationToken).ConfigureAwait(false);
+                        }
+                    }
+                    return ChainJson(chain);
+                }
+
+            case "signalChain":
+                {
+                    var signal = await client.SignalChainAsync(
+                        ChainRef(step["namespaceId"]), ChainRef(step["chainId"]), (string)step["name"]!, step["payload"]?.DeepClone(),
+                        new ChainCommandOptions { ExpectedRunId = ChainRef(step["expectedRunId"]), IdempotencyKey = (string?)step["idempotencyKey"], Traceparent = (string?)step["traceparent"] },
+                        cancellationToken).ConfigureAwait(false);
+                    return new JsonObject { ["deliveredTo"] = new JsonArray([.. signal.DeliveredTo.Select(item => (JsonNode?)JsonValue.Create(item))]) };
+                }
+
+            case "cancelChain":
+                await client.CancelChainAsync(
+                    ChainRef(step["namespaceId"]), ChainRef(step["chainId"]), (string)step["reason"]!,
+                    new ChainCommandOptions { ExpectedRunId = ChainRef(step["expectedRunId"]), IdempotencyKey = (string?)step["idempotencyKey"], Traceparent = (string?)step["traceparent"] },
+                    cancellationToken).ConfigureAwait(false);
+                return new JsonObject { ["accepted"] = true };
 
             case "signal":
                 {
@@ -368,6 +662,14 @@ internal sealed class RunMode : IAsyncDisposable
                     RunOf(step),
                     new WaitOptions { Timeout = TimeSpan.FromMilliseconds((long?)step["timeoutMs"] ?? 60_000), PollInterval = TimeSpan.FromMilliseconds(100) },
                     cancellationToken).ConfigureAwait(false));
+            case "waitForChainCompletion":
+                {
+                    var chain = await client.WaitForChainCompletionAsync(
+                        ChainRef(step["namespaceId"]), ChainRef(step["chainId"]),
+                        new WaitOptions { Timeout = TimeSpan.FromMilliseconds((long?)step["timeoutMs"] ?? 60_000), PollInterval = TimeSpan.FromMilliseconds(100) },
+                        cancellationToken).ConfigureAwait(false);
+                    return ChainJson(chain);
+                }
             case "events":
                 {
                     var page = await client.EventsAsync(RunOf(step), limit: 200, cancellationToken: cancellationToken).ConfigureAwait(false);
@@ -506,10 +808,35 @@ internal sealed class RunMode : IAsyncDisposable
         "RETRY_COMPENSATION" => RunAction.RetryCompensation,
         "SKIP_COMPENSATION" => RunAction.SkipCompensation,
         "RESOLVE_STEP" => RunAction.ResolveStep,
+        "RERUN_AS_NEW" => RunAction.RerunAsNew,
         _ => throw new InvalidOperationException($"unknown action {action}"),
     };
 
-    internal static JsonObject RunJson(Run run) => new()
+    internal static JsonObject RunJson(Run run)
+    {
+        var observed = RunFields(run);
+        // Present only for a run in a chain, so the observations of every other run stay as they were.
+        if (run.Chain is { } chain)
+        {
+            observed["chain"] = new JsonObject
+            {
+                ["chainId"] = chain.ChainId,
+                ["segmentIndex"] = chain.SegmentIndex,
+                ["completionKind"] = chain.CompletionKind,
+                ["successorRunId"] = chain.SuccessorRunId,
+            };
+        }
+
+        // Present only for a run started again from an ended one.
+        if (run.RerunOf is { } origin)
+        {
+            observed["rerunOf"] = origin;
+        }
+
+        return observed;
+    }
+
+    private static JsonObject RunFields(Run run) => new()
     {
         ["runId"] = run.RunId,
         ["workflowId"] = run.WorkflowId,
@@ -526,6 +853,20 @@ internal sealed class RunMode : IAsyncDisposable
         ["correlationId"] = run.CorrelationId,
         ["depth"] = run.Depth,
         ["parent"] = run.Parent is { } parent ? new JsonObject { ["runId"] = parent.RunId, ["node"] = parent.Node, ["cancelPolicy"] = parent.CancelPolicy } : null,
+    };
+
+    private static JsonObject ChainJson(ChainInspection chain) => new()
+    {
+        ["chainId"] = chain.ChainId,
+        ["currentRunId"] = chain.CurrentRunId,
+        ["revision"] = chain.Revision,
+        ["cancelRequested"] = chain.CancelRequested,
+        ["finalOutcome"] = chain.FinalOutcome,
+        ["segments"] = new JsonArray([.. chain.Segments.Select(item => (JsonNode?)new JsonObject
+        {
+            ["index"] = item.Index, ["runId"] = item.RunId, ["predecessorRunId"] = item.PredecessorRunId,
+            ["successorRunId"] = item.SuccessorRunId,
+        })]),
     };
 
     /// <summary>An instant as the harness requires it: UTC, with a Z, whatever the time zone of the process.</summary>

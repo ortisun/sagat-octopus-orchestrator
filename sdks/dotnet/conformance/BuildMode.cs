@@ -75,8 +75,68 @@ internal static class BuildMode
             builder.OutputSchema(output);
         }
 
+        if (definition["state"] is JsonObject state)
+        {
+            builder.State(StateOf(state));
+        }
+
+        if (definition["chainPolicy"] is JsonObject chainPolicy)
+        {
+            builder.ChainPolicy(new ChainPolicyOptions
+            {
+                MaxSegments = (int)chainPolicy["maxSegments"]!,
+                Timeout = Ms(chainPolicy["timeoutMs"]),
+            });
+        }
+
+        foreach (var (name, bodyDefinition) in definition["bodies"]?.AsObject() ?? [])
+        {
+            var nested = Workflow.Body();
+            Apply(nested, bodyDefinition!["program"]!.AsArray());
+            builder.Body(name, nested);
+        }
+
         Apply(builder, definition["program"]!.AsArray());
         return builder;
+    }
+
+    private static StateDefinition StateOf(JsonObject state)
+    {
+        var queries = new Dictionary<string, QueryDefinition>(StringComparer.Ordinal);
+        foreach (var (name, value) in state["queries"]?.AsObject() ?? [])
+        {
+            var query = value!.AsObject();
+            queries[name] = new QueryDefinition
+            {
+                ArgsSchema = query["argsSchema"] as JsonObject,
+                ResultSchema = query["resultSchema"] as JsonObject,
+                Expression = (string?)query["expression"],
+                Disclosure = (string?)query["disclosure"],
+            };
+        }
+
+        var updates = new Dictionary<string, UpdateDefinition>(StringComparer.Ordinal);
+        foreach (var (name, value) in state["updates"]?.AsObject() ?? [])
+        {
+            var update = value!.AsObject();
+            updates[name] = new UpdateDefinition
+            {
+                ArgsSchema = update["argsSchema"] as JsonObject,
+                Validate = (string?)update["validate"],
+                State = (string?)update["state"],
+                Result = (string?)update["result"],
+                ResultSchema = update["resultSchema"] as JsonObject,
+                Disclosure = (string?)update["disclosure"],
+            };
+        }
+
+        return new StateDefinition
+        {
+            Schema = state["schema"] as JsonObject,
+            Initial = (string?)state["initial"],
+            Queries = queries,
+            Updates = updates,
+        };
     }
 
     private static void Apply<TFlow>(FlowBase<TFlow> target, JsonArray program)
@@ -123,6 +183,65 @@ internal static class BuildMode
                 case "condition":
                     target.Condition(id, (string)op["expression"]!, (string)op["ifTrue"]!, (string)op["ifFalse"]!);
                     break;
+                case "switch":
+                    target.Switch(
+                        id,
+                        op["cases"]!.AsArray().Select(item => new SwitchCase(
+                            (string)item!["id"]!,
+                            (string)item["when"]!,
+                            (string)item["target"]!)),
+                        (string)op["default"]!);
+                    break;
+                case "forEach":
+                    target.ForEach(id, (string)op["items"]!, (string)op["body"]!, (string)op["result"]!, new CollectionOptions
+                    {
+                        MaxItems = (int)op["maxItems"]!,
+                        MaxConcurrency = (int)op["maxConcurrency"]!,
+                    });
+                    break;
+                case "map":
+                    target.Map(id, (string)op["items"]!, (string)op["body"]!, (string)op["result"]!, new CollectionOptions
+                    {
+                        MaxItems = (int)op["maxItems"]!,
+                        MaxConcurrency = (int)op["maxConcurrency"]!,
+                    });
+                    break;
+                case "while":
+                    target.While(id, (string)op["condition"]!, (string)op["body"]!, (string)op["initial"]!, (string)op["carry"]!, LoopOptionsOf(op));
+                    break;
+                case "repeatUntil":
+                    target.RepeatUntil(id, (string)op["condition"]!, (string)op["body"]!, (string)op["initial"]!, (string)op["carry"]!, LoopOptionsOf(op));
+                    break;
+                case "approval":
+                    var policy = op["policy"]!.AsObject();
+                    target.Approval(id, new ApprovalOptions
+                    {
+                        Policy = new ApprovalPolicy
+                        {
+                            Subjects = policy["subjects"] is JsonArray subjects ? [.. subjects.Select(subject => (string)subject!)] : null,
+                            Roles = policy["roles"] is JsonArray roles ? [.. roles.Select(role => (string)role! switch
+                            {
+                                "admin" => ApprovalRole.Admin,
+                                "developer" => ApprovalRole.Developer,
+                                "operator" => ApprovalRole.Operator,
+                                _ => (ApprovalRole)(-1),
+                            })] : null,
+                            ExcludeInitiator = (bool?)policy["excludeInitiator"],
+                        },
+                        Timeout = Ms(op["timeoutMs"]),
+                        OnApprove = (string)op["onApprove"]!,
+                        OnReject = (string)op["onReject"]!,
+                        OnExpire = (string)op["onExpire"]!,
+                    });
+                    break;
+                case "continueAsNew":
+                    target.ContinueAsNew(id, (string)op["input"]!, (string?)op["state"]);
+                    break;
+                case "return" when target is Body bodyTarget:
+                    bodyTarget.Return(id, (string)op["result"]!);
+                    break;
+                case "return":
+                    throw new InvalidOperationException("return is only valid in a named body");
                 case "parallel":
                     target.Parallel(
                         id,
@@ -166,6 +285,14 @@ internal static class BuildMode
     }
 
     private static TimeSpan Ms(JsonNode? value) => TimeSpan.FromMilliseconds((long)value!);
+
+    private static LoopOptions LoopOptionsOf(JsonObject op) => new()
+    {
+        MaxIterations = (int)op["maxIterations"]!,
+        Timeout = Ms(op["timeoutMs"]),
+        Delay = op["delayMs"] is { } delay ? Ms(delay) : null,
+        OnError = (string?)op["onError"],
+    };
 
     private static StepOptions StepOptionsOf(JsonObject? options) => options is null
         ? new StepOptions()

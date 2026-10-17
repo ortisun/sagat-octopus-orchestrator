@@ -69,3 +69,10 @@
 ## Incremental implementation strategy
 
 Contract → first failing test → domain → adapter → happy path → failure/recovery → observability → security gate → performance → release.
+
+## Follow-on example coverage
+
+The additional order-processing examples are tracked under feature 014, US01, in
+[`../014-workflow-primitives/tasks.md`](../014-workflow-primitives/tasks.md). This extends
+T012-018/T012-019 and FR-012-002; the prior evidence for hello-world remains specific to that
+example. See feature 014's validation report for the fresh all-language execution results.

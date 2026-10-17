@@ -12,6 +12,7 @@
   "workers": {
     "w1": {
       "workerName": "blob-input-worker",
+      "protocolVersion": "1.4",
       "maxInflight": 1,
       "heartbeatIntervalMs": 200,
       "activities": {

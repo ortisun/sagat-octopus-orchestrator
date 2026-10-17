@@ -17,6 +17,25 @@ internal sealed class Behaviors(string workerKey, List<JsonObject> log, WorkerMe
         var outcome = "returned";
         try
         {
+            // `holdUntilLogged`: a scoped instance waits until the worker has logged that many finished attempts,
+            // which orders completions by what happened rather than by how long anything took.
+            if (behavior["holdUntilLogged"] is JsonArray holds)
+            {
+                var holdUntil = (int)holds[(int)(context.Index ?? 0)]!;
+                while (Count < holdUntil)
+                {
+                    try
+                    {
+                        await Task.Delay(10, cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        outcome = "cancelled";
+                        return null;
+                    }
+                }
+            }
+
             var result = await RunAsync(behavior, input, context, value => outcome = value, cancellationToken).ConfigureAwait(false);
             return result;
         }
@@ -258,6 +277,26 @@ internal sealed class Behaviors(string workerKey, List<JsonObject> log, WorkerMe
             ["abortedReason"] = context.CancellationToken.IsCancellationRequested ? context.CancellationReason : null,
             ["outcome"] = outcome,
         };
+        if (context.Instance is not null)
+        {
+            entry["instance"] = new JsonObject
+            {
+                ["instancePath"] = new JsonArray(context.Instance.InstancePath.Select(segment => (JsonNode?)new JsonObject
+                {
+                    ["scopeNodeId"] = segment.ScopeNodeId,
+                    ["iterationIndex"] = segment.IterationIndex,
+                }).ToArray()),
+                ["definitionNodeId"] = context.Instance.DefinitionNodeId,
+            };
+        }
+        if (context.Index is not null)
+        {
+            entry["scopeInput"] = new JsonObject
+            {
+                ["item"] = context.Item is null ? null : JsonNode.Parse(context.Item.Value.GetRawText()),
+                ["index"] = context.Index.Value,
+            };
+        }
         lock (gate)
         {
             log.Add(entry);

@@ -1,0 +1,29 @@
+{
+  "name": "chain-rerun",
+  "description": "G371: RERUN_AS_NEW of a continued segment. The rerun is an unrelated run with a chain of its own, a fresh deadline and rerunOf; a run that has not ended cannot be rerun; the original chain is untouched.",
+  "workflows": {
+    "chain": {
+      "name": "chain-rerun-runtime",
+      "chainPolicy": { "maxSegments": 3, "timeoutMs": 86400000 },
+      "program": [
+        { "op": "waitForEvent", "id": "release", "options": { "eventType": "chain.release", "correlationExpr": "input.key", "timeoutMs": 600000 } },
+        { "op": "continueAsNew", "id": "next", "input": "input" }
+      ]
+    }
+  },
+  "steps": [
+    { "id": "start", "op": "start", "workflow": "chain", "input": { "key": "order-{{unique}}" } },
+    { "id": "inspect", "op": "inspectChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}" },
+    { "id": "release", "op": "publishEvent", "type": "chain.release", "correlationKey": "order-{{unique}}", "eventId": "release-{{unique}}", "data": { "released": true } },
+    { "id": "inspect-second", "op": "inspectChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "waitForHeadChange": "{{currentRunId:inspect}}" },
+    { "id": "continued", "op": "get", "run": "start" },
+    { "id": "rerun", "op": "operate", "run": "start", "action": "RERUN_AS_NEW", "reason": "run the continued segment again" },
+    { "id": "rerun-run", "op": "get", "run": "rerun" },
+    { "id": "rerun-chain", "op": "inspectChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:rerun-run}}" },
+    { "id": "rerun-open", "op": "operate", "run": "rerun", "action": "RERUN_AS_NEW", "reason": "run it again before it ended" },
+    { "id": "original", "op": "inspectChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}" },
+    { "id": "cancel-original", "op": "cancelChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "expectedRunId": "{{currentRunId:inspect-second}}", "reason": "the original chain is done", "idempotencyKey": "rerun-cancel-original-{{unique}}" },
+    { "id": "cancel-rerun", "op": "cancel", "run": "rerun", "reason": "the rerun is done" },
+    { "id": "rerun-done", "op": "waitForCompletion", "run": "rerun", "timeoutMs": 10000 }
+  ]
+}

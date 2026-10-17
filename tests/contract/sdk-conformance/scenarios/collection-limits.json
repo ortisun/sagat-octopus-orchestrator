@@ -1,0 +1,136 @@
+{
+  "name": "collection-limits",
+  "description": "WP-12 (item limit): the declared maxItems of a map holds at its boundary through the public path in every SDK. Three items under maxItems 3 run to the end; four items fail the run with ITERATION_LIMIT before any iteration is admitted and with no worker call. The instance budget (limits.maxInstances) cannot be set through the SDK builders and is covered by the Rust limits suite.",
+  "server": {
+    "iterationConcurrency": 4
+  },
+  "sourceEvidence": true,
+  "workflows": {
+    "items": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "name": "collection-limit-items",
+      "bodies": {
+        "line": {
+          "program": [
+            {
+              "op": "step",
+              "id": "work",
+              "activity": "limits.line"
+            },
+            {
+              "op": "return",
+              "id": "returned",
+              "result": "steps.work.output"
+            }
+          ]
+        }
+      },
+      "program": [
+        {
+          "op": "map",
+          "id": "items",
+          "items": "input.items",
+          "body": "line",
+          "result": "bodyResult",
+          "maxItems": 3,
+          "maxConcurrency": 1
+        },
+        {
+          "op": "end",
+          "id": "done",
+          "options": {
+            "outputExpr": "steps.items.output"
+          }
+        }
+      ]
+    }
+  },
+  "workers": {
+    "current": {
+      "workerName": "collection-limits",
+      "protocolVersion": "1.5",
+      "transport": "poll",
+      "maxInflight": 4,
+      "autostart": false,
+      "activities": {
+        "limits.line": {
+          "behavior": {
+            "returns": {
+              "ok": true
+            }
+          }
+        }
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "start-worker",
+      "op": "startWorker",
+      "worker": "current"
+    },
+    {
+      "id": "at-the-limit",
+      "op": "start",
+      "workflow": "items",
+      "input": {
+        "items": [
+          {
+            "n": 1
+          },
+          {
+            "n": 2
+          },
+          {
+            "n": 3
+          }
+        ]
+      }
+    },
+    {
+      "id": "at-the-limit-done",
+      "op": "waitForCompletion",
+      "run": "at-the-limit",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "three-attempts",
+      "op": "awaitWorkerLog",
+      "worker": "current",
+      "count": 3,
+      "timeoutMs": 30000
+    },
+    {
+      "id": "past-the-limit",
+      "op": "start",
+      "workflow": "items",
+      "input": {
+        "items": [
+          {
+            "n": 1
+          },
+          {
+            "n": 2
+          },
+          {
+            "n": 3
+          },
+          {
+            "n": 4
+          }
+        ]
+      }
+    },
+    {
+      "id": "past-the-limit-done",
+      "op": "waitForCompletion",
+      "run": "past-the-limit",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "stop-worker",
+      "op": "stopWorker",
+      "worker": "current"
+    }
+  ]
+}

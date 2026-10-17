@@ -72,6 +72,22 @@ describe('RunCard', () => {
     expect(screen.getByText('Undo step — select for details')).toHaveAttribute('aria-label', `Undo of ${forward}`);
     expect(screen.queryByText(/…/)).not.toBeInTheDocument();
   });
+
+  it('identifies an unknown runtime node as unsupported without hiding its status', () => {
+    const type = 'futurePrimitive';
+    full(node({ type, status: 'WAITING' }));
+
+    expect(screen.getByText(`Unsupported node (${type})`)).toBeInTheDocument();
+    expect(screen.getByText('Waiting')).toBeInTheDocument();
+  });
+
+  it('bounds an unknown long type on the card and preserves its accessible name', () => {
+    const type = 'future-'.repeat(20);
+    full(node({ type }));
+
+    expect(screen.getByText('Unsupported node — select for details'))
+      .toHaveAttribute('aria-label', `Unsupported node (${type})`);
+  });
 });
 
 describe('RunChip', () => {

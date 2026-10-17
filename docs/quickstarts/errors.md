@@ -47,9 +47,45 @@ Add `"activity": "payments.charge"`. The pointer counts from zero: `/nodes/0` is
 
 ### UNSUPPORTED_NODE
 
-This node type is in the schema and is not built yet (foreach, humanApproval). Use a child workflow for repetition, and a waitEvent for an approval that a person's tool sends as an event.
+This node, or this combination of nodes, is in the schema but cannot be published yet: for example an approval inside a forEach or while body (the error's `dependency` names what it waits for), or a shape the enabled subset does not allow. Move the part that is not allowed into a child workflow.
 
-`foreach` and `humanApproval` exist in the schema so that documents can be written ahead of the engine, and are refused when published. An approval by a person is, today, a `waitEvent` for an event that the approver's tool publishes (`sagat new approval` writes one).
+Collections, loops, approvals, switches and Continue-As-New are built, each in the shapes the feature's quickstart lists. What is refused is the rest: an approval inside a body (it waits for scoped compensation, `dependency: SCOPED_COMPENSATION`), a branch, timer or nested scope inside a body, and a node kind the reading platform does not enable.
+
+### INVALID_SCOPE
+
+A forEach, while or repeatUntil body is not well formed (the reason says how): a body is a chain of one to eight activities ending in a return, it stays inside its own scope and nothing outside jumps into it.
+
+### DUPLICATE_BODY
+
+Two entries of `bodies` have the same name. Body names are unique in a document.
+
+### UNKNOWN_BODY
+
+A forEach, while or repeatUntil node names a body that `bodies` does not define. Add the body or fix the name.
+
+### UNREACHABLE_BODY
+
+A body is defined and no node uses it. Remove it, or reference it from a forEach, while or repeatUntil node.
+
+### RECURSIVE_BODY
+
+A body refers to itself, directly or through other bodies. Bodies nest but never form a cycle.
+
+### BODY_DEPTH_EXCEEDED
+
+Bodies nest deeper than the limit (8 levels). Flatten the nesting or move the inner part into a child workflow.
+
+### INVALID_WORKFLOW_LIMIT
+
+A top-level `limits` value is outside its range. A workflow may lower maxInstances and the depth below the platform and tenant ceilings and never raise them.
+
+### INVALID_CONTINUATION_POLICY
+
+The chainPolicy of a workflow that continues as new is not valid: maxSegments is 1 to 10000 and a timeout is required. Only a workflow with a continueAsNew node declares one.
+
+### INVALID_SWITCH
+
+A switch needs at least one case, a default route, and unique case ids; each case has a predicate and a target node (the reason says which one is missing).
 
 ### EXPRESSION
 

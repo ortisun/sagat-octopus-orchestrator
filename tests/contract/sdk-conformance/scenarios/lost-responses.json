@@ -80,6 +80,7 @@
   "workers": {
     "w1": {
       "workerName": "lost-worker",
+      "protocolVersion": "1.4",
       "maxInflight": 1,
       "autostart": false,
       "heartbeatIntervalMs": 200,

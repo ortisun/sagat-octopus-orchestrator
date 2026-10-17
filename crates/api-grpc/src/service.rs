@@ -22,7 +22,9 @@ use sagat_application::identity::RequestContext;
 use sagat_application::runs::RunStore;
 use sagat_application::worker::{Capabilities, ClaimedTask, StepAck, WorkerService, WorkerStore};
 use sagat_domain::blobs::BlobId;
+use sagat_domain::execution::{ExecutionInstanceId, InstancePath};
 use sagat_domain::identity::Principal;
+use sagat_domain::workflow::NodeId;
 use sagat_telemetry::TraceContext;
 use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
@@ -760,13 +762,18 @@ where
         observe(&self.core, "ResolveSecrets", trace, async {
             let auth = self.authenticate(&request).await?;
             let message = request.get_ref();
-            let attempt = Attempt::parse(
+            let mut attempt = Attempt::parse(
                 &message.task_id,
                 &message.run_id,
                 &message.step_id,
                 message.attempt,
                 message.generation,
                 &message.lease_token,
+            )?;
+            attach_instance(
+                &mut attempt,
+                message.instance.as_ref(),
+                self.workers.supports_scoped_worker_protocol(),
             )?;
             let resolved = self
                 .workers
@@ -801,13 +808,18 @@ where
             if !message.worker_id.is_empty() {
                 worker_id(&message.worker_id)?;
             }
-            let attempt = Attempt::parse_heartbeat(
+            let mut attempt = Attempt::parse_heartbeat(
                 &message.task_id,
                 &message.run_id,
                 &message.step_id,
                 message.attempt,
                 message.generation,
                 &message.lease_token,
+            )?;
+            attach_instance(
+                &mut attempt,
+                message.instance.as_ref(),
+                self.workers.supports_scoped_worker_protocol(),
             )?;
             let ack = self
                 .workers
@@ -830,13 +842,18 @@ where
         observe(&self.core, "CompleteStep", trace_of(&request), async {
             let auth = self.authenticate(&request).await?;
             let message = request.get_ref();
-            let attempt = Attempt::parse(
+            let mut attempt = Attempt::parse(
                 &message.task_id,
                 &message.run_id,
                 &message.step_id,
                 message.attempt,
                 message.generation,
                 &message.lease_token,
+            )?;
+            attach_instance(
+                &mut attempt,
+                message.instance.as_ref(),
+                self.workers.supports_scoped_worker_protocol(),
             )?;
             let key = idempotency_key(&message.idempotency_key)?;
             if !message.output_blob_ref.is_empty() {
@@ -928,13 +945,18 @@ where
             else {
                 return Err(invalid("the first message of an upload must be the header"));
             };
-            let attempt = Attempt::parse(
+            let mut attempt = Attempt::parse(
                 &header.task_id,
                 &header.run_id,
                 &header.step_id,
                 header.attempt,
                 header.generation,
                 &header.lease_token,
+            )?;
+            attach_instance(
+                &mut attempt,
+                header.instance.as_ref(),
+                self.workers.supports_scoped_worker_protocol(),
             )?;
             let principal = &auth.session.principal;
             let scope = self
@@ -982,13 +1004,18 @@ where
             let blobs = self.blob_access()?;
             let place = blobs.permit()?;
             let message = request.get_ref();
-            let attempt = Attempt::parse(
+            let mut attempt = Attempt::parse(
                 &message.task_id,
                 &message.run_id,
                 &message.step_id,
                 message.attempt,
                 message.generation,
                 &message.lease_token,
+            )?;
+            attach_instance(
+                &mut attempt,
+                message.instance.as_ref(),
+                self.workers.supports_scoped_worker_protocol(),
             )?;
             let id = message
                 .blob_id
@@ -1034,13 +1061,18 @@ where
         observe(&self.core, "FailStep", trace_of(&request), async {
             let auth = self.authenticate(&request).await?;
             let message = request.get_ref();
-            let attempt = Attempt::parse(
+            let mut attempt = Attempt::parse(
                 &message.task_id,
                 &message.run_id,
                 &message.step_id,
                 message.attempt,
                 message.generation,
                 &message.lease_token,
+            )?;
+            attach_instance(
+                &mut attempt,
+                message.instance.as_ref(),
+                self.workers.supports_scoped_worker_protocol(),
             )?;
             let key = idempotency_key(&message.idempotency_key)?;
             if message.error_code.len() > 128 || message.safe_message.len() > 2048 {
@@ -1098,7 +1130,186 @@ fn step_response(ack: &StepAck) -> pb::StepCommandResponse {
     }
 }
 
+fn instance_identity(instance: &ExecutionInstanceId) -> pb::ExecutionInstanceIdentity {
+    pb::ExecutionInstanceIdentity {
+        instance_path: instance
+            .path()
+            .segments()
+            .iter()
+            .map(|segment| pb::ScopePathSegment {
+                scope_node_id: segment.scope_node().to_string(),
+                iteration_index: segment.iteration_index(),
+            })
+            .collect(),
+        definition_node_id: instance.node().to_string(),
+    }
+}
+
+#[cfg(test)]
+fn root_identity(node: &NodeId) -> pb::ExecutionInstanceIdentity {
+    instance_identity(&ExecutionInstanceId::root(node.clone()))
+}
+
+fn parse_instance_identity(
+    identity: Option<&pb::ExecutionInstanceIdentity>,
+    expected_node: &NodeId,
+) -> Result<ExecutionInstanceId, Status> {
+    let Some(identity) = identity else {
+        return Ok(ExecutionInstanceId::root(expected_node.clone()));
+    };
+    if identity.definition_node_id != expected_node.as_str() {
+        return Err(invalid(
+            "instance.definition_node_id does not match task_id",
+        ));
+    }
+    let mut path = InstancePath::root();
+    for segment in &identity.instance_path {
+        let scope_node = NodeId::parse(&segment.scope_node_id)
+            .map_err(|_| invalid("instance.instance_path has a malformed scope_node_id"))?;
+        path = path
+            .child(scope_node, segment.iteration_index)
+            .map_err(|_| invalid("instance.instance_path exceeds its bounds"))?;
+    }
+    Ok(ExecutionInstanceId::in_path(path, expected_node.clone()))
+}
+
+fn require_supported_identity(
+    identity: &ExecutionInstanceId,
+    supports_scoped_identity: bool,
+) -> Result<(), Status> {
+    if identity.path().is_root() || supports_scoped_identity {
+        Ok(())
+    } else {
+        Err(Status::unimplemented(
+            "scoped execution identity requires worker protocol 1.5 support",
+        ))
+    }
+}
+
+fn attach_instance(
+    attempt: &mut Attempt,
+    identity: Option<&pb::ExecutionInstanceIdentity>,
+    supports_scoped_identity: bool,
+) -> Result<(), Status> {
+    let parsed = parse_instance_identity(identity, attempt.instance.node())?;
+    require_supported_identity(&parsed, supports_scoped_identity)?;
+    attempt.instance = parsed;
+    Ok(())
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    #[test]
+    fn old_and_explicit_root_reports_are_accepted() {
+        let node = NodeId::parse("charge").expect("node");
+        assert!(parse_instance_identity(None, &node).is_ok());
+        assert!(parse_instance_identity(Some(&root_identity(&node)), &node).is_ok());
+    }
+
+    #[test]
+    fn an_unimplemented_scope_or_mismatched_root_is_rejected() {
+        let node = NodeId::parse("charge").expect("node");
+        let other = NodeId::parse("refund").expect("node");
+        assert!(parse_instance_identity(Some(&root_identity(&other)), &node).is_err());
+
+        let scoped = pb::ExecutionInstanceIdentity {
+            instance_path: vec![pb::ScopePathSegment {
+                scope_node_id: "lines".into(),
+                iteration_index: 0,
+            }],
+            definition_node_id: node.to_string(),
+        };
+        let parsed = parse_instance_identity(Some(&scoped), &node).expect("valid scoped identity");
+        let error = require_supported_identity(&parsed, false)
+            .expect_err("scoped execution remains disabled");
+        assert_eq!(error.code(), Code::Unimplemented);
+        assert!(require_supported_identity(&parsed, true).is_ok());
+    }
+
+    #[test]
+    fn a_wire_path_is_bounded_and_round_trips_structurally() {
+        let node = NodeId::parse("charge").expect("node");
+        let identity = pb::ExecutionInstanceIdentity {
+            instance_path: (0..8)
+                .map(|index| pb::ScopePathSegment {
+                    scope_node_id: format!("scope{index}"),
+                    iteration_index: 9_999,
+                })
+                .collect(),
+            definition_node_id: node.to_string(),
+        };
+        let parsed = parse_instance_identity(Some(&identity), &node).expect("bounded identity");
+        assert_eq!(parsed.path().depth(), 8);
+        assert_eq!(instance_identity(&parsed), identity);
+
+        let mut too_deep = identity;
+        too_deep.instance_path.push(pb::ScopePathSegment {
+            scope_node_id: "overflow".into(),
+            iteration_index: 0,
+        });
+        assert!(parse_instance_identity(Some(&too_deep), &node).is_err());
+
+        let bad_index = pb::ExecutionInstanceIdentity {
+            instance_path: vec![pb::ScopePathSegment {
+                scope_node_id: "lines".into(),
+                iteration_index: 10_000,
+            }],
+            definition_node_id: node.to_string(),
+        };
+        assert!(parse_instance_identity(Some(&bad_index), &node).is_err());
+    }
+
+    #[test]
+    fn an_absent_identity_keeps_the_legacy_root() {
+        let node = NodeId::parse("charge").expect("node");
+        let parsed = parse_instance_identity(None, &node).expect("legacy root");
+        assert!(parsed.path().is_root());
+        assert_eq!(parsed.node(), &node);
+    }
+
+    #[test]
+    fn a_scoped_lease_carries_the_exact_instance_identity() {
+        let run_id = sagat_domain::execution::RunId::new(uuid::Uuid::from_u128(1));
+        let node = NodeId::parse("charge").expect("node");
+        let scope = NodeId::parse("lines").expect("scope");
+        let instance =
+            ExecutionInstanceId::in_path(InstancePath::root().child(scope, 7).expect("path"), node);
+        let task = ClaimedTask {
+            run_id,
+            instance: instance.clone(),
+            step_id: uuid::Uuid::from_u128(2),
+            fence: sagat_domain::execution::Fence {
+                attempt: 3,
+                generation: 4,
+            },
+            lease_token: sagat_application::entropy::Token::from_bytes([1; 32]).expect("token"),
+            expires_at: OffsetDateTime::UNIX_EPOCH,
+            activity: sagat_domain::workflow::ActivityName::parse("payments.charge")
+                .expect("activity"),
+            input: b"{}".to_vec(),
+            input_blob: None,
+            idempotency_key: "scoped-charge".into(),
+            trace_id: None,
+            kind: sagat_application::worker::TaskKind::Forward,
+            target: None,
+        };
+
+        let encoded = lease(&task);
+        assert_eq!(encoded.instance, Some(instance_identity(&instance)));
+        assert_eq!(encoded.step_id, task.step_id.to_string());
+        assert_eq!(encoded.attempt, 3);
+        assert_eq!(encoded.generation, 4);
+    }
+}
+
 fn lease(task: &ClaimedTask) -> pb::TaskLease {
+    let instance = Some(instance_identity(&task.instance));
+    let target_instance = task
+        .target
+        .as_ref()
+        .map(|target| instance_identity(&target.instance));
     pb::TaskLease {
         task_id: task.task_id(),
         run_id: task.run_id.to_string(),
@@ -1119,13 +1330,15 @@ fn lease(task: &ClaimedTask) -> pb::TaskLease {
         target_node: task
             .target
             .as_ref()
-            .map(|t| t.node.to_string())
+            .map(|t| t.instance.node().to_string())
             .unwrap_or_default(),
         target_idempotency_key: task
             .target
             .as_ref()
             .map(|t| t.idempotency_key.clone())
             .unwrap_or_default(),
+        instance,
+        target_instance,
     }
 }
 

@@ -1,0 +1,142 @@
+{
+  "name": "switch-builders",
+  "description": "WP-07: the five SDKs emit the same ordered v1 switch node, reject structural mistakes, and observe first-match, default and predicate-error runtime behavior.",
+  "workflows": {
+    "ordered": {
+      "name": "switch-flow",
+      "program": [
+        {
+          "op": "switch",
+          "id": "route",
+          "cases": [
+            { "id": "nonnegative", "when": "input.amount >= 0", "target": "positive" },
+            { "id": "one", "when": "input.amount == 1", "target": "also-positive" }
+          ],
+          "default": "fallback"
+        },
+        { "op": "step", "id": "positive", "activity": "amount.positive" },
+        { "op": "end", "id": "positive-end" },
+        { "op": "step", "id": "also-positive", "activity": "amount.also-positive" },
+        { "op": "end", "id": "also-positive-end" },
+        { "op": "step", "id": "fallback", "activity": "amount.fallback" },
+        { "op": "end", "id": "fallback-end" }
+      ]
+    }
+  },
+  "invalidWorkflows": {
+    "empty-cases": {
+      "contains": "between 1 and 32 cases",
+      "workflow": {
+        "name": "empty-switch-cases",
+        "program": [
+          { "op": "switch", "id": "route", "cases": [], "default": "fallback" },
+          { "op": "step", "id": "fallback", "activity": "amount.fallback" }
+        ]
+      }
+    },
+    "duplicate-case-id": {
+      "contains": "case id",
+      "workflow": {
+        "name": "duplicate-switch-cases",
+        "program": [
+          {
+            "op": "switch",
+            "id": "route",
+            "cases": [
+              { "id": "same", "when": "true", "target": "first" },
+              { "id": "same", "when": "false", "target": "second" }
+            ],
+            "default": "fallback"
+          },
+          { "op": "step", "id": "first", "activity": "amount.first" },
+          { "op": "step", "id": "second", "activity": "amount.second" },
+          { "op": "step", "id": "fallback", "activity": "amount.fallback" }
+        ]
+      }
+    },
+    "dangling-case-target": {
+      "contains": "not a node",
+      "workflow": {
+        "name": "dangling-switch-case",
+        "program": [
+          {
+            "op": "switch",
+            "id": "route",
+            "cases": [{ "id": "missing", "when": "true", "target": "nowhere" }],
+            "default": "fallback"
+          },
+          { "op": "step", "id": "fallback", "activity": "amount.fallback" }
+        ]
+      }
+    },
+    "dangling-default": {
+      "contains": "not a node",
+      "workflow": {
+        "name": "dangling-switch-default",
+        "program": [
+          {
+            "op": "switch",
+            "id": "route",
+            "cases": [{ "id": "known", "when": "true", "target": "known" }],
+            "default": "nowhere"
+          },
+          { "op": "step", "id": "known", "activity": "amount.known" }
+        ]
+      }
+    }
+  },
+  "workers": {
+    "w1": {
+      "workerName": "switch-worker",
+      "protocolVersion": "1.4",
+      "maxInflight": 3,
+      "heartbeatIntervalMs": 200,
+      "activities": {
+        "amount.positive": { "behavior": { "returns": { "route": "positive" } } },
+        "amount.also-positive": { "behavior": { "returns": { "route": "also-positive" } } },
+        "amount.fallback": { "behavior": { "returns": { "route": "fallback" } } }
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "first-match",
+      "op": "start",
+      "workflow": "ordered",
+      "input": { "amount": 1 }
+    },
+    {
+      "id": "first-match-done",
+      "op": "waitForCompletion",
+      "run": "first-match",
+      "timeoutMs": 30000
+    },
+    { "id": "first-match-journal", "op": "events", "run": "first-match" },
+    {
+      "id": "default",
+      "op": "start",
+      "workflow": "ordered",
+      "input": { "amount": -1 }
+    },
+    {
+      "id": "default-done",
+      "op": "waitForCompletion",
+      "run": "default",
+      "timeoutMs": 30000
+    },
+    { "id": "default-journal", "op": "events", "run": "default" },
+    {
+      "id": "predicate-error",
+      "op": "start",
+      "workflow": "ordered",
+      "input": {}
+    },
+    {
+      "id": "predicate-error-done",
+      "op": "waitForCompletion",
+      "run": "predicate-error",
+      "timeoutMs": 30000
+    },
+    { "id": "predicate-error-journal", "op": "events", "run": "predicate-error" }
+  ]
+}

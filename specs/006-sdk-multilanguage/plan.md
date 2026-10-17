@@ -99,3 +99,16 @@ schema and shared durable admission; bounded authenticated server stream; five i
 SDK adapters/host lifecycles; shared conformance, failure matrix and comparative measurement.
 Features 001 and 002 are approved dependencies. Protocol minor 1.4 is independent of package
 SemVer. Root integration owns shared fixtures and reviews; SDK writers own only their subtree.
+
+
+## Approved workflow-primitives dependency (2026-10-14)
+
+[ADR-0030](../../docs/adr/ADR-0030-structured-instances-and-continuation-chains.md) and
+[ADR-0031](../../docs/adr/ADR-0031-declared-operation-result-disclosure.md) accept the feature-014
+architecture and separate declared-result disclosure policy.
+[ADR-0032](../../docs/adr/ADR-0032-additive-workflow-ir.md) keeps the workflow IR at v1 and
+supersedes the earlier separate-revision allocation. Worker minor 1.5 adds scoped task identity while every accepted 1.0–1.4 form remains served. Unary/stream claims share eligibility and fencing. All five SDKs add additive v1 declarative builders and explicit operation/chain clients only against reviewed shared conformance; package versions and worker minor remain independent.
+
+This approves the described dependency for implementation, not a runtime guarantee. Canonical
+contracts, migration/replay, tenant/fault tests and applicable five-SDK evidence remain the
+feature-014 release gates; existing feature behavior stays supported.

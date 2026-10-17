@@ -445,3 +445,40 @@ pub(crate) async fn cancel(
         Err(e) => Err(e.to_string()),
     }
 }
+
+/// Starts a new run of the same version, with the same input, from a run that ended. The answer
+/// names the new run; a run that has not ended is refused by the server (409) and nothing starts.
+pub(crate) async fn rerun(
+    common: &Common,
+    env: &Env,
+    run: &str,
+    reason: &str,
+    io: &mut Io<'_>,
+) -> Result<u8, String> {
+    let namespace = namespace_of(common, env)?;
+    let session = session(common, env, &namespace)?;
+    let key = crate::versions::nonce("rerun", &[run]);
+    match session
+        .client
+        .call(
+            "POST",
+            &format!("/runs/{run}/operations"),
+            Some(&json!({ "action": "RERUN_AS_NEW", "reason": reason })),
+            Some(&key),
+        )
+        .await
+    {
+        Ok((_, answer)) => {
+            io.say(format!(
+                "run {run} was started again as {}",
+                answer["newRunId"].as_str().unwrap_or("?")
+            ));
+            Ok(EXIT_DONE)
+        }
+        Err(CallError::Refused(failure)) if failure.status == 409 => {
+            io.warn(format!("the run could not be started again: {failure}"));
+            Ok(EXIT_FAILED)
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}

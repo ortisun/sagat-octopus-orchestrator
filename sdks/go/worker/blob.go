@@ -74,7 +74,7 @@ func (h *Host) writeBlob(ctx context.Context, l *link, lease *pb.TaskLease, mino
 	if err != nil {
 		return BlobDescriptor{}, errorOfStatus(ctx, methodWriteBlob, err, nil, nil)
 	}
-	header := &pb.WriteBlobHeader{TaskId: lease.GetTaskId(), RunId: lease.GetRunId(), StepId: lease.GetStepId(), Attempt: lease.GetAttempt(), Generation: lease.GetGeneration(), LeaseToken: lease.GetLeaseToken(), ContentType: options.ContentType, ExpectedSize: options.ExpectedSize, ExpectedSha256: options.ExpectedSHA256}
+	header := &pb.WriteBlobHeader{TaskId: lease.GetTaskId(), RunId: lease.GetRunId(), StepId: lease.GetStepId(), Attempt: lease.GetAttempt(), Generation: lease.GetGeneration(), LeaseToken: lease.GetLeaseToken(), ContentType: options.ContentType, ExpectedSize: options.ExpectedSize, ExpectedSha256: options.ExpectedSHA256, Instance: instanceOf(lease, minor)}
 	if err := stream.Send(&pb.WriteBlobRequest{Part: &pb.WriteBlobRequest_Header{Header: header}}); err != nil {
 		return BlobDescriptor{}, errorOfStatus(ctx, methodWriteBlob, err, streamHeader(stream), stream.Trailer())
 	}
@@ -194,7 +194,7 @@ func (h *Host) readBlob(ctx context.Context, l *link, lease *pb.TaskLease, minor
 	if err != nil {
 		return nil, err
 	}
-	request := &pb.ReadBlobRequest{TaskId: lease.GetTaskId(), RunId: lease.GetRunId(), StepId: lease.GetStepId(), Attempt: lease.GetAttempt(), Generation: lease.GetGeneration(), LeaseToken: lease.GetLeaseToken(), BlobId: descriptor.ID}
+	request := &pb.ReadBlobRequest{TaskId: lease.GetTaskId(), RunId: lease.GetRunId(), StepId: lease.GetStepId(), Attempt: lease.GetAttempt(), Generation: lease.GetGeneration(), LeaseToken: lease.GetLeaseToken(), BlobId: descriptor.ID, Instance: instanceOf(lease, minor)}
 	stream, err := l.rpc.client.ReadBlob(callCtx, request)
 	if err != nil {
 		cancel()

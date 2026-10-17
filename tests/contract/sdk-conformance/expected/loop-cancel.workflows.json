@@ -1,0 +1,95 @@
+{
+  "canonical": {
+    "active": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"bodies\":{\"iteration\":{\"entrypoint\":\"work\",\"nodes\":[{\"activity\":\"loopx.hang\",\"id\":\"work\",\"next\":\"returned\",\"type\":\"activity\"},{\"id\":\"returned\",\"result\":\"steps.work.output\",\"type\":\"return\"}]}},\"entrypoint\":\"loop\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"loop-cancel-active\"},\"nodes\":[{\"body\":\"iteration\",\"carry\":\"carry + 1\",\"condition\":\"carry < 3\",\"id\":\"loop\",\"initial\":\"0\",\"maxIterations\":3,\"next\":\"done\",\"timeoutMs\":600000,\"type\":\"while\"},{\"id\":\"done\",\"type\":\"end\"}]}",
+    "delayed": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"bodies\":{\"iteration\":{\"entrypoint\":\"work\",\"nodes\":[{\"activity\":\"loopx.quick\",\"id\":\"work\",\"next\":\"returned\",\"type\":\"activity\"},{\"id\":\"returned\",\"result\":\"steps.work.output\",\"type\":\"return\"}]}},\"entrypoint\":\"loop\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"loop-cancel-delayed\"},\"nodes\":[{\"body\":\"iteration\",\"carry\":\"carry + 1\",\"condition\":\"carry < 3\",\"delayMs\":600000,\"id\":\"loop\",\"initial\":\"0\",\"maxIterations\":3,\"next\":\"done\",\"timeoutMs\":3600000,\"type\":\"while\"},{\"id\":\"done\",\"type\":\"end\"}]}"
+  },
+  "workflows": {
+    "active": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "bodies": {
+        "iteration": {
+          "entrypoint": "work",
+          "nodes": [
+            {
+              "activity": "loopx.hang",
+              "id": "work",
+              "next": "returned",
+              "type": "activity"
+            },
+            {
+              "id": "returned",
+              "result": "steps.work.output",
+              "type": "return"
+            }
+          ]
+        }
+      },
+      "entrypoint": "loop",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "loop-cancel-active"
+      },
+      "nodes": [
+        {
+          "body": "iteration",
+          "carry": "carry + 1",
+          "condition": "carry < 3",
+          "id": "loop",
+          "initial": "0",
+          "maxIterations": 3,
+          "next": "done",
+          "timeoutMs": 600000,
+          "type": "while"
+        },
+        {
+          "id": "done",
+          "type": "end"
+        }
+      ]
+    },
+    "delayed": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "bodies": {
+        "iteration": {
+          "entrypoint": "work",
+          "nodes": [
+            {
+              "activity": "loopx.quick",
+              "id": "work",
+              "next": "returned",
+              "type": "activity"
+            },
+            {
+              "id": "returned",
+              "result": "steps.work.output",
+              "type": "return"
+            }
+          ]
+        }
+      },
+      "entrypoint": "loop",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "loop-cancel-delayed"
+      },
+      "nodes": [
+        {
+          "body": "iteration",
+          "carry": "carry + 1",
+          "condition": "carry < 3",
+          "delayMs": 600000,
+          "id": "loop",
+          "initial": "0",
+          "maxIterations": 3,
+          "next": "done",
+          "timeoutMs": 3600000,
+          "type": "while"
+        },
+        {
+          "id": "done",
+          "type": "end"
+        }
+      ]
+    }
+  }
+}

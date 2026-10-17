@@ -63,6 +63,7 @@
   "workers": {
     "w1": {
       "workerName": "net-worker",
+      "protocolVersion": "1.4",
       "maxInflight": 2,
       "autostart": false,
       "heartbeatIntervalMs": 150,

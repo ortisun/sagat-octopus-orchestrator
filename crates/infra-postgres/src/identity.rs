@@ -72,6 +72,17 @@ impl PgIdentityStore {
         self
     }
 
+    /// Waits until every denial write already accepted by this store has finished.
+    pub async fn flush_denial_writes(&self) {
+        let permits = Arc::clone(&self.denial_slots)
+            .acquire_many_owned(MAX_PENDING_DENIALS as u32)
+            .await;
+        match permits {
+            Ok(permits) => drop(permits),
+            Err(error) => tracing::error!(%error, "denial-write barrier unexpectedly closed"),
+        }
+    }
+
     /// Creates a tenant and its first administrator atomically.
     ///
     /// Provisioning is a platform operation (operators and the development seed), deliberately
@@ -272,7 +283,7 @@ pub(crate) async fn insert_audit(
 
 /// Appends `audit` unless an identical event (same tenant, actor, action and resource) was already
 /// recorded within `window`.
-async fn insert_denial_once(
+pub(crate) async fn insert_denial_once(
     pool: &PgPool,
     audit: &AuditRecord,
     window: Duration,
@@ -704,6 +715,7 @@ fn record(mapped: StoreError) -> StoreError {
         | StoreError::MissingReference
         | StoreError::RevisionConflict { .. }
         | StoreError::QuotaExceeded { .. }
+        | StoreError::UnreadableDefinition
         | StoreError::IdempotencyKeyReused => {}
     }
     mapped

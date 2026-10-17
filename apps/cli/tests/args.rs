@@ -284,6 +284,17 @@ fn the_commands_for_one_workflow_take_the_words_and_flags_they_document() {
         }
     );
     assert_eq!(
+        parse(&argv(&format!(
+            "workflow rerun {RUN} --reason fixed-the-worker"
+        )))
+        .expect("parses")
+        .command,
+        Command::WorkflowRerun {
+            run: RUN.into(),
+            reason: "fixed-the-worker".into()
+        }
+    );
+    assert_eq!(
         parse(&argv("workflow runs checkout --limit 500"))
             .expect("parses")
             .command,
@@ -454,6 +465,14 @@ fn the_new_commands_name_what_is_wrong() {
             "workflow cancel 01a12aca-0d9d-7589-bf01-bc7b7cc0a7b8",
             "--reason is required",
         ),
+        (
+            "workflow rerun 01a12aca-0d9d-7589-bf01-bc7b7cc0a7b8",
+            "--reason is required",
+        ),
+        (
+            "workflow rerun not-an-id --reason x",
+            "the run is given by its id",
+        ),
         ("script", "script needs a command"),
         ("script frobnicate", "'script frobnicate' is not a command"),
         ("script test", "the script (a file) is required"),
@@ -488,6 +507,7 @@ fn the_usage_names_every_command_the_parser_takes() {
         "workflow runs",
         "workflow inspect",
         "workflow cancel",
+        "workflow rerun",
         "script test",
         "script publish",
         "worker dev",

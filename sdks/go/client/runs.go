@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"time"
+	"unicode/utf8"
 
 	sagat "github.com/ortisun/sagat-octopus-orchestrator/sdks/go"
 	"github.com/ortisun/sagat-octopus-orchestrator/sdks/go/internal/backoff"
@@ -138,6 +139,16 @@ func runPath(runID string) (string, error) {
 		return "", sagat.Invalid("a run id is a UUID")
 	}
 	return "/runs/" + runID, nil
+}
+
+func chainPath(namespaceID, chainID string) (string, error) {
+	if !uuidPattern.MatchString(namespaceID) {
+		return "", sagat.Invalid("a namespace id is a UUID")
+	}
+	if !uuidPattern.MatchString(chainID) {
+		return "", sagat.Invalid("a chain id is a UUID")
+	}
+	return "/namespaces/" + lower(namespaceID) + "/chains/" + lower(chainID), nil
 }
 
 // segment is a name in a URL path (a signal name): percent-encoded, and never ".", ".." or empty, which
@@ -461,6 +472,7 @@ const (
 	ActionRetryCompensation Action = "RETRY_COMPENSATION"
 	ActionSkipCompensation  Action = "SKIP_COMPENSATION"
 	ActionResolveStep       Action = "RESOLVE_STEP"
+	ActionRerunAsNew        Action = "RERUN_AS_NEW"
 )
 
 // Operate applies an action to a run. reason has 8 to 2000 characters. Reads WithStepID,
@@ -512,12 +524,480 @@ func (c *Client) Operate(ctx context.Context, runID string, action Action, reaso
 	status, _ := jsonx.String(raw, "runStatus")
 	result.RunStatus = RunStatus(status)
 	result.RunVersion, _ = jsonx.Int(raw, "runVersion")
+	result.NewRunID, _ = jsonx.String(raw, "newRunId")
 	return result, nil
+}
+
+// RerunAsNew starts a new run of the same version, with the same input and correlation id, from a
+// run that ended. reason has 8 to 2000 characters. It needs run:operate and run:start; a run that
+// has not ended is refused with CONFLICT. The answer's NewRunID is the new run, which names its
+// origin in Run.RerunOf; a segment of a continuation chain starts a run with a chain of its own.
+// It is Operate with ActionRerunAsNew.
+func (c *Client) RerunAsNew(ctx context.Context, runID, reason string, opts ...CallOption) (*OperationResult, error) {
+	return c.Operate(ctx, runID, ActionRerunAsNew, reason, opts...)
 }
 
 // Cancel cancels a run. reason has 8 to 2000 characters. It is Operate with ActionCancel.
 func (c *Client) Cancel(ctx context.Context, runID, reason string, opts ...CallOption) (*OperationResult, error) {
 	return c.Operate(ctx, runID, ActionCancel, reason, opts...)
+}
+
+var approvalDecisionKeyPattern = regexp.MustCompile(`^[\x21-\x7e]{1,128}$`)
+var approvalReasonCodePattern = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,64}$`)
+var declaredOperationNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$`)
+var updateKeyPattern = regexp.MustCompile(`^[\x21-\x7e]{1,128}$`)
+
+// ListApprovals reads one bounded page in immutable opening order.
+func (c *Client) ListApprovals(ctx context.Context, runID string, options ApprovalListOptions, opts ...CallOption) (*ApprovalPage, error) {
+	path, err := runPath(runID)
+	if err != nil {
+		return nil, err
+	}
+	o := callOptionsOf(opts)
+	traceparent, err := c.trace(ctx, o.traceparent)
+	if err != nil {
+		return nil, err
+	}
+	query := url.Values{}
+	if options.Cursor != "" {
+		query.Set("cursor", options.Cursor)
+	}
+	if options.Limit > 0 {
+		query.Set("limit", strconv.Itoa(options.Limit))
+	}
+	resp, err := c.do(ctx, request{method: "GET", path: path + "/approvals", query: query, repeatable: true, traceparent: traceparent})
+	if err != nil {
+		return nil, err
+	}
+	raw, err := object(resp.body, "an approval page")
+	if err != nil {
+		return nil, err
+	}
+	var values []map[string]json.RawMessage
+	if encoded, ok := raw["items"]; !ok || json.Unmarshal(encoded, &values) != nil || len(values) > 200 {
+		return nil, protocolError("items is invalid in the answer")
+	}
+	page := &ApprovalPage{Items: make([]ApprovalListItem, 0, len(values)), Raw: raw}
+	page.NextCursor, _ = jsonx.String(raw, "nextCursor")
+	for _, value := range values {
+		item := ApprovalListItem{Raw: value}
+		if item.ApprovalID, err = requiredString(value, "approvalId"); err != nil {
+			return nil, err
+		}
+		if item.RunID, err = requiredString(value, "runId"); err != nil {
+			return nil, err
+		}
+		if item.NodeID, err = requiredString(value, "nodeId"); err != nil {
+			return nil, err
+		}
+		status, statusErr := requiredString(value, "status")
+		if statusErr != nil || !validApprovalStatus(ApprovalStatus(status)) {
+			return nil, protocolError("status is invalid in the answer")
+		}
+		item.Status = ApprovalStatus(status)
+		if item.Deadline, _ = jsonx.Time(value, "deadline"); item.Deadline.IsZero() {
+			return nil, protocolError("deadline is missing from the answer")
+		}
+		item.SettledAt, _ = jsonx.Time(value, "settledAt")
+		var scopes []map[string]json.RawMessage
+		if encoded, ok := value["instancePath"]; !ok || json.Unmarshal(encoded, &scopes) != nil || len(scopes) > 8 {
+			return nil, protocolError("instancePath is invalid in the answer")
+		}
+		item.InstancePath = make([]ApprovalScope, 0, len(scopes))
+		for _, scope := range scopes {
+			node, nodeErr := requiredString(scope, "scopeNodeId")
+			index, indexErr := requiredRevision(scope, "iterationIndex", 0)
+			if nodeErr != nil || indexErr != nil || index > 9_999 {
+				return nil, protocolError("approval scope is invalid in the answer")
+			}
+			item.InstancePath = append(item.InstancePath, ApprovalScope{ScopeNodeID: node, IterationIndex: int(index)})
+		}
+		page.Items = append(page.Items, item)
+	}
+	return page, nil
+}
+
+// ListChainRuns reads one bounded page of a chain's runs in segment order. The cursor is opaque and
+// stable: a segment is only appended, so a page never repeats or skips one while the chain grows.
+// A page carries lineage and lifecycle only, never an input, output or state.
+func (c *Client) ListChainRuns(ctx context.Context, namespaceID, chainID string, options ChainRunListOptions, opts ...CallOption) (*ChainRunPage, error) {
+	path, err := chainPath(namespaceID, chainID)
+	if err != nil {
+		return nil, err
+	}
+	o := callOptionsOf(opts)
+	traceparent, err := c.trace(ctx, o.traceparent)
+	if err != nil {
+		return nil, err
+	}
+	query := url.Values{}
+	if options.Cursor != "" {
+		query.Set("cursor", options.Cursor)
+	}
+	if options.Limit > 0 {
+		query.Set("limit", strconv.Itoa(options.Limit))
+	}
+	resp, err := c.do(ctx, request{method: "GET", path: path + "/runs", query: query, repeatable: true, traceparent: traceparent})
+	if err != nil {
+		return nil, err
+	}
+	raw, err := object(resp.body, "a chain run page")
+	if err != nil {
+		return nil, err
+	}
+	var values []map[string]json.RawMessage
+	if encoded, ok := raw["items"]; !ok || json.Unmarshal(encoded, &values) != nil || len(values) > 200 {
+		return nil, protocolError("items is invalid in the answer")
+	}
+	page := &ChainRunPage{Items: make([]ChainRun, 0, len(values)), Raw: raw}
+	page.NextCursor, _ = jsonx.String(raw, "nextCursor")
+	for _, value := range values {
+		item := ChainRun{Raw: value}
+		index, indexErr := requiredRevision(value, "index", 0)
+		if indexErr != nil || index > 9_999 {
+			return nil, protocolError("index is invalid in the answer")
+		}
+		item.Index = int(index)
+		if item.RunID, err = requiredString(value, "runId"); err != nil {
+			return nil, err
+		}
+		status, statusErr := requiredString(value, "status")
+		if statusErr != nil {
+			return nil, statusErr
+		}
+		item.Status = RunStatus(status)
+		if item.CompletionKind, err = completionKindOf(value); err != nil {
+			return nil, err
+		}
+		item.PredecessorRunID, _ = jsonx.String(value, "predecessorRunId")
+		item.SuccessorRunID, _ = jsonx.String(value, "successorRunId")
+		var ok bool
+		if item.CreatedAt, ok = jsonx.Time(value, "createdAt"); !ok {
+			return nil, protocolError("createdAt is missing from the answer")
+		}
+		item.FinishedAt, _ = jsonx.Time(value, "finishedAt")
+		page.Items = append(page.Items, item)
+	}
+	return page, nil
+}
+
+// ListAllChainRuns yields every run of a chain, in segment order, until the opaque cursor ends.
+func (c *Client) ListAllChainRuns(ctx context.Context, namespaceID, chainID string, options ChainRunListOptions, opts ...CallOption) iter.Seq2[*ChainRun, error] {
+	return func(yield func(*ChainRun, error) bool) {
+		for {
+			page, err := c.ListChainRuns(ctx, namespaceID, chainID, options, opts...)
+			if err != nil {
+				yield(nil, err)
+				return
+			}
+			for index := range page.Items {
+				if !yield(&page.Items[index], nil) {
+					return
+				}
+			}
+			if page.NextCursor == "" {
+				return
+			}
+			options.Cursor = page.NextCursor
+		}
+	}
+}
+
+// ListAllApprovals yields every approval page until the opaque cursor ends.
+func (c *Client) ListAllApprovals(ctx context.Context, runID string, options ApprovalListOptions, opts ...CallOption) iter.Seq2[*ApprovalListItem, error] {
+	return func(yield func(*ApprovalListItem, error) bool) {
+		for {
+			page, err := c.ListApprovals(ctx, runID, options, opts...)
+			if err != nil {
+				yield(nil, err)
+				return
+			}
+			for index := range page.Items {
+				if !yield(&page.Items[index], nil) {
+					return
+				}
+			}
+			if page.NextCursor == "" {
+				return
+			}
+			options.Cursor = page.NextCursor
+		}
+	}
+}
+
+func validApprovalStatus(status ApprovalStatus) bool {
+	return status == ApprovalPending || status == ApprovalApproved || status == ApprovalRejected || status == ApprovalExpired || status == ApprovalCancelled
+}
+
+// DecideApproval records an eligible actor's durable decision. The body DecisionKey makes retries
+// safe; WithTraceparent is the only call option this method reads.
+func (c *Client) DecideApproval(ctx context.Context, approvalID string, decision ApprovalDecisionRequest, opts ...CallOption) (*ApprovalDecisionReceipt, error) {
+	if !uuidPattern.MatchString(approvalID) {
+		return nil, sagat.Invalid("an approval id is a UUID")
+	}
+	if decision.Decision != ApprovalApprove && decision.Decision != ApprovalReject {
+		return nil, sagat.Invalid("an approval decision is APPROVE or REJECT")
+	}
+	if !approvalDecisionKeyPattern.MatchString(decision.DecisionKey) {
+		return nil, sagat.Invalid("an approval decision key is 1 to 128 visible ASCII characters")
+	}
+	if decision.ReasonCode != "" && !approvalReasonCodePattern.MatchString(decision.ReasonCode) {
+		return nil, sagat.Invalid("an approval reason code is 1 to 64 letters, digits, dots, underscores, colons or hyphens")
+	}
+	o := callOptionsOf(opts)
+	traceparent, err := c.trace(ctx, o.traceparent)
+	if err != nil {
+		return nil, err
+	}
+	body := map[string]any{"decisionKey": decision.DecisionKey, "decision": string(decision.Decision)}
+	if decision.ReasonCode != "" {
+		body["reasonCode"] = decision.ReasonCode
+	}
+	resp, err := c.do(ctx, request{method: "POST", path: "/approvals/" + lower(approvalID) + "/decisions", body: body, hasBody: true, traceparent: traceparent, repeatable: true})
+	if err != nil {
+		return nil, err
+	}
+	raw, err := object(resp.body, "an approval decision receipt")
+	if err != nil {
+		return nil, err
+	}
+	receipt := &ApprovalDecisionReceipt{Raw: raw}
+	if receipt.ReceiptID, err = requiredString(raw, "receiptId"); err != nil {
+		return nil, err
+	}
+	if receipt.ApprovalID, err = requiredString(raw, "approvalId"); err != nil {
+		return nil, err
+	}
+	if receipt.DecisionKey, err = requiredString(raw, "decisionKey"); err != nil {
+		return nil, err
+	}
+	value, err := requiredString(raw, "decision")
+	if err != nil || (value != string(ApprovalApprove) && value != string(ApprovalReject)) {
+		return nil, protocolError("decision is invalid in the answer")
+	}
+	receipt.Decision = ApprovalDecision(value)
+	receipt.ReasonCode, _ = jsonx.String(raw, "reasonCode")
+	if receipt.Actor, err = requiredString(raw, "actor"); err != nil {
+		return nil, err
+	}
+	if receipt.DecidedAt, _ = jsonx.Time(raw, "decidedAt"); receipt.DecidedAt.IsZero() {
+		return nil, protocolError("decidedAt is missing from the answer")
+	}
+	var hasOutcomeSequence bool
+	if receipt.OutcomeSequence, hasOutcomeSequence = jsonx.Int(raw, "outcomeSequence"); !hasOutcomeSequence || receipt.OutcomeSequence < 1 {
+		return nil, protocolError("outcomeSequence is invalid in the answer")
+	}
+	receipt.Replayed, _ = jsonx.Bool(raw, "replayed")
+	return receipt, nil
+}
+
+// Query evaluates a declared side-effect-free query over one committed state snapshot.
+func (c *Client) Query(ctx context.Context, runID, name string, args any, opts ...CallOption) (*QueryResult, error) {
+	path, err := declaredOperationPath(runID, "queries", name)
+	if err != nil {
+		return nil, err
+	}
+	o := callOptionsOf(opts)
+	traceparent, err := c.trace(ctx, o.traceparent)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.do(ctx, request{method: "POST", path: path, body: map[string]any{"args": args}, hasBody: true, traceparent: traceparent, repeatable: true})
+	if err != nil {
+		return nil, err
+	}
+	raw, err := object(resp.body, "a query result")
+	if err != nil {
+		return nil, err
+	}
+	return queryResult(raw)
+}
+
+// QueryChain evaluates a declared query against the chain head selected under the server's chain lock.
+func (c *Client) QueryChain(ctx context.Context, namespaceID, chainID, name string, query ChainQueryRequest, opts ...CallOption) (*QueryResult, error) {
+	path, err := chainPath(namespaceID, chainID)
+	if err != nil {
+		return nil, err
+	}
+	if !declaredOperationNamePattern.MatchString(name) {
+		return nil, sagat.Invalid("an operation name is 1 to 128 permitted characters and starts with a letter or digit")
+	}
+	body := map[string]any{"args": query.Args}
+	if query.ExpectedRunID != "" {
+		if !uuidPattern.MatchString(query.ExpectedRunID) {
+			return nil, sagat.Invalid("an expected run id is a UUID")
+		}
+		body["expectedRunId"] = lower(query.ExpectedRunID)
+	}
+	o := callOptionsOf(opts)
+	traceparent, err := c.trace(ctx, o.traceparent)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.do(ctx, request{
+		method: "POST", path: path + "/queries/" + url.PathEscape(name), body: body, hasBody: true,
+		traceparent: traceparent, repeatable: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	raw, err := object(resp.body, "a query result")
+	if err != nil {
+		return nil, err
+	}
+	return queryResult(raw)
+}
+
+func queryResult(raw map[string]json.RawMessage) (*QueryResult, error) {
+	result := &QueryResult{Raw: raw}
+	var err error
+	if result.RunID, err = requiredString(raw, "runId"); err != nil {
+		return nil, err
+	}
+	if result.RunVersion, err = requiredRevision(raw, "runVersion", 0); err != nil {
+		return nil, err
+	}
+	if result.StateRevision, err = requiredRevision(raw, "stateRevision", 0); err != nil {
+		return nil, err
+	}
+	if value, ok := raw["result"]; ok {
+		if err := json.Unmarshal(value, &result.Result); err != nil {
+			return nil, protocolError("result is invalid in the answer")
+		}
+	} else {
+		return nil, protocolError("result is missing from the answer")
+	}
+	return result, nil
+}
+
+// Update applies or replays a declared durable state update.
+func (c *Client) Update(ctx context.Context, runID, name string, update UpdateRequest, opts ...CallOption) (*UpdateReceipt, error) {
+	path, err := declaredOperationPath(runID, "updates", name)
+	if err != nil {
+		return nil, err
+	}
+	if !updateKeyPattern.MatchString(update.UpdateKey) {
+		return nil, sagat.Invalid("an update key is 1 to 128 visible ASCII characters")
+	}
+	if update.ExpectedStateRevision != nil && *update.ExpectedStateRevision < 0 {
+		return nil, sagat.Invalid("expected state revision is non-negative")
+	}
+	o := callOptionsOf(opts)
+	traceparent, err := c.trace(ctx, o.traceparent)
+	if err != nil {
+		return nil, err
+	}
+	body := map[string]any{"updateKey": update.UpdateKey, "args": update.Args}
+	if update.ExpectedStateRevision != nil {
+		body["expectedStateRevision"] = *update.ExpectedStateRevision
+	}
+	resp, err := c.do(ctx, request{method: "POST", path: path, body: body, hasBody: true, traceparent: traceparent, repeatable: true})
+	if err != nil {
+		return nil, err
+	}
+	raw, err := object(resp.body, "an update receipt")
+	if err != nil {
+		return nil, err
+	}
+	return updateReceipt(raw)
+}
+
+// UpdateChain applies or replays a declared state update against the chain's current head.
+func (c *Client) UpdateChain(ctx context.Context, namespaceID, chainID, name string, update ChainUpdateRequest, opts ...CallOption) (*UpdateReceipt, error) {
+	path, err := chainPath(namespaceID, chainID)
+	if err != nil {
+		return nil, err
+	}
+	if !declaredOperationNamePattern.MatchString(name) {
+		return nil, sagat.Invalid("an operation name is 1 to 128 permitted characters and starts with a letter or digit")
+	}
+	if !updateKeyPattern.MatchString(update.UpdateKey) {
+		return nil, sagat.Invalid("an update key is 1 to 128 visible ASCII characters")
+	}
+	if update.ExpectedStateRevision != nil && *update.ExpectedStateRevision < 0 {
+		return nil, sagat.Invalid("expected state revision is non-negative")
+	}
+	body := map[string]any{"updateKey": update.UpdateKey, "args": update.Args}
+	if update.ExpectedRunID != "" {
+		if !uuidPattern.MatchString(update.ExpectedRunID) {
+			return nil, sagat.Invalid("an expected run id is a UUID")
+		}
+		body["expectedRunId"] = lower(update.ExpectedRunID)
+	}
+	if update.ExpectedStateRevision != nil {
+		body["expectedStateRevision"] = *update.ExpectedStateRevision
+	}
+	o := callOptionsOf(opts)
+	traceparent, err := c.trace(ctx, o.traceparent)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.do(ctx, request{
+		method: "POST", path: path + "/updates/" + url.PathEscape(name), body: body, hasBody: true,
+		traceparent: traceparent, repeatable: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	raw, err := object(resp.body, "an update receipt")
+	if err != nil {
+		return nil, err
+	}
+	return updateReceipt(raw)
+}
+
+func updateReceipt(raw map[string]json.RawMessage) (*UpdateReceipt, error) {
+	var err error
+	receipt := &UpdateReceipt{Raw: raw}
+	if receipt.RunID, err = requiredString(raw, "runId"); err != nil {
+		return nil, err
+	}
+	if receipt.Operation, err = requiredString(raw, "operation"); err != nil {
+		return nil, err
+	}
+	if receipt.UpdateKey, err = requiredString(raw, "updateKey"); err != nil {
+		return nil, err
+	}
+	if receipt.Status, err = requiredString(raw, "status"); err != nil || receipt.Status != "APPLIED" {
+		return nil, protocolError("status is invalid in the answer")
+	}
+	if value, ok := raw["result"]; ok {
+		if err := json.Unmarshal(value, &receipt.Result); err != nil {
+			return nil, protocolError("result is invalid in the answer")
+		}
+	} else {
+		return nil, protocolError("result is missing from the answer")
+	}
+	if receipt.BeforeStateRevision, err = requiredRevision(raw, "beforeStateRevision", 0); err != nil {
+		return nil, err
+	}
+	if receipt.AfterStateRevision, err = requiredRevision(raw, "afterStateRevision", 1); err != nil {
+		return nil, err
+	}
+	if receipt.RunVersion, err = requiredRevision(raw, "runVersion", 1); err != nil {
+		return nil, err
+	}
+	receipt.Replayed, _ = jsonx.Bool(raw, "replayed")
+	return receipt, nil
+}
+
+func declaredOperationPath(runID, kind, name string) (string, error) {
+	path, err := runPath(runID)
+	if err != nil {
+		return "", err
+	}
+	if !declaredOperationNamePattern.MatchString(name) {
+		return "", sagat.Invalid("an operation name is 1 to 128 permitted characters and starts with a letter or digit")
+	}
+	return path + "/" + kind + "/" + url.PathEscape(name), nil
+}
+
+func requiredRevision(raw map[string]json.RawMessage, key string, minimum int64) (int64, error) {
+	value, ok := jsonx.Int(raw, key)
+	if !ok || value < minimum {
+		return 0, protocolError("%s is invalid in the answer", key)
+	}
+	return value, nil
 }
 
 // Signal sends a signal to the steps of a run that wait for it; a signal nobody waits for is a
@@ -562,6 +1042,118 @@ func (c *Client) Signal(ctx context.Context, runID, name string, payload any, op
 		}
 	}
 	return result, nil
+}
+
+// InspectChain reads one committed chain head and lineage snapshot.
+func (c *Client) InspectChain(ctx context.Context, namespaceID, chainID string, opts ...CallOption) (*ChainInspection, error) {
+	path, err := chainPath(namespaceID, chainID)
+	if err != nil {
+		return nil, err
+	}
+	o := callOptionsOf(opts)
+	traceparent, err := c.trace(ctx, o.traceparent)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.do(ctx, request{method: "GET", path: path, traceparent: traceparent, repeatable: true})
+	if err != nil {
+		return nil, err
+	}
+	raw, err := object(resp.body, "a chain inspection")
+	if err != nil {
+		return nil, err
+	}
+	result := &ChainInspection{Raw: raw}
+	if result.ChainID, err = requiredString(raw, "chainId"); err != nil {
+		return nil, err
+	}
+	if result.CurrentRunID, err = requiredString(raw, "currentRunId"); err != nil {
+		return nil, err
+	}
+	if result.Revision, err = requiredRevision(raw, "revision", 0); err != nil {
+		return nil, err
+	}
+	result.CancelRequested, _ = jsonx.Bool(raw, "cancelRequested")
+	result.FinalOutcome, _ = jsonx.String(raw, "finalOutcome")
+	var segments []map[string]json.RawMessage
+	if value, ok := raw["segments"]; !ok || json.Unmarshal(value, &segments) != nil || len(segments) == 0 {
+		return nil, protocolError("segments is invalid in the answer")
+	}
+	result.Segments = make([]ChainSegment, 0, len(segments))
+	for _, item := range segments {
+		index, err := requiredRevision(item, "index", 0)
+		if err != nil || index > 65535 {
+			return nil, protocolError("index is invalid in the answer")
+		}
+		runID, err := requiredString(item, "runId")
+		if err != nil {
+			return nil, err
+		}
+		predecessor, _ := jsonx.String(item, "predecessorRunId")
+		successor, _ := jsonx.String(item, "successorRunId")
+		result.Segments = append(result.Segments, ChainSegment{Index: int(index), RunID: runID, PredecessorRunID: predecessor, SuccessorRunID: successor})
+	}
+	return result, nil
+}
+
+// SignalChain signals a root wait on the expected current chain head.
+func (c *Client) SignalChain(ctx context.Context, namespaceID, chainID, name string, payload any, command ChainCommand, opts ...CallOption) (*SignalResult, error) {
+	path, err := chainPath(namespaceID, chainID)
+	if err != nil {
+		return nil, err
+	}
+	if !uuidPattern.MatchString(command.ExpectedRunID) {
+		return nil, sagat.Invalid("an expected run id is a UUID")
+	}
+	encodedName, err := segment(name)
+	if err != nil {
+		return nil, err
+	}
+	o := callOptionsOf(opts)
+	idempotencyKey, err := key(o.idempotencyKey)
+	if err != nil {
+		return nil, err
+	}
+	traceparent, err := c.trace(ctx, o.traceparent)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.do(ctx, request{method: "POST", path: path + "/signals/" + encodedName, body: map[string]any{"expectedRunId": lower(command.ExpectedRunID), "payload": payload}, hasBody: true, idempotencyKey: idempotencyKey, traceparent: traceparent, repeatable: true})
+	if err != nil {
+		return nil, err
+	}
+	raw, err := object(resp.body, "a chain signal result")
+	if err != nil {
+		return nil, err
+	}
+	var delivered []string
+	_ = json.Unmarshal(raw["deliveredTo"], &delivered)
+	return &SignalResult{DeliveredTo: delivered, Raw: raw}, nil
+}
+
+// CancelChain latches cancellation and cancels the expected current chain head.
+func (c *Client) CancelChain(ctx context.Context, namespaceID, chainID, reason string, command ChainCommand, opts ...CallOption) error {
+	path, err := chainPath(namespaceID, chainID)
+	if err != nil {
+		return err
+	}
+	if !uuidPattern.MatchString(command.ExpectedRunID) {
+		return sagat.Invalid("an expected run id is a UUID")
+	}
+	if utf8.RuneCountInString(reason) < 1 || utf8.RuneCountInString(reason) > 512 {
+		return sagat.Invalid("a chain cancellation reason is 1 to 512 characters")
+	}
+	o := callOptionsOf(opts)
+	idempotencyKey, err := key(o.idempotencyKey)
+	if err != nil {
+		return err
+	}
+	traceparent, err := c.trace(ctx, o.traceparent)
+	if err != nil {
+		return err
+	}
+	_, err = c.do(ctx, request{method: "POST", path: path + "/cancel", body: map[string]any{"expectedRunId": lower(command.ExpectedRunID), "reason": reason}, hasBody: true, idempotencyKey: idempotencyKey, traceparent: traceparent, repeatable: true})
+	return err
 }
 
 // Event is an event published to the inbox of the namespace.
@@ -685,7 +1277,7 @@ func (c *Client) Events(ctx context.Context, runID string, options EventsOptions
 	return page, nil
 }
 
-// WaitOption adjusts WaitForCompletion.
+// WaitOption adjusts run and chain completion waits.
 type WaitOption func(*waitOptions)
 
 type waitOptions struct {
@@ -718,6 +1310,33 @@ func (c *Client) WaitForCompletion(ctx context.Context, runID string, opts ...Wa
 		}
 		if !time.Now().Before(end) {
 			e := sagat.Errorf(sagat.CodeTransport, "the run did not finish within %d ms", o.timeout.Milliseconds())
+			e.Reason = "WAIT_TIMEOUT"
+			return nil, e
+		}
+		wait := time.Duration(float64(o.pollInterval) * (0.8 + rand.Float64()*0.4))
+		if err := backoff.Sleep(ctx, wait); err != nil {
+			return nil, sagat.NewError(sagat.CodeCancelled, "cancelled while waiting").WithCause(err)
+		}
+	}
+}
+
+// WaitForChainCompletion polls authorized chain snapshots until the final outcome commits.
+func (c *Client) WaitForChainCompletion(ctx context.Context, namespaceID, chainID string, opts ...WaitOption) (*ChainInspection, error) {
+	o := waitOptions{timeout: 60 * time.Second, pollInterval: 500 * time.Millisecond}
+	for _, opt := range opts {
+		opt(&o)
+	}
+	end := time.Now().Add(o.timeout)
+	for {
+		chain, err := c.InspectChain(ctx, namespaceID, chainID)
+		if err != nil {
+			return nil, err
+		}
+		if chain.FinalOutcome != "" {
+			return chain, nil
+		}
+		if !time.Now().Before(end) {
+			e := sagat.Errorf(sagat.CodeTransport, "the chain did not finish within %d ms", o.timeout.Milliseconds())
 			e.Reason = "WAIT_TIMEOUT"
 			return nil, e
 		}

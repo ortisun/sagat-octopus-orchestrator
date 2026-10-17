@@ -1,0 +1,364 @@
+{
+  "faultsApplied": [],
+  "observations": [
+    {
+      "id": "start",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "WAITING",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "child-started",
+      "ok": true,
+      "op": "awaitJournal"
+    },
+    {
+      "id": "child-waiting",
+      "ok": true,
+      "op": "list",
+      "result": {
+        "count": 2
+      }
+    },
+    {
+      "id": "release",
+      "ok": true,
+      "op": "publishEvent",
+      "result": {
+        "eventId": "release-a-{{unique}}",
+        "status": "ACCEPTED"
+      }
+    },
+    {
+      "id": "first-segment-ended",
+      "ok": true,
+      "op": "list",
+      "result": {
+        "count": 1
+      }
+    },
+    {
+      "id": "cancel-parent",
+      "ok": true,
+      "op": "cancel",
+      "result": {
+        "accepted": true,
+        "runStatus": "CANCELLED"
+      }
+    },
+    {
+      "id": "parent-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "CANCELLED",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "cancelled",
+      "ok": true,
+      "op": "list",
+      "result": {
+        "count": 2
+      }
+    },
+    {
+      "id": "loose-start",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:4>",
+        "startedBy": "alice",
+        "status": "WAITING",
+        "traceId": "<trace:2>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:5>",
+        "workflowId": "<uuid:6>"
+      }
+    },
+    {
+      "id": "loose-child-started",
+      "ok": true,
+      "op": "awaitJournal"
+    },
+    {
+      "id": "loose-child-waiting",
+      "ok": true,
+      "op": "list",
+      "result": {
+        "count": 2
+      }
+    },
+    {
+      "id": "cancel-loose",
+      "ok": true,
+      "op": "cancel",
+      "result": {
+        "accepted": true,
+        "runStatus": "CANCELLED"
+      }
+    },
+    {
+      "id": "loose-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:4>",
+        "startedBy": "alice",
+        "status": "CANCELLED",
+        "traceId": "<trace:2>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:5>",
+        "workflowId": "<uuid:6>"
+      }
+    },
+    {
+      "id": "release-detached",
+      "ok": true,
+      "op": "publishEvent",
+      "result": {
+        "eventId": "release-b-{{unique}}",
+        "status": "ACCEPTED"
+      }
+    },
+    {
+      "id": "detached-continued",
+      "ok": true,
+      "op": "list",
+      "result": {
+        "count": 2
+      }
+    },
+    {
+      "id": "detached-waiting",
+      "ok": true,
+      "op": "list",
+      "result": {
+        "count": 1
+      }
+    }
+  ],
+  "serverState": [
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "hold",
+          "kind": "FORWARD",
+          "status": "WAITING",
+          "type": "waitEvent",
+          "waitingOn": "event"
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "roll",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "continueAsNew",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:7>",
+      "status": "WAITING"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "hold",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "waitEvent",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "roll",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "continueAsNew",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:8>",
+      "status": "SUCCEEDED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "done",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "kid",
+          "kind": "FORWARD",
+          "status": "CANCELLED",
+          "type": "child",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:4>",
+      "status": "CANCELLED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "hold",
+          "kind": "FORWARD",
+          "status": "CANCELLED",
+          "type": "waitEvent",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "roll",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "continueAsNew",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:9>",
+      "status": "CANCELLED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "hold",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "waitEvent",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "roll",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "continueAsNew",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:10>",
+      "status": "SUCCEEDED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "done",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "kid",
+          "kind": "FORWARD",
+          "status": "CANCELLED",
+          "type": "child",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:1>",
+      "status": "CANCELLED"
+    }
+  ],
+  "workerLog": {}
+}

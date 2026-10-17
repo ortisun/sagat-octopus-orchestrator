@@ -25,6 +25,36 @@ because the privileges cannot be verified: run `migrate` first. The check runs o
 does not look at other role attributes (`CREATEROLE`, `REPLICATION`, ...). With `SAGAT_ENV=dev` it
 is skipped, which is why the local Docker stack (dev) also works with the owner role.
 
+### What the runtime role may do, and how that is checked
+
+`sagat_app` holds exactly the grants the migrations give it (`GRANT ... TO sagat_app`, each inside an
+`IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'sagat_app')` block, so create the role before
+`migrate`). Two things to know when changing a query or a migration:
+
+- **A row lock is an `UPDATE`.** `SELECT ... FOR UPDATE|NO KEY UPDATE|SHARE|KEY SHARE` needs `UPDATE`
+  on at least one column of the table, so a lock on a table the role may only read (`memberships`,
+  `tenants`) is `permission denied` in production. Read without a lock, or add a column-level grant
+  in a new migration. Never grant `UPDATE`, `DELETE` or `TRUNCATE` on `audit_records`: `serve` refuses
+  to start if the role could.
+- **The integration suites connect as the owner**, which can do anything, so passing them says
+  nothing about the runtime role. `tests/integration/platform-foundation/runtime_privileges.rs` is
+  the check: it reads every SQL literal in the Rust sources that talk to PostgreSQL, derives the
+  privileges each statement needs (SELECT, INSERT and UPDATE per column, DELETE, row locks, function
+  calls), asks the catalog of the fully migrated schema whether `sagat_app` holds them, confirms each
+  answer by running the smallest equivalent statement as `sagat_app` in a rolled-back transaction,
+  and follows the triggers those writes fire when the trigger function is not `SECURITY DEFINER`.
+  A statement without a privilege fails the test unless it is in the `ALLOWED` list of that file with
+  a reason (today: `provision-tenant` and `seed-dev` write `tenants` and `memberships`, and
+  `scheduling-weight` writes `tenant_scheduling`, all as the owner; one unused helper; two
+  statements whose text is assembled at run time). An `ALLOWED` entry that no longer excuses
+  anything also fails. Besides it, `SAGAT_TEST_AS_RUNTIME_ROLE=1 cargo test -p sagat-tests --test
+  integration_workflow_primitives` re-runs every API-backed test with the API connected as `sagat_app`.
+- **What it cannot see:** SQL assembled at run time from values (reported as an unresolved
+  placeholder), the bodies of `SECURITY DEFINER` functions (they run as the owner), foreign-key
+  checks (they run as the owner), `SELECT` granted on some columns only (the check wants the table),
+  and any grant an operator changes by hand after `migrate`. The audit proves the migrations, not the
+  deployed database: run `\dp` on the deployed one after a restore (section 7).
+
 ## 2. Start, stop, upgrade
 
 ```sh

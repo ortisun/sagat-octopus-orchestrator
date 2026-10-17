@@ -202,3 +202,16 @@ cursor. A later-page error or cancellation must not publish a partial list as a 
 Send signal acceptance (T007-056/G167): [`signal-completion.md`](./signal-completion.md) defines
 the authorized confirmation, bounded JSON input, retry identity and context-disposal behavior.
 It uses the existing durable feature 002 signal API; no execution or audit semantics change.
+
+
+## Approved workflow-primitives dependency (2026-10-14)
+
+[ADR-0030](../../docs/adr/ADR-0030-structured-instances-and-continuation-chains.md) and
+[ADR-0031](../../docs/adr/ADR-0031-declared-operation-result-disclosure.md) accept the feature-014
+architecture and separate declared-result disclosure policy.
+[ADR-0032](../../docs/adr/ADR-0032-additive-workflow-ir.md) keeps the workflow IR at v1 and
+supersedes the earlier separate-revision allocation. The journal-derived graph may project scoped instances/routes/chain links and unknown revisions must degrade safely. This dependency does not authorize full new-node visual authoring or a raw-value viewer; structural payload inspection retains ADR-0028.
+
+This approves the described dependency for implementation, not a runtime guarantee. Canonical
+contracts, migration/replay, tenant/fault tests and applicable five-SDK evidence remain the
+feature-014 release gates; existing feature behavior stays supported.

@@ -59,7 +59,7 @@ async fn a_permanent_failure_after_a_reservation_compensates_it_and_the_run_ends
         (undo.activity.as_str(), undo.kind),
         ("undo.reserve", TaskKind::Compensation)
     );
-    assert_eq!(undo.node.as_str(), "reserve~c");
+    assert_eq!(undo.instance.node().as_str(), "reserve~c");
     let input: Value = serde_json::from_slice(&undo.input).expect("json");
     assert_eq!(input["steps"]["reserve"]["output"]["reservation"], "r-1");
     // It is about the forward step, and carries the key of that step's own attempts.
@@ -67,7 +67,7 @@ async fn a_permanent_failure_after_a_reservation_compensates_it_and_the_run_ends
         .target
         .clone()
         .expect("a compensation names its target");
-    assert_eq!(target.node.as_str(), "reserve");
+    assert_eq!(target.instance.node().as_str(), "reserve");
     assert_eq!(target.idempotency_key, reserve.idempotency_key);
     // Its own key is stable per run, step and action, and is not the forward step's.
     assert_eq!(

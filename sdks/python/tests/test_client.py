@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
+import time
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -124,6 +126,269 @@ async def test_an_event_without_an_id_gets_one_per_call_kept_across_retries_so_a
     ids = [seen.body["eventId"] for seen in http.seen]
     assert ids[0] == ids[1]
     assert re.fullmatch(r"[0-9a-f-]{36}", ids[0])
+
+
+async def test_an_approval_decision_uses_its_body_key_and_returns_a_typed_receipt(
+    http: FakeHttpServer, make_client: MakeClient
+) -> None:
+    approval_id = "0190aaaa-0000-7000-8000-000000000099"
+    http.serve(
+        lambda _seen: reply(
+            200,
+            {
+                "receiptId": "0190aaaa-0000-7000-8000-000000000100",
+                "approvalId": approval_id,
+                "decisionKey": "review-1",
+                "decision": "APPROVE",
+                "reasonCode": "POLICY_OK",
+                "actor": "alice",
+                "decidedAt": "2026-10-15T10:00:00Z",
+                "outcomeSequence": 7,
+                "replayed": False,
+                "futureField": "kept",
+            },
+        )
+    )
+    receipt = await make_client().decide_approval(
+        approval_id, "APPROVE", decision_key="review-1", reason_code="POLICY_OK", traceparent=TRACE
+    )
+    [request] = http.seen
+    assert request.url == f"/v1/approvals/{approval_id}/decisions"
+    assert request.body == {"decisionKey": "review-1", "decision": "APPROVE", "reasonCode": "POLICY_OK"}
+    assert "idempotency-key" not in request.headers
+    assert receipt.decided_at == datetime(2026, 10, 15, 10, 0, tzinfo=timezone.utc)
+    assert receipt.outcome_sequence == 7 and receipt.raw["futureField"] == "kept"
+
+
+async def test_approval_pages_are_typed_and_all_pages_follow_the_opaque_cursor(
+    http: FakeHttpServer, make_client: MakeClient
+) -> None:
+    approval_ids = ["0190aaaa-0000-7000-8000-000000000099", "0190aaaa-0000-7000-8000-000000000100"]
+
+    def serve(seen: Seen) -> Any:
+        second = "cursor=next" in seen.url
+        approval_id = approval_ids[1 if second else 0]
+        return reply(
+            200,
+            {
+                "items": [
+                    {
+                        "approvalId": approval_id,
+                        "runId": RUN,
+                        "nodeId": "review",
+                        "instancePath": [{"scopeNodeId": "items", "iterationIndex": 3}],
+                        "status": "APPROVED" if second else "PENDING",
+                        "deadline": "2026-10-16T10:00:00Z",
+                        "settledAt": "2026-10-15T10:00:00Z" if second else None,
+                    }
+                ],
+                "nextCursor": None if second else "next",
+            },
+        )
+
+    http.serve(serve)
+    client = make_client()
+    page = await client.list_approvals(RUN, cursor="from", limit=1, traceparent=TRACE)
+    assert page.items[0].status == "PENDING"
+    assert page.items[0].instance_path[0].iteration_index == 3
+    assert page.items[0].deadline == datetime(2026, 10, 16, 10, 0, tzinfo=timezone.utc)
+    assert http.seen[0].url == f"/v1/runs/{RUN}/approvals?cursor=from&limit=1"
+    http.seen.clear()
+    items = [item async for item in client.list_all_approvals(RUN, limit=1)]
+    assert [item.approval_id for item in items] == approval_ids
+    assert http.seen[1].url == f"/v1/runs/{RUN}/approvals?cursor=next&limit=1"
+
+
+async def test_an_approval_decision_surfaces_authorization_and_idempotency_failures_and_rejects_bad_input(
+    http: FakeHttpServer, make_client: MakeClient
+) -> None:
+    approval_id = "0190aaaa-0000-7000-8000-000000000099"
+    client = make_client()
+
+    def denied(status: int, code: str, reason: str) -> Callable[[Seen], Any]:
+        return lambda _seen: reply(status, refusal(code, details={"reason": reason}))
+
+    for status, code, reason in ((403, "FORBIDDEN", "NOT_ELIGIBLE"), (409, "CONFLICT", "IDEMPOTENCY_KEY_REUSED")):
+        http.serve(denied(status, code, reason))
+        with pytest.raises(SagatError) as caught:
+            await client.decide_approval(approval_id, "REJECT", decision_key="review-1")
+        assert (caught.value.status, caught.value.code, caught.value.reason) == (status, code, reason)
+    http.serve(lambda _seen: reply(500))
+    with pytest.raises(SagatError):
+        await client.decide_approval("../other", "APPROVE", decision_key="review-1")
+    with pytest.raises(SagatError):
+        await client.decide_approval(approval_id, "APPROVE", decision_key="bad key")
+    assert not http.seen
+
+
+async def test_declared_query_and_update_preserve_revisions_result_and_update_key(
+    http: FakeHttpServer, make_client: MakeClient
+) -> None:
+    def serve(seen: Seen) -> Any:
+        if "/queries/" in seen.url:
+            return reply(200, {"runId": RUN, "runVersion": 4, "stateRevision": 1, "result": {"balance": 12}})
+        return reply(
+            200,
+            {
+                "runId": RUN,
+                "operation": "account.credit",
+                "updateKey": "credit-1",
+                "status": "APPLIED",
+                "result": {"balance": 15},
+                "beforeStateRevision": 1,
+                "afterStateRevision": 2,
+                "runVersion": 5,
+                "replayed": False,
+                "future": True,
+            },
+        )
+
+    http.serve(serve)
+    client = make_client()
+    queried = await client.query(RUN, "account.balance", {"currency": "BRL"})
+    updated = await client.update(
+        RUN, "account.credit", {"amount": 3}, update_key="credit-1", expected_state_revision=1, traceparent=TRACE
+    )
+    assert [seen.url for seen in http.seen] == [
+        f"/v1/runs/{RUN}/queries/account.balance",
+        f"/v1/runs/{RUN}/updates/account.credit",
+    ]
+    assert http.seen[0].body == {"args": {"currency": "BRL"}}
+    assert http.seen[1].body == {"updateKey": "credit-1", "args": {"amount": 3}, "expectedStateRevision": 1}
+    assert "idempotency-key" not in http.seen[1].headers
+    assert queried.state_revision == 1 and queried.result == {"balance": 12}
+    assert updated.after_state_revision == 2 and updated.raw["future"] is True
+
+
+async def test_declared_update_retries_with_the_same_body_key_and_rejects_bad_input_locally(
+    http: FakeHttpServer, make_client: MakeClient
+) -> None:
+    attempts = 0
+
+    def serve(_seen: Seen) -> Any:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return reply(503, refusal("UNAVAILABLE", "busy", True))
+        return reply(
+            200,
+            {
+                "runId": RUN,
+                "operation": "account.credit",
+                "updateKey": "credit-1",
+                "status": "APPLIED",
+                "result": 15,
+                "beforeStateRevision": 1,
+                "afterStateRevision": 2,
+                "runVersion": 5,
+                "replayed": False,
+            },
+        )
+
+    http.serve(serve)
+    client = make_client()
+    await client.update(RUN, "account.credit", {"amount": 3}, update_key="credit-1")
+    assert len(http.seen) == 2 and http.seen[0].body == http.seen[1].body
+    http.seen.clear()
+    with pytest.raises(SagatError):
+        await client.query(RUN, "bad operation")
+    with pytest.raises(SagatError):
+        await client.update(RUN, "credit", {}, update_key="bad key")
+    with pytest.raises(SagatError):
+        await client.update(RUN, "credit", {}, update_key="credit-2", expected_state_revision=-1)
+    assert not http.seen
+
+
+async def test_chain_inspection_and_commands_use_expected_head_and_durable_keys(
+    http: FakeHttpServer, make_client: MakeClient
+) -> None:
+    namespace_id = "0190aaaa-0000-7000-8000-000000000010"
+    chain_id = "0190aaaa-0000-7000-8000-000000000011"
+    head = "0190aaaa-0000-7000-8000-000000000012"
+
+    def serve(seen: Seen) -> Any:
+        if "/signals/" in seen.url:
+            return reply(202, {"deliveredTo": ["wait"]})
+        if seen.url.endswith("/cancel"):
+            return reply(202)
+        return reply(
+            200,
+            {
+                "chainId": chain_id,
+                "currentRunId": head,
+                "revision": 2,
+                "cancelRequested": False,
+                "finalOutcome": None,
+                "segments": [
+                    {"index": 0, "runId": chain_id, "predecessorRunId": None, "successorRunId": head},
+                    {"index": 1, "runId": head, "predecessorRunId": chain_id, "successorRunId": None},
+                ],
+            },
+        )
+
+    http.serve(serve)
+    client = make_client()
+    inspection = await client.inspect_chain(namespace_id, chain_id)
+    signalled = await client.signal_chain(
+        namespace_id, chain_id, "chain.release", {"ok": True}, expected_run_id=head, idempotency_key="chain-signal-1"
+    )
+    await client.cancel_chain(
+        namespace_id,
+        chain_id,
+        "operator requested cancellation",
+        expected_run_id=head,
+        idempotency_key="chain-cancel-1",
+    )
+    assert inspection.segments[1].predecessor_run_id == chain_id and signalled.delivered_to == ("wait",)
+    assert http.seen[1].body == {"expectedRunId": head, "payload": {"ok": True}}
+    assert http.seen[1].headers["idempotency-key"] == "chain-signal-1"
+    assert http.seen[2].body == {"expectedRunId": head, "reason": "operator requested cancellation"}
+
+
+async def test_chain_query_carries_expected_head_and_returns_resolved_revisions(
+    http: FakeHttpServer, make_client: MakeClient
+) -> None:
+    namespace_id = "0190aaaa-0000-7000-8000-000000000010"
+    chain_id = "0190aaaa-0000-7000-8000-000000000011"
+    head = "0190aaaa-0000-7000-8000-000000000012"
+    http.serve(
+        lambda _seen: reply(
+            200,
+            {
+                "runId": head,
+                "runVersion": 7,
+                "stateRevision": 3,
+                "result": {"amount": "19.99", "occurredAt": "2026-10-15T15:34:56.789Z"},
+            },
+        )
+    )
+    result = await make_client().query_chain(namespace_id, chain_id, "account.snapshot", {}, expected_run_id=head)
+    assert http.seen[0].url == f"/v1/namespaces/{namespace_id}/chains/{chain_id}/queries/account.snapshot"
+    assert http.seen[0].body == {"args": {}, "expectedRunId": head}
+    assert result.run_id == head and result.state_revision == 3
+    assert result.result == {"amount": "19.99", "occurredAt": "2026-10-15T15:34:56.789Z"}
+
+
+async def test_cancelling_a_declared_update_stops_the_call_without_retrying(
+    http: FakeHttpServer, make_client: MakeClient
+) -> None:
+    def serve(_seen: Seen) -> Any:
+        time.sleep(1)
+        return reply(200)
+
+    http.serve(serve)
+    call = asyncio.create_task(
+        make_client(timeout=5).update(RUN, "account.credit", {"amount": "19.99"}, update_key="credit-1")
+    )
+    for _ in range(100):
+        if http.seen:
+            break
+        await asyncio.sleep(0.001)
+    call.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await call
+    await asyncio.sleep(0.02)
+    assert len(http.seen) == 1
 
 
 async def test_get_is_retried_on_unavailability_and_on_rate_limiting_honouring_retry_after_and_gives_up_after_the_attempts(
@@ -430,6 +695,39 @@ async def test_cancel_and_signal_are_operations_with_a_reason_and_a_payload_and_
     assert http.seen[3].url == f"/v1/runs/{RUN}/signals/a%2Fb%20c", "a name is a path segment, whatever it holds"
 
 
+async def test_rerun_as_new_names_the_new_run_and_the_new_run_names_its_origin(
+    http: FakeHttpServer, make_client: MakeClient
+) -> None:
+    started = "0190aaaa-0000-7000-8000-000000000021"
+    http.serve(
+        lambda seen: (
+            reply(
+                202,
+                {"operationId": "op-2", "accepted": True, "runStatus": "SUCCEEDED", "runVersion": 9, "newRunId": started},
+            )
+            if seen.url.endswith("/operations")
+            else reply(200, run_body(runId=started, rerunOf=RUN))
+        )
+    )
+    client = make_client()
+    rerun = await client.rerun_as_new(RUN, "run it again after the fix", idempotency_key="rerun-key-001")
+    assert (rerun.operation_id, rerun.accepted, rerun.run_status, rerun.run_version, rerun.new_run_id) == (
+        "op-2",
+        True,
+        "SUCCEEDED",
+        9,
+        started,
+    )
+    assert http.seen[0].url == f"/v1/runs/{RUN}/operations"
+    assert http.seen[0].body == {"action": "RERUN_AS_NEW", "reason": "run it again after the fix"}
+    assert http.seen[0].headers["idempotency-key"] == "rerun-key-001"
+    assert (await client.get(started)).rerun_of == RUN
+    http.serve(lambda _seen: reply(200, run_body()))
+    assert (await client.get(RUN)).rerun_of is None
+    http.serve(lambda _seen: reply(202, {"operationId": "op-3", "accepted": True, "runStatus": "CANCELLING"}))
+    assert (await client.operate(RUN, "CANCEL", "no longer needed")).new_run_id is None
+
+
 async def test_the_journal_of_a_run_is_read_a_page_at_a_time(http: FakeHttpServer, make_client: MakeClient) -> None:
     http.serve(
         lambda _seen: reply(
@@ -538,3 +836,83 @@ async def test_run_input_expected_size_is_a_runtime_integer(value: object, make_
     with pytest.raises(SagatError) as caught:
         await make_client().upload_run_input([b"body"], expected_size=value)  # type: ignore[arg-type]
     assert caught.value.code == "VALIDATION_FAILED"
+
+
+async def test_a_run_in_a_chain_names_its_segment_and_a_run_outside_one_has_none(
+    http: FakeHttpServer, make_client: MakeClient
+) -> None:
+    chain = "0190aaaa-0000-7000-8000-000000000011"
+    successor = "0190aaaa-0000-7000-8000-000000000012"
+    http.serve(
+        lambda _seen: reply(
+            200,
+            run_body(
+                status="SUCCEEDED",
+                chain={"chainId": chain, "segmentIndex": 0, "completionKind": "CONTINUED", "successorRunId": successor},
+            ),
+        )
+    )
+    continued = await make_client().get(RUN)
+    assert continued.status == "SUCCEEDED"
+    assert continued.chain is not None
+    assert (continued.chain.chain_id, continued.chain.segment_index) == (chain, 0)
+    assert (continued.chain.completion_kind, continued.chain.successor_run_id) == ("CONTINUED", successor)
+    http.serve(
+        lambda _seen: reply(
+            200, run_body(chain={"chainId": chain, "segmentIndex": 2, "completionKind": None, "successorRunId": None})
+        )
+    )
+    opened = await make_client().get(RUN)
+    assert opened.chain is not None and opened.chain.completion_kind is None and opened.chain.successor_run_id is None
+    http.serve(lambda _seen: reply(200, run_body()))
+    assert (await make_client().get(RUN)).chain is None
+    http.serve(
+        lambda _seen: reply(
+            200, run_body(chain={"chainId": chain, "segmentIndex": 0, "completionKind": "SOMEDAY", "successorRunId": None})
+        )
+    )
+    with pytest.raises(SagatError) as error:
+        await make_client().get(RUN)
+    assert error.value.code == "PROTOCOL"
+
+
+async def test_the_runs_of_a_chain_are_paged_in_segment_order_following_the_server_cursor(
+    http: FakeHttpServer, make_client: MakeClient
+) -> None:
+    namespace_id = "0190aaaa-0000-7000-8000-000000000010"
+    chain_id = "0190aaaa-0000-7000-8000-000000000011"
+    ids = [chain_id, "0190aaaa-0000-7000-8000-000000000012", "0190aaaa-0000-7000-8000-000000000013"]
+
+    def item(index: int) -> dict[str, Any]:
+        return {
+            "index": index,
+            "runId": ids[index],
+            "status": "SUCCEEDED" if index < 2 else "RUNNING",
+            "completionKind": "CONTINUED" if index < 2 else None,
+            "predecessorRunId": ids[index - 1] if index else None,
+            "successorRunId": ids[index + 1] if index < 2 else None,
+            "createdAt": "2026-10-10T10:00:00Z",
+            "finishedAt": "2026-10-10T10:00:01Z" if index < 2 else None,
+        }
+
+    http.serve(
+        lambda seen: reply(200, {"items": [item(2)], "nextCursor": None})
+        if "cursor=AAE" in seen.url
+        else reply(200, {"items": [item(0), item(1)], "nextCursor": "AAE"})
+    )
+    client = make_client()
+    collected = [segment.index async for segment in client.list_all_chain_runs(namespace_id, chain_id, limit=2)]
+    assert collected == [0, 1, 2]
+    assert http.seen[0].method == "GET"
+    assert http.seen[0].url == f"/v1/namespaces/{namespace_id}/chains/{chain_id}/runs?limit=2"
+    assert http.seen[1].url == f"/v1/namespaces/{namespace_id}/chains/{chain_id}/runs?cursor=AAE&limit=2"
+    page = await client.list_chain_runs(namespace_id, chain_id)
+    assert page.items[0].completion_kind == "CONTINUED" and page.items[1].successor_run_id == ids[2]
+    assert page.next_cursor == "AAE" and page.items[0].created_at.year == 2026
+
+    http.serve(lambda _seen: reply(200, {"items": [{**item(0), "index": 10_000}], "nextCursor": None}))
+    with pytest.raises(SagatError) as error:
+        await client.list_chain_runs(namespace_id, chain_id)
+    assert error.value.code == "PROTOCOL"
+    with pytest.raises(SagatError):
+        await client.list_chain_runs("not-an-id", chain_id)
