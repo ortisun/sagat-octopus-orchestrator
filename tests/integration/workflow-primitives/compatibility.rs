@@ -572,24 +572,8 @@ async fn combinations_the_reader_does_not_enable_are_refused_with_a_typed_reason
             ),
             refusal: Ok("parallel"),
         },
-        Case {
-            label: "declared state together with approval",
-            document: {
-                let mut doc = document(
-                    "compat-state-approval",
-                    "review",
-                    vec![
-                        json!({"id": "review", "type": "approval", "timeoutMs": 86_400_000,
-                               "policy": {"roles": ["operator"]},
-                               "onApprove": "ok", "onReject": "ok", "onExpire": "ok"}),
-                        activity("ok"),
-                    ],
-                );
-                doc["state"] = json!({"schema": {"type": "integer"}, "initial": "0"});
-                doc
-            },
-            refusal: Ok("approval"),
-        },
+        // Declared state together with an approval used to be refused here; D295 enables it, and
+        // `approval_combinations` proves the combination.
     ];
 
     for case in cases {
