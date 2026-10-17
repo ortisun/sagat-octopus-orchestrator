@@ -550,3 +550,44 @@ fn a_checkpoint_after_the_deadline_loses_the_race_without_mutation() {
     );
     assert_eq!(state, before);
 }
+
+/// One `(loop instance, iteration index)` is admitted once (T014-005): a second admission of the
+/// active iteration, or of an index already checkpointed, is refused and changes nothing.
+#[test]
+fn an_iteration_index_is_admitted_once_per_loop_instance() {
+    let mut state = start(LoopKind::While, 3, Some(true));
+    admit(&mut state, 0);
+    let active = state.clone();
+    let again = RunEvent::LoopIterationAdmitted {
+        node: node("poll"),
+        index: 0,
+        entry: body(0),
+    };
+    assert!(
+        matches!(
+            state.apply(&again),
+            Err(ExecutionError::LoopNotReady {
+                phase: LoopPhase::Running,
+                ..
+            })
+        ),
+        "the active iteration cannot be admitted twice"
+    );
+    assert_eq!(state, active);
+
+    return_body(&mut state, 0);
+    checkpoint(&mut state, 0, true, LoopContinuation::Continue);
+    let checkpointed = state.clone();
+    assert!(
+        matches!(
+            state.apply(&again),
+            Err(ExecutionError::UnexpectedLoopIteration {
+                expected: 1,
+                actual: 0,
+                ..
+            })
+        ),
+        "a checkpointed index cannot be admitted again"
+    );
+    assert_eq!(state, checkpointed);
+}

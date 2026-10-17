@@ -100,3 +100,61 @@ fn structured_codec_preserves_the_complete_sequential_loop_contract() {
         kind => panic!("expected repeatUntil, got {kind:?}"),
     }
 }
+
+/// The loop bounds of the contract (T014-018): `timeoutMs` and `delayMs` are 1..31622400000 ms,
+/// `maxIterations` is required and 1..10000, and the codec refuses anything outside them before a
+/// run can exist.
+#[test]
+fn loop_bounds_are_refused_at_publication() {
+    let (golden, _) = loop_golden();
+    let workflow = &golden["workflows"]["pre-and-post-test"];
+    let with = |field: &str, value: Option<Value>| {
+        let mut document = workflow.clone();
+        let node = document["nodes"]
+            .as_array_mut()
+            .expect("nodes")
+            .iter_mut()
+            .find(|node| node["id"] == "pre")
+            .expect("pre-test loop");
+        match value {
+            Some(value) => node[field] = value,
+            None => {
+                node.as_object_mut().expect("node object").remove(field);
+            }
+        }
+        serde_json::to_vec(&document).expect("workflow JSON")
+    };
+    let accepted = |bytes: Vec<u8>| JsonIrCodec.parse(&bytes).is_ok();
+
+    for (field, value) in [
+        ("timeoutMs", 1_u64),
+        ("timeoutMs", 31_622_400_000),
+        ("delayMs", 1),
+        ("delayMs", 31_622_400_000),
+        ("maxIterations", 1),
+        ("maxIterations", 10_000),
+    ] {
+        assert!(
+            accepted(with(field, Some(value.into()))),
+            "{field} = {value}"
+        );
+    }
+    for (field, value) in [
+        ("timeoutMs", 0_u64),
+        ("timeoutMs", 31_622_400_001),
+        ("delayMs", 0),
+        ("delayMs", 31_622_400_001),
+        ("maxIterations", 0),
+        ("maxIterations", 10_001),
+    ] {
+        assert!(
+            !accepted(with(field, Some(value.into()))),
+            "{field} = {value}"
+        );
+    }
+    assert!(
+        !accepted(with("maxIterations", None)),
+        "maxIterations is required"
+    );
+    assert!(!accepted(with("timeoutMs", None)), "timeoutMs is required");
+}

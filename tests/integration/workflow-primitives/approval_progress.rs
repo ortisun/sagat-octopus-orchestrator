@@ -755,3 +755,99 @@ async fn outbox_failure_rolls_back_request_timer_journal_projection_and_audit() 
     .await;
     assert!(inconsistent.is_err());
 }
+
+/// A primitive transaction cut off at any await point (T014-007) commits whole or not at all, and
+/// never leaves its connection inside a transaction: decisions are cut off after a few microseconds,
+/// round after round, on a pool of one connection, so every round meets what the one before left.
+#[tokio::test]
+async fn a_decision_cut_off_at_any_await_commits_whole_or_not_at_all() {
+    let fixture = fixture("approval-cut-off").await;
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&fixture.world.db.url)
+        .await
+        .expect("one-connection pool");
+    let cut = PgApprovalProgressStore::new(pool.clone());
+    let tenant = fixture.world.admin.tenant_id().as_uuid();
+    let request = fixture.request.id().as_uuid();
+    let mut committed_rounds = 0;
+    let mut cut_rounds = 0;
+    for round in 0..400_u64 {
+        let at = fixture.opened_at + Duration::from_secs(1);
+        let attempt = decision(&fixture, &fixture.actor, "cut-off", at, Uuid::now_v7());
+        let micros = 20 + (round * 41) % 4_000;
+        if tokio::time::timeout(Duration::from_micros(micros), cut.decide(&attempt))
+            .await
+            .is_err()
+        {
+            cut_rounds += 1;
+        }
+
+        // Nothing is left open on the connection: on its own a statement is its own transaction,
+        // so `now()` moves; inside a forgotten transaction it would not.
+        let first: OffsetDateTime = sqlx::query_scalar("SELECT now()")
+            .fetch_one(&pool)
+            .await
+            .expect("first statement");
+        let second: OffsetDateTime = sqlx::query_scalar("SELECT now()")
+            .fetch_one(&pool)
+            .await
+            .expect("second statement");
+        assert_ne!(
+            first, second,
+            "round {round} left its connection in a transaction"
+        );
+
+        // All of the decision or none of it.
+        let (status, receipts, settled, audits): (String, i64, i64, i64) = sqlx::query_as(
+            "SELECT r.status, \
+                    (SELECT count(*) FROM approval_decision_receipts x \
+                      WHERE x.tenant_id=r.tenant_id AND x.request_id=r.request_id), \
+                    (SELECT count(*) FROM event_outbox o WHERE o.tenant_id=r.tenant_id \
+                      AND o.aggregate_id=r.run_id AND o.event_type='approval.settled'), \
+                    (SELECT count(*) FROM audit_records a WHERE a.tenant_id=r.tenant_id \
+                      AND a.resource_id=r.request_id::text AND a.action='approval.decided') \
+             FROM approval_requests r WHERE r.tenant_id=$1 AND r.request_id=$2",
+        )
+        .bind(tenant)
+        .bind(request)
+        .fetch_one(&fixture.world.db.pool)
+        .await
+        .expect("decision evidence");
+        match status.as_str() {
+            "PENDING" => assert_eq!((receipts, settled, audits), (0, 0, 0), "round {round}"),
+            "APPROVED" => {
+                assert_eq!((receipts, settled, audits), (1, 1, 1), "round {round}");
+                committed_rounds += 1;
+            }
+            other => panic!("round {round}: unexpected status {other}"),
+        }
+    }
+
+    assert!(
+        cut_rounds > 0,
+        "no round was cut off: the test proves nothing"
+    );
+    // Uncut, the same decision commits or replays exactly once.
+    let at = fixture.opened_at + Duration::from_secs(1);
+    let outcome = cut
+        .decide(&decision(
+            &fixture,
+            &fixture.actor,
+            "cut-off",
+            at,
+            Uuid::now_v7(),
+        ))
+        .await
+        .expect("uncut decision");
+    assert_eq!(outcome.replayed(), committed_rounds > 0);
+    let receipts: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM approval_decision_receipts WHERE tenant_id=$1 AND request_id=$2",
+    )
+    .bind(tenant)
+    .bind(request)
+    .fetch_one(&fixture.world.db.pool)
+    .await
+    .expect("receipts");
+    assert_eq!(receipts, 1);
+}

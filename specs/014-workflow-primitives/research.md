@@ -210,3 +210,39 @@ Production ceilings still need measurement; canonical contracts, engine/SDK code
 10,000-item materialization, migration/replay and runtime fault/security/conformance evidence remain
 pending. Architectural acceptance proves none of them. External sources were read on 2026-10-14;
 local ADRs remain the normative Sagat decisions.
+
+## Decisions of 2026-10-17
+
+Taken while closing the remaining tasks. D294–D298 are the owner's; the others follow the accepted
+contracts (`contracts/README.md`, the OpenAPI) and only align the code or the task text with them.
+
+- **D291 — A conflicting declared Update answers `CONFLICT` (409).** The code answered
+  `VALIDATION_FAILED` with status 409 for a revision conflict, a reused update key and a run that is
+  not mutable; the contract says `CONFLICT`. The code is corrected and the reviewed
+  `state-operations` golden is re-reviewed, not re-blessed blindly.
+- **D292 — The four reasons the code already uses join the contract table.** `INVALID_ARGUMENTS`,
+  `INVALID_UPDATE_KEY`, `INVALID_DECISION_KEY` and `INVALID_REASON_CODE` are added to
+  `contracts/README.md` §5 with their remediation rows, and a contract test ties the table to the
+  OpenAPI and to `crates/api-http/src/error.rs`.
+- **D293 — Chain command keys follow the existing `Idempotency-Key` rule (8..160).** The task text
+  said 1..128; the contract and the shared header win, and T014-037 is amended.
+- **D294 (owner) — A loop's `onError` routes every loop failure.** A permanent body failure, the loop
+  timeout and an expression error route to `onError` after the active iteration drains, as the
+  iteration limit already does.
+- **D295 (owner) — Approval combines with declared state and with chains; not inside bodies.**
+  Approvals inside collection or loop bodies wait for scoped compensation.
+- **D296 (owner) — A continuation boundary waits for quiescence.** Reaching `continueAsNew` with open
+  work waits until it settles (or the run's deadline ends it `TIMED_OUT`);
+  `CONTINUATION_NOT_QUIESCENT` is not a terminal outcome.
+- **D297 (owner) — The top-level `limits` block is publishable.** An author may lower
+  `maxInstances` and depth below the platform and tenant ceilings, never raise them; checked at
+  publication and enforced at admission (WP-12).
+- **D298 (owner) — Retention of finished runs stays a pending decision.** Nothing is deleted. Task
+  clauses about cleanup are amended to "nothing is removed; a future retention must keep chain,
+  receipt and blob references", and `NOT_FOUND after retention` is out of scope.
+- **D299 — `GET /chains/{chainId}/runs` is built with cursor paging,** as the contract plans.
+- **D300 — Task text names the files where the work lives.** Where a task names a file that was
+  never created (`primitives.rs`, `transactions.rs`, `collections.rs`, `approvals.rs`, `chains.rs`,
+  `chain.rs`), the task is amended to the actual file when it is closed; no empty files are created.
+- **D301 — Starting a continuation chain as a child is refused with a typed error** until child
+  chains are enabled, instead of failing with `INTERNAL`.
