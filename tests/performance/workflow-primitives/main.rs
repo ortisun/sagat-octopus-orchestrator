@@ -180,7 +180,7 @@ fn environment() -> String {
         .map(std::num::NonZero::get)
         .unwrap_or(0);
     format!(
-        "- CPU: {cpu} ({cores} logical cores)\n- OS: {}\n- Load average at start: {}\n- Build profile: {}\n- Commit: {}\n- PostgreSQL: Docker container on the same host\n- SQLx pool: 8 connections\n- Services: in-process; no client network latency",
+        "- CPU: {cpu} ({cores} logical cores)\n- OS: {}\n- Load average when the report was written (end of the run): {}\n- Build profile: {}\n- Commit: {}\n- PostgreSQL: Docker container on the same host\n- SQLx pool: 8 connections\n- Services: in-process; no client network latency",
         command("uname", &["-srm"]),
         command("sh", &["-c", "uptime | sed 's/.*load averages*: //'"]),
         if cfg!(debug_assertions) {
@@ -959,8 +959,9 @@ fn report(waits: WaitMeasurements, slots: SlotMeasurements) -> String {
 #[ignore = "capacity benchmark: run explicitly with --ignored"]
 async fn measure_durable_waits_and_cross_run_tenant_slot_contention() {
     let world = world().await;
+    let machine = common::machine();
     let waits = measure_waits(&world).await;
     let slots = measure_slot_contention(&world).await;
     let report = report(waits, slots);
-    common::emit("waits", &format!("{}\n{}\n", common::machine(), report));
+    common::emit("waits", &format!("{machine}\n{report}\n"));
 }
