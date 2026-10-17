@@ -235,7 +235,7 @@
             },
             "compensateWith": {
               "type": "string",
-              "description": "The activity that undoes this one. It runs when a saga around this node compensates, and must be idempotent and tolerate an effect that never happened."
+              "description": "The activity that undoes this one. It runs when a saga around this node compensates, or, for a step in the body of a collection or loop, when that scope stops (a failed iteration, a cancellation) with iterations that completed: inside one iteration in reverse dependency order, between collection iterations in no order, and across loop iterations last iteration first. It must be idempotent and tolerate an effect that never happened."
             },
             "reconcileWith": {
               "type": "string",
@@ -265,7 +265,7 @@
             },
             "irreversible": {
               "type": "boolean",
-              "description": "The effect cannot be undone once it has happened. A saga that has to compensate past it ends PARTIAL. Cannot be combined with compensateWith."
+              "description": "The effect cannot be undone once it has happened. A saga, or the collection or loop that owns the body, that has to compensate past it ends PARTIAL. Cannot be combined with compensateWith."
             },
             "highRisk": {
               "type": "boolean",
@@ -1510,7 +1510,8 @@
           "$ref": "#/$defs/bodyRetry"
         },
         "compensateWith": {
-          "$ref": "#/$defs/name"
+          "$ref": "#/$defs/name",
+          "description": "The activity that undoes this step when the collection or loop that owns the body stops with completed iterations (a failed iteration, a cancellation). Inside one iteration compensations run in reverse dependency order; collection iterations have no order between them; loop iterations compensate last first. It must be idempotent and tolerate an effect that never happened."
         },
         "reconcileWith": {
           "$ref": "#/$defs/name"
@@ -1537,7 +1538,7 @@
         },
         "irreversible": {
           "type": "boolean",
-          "description": "The effect cannot be undone once it has happened. A saga that has to compensate past it ends PARTIAL. Cannot be combined with compensateWith."
+          "description": "The effect cannot be undone once it has happened. A saga, or the collection or loop that owns the body, that has to compensate past it ends PARTIAL. Cannot be combined with compensateWith."
         },
         "highRisk": {
           "type": "boolean",
@@ -1829,7 +1830,8 @@
           "$ref": "#/$defs/bodyRetry"
         },
         "compensateWith": {
-          "$ref": "#/$defs/name"
+          "$ref": "#/$defs/name",
+          "description": "The activity that undoes this step when the collection or loop that owns the body stops with completed iterations (a failed iteration, a cancellation). Inside one iteration compensations run in reverse dependency order; collection iterations have no order between them; loop iterations compensate last first. It must be idempotent and tolerate an effect that never happened."
         },
         "secrets": {
           "type": "array",

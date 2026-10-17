@@ -60,8 +60,8 @@ switch integration target exercises these outcomes against PostgreSQL and checks
 
 The five SDKs can construct additive v1 collection, bounded-loop, approval and continuation
 documents. The server accepts a restricted collection graph made from one or more root `forEach`
-nodes ending at `end`; every referenced body must contain exactly one activity followed by one
-`return`. Before starting work, an administrator must set the tenant-wide active iteration budget:
+nodes ending at `end`; every referenced body must contain a chain of one to eight activities followed
+by one `return`. Before starting work, an administrator must set the tenant-wide active iteration budget:
 
 ```sh
 curl -X PUT "$API/v1/quotas/iteration_concurrency" \
@@ -209,8 +209,8 @@ does not admit another iteration, and no worker lease is retained during the del
 with a `delayMs` loop (no worker leased while it waits) is not exercised yet and stays a release
 gate.
 
-The restricted public loop shape is published (a loop chain ending at `end`, with a body of one
-activity and one `return`; see `contracts/README.md`). A loop failure drains the active iteration
+The restricted public loop shape is published (a loop chain ending at `end`, with a body of one to eight
+activities and one `return`; see `contracts/README.md`). A loop failure drains the active iteration
 first and then follows the loop's `onError` edge; without an `onError` edge it fails the run after
 the drain. A cancelled run still ends `CANCELLED` and never takes the edge. Publication accepts an
 `end` as the `onError` target; an `onError` edge to an activity is proven at the storage and
@@ -282,6 +282,43 @@ The release operator follows the remaining scenarios after implementing the rele
 Complete standard formatting, Clippy, locked workspace, architecture, contract compilation, Compose
 smoke and dependency advisory gates before merge of engine changes. Rollback first disables new
 primitive publication/start; keep readers for in-flight runs using the new capabilities until they drain.
+
+## Compensating a failed collection or loop
+
+A collection or loop body may declare `compensateWith`, `reconcileWith`, `irreversible` and `highRisk`
+on its activities. Happy path: nothing fails, nothing is compensated, and the run is `SUCCEEDED` as
+before (the `collection-runtime`, `collection-ordering`, `loop-runtime` and `loop-semantics` scenarios
+are unchanged). Failure path, one body `reserve -> charge -> ship` where `reserve` and `charge` declare
+`compensateWith` and `ship` fails for good:
+
+1. The iteration fails; the collection stops admitting iterations and drains the ones in flight
+   (`collection.drain_started`).
+2. The scheduler journals `scope.compensation_planned` and the worker receives `COMPENSATION` tasks for
+   `charge` and then `reserve`, each carrying the iteration's `target_instance`.
+3. The run is `COMPENSATING`, then `scope.compensated` is journaled, the scope finishes and the run ends
+   `COMPENSATED` (or `PARTIAL` when an `irreversible` effect completed, or `COMPENSATION_FAILED`).
+
+```sh
+SAGAT_SDK_SCENARIO=collection-compensation cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
+SAGAT_SDK_SCENARIO=loop-compensation cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
+cargo test -p sagat-tests --test integration_workflow_primitives --locked scope_compensation_http:: -- --test-threads=2
+cargo test -p sagat-tests --test fault_workflow_primitives --locked scope_compensation:: -- --test-threads=2
+cargo test -p sagat-domain --test scoped_compensation --locked
+```
+
+A compensation that keeps failing leaves the run in `MANUAL_REVIEW`. List it with
+`GET /runs?status=MANUAL_REVIEW`, read the waiting instance from `GET /runs/$RUN/graph` and decide with
+the iteration spelled out in `instancePath`:
+
+```sh
+curl -X POST "$API/v1/runs/$RUN/operations" -H "authorization: Bearer $OPERATOR" \
+  -H 'content-type: application/json' -H 'idempotency-key: release-retry-0001' \
+  -d '{"action":"RETRY_COMPENSATION","stepId":"reserve~c",
+       "instancePath":[{"scopeNodeId":"lines","iterationIndex":1}],
+       "reason":"the provider is back, retry the release"}'
+```
+
+See `docs/runbooks/workflow-primitives.md` for the operator procedure.
 
 ## Evidence boundary
 

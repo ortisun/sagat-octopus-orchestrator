@@ -32,7 +32,7 @@ ceiling and the author's value; a chain successor captures its own, so `maxInsta
 segment.
 
 Every activated node instance counts, the `end` node included; admitting a collection or loop
-iteration charges its body's nodes (an activity and its `return` cost two). The next work beyond
+iteration charges its body's nodes plus the compensation and lookup instances its activities may need (an activity and its `return` cost two; an activity with `compensateWith` and `reconcileWith` costs four). The next work beyond
 the budget is a durable run failure, never a silent wait:
 
 | Next work | Failure code | When it is decided |
@@ -121,6 +121,47 @@ it lands during a failure drain. The public loop subset accepts an `end` as the 
 An expression error while evaluating the loop's initial carry or condition at entry happens before
 any iteration exists and still fails the run (pending decision G341 in `research.md`).
 
+### Bodies that compensate (T014-014..021, D380-D389)
+
+A published collection or loop body is a chain of one to eight activities followed by its `return`
+(`MAX_BODY_CHAIN`, an `onError` on a body activity stays refused). Each activity may declare
+`compensateWith`, `reconcileWith`, `compensationRetry`, `compensationTimeoutMs`, `irreversible`
+and `highRisk` with the meaning they have at the root; `irreversible` and `compensateWith` on one
+step are refused as at the root. Branching, `saga`, timers, child workflows and nested scopes inside a
+body remain closed.
+
+A scope whose body declares any of `compensateWith`, `irreversible` or `highRisk` is its own saga.
+When it stops for a failed iteration, the storage quota, an outer cancellation or a loop timeout, the
+active iterations drain as before, and then the iterations that completed (and those whose last
+attempt had an unknown outcome) are undone before the scope finishes:
+
+| Where | Order |
+| --- | --- |
+| Inside one iteration | Reverse dependency order of the body chain: the compensation of a later activity finishes before the one of an earlier activity starts. |
+| Between iterations of a collection | None. At most `maxConcurrency` iterations have a compensation in flight. |
+| Between iterations of a loop | Last iteration first; iteration `k` starts after the nearest later iteration that had anything to undo has finished. |
+
+The plan is journaled once as `scope.compensation_planned` (the instances to undo, the ones each waits
+for, and the effects that cannot be undone) and the end as `scope.compensated` with the outcome
+`COMPENSATED`, `PARTIAL` or `COMPENSATION_FAILED`. The scope owner stays `WAITING` on `COLLECTION` or
+`LOOP` meanwhile and the run is `COMPENSATING`, or `MANUAL_REVIEW` when a compensation waits for a
+person. The run ends with the worse of the stop and the outcome: a failure fully undone is
+`COMPENSATED`; a cancellation fully undone is `CANCELLED`; an irreversible effect, an unknown outcome
+that nothing could undo, or a compensation skipped by an operator is `PARTIAL`; a compensation that
+failed for good is `COMPENSATION_FAILED`. A stop that arrives while the scope compensates changes
+none of this, and a compensation that waits for a person keeps waiting through a cancellation (stricter
+than the root rule of D66, O381). A loop `onError` edge is taken only after the failure was fully
+undone.
+
+A compensation is a worker task of kind `COMPENSATION` with the typed scope identity of the iteration
+it undoes (`target_instance`, worker protocol 1.5), the forward node as `targetNode` and the key of
+the forward effect as `targetIdempotencyKey`. Its own key is stable across retries and restarts and
+derived from the workflow version, the scope path and the forward node. A step whose outcome is
+unknown inside an iteration is reconciled by the lookup of that iteration before it is repeated or
+compensated; the three verdicts conclude it as at the root. Compensation has the lease, fence, retry,
+timeout, breaker and audit of every activity, and a compensation whose budget is spent waits on
+`OPERATOR`.
+
 Loops may also specify `delayMs` in 1..31622400000, applied only between needed iterations. Absence
 means no delay. Shared run `maxInstances` and nesting limits are enforced even when individual node
 limits fit. Each forward activation reserves its possible declared compensation/reconciliation
@@ -163,6 +204,14 @@ operations and wider continuation graphs remain gated.
 | `POST /namespaces/{namespaceId}/chains/{chainId}/queries/{name}` | `args`, optional `expectedRunId` | 200 current-head declared result plus the actual `runId`; requires `run:read` + `run:query`; a changed expected head returns 409. |
 | `POST /namespaces/{namespaceId}/chains/{chainId}/updates/{name}` | `updateKey`, `args`, optional `expectedRunId` and `expectedStateRevision` | 200 current-head APPLIED receipt/result; durable 422 rejection or 409 revision conflict; requires `run:update`. Exact receipt replay stays bound to its original resolved run after rollover. |
 | `GET /chains/{chainId}/runs` | bounded cursor/page size | Planned ordered segment page with no implicit payloads. |
+
+**Operator decisions inside a scope.** `POST /runs/{runId}/operations` accepts an optional
+`instancePath` (the scopes around the step, outermost first, each with its iteration, as the runtime
+graph reports them) for `RETRY_STEP`, `RETRY_COMPENSATION`, `SKIP_COMPENSATION`, `RESOLVE_STEP` and
+`MARK_MANUAL_REVIEW`. `stepId` is the local node (`reserve~c` for the compensation of `reserve`).
+The request is refused with `VALIDATION_FAILED` for `CANCEL`, `PAUSE`, `RESUME` and `RERUN`, which
+apply to the whole run. Permissions, the reason, the idempotency key, the audit record and the
+`409` rules are those of a root decision (`docs/runbooks/sagas.md`).
 
 **Permissions (accepted by ADR-0030/0031/0032)**: new permissions follow the existing
 `resource:action` form. `approval:read` goes to `admin`, `developer`, `operator` and `viewer`;

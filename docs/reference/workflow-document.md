@@ -51,12 +51,12 @@ Every node has the fields below; each kind adds its own. The kinds: [`activity`]
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `activity` | string | yes |  |
-| `compensateWith` | string |  | The activity that undoes this one. It runs when a saga around this node compensates, and must be idempotent and tolerate an effect that never happened. |
+| `compensateWith` | string |  | The activity that undoes this one. It runs when a saga around this node compensates, or, for a step in the body of a collection or loop, when that scope stops (a failed iteration, a cancellation) with iterations that completed: inside one iteration in reverse dependency order, between collection iterations in no order, and across loop iterations last iteration first. It must be idempotent and tolerate an effect that never happened. |
 | `compensationRetry` | [`retry`](#retry) |  | The retry budget of the compensation (compensateWith). Five attempts, exponential from two seconds to five minutes, with jitter when absent. |
 | `compensationTimeoutMs` | integer (min 1) |  | Longest one attempt of the compensation may take. |
 | `highRisk` | boolean |  | An attempt whose outcome is unknown (lease lost, timeout, OUTCOME_UNKNOWN) is never retried or compensated blindly: it is reconciled when reconcileWith says how, and otherwise waits for an operator. |
 | `idempotencyTemplate` | string |  |  |
-| `irreversible` | boolean |  | The effect cannot be undone once it has happened. A saga that has to compensate past it ends PARTIAL. Cannot be combined with compensateWith. |
+| `irreversible` | boolean |  | The effect cannot be undone once it has happened. A saga, or the collection or loop that owns the body, that has to compensate past it ends PARTIAL. Cannot be combined with compensateWith. |
 | `reconcileWith` | string |  | The activity that finds out whether this one happened, after an attempt with an unknown outcome. It answers {"effect": "applied"\|"not_applied"\|"unknown"} and, for applied, optionally {"output": ...}. |
 | `retry` | [`retry`](#retry) |  |  |
 | `secrets` | array of string (max items 16) |  | Names of the secrets of the namespace the worker may ask for while it holds a lease on this step. Names only: a value is never part of a definition. |
@@ -256,13 +256,13 @@ Every node has the fields below; each kind adds its own. The kinds: [`activity`]
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `activity` | [`name`](#name) | yes |  |
-| `compensateWith` | [`name`](#name) |  |  |
+| `compensateWith` | [`name`](#name) |  | The activity that undoes this step when the collection or loop that owns the body stops with completed iterations (a failed iteration, a cancellation). Inside one iteration compensations run in reverse dependency order; collection iterations have no order between them; loop iterations compensate last first. It must be idempotent and tolerate an effect that never happened. |
 | `compensationRetry` | [`bodyRetry`](#bodyRetry) |  | The retry budget of the compensation (compensateWith). Five attempts, exponential from two seconds to five minutes, with jitter when absent. |
 | `compensationTimeoutMs` | [`duration`](#duration) |  |  |
 | `highRisk` | boolean |  | An attempt whose outcome is unknown (lease lost, timeout, OUTCOME_UNKNOWN) is never retried or compensated blindly: it is reconciled when reconcileWith says how, and otherwise waits for an operator. |
 | `id` | [`nodeId`](#nodeId) | yes |  |
 | `idempotencyTemplate` | [`expression`](#expression) |  |  |
-| `irreversible` | boolean |  | The effect cannot be undone once it has happened. A saga that has to compensate past it ends PARTIAL. Cannot be combined with compensateWith. |
+| `irreversible` | boolean |  | The effect cannot be undone once it has happened. A saga, or the collection or loop that owns the body, that has to compensate past it ends PARTIAL. Cannot be combined with compensateWith. |
 | `next` | [`nodeId`](#nodeId) |  |  |
 | `onError` | [`nodeId`](#nodeId) |  |  |
 | `reconcileWith` | [`name`](#name) |  |  |
@@ -342,7 +342,7 @@ any
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `artifactDigest` | string (pattern `^sha256:[0-9a-f]{64}$`) | yes | The artifact a build made: the digest of a ready version of a script of the same tenant. The step runs exactly this code; publishing a newer version of the script changes nothing about a workflow that names this digest. Checked when the workflow is published. |
-| `compensateWith` | [`name`](#name) |  |  |
+| `compensateWith` | [`name`](#name) |  | The activity that undoes this step when the collection or loop that owns the body stops with completed iterations (a failed iteration, a cancellation). Inside one iteration compensations run in reverse dependency order; collection iterations have no order between them; loop iterations compensate last first. It must be idempotent and tolerate an effect that never happened. |
 | `id` | [`nodeId`](#nodeId) | yes |  |
 | `language` | one of `"typescript"`, `"python"`, `"csharp"`, `"go"`, `"java"` |  | Informational: the runner takes the language from the artifact. |
 | `next` | [`nodeId`](#nodeId) |  |  |

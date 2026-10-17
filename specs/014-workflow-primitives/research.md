@@ -713,3 +713,90 @@ Open decisions for the owner (options, recommendation, effect on what is built):
 - **O383 — Branches and nested scopes in bodies.** Closed (D388). Opening them needs the scoped
   planner to route conditions, switches and parallel joins, and nested low-capacity admission tests
   (T014-014, T014-021). *Recommendation:* separate increment.
+
+### Decisions made while building
+
+- **D390 — A loop that stops at a limit is stopped at the result boundary of its last iteration.** The
+  checkpoint that records `ITERATION_LIMIT` or `INSTANCE_LIMIT` finishes the loop at once, which would
+  leave the completed iterations un-undone. For a compensating scope the scheduler does not commit that
+  checkpoint: it starts the failure drain of the iteration that met the limit (the same drain an
+  expression error at the result boundary uses), the loop compensates last iteration first, and then
+  fails with the limit's code. Consequences: the journal shows `loop.drain_started` with the limit code
+  where a non-compensating loop shows `loop.iteration_checkpointed` with continuation `iteration_limit`;
+  the result and carry of that last iteration are not recorded (the loop failed, nothing reads them);
+  the iteration's own effects are undone because they completed. The store re-proves the claim: the
+  limit is accepted as a drain code only for a pending `return`, `iteration + 1 >= maxIterations` for
+  `ITERATION_LIMIT`, and consumed instances plus the body charge above the run's budget for
+  `INSTANCE_LIMIT`. A loop with no compensation keeps the old checkpoint and journal.
+- **D391 — The next body is charged with its derived nodes.** The instance charge of a loop iteration is
+  `all_nodes` (an activity with `compensateWith` and `reconcileWith` costs four), as admission already
+  charged. The limit decision of the scheduler and the proof of the checkpoint used the declared nodes
+  only, so a loop near its budget could be refused by the store after the scheduler had decided to
+  continue and then be unable to stop. Both use `all_nodes` now; for a body with no derived node nothing
+  changes.
+- **D392 — Operator decisions address the iteration.** `POST /runs/{id}/operations` takes an optional
+  `instancePath` (OpenAPI `OperationRequest.instancePath`, items `ApprovalScope`) for `RETRY_STEP`,
+  `RETRY_COMPENSATION`, `SKIP_COMPENSATION`, `RESOLVE_STEP` and `MARK_MANUAL_REVIEW`; it is refused for
+  the operations that apply to the whole run. Permissions, reason, idempotency key, audit and the 409
+  rules are the root's. The audit resource names the instance (`{run}/lines[1]/reserve~c`).
+- **D393 — A compensation answer is not retained, so a closed storage quota cannot stall it.** Tested:
+  with the tenant content quota closed at its current use, every compensation of a failed collection
+  completes and the run ends `COMPENSATED`. A forward step whose answer the quota refuses still fails
+  with `STORAGE_QUOTA_EXCEEDED`, as at the root.
+
+### As built
+
+Domain (`crates/domain`): `scoped_sagas.rs` (`plan_scope_compensation`), `ScopeSagaState` and the two scope
+events in `state.rs`/`event.rs`, the shared effect arms (`apply_effect_event`), `fail_instance` and the
+instance forms of the operator commands in `command.rs`, `DependencyGraph` in `saga.rs`,
+`WorkflowDefinition::scope_compensates`. Application: instance-addressed compensation and lookup keys
+(`execution.rs`), the scoped lease/complete/fail paths (`worker.rs`), `RunService::review_instance`.
+Storage (`crates/infra-postgres`): migration `20261112000000_scope_compensation` (`scope_sagas`,
+`scope_saga_entries`, runtime-role grants, `storage-classification.json`), the journal codec, the
+projection of the scope saga and of scoped steps, kept reservations in the collection and loop drains,
+`scope_compensation.rs` (the finished saga and the stopped run's status). Scheduler: `passes.rs` plans
+and advances the compensation in the draining branches of both scopes. Publication: a body is a chain of
+one to eight activities (`MAX_BODY_CHAIN`, `infra-ir`). HTTP: `instancePath`.
+
+Evidence, by clause (test names; the files are under `crates/domain/tests`, `tests/integration/workflow-primitives`,
+`tests/fault/workflow-primitives` and `tests/contract`):
+
+| Clause | Evidence |
+| --- | --- |
+| Reverse topological order inside an iteration | `scoped_compensation::compensation_in_one_iteration_runs_in_reverse_topological_order`, `scope_compensation_http::a_failed_collection_undoes_what_its_iterations_completed_in_reverse_order`, scenario `collection-compensation` (refund before release) |
+| No order between collection iterations, bounded by `maxConcurrency` | `iterations_of_a_collection_are_independent_branches`, `compensation_fan_out_is_bounded_by_the_scope_concurrency`, `scope_compensation_http::a_collection_undoes_no_more_iterations_at_once_than_it_may_run` |
+| Loop iterations in reverse order | `completed_iterations_of_a_loop_compensate_in_reverse_iteration_order`, `a_failed_loop_undoes_its_completed_iterations_last_first` (carries `[2,1,1,0,0]`), `a_loop_stopped_by_its_iteration_limit_undoes_its_iterations_last_first`, `a_loop_stopped_by_the_instance_budget_undoes_its_iterations_last_first`, scenario `loop-compensation` |
+| Unknown effect reconciled before repeating or compensating | `an_attempt_with_an_unknown_outcome_is_looked_up_before_anything_is_repeated`, `a_lookup_that_found_the_effect_makes_the_step_compensable`, the three verdicts over HTTP (`an_effect_of_unknown_outcome_is_looked_up_and_found_applied_before_anything_repeats`, `an_effect_found_not_applied_is_tried_again_with_the_same_key`, `a_lookup_that_cannot_say_waits_for_a_person_who_declares_what_happened`), scenario `collection-compensation` (`reconciled`) |
+| Irreversible effect ends PARTIAL | `an_irreversible_effect_ends_the_scope_partial_after_the_rest_is_undone`, `scope_compensation_http::an_irreversible_effect_ends_the_run_partial_and_is_never_called_compensated`, scenario `collection-compensation` (`partial`) |
+| A compensation that keeps failing waits for an audited decision | `a_compensation_that_keeps_failing_waits_for_a_person_and_is_never_assumed_done`, `scope_compensation_http::a_compensation_that_keeps_failing_waits_for_a_person_who_can_retry_it`, `a_person_can_skip_a_compensation_and_the_run_ends_partial`, `a_person_can_declare_a_compensation_failed_and_the_run_ends_compensation_failed` (with the `saga.step_*` audit), scenario `collection-compensation` (`stuck`) |
+| A failure or cancel during the drain never overwrites the outcome | `a_cancellation_that_lands_during_compensation_changes_nothing`, `a_stop_from_outside_never_gives_up_on_a_compensation_that_waits_for_a_person`, `a_cancellation_never_gives_up_on_a_compensation_that_waits_for_a_person` (HTTP) and `fault_workflow_primitives` `scope_compensation::a_cancellation_racing_the_scheduler_that_stops_the_scope_for_a_failure_ends_consistently` |
+| Lease, fence, duplicates, restart, lost hint | `tests/fault/workflow-primitives/scope_compensation.rs` (duplicate and stale report, lost hint, connection killed in each transaction, scheduler cut at every await, outbox and audit failure, replica takeover) |
+| Storage quota | `a_collection_stopped_by_the_storage_quota_still_undoes_its_completed_iterations` (domain), `a_closed_storage_quota_does_not_stop_the_compensation` (HTTP) |
+| Five SDKs | scenarios `collection-compensation` and `loop-compensation`, goldens in `expected/` read by hand |
+
+### Gaps recorded by this increment
+
+- **G380 — The reservation integrity check of the loader was relaxed, not made definition-aware.** The
+  loader accepted `remaining_reservations > 0` for an admitted iteration and `= 0` for a checkpointed or
+  drained one; a scope with kept compensation reservations needs `>= 0`. The exact count is a function of
+  the body (`all_nodes - 1` minus what ran) and is checked at write time, not on load. A definition-aware
+  load check is open.
+- **G381 — A run deadline over an open collection or loop is unsupported (O382).** Unchanged. The loop
+  case is pinned by `the_run_deadline_over_an_active_loop_still_fails_closed`.
+- **G382 — The SDKs cannot send `instancePath`.** `operate` in the five SDKs, the CLI and Studio do not
+  carry it; a scoped decision is made over HTTP. Adding it is additive but touches all five clients and
+  their goldens, so it was not done in this increment.
+- **G383 — The chain bound of eight activities is a design value.** `MAX_BODY_CHAIN` has no load or
+  latency evidence behind the number; it bounds the instance charge and the plan size. Branches, timers
+  and nested scopes inside a body stay closed (O383).
+- **G384 — Hold versus the root rule of D66 (O381).** A scoped compensation that waits for a person is
+  kept through a cancellation; the root gives up on it. Recommended: change the root; not done.
+- **G385 — The collection-level storage-quota drain with compensation has planner evidence only.** Making
+  the scheduler's own quota stop (`CollectionDrainReason::StorageQuotaExceeded`) fire needs a checkpoint
+  that retains new content, which the test documents do not produce; the planner treats the reason like
+  the others and has a domain test, but no integration test reaches that exact reason.
+- **G386 — Restart at every step is sampled, not exhaustive.** The cut sweep covers every await of the
+  scheduler tick at a stride and the replica takeover covers a lapsed lease; a crash after every
+  individual commit of a long compensation is not enumerated.
+- **G387 — SDK `operate` and Studio show a scoped step by its id only.** The graph lists
+  `lines[2]/reserve~c`; there is no screen that groups a scope's compensations.

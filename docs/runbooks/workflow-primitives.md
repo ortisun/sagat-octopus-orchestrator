@@ -176,6 +176,41 @@ new head after delivery, and send subsequent commands with that run ID. A direct
 entrypoint, body-local continuation, triggers and broader graphs remain disabled. Exact-run commands remain bound to their
 segment and do not forward silently.
 
+## A collection or loop that compensates
+
+A collection or loop whose body declares `compensateWith`, `irreversible` or `highRisk` undoes its
+completed iterations when it stops (a permanent failure of an iteration, the iteration limit or a loop
+timeout, the storage quota, a cancellation). The order is reverse dependency inside an iteration, none
+between collection iterations (at most `maxConcurrency` are undone at once) and last iteration first for
+a loop. The sagas runbook (`sagas.md`) explains the outcomes; this section is what differs inside a scope.
+
+Read it from the journal and the graph. `scope.compensation_planned` lists the instances to undo, the
+instances each waits for and the effects that cannot be undone; `scope.compensated` carries the outcome.
+Between the two the run is `COMPENSATING` and the scope owner stays `WAITING` on `COLLECTION` or `LOOP`.
+The graph shows the compensation of `reserve` in iteration 2 of `lines` as `lines[2]/reserve~c` with the
+`instancePath` `[{"scopeNodeId":"lines","iterationIndex":2}]`, and its lookup as `lines[2]/reserve~r`.
+
+When the run is `MANUAL_REVIEW`, find the instance with `waitingOn: operator` and its `failureCode`.
+Decide with `POST /runs/{runId}/operations`, the same actions, permissions, reasons and audit records as
+for a root saga (`RETRY_COMPENSATION`, `RETRY_STEP`, `SKIP_COMPENSATION`, `RESOLVE_STEP`), adding
+`instancePath` with the scope ancestry from the graph, outermost first. Without it the request addresses
+the root step of the same name, which does not exist or does not wait for a person, and is refused. `SKIP_COMPENSATION`
+ends the scope `PARTIAL`; a retry uses the same idempotency key as the failed attempt. An operator
+decision is the only way out: a cancellation or a deadline that arrives while a scoped compensation waits
+for a person leaves it waiting (unlike a root saga, see D386), and a restart does not forget it.
+
+An effect with an unknown outcome inside an iteration (`LEASE_EXPIRED`, `ATTEMPT_TIMEOUT`,
+`OUTCOME_UNKNOWN`) is looked up by `<node>~r` of that iteration before anything repeats it; an iteration
+that waits for a lookup or a person is not drained, so the scope cannot finish while it does. If a run
+sits in `COMPENSATING` without a compensation leased, check that the scheduler is discovering
+`COMPENSATING` runs and compare the projection with the journal (`verify_run`) before touching anything.
+Compensations are leased while the run is stopping and are never cancelled by the stop; do not cancel
+them by hand. Their idempotency keys are stable (`compensation:{id}:{run}` from the scope path and the
+forward node), so a retried compensation reaches the provider with the key of the first one.
+
+Not covered: a run deadline that expires over a collection or loop that is still open stays unsupported
+(O382), and branches, timers and nested scopes inside a compensating body are not published (D388).
+
 ## Rollback and compatibility
 
 Disable publication and starts of any newly enabled primitive before rolling back its writer.
