@@ -42,6 +42,9 @@ side of their shared worker/store modules would lose security or durable executi
    database results (ADR-0035). The database node is outside classification's closed carrier
    set; annotations there are rejected, and no classifier protection is implied for its
    separately authorized result endpoint. Canary tests state the policy of each surface.
+   Values explicitly mapped into another supported carrier, including the workflow result,
+   follow that receiving carrier under D283. This policy performs no taint tracking. A result
+   selector reads only the retained run result; it never substitutes a database step output.
 
 ## Consequences and evidence
 

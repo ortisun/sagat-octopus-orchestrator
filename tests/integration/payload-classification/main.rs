@@ -2,5 +2,6 @@
 //! implementation tasks that own each behavior; this registration makes those cases first-class.
 
 mod pinning;
+mod grants;
 #[path = "../../support/mod.rs"]
 mod support;

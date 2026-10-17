@@ -351,6 +351,7 @@ pub async fn start_with(options: Options) -> TestApi {
         QuotaService::new(executions.clone(), SystemClock),
         BindingService::new(executions.clone(), SystemClock),
         EgressService::new(executions.clone(), SystemClock),
+        sagat_application::reveal_grants::RevealGrantService::new(executions.clone(), SystemClock),
     )
     .with_operations(sagat_application::operations::OperationsService::new(
         executions.clone(),

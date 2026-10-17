@@ -518,6 +518,7 @@ pub async fn serve_with_admin(
         QuotaService::new(executions.clone(), SystemClock),
         BindingService::new(executions.clone(), SystemClock),
         EgressService::new(executions.clone(), SystemClock),
+        sagat_application::reveal_grants::RevealGrantService::new(executions.clone(), SystemClock),
     )
     .with_operations(OperationsService::new(
         executions.clone(),

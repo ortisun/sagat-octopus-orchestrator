@@ -256,13 +256,14 @@ where
 /// identity ones. The governance routes share the in-flight budget and the protective layers.
 pub fn router_with_governance<S, C, P, X, E, G>(
     state: ExecState<S, C, P, X, E>,
-    governance: GovState<S, C, G>,
+    mut governance: GovState<S, C, G>,
     limits: HttpLimits,
 ) -> Router
 where
     S: IdentityStore + 'static,
     C: Clock + 'static,
-    G: sagat_application::quotas::QuotaStore
+    G: sagat_application::reveal_grants::RevealGrantStore
+        + sagat_application::quotas::QuotaStore
         + sagat_application::api_admission::ApiAdmissionStore
         + sagat_application::bindings::BindingStore
         + sagat_application::secrets::SecretStore
@@ -280,7 +281,8 @@ where
         + 'static,
     ExecState<S, C, P, X, E>: Exec,
 {
-    compose(state, limits, move |slots, limits, _| {
+    compose(state, limits, move |slots, limits, core| {
+        governance.core = core;
         governance_routes(governance, slots, limits)
     })
 }
@@ -289,7 +291,7 @@ where
 #[allow(clippy::too_many_arguments)]
 pub fn router_with_governance_and_approvals<S, C, P, X, E, G, A, O, V>(
     state: ExecState<S, C, P, X, E>,
-    governance: GovState<S, C, G>,
+    mut governance: GovState<S, C, G>,
     approval_admission: sagat_application::api_admission::ApiAdmissionService<P, C>,
     approvals: A,
     operation_admission: sagat_application::api_admission::ApiAdmissionService<P, C>,
@@ -308,7 +310,8 @@ where
     A: sagat_application::approval_progress::ApprovalProgressStore + 'static,
     O: sagat_application::declared_operations::DeclaredOperationStore + 'static,
     V: sagat_application::declared_operations::DeclaredOperationEvaluator + 'static,
-    G: sagat_application::quotas::QuotaStore
+    G: sagat_application::reveal_grants::RevealGrantStore
+        + sagat_application::quotas::QuotaStore
         + sagat_application::api_admission::ApiAdmissionStore
         + sagat_application::bindings::BindingStore
         + sagat_application::secrets::SecretStore
@@ -331,6 +334,7 @@ where
 {
     let chain_state = state.clone();
     compose(state, limits, move |slots, limits, core| {
+        governance.core = core.clone();
         let approval_state = ApprovalApiState::new(
             core.clone(),
             approval_admission,
@@ -374,7 +378,8 @@ where
     T: Clone + Send + Sync + 'static,
     S: IdentityStore + 'static,
     C: Clock + 'static,
-    G: sagat_application::quotas::QuotaStore
+    G: sagat_application::reveal_grants::RevealGrantStore
+        + sagat_application::quotas::QuotaStore
         + sagat_application::api_admission::ApiAdmissionStore
         + sagat_application::bindings::BindingStore
         + sagat_application::secrets::SecretStore
@@ -743,6 +748,8 @@ where
             );
     }
     router
+        .merge(reveal_grants::routes::<B<S, C, G>, B<S, C, G>>(state.clone())
+            .layer(RequestBodyLimitLayer::new(limits.max_body_bytes)))
         .route_layer(axum::middleware::from_fn_with_state(
             Arc::clone(slots),
             limits::shed_excess,

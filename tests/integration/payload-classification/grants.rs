@@ -8,7 +8,6 @@ use sagat_application::error::AppError;
 use sagat_application::reveal_grants::{RevealGrantError, RevealGrantService};
 use sagat_domain::identity::{Permission, Role};
 use sagat_infra_postgres::{PgRunStore, has_effective_payload_reveal_grant};
-use sqlx::Acquire;
 
 use crate::support::engine::{World, ctx, world};
 
@@ -337,4 +336,30 @@ async fn an_effective_grant_read_fences_revoke_until_disclosure_commit() {
         audit_actions,
         vec!["payload.reveal_granted", "payload.reveal_revoked"]
     );
+}
+
+#[tokio::test]
+async fn http_repeated_delete_returns_not_found_and_responses_are_not_cached() {
+    use reqwest::{Method, StatusCode};
+    let mut options = crate::support::api::Options::default();
+    options.limits.max_body_bytes = 1024;
+    let api = crate::support::api::start_with(options).await;
+    api.tenant("grants-http", "admin").await;
+    let workspace = api.create_workspace("admin", "grants-http", "work").await;
+    let namespace = api
+        .create_namespace("admin", "grants-http", &workspace, "sandbox", "dev")
+        .await;
+    let path = format!("/namespaces/{namespace}/payload-reveal-grants/admin");
+    let put = api.as_user(Method::PUT, &path, "admin", "grants-http")
+        .send().await.expect("grant HTTP");
+    let oversized = api.as_user(Method::PUT, &path, "admin", "grants-http")
+        .body(vec![b'x'; 1025]).send().await.expect("oversized grant HTTP");
+    assert_eq!(oversized.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(put.status(), StatusCode::OK);
+    assert_eq!(put.headers()["cache-control"], "no-store");
+    for expected in [StatusCode::OK, StatusCode::NOT_FOUND] {
+        let response = api.as_user(Method::DELETE, &path, "admin", "grants-http")
+            .send().await.expect("revoke HTTP");
+        assert_eq!(response.status(), expected);
+    }
 }

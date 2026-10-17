@@ -6989,6 +6989,42 @@
         "crates/infra-postgres/src/managed_secrets.rs",
         "crates/infra-postgres/migrations/20261122000000_openbao_secrets.up.sql"
       ]
+    },
+    {
+      "table": "payload_reveal_grants",
+      "column": "granted_by",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Subject is bounded to 255 non-control characters by the domain value object. Grant writes serialize the namespace set and enforce at most 256 grants per namespace. Writer/source: `crates/infra-postgres/src/reveal_grants.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/reveal_grants.rs"
+      ]
+    },
+    {
+      "table": "payload_reveal_grants",
+      "column": "subject",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Subject is bounded to 255 non-control characters by the domain value object. Grant writes serialize the namespace set and enforce at most 256 grants per namespace. Writer/source: `crates/infra-postgres/src/reveal_grants.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/reveal_grants.rs"
+      ]
     }
   ],
   "external_content": [

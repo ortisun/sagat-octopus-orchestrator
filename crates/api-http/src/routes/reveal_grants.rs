@@ -189,10 +189,13 @@ pub async fn revoke_payload_reveal<B: RevealGrantApi>(
         .prepare(&caller.session.principal, namespace, &caller.ctx)
         .await?;
     admit_resolved_namespace(&state, &caller, scope.namespace_id()).await?;
-    grants
+    if !grants
         .revoke(&scope, &subject, &caller.ctx)
         .await
-        .map_err(map_reveal_error)?;
+        .map_err(map_reveal_error)?
+    {
+        return Err(ApiError::not_found());
+    }
     Ok((no_store_headers(), Json(EmptyBody {})))
 }
 

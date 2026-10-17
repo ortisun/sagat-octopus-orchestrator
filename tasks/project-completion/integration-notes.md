@@ -27,3 +27,15 @@ This is an implementation checkpoint, not a completed release gate.
 Workspace all-target compilation exposed cross-feature interface mismatches; the final check passed after correcting them. Earlier failed attempts are not passing test evidence. The database composition RED fixture exposed the existing body-kind schema refusal; its assertion was corrected to accept the documented schema refusal and separately demand the mixed-root publication gate. Real PostgreSQL/OpenBao pool/authority races, scoped regressions, all-five-SDK runtime conformance and the final full gates remain pending.
 
 Independent Astra xhigh static review found and drove fixes for pool bypass, stale ordinary worker membership/ACL authority, same-named scoped lease deadlines, binding/session deadlock order and protocol feature-gate negotiation. It ran no executable tests. A subsequent final review remains required after integration.
+
+## Classification integration checkpoint
+
+- New normal and private ad hoc versions pin interpreter rules 1; legacy migration defaults to 0.
+- `integration_payload_classification` ran 8 PostgreSQL/HTTP tests successfully on the combined tree
+  (`/tmp/sagat-completion-grants-http-green.log`): immutable pinning, byte preservation across the
+  exact up/down DDL, grant rules/tenant/cascade, stale actor refusal, audit rollback, a concurrent
+  256-grant ceiling, revocation blocked until an effective grant read transaction ends,
+  repeated DELETE returning 404, no-store metadata, and oversized request refusal.
+- This is focused integration evidence. It does not establish old-binary compatibility, full
+  classified disclosure behavior or the final release gates. Classifier review findings remain
+  under correction before value disclosure is mounted.
