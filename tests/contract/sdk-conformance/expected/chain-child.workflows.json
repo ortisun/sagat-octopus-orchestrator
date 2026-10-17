@@ -1,0 +1,66 @@
+{
+  "canonical": {
+    "kid": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"chainPolicy\":{\"maxSegments\":4,\"timeoutMs\":86400000},\"entrypoint\":\"work\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"chain-kid-runtime\"},\"nodes\":[{\"activity\":\"chain.kid\",\"id\":\"work\",\"next\":\"again\",\"type\":\"activity\"},{\"expression\":\"input.continue\",\"id\":\"again\",\"ifFalse\":\"done\",\"ifTrue\":\"rollover\",\"type\":\"condition\"},{\"id\":\"rollover\",\"input\":\"input.next\",\"type\":\"continueAsNew\"},{\"id\":\"done\",\"type\":\"end\"}]}",
+    "mother": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"kid\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"chain-mother-runtime\"},\"nodes\":[{\"id\":\"kid\",\"input\":\"input.kid\",\"next\":\"after\",\"type\":\"child\",\"workflowId\":\"chain-kid-runtime\"},{\"activity\":\"chain.after\",\"id\":\"after\",\"type\":\"activity\"}]}"
+  },
+  "workflows": {
+    "kid": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "chainPolicy": {
+        "maxSegments": 4,
+        "timeoutMs": 86400000
+      },
+      "entrypoint": "work",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "chain-kid-runtime"
+      },
+      "nodes": [
+        {
+          "activity": "chain.kid",
+          "id": "work",
+          "next": "again",
+          "type": "activity"
+        },
+        {
+          "expression": "input.continue",
+          "id": "again",
+          "ifFalse": "done",
+          "ifTrue": "rollover",
+          "type": "condition"
+        },
+        {
+          "id": "rollover",
+          "input": "input.next",
+          "type": "continueAsNew"
+        },
+        {
+          "id": "done",
+          "type": "end"
+        }
+      ]
+    },
+    "mother": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "kid",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "chain-mother-runtime"
+      },
+      "nodes": [
+        {
+          "id": "kid",
+          "input": "input.kid",
+          "next": "after",
+          "type": "child",
+          "workflowId": "chain-kid-runtime"
+        },
+        {
+          "activity": "chain.after",
+          "id": "after",
+          "type": "activity"
+        }
+      ]
+    }
+  }
+}

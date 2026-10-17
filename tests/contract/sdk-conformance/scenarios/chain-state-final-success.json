@@ -1,0 +1,54 @@
+{
+  "name": "chain-state-final-success",
+  "description": "A conditional stateful chain transfers its declared snapshot once and finishes successfully in the successor.",
+  "workflows": {
+    "chain": {
+      "name": "chain-state-final-success-runtime",
+      "chainPolicy": { "maxSegments": 3, "timeoutMs": 86400000 },
+      "state": {
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": { "amount": { "type": "string", "maxLength": 64 } },
+          "required": ["amount"]
+        },
+        "initial": "input.account",
+        "queries": {
+          "amount.read": {
+            "argsSchema": { "type": "object", "additionalProperties": false },
+            "resultSchema": { "type": "string", "maxLength": 64 },
+            "expression": "state.amount",
+            "disclosure": "declared-business-result-v1"
+          }
+        }
+      },
+      "program": [
+        { "op": "step", "id": "work", "activity": "chain.work" },
+        { "op": "condition", "id": "again", "expression": "input.continue", "ifTrue": "rollover", "ifFalse": "done" },
+        { "op": "continueAsNew", "id": "rollover", "input": "input.next", "state": "state" },
+        { "op": "end", "id": "done" }
+      ]
+    }
+  },
+  "workers": {
+    "current": {
+      "workerName": "chain-state-final-worker",
+      "protocolVersion": "1.5",
+      "transport": "poll",
+      "maxInflight": 1,
+      "autostart": false,
+      "activities": {
+        "chain.work": { "behavior": { "sleepMs": 50, "returns": { "ok": true } } }
+      }
+    }
+  },
+  "steps": [
+    { "id": "start", "op": "start", "workflow": "chain", "input": { "account": { "amount": "19.99" }, "continue": true, "next": { "account": { "amount": "0.00" }, "continue": false } } },
+    { "id": "initial", "op": "inspectChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}" },
+    { "id": "start-worker", "op": "startWorker", "worker": "current" },
+    { "id": "chain-done", "op": "waitForChainCompletion", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "timeoutMs": 30000 },
+    { "id": "query", "op": "queryChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "expectedRunId": "{{currentRunId:chain-done}}", "name": "amount.read", "args": {} },
+    { "id": "segment-done", "op": "waitForCompletion", "run": "start", "timeoutMs": 10000 },
+    { "id": "stop-worker", "op": "stopWorker", "worker": "current" }
+  ]
+}

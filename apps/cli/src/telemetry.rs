@@ -348,6 +348,7 @@ fn command_label(command: &Command) -> &'static str {
         Command::WorkflowRuns { .. } => "workflow.runs",
         Command::WorkflowInspect { .. } => "workflow.inspect",
         Command::WorkflowCancel { .. } => "workflow.cancel",
+        Command::WorkflowRerun { .. } => "workflow.rerun",
         Command::ScriptTest { .. } => "script.test",
         Command::ScriptPublish { .. } => "script.publish",
         Command::WorkerDev { .. } => "worker.dev",

@@ -4,26 +4,62 @@
 //! the data-dependent decisions (conditions, correlation keys) are resolved by an adapter and
 //! returned as journal events (`FR-002-001`, `FR-002-002`; `docs/architecture/execution-semantics.md`).
 
+mod approval;
 mod command;
+mod continuation;
 mod error;
 mod event;
+mod instance;
+mod operations;
 mod plan;
 mod sagas;
+mod scoped_sagas;
 mod state;
 
+pub use approval::{
+    ApprovalDecision, ApprovalDecisionCommand, ApprovalDecisionReceipt, ApprovalDecisionResolution,
+    ApprovalError, ApprovalPolicy, ApprovalReasonCode, ApprovalReceiptId, ApprovalRequest,
+    ApprovalRequestId, ApprovalStatus, ApprovalTransition, DecisionKey,
+    MAX_APPROVAL_POLICY_ENTRIES, MAX_APPROVAL_REASON_CODE_BYTES, MAX_DECISION_KEY_BYTES,
+};
 pub use command::{
-    Expiry, Failure, Heartbeat, Progress, Resolution, complete_reconciliation, complete_step,
-    expire_attempt, fail_report_for_storage_quota, fail_step, fail_step_for_storage_quota,
-    finish_child, fire_timer, heartbeat, lease_step, mark_for_review, pause_run, resolve,
-    resolve_review, resume_run, retry_due, retry_review, satisfy_wait, skip_review, start_run,
-    stop_for_storage_quota, stop_run, time_out_wait,
+    AddressedProgress, Expiry, Failure, Heartbeat, InstanceHeartbeat, Progress, Resolution,
+    advance_scope_compensation, complete_instance, complete_reconciliation,
+    complete_reconciliation_instance, complete_step, expire_attempt, expire_instance,
+    fail_instance, fail_report_for_storage_quota, fail_step, fail_step_for_storage_quota,
+    fail_unentered_loop, finish_child, fire_timer, heartbeat, heartbeat_instance, lease_instance,
+    lease_step, mark_for_review, mark_for_review_instance, pause_run, release_pending, resolve,
+    resolve_review, resolve_review_instance, resume_run, retry_due, retry_due_instance,
+    retry_review, retry_review_instance, satisfy_wait, skip_review, skip_review_instance,
+    start_run, stop_for_storage_quota, stop_run, time_out_wait,
+};
+pub use continuation::{
+    CancelResolution, ChainError, ChainFinalOutcome, ChainHandoff, ChainPolicy, ChainScope,
+    ChildChainLink, ChildObservation, ContinuationProposal, ContinuationTransfer, ExecutionChain,
+    FinalizationResolution, MAX_CHAIN_SEGMENTS, MAX_TREE_RUNS, Quiescence, QuiescenceBlocker,
+    Segment, SegmentCompletionKind, SegmentIndex,
 };
 pub use error::ExecutionError;
 pub use event::{
-    Cause, ChildOutcome, CorrelationKey, FailureCode, Fence, JoinOutcome, PlannedEntry,
-    ReconcileResult, ReviewOutcome, RunEvent, StopReason,
+    AddressedRunEvent, Cause, ChildOutcome, CollectionDrainReason, CollectionOutcome,
+    CorrelationKey, EventAddressError, FailureCode, Fence, JoinOutcome, LoopContinuation,
+    LoopDrainReason, LoopKind, LoopOutcome, PlannedEntry, ReconcileResult, ReviewOutcome, RunEvent,
+    ScopedPlannedEntry, StopReason, SwitchSelection,
 };
-pub use plan::{Evaluation, Plan, plan};
+pub use instance::{
+    ExecutionInstanceId, InstanceIdentityError, InstancePath, MAX_ITERATION_INDEX, MAX_SCOPE_DEPTH,
+    ScopeSegment,
+};
+pub use operations::{
+    DeclaredOperationsState, MAX_OPERATION_NAME_BYTES, MAX_OPERATION_VALUE_BYTES,
+    MAX_UPDATE_KEY_BYTES, OperationAddress, OperationError, OperationScope, OperationValue,
+    QueryResponse, QuerySnapshot, ResultDisclosure, UpdateEvaluation, UpdateKey, UpdateReceipt,
+    UpdateReceiptStatus, UpdateRejection, UpdateRequest, UpdateResolution,
+};
+pub use plan::{AddressedPlan, Evaluation, Plan, plan, plan_addressed};
+pub use scoped_sagas::plan_scope_compensation;
 pub use state::{
-    RunId, RunState, RunStatus, SagaPhase, SagaState, StepState, StepStatus, WaitingOn,
+    CollectionIterationRestore, CollectionPhase, CollectionResult, CollectionState, LoopCheckpoint,
+    LoopIterationRestore, LoopPhase, LoopState, RunChainState, RunId, RunState, RunStatus,
+    SagaPhase, SagaState, ScopeSagaState, StepState, StepStatus, WaitingOn, scope_final_status,
 };

@@ -1,0 +1,46 @@
+{
+  "name": "chain-commands",
+  "description": "All SDKs signal a public wait after an entry activity, replay the same key, reject stale-head commands and cancel the successor.",
+  "workflows": {
+    "chain": {
+      "name": "chain-command-runtime",
+      "chainPolicy": { "maxSegments": 3, "timeoutMs": 86400000 },
+      "program": [
+        { "op": "step", "id": "prepare", "activity": "chain.prepare" },
+        { "op": "waitForEvent", "id": "release", "options": { "eventType": "chain.release", "correlationExpr": "input.key", "timeoutMs": 600000 } },
+        { "op": "continueAsNew", "id": "next", "input": "input" }
+      ]
+    }
+  },
+  "workers": {
+    "current": {
+      "workerName": "chain-command-worker",
+      "protocolVersion": "1.5",
+      "transport": "poll",
+      "maxInflight": 1,
+      "autostart": false,
+      "activities": {
+        "chain.prepare": { "behavior": { "returns": { "ok": true } } }
+      }
+    }
+  },
+  "steps": [
+    { "id": "start", "op": "start", "workflow": "chain", "input": { "key": "order-{{unique}}" } },
+    { "id": "start-worker", "op": "startWorker", "worker": "current" },
+    { "id": "waiting", "op": "awaitJournal", "run": "start", "eventType": "wait.started", "stepId": "release", "timeoutMs": 10000 },
+    { "id": "stop-worker", "op": "stopWorker", "worker": "current" },
+    { "id": "inspect", "op": "inspectChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}" },
+    { "id": "foreign", "op": "inspectChain", "token": "other", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}" },
+    { "id": "signal", "op": "signalChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "expectedRunId": "{{currentRunId:inspect}}", "name": "chain.release", "payload": { "released": true }, "idempotencyKey": "chain-signal-{{unique}}" },
+    { "id": "signal-replay", "op": "signalChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "expectedRunId": "{{currentRunId:inspect}}", "name": "chain.release", "payload": { "released": true }, "idempotencyKey": "chain-signal-{{unique}}" },
+    { "id": "inspect-head", "op": "inspectChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "waitForHeadChange": "{{currentRunId:inspect}}" },
+    { "id": "signal-replay-after-handoff", "op": "signalChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "expectedRunId": "{{currentRunId:inspect}}", "name": "chain.release", "payload": { "released": true }, "idempotencyKey": "chain-signal-{{unique}}" },
+    { "id": "signal-reused-key", "op": "signalChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "expectedRunId": "{{currentRunId:inspect}}", "name": "chain.release", "payload": { "released": false }, "idempotencyKey": "chain-signal-{{unique}}" },
+    { "id": "new-head-no-wait", "op": "signalChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "expectedRunId": "{{currentRunId:inspect-head}}", "name": "chain.release", "payload": { "released": false }, "idempotencyKey": "chain-no-wait-{{unique}}" },
+    { "id": "stale-signal", "op": "signalChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "expectedRunId": "{{currentRunId:inspect}}", "name": "chain.release", "payload": { "released": false }, "idempotencyKey": "chain-stale-signal-{{unique}}" },
+    { "id": "stale-cancel", "op": "cancelChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "expectedRunId": "{{currentRunId:inspect}}", "reason": "stale caller", "idempotencyKey": "chain-stale-{{unique}}" },
+    { "id": "cancel", "op": "cancelChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "expectedRunId": "{{currentRunId:inspect-head}}", "reason": "operator requested cancellation", "idempotencyKey": "chain-cancel-{{unique}}" },
+    { "id": "cancel-replay", "op": "cancelChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "expectedRunId": "{{currentRunId:inspect-head}}", "reason": "operator requested cancellation", "idempotencyKey": "chain-cancel-{{unique}}" },
+    { "id": "chain-done", "op": "waitForChainCompletion", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "timeoutMs": 10000 }
+  ]
+}

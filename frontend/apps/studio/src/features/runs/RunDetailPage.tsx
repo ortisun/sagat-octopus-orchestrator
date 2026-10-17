@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { useParams } from 'react-router';
+import { Link, useParams } from 'react-router';
 import { followRun, isTerminal } from '../../api/follow';
 import type { RuntimeNode } from '../../api/types';
 import { useApp, useCan, useNamespace, useSession } from '../../app/context';
@@ -259,6 +259,15 @@ function RunDetail({ runId }: { runId: string }) {
           onRefresh={refresh}
           refreshing={snapshot.reloading}
         />
+
+        {model?.chain ? (
+          <Banner tone="info" title={`Execution chain · segment ${model.chain.segmentIndex + 1} of ${model.chain.segmentCount}`}>
+            <span>Chain <code>{model.chain.chainId}</code>.</span>{' '}
+            {model.chain.predecessorRunId ? <Link to={`/runs/${model.chain.predecessorRunId}`}>Previous run</Link> : null}{' '}
+            {model.chain.successorRunId ? <Link to={`/runs/${model.chain.successorRunId}`}>Next run</Link> : null}{' '}
+            {model.chain.currentRunId !== runId ? <Link to={`/runs/${model.chain.currentRunId}`}>Current run</Link> : null}
+          </Banner>
+        ) : null}
 
         <div className="rn-run-context">
           <SendSignal runId={runId} status={status} onSent={refresh} />

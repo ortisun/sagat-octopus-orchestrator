@@ -141,7 +141,14 @@ pub async fn world_with_breaker(
     let other_namespace = namespace_in(&t.store, &t.admin_b, "payments", Environment::Dev).await;
     let codec = Arc::new(JsonIrCodec);
     let cache = DefinitionCache::new(codec, 64);
-    let store = PgRunStore::new(db.pool.clone(), cache.clone()).with_breaker(breaker);
+    // `SAGAT_TEST_AS_RUNTIME_ROLE=1` runs the services of the world (engine, workers, schedulers,
+    // dispatchers) as the least-privilege runtime role, the role the engine is required to run as.
+    let store_pool = if super::as_runtime_role() {
+        db.runtime_pool_with(16).await
+    } else {
+        db.pool.clone()
+    };
+    let store = PgRunStore::new(store_pool, cache.clone()).with_breaker(breaker);
     let engine = Engine::new(JsonEvaluator);
     let key_k1 = sagat_infra_secrets::generate_key().expect("a key");
     let keys =
@@ -659,7 +666,12 @@ impl World {
     /// A replica whose pool holds at most `max_connections`, to show that no call needs a second
     /// connection while it holds one.
     pub async fn replica_with_pool(&self, max_connections: u32) -> Replica {
-        let mut config = PoolConfig::new(self.db.url.clone());
+        let mut config = PoolConfig::new(if super::as_runtime_role() {
+            self.db
+                .url_for(super::RUNTIME_ROLE, super::RUNTIME_ROLE_PASSWORD)
+        } else {
+            self.db.url.clone()
+        });
         config.max_connections = max_connections;
         config.acquire_timeout = std::time::Duration::from_secs(2);
         let pool = connect(&config).await.expect("a second pool");
@@ -1039,7 +1051,7 @@ pub struct Session {
 pub fn task_ref(task: &ClaimedTask) -> TaskRef<'_> {
     TaskRef {
         run_id: task.run_id,
-        node: &task.node,
+        instance: &task.instance,
         step_id: Some(task.step_id),
         fence: task.fence,
         lease_token: task.lease_token.expose(),

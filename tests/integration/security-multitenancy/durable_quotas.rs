@@ -154,28 +154,61 @@ async fn migration_backfills_legacy_finalized_blobs_exactly_and_unknown_uploads_
     const BEFORE_DURABLE_QUOTAS: i64 = 20_261_023_000_000;
     const LEGACY_UPLOAD_RESERVATION: i64 = 5 * 1024 * 1024 * 1024;
     let w = world().await;
-    let (workflow, _) = w
+    // The workflow is published on the current schema. The schema then goes back to before the
+    // quotas with no run on it: a run leaves scoped execution identity behind, and returning past
+    // that migration is refused on purpose (feature 014, "keep a compatible reader"). The legacy
+    // run and step are therefore written the way the pre-quota engine wrote them.
+    let (workflow, version) = w
         .publish(document(
             "legacy-blob-backfill",
             "store",
             vec![activity("store")],
         ))
         .await;
-    w.start(workflow, &serde_json::json!({})).await;
     MIGRATOR
         .undo(&w.db.pool, BEFORE_DURABLE_QUOTAS)
         .await
         .expect("return to pre-quota schema");
-    let (run_id, step_id, attempt, generation): (uuid::Uuid, uuid::Uuid, i32, i64) =
-        sqlx::query_as(
-            "SELECT run_id, step_id, attempt, generation FROM steps \
-             WHERE tenant_id = $1 AND namespace_id = $2 LIMIT 1",
-        )
-        .bind(w.admin.tenant_id().as_uuid())
-        .bind(w.namespace.id().as_uuid())
-        .fetch_one(&w.db.pool)
-        .await
-        .expect("seed step");
+    let tenant = w.admin.tenant_id().as_uuid();
+    let run = uuid::Uuid::now_v7();
+    let step_id = uuid::Uuid::now_v7();
+    let legacy_input = [7_u8; 32];
+    sqlx::query(
+        "INSERT INTO payloads (tenant_id, digest, content) VALUES ($1, $2, '{}') \
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(tenant)
+    .bind(legacy_input.as_slice())
+    .execute(&w.db.pool)
+    .await
+    .expect("legacy input payload");
+    sqlx::query(
+        "INSERT INTO runs \
+         (id, tenant_id, namespace_id, workflow_id, workflow_version_id, status, run_version, \
+          input_digest, started_by, created_at, updated_at, root_run_id) \
+         VALUES ($1, $2, $3, $4, $5, 'RUNNING', 1, $6, 'legacy', now(), now(), $1)",
+    )
+    .bind(run)
+    .bind(tenant)
+    .bind(w.namespace.id().as_uuid())
+    .bind(workflow.as_uuid())
+    .bind(version.as_uuid())
+    .bind(legacy_input.as_slice())
+    .execute(&w.db.pool)
+    .await
+    .expect("legacy run");
+    sqlx::query(
+        "INSERT INTO steps (tenant_id, run_id, node, step_id, namespace_id, status, updated_at) \
+         VALUES ($1, $2, 'store', $3, $4, 'READY', now())",
+    )
+    .bind(tenant)
+    .bind(run)
+    .bind(step_id)
+    .bind(w.namespace.id().as_uuid())
+    .execute(&w.db.pool)
+    .await
+    .expect("legacy step");
+    let (run_id, attempt, generation) = (run, 0_i32, 0_i64);
     let uploading = uuid::Uuid::now_v7();
     let uploaded = uuid::Uuid::now_v7();
     sqlx::query(

@@ -8,7 +8,7 @@ SDK uses its own conventions (`startRun` / `StartRun` / `start_run` / `StartAsyn
 
 An SDK is three things in one package and **nothing else**:
 
-1. a **client** (REST): start, read, list, cancel and signal runs, publish events;
+1. a **client** (REST): start, read, list, cancel and signal runs, decide approvals, publish events;
 2. a **worker host** (gRPC, `worker.proto`): register activities, take leases, heartbeat, complete or
    fail, with cancellation and the saga/reconciliation task kinds;
 3. **workflow builders**: typed, side-effect-free constructors of the workflow IR
@@ -97,13 +97,26 @@ All calls are `<apiUrl><path>` with `Authorization: Bearer <token>`, `Accept: ap
 | `startWithBlob(workflowId, descriptor, options)` | `POST /runs` with `{workflowId, versionId?, inputBlobRef: descriptor.id, correlationId?, deadline?}`, header `Idempotency-Key` | `202` Run |
 | `get(runId)` | `GET /runs/{runId}` | `200` Run |
 | `list(options)` | `GET /runs?workflowId=&status=&limit=&cursor=` | `200` `{items, nextCursor}`; `listAll` pages for the caller |
+| `listApprovals(runId, options)` | `GET /runs/{runId}/approvals?limit=&cursor=` | `200` ApprovalPage; `listAllApprovals` follows opaque cursors |
 | `cancel(runId, reason, options)` | `POST /runs/{runId}/operations` with `{action: "CANCEL", reason, expectedRunVersion?}`, `Idempotency-Key` | `202` OperationResult |
 | `signal(runId, name, payload, options)` | `POST /runs/{runId}/signals/{name}` with the payload object, `Idempotency-Key` | `202` `{deliveredTo}` |
+| `decideApproval(approvalId, decision, options)` | `POST /approvals/{approvalId}/decisions` with `{decisionKey, decision: APPROVE \| REJECT, reasonCode?}` | `200` ApprovalDecisionReceipt |
+| `query(runId, name, args, options)` | `POST /runs/{runId}/queries/{name}` with `{args}` | `200` QueryResult with the observed run and state revisions |
+| `queryChain(namespaceId, chainId, name, args, options)` | `POST /namespaces/{namespaceId}/chains/{chainId}/queries/{name}` with `{args, expectedRunId?}` | `200` QueryResult for the head resolved under the chain lock |
+| `update(runId, name, args, options)` | `POST /runs/{runId}/updates/{name}` with `{updateKey, args, expectedStateRevision?}` | `200` UpdateReceipt |
+| `inspectChain(namespaceId, chainId)` | `GET /namespaces/{namespaceId}/chains/{chainId}` | `200` ChainInspection |
+| `listChainRuns(namespaceId, chainId, options)` | `GET /namespaces/{namespaceId}/chains/{chainId}/runs?limit=&cursor=` | `200` ChainRunPage `{items, nextCursor}` in segment order; `listAllChainRuns` follows opaque cursors |
+| `signalChain(namespaceId, chainId, name, payload, options)` | `POST /namespaces/{namespaceId}/chains/{chainId}/signals/{name}` with `{expectedRunId, payload}`, `Idempotency-Key` | `202` `{deliveredTo}` |
+| `cancelChain(namespaceId, chainId, reason, options)` | `POST /namespaces/{namespaceId}/chains/{chainId}/cancel` with `{expectedRunId, reason}`, `Idempotency-Key` | `202` empty |
 | `publishEvent(event)` | `POST /events` with `{eventId, type, data, subject?, occurredAt?, correlationKey?, dedupeTtlSeconds?}` | `202` `{eventId, source, status: ACCEPTED \| DUPLICATE}` |
 | `waitForCompletion(runId, options)` | polls `get` every `pollInterval` (default 500 ms, ±20 % jitter) until the status is terminal or `timeout` | the final Run |
 
-Also exposed, thin: `operate(runId, action, reason, options)` for `PAUSE`, `RESUME` and the saga
-decisions, `events(runId, cursor)` for the journal. Terminal statuses: `SUCCEEDED`, `FAILED`,
+Also exposed, thin: `operate(runId, action, reason, options)` for `PAUSE`, `RESUME`, `RERUN_AS_NEW` and the saga
+decisions, `events(runId, cursor)` for the journal. `rerunAsNew(runId, reason, options)` is `operate` with
+`RERUN_AS_NEW`: it starts a new run of the same version, with the same input and correlation id, from a run that
+ended (a run that has not ended is `CONFLICT`). The `OperationResult` names it in `newRunId` (absent for every other
+action) and the new run names its origin in `Run.rerunOf` (absent for a run that is not a rerun). A rerun of a
+segment of a continuation chain is an unrelated run with a chain, a deadline and a segment 0 of its own. Terminal statuses: `SUCCEEDED`, `FAILED`,
 `CANCELLED`, `TIMED_OUT`, `COMPENSATED`, `PARTIAL`, `COMPENSATION_FAILED`.
 
 Rules:
@@ -113,6 +126,28 @@ Rules:
   separate calls with no key are two runs.
 - `publishEvent`'s `eventId` works the same way: the caller's, or generated per call and kept across
   retries, so an event is admitted once per window and a retry is answered `DUPLICATE`.
+- An approval decision key is 1 to 128 visible ASCII characters and lives in the request body. The SDK
+  requires it, sends no `Idempotency-Key` header, and may safely retry the exact same body. A replay
+  returns the original receipt with `replayed: true`; changing the body under the same key is a
+  `CONFLICT` with reason `IDEMPOTENCY_KEY_REUSED`. The receipt is typed and retains the raw JSON.
+- Approval pages preserve immutable opening order and expose only the request identity, run/node instance,
+  closed status, deadline and settlement time returned by the server. They do not infer eligibility,
+  policy or actor data. A page is bounded to 200 entries and `listAllApprovals` treats `nextCursor` as opaque.
+- A declared operation name is 1 to 128 characters and matches `[A-Za-z0-9][A-Za-z0-9_.:-]*`.
+  An update key is 1 to 128 visible ASCII characters. It lives in the body, is required, and is
+  preserved with the exact arguments and expected revision across retries. Query and update results
+  are typed, retain raw JSON and expose the exact committed revisions returned by the server.
+- Chain commands require the namespace UUID and chain UUID because the chain is a namespace-scoped
+  resource. Every mutating command carries the caller's observed `expectedRunId`; a delayed command
+  fails with `CHAIN_HEAD_CHANGED` instead of reaching a replacement head. The SDK generates or accepts
+  an `Idempotency-Key` and preserves the exact key and body across retries.
+- A `Run` read inside a continuation chain carries its `chain` segment (`chainId`, `segmentIndex`,
+  `completionKind` `CONTINUED` | `FINAL` | none while open, `successorRunId`); a run outside any chain has none.
+  A segment that is `SUCCEEDED` with `CONTINUED` ended into its successor and is **not** the process outcome:
+  `waitForCompletion` is a segment wait, `waitForChainCompletion` waits for the chain's final outcome. A chain run
+  page is bounded to 200 entries, in segment order, carries lineage and lifecycle only (no input, output or
+  state), and treats `nextCursor` as opaque. An unknown `completionKind` or an index above 9,999 is a
+  `PROTOCOL` error.
 - `start` with a `deadline` sends an RFC 3339 instant in UTC (`...Z`); the SDK **MUST NOT** send a local
   offset it computed. A `deadline` option as a duration is converted by the SDK from the clock at the
   call, once, before the first attempt.
@@ -154,6 +189,8 @@ jitter (`min(maxDelay, initialDelay * 2^n)` scaled by a random factor in `[0.5, 
 |---|---|
 | `GET` (REST) | `TRANSPORT`, `UNAVAILABLE`, `RATE_LIMITED`, `INTERNAL` with `retryable` true |
 | `POST` that carries an idempotency key or event id | the same; **never** after any other answer |
+| approval decision with its body `decisionKey` | the same, with the exact same body |
+| declared query, and declared update with its body `updateKey` | the same, with the exact same body |
 | `uploadRunInput` | never: its one-pass body is not replayable |
 | worker `PollTasks`, `Heartbeat` | `UNAVAILABLE`, `RESOURCE_EXHAUSTED`, transport failures |
 | worker `CompleteStep`, `FailStep` | the same, with the **same** idempotency key and body; at most 5 times |
@@ -187,7 +224,7 @@ pools, max_inflight, protocol_version}}`:
   1 to 256.
 - `max_inflight`: the host's concurrency limit, 1 to 1000 (default 10).
 - `protocol_version`: the newest minor version of protocol 1 the SDK speaks — a constant of the SDK,
-  `1.4` for SDK 0.1 (`1` is `1.0`). The server answers `accepted_protocol_version`: the newest both
+  `1.5` for SDK 0.1 (`1` is `1.0`). The server answers `accepted_protocol_version`: the newest both
   speak (the worker's own if it is not newer than the server's, the server's otherwise). The host **MUST**
   use only the features of the accepted version: against `1` it sends `Heartbeat` without the step
   identity (`run_id`, `step_id`, `attempt`) and does not call `ResolveSecrets`; against `1.1` it does
@@ -195,6 +232,17 @@ pools, max_inflight, protocol_version}}`:
   the server (`UNSUPPORTED_PROTOCOL`); the host does not retry it.
 - The host exposes the accepted version (`host.protocolVersion`).
 - There is one live session per worker name and identity: registering again replaces it (§6.2).
+- Protocol `1.5` adds the execution-instance identity to a lease. When `1.5` is accepted, the host
+  echoes the identity supplied by the server on heartbeat, completion, failure, secret resolution,
+  blob upload and blob read. It does not construct or alter this identity. When `1.4` or older is
+  accepted, the host omits it from every request, even if an additive field is present on the lease.
+  The server uses the echoed identity with the lease fence and tenant-bound worker session; an SDK
+  never treats the identity alone as authorization.
+- The activity context exposes a copied, typed `ExecutionInstanceIdentity` only when protocol `1.5`
+  was accepted and the lease supplied it. Its ordered path contains `{scopeNodeId, iterationIndex}`
+  segments and its `definitionNodeId` identifies the node activated at that path. The field is absent
+  at protocol `1.4` or older. Reports still echo the original lease field, so handler code cannot
+  change the identity used for authorization or fencing.
 
 ### 6.2 The loop
 
@@ -226,12 +274,14 @@ For a `TaskLease` the host:
 
 1. finds the handler by `activity_name`; none → `FailStep(error_code = "NO_HANDLER", retryable = false)`
    (the server would not have leased it to a worker that did not advertise it, so this is a bug report);
-2. parses `input_json` — the **step document** `{run: {id}, node, input, steps: {<node>: {output}}}` —
+2. parses `input_json` — the **step document** `{run: {id}, node, input, steps: {<node>: {output}}}`,
+   with `{item,index}` for an admitted collection instance —
    and hands the handler `input` (the run's input) typed by the handler's declared type, plus the context
    (`ctx`): `activityName`, `taskId`, `runId`, `node` (the node id of the workflow definition, `node` of the step document;
    the lease's `step_id` when the document has none), `stepId` (the lease's `step_id`, a UUID, which the reports carry), `attempt`, `generation`,
    `idempotencyKey`, `traceparent`, `deadline`, `taskKind` (`FORWARD` when empty, `COMPENSATION`,
-   `RECONCILIATION`), `targetNode`, `targetIdempotencyKey`, `steps` (the outputs of earlier steps,
+   `RECONCILIATION`), `targetNode`, `targetIdempotencyKey`, `item`/`index` (the immutable captured value
+   and index for collection work; absent otherwise), `steps` (the outputs of earlier steps,
    by node), a cancellation token, a logger and `secrets()`;
 3. starts the **heartbeat** before the handler and keeps it until the report is made (§6.4);
 4. runs the handler with the lease as its deadline; its result is the output;

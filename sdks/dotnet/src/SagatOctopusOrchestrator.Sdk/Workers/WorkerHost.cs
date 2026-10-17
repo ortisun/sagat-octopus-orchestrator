@@ -634,6 +634,7 @@ public sealed partial class WorkerHost : IWorkerHost
     {
         try
         {
+            var protocolMinor = minor;
             var id = Interlocked.Increment(ref sequence);
             var entry = new InFlight(new TaskRuntime(lease.ExpiresAtEpochMs));
             inflight[id] = entry;
@@ -645,7 +646,7 @@ public sealed partial class WorkerHost : IWorkerHost
                 {
                     try
                     {
-                        await ExecuteAsync(lease, entry.Runtime, session).ConfigureAwait(false);
+                        await ExecuteAsync(lease, entry.Runtime, session, protocolMinor).ConfigureAwait(false);
                     }
 #pragma warning disable CA1031 // A bug in one task must not take the host down.
                     catch (Exception error)
@@ -679,7 +680,7 @@ public sealed partial class WorkerHost : IWorkerHost
         }
     }
 
-    private async Task ExecuteAsync(TaskLease lease, TaskRuntime runtime, Session session)
+    private async Task ExecuteAsync(TaskLease lease, TaskRuntime runtime, Session session, int protocolMinor)
     {
         var started = Stopwatch.GetTimestamp();
         ActivityRegistration? registered;
@@ -689,7 +690,7 @@ public sealed partial class WorkerHost : IWorkerHost
         }
 
         // `task_kind` came with 1.2: against an older server every task is a forward one, whatever the field says.
-        var kind = minor < 2
+        var kind = protocolMinor < 2
             ? TaskKind.Forward
             : lease.TaskKind switch
             {
@@ -707,7 +708,7 @@ public sealed partial class WorkerHost : IWorkerHost
         });
         try
         {
-            await ExecuteInAsync(lease, runtime, session, kind, started, registered, span).ConfigureAwait(false);
+            await ExecuteInAsync(lease, runtime, session, protocolMinor, kind, started, registered, span).ConfigureAwait(false);
         }
         finally
         {
@@ -715,11 +716,11 @@ public sealed partial class WorkerHost : IWorkerHost
         }
     }
 
-    private async Task ExecuteInAsync(TaskLease lease, TaskRuntime runtime, Session session, TaskKind kind, long started, ActivityRegistration? registered, Activity? span)
+    private async Task ExecuteInAsync(TaskLease lease, TaskRuntime runtime, Session session, int protocolMinor, TaskKind kind, long started, ActivityRegistration? registered, Activity? span)
     {
         if (registered is null)
         {
-            await FailAsync(session, lease, "NO_HANDLER", "no handler is registered for the activity", retryable: false, started, span).ConfigureAwait(false);
+            await FailAsync(session, lease, protocolMinor, "NO_HANDLER", "no handler is registered for the activity", retryable: false, started, span).ConfigureAwait(false);
             return;
         }
 
@@ -732,7 +733,7 @@ public sealed partial class WorkerHost : IWorkerHost
             }
             catch (JsonException)
             {
-                await FailAsync(session, lease, "INPUT_INVALID", "the step document is not JSON", retryable: false, started, span).ConfigureAwait(false);
+                await FailAsync(session, lease, protocolMinor, "INPUT_INVALID", "the step document is not JSON", retryable: false, started, span).ConfigureAwait(false);
                 return;
             }
 
@@ -742,6 +743,25 @@ public sealed partial class WorkerHost : IWorkerHost
             var node = hasRoot && root.TryGetProperty("node", out var nodeElement) && nodeElement.ValueKind == JsonValueKind.String && nodeElement.GetString() is { Length: > 0 } nodeId
                 ? nodeId
                 : lease.StepId;
+            JsonElement? item = null;
+            uint? index = null;
+            if (protocolMinor >= 5 && lease.Instance is not null && lease.Instance.InstancePath.Count > 0)
+            {
+                var itemElement = default(JsonElement);
+                var indexElement = default(JsonElement);
+                var hasItem = hasRoot && root.TryGetProperty("item", out itemElement);
+                var hasIndex = hasRoot && root.TryGetProperty("index", out indexElement);
+                if (hasItem || hasIndex)
+                {
+                    if (!hasItem || !hasIndex || !indexElement.TryGetUInt32(out var parsedIndex))
+                    {
+                        await FailAsync(session, lease, protocolMinor, "INPUT_INVALID", "the collection item context is malformed", retryable: false, started, span).ConfigureAwait(false);
+                        return;
+                    }
+                    item = itemElement.Clone();
+                    index = parsedIndex;
+                }
+            }
 
             object? typed;
             try
@@ -752,7 +772,7 @@ public sealed partial class WorkerHost : IWorkerHost
             catch (Exception)
 #pragma warning restore CA1031
             {
-                await FailAsync(session, lease, "INPUT_INVALID", "the input does not have the type of the handler", retryable: false, started, span).ConfigureAwait(false);
+                await FailAsync(session, lease, protocolMinor, "INPUT_INVALID", "the input does not have the type of the handler", retryable: false, started, span).ConfigureAwait(false);
                 return;
             }
 
@@ -768,7 +788,7 @@ public sealed partial class WorkerHost : IWorkerHost
                 }
             }
 
-            using var secretsLoader = new SecretsLoader(this, lease, session);
+            using var secretsLoader = new SecretsLoader(lease, session, protocolMinor);
             var context = new ActivityExecutionContext(
                 runtime,
                 lease.ActivityName,
@@ -778,18 +798,25 @@ public sealed partial class WorkerHost : IWorkerHost
                 lease.StepId,
                 lease.Attempt,
                 lease.Generation,
+                protocolMinor >= 5 && lease.Instance is not null
+                    ? new global::SagatOctopusOrchestrator.Sdk.Workers.ExecutionInstanceIdentity(
+                        lease.Instance.InstancePath.Select(segment => new ExecutionScope(segment.ScopeNodeId, segment.IterationIndex)).ToArray(),
+                        lease.Instance.DefinitionNodeId)
+                    : null,
+                item,
+                index,
                 lease.IdempotencyKey,
                 lease.Traceparent,
                 kind,
-                minor >= 2 ? lease.TargetNode : string.Empty,
-                minor >= 2 ? lease.TargetIdempotencyKey : string.Empty,
+                protocolMinor >= 2 ? lease.TargetNode : string.Empty,
+                protocolMinor >= 2 ? lease.TargetIdempotencyKey : string.Empty,
                 steps,
                 ContextLogger(lease.ActivityName),
                 secretsLoader.GetAsync,
-                (source, blobOptions, cancellationToken) => WriteBlobAsync(session, lease, runtime, source, blobOptions, cancellationToken),
-                (descriptor, cancellationToken) => ReadBlobAsync(session, lease, runtime, descriptor, cancellationToken));
+                (source, blobOptions, cancellationToken) => WriteBlobAsync(session, lease, runtime, protocolMinor, source, blobOptions, cancellationToken),
+                (descriptor, cancellationToken) => ReadBlobAsync(session, lease, runtime, protocolMinor, descriptor, cancellationToken));
 
-            await RunAndReportAsync(session, lease, runtime, registered, typed, context, secretsLoader, started, span).ConfigureAwait(false);
+            await RunAndReportAsync(session, lease, runtime, protocolMinor, registered, typed, context, secretsLoader, started, span).ConfigureAwait(false);
         }
         finally
         {
@@ -805,6 +832,7 @@ public sealed partial class WorkerHost : IWorkerHost
         Session session,
         TaskLease lease,
         TaskRuntime runtime,
+        int protocolMinor,
         ActivityRegistration registered,
         object? typed,
         ActivityExecutionContext context,
@@ -813,7 +841,7 @@ public sealed partial class WorkerHost : IWorkerHost
         Activity? span)
     {
         using var stopBeat = new CancellationTokenSource();
-        var heartbeat = BeatAsync(session, lease, runtime, stopBeat.Token);
+        var heartbeat = BeatAsync(session, lease, runtime, protocolMinor, stopBeat.Token);
         try
         {
             ActivityResult? result = null;
@@ -862,13 +890,13 @@ public sealed partial class WorkerHost : IWorkerHost
 
             if (failure is not null)
             {
-                await FailAsync(session, lease, failure.Code, failure.Message, failure.IsRetryable, started, span).ConfigureAwait(false);
+                await FailAsync(session, lease, protocolMinor, failure.Code, failure.Message, failure.IsRetryable, started, span).ConfigureAwait(false);
                 return;
             }
 
             if (result is VerdictResult { Verdict: null })
             {
-                await FailAsync(session, lease, "RECONCILIATION_ANSWER_INVALID", "a reconciler answers applied, notApplied or unknown", retryable: false, started, span).ConfigureAwait(false);
+                await FailAsync(session, lease, protocolMinor, "RECONCILIATION_ANSWER_INVALID", "a reconciler answers applied, notApplied or unknown", retryable: false, started, span).ConfigureAwait(false);
                 return;
             }
 
@@ -876,9 +904,9 @@ public sealed partial class WorkerHost : IWorkerHost
             string output;
             if (blob is not null)
             {
-                if (minor < 3)
+                if (protocolMinor < 3)
                 {
-                    await FailAsync(session, lease, "UNSUPPORTED_PROTOCOL", "blob output requires worker protocol 1.3", retryable: false, started, span).ConfigureAwait(false);
+                    await FailAsync(session, lease, protocolMinor, "UNSUPPORTED_PROTOCOL", "blob output requires worker protocol 1.3", retryable: false, started, span).ConfigureAwait(false);
                     return;
                 }
 
@@ -888,7 +916,7 @@ public sealed partial class WorkerHost : IWorkerHost
                 }
                 catch (SagatException)
                 {
-                    await FailAsync(session, lease, "OUTPUT_INVALID", "the blob output descriptor is malformed", retryable: false, started, span).ConfigureAwait(false);
+                    await FailAsync(session, lease, protocolMinor, "OUTPUT_INVALID", "the blob output descriptor is malformed", retryable: false, started, span).ConfigureAwait(false);
                     return;
                 }
 
@@ -902,18 +930,18 @@ public sealed partial class WorkerHost : IWorkerHost
                 }
                 catch (SagatException error)
                 {
-                    await FailAsync(session, lease, "OUTPUT_INVALID", error.Message, retryable: false, started, span).ConfigureAwait(false);
+                    await FailAsync(session, lease, protocolMinor, "OUTPUT_INVALID", error.Message, retryable: false, started, span).ConfigureAwait(false);
                     return;
                 }
             }
 
             if (Encoding.UTF8.GetByteCount(output) > MaxOutputBytes)
             {
-                await FailAsync(session, lease, "PAYLOAD_TOO_LARGE", "the output is over 256 KiB", retryable: false, started, span).ConfigureAwait(false);
+                await FailAsync(session, lease, protocolMinor, "PAYLOAD_TOO_LARGE", "the output is over 256 KiB", retryable: false, started, span).ConfigureAwait(false);
                 return;
             }
 
-            await CompleteAsync(session, lease, output, blob, started, span).ConfigureAwait(false);
+            await CompleteAsync(session, lease, protocolMinor, output, blob, started, span).ConfigureAwait(false);
         }
         finally
         {
@@ -932,10 +960,11 @@ public sealed partial class WorkerHost : IWorkerHost
     private static bool IsCancellation(Exception error) =>
         error is OperationCanceledException || (error is SagatException { Code: SagatErrorCode.Cancelled });
 
-    private async Task<BlobDescriptor> WriteBlobAsync(
+    private static async Task<BlobDescriptor> WriteBlobAsync(
         Session session,
         TaskLease lease,
         TaskRuntime runtime,
+        int protocolMinor,
         Stream source,
         BlobWriteOptions blobOptions,
         CancellationToken cancellationToken)
@@ -945,19 +974,20 @@ public sealed partial class WorkerHost : IWorkerHost
             throw SagatException.Invalid("the attempt is over");
         }
 
-        if (minor < 3)
+        if (protocolMinor < 3)
         {
             throw new SagatException(SagatErrorCode.UnsupportedProtocol, "blob streaming requires worker protocol 1.3");
         }
 
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(runtime.Abort.Token, cancellationToken);
-        return await Blobs.WriteAsync(session.Rpc, lease, source, blobOptions, linked.Token).ConfigureAwait(false);
+        return await Blobs.WriteAsync(session.Rpc, lease, protocolMinor >= 5, source, blobOptions, linked.Token).ConfigureAwait(false);
     }
 
-    private async IAsyncEnumerable<ReadOnlyMemory<byte>> ReadBlobAsync(
+    private static async IAsyncEnumerable<ReadOnlyMemory<byte>> ReadBlobAsync(
         Session session,
         TaskLease lease,
         TaskRuntime runtime,
+        int protocolMinor,
         BlobDescriptor descriptor,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
@@ -966,13 +996,13 @@ public sealed partial class WorkerHost : IWorkerHost
             throw SagatException.Invalid("the attempt is over");
         }
 
-        if (minor < 3)
+        if (protocolMinor < 3)
         {
             throw new SagatException(SagatErrorCode.UnsupportedProtocol, "blob streaming requires worker protocol 1.3");
         }
 
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(runtime.Abort.Token, cancellationToken);
-        await foreach (var chunk in Blobs.ReadAsync(session.Rpc, lease, descriptor, linked.Token).ConfigureAwait(false))
+        await foreach (var chunk in Blobs.ReadAsync(session.Rpc, lease, protocolMinor >= 5, descriptor, linked.Token).ConfigureAwait(false))
         {
             yield return chunk;
         }
@@ -1012,10 +1042,10 @@ public sealed partial class WorkerHost : IWorkerHost
 
     // ----------------------------------------------------------------------------------- heartbeat
 
-    private Task BeatAsync(Session session, TaskLease lease, TaskRuntime runtime, CancellationToken stop)
+    private Task BeatAsync(Session session, TaskLease lease, TaskRuntime runtime, int protocolMinor, CancellationToken stop)
     {
         var channel = session.Rpc;
-        var identity = minor >= 1;
+        var identity = protocolMinor >= 1;
 
         var interval = options.Worker.HeartbeatInterval ?? runtime.HeartbeatInterval;
 
@@ -1027,19 +1057,25 @@ public sealed partial class WorkerHost : IWorkerHost
                     try
                     {
                         await Task.Delay(interval, stop).ConfigureAwait(false);
-                        var answer = await channel.HeartbeatAsync(
-                            new HeartbeatRequest
-                            {
-                                TaskId = lease.TaskId,
-                                WorkerId = workerId,
-                                Generation = lease.Generation,
-                                LeaseToken = lease.LeaseToken,
+                        var request = new HeartbeatRequest
+                        {
+                            TaskId = lease.TaskId,
+                            WorkerId = workerId,
+                            Generation = lease.Generation,
+                            LeaseToken = lease.LeaseToken,
 
-                                // The step identity came with 1.1.
-                                RunId = identity ? lease.RunId : string.Empty,
-                                StepId = identity ? lease.StepId : string.Empty,
-                                Attempt = identity ? lease.Attempt : 0,
-                            },
+                            // The step identity came with 1.1.
+                            RunId = identity ? lease.RunId : string.Empty,
+                            StepId = identity ? lease.StepId : string.Empty,
+                            Attempt = identity ? lease.Attempt : 0,
+                        };
+                        if (protocolMinor >= 5 && lease.Instance is not null)
+                        {
+                            request.Instance = lease.Instance;
+                        }
+
+                        var answer = await channel.HeartbeatAsync(
+                            request,
                             lease.Traceparent.Length > 0 ? lease.Traceparent : null,
                             stop).ConfigureAwait(false);
                         Safe.Add(Telemetry.Heartbeats, tags);
@@ -1125,26 +1161,32 @@ public sealed partial class WorkerHost : IWorkerHost
         }
     }
 
-    private async Task CompleteAsync(Session session, TaskLease lease, string output, BlobDescriptor? blob, long started, Activity? span)
+    private async Task CompleteAsync(Session session, TaskLease lease, int protocolMinor, string output, BlobDescriptor? blob, long started, Activity? span)
     {
         var channel = session.Rpc;
         try
         {
+            var request = new CompleteStepRequest
+            {
+                TaskId = lease.TaskId,
+                RunId = lease.RunId,
+                StepId = lease.StepId,
+                Attempt = lease.Attempt,
+                Generation = lease.Generation,
+                LeaseToken = lease.LeaseToken,
+                IdempotencyKey = "done-" + lease.TaskId,
+                OutputJson = output,
+                OutputBlobRef = blob?.Id ?? string.Empty,
+                OutputSha256 = blob?.Sha256 ?? string.Empty,
+                Traceparent = lease.Traceparent,
+            };
+            if (protocolMinor >= 5 && lease.Instance is not null)
+            {
+                request.Instance = lease.Instance;
+            }
+
             var reported = await WithRetriesAsync(session, token => channel.CompleteStepAsync(
-                new CompleteStepRequest
-                {
-                    TaskId = lease.TaskId,
-                    RunId = lease.RunId,
-                    StepId = lease.StepId,
-                    Attempt = lease.Attempt,
-                    Generation = lease.Generation,
-                    LeaseToken = lease.LeaseToken,
-                    IdempotencyKey = "done-" + lease.TaskId,
-                    OutputJson = output,
-                    OutputBlobRef = blob?.Id ?? string.Empty,
-                    OutputSha256 = blob?.Sha256 ?? string.Empty,
-                    Traceparent = lease.Traceparent,
-                },
+                request,
                 lease.Traceparent.Length > 0 ? lease.Traceparent : null,
                 token)).ConfigureAwait(false);
             if (!reported)
@@ -1169,27 +1211,33 @@ public sealed partial class WorkerHost : IWorkerHost
         }
     }
 
-    private async Task FailAsync(Session session, TaskLease lease, string code, string message, bool retryable, long started, Activity? span)
+    private async Task FailAsync(Session session, TaskLease lease, int protocolMinor, string code, string message, bool retryable, long started, Activity? span)
     {
         var channel = session.Rpc;
         var safeCode = CodePattern().IsMatch(code) ? code : "WORKER_ERROR";
         try
         {
+            var request = new FailStepRequest
+            {
+                TaskId = lease.TaskId,
+                RunId = lease.RunId,
+                StepId = lease.StepId,
+                Attempt = lease.Attempt,
+                Generation = lease.Generation,
+                LeaseToken = lease.LeaseToken,
+                IdempotencyKey = "failed-" + lease.TaskId,
+                ErrorCode = safeCode,
+                SafeMessage = Cut(message),
+                Retryable = retryable,
+                Traceparent = lease.Traceparent,
+            };
+            if (protocolMinor >= 5 && lease.Instance is not null)
+            {
+                request.Instance = lease.Instance;
+            }
+
             var reported = await WithRetriesAsync(session, token => channel.FailStepAsync(
-                new FailStepRequest
-                {
-                    TaskId = lease.TaskId,
-                    RunId = lease.RunId,
-                    StepId = lease.StepId,
-                    Attempt = lease.Attempt,
-                    Generation = lease.Generation,
-                    LeaseToken = lease.LeaseToken,
-                    IdempotencyKey = "failed-" + lease.TaskId,
-                    ErrorCode = safeCode,
-                    SafeMessage = Cut(message),
-                    Retryable = retryable,
-                    Traceparent = lease.Traceparent,
-                },
+                request,
                 lease.Traceparent.Length > 0 ? lease.Traceparent : null,
                 token)).ConfigureAwait(false);
             if (!reported)
@@ -1248,24 +1296,30 @@ public sealed partial class WorkerHost : IWorkerHost
 
     // --------------------------------------------------------------------------------------- secrets
 
-    private async Task<ActivitySecrets> ResolveSecretsAsync(Session session, TaskLease lease, CancellationToken cancellationToken)
+    private static async Task<ActivitySecrets> ResolveSecretsAsync(Session session, TaskLease lease, int protocolMinor, CancellationToken cancellationToken)
     {
-        if (minor < 2)
+        if (protocolMinor < 2)
         {
             throw new SagatException(SagatErrorCode.UnsupportedProtocol, "the server speaks a protocol older than 1.2, which has no ResolveSecrets");
         }
 
+        var request = new ResolveSecretsRequest
+        {
+            TaskId = lease.TaskId,
+            RunId = lease.RunId,
+            StepId = lease.StepId,
+            Attempt = lease.Attempt,
+            Generation = lease.Generation,
+            LeaseToken = lease.LeaseToken,
+            Traceparent = lease.Traceparent,
+        };
+        if (protocolMinor >= 5 && lease.Instance is not null)
+        {
+            request.Instance = lease.Instance;
+        }
+
         var answer = await session.Rpc.ResolveSecretsAsync(
-            new ResolveSecretsRequest
-            {
-                TaskId = lease.TaskId,
-                RunId = lease.RunId,
-                StepId = lease.StepId,
-                Attempt = lease.Attempt,
-                Generation = lease.Generation,
-                LeaseToken = lease.LeaseToken,
-                Traceparent = lease.Traceparent,
-            },
+            request,
             lease.Traceparent.Length > 0 ? lease.Traceparent : null,
             cancellationToken).ConfigureAwait(false);
         var values = new Dictionary<string, byte[]>(StringComparer.Ordinal);
@@ -1281,7 +1335,7 @@ public sealed partial class WorkerHost : IWorkerHost
     /// Resolves the secrets of one attempt once, on first use (a failed resolution is not remembered), and wipes them when the handler returns:
     /// after that nothing can be asked for.
     /// </summary>
-    private sealed class SecretsLoader(WorkerHost host, TaskLease lease, Session session) : IDisposable
+    private sealed class SecretsLoader(TaskLease lease, Session session, int protocolMinor) : IDisposable
     {
         private readonly SemaphoreSlim gate = new(1, 1);
         private ActivitySecrets? loaded;
@@ -1294,7 +1348,7 @@ public sealed partial class WorkerHost : IWorkerHost
             {
                 return Volatile.Read(ref closed)
                     ? throw SagatException.Invalid("the secrets of an attempt are not available once its handler has returned")
-                    : loaded ??= await host.ResolveSecretsAsync(session, lease, cancellationToken).ConfigureAwait(false);
+                    : loaded ??= await ResolveSecretsAsync(session, lease, protocolMinor, cancellationToken).ConfigureAwait(false);
             }
             finally
             {

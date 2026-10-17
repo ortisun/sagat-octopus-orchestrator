@@ -1,0 +1,43 @@
+{
+  "canonical": {
+    "chain": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"chainPolicy\":{\"maxSegments\":4,\"timeoutMs\":86400000},\"entrypoint\":\"work\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"chain-three-segments-runtime\"},\"nodes\":[{\"activity\":\"chain.work\",\"id\":\"work\",\"next\":\"again\",\"type\":\"activity\"},{\"expression\":\"input.continue\",\"id\":\"again\",\"ifFalse\":\"done\",\"ifTrue\":\"rollover\",\"type\":\"condition\"},{\"id\":\"rollover\",\"input\":\"input.next\",\"type\":\"continueAsNew\"},{\"id\":\"done\",\"type\":\"end\"}]}"
+  },
+  "workflows": {
+    "chain": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "chainPolicy": {
+        "maxSegments": 4,
+        "timeoutMs": 86400000
+      },
+      "entrypoint": "work",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "chain-three-segments-runtime"
+      },
+      "nodes": [
+        {
+          "activity": "chain.work",
+          "id": "work",
+          "next": "again",
+          "type": "activity"
+        },
+        {
+          "expression": "input.continue",
+          "id": "again",
+          "ifFalse": "done",
+          "ifTrue": "rollover",
+          "type": "condition"
+        },
+        {
+          "id": "rollover",
+          "input": "input.next",
+          "type": "continueAsNew"
+        },
+        {
+          "id": "done",
+          "type": "end"
+        }
+      ]
+    }
+  }
+}

@@ -31,6 +31,7 @@
   "workers": {
     "w1": {
       "workerName": "lifecycle-worker",
+      "protocolVersion": "1.4",
       "maxInflight": 4,
       "autostart": false,
       "heartbeatIntervalMs": 200,

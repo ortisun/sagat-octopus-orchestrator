@@ -7,14 +7,19 @@
 //! and commits them together (`FR-002-002`, `FR-002-003`). If the transaction is dropped without a
 //! commit, nothing happened.
 
+mod collection_plan;
+#[cfg(test)]
+mod instance_port_tests;
+
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::Arc;
 
 use sagat_domain::definition::{WorkflowId, WorkflowVersionId};
 use sagat_domain::execution::{
-    CorrelationKey, Evaluation, ExecutionError, FailureCode, Progress, Resolution, RunEvent, RunId,
-    RunState, RunStatus, StopReason,
+    AddressedRunEvent, CorrelationKey, Evaluation, ExecutionError, ExecutionInstanceId,
+    FailureCode, InstancePath, Progress, Resolution, RunEvent, RunId, RunState, RunStatus,
+    StopReason,
 };
 use sagat_domain::identity::{NamespaceId, TenantId};
 use sagat_domain::workflow::{ActivityName, CancelPolicy, Expression, NodeId, WorkflowDefinition};
@@ -25,6 +30,7 @@ use sagat_domain::audit::AuditRecord;
 use crate::blobs::BlobCommit;
 use crate::definitions::{Idempotency, IrCodec, IrError};
 use crate::error::StoreError;
+use crate::loop_progress::{LoopCheckpointEvaluation, LoopEntryEvaluation};
 use crate::secrets::{SecretInputs, StoredSecret};
 use sagat_domain::secrets::SecretName;
 
@@ -34,7 +40,7 @@ pub const MAX_PAYLOAD_BYTES: usize = 256 * 1024;
 
 /// Most runs one tree may hold: a root run and all its descendants. Depth alone does not bound a
 /// tree (a parallel node can start hundreds of children per level), so the whole tree has a budget.
-pub const MAX_TREE_RUNS: usize = 1024;
+pub const MAX_TREE_RUNS: usize = sagat_domain::execution::MAX_TREE_RUNS;
 
 /// What the refusal names when a tree is full (`StoreError::QuotaExceeded::what`); the scheduler
 /// tells it apart from the quotas of a namespace or a tenant, which fail the child differently.
@@ -51,6 +57,9 @@ pub const MAX_RUN_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 /// Deepest nesting of child runs: a run started by the API is at depth 0, its children at 1, and so
 /// on. A recursive workflow therefore ends in a failed step, never in an unbounded tree.
 pub const MAX_CHILD_DEPTH: u8 = 8;
+
+const SCOPED_EXECUTION_ADAPTER_REQUIRED: &str =
+    "the storage adapter does not support scoped execution identities";
 
 /// The id of the child run a `child` step of `parent` reserves. Derived, not random, so a retried
 /// reservation names the same run and a crash between journaling it and creating it is repaired by
@@ -80,6 +89,42 @@ pub fn step_id(version: WorkflowVersionId, run: RunId, node: &NodeId) -> uuid::U
     uuid::Uuid::from_bytes(bytes)
 }
 
+/// Stable opaque id of a logical step in a nested scope. Root work retains its historical id
+/// byte-for-byte. The nonroot encoding is domain-separated and length-delimited, so a path cannot
+/// collide by concatenating user-controlled node names. Attempts never enter this derivation.
+#[must_use]
+pub fn instance_step_id(
+    version: WorkflowVersionId,
+    run: RunId,
+    instance: &ExecutionInstanceId,
+) -> uuid::Uuid {
+    use sha2::{Digest, Sha256};
+
+    if instance.path().is_root() {
+        return step_id(version, run, instance.node());
+    }
+    let mut digest = Sha256::new();
+    digest.update(b"sagat.step.instance.scoped.v1\0");
+    digest.update(version.as_uuid().as_bytes());
+    digest.update(run.as_uuid().as_bytes());
+    digest.update([instance.path().depth() as u8]);
+    for segment in instance.path().segments() {
+        let name = segment.scope_node().as_str().as_bytes();
+        digest.update([name.len() as u8]);
+        digest.update(name);
+        digest.update((segment.iteration_index() as u16).to_be_bytes());
+    }
+    let name = instance.node().as_str().as_bytes();
+    digest.update([name.len() as u8]);
+    digest.update(name);
+    let hash = digest.finalize();
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&hash[..16]);
+    bytes[6] = (bytes[6] & 0x0f) | 0x80;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    uuid::Uuid::from_bytes(bytes)
+}
+
 /// The stable identity of the compensation of `forward` in a workflow version: the same for every run
 /// of that version, so a provider that is asked to undo `reserve` can recognise the request, and the
 /// plan stored with the version names the same ids a run uses. With the run id it makes the
@@ -101,6 +146,76 @@ pub fn compensation_id(version: WorkflowVersionId, forward: &NodeId) -> uuid::Uu
 #[must_use]
 pub fn compensation_key(version: WorkflowVersionId, run: RunId, forward: &NodeId) -> String {
     format!("compensation:{}:{run}", compensation_id(version, forward))
+}
+
+/// The stable identity of the compensation of the forward instance `forward` in a workflow version
+/// (D382). For a root instance it is [`compensation_id`], byte for byte. For an instance in a scope
+/// it is a domain-separated, length-delimited derivation over the version, the path of scope
+/// segments and the node, so two iterations of one body node never share the id of their
+/// compensation and a path cannot collide by concatenating user-controlled names. An attempt or
+/// generation never enters it: a retry, a lost response and a restart ask the provider for the same
+/// thing.
+#[must_use]
+pub fn instance_compensation_id(
+    version: WorkflowVersionId,
+    forward: &ExecutionInstanceId,
+) -> uuid::Uuid {
+    use sha2::{Digest, Sha256};
+
+    if forward.path().is_root() {
+        return compensation_id(version, forward.node());
+    }
+    let mut digest = Sha256::new();
+    digest.update(b"sagat.compensation.instance.v1\0");
+    digest.update(version.as_uuid().as_bytes());
+    digest.update([forward.path().depth() as u8]);
+    for segment in forward.path().segments() {
+        let name = segment.scope_node().as_str().as_bytes();
+        digest.update([name.len() as u8]);
+        digest.update(name);
+        digest.update((segment.iteration_index() as u16).to_be_bytes());
+    }
+    let name = forward.node().as_str().as_bytes();
+    digest.update([name.len() as u8]);
+    digest.update(name);
+    let hash = digest.finalize();
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&hash[..16]);
+    bytes[6] = (bytes[6] & 0x0f) | 0x80;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    uuid::Uuid::from_bytes(bytes)
+}
+
+/// The idempotency key of the compensation of the forward instance `forward` in one run:
+/// `compensation:{id}:{run}`, stable per run, instance and action.
+#[must_use]
+pub fn instance_compensation_key(
+    version: WorkflowVersionId,
+    run: RunId,
+    forward: &ExecutionInstanceId,
+) -> String {
+    format!(
+        "compensation:{}:{run}",
+        instance_compensation_id(version, forward)
+    )
+}
+
+/// The idempotency key of the lookup of the forward instance `forward` in one run. A root lookup
+/// keeps `reconciliation:{run}:{node}`; a scoped one names the instance by its step id.
+#[must_use]
+pub fn instance_reconciliation_key(
+    version: WorkflowVersionId,
+    run: RunId,
+    forward: &ExecutionInstanceId,
+) -> String {
+    if forward.path().is_root() {
+        format!("reconciliation:{run}:{}", forward.node())
+    } else {
+        format!(
+            "reconciliation:{run}:{}",
+            instance_step_id(version, run, forward)
+        )
+    }
 }
 
 /// When the compensations of one provider operation stop being asked for (FR-003-003).
@@ -144,8 +259,72 @@ pub struct RunData {
     pub input: Vec<u8>,
     /// Catalog-backed run input only; a caller-provided JSON lookalike never sets this identity.
     pub input_blob: Option<sagat_domain::blobs::BlobId>,
-    /// Outputs of the steps that succeeded, by node id.
-    pub outputs: BTreeMap<NodeId, Vec<u8>>,
+    /// Current declared workflow state, when this version defines one.
+    pub state: Option<Vec<u8>>,
+    /// Revision of `state`; absent exactly when no declared state exists.
+    pub state_revision: Option<u64>,
+    /// Outputs of the step instances that succeeded.
+    pub outputs: BTreeMap<ExecutionInstanceId, Vec<u8>>,
+    /// Input owned by an admitted collection or loop iteration, keyed by its exact scope path.
+    pub scope_inputs: BTreeMap<InstancePath, ScopeInput>,
+}
+
+/// The immutable input made available to one admitted iteration body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScopeInput {
+    Collection { index: u32, item: Vec<u8> },
+    Loop { iteration: u32, carry: Vec<u8> },
+}
+
+impl RunData {
+    /// The output retained for one logical instance.
+    #[must_use]
+    pub fn output(&self, instance: &ExecutionInstanceId) -> Option<&[u8]> {
+        self.outputs.get(instance).map(Vec::as_slice)
+    }
+
+    /// Retains an output under its full run-local identity.
+    pub fn insert_output(
+        &mut self,
+        instance: ExecutionInstanceId,
+        output: Vec<u8>,
+    ) -> Option<Vec<u8>> {
+        self.outputs.insert(instance, output)
+    }
+
+    /// The output of an existing root node.
+    #[must_use]
+    pub fn root_output(&self, node: &NodeId) -> Option<&[u8]> {
+        self.output(&ExecutionInstanceId::root(node.clone()))
+    }
+
+    /// Retains an output produced by the existing root-only execution path.
+    pub fn insert_root_output(&mut self, node: NodeId, output: Vec<u8>) -> Option<Vec<u8>> {
+        self.insert_output(ExecutionInstanceId::root(node), output)
+    }
+
+    /// Root outputs in definition-node order, for the existing public expression context.
+    pub fn root_outputs(&self) -> impl Iterator<Item = (&NodeId, &[u8])> {
+        self.outputs.iter().filter_map(|(instance, output)| {
+            instance
+                .path()
+                .is_root()
+                .then_some((instance.node(), output.as_slice()))
+        })
+    }
+
+    /// Outputs visible within one exact execution scope.
+    pub fn outputs_in(&self, path: &InstancePath) -> impl Iterator<Item = (&NodeId, &[u8])> {
+        self.outputs.iter().filter_map(move |(instance, output)| {
+            (instance.path() == path).then_some((instance.node(), output.as_slice()))
+        })
+    }
+
+    /// Input owned by one exact admitted scope.
+    #[must_use]
+    pub fn scope_input(&self, path: &InstancePath) -> Option<&ScopeInput> {
+        self.scope_inputs.get(path)
+    }
 }
 
 /// An expression failed to evaluate. The detail is for logs; it never reaches clients.
@@ -190,6 +369,24 @@ pub trait ExpressionEvaluator: Send + Sync {
         node: &NodeId,
     ) -> Result<String, ExpressionFailure>;
 
+    /// Renders an idempotency-key template using the exact execution scope.
+    ///
+    /// # Errors
+    /// [`ExpressionFailure`] when scoped data is not supported or the template fails.
+    fn idempotency_key_instance(
+        &self,
+        template: &Expression,
+        data: &RunData,
+        instance: &ExecutionInstanceId,
+    ) -> Result<String, ExpressionFailure> {
+        if !instance.path().is_root() {
+            return Err(ExpressionFailure(
+                "scoped idempotency context is unavailable".to_owned(),
+            ));
+        }
+        self.idempotency_key(template, data, instance.node())
+    }
+
     /// The input of a child run: `expression` evaluated over the parent's data, or the parent's own
     /// input when the node defines none. It must be a JSON object, like every run input.
     ///
@@ -212,8 +409,94 @@ pub trait ExpressionEvaluator: Send + Sync {
         data: &RunData,
     ) -> Result<Vec<u8>, ExpressionFailure>;
 
+    /// Evaluates an expression as a canonical JSON value selected for continuation: the same
+    /// evaluation as [`Self::run_result`].
+    ///
+    /// # Errors
+    /// [`ExpressionFailure`] when the expression cannot be evaluated or serialized.
+    fn continuation_value(
+        &self,
+        expression: &Expression,
+        data: &RunData,
+    ) -> Result<Vec<u8>, ExpressionFailure>;
+
     /// The JSON document a worker receives as the input of `node`.
     fn task_input(&self, data: &RunData, node: &NodeId) -> Vec<u8>;
+
+    /// The JSON document a worker receives for one exact execution instance.
+    ///
+    /// # Errors
+    /// [`ExpressionFailure`] when scoped data is not supported or cannot be materialized.
+    fn task_input_instance(
+        &self,
+        data: &RunData,
+        instance: &ExecutionInstanceId,
+    ) -> Result<Vec<u8>, ExpressionFailure> {
+        if !instance.path().is_root() {
+            return Err(ExpressionFailure(
+                "scoped task input is unavailable".to_owned(),
+            ));
+        }
+        Ok(self.task_input(data, instance.node()))
+    }
+
+    /// Captures the immutable JSON values selected by a collection expression.
+    fn collection_items(
+        &self,
+        expression: &Expression,
+        data: &RunData,
+    ) -> Result<Vec<Vec<u8>>, ExpressionFailure>;
+
+    /// What a collection expression selects: the array itself, or the descriptor of a blob whose
+    /// content is the array (T014-016). The default only knows arrays.
+    ///
+    /// # Errors
+    /// [`ExpressionFailure`] when the expression fails or yields neither.
+    fn collection_source(
+        &self,
+        expression: &Expression,
+        data: &RunData,
+    ) -> Result<crate::collection_source::CollectionSource, ExpressionFailure> {
+        self.collection_items(expression, data)
+            .map(crate::collection_source::CollectionSource::Items)
+    }
+
+    /// Evaluates a body return in the exact iteration context.
+    fn collection_return(
+        &self,
+        expression: &Expression,
+        data: &RunData,
+        instance: &ExecutionInstanceId,
+    ) -> Result<Vec<u8>, ExpressionFailure>;
+
+    /// Maps one body result through the collection node's result expression.
+    fn collection_member_result(
+        &self,
+        expression: &Expression,
+        data: &RunData,
+        instance: &ExecutionInstanceId,
+        body_result: &[u8],
+    ) -> Result<Vec<u8>, ExpressionFailure>;
+
+    /// Evaluates the initial carry and, for a pre-test loop, its first condition from the same
+    /// immutable run snapshot.
+    fn loop_entry(
+        &self,
+        initial: &Expression,
+        condition: Option<&Expression>,
+        data: &RunData,
+    ) -> Result<LoopEntryEvaluation, ExpressionFailure>;
+
+    /// Evaluates one body return, the new carry and the condition against that new carry from one
+    /// immutable iteration snapshot.
+    fn loop_checkpoint(
+        &self,
+        result: &Expression,
+        carry: &Expression,
+        condition: &Expression,
+        data: &RunData,
+        return_instance: &ExecutionInstanceId,
+    ) -> Result<LoopCheckpointEvaluation, ExpressionFailure>;
 
     /// Reads the answer of a reconciliation activity: a JSON object
     /// `{"effect": "applied" | "not_applied" | "unknown", "output": <JSON>}` where `output` is
@@ -287,6 +570,17 @@ pub struct RunInfo {
     pub root: RunId,
 }
 
+/// Where a run sits in its continuation chain, when it belongs to one. A segment that ended into
+/// its successor is `SUCCEEDED` without being the process outcome; this is what tells the two apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunSegment {
+    pub chain_id: RunId,
+    pub index: u16,
+    /// `None` while the segment is open.
+    pub completion_kind: Option<sagat_domain::execution::SegmentCompletionKind>,
+    pub successor: Option<RunId>,
+}
+
 /// A run as read by the API.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunRecord {
@@ -297,6 +591,9 @@ pub struct RunRecord {
     pub paused: bool,
     pub updated_at: OffsetDateTime,
     pub finished_at: Option<OffsetDateTime>,
+    /// Set by the reads that serve the API (`get`, `list`); `None` for a run outside any chain and
+    /// for a record loaded inside a command transaction.
+    pub chain: Option<RunSegment>,
 }
 
 /// Who caused the events of one transaction (stored with every journal entry).
@@ -328,7 +625,8 @@ pub struct Effects {
     pub actor: Actor,
     pub trace_id: Option<String>,
     /// The outputs of steps that finished in this transaction: what a worker returned, or the
-    /// payload of the signal that woke a wait.
+    /// payload of the signal that woke a wait. This existing writer path addresses root nodes;
+    /// scoped writers must carry [`ExecutionInstanceId`] through effects and transaction staging.
     pub outputs: Vec<(NodeId, Vec<u8>)>,
     /// The lease granted to a worker by a `step.leased` event of this transaction.
     pub lease: Option<LeaseGrant>,
@@ -340,6 +638,8 @@ pub struct Effects {
     pub idempotency: Option<(Idempotency, String)>,
     /// `READY` steps to write a fresh wake-up notification for (their notification was lost).
     pub rehint: Vec<NodeId>,
+    /// Scoped `READY` instances whose wake-up notification may have been lost.
+    pub rehint_instances: Vec<ExecutionInstanceId>,
     /// Child runs reserved in this transaction; the engine fills it while resolving `child` steps.
     pub children: Vec<ChildSpawn>,
     /// Blobs the outputs above are descriptors of: committed with them, or the transaction fails.
@@ -361,6 +661,7 @@ impl Effects {
             audit: None,
             idempotency: None,
             rehint: Vec::new(),
+            rehint_instances: Vec::new(),
             children: Vec::new(),
             blobs: Vec::new(),
             reported: None,
@@ -380,7 +681,7 @@ pub struct LeaseDeadlines {
 /// The lease handed to a worker. Only the hash of the token is stored.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LeaseGrant {
-    pub node: NodeId,
+    pub instance: ExecutionInstanceId,
     pub token_hash: Vec<u8>,
     pub worker_id: String,
     /// Added to the database clock: a lease lasts this long unless renewed.
@@ -389,17 +690,17 @@ pub struct LeaseGrant {
     pub attempt_timeout: Option<std::time::Duration>,
 }
 
-/// The lease that reported the attempt of `node`: the hash of its token, never the token.
+/// The lease that reported the attempt of `instance`: the hash of its token, never the token.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReportedLease {
-    pub node: NodeId,
+    pub instance: ExecutionInstanceId,
     pub token_hash: Vec<u8>,
 }
 
 /// A heartbeat: push the lease expiry out by `ttl` (capped by the attempt deadline).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LeaseRenewal {
-    pub node: NodeId,
+    pub instance: ExecutionInstanceId,
     pub ttl: std::time::Duration,
 }
 
@@ -438,12 +739,36 @@ pub trait RunTx: Send {
         node: &NodeId,
     ) -> impl Future<Output = Result<Option<OffsetDateTime>, StoreError>> + Send;
 
+    fn lease_expiry_instance(
+        &mut self,
+        instance: &ExecutionInstanceId,
+    ) -> impl Future<Output = Result<Option<OffsetDateTime>, StoreError>> + Send {
+        async move {
+            if !instance.path().is_root() {
+                return Err(scoped_execution_adapter_required());
+            }
+            self.lease_expiry(instance.node()).await
+        }
+    }
+
     /// The two times at which the lease held on `node` ends (`None` when no lease is held): the
     /// renewable expiry and the attempt's own deadline, if it has one.
     fn lease_deadlines(
         &mut self,
         node: &NodeId,
     ) -> impl Future<Output = Result<Option<LeaseDeadlines>, StoreError>> + Send;
+
+    fn lease_deadlines_instance(
+        &mut self,
+        instance: &ExecutionInstanceId,
+    ) -> impl Future<Output = Result<Option<LeaseDeadlines>, StoreError>> + Send {
+        async move {
+            if !instance.path().is_root() {
+                return Err(scoped_execution_adapter_required());
+            }
+            self.lease_deadlines(instance.node()).await
+        }
+    }
 
     /// Whether `owner` still holds the shard lease `lease`, as of the database's clock. It takes
     /// the shard's row in shared mode, held to the end of the transaction, and a takeover of the
@@ -526,6 +851,19 @@ pub trait RunTx: Send {
         token_hash: &[u8],
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 
+    fn lease_unexpired_instance(
+        &mut self,
+        instance: &ExecutionInstanceId,
+        token_hash: &[u8],
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
+        async move {
+            if !instance.path().is_root() {
+                return Err(scoped_execution_adapter_required());
+            }
+            self.lease_unexpired(instance.node(), token_hash).await
+        }
+    }
+
     /// Whether the circuit breaker of the compensations of `activity` lets one be leased now.
     ///
     /// Closed: yes. Open: no. Half open (the window is over): yes for exactly one caller, whose
@@ -557,6 +895,20 @@ pub trait RunTx: Send {
         activity: &ActivityName,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 
+    fn script_execution_admitted_instance(
+        &mut self,
+        instance: &ExecutionInstanceId,
+        activity: &ActivityName,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
+        async move {
+            if !instance.path().is_root() {
+                return Err(scoped_execution_adapter_required());
+            }
+            self.script_execution_admitted(instance.node(), activity)
+                .await
+        }
+    }
+
     /// Whether `token_hash` is the hash of the lease currently held on `node`.
     fn lease_matches(
         &mut self,
@@ -564,11 +916,24 @@ pub trait RunTx: Send {
         token_hash: &[u8],
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 
-    /// Whether `token_hash` is the hash of the lease that reported the attempt of `node` and the
-    /// step has not been leased again since (G141).
+    fn lease_matches_instance(
+        &mut self,
+        instance: &ExecutionInstanceId,
+        token_hash: &[u8],
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
+        async move {
+            if !instance.path().is_root() {
+                return Err(scoped_execution_adapter_required());
+            }
+            self.lease_matches(instance.node(), token_hash).await
+        }
+    }
+
+    /// Whether `token_hash` is the hash of the lease that reported the attempt of `instance` and
+    /// the step has not been leased again since (G141).
     fn reported_by(
         &mut self,
-        node: &NodeId,
+        instance: &ExecutionInstanceId,
         token_hash: &[u8],
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 
@@ -579,15 +944,35 @@ pub trait RunTx: Send {
         idempotency: &Idempotency,
     ) -> impl Future<Output = Result<Option<String>, StoreError>> + Send;
 
+    /// Latches cancellation on a containing execution chain while that chain is locked. Stores
+    /// without chain membership keep the compatibility no-op.
+    fn latch_chain_cancel(&mut self) -> impl Future<Output = Result<(), StoreError>> + Send {
+        async { Ok(()) }
+    }
+
     /// The run's input and the outputs of its finished steps (loaded once per transaction).
     fn data(&mut self) -> impl Future<Output = Result<&RunData, StoreError>> + Send;
 
     /// Makes outputs that are about to be persisted visible to this transaction's evaluations: a
-    /// condition that follows a step that just completed must see what that step returned.
+    /// condition that follows a step that just completed must see what that step returned. The
+    /// existing path stages root nodes; scoped staging requires a typed effect identity.
     fn stage_outputs(
         &mut self,
         outputs: &[(NodeId, Vec<u8>)],
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
+    /// Makes outputs addressed by their complete logical identity visible to evaluations in this
+    /// transaction. The compatibility implementation accepts root instances only and delegates to
+    /// [`Self::stage_outputs`]; adapters must override this method before scoped work is enabled.
+    fn stage_instance_outputs(
+        &mut self,
+        outputs: &[(ExecutionInstanceId, Vec<u8>)],
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        async move {
+            let root_outputs = root_outputs_for_legacy_adapter(outputs)?;
+            self.stage_outputs(&root_outputs).await
+        }
+    }
 
     /// Appends `events` to the journal and updates every projection (steps, timers, subscriptions,
     /// payloads, the run row, the outbox) in this transaction. `state` already includes `events`.
@@ -596,6 +981,23 @@ pub trait RunTx: Send {
         events: &[RunEvent],
         effects: Effects,
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
+    /// Persists explicitly addressed events and outputs without discarding their instance paths.
+    /// The compatibility implementation delegates only when every identity is root. A scoped item
+    /// fails before [`Self::persist`] is called, so a legacy adapter cannot flatten it silently.
+    fn persist_addressed(
+        &mut self,
+        events: &[AddressedRunEvent],
+        outputs: &[(ExecutionInstanceId, Vec<u8>)],
+        mut effects: Effects,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        async move {
+            let root_events = root_events_for_legacy_adapter(events)?;
+            let root_outputs = root_outputs_for_legacy_adapter(outputs)?;
+            effects.outputs.extend(root_outputs);
+            self.persist(&root_events, effects).await
+        }
+    }
 
     /// Records, in this transaction, that an event was delivered to a consumer of this run (a step
     /// it wakes, or the trigger that starts it). `true` when the delivery is new; `false` when the
@@ -609,6 +1011,40 @@ pub trait RunTx: Send {
 
     /// Commits. Dropping the transaction instead rolls everything back.
     fn commit(self) -> impl Future<Output = Result<(), StoreError>> + Send;
+}
+
+fn root_events_for_legacy_adapter(
+    events: &[AddressedRunEvent],
+) -> Result<Vec<RunEvent>, StoreError> {
+    if events.iter().any(|event| !event.path().is_root()) {
+        return Err(scoped_execution_adapter_required());
+    }
+    Ok(events
+        .iter()
+        .cloned()
+        .map(AddressedRunEvent::into_event)
+        .collect())
+}
+
+fn root_outputs_for_legacy_adapter(
+    outputs: &[(ExecutionInstanceId, Vec<u8>)],
+) -> Result<Vec<(NodeId, Vec<u8>)>, StoreError> {
+    if outputs
+        .iter()
+        .any(|(instance, _)| !instance.path().is_root())
+    {
+        return Err(scoped_execution_adapter_required());
+    }
+    Ok(outputs
+        .iter()
+        .map(|(instance, output)| (instance.node().clone(), output.clone()))
+        .collect())
+}
+
+fn scoped_execution_adapter_required() -> StoreError {
+    StoreError::Internal {
+        detail: SCOPED_EXECUTION_ADAPTER_REQUIRED.into(),
+    }
 }
 
 /// Why an engine call failed.
@@ -695,6 +1131,38 @@ impl<E: ExpressionEvaluator> Engine<E> {
         Ok(value)
     }
 
+    /// Executes a command whose journal and outputs retain their complete logical identity.
+    /// Structured control nodes that need external evaluation keep their dedicated transaction
+    /// owners; this path advances worker-owned activity transitions only.
+    pub async fn run_addressed<T, Tx, F>(
+        &self,
+        tx: &mut Tx,
+        outputs: Vec<(ExecutionInstanceId, Vec<u8>)>,
+        effects: Effects,
+        command: F,
+    ) -> Result<T, EngineError>
+    where
+        Tx: RunTx,
+        F: FnOnce(
+            &WorkflowDefinition,
+            &mut RunState,
+            OffsetDateTime,
+        )
+            -> Result<(T, sagat_domain::execution::AddressedProgress), ExecutionError>,
+    {
+        if !outputs.is_empty() {
+            tx.stage_instance_outputs(&outputs).await?;
+        }
+        let now = tx.now();
+        let (value, progress) = {
+            let (def, state) = tx.parts();
+            command(def, state, now)?
+        };
+        tx.persist_addressed(&progress.events, &outputs, effects)
+            .await?;
+        Ok(value)
+    }
+
     async fn resolve<Tx: RunTx>(
         &self,
         tx: &mut Tx,
@@ -714,6 +1182,32 @@ impl<E: ExpressionEvaluator> Engine<E> {
                 },
                 None,
             ),
+            Evaluation::Switch { node, cases } => {
+                let mut selection = Ok(sagat_domain::execution::SwitchSelection::Default);
+                for case in cases {
+                    match self.evaluator.condition(case.when(), data) {
+                        Ok(true) => {
+                            selection = Ok(sagat_domain::execution::SwitchSelection::Case(
+                                case.id().clone(),
+                            ));
+                            break;
+                        }
+                        Ok(false) => {}
+                        Err(error) => {
+                            log_failure(node)(error);
+                            selection = Err(());
+                            break;
+                        }
+                    }
+                }
+                (
+                    Resolution::Switch {
+                        node: node.clone(),
+                        selection,
+                    },
+                    None,
+                )
+            }
             Evaluation::Correlation { node, expression } => (
                 Resolution::Correlation {
                     node: node.clone(),
@@ -928,5 +1422,32 @@ impl DefinitionCache {
             }
         }
         Ok(parsed)
+    }
+
+    /// Evaluates the optional declared business state for a new run using the same codec that
+    /// admitted its immutable workflow version.
+    ///
+    /// # Errors
+    /// Returns a value-free evaluator error for an invalid input, expression or initial state.
+    pub fn initial_declared_state(
+        &self,
+        document: &[u8],
+        input: &[u8],
+    ) -> Result<
+        Option<crate::declared_operations::EvaluatedOperationWrite>,
+        crate::operation_evaluation::OperationEvaluationError,
+    > {
+        self.codec.initial_declared_state(document, input)
+    }
+
+    /// Extracts immutable declared-state publication metadata with the cache's admission codec.
+    ///
+    /// # Errors
+    /// Returns an IR error when a stored declaration no longer validates.
+    pub fn declared_state_publication(
+        &self,
+        document: &[u8],
+    ) -> Result<Option<crate::declared_operations::PublishedDeclaredState>, IrError> {
+        self.codec.declared_state_publication(document)
     }
 }

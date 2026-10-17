@@ -4,11 +4,13 @@ use std::fmt;
 
 use time::OffsetDateTime;
 
+use super::approval::{ApprovalDecision, ApprovalReasonCode, ApprovalReceiptId, ApprovalRequestId};
 use super::error::ExecutionError;
+use super::instance::{ExecutionInstanceId, InstancePath};
 use super::state::{RunId, RunStatus};
-use crate::identity::clip;
+use crate::identity::{Subject, clip};
 use crate::saga::{ReconcileVerdict, SagaOutcome};
-use crate::workflow::NodeId;
+use crate::workflow::{ActivityName, Digest, NodeId};
 
 const MAX_CODE_LEN: usize = 64;
 const MAX_KEY_LEN: usize = 256;
@@ -222,6 +224,32 @@ impl FailureCode {
         Self::system("RUN_DATA_LIMIT")
     }
 
+    /// A loop still needed another body after spending its declared iteration budget.
+    #[must_use]
+    pub fn iteration_limit() -> Self {
+        Self::system("ITERATION_LIMIT")
+    }
+
+    /// The next instance would have gone beyond the run's lifetime instance budget: the platform
+    /// ceiling lowered by the author's `limits` or by tenant policy.
+    #[must_use]
+    pub fn instance_limit() -> Self {
+        Self::system("INSTANCE_LIMIT")
+    }
+
+    /// The blob a collection reads its items from is not available to the run: missing, in another
+    /// tenant or namespace, not the run's own, or without bytes in the store.
+    #[must_use]
+    pub fn blob_unavailable() -> Self {
+        Self::system("BLOB_UNAVAILABLE")
+    }
+
+    /// The bytes of a blob are not the bytes that were stored (size or digest differ).
+    #[must_use]
+    pub fn blob_corrupt() -> Self {
+        Self::system("BLOB_CORRUPT")
+    }
+
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
@@ -334,6 +362,17 @@ pub struct PlannedEntry {
     pub after: Vec<NodeId>,
 }
 
+/// One compensation of the plan a collection or loop scope records when it starts to compensate.
+/// Unlike [`PlannedEntry`] it names logical instances: the same body node runs once per iteration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScopedPlannedEntry {
+    /// The forward instance whose effect is being undone; its compensation is
+    /// `instance.compensation()`, at the same scope path.
+    pub instance: ExecutionInstanceId,
+    /// The forward instances whose compensations must have finished first.
+    pub after: Vec<ExecutionInstanceId>,
+}
+
 /// What a reconciliation led to for the step it was about.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReconcileResult {
@@ -361,12 +400,85 @@ pub enum JoinOutcome {
     Failed,
 }
 
+/// The one recorded branch chosen by an ordered switch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitchSelection {
+    Case(NodeId),
+    Default,
+}
+
 /// How a child run ended, as the step of the parent that waited for it sees it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChildOutcome {
     Succeeded,
     /// The child did not succeed (or could not be started); the code says why.
     Failed(FailureCode),
+}
+
+/// Why a collection stops admitting new iterations and drains the ones already accepted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CollectionDrainReason {
+    /// One admitted iteration failed permanently.
+    Failed { iteration: u32, code: FailureCode },
+    /// Retaining an automatic collection value exceeded the tenant's durable-content quota.
+    StorageQuotaExceeded,
+    /// The enclosing run asked the collection to stop.
+    Cancelled,
+}
+
+/// The terminal result of a collection scope after all accepted iterations have settled.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CollectionOutcome {
+    Succeeded,
+    Failed(FailureCode),
+    Cancelled,
+}
+
+/// Whether a loop checks its predicate before or after its body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoopKind {
+    While,
+    RepeatUntil,
+}
+
+/// The next action recorded atomically with one loop checkpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoopContinuation {
+    Complete,
+    Continue,
+    DelayUntil(OffsetDateTime),
+    /// The loop still needed another body after spending its declared iteration budget.
+    IterationLimit,
+    /// The loop needed another body the run's lifetime instance budget could not admit.
+    InstanceLimit,
+}
+
+impl LoopContinuation {
+    /// The durable failure code of a continuation that stops the loop because a declared hard
+    /// budget ran out; none for a continuation that keeps going or completes.
+    #[must_use]
+    pub fn limit_failure(&self) -> Option<FailureCode> {
+        match self {
+            Self::IterationLimit => Some(FailureCode::iteration_limit()),
+            Self::InstanceLimit => Some(FailureCode::instance_limit()),
+            Self::Complete | Self::Continue | Self::DelayUntil(_) => None,
+        }
+    }
+}
+
+/// Why a loop stops admitting work and drains its active iteration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LoopDrainReason {
+    Failed { iteration: u32, code: FailureCode },
+    TimedOut,
+    Cancelled,
+}
+
+/// The terminal result of a loop after accepted work has settled.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LoopOutcome {
+    Failed(FailureCode),
+    Cancelled,
 }
 
 /// Why an event happened: a closed `kind` (a failure, a retry, a review, a stop, an operator's
@@ -391,6 +503,21 @@ pub struct Fence {
 pub enum RunEvent {
     RunStarted {
         entrypoint: NodeId,
+    },
+    /// Captures the immutable continuation policy beside the initial run start.
+    ExecutionChainStarted {
+        max_segments: u16,
+        original_deadline: OffsetDateTime,
+    },
+    /// Links a freshly started successor to the immutable execution chain it joined.
+    ExecutionChainSuccessorLinked {
+        chain_id: RunId,
+        predecessor: RunId,
+        segment_index: u16,
+        max_segments: u16,
+        original_deadline: OffsetDateTime,
+        input_digest: Digest,
+        state_digest: Option<Digest>,
     },
     /// The successors of a finished step were chosen and now exist as pending steps.
     StepRouted {
@@ -438,6 +565,10 @@ pub enum RunEvent {
         node: NodeId,
         outcome: bool,
     },
+    SwitchEvaluated {
+        node: NodeId,
+        selection: SwitchSelection,
+    },
     TimerStarted {
         node: NodeId,
         due_at: OffsetDateTime,
@@ -458,6 +589,23 @@ pub enum RunEvent {
         node: NodeId,
         handled: bool,
     },
+    ApprovalOpened {
+        node: NodeId,
+        request_id: ApprovalRequestId,
+        deadline: OffsetDateTime,
+    },
+    ApprovalDecided {
+        node: NodeId,
+        request_id: ApprovalRequestId,
+        receipt_id: ApprovalReceiptId,
+        decision: ApprovalDecision,
+        actor: Subject,
+        reason_code: Option<ApprovalReasonCode>,
+    },
+    ApprovalExpired {
+        node: NodeId,
+        request_id: ApprovalRequestId,
+    },
     ParallelForked {
         node: NodeId,
         branches: Vec<NodeId>,
@@ -465,6 +613,103 @@ pub enum RunEvent {
     ParallelJoined {
         node: NodeId,
         outcome: JoinOutcome,
+    },
+    /// Captures immutable collection membership and its effective scope limits before admission.
+    CollectionEntered {
+        node: NodeId,
+        item_count: u32,
+        max_items: u32,
+        max_concurrency: u16,
+        snapshot_digest: Digest,
+    },
+    /// Allocates the first body instance for exactly one collection index.
+    CollectionIterationAdmitted {
+        node: NodeId,
+        index: u32,
+        entry: ExecutionInstanceId,
+        item_digest: Digest,
+    },
+    /// Records the explicit body return instance for an admitted index.
+    CollectionIterationReturned {
+        node: NodeId,
+        index: u32,
+        return_instance: ExecutionInstanceId,
+    },
+    /// Makes one returned result durable and releases its collection concurrency slot.
+    CollectionIterationCheckpointed {
+        node: NodeId,
+        index: u32,
+        return_instance: ExecutionInstanceId,
+        result_digest: Digest,
+    },
+    /// Stops new admission while accepted iterations settle.
+    CollectionDrainStarted {
+        node: NodeId,
+        reason: CollectionDrainReason,
+    },
+    /// Records that one accepted iteration ended without a result during drain.
+    CollectionIterationDrained {
+        node: NodeId,
+        index: u32,
+    },
+    /// Closes the scope only after every required result or drain record exists.
+    CollectionFinished {
+        node: NodeId,
+        outcome: CollectionOutcome,
+        result_digest: Option<Digest>,
+    },
+    /// Records loop kind, bounds, initial carry and the pre-test result when one is required.
+    LoopEntered {
+        node: NodeId,
+        kind: LoopKind,
+        max_iterations: u32,
+        entered_at: OffsetDateTime,
+        deadline: OffsetDateTime,
+        initial_carry_digest: Digest,
+        initial_condition: Option<bool>,
+    },
+    /// Allocates the body entry for the next sequential iteration.
+    LoopIterationAdmitted {
+        node: NodeId,
+        index: u32,
+        entry: ExecutionInstanceId,
+    },
+    /// Records the explicit body return instance before expressions are checkpointed.
+    LoopIterationReturned {
+        node: NodeId,
+        index: u32,
+        return_instance: ExecutionInstanceId,
+    },
+    /// Commits the body result, new carry, predicate result and next action as one decision.
+    LoopIterationCheckpointed {
+        node: NodeId,
+        index: u32,
+        return_instance: ExecutionInstanceId,
+        result_digest: Digest,
+        carry_digest: Digest,
+        condition: bool,
+        checked_at: OffsetDateTime,
+        continuation: LoopContinuation,
+    },
+    /// The durable between-iteration timer fired.
+    LoopDelayElapsed {
+        node: NodeId,
+        next_iteration: u32,
+    },
+    /// Stops new iteration admission while the current body settles.
+    LoopDrainStarted {
+        node: NodeId,
+        reason: LoopDrainReason,
+    },
+    /// Records that the accepted body ended without a checkpoint during drain.
+    LoopIterationDrained {
+        node: NodeId,
+        index: u32,
+    },
+    /// Closes a cancelled or failed loop after its active body has settled.
+    LoopFinished {
+        node: NodeId,
+        outcome: LoopOutcome,
     },
     /// A child run was reserved for the step: its id is journaled before the child exists, so a
     /// crash between the two is repaired by starting exactly that run (`FR-002-009`).
@@ -515,6 +760,20 @@ pub enum RunEvent {
         node: NodeId,
         outcome: SagaOutcome,
     },
+    /// The iterations of a collection or loop scope have settled after it stopped, and the scope
+    /// starts to undo what they completed: the compensations to run, the instances each waits for,
+    /// and the completed instances whose effect cannot be undone. Addressed at the scope owner.
+    ScopeCompensationPlanned {
+        node: NodeId,
+        cause: FailureCode,
+        entries: Vec<ScopedPlannedEntry>,
+        irreversible: Vec<ExecutionInstanceId>,
+    },
+    /// Every compensation of the scope has finished (or been skipped by a person): how it ended.
+    ScopeCompensated {
+        node: NodeId,
+        outcome: SagaOutcome,
+    },
     /// An attempt ended without a known outcome and the step says how to find it out: its
     /// reconciliation is scheduled and the step waits for the answer.
     ReconciliationRequested {
@@ -548,6 +807,26 @@ pub enum RunEvent {
         node: NodeId,
         outcome: ReviewOutcome,
     },
+    /// A declared Update replaced the content-addressed business-state reference.
+    StateUpdated {
+        operation: ActivityName,
+        before_revision: u64,
+        after_revision: u64,
+        state_digest: Digest,
+    },
+    /// Closes this segment while transferring explicit input and optional state to its successor.
+    RunContinued {
+        successor: RunId,
+        input_digest: Digest,
+        state_digest: Option<Digest>,
+    },
+    /// Selects a typed continuation terminal and closes the segment in one replayable transition.
+    ContinuationSelected {
+        node: NodeId,
+        successor: RunId,
+        input_digest: Digest,
+        state_digest: Option<Digest>,
+    },
     RunPaused,
     RunResumed,
     RunStopRequested {
@@ -559,12 +838,113 @@ pub enum RunEvent {
     },
 }
 
+/// A journal event together with the scope path that addresses its logical execution instance.
+///
+/// Existing journals use [`Self::root`]. A scoped address is only valid for a step event; run-level
+/// events remain properties of the run and therefore always use the empty path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AddressedRunEvent {
+    path: InstancePath,
+    event: RunEvent,
+}
+
+/// Why a journal event cannot use the requested scope path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum EventAddressError {
+    #[error("a run-level event must use the root path")]
+    RunEventInScope,
+}
+
+impl AddressedRunEvent {
+    #[must_use]
+    pub fn root(event: RunEvent) -> Self {
+        Self {
+            path: InstancePath::root(),
+            event,
+        }
+    }
+
+    /// Addresses a step event in one scope path.
+    ///
+    /// # Errors
+    /// Returns [`EventAddressError::RunEventInScope`] when a run-level event is assigned to a
+    /// non-root path.
+    pub fn in_path(path: InstancePath, event: RunEvent) -> Result<Self, EventAddressError> {
+        if !path.is_root() && event.node().is_none() {
+            return Err(EventAddressError::RunEventInScope);
+        }
+        Ok(Self { path, event })
+    }
+
+    #[must_use]
+    pub const fn path(&self) -> &InstancePath {
+        &self.path
+    }
+
+    #[must_use]
+    pub const fn event(&self) -> &RunEvent {
+        &self.event
+    }
+
+    #[must_use]
+    pub fn into_event(self) -> RunEvent {
+        self.event
+    }
+
+    #[must_use]
+    pub fn instance(&self) -> Option<ExecutionInstanceId> {
+        self.event
+            .node()
+            .cloned()
+            .map(|node| ExecutionInstanceId::in_path(self.path.clone(), node))
+    }
+
+    /// Every instance created or changed by the event. Child activations inherit the addressed
+    /// path; opening a new dynamic iteration remains the responsibility of its scope event.
+    #[must_use]
+    pub fn changed_instances(&self) -> Vec<ExecutionInstanceId> {
+        let mut instances = self
+            .event
+            .changed_nodes()
+            .into_iter()
+            .map(|node| ExecutionInstanceId::in_path(self.path.clone(), node))
+            .collect::<Vec<_>>();
+        match &self.event {
+            RunEvent::CollectionIterationAdmitted { entry, .. } => {
+                instances.push(entry.clone());
+            }
+            RunEvent::CollectionIterationReturned {
+                return_instance, ..
+            }
+            | RunEvent::CollectionIterationCheckpointed {
+                return_instance, ..
+            } => {
+                instances.push(return_instance.clone());
+            }
+            RunEvent::ScopeCompensationPlanned { entries, .. } => {
+                instances.extend(entries.iter().map(|entry| entry.instance.compensation()));
+            }
+            RunEvent::LoopIterationAdmitted { entry, .. } => instances.push(entry.clone()),
+            RunEvent::LoopIterationReturned {
+                return_instance, ..
+            }
+            | RunEvent::LoopIterationCheckpointed {
+                return_instance, ..
+            } => instances.push(return_instance.clone()),
+            _ => {}
+        }
+        instances
+    }
+}
+
 impl RunEvent {
     /// Stable dotted name stored in the journal (`event_type`).
     #[must_use]
     pub const fn name(&self) -> &'static str {
         match self {
             Self::RunStarted { .. } => "run.started",
+            Self::ExecutionChainStarted { .. } => "execution_chain.started",
+            Self::ExecutionChainSuccessorLinked { .. } => "execution_chain.successor_linked",
             Self::StepRouted { .. } => "step.routed",
             Self::StepReleased { .. } => "step.released",
             Self::StepLeased { .. } => "step.leased",
@@ -574,13 +954,32 @@ impl RunEvent {
             Self::StepRetryDue { .. } => "step.retry_due",
             Self::StepFailed { .. } => "step.failed",
             Self::ConditionEvaluated { .. } => "condition.evaluated",
+            Self::SwitchEvaluated { .. } => "switch.evaluated",
             Self::TimerStarted { .. } => "timer.started",
             Self::TimerFired { .. } => "timer.fired",
             Self::WaitStarted { .. } => "wait.started",
             Self::WaitSatisfied { .. } => "wait.satisfied",
             Self::WaitTimedOut { .. } => "wait.timed_out",
+            Self::ApprovalOpened { .. } => "approval.opened",
+            Self::ApprovalDecided { .. } => "approval.decided",
+            Self::ApprovalExpired { .. } => "approval.expired",
             Self::ParallelForked { .. } => "parallel.forked",
             Self::ParallelJoined { .. } => "parallel.joined",
+            Self::CollectionEntered { .. } => "collection.entered",
+            Self::CollectionIterationAdmitted { .. } => "collection.iteration_admitted",
+            Self::CollectionIterationReturned { .. } => "collection.iteration_returned",
+            Self::CollectionIterationCheckpointed { .. } => "collection.iteration_checkpointed",
+            Self::CollectionDrainStarted { .. } => "collection.drain_started",
+            Self::CollectionIterationDrained { .. } => "collection.iteration_drained",
+            Self::CollectionFinished { .. } => "collection.finished",
+            Self::LoopEntered { .. } => "loop.entered",
+            Self::LoopIterationAdmitted { .. } => "loop.iteration_admitted",
+            Self::LoopIterationReturned { .. } => "loop.iteration_returned",
+            Self::LoopIterationCheckpointed { .. } => "loop.iteration_checkpointed",
+            Self::LoopDelayElapsed { .. } => "loop.delay_elapsed",
+            Self::LoopDrainStarted { .. } => "loop.drain_started",
+            Self::LoopIterationDrained { .. } => "loop.iteration_drained",
+            Self::LoopFinished { .. } => "loop.finished",
             Self::ChildStarted { .. } => "child.started",
             Self::ChildFinished { .. } => "child.finished",
             Self::EndReached { .. } => "end.reached",
@@ -591,12 +990,17 @@ impl RunEvent {
             Self::SagaAborting { .. } => "saga.aborting",
             Self::CompensationPlanned { .. } => "compensation.planned",
             Self::SagaCompensated { .. } => "saga.compensated",
+            Self::ScopeCompensationPlanned { .. } => "scope.compensation_planned",
+            Self::ScopeCompensated { .. } => "scope.compensated",
             Self::ReconciliationRequested { .. } => "reconciliation.requested",
             Self::ReconciliationConcluded { .. } => "reconciliation.concluded",
             Self::StepNeedsReview { .. } => "step.needs_review",
             Self::StepRetryRequested { .. } => "step.retry_requested",
             Self::StepSkipped { .. } => "step.skipped",
             Self::StepResolved { .. } => "step.resolved",
+            Self::StateUpdated { .. } => "state.updated",
+            Self::RunContinued { .. } => "run.continued",
+            Self::ContinuationSelected { .. } => "continuation.selected",
             Self::RunPaused => "run.paused",
             Self::RunResumed => "run.resumed",
             Self::RunStopRequested { .. } => "run.stop_requested",
@@ -617,13 +1021,32 @@ impl RunEvent {
             | Self::StepRetryDue { node }
             | Self::StepFailed { node, .. }
             | Self::ConditionEvaluated { node, .. }
+            | Self::SwitchEvaluated { node, .. }
             | Self::TimerStarted { node, .. }
             | Self::TimerFired { node }
             | Self::WaitStarted { node, .. }
             | Self::WaitSatisfied { node }
             | Self::WaitTimedOut { node, .. }
+            | Self::ApprovalOpened { node, .. }
+            | Self::ApprovalDecided { node, .. }
+            | Self::ApprovalExpired { node, .. }
             | Self::ParallelForked { node, .. }
             | Self::ParallelJoined { node, .. }
+            | Self::CollectionEntered { node, .. }
+            | Self::CollectionIterationAdmitted { node, .. }
+            | Self::CollectionIterationReturned { node, .. }
+            | Self::CollectionIterationCheckpointed { node, .. }
+            | Self::CollectionDrainStarted { node, .. }
+            | Self::CollectionIterationDrained { node, .. }
+            | Self::CollectionFinished { node, .. }
+            | Self::LoopEntered { node, .. }
+            | Self::LoopIterationAdmitted { node, .. }
+            | Self::LoopIterationReturned { node, .. }
+            | Self::LoopIterationCheckpointed { node, .. }
+            | Self::LoopDelayElapsed { node, .. }
+            | Self::LoopDrainStarted { node, .. }
+            | Self::LoopIterationDrained { node, .. }
+            | Self::LoopFinished { node, .. }
             | Self::ChildStarted { node, .. }
             | Self::ChildFinished { node, .. }
             | Self::EndReached { node }
@@ -634,13 +1057,20 @@ impl RunEvent {
             | Self::SagaAborting { node, .. }
             | Self::CompensationPlanned { node, .. }
             | Self::SagaCompensated { node, .. }
+            | Self::ScopeCompensationPlanned { node, .. }
+            | Self::ScopeCompensated { node, .. }
             | Self::ReconciliationRequested { node, .. }
             | Self::ReconciliationConcluded { node, .. }
             | Self::StepNeedsReview { node, .. }
             | Self::StepRetryRequested { node }
             | Self::StepSkipped { node }
-            | Self::StepResolved { node, .. } => Some(node),
+            | Self::StepResolved { node, .. }
+            | Self::ContinuationSelected { node, .. } => Some(node),
             Self::RunStarted { .. }
+            | Self::ExecutionChainStarted { .. }
+            | Self::ExecutionChainSuccessorLinked { .. }
+            | Self::StateUpdated { .. }
+            | Self::RunContinued { .. }
             | Self::RunPaused
             | Self::RunResumed
             | Self::RunStopRequested { .. }
@@ -684,6 +1114,7 @@ impl RunEvent {
             Self::StepRetryScheduled { code, .. } => cause("retry", code.as_str()),
             Self::StepNeedsReview { code, .. } => cause("review", code.as_str()),
             Self::SagaAborting { cause: code, .. } => cause("abort", code.as_str()),
+            Self::ScopeCompensationPlanned { cause: code, .. } => cause("abort", code.as_str()),
             Self::ReconciliationRequested { cause: code, .. } => {
                 cause("unknown_outcome", code.as_str())
             }
@@ -711,6 +1142,54 @@ impl RunEvent {
                 outcome: JoinOutcome::Failed,
                 ..
             } => cause("failure", "BRANCH_FAILED"),
+            Self::CollectionDrainStarted {
+                reason: CollectionDrainReason::Failed { code, .. },
+                ..
+            }
+            | Self::CollectionFinished {
+                outcome: CollectionOutcome::Failed(code),
+                ..
+            } => cause("failure", code.as_str()),
+            Self::CollectionDrainStarted {
+                reason: CollectionDrainReason::StorageQuotaExceeded,
+                ..
+            } => cause("failure", FailureCode::storage_quota_exceeded().as_str()),
+            Self::CollectionDrainStarted {
+                reason: CollectionDrainReason::Cancelled,
+                ..
+            }
+            | Self::CollectionFinished {
+                outcome: CollectionOutcome::Cancelled,
+                ..
+            } => cause("cancel", "REQUESTED"),
+            Self::LoopIterationCheckpointed {
+                continuation: LoopContinuation::IterationLimit,
+                ..
+            } => cause("failure", "ITERATION_LIMIT"),
+            Self::LoopIterationCheckpointed {
+                continuation: LoopContinuation::InstanceLimit,
+                ..
+            } => cause("failure", "INSTANCE_LIMIT"),
+            Self::LoopDrainStarted {
+                reason: LoopDrainReason::Failed { code, .. },
+                ..
+            }
+            | Self::LoopFinished {
+                outcome: LoopOutcome::Failed(code),
+                ..
+            } => cause("failure", code.as_str()),
+            Self::LoopDrainStarted {
+                reason: LoopDrainReason::Cancelled,
+                ..
+            }
+            | Self::LoopFinished {
+                outcome: LoopOutcome::Cancelled,
+                ..
+            } => cause("cancel", "REQUESTED"),
+            Self::LoopDrainStarted {
+                reason: LoopDrainReason::TimedOut,
+                ..
+            } => cause("failure", FailureCode::run_timed_out().as_str()),
             Self::RunPaused => cause("request", "PAUSE"),
             Self::RunResumed => cause("request", "RESUME"),
             Self::RunFinished { status } => cause("outcome", status.as_str()),

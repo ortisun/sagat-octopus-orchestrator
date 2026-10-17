@@ -16,6 +16,7 @@
   "workers": {
     "bound": {
       "workerName": "reg-bound",
+      "protocolVersion": "1.4",
       "maxInflight": 2,
       "autostart": false,
       "heartbeatIntervalMs": 200,
@@ -31,6 +32,7 @@
     },
     "unbound": {
       "workerName": "reg-unbound",
+      "protocolVersion": "1.4",
       "token": "unbound",
       "maxInflight": 2,
       "autostart": false,

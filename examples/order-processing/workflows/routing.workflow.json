@@ -1,0 +1,58 @@
+{
+  "apiVersion": "sagat-octopus-orchestrator.io/v1",
+  "kind": "Workflow",
+  "metadata": {
+    "name": "order-routing",
+    "description": "Executable routing example using the current workflow IR; provider effects are simulated."
+  },
+  "entrypoint": "validate",
+  "triggers": [
+    {
+      "kind": "manual"
+    }
+  ],
+  "inputSchema": {
+    "type": "object",
+    "required": [
+      "orderId",
+      "amount",
+      "failNotify"
+    ],
+    "properties": {
+      "orderId": {
+        "type": "string"
+      },
+      "amount": {
+        "type": "integer"
+      },
+      "failNotify": {
+        "type": "boolean"
+      }
+    }
+  },
+  "nodes": [
+    {
+      "id": "validate",
+      "type": "activity",
+      "activity": "order.validate",
+      "next": "accepted"
+    },
+    {
+      "id": "accepted",
+      "type": "condition",
+      "expression": "steps.validate.output.accepted == true",
+      "ifTrue": "notify",
+      "ifFalse": "rejected"
+    },
+    {
+      "id": "notify",
+      "type": "activity",
+      "activity": "order.notify"
+    },
+    {
+      "id": "rejected",
+      "type": "end",
+      "outputExpr": "steps.validate.output"
+    }
+  ]
+}

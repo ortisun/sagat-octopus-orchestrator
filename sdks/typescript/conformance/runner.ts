@@ -4,8 +4,8 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import {
-  ActivityFailure, BlobOutput, SDK_VERSION, SagatClient, SagatError, WorkerHost, flow, reconcile, workflow,
-  type ActivityContext, type Flow, type Run, type WorkflowBuilder,
+  ActivityFailure, BlobOutput, SDK_VERSION, SagatClient, SagatError, WorkerHost, body, flow, reconcile, workflow,
+  type ActivityContext, type Body, type Flow, type Run, type StateDefinition, type WorkflowBuilder,
 } from '../src/index.js';
 import { FaultPlan, type Fault } from './faults.js';
 
@@ -34,6 +34,14 @@ function apply(target: Flow, ops: Obj[]): void {
       case 'waitForEvent': target.waitForEvent(op['id'], op['options']); break;
       case 'invokeChild': target.invokeChild(op['id'], op['workflow'], op['options']); break;
       case 'condition': target.condition(op['id'], op['expression'], op['ifTrue'], op['ifFalse']); break;
+      case 'switch': target.switch(op['id'], op['cases'], op['default']); break;
+      case 'forEach': target.forEach(op['id'], op['items'], op['body'], op['result'], { maxItems: op['maxItems'], maxConcurrency: op['maxConcurrency'] }); break;
+      case 'map': target.map(op['id'], op['items'], op['body'], op['result'], { maxItems: op['maxItems'], maxConcurrency: op['maxConcurrency'] }); break;
+      case 'while': target.while(op['id'], op['condition'], op['body'], op['initial'], op['carry'], { maxIterations: op['maxIterations'], timeoutMs: op['timeoutMs'], delayMs: op['delayMs'], onError: op['onError'] }); break;
+      case 'repeatUntil': target.repeatUntil(op['id'], op['condition'], op['body'], op['initial'], op['carry'], { maxIterations: op['maxIterations'], timeoutMs: op['timeoutMs'], delayMs: op['delayMs'], onError: op['onError'] }); break;
+      case 'approval': target.approval(op['id'], { policy: op['policy'], timeoutMs: op['timeoutMs'], onApprove: op['onApprove'], onReject: op['onReject'], onExpire: op['onExpire'] }); break;
+      case 'continueAsNew': target.continueAsNew(op['id'], op['input'], op['state']); break;
+      case 'return': (target as Body).returnValue(op['id'], op['result']); break;
       case 'parallel': {
         const branches = (op['branches'] as Obj[][]).map((ops) => {
           const branch = flow();
@@ -62,6 +70,13 @@ function builderOf(definition: Obj): WorkflowBuilder {
   for (const trigger of definition['triggers'] ?? []) builder.trigger(trigger);
   if (definition['inputSchema']) builder.inputSchema(definition['inputSchema']);
   if (definition['outputSchema']) builder.outputSchema(definition['outputSchema']);
+  if (definition['state']) builder.state(definition['state'] as StateDefinition);
+  if (definition['chainPolicy']) builder.chainPolicy(definition['chainPolicy']);
+  for (const [name, bodyDefinition] of Object.entries<Obj>(definition['bodies'] ?? {})) {
+    const nested = body();
+    apply(nested, bodyDefinition['program']);
+    builder.body(name, nested);
+  }
   apply(builder, definition['program']);
   return builder;
 }
@@ -102,6 +117,10 @@ function runJson(run: Run): Obj {
     paused: run.paused, startedBy: run.startedBy, createdAt: iso(run.createdAt), updatedAt: iso(run.updatedAt),
     finishedAt: iso(run.finishedAt), deadline: iso(run.deadline), traceId: run.traceId, correlationId: run.correlationId,
     depth: run.depth, parent: run.parent,
+    // Present only for a run in a chain, so the observations of every other run stay as they were.
+    ...(run.chain ? { chain: run.chain } : {}),
+    // Present only for a run started again from an ended one.
+    ...(run.rerunOf ? { rerunOf: run.rerunOf } : {}),
   };
 }
 
@@ -146,6 +165,15 @@ function behaviorHandler(
     measurement.deliveries.push({ runId: ctx.runId, node: ctx.node, takenAtUnixMs: Date.now() });
     let outcome = 'returned';
     try {
+      // `holdUntilLogged`: a scoped instance waits until the worker has logged that many finished attempts,
+      // which orders completions by what happened rather than by how long anything took.
+      const holdUntil = (behavior['holdUntilLogged'] as number[] | undefined)?.[ctx.index ?? 0] ?? 0;
+      while (log.length < holdUntil) {
+        if (await abortable(10, ctx.signal)) {
+          outcome = 'cancelled';
+          return null;
+        }
+      }
       if (behavior['failsUntilAttempt'] !== undefined && ctx.attempt < behavior['failsUntilAttempt']) {
         outcome = 'failed';
         const f = behavior['fails'];
@@ -242,6 +270,16 @@ function behaviorHandler(
         kind,
         node: ctx.node,
         attempt: ctx.attempt,
+        ...(ctx.instance ? {
+          instance: {
+            instancePath: ctx.instance.instancePath.map((segment) => ({
+              scopeNodeId: segment.scopeNodeId,
+              iterationIndex: segment.iterationIndex,
+            })),
+            definitionNodeId: ctx.instance.definitionNodeId,
+          },
+        } : {}),
+        ...(ctx.index !== undefined ? { scopeInput: { item: ctx.item, index: ctx.index } } : {}),
         input,
         taskKind: ctx.taskKind,
         targetNode: ctx.targetNode,
@@ -296,6 +334,13 @@ async function run(scenario: Obj, config: Obj): Promise<Obj> {
     default: clientFor(config['clientToken']),
     bad: clientFor(config['badToken']),
     other: clientFor(config['otherTenantToken']),
+    // Members of the tenant with one role each (`operator`, `viewer`, `runner`), the worker identity, and an
+    // operator the scenario revokes: the scenarios about who may do what.
+    worker: clientFor(config['workerToken']),
+    operator: clientFor(config['operatorToken']),
+    viewer: clientFor(config['viewerToken']),
+    runner: clientFor(config['runnerToken']),
+    revoked: clientFor(config['revokedToken']),
   };
   const logs: Record<string, Obj[]> = {};
   const measurements: Record<string, { active: number; peakInflight: number; deliveries: Obj[] }> = {};
@@ -316,10 +361,34 @@ async function run(scenario: Obj, config: Obj): Promise<Obj> {
   const observations: Obj[] = [];
   const results = new Map<string, Obj>();
   const runOf = (step: Obj): string => {
+    if (typeof step['page'] === 'string') {
+      // A segment of a page of `listChainRuns`, by position.
+      const items = results.get(step['page'])?.['items'];
+      const id = Array.isArray(items) ? (items[step['index'] ?? 0] as Obj | undefined)?.['runId'] : undefined;
+      if (typeof id !== 'string') throw new Error(`step ${String(step['page'])} has no segment ${String(step['index'])}`);
+      return id;
+    }
+    // A rerun answers `newRunId` and no `runId`: the step then names the run it started.
     const result = results.get(step['run']);
-    const id = result?.['runId'];
+    const id = result?.['runId'] ?? result?.['newRunId'];
     if (typeof id !== 'string') throw new Error(`step ${String(step['run'])} has no run`);
     return id;
+  };
+  const approvalOf = (step: Obj): string => {
+    if (typeof step['approvalId'] === 'string') return step['approvalId'];
+    const items = results.get(step['approval'])?.['items'];
+    const id = Array.isArray(items) ? (items[0] as Obj | undefined)?.['approvalId'] : undefined;
+    if (typeof id !== 'string') throw new Error(`step ${String(step['approval'])} has no approval`);
+    return id;
+  };
+  const chainRef = (value: string): string => {
+    if (value === '{{namespaceId}}') return config['namespaceId'] as string;
+    const match = /^\{\{(chainId|currentRunId):([^}]+)\}\}$/.exec(value);
+    if (!match) return value;
+    const field = match[1] === 'chainId' ? 'runId' : 'currentRunId';
+    const resolved = results.get(match[2]!)?.[field];
+    if (typeof resolved !== 'string') throw new Error(`step ${match[2]} has no ${field}`);
+    return resolved;
   };
 
   for (const [key, entry] of Object.entries(hosts)) {
@@ -343,7 +412,7 @@ async function run(scenario: Obj, config: Obj): Promise<Obj> {
         }
         case 'startWithBlob': {
           const workflowId = config['workflows'][step['workflow']].workflowId as string;
-          const body = Buffer.alloc(step['inputBlobBytes'], 'i');
+          const body = typeof step['inputBlobText'] === 'string' ? Buffer.from(step['inputBlobText'], 'utf8') : Buffer.alloc(step['inputBlobBytes'], 'i');
           const sha256 = createHash('sha256').update(body).digest('hex');
           const descriptor = await client.uploadRunInput([body], { expectedSize: body.length, expectedSha256: sha256 });
           result = runJson(await client.startWithBlob(workflowId, descriptor, {
@@ -364,9 +433,29 @@ async function run(scenario: Obj, config: Obj): Promise<Obj> {
             for await (const item of client.listAll({ status: step['status'], limit: step['limit'] })) ids.push(item.runId);
           } else {
             ids.push(...(await client.list({ status: step['status'], limit: step['limit'] })).items.map((r) => r.runId));
+            // `waitForCount`: the runs of a chain are made by the scheduler, so a scenario that needs a hand-off
+            // to have happened waits for it by the count of runs in a status, as inspectChain waits for a head.
+            for (let attempt = 0; attempt < 100 && ids.length < (step['waitForCount'] ?? 0); attempt++) {
+              await new Promise((resolve) => setTimeout(resolve, 50));
+              ids.length = 0;
+              ids.push(...(await client.list({ status: step['status'], limit: step['limit'] })).items.map((r) => r.runId));
+            }
           }
-          // In the order the server gave (newest first): the SDK keeps it, also across pages.
-          result = { items: ids };
+          // In the order the server gave (newest first): the SDK keeps it, also across pages. `countOnly` answers
+          // the number alone, for runs whose ids are derived from their parent's and so sort anywhere.
+          result = step['countOnly'] ? { count: ids.length } : { items: ids };
+          break;
+        }
+        case 'listApprovals': {
+          let page = await client.listApprovals(runOf(step), { cursor: step['cursor'], limit: step['limit'], traceparent: step['traceparent'] });
+          for (let attempt = 0; step['waitForItem'] && page.items.length === 0 && attempt < 100; attempt++) {
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            page = await client.listApprovals(runOf(step), { cursor: step['cursor'], limit: step['limit'], traceparent: step['traceparent'] });
+          }
+          result = { items: page.items.map((item) => ({
+            approvalId: item.approvalId, runId: item.runId, nodeId: item.nodeId, instancePath: item.instancePath,
+            status: item.status, deadline: item.deadline.toISOString(), settledAt: item.settledAt?.toISOString() ?? null,
+          })), nextCursor: page.nextCursor };
           break;
         }
         case 'cancel': {
@@ -376,9 +465,94 @@ async function run(scenario: Obj, config: Obj): Promise<Obj> {
         }
         case 'operate': {
           const r = await client.operate(runOf(step), step['action'], step['reason'], { stepId: step['stepId'], outcome: step['outcome'], errorCode: step['errorCode'] });
-          result = { accepted: r.accepted, runStatus: r.runStatus };
+          // `newRunId` only for the action that starts a run, so the other operations observe as they did.
+          result = { accepted: r.accepted, runStatus: r.runStatus, ...(r.newRunId ? { newRunId: r.newRunId } : {}) };
           break;
         }
+        case 'decideApproval': {
+          const r = await client.decideApproval(approvalOf(step), step['decision'], {
+            decisionKey: step['decisionKey'], reasonCode: step['reasonCode'], traceparent: step['traceparent'],
+          });
+          result = {
+            receiptId: r.receiptId, approvalId: r.approvalId, decisionKey: r.decisionKey, decision: r.decision,
+            reasonCode: r.reasonCode, actor: r.actor, decidedAt: r.decidedAt.toISOString(),
+            outcomeSequence: r.outcomeSequence, replayed: r.replayed,
+          };
+          break;
+        }
+        case 'query': {
+          const r = await client.query(runOf(step), step['name'], step['args'] ?? null, { traceparent: step['traceparent'] });
+          result = { runVersion: r.runVersion, stateRevision: r.stateRevision, result: r.result };
+          break;
+        }
+        case 'queryChain': {
+          const r = await client.queryChain(
+            chainRef(step['namespaceId']), chainRef(step['chainId']), step['name'], step['args'] ?? null,
+            { expectedRunId: step['expectedRunId'] ? chainRef(step['expectedRunId']) : undefined, traceparent: step['traceparent'] },
+          );
+          result = { runId: r.runId, runVersion: r.runVersion, stateRevision: r.stateRevision, result: r.result };
+          break;
+        }
+        case 'update': {
+          const r = await client.update(runOf(step), step['name'], step['args'] ?? null, {
+            updateKey: step['updateKey'], expectedStateRevision: step['expectedStateRevision'], traceparent: step['traceparent'],
+          });
+          result = {
+            operation: r.operation, updateKey: r.updateKey, status: r.status, result: r.result,
+            beforeStateRevision: r.beforeStateRevision, afterStateRevision: r.afterStateRevision,
+            runVersion: r.runVersion, replayed: r.replayed,
+          };
+          break;
+        }
+        case 'updateChain': {
+          const r = await client.updateChain(
+            chainRef(step['namespaceId']), chainRef(step['chainId']), step['name'], step['args'] ?? null,
+            {
+              updateKey: step['updateKey'],
+              expectedRunId: step['expectedRunId'] ? chainRef(step['expectedRunId']) : undefined,
+              expectedStateRevision: step['expectedStateRevision'], traceparent: step['traceparent'],
+            },
+          );
+          result = {
+            runId: r.runId, operation: r.operation, updateKey: r.updateKey, status: r.status, result: r.result,
+            beforeStateRevision: r.beforeStateRevision, afterStateRevision: r.afterStateRevision,
+            runVersion: r.runVersion, replayed: r.replayed,
+          };
+          break;
+        }
+        case 'listChainRuns': {
+          const named = /^\{\{nextCursor:([^}]+)\}\}$/.exec(String(step['cursor'] ?? ''));
+          const cursor = named ? (results.get(named[1]!)?.['nextCursor'] as string | undefined) : (step['cursor'] as string | undefined);
+          if (named && typeof cursor !== 'string') throw new Error(`step ${named[1]} has no next page`);
+          const page = await client.listChainRuns(chainRef(step['namespaceId']), chainRef(step['chainId']), {
+            cursor, limit: step['limit'], traceparent: step['traceparent'],
+          });
+          result = {
+            items: page.items.map((item) => ({
+              index: item.index, runId: item.runId, status: item.status, completionKind: item.completionKind,
+              predecessorRunId: item.predecessorRunId, successorRunId: item.successorRunId,
+              createdAt: iso(item.createdAt), finishedAt: iso(item.finishedAt),
+            })),
+            nextCursor: page.nextCursor,
+          };
+          break;
+        }
+        case 'inspectChain': {
+          let r = await client.inspectChain(chainRef(step['namespaceId']), chainRef(step['chainId']), { traceparent: step['traceparent'] });
+          for (let attempt = 0; step['waitForHeadChange'] && r.currentRunId === chainRef(step['waitForHeadChange']) && attempt < 100; attempt++) {
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            r = await client.inspectChain(chainRef(step['namespaceId']), chainRef(step['chainId']), { traceparent: step['traceparent'] });
+          }
+          result = { chainId: r.chainId, currentRunId: r.currentRunId, revision: r.revision, cancelRequested: r.cancelRequested,
+            finalOutcome: r.finalOutcome, segments: r.segments };
+          break;
+        }
+        case 'signalChain': result = { ...(await client.signalChain(chainRef(step['namespaceId']), chainRef(step['chainId']), step['name'], step['payload'], {
+          expectedRunId: chainRef(step['expectedRunId']), idempotencyKey: step['idempotencyKey'], traceparent: step['traceparent'],
+        })) }; break;
+        case 'cancelChain': await client.cancelChain(chainRef(step['namespaceId']), chainRef(step['chainId']), step['reason'], {
+          expectedRunId: chainRef(step['expectedRunId']), idempotencyKey: step['idempotencyKey'], traceparent: step['traceparent'],
+        }); result = { accepted: true }; break;
         case 'signal': result = { ...(await client.signal(runOf(step), step['name'], step['payload'] ?? {})) }; break;
         case 'publishEvent': {
           const r = await client.publishEvent({ type: step['type'], data: step['data'] ?? {}, eventId: step['eventId'], correlationKey: step['correlationKey'] });
@@ -386,6 +560,13 @@ async function run(scenario: Obj, config: Obj): Promise<Obj> {
           break;
         }
         case 'waitForCompletion': result = runJson(await client.waitForCompletion(runOf(step), { timeoutMs: step['timeoutMs'] ?? 60_000, pollIntervalMs: 100 })); break;
+        case 'waitForChainCompletion': {
+          const r = await client.waitForChainCompletion(chainRef(step['namespaceId']), chainRef(step['chainId']),
+            { timeoutMs: step['timeoutMs'] ?? 60_000, pollIntervalMs: 100 });
+          result = { chainId: r.chainId, currentRunId: r.currentRunId, revision: r.revision, cancelRequested: r.cancelRequested,
+            finalOutcome: r.finalOutcome, segments: r.segments };
+          break;
+        }
         case 'events': {
           const page = await client.events(runOf(step), { limit: 200 });
           result = { events: page.items.map((e) => ({ type: e.raw['eventType'], stepId: e.raw['stepId'] ?? null, attempt: e.raw['attempt'] ?? null })) };

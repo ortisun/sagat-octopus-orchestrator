@@ -112,6 +112,11 @@ defer host.Stop(graceCtx)                       // stops polling, waits for the 
   `INPUT_INVALID`). Decoding into `any` turns numbers into `float64`; use `int64` fields, or take a
   `json.RawMessage` (`RegisterActivity` takes the raw handler), to keep integers exact.
 * The host exposes the version the server agreed to (`host.ProtocolVersion()`) and runs at it.
+* At protocol 1.5, `worker.TaskFrom(ctx).Instance` is a typed copy of the lease identity with its
+  ordered scope path and definition node. It is `nil` at protocol 1.4 or older; reports continue to
+  use the original lease identity.
+* For a collection body, `Task.Item` is the captured JSON item and `Task.Index` points to its stable
+  input index. Both are absent from root and non-collection work; the handler input remains the run input.
 * Metrics: `worker.WithEventHandler(func(worker.Event))` is called for registrations, polls, tasks taken,
   completed, failed, stale or dropped, heartbeats and reconnects.
 
@@ -221,6 +226,8 @@ worker protocol is additive within `1.x`. A newer SDK against an older server ru
 server's protocol version and treats a call the server does not have (a `501`, a `404` that says `ROUTE_NOT_FOUND`, a `405` that says
 `METHOD_NOT_ALLOWED`, or a `404` that is not the platform's error envelope) as `NOT_FOUND` with the reason
 `UNSUPPORTED_BY_SERVER`; an older SDK ignores the fields it does not know (`Run.Raw` keeps them).
+This SDK offers worker protocol `1.5`; when `1.4` or older is negotiated, lease-bound requests omit
+scoped execution identity and remain root compatible.
 
 ## Runtime matrix
 
@@ -230,7 +237,7 @@ What was **actually run** for this release, and what was not:
 |---|---|---|
 | Go | **1.25.14** (`go test -race ./...`, `go vet`, `gofmt`, `govulncheck`, the conformance suite) | Every other Go: `go.mod` says `go 1.25.0` because gRPC v1.83 requires it, so **1.24 and older cannot build the module** (the first release of this SDK was run on 1.24.2, before that change); 1.26 was not run as the SDK's toolchain |
 | OS / arch | **macOS, Darwin 25.3.0, arm64** | Linux, Windows, amd64 |
-| Server | The platform at this commit (REST `/v1`, worker protocol 1.4), through the 19-scenario conformance suite; protocol 1.0 is also covered by the unit tests of the host, 1.1 only by the registration probe of `protocol-negotiation` | Any other server version |
+| Server | The platform at this commit (REST `/v1`, worker protocol 1.5), through the shared conformance suite; protocol 1.0 is also covered by the unit tests of the host, 1.1 by the registration probe of `protocol-negotiation` | Any other server version |
 | TLS | Tested with throw-away certificates (ECDSA, generated in the tests) against an in-process TLS server, on both channels, on loopback: an untrusted server certificate is refused as `TRANSPORT` and never reaches the handler; a configured CA makes the same server work (a task goes through end to end on the worker channel); a certificate for another name is refused; with mTLS the server sees the client certificate, and refuses a client with none or with one of another authority; no warning is logged for `https://`. See "TLS" below for what is **not** covered | A trusted server certificate from the *system* roots (only the untrusted case is tested), revocation, TLS versions and cipher suites, certificate rotation on a running host |
 | Race detector | `-race` passes on the unit tests | -- |
 | Vulnerability scan | `govulncheck` v1.7.0 on `./...` with Go 1.25.14 and the vulnerability database of 2026-10-08: 9 reachable findings, all from 2026-10-08, and 4 in packages that are imported but not called | See "Known findings" below |

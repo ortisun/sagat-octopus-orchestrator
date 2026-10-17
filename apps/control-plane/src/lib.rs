@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use sagat_api_http::{
     AppState, ExecState, GovState, HttpJwksFetcher, HttpLimits, ServerConfig, TokenVerifier,
-    protect, router_with_governance,
+    protect, router_with_governance_and_approvals,
 };
 use sagat_application::bindings::BindingService;
 use sagat_application::clock::SystemClock;
@@ -30,10 +30,10 @@ use sagat_application::runs::RunService;
 use sagat_application::scripts::{RunnerService, ScriptService};
 use sagat_application::secrets::SecretService;
 use sagat_domain::identity::{Membership, Slug, Subject, Tenant, TenantId};
-use sagat_infra_ir::{JsonEvaluator, JsonIrCodec};
+use sagat_infra_ir::{JsonDeclaredOperationEvaluator, JsonEvaluator, JsonIrCodec};
 use sagat_infra_postgres::{
-    LeastPrivilegeError, PgIdentityStore, PgPool, PgRunStore, PoolConfig, connect, migrate,
-    spawn_pool_metrics,
+    LeastPrivilegeError, PgApprovalProgressStore, PgDeclaredOperationStore, PgIdentityStore,
+    PgPool, PgRunStore, PoolConfig, connect, migrate, spawn_pool_metrics,
 };
 use sagat_telemetry::Metrics;
 use time::OffsetDateTime;
@@ -619,7 +619,17 @@ pub async fn serve_with_admin(
         ),
     ))
     .with_publishing(publishing);
-    let mut app = router_with_governance(exec, governance, serve.limits);
+    let mut app = router_with_governance_and_approvals(
+        exec,
+        governance,
+        sagat_application::api_admission::ApiAdmissionService::new(executions.clone(), SystemClock),
+        PgApprovalProgressStore::new(pool.clone()),
+        sagat_application::api_admission::ApiAdmissionService::new(executions, SystemClock),
+        PgDeclaredOperationStore::new(pool.clone()),
+        JsonDeclaredOperationEvaluator,
+        SystemClock,
+        serve.limits,
+    );
     // The Studio is static files on the API's own origin: no CORS, no second listener.
     if let Some(studio) = serve.studio.clone() {
         let dir = studio.dir.display().to_string();

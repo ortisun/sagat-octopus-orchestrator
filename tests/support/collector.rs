@@ -233,6 +233,26 @@ impl Collector {
     /// served on the test's own runtime, so everything it does is seen by this subscriber until the
     /// guard drops. Flush with [`SpanSink::shutdown`].
     pub fn install(&self, ratio: f64) -> (CollectorGuard, SpanSink) {
+        let (guard, sink, _) = self.install_inner(ratio, None);
+        (guard, sink)
+    }
+
+    /// [`Self::install`] that also writes every log line, at any level, to the returned buffer, so
+    /// a test can search the spans and the log text of the same requests.
+    pub fn install_with_logs(
+        &self,
+        ratio: f64,
+    ) -> (CollectorGuard, SpanSink, super::logs::Captured) {
+        let captured = super::logs::Captured::default();
+        let (guard, sink, _) = self.install_inner(ratio, Some(captured.clone()));
+        (guard, sink, captured)
+    }
+
+    fn install_inner(
+        &self,
+        ratio: f64,
+        logs: Option<super::logs::Captured>,
+    ) -> (CollectorGuard, SpanSink, Option<super::logs::Captured>) {
         // `tracing-core` optimizes its first dispatcher through the default of whichever thread
         // registers a new callsite. A concurrent test with no subscriber can otherwise cache that
         // callsite as disabled after this scoped dispatcher was installed. The empty global
@@ -249,8 +269,17 @@ impl Collector {
         config.flush_interval = Duration::from_millis(100);
         config.sample_ratio = ratio;
         let sink = sagat_telemetry::start(OtlpClient::new(config).expect("client"));
-        let subscriber = tracing_subscriber::registry().with(OtlpLayer::new(sink.clone(), ratio));
-        let subscriber = tracing::subscriber::set_default(subscriber);
+        let layered = tracing_subscriber::registry().with(OtlpLayer::new(sink.clone(), ratio));
+        let subscriber = match logs.clone() {
+            Some(writer) => tracing::subscriber::set_default(
+                layered.with(
+                    tracing_subscriber::fmt::layer()
+                        .with_writer(writer)
+                        .with_ansi(false),
+                ),
+            ),
+            None => tracing::subscriber::set_default(layered),
+        };
         tracing::callsite::rebuild_interest_cache();
         (
             CollectorGuard {
@@ -258,6 +287,7 @@ impl Collector {
                 _exclusive: exclusive,
             },
             sink,
+            logs,
         )
     }
 }

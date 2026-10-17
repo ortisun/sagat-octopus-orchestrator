@@ -24,6 +24,15 @@ public interface ActivityContext {
 
     long generation();
 
+    /** Present only when protocol 1.5 was negotiated and the lease supplied an identity; otherwise null. */
+    ExecutionInstanceIdentity instance();
+
+    /** The immutable captured collection item for this scoped task; null for root and non-collection work. */
+    JsonNode item();
+
+    /** The captured collection index; null for root and non-collection work. */
+    Integer index();
+
     /** Stable across the attempts of the step: send it to the provider of an external effect. */
     String idempotencyKey();
 

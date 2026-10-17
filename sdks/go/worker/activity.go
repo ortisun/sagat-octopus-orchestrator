@@ -26,6 +26,18 @@ const (
 	KindReconciliation TaskKind = "RECONCILIATION"
 )
 
+// ExecutionScope is one repeated scope that addresses a runtime activation of a definition node.
+type ExecutionScope struct {
+	ScopeNodeID    string
+	IterationIndex uint32
+}
+
+// ExecutionInstanceIdentity is the run-local identity supplied for a task by worker protocol 1.5.
+type ExecutionInstanceIdentity struct {
+	InstancePath     []ExecutionScope
+	DefinitionNodeID string
+}
+
 // The reasons an activity's context is cancelled; context.Cause(ctx) returns one of them.
 var (
 	// ErrRunCancelled: the run was cancelled. The handler decides what to do; when it ends, the host
@@ -160,6 +172,12 @@ type Task struct {
 	StepID     string
 	Attempt    int
 	Generation int64
+	// Instance is present only when protocol 1.5 was negotiated and the lease supplied an identity.
+	Instance *ExecutionInstanceIdentity
+	// Item and Index are present together for a scoped collection task. Item is the immutable
+	// captured JSON value for this iteration; both are absent for root and non-collection work.
+	Item  json.RawMessage
+	Index *uint32
 	// IdempotencyKey is stable across the attempts of the step: send it to the provider of an
 	// external effect. For a compensation it is the key of this compensation.
 	IdempotencyKey string

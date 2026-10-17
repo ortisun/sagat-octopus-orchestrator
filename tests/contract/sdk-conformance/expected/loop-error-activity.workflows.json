@@ -1,0 +1,61 @@
+{
+  "canonical": {
+    "recover": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"bodies\":{\"iteration\":{\"entrypoint\":\"work\",\"nodes\":[{\"activity\":\"looperr.work\",\"id\":\"work\",\"next\":\"returned\",\"type\":\"activity\"},{\"id\":\"returned\",\"result\":\"steps.work.output\",\"type\":\"return\"}]}},\"entrypoint\":\"loop\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"loop-error-activity\"},\"nodes\":[{\"body\":\"iteration\",\"carry\":\"carry + 1\",\"condition\":\"carry < 3\",\"id\":\"loop\",\"initial\":\"0\",\"maxIterations\":3,\"next\":\"done\",\"onError\":\"recover\",\"timeoutMs\":60000,\"type\":\"while\"},{\"id\":\"done\",\"type\":\"end\"},{\"activity\":\"looperr.recover\",\"id\":\"recover\",\"next\":\"recovered\",\"type\":\"activity\"},{\"id\":\"recovered\",\"type\":\"end\"}]}"
+  },
+  "workflows": {
+    "recover": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "bodies": {
+        "iteration": {
+          "entrypoint": "work",
+          "nodes": [
+            {
+              "activity": "looperr.work",
+              "id": "work",
+              "next": "returned",
+              "type": "activity"
+            },
+            {
+              "id": "returned",
+              "result": "steps.work.output",
+              "type": "return"
+            }
+          ]
+        }
+      },
+      "entrypoint": "loop",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "loop-error-activity"
+      },
+      "nodes": [
+        {
+          "body": "iteration",
+          "carry": "carry + 1",
+          "condition": "carry < 3",
+          "id": "loop",
+          "initial": "0",
+          "maxIterations": 3,
+          "next": "done",
+          "onError": "recover",
+          "timeoutMs": 60000,
+          "type": "while"
+        },
+        {
+          "id": "done",
+          "type": "end"
+        },
+        {
+          "activity": "looperr.recover",
+          "id": "recover",
+          "next": "recovered",
+          "type": "activity"
+        },
+        {
+          "id": "recovered",
+          "type": "end"
+        }
+      ]
+    }
+  }
+}

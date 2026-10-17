@@ -1,0 +1,155 @@
+{
+  "name": "collection-builders",
+  "buildOnly": true,
+  "description": "Builder-only parity for additive v1 forEach, map and named return bodies. The harness does not publish or execute these workflows until server runtime support is enabled.",
+  "workflows": {
+    "for-each": {
+      "name": "collection-for-each",
+      "bodies": {
+        "line": {
+          "program": [
+            { "op": "step", "id": "price", "activity": "line.price" },
+            { "op": "return", "id": "return-price", "result": "steps.price.output" }
+          ]
+        },
+        "tax": {
+          "program": [
+            { "op": "step", "id": "price", "activity": "tax.price" },
+            { "op": "return", "id": "return-price", "result": "steps.price.output" }
+          ]
+        }
+      },
+      "program": [
+        {
+          "op": "forEach",
+          "id": "lines",
+          "items": "input.lines",
+          "body": "line",
+          "result": "bodyResult",
+          "maxItems": 17,
+          "maxConcurrency": 3
+        },
+        {
+          "op": "map",
+          "id": "taxes",
+          "items": "input.lines",
+          "body": "tax",
+          "result": "bodyResult",
+          "maxItems": 17,
+          "maxConcurrency": 3
+        },
+        { "op": "end", "id": "done", "options": { "outputExpr": "steps.taxes.output" } }
+      ]
+    },
+    "map": {
+      "name": "collection-map",
+      "bodies": {
+        "line": {
+          "program": [
+            { "op": "step", "id": "price", "activity": "line.price" },
+            { "op": "return", "id": "return-price", "result": "steps.price.output" }
+          ]
+        }
+      },
+      "program": [
+        {
+          "op": "map",
+          "id": "prices",
+          "items": "input.lines",
+          "body": "line",
+          "result": "bodyResult.amount",
+          "maxItems": 10000,
+          "maxConcurrency": 256
+        },
+        { "op": "end", "id": "done", "options": { "outputExpr": "steps.prices.output" } }
+      ]
+    }
+  },
+  "invalidWorkflows": {
+    "unknown-body": {
+      "contains": "not a body",
+      "workflow": {
+        "name": "unknown-body",
+        "program": [
+          { "op": "forEach", "id": "items", "items": "input.items", "body": "missing", "result": "bodyResult", "maxItems": 2, "maxConcurrency": 1 },
+          { "op": "end", "id": "done" }
+        ]
+      }
+    },
+    "max-items": {
+      "contains": "maxItems",
+      "workflow": {
+        "name": "bad-max-items",
+        "program": [
+          { "op": "forEach", "id": "items", "items": "input.items", "body": "line", "result": "bodyResult", "maxItems": 0, "maxConcurrency": 1 }
+        ]
+      }
+    },
+    "max-concurrency": {
+      "contains": "maxConcurrency",
+      "workflow": {
+        "name": "bad-concurrency",
+        "program": [
+          { "op": "forEach", "id": "items", "items": "input.items", "body": "line", "result": "bodyResult", "maxItems": 2, "maxConcurrency": 257 }
+        ]
+      }
+    },
+    "missing-return": {
+      "contains": "exactly one return",
+      "workflow": {
+        "name": "missing-return",
+        "bodies": {
+          "line": { "program": [{ "op": "step", "id": "work", "activity": "line.work" }] }
+        },
+        "program": [
+          { "op": "forEach", "id": "items", "items": "input.items", "body": "line", "result": "bodyResult", "maxItems": 2, "maxConcurrency": 1 },
+          { "op": "end", "id": "done" }
+        ]
+      }
+    },
+    "body-end": {
+      "contains": "cannot hold an end",
+      "workflow": {
+        "name": "body-end",
+        "bodies": {
+          "line": { "program": [{ "op": "end", "id": "wrong" }] }
+        },
+        "program": [
+          { "op": "forEach", "id": "items", "items": "input.items", "body": "line", "result": "bodyResult", "maxItems": 2, "maxConcurrency": 1 },
+          { "op": "end", "id": "done" }
+        ]
+      }
+    },
+    "multiple-returns": {
+      "contains": "exactly one return",
+      "workflow": {
+        "name": "multiple-returns",
+        "bodies": {
+          "line": {
+            "program": [
+              { "op": "return", "id": "first", "result": "item" },
+              { "op": "return", "id": "second", "result": "item" }
+            ]
+          }
+        },
+        "program": [
+          { "op": "forEach", "id": "items", "items": "input.items", "body": "line", "result": "bodyResult", "maxItems": 2, "maxConcurrency": 1 },
+          { "op": "end", "id": "done" }
+        ]
+      }
+    },
+    "collection-terminal": {
+      "contains": "next node",
+      "workflow": {
+        "name": "collection-terminal",
+        "bodies": {
+          "line": { "program": [{ "op": "return", "id": "returned", "result": "item" }] }
+        },
+        "program": [
+          { "op": "forEach", "id": "items", "items": "input.items", "body": "line", "result": "bodyResult", "maxItems": 2, "maxConcurrency": 1 }
+        ]
+      }
+    }
+  },
+  "steps": []
+}

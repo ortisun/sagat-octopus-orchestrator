@@ -172,11 +172,11 @@ const ALL_ROLES: [Role; 6] = [
 /// The authoritative matrix, written out by hand (not derived from `Role::permissions`).
 fn expected(role: Role) -> Vec<Permission> {
     use Permission::{
-        DefinitionPublish, DefinitionRead, DefinitionWrite, EventManage, EventPublish, EventRead,
-        NamespaceRead, OpsRead, PublicationApprove, QuotaRead, RunOperate, RunPayloadInspect,
-        RunRead, RunSignal, RunStart, ScriptBuild, ScriptExecute, ScriptPublish, ScriptRead,
-        ScriptWrite, SecretRead, SecretUse, VersionActivate, WorkerExecute, WorkerManage,
-        WorkspaceRead,
+        ApprovalDecide, ApprovalRead, DefinitionPublish, DefinitionRead, DefinitionWrite,
+        EventManage, EventPublish, EventRead, NamespaceRead, OpsRead, PublicationApprove,
+        QuotaRead, RunOperate, RunPayloadInspect, RunQuery, RunRead, RunSignal, RunStart,
+        RunUpdate, ScriptBuild, ScriptExecute, ScriptPublish, ScriptRead, ScriptWrite, SecretRead,
+        SecretUse, VersionActivate, WorkerExecute, WorkerManage, WorkspaceRead,
     };
     match role {
         Role::Admin => Permission::ALL.to_vec(),
@@ -189,6 +189,10 @@ fn expected(role: Role) -> Vec<Permission> {
                 DefinitionPublish,
                 RunStart,
                 RunRead,
+                RunQuery,
+                RunUpdate,
+                ApprovalRead,
+                ApprovalDecide,
                 SecretRead,
                 SecretUse,
                 QuotaRead,
@@ -208,6 +212,10 @@ fn expected(role: Role) -> Vec<Permission> {
             DefinitionRead,
             RunStart,
             RunRead,
+            RunQuery,
+            RunUpdate,
+            ApprovalRead,
+            ApprovalDecide,
             RunPayloadInspect,
             RunOperate,
             RunSignal,
@@ -225,6 +233,7 @@ fn expected(role: Role) -> Vec<Permission> {
             NamespaceRead,
             DefinitionRead,
             RunRead,
+            ApprovalRead,
             QuotaRead,
             EventRead,
             ScriptRead,

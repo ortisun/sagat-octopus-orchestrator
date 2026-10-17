@@ -29,7 +29,7 @@ async fn a_failure_that_is_never_committed_does_not_start_a_compensation() {
         .expect("begin")
         .expect("exists");
     let engine = Engine::new(sagat_infra_ir::JsonEvaluator);
-    let (node, fence) = (submit.node.clone(), submit.fence);
+    let (node, fence) = (submit.instance.node().clone(), submit.fence);
     engine
         .run(
             &mut tx,

@@ -16,6 +16,273 @@ SAGAT_SDK_REUSE=1 …                                                           
 
 `--ignored` because the suite needs the five toolchains (Node, Python, Go, .NET and a JDK) and Docker, which `cargo test --workspace` cannot assume; the `sdks` job of CI sets them up and runs the suite with `--ignored`. `SAGAT_SDK_REUSE=1` also skips the build of the runners, so run once without it after changing an SDK or a runner.
 
+## Protocol compatibility
+
+`protocol-negotiation.json` keeps the production worker ceiling and old-minor path executable in
+all five SDKs. It probes the accepted 1.x minors, malformed input and incompatible majors, then
+runs the same root activity through protocol 1, a retained 1.4 worker and the current 1.5 worker.
+The production adapter accepts 1.5 while a worker that offers 1.4 remains at 1.4. This scenario
+exercises additive negotiation and root compatibility; scoped identity has its own runtime scenario.
+The older root-work scenarios explicitly offer worker 1.4 so their reviewed goldens retain the
+pre-identity task/log shape. New primitive scenarios explicitly offer 1.5 where scoped identity
+is required. An omitted version uses the current SDK default and must not silently change the
+meaning of a historical golden when the SDK advances.
+
+## Workflow-primitives scenarios
+
+`switch-builders.json` is the reviewed WP-07 contract. Its build phase verifies that all five public
+builders preserve the ordered cases, mandatory default and v1 document shape, and reject empty cases,
+duplicate case ids and dangling targets. Its runtime phase starts overlapping-true, no-match and
+predicate-error runs through every SDK. The golden requires only the first case activity and the default
+activity to execute, leaves every non-selected node `NOT_STARTED`, and records `EXPRESSION_ERROR` without
+a `switch.evaluated` event for the invalid predicate. The two golden files were written after inspecting
+the builder documents and equal normalized runtime outputs from all five SDKs; they were not auto-blessed.
+
+`collection-builders.json` checks additive v1 collection authoring in the five SDKs. Its
+`buildOnly: true` marker makes the harness compare the reviewed workflow golden, canonical text
+and validation errors without publishing or executing a collection. The fixture includes two
+named bodies that reuse local node IDs and covers `forEach`, its `map` alias and bounded options.
+It does not count as collection runtime conformance.
+
+`loop-builders.json` checks additive v1 `while` and `repeatUntil` authoring in the five SDKs.
+It is build-only while durable loop execution remains disabled. The reviewed fixture covers pre-test
+and post-test shapes, the maximum iteration and duration bounds, optional durable delay/error routing,
+named body references and the required successor. It does not count as loop runtime conformance.
+
+`loop-runtime.json` publishes the restricted activity/return bodies, then executes one pre-test
+`while` and one post-test `repeatUntil` through the real scheduler and worker protocol 1.5. The
+five SDKs produce the same terminal graph and worker observations, with distinct scoped identities
+for the two body activities. Broader bodies, delay and error routing remain separate gates.
+
+`approval-builders.json` checks additive v1 native approval authoring in the five SDKs. It remains
+build-only so the authoring contract is reviewed independently of runtime behavior.
+The reviewed fixture covers subject and built-in role policies, the default initiator exclusion,
+bounded deadlines, all three routes and local validation failures. It does not count as approval
+runtime conformance.
+
+`continuation-builders.json` checks additive v1 `continueAsNew` authoring and the required finite
+`chainPolicy` in the five SDKs. It remains build-only because the full authored continuation shape
+exceeds the restricted public runtime path. The reviewed fixture covers explicit input
+and optional state transfer, the 10,000-segment and duration ceilings, inherited policy requirements
+and the top-level-only boundary. It does not count as continuation runtime conformance.
+
+`state-operation-builders.json` checks additive v1 typed state plus finite Query/Update declarations
+in the five SDKs. It remains build-only and checks authoring separately from runtime calls. The
+reviewed fixture covers explicit result disclosure, closed state/result schemas,
+bounded strings and arrays, operation-count/name limits and the 1,024-byte expression boundary.
+
+`state-operations.json` runs the public Query/Update calls in all five SDKs against the real API and
+PostgreSQL store. It checks the observed revisions, exact update replay, stale-revision conflict,
+durable validator rejection, authentication and opaque cross-tenant lookup. Every retry preserves
+the body `updateKey`; no idempotency header is synthesized. Its lost-response fault proves that the
+same update is replayed instead of applied twice. Decimal values and instants stay exact JSON strings,
+including the UTC `Z`, under the harness's non-UTC process timezone. The language unit suites cancel an
+in-flight update and prove that cancellation does not trigger a hidden retry. Since 2026-10-17 it also
+checks, in all five SDKs, a stale revision as `CONFLICT`/`REVISION_CONFLICT` (409), the same key with a
+different body as `CONFLICT`/`IDEMPOTENCY_KEY_REUSED`, arguments outside the declared schema as
+`VALIDATION_FAILED`/`INVALID_ARGUMENTS` (422), an Update to a cancelled run as
+`CONFLICT`/`RUN_NOT_MUTABLE`, and a Query to that terminal run, which still reads the last snapshot.
+`chain-query-handoff.json` adds an Update addressed to the predecessor segment after the hand-off,
+`CONFLICT`/`RUN_CONTINUED`. The goldens were reviewed by hand (the `stale` entry changed from
+`VALIDATION_FAILED` to `CONFLICT`, D291) and all five SDKs match them.
+
+`approval-decisions.json` publishes and starts native approval workflows, discovers each request through
+the public run approval page, and calls the public decision route from all five SDKs. It covers
+authentication, opaque tenant isolation, approve and reject routing, exact replay and conflicting reuse
+of the body decision key. No private store is seeded; the scheduler creates every request through the
+published workflow path. The SDK unit suites separately cover multi-page cursor traversal and strict
+response parsing.
+
+`approval-settlement.json` is the WP-06 settlement contract. Every run is created through the published
+workflow path and settled through the public calls; no private store is seeded and the control endpoint is
+not used. An approval that nobody decides expires on its own deadline (six seconds in the `short`
+workflow) and takes the `expired` route; a decision that beat the deadline of an earlier run is still
+`APPROVED` after a later run, started after it, has expired. The decision is made on a run that finished
+afterwards, so the exact replay, the same key with another body (`CONFLICT`/`IDEMPOTENCY_KEY_REUSED`) and a
+second key (`CONFLICT`/`ALREADY_DECIDED`) are all read from the settled outcome. A decision after the expiry
+or after a cancellation is `ALREADY_DECIDED`, and a cancel after the decision is refused because the run
+already ended. Raw signals named like a decision are `STATE_CONFLICT` and leave the request `PENDING` and the
+run `WAITING`. The commit order of a decision and an expiry that race is not observable from outside; the
+Rust fault tests (`tests/fault/workflow-primitives/approvals.rs`) drive both orders and the race with barriers.
+The deadline cannot be moved by the control endpoint: it is part of the journal's `approval.opened` event.
+
+`collection-ordering.json` is the WP-03 contract: a `map` over 17 items, three at a time, whose first window
+finishes in reverse. Iteration 2 completes first, then the fourteen after it one at a time (the two held slots
+stay held), then 1 and 0, through `holdUntilLogged`, so the order comes from counts of finished attempts and not
+from sleeps. Equal values stay at separate indices, the aggregate the journal records is in input order, the
+journal never shows more than three iterations active, every attempt is the first, and an empty list succeeds
+with an empty aggregate without calling the worker.
+
+`loop-semantics.json` is the WP-05 contract, with `scopeEvidence: "ordered"` so that the journal, not only the
+SDK, shows each iteration. A `while` whose condition is false at entry runs no body (no worker attempt, no
+iteration event); a `repeatUntil` runs one body before it checks, whatever the condition says; a `while` that
+counts to three commits three checkpoints whose carries are 1, 2 and 3; `maxIterations: 1` on a loop that
+would go on stops it after the first checkpoint with `ITERATION_LIMIT` and the run ends `FAILED`. The delay
+case stops its worker after the first body, waits (by the journal, not by sleeping) for the engine to record
+`loop.delay_elapsed`, and only then starts a second worker for the next body: the delay was the engine's timer
+and held no worker.
+
+`collection-blob-source.json` is the T014-016 contract for a collection whose items are a blob. Each SDK uploads the
+array through the public run-input route and starts a `map` whose `items` expression is `input`. The platform reads
+the blob once at entry and keeps the array as the membership: three elements, two of them equal, reach indices 0, 1
+and 2 in order (one iteration at a time, `scopeEvidence: "ordered"`), the aggregate is in input order, and the
+engine's read of the blob is audited once (`sourceEvidence`: `fromBlob`, `blobReads`). Four more runs fail before any
+iteration is admitted and with no worker call: an array longer than `maxItems` (`ITERATION_LIMIT`), a JSON object and
+text that is not JSON (`EXPRESSION_ERROR`), and a typed descriptor naming a blob the run does not own, which looks
+exactly like another tenant's blob (`BLOB_UNAVAILABLE`). `sourceEvidence: true` adds, for every run of the scenario,
+its status, its stop code and whether its collection was entered from a blob.
+
+`collection-limits.json` is the item-limit case of WP-12: three items under `maxItems: 3` run to the end, four fail with
+`ITERATION_LIMIT` before any iteration is admitted and with no worker call (`sourceEvidence` shows the stop code). The
+instance budget (`limits.maxInstances`) is not settable through the SDK builders yet (a scenario's `limits` key is
+ignored by every runner), so it is covered only by the Rust suite `limits.rs`.
+
+`collection-compensation.json` is the WP-04 contract for a collection that stops. A `map` with concurrency one
+over bodies of several activities: when `ship` fails for good in the first iteration, the iteration's completed
+`reserve` and `charge` are undone in reverse order (the refund before the release), through `COMPENSATION` tasks
+that carry the iteration's scope identity, the forward node and the key of the effect they undo; later items are
+never started. With an `irreversible` activity in the body the run ends `PARTIAL` and only the reversible effect
+is undone. An activity with an unknown outcome in a body is looked up by the iteration's own reconciler and the
+collection goes on with the looked-up output. A compensation that fails for good leaves the run waiting for a
+person (`step.needs_review`, status `MANUAL_REVIEW`). The golden never has two iterations with something to
+undo: the contract promises no order between iterations, so no scenario pins one. `scopeEvidence: "ordered"`
+adds the journal's `scope.compensation_planned` (the instances to undo and what each waits for) and
+`scope.compensated`.
+
+`loop-compensation.json` is the WP-05 compensation case: a `while` whose three iterations each reserve and
+charge, stopped by `maxIterations: 3`, ends `FAILED` with `ITERATION_LIMIT` after undoing iteration 2, then 1,
+then 0 (and the refund before the release in each), with the plan and its outcome in the journal.
+
+`loop-cancel.json` is the WP-05 cancel contract. A `while` whose body attempt is running when the run is
+cancelled: the engine journals `run.stop_requested`, `loop.drain_started`, `step.cancel_requested` and
+`step.cancelled`, the worker's handler sees its cancellation signal (`abortedReason: run-cancelled`), then
+`loop.iteration_drained`, `loop.finished` (cancelled) and `run.finished`. A second `while` with a delay between
+iterations is cancelled after its first checkpoint (the continuation is `delay`) with its worker stopped: the
+journal goes from `loop.iteration_checkpointed` straight to the drain without `loop.delay_elapsed` or another
+iteration. Its delay is shorter than its `timeoutMs`; a delay that cannot fit the budget is never scheduled
+(D402). The golden was written after reading both journals and the scope evidence by hand.
+
+`loop-error-activity.json` is the WP-05 recovery contract: the body activity fails for good, the engine drains
+the active iteration (`loop.drain_started`, `loop.iteration_drained`, `loop.finished` with the body's code), the
+run continues at the activity the loop's `onError` names, which a worker takes as a root task (empty instance
+path), and the run ends `SUCCEEDED` through the recovery `end` while the success `end` stays `NOT_STARTED`.
+
+`approval-security.json` is the WP-14 contract for approvals. The workflow's policy admits `admin` and `operator`
+and keeps the default exclusion of the initiator, and the run's input carries a secret-shaped value that the
+scenario lists under `mustNotLeak` and `mustNotAppear`: it must not come back in any error, observation, the
+server state or the audit evidence. The initiator (`alice`, an admin) is refused with
+`FORBIDDEN`/`INITIATOR_CANNOT_DECIDE`; a viewer, the worker identity and a runner are refused with
+`FORBIDDEN`/`NOT_ELIGIBLE` (the viewer may still list, the worker and the runner may not); an operator whose
+membership the control endpoint revokes is `UNAUTHENTICATED` from then on, for listing as well as deciding;
+the request is still `PENDING` after all of them, and an eligible operator then decides it. Each call carries a
+`traceparent` and every error reports that trace. `auditEvidence: true` adds the approval audit rows, read from
+the audit trail: the opening by the engine, one `approval.denied` for each refusal that reached the approval
+(with its reason and the caller's trace) and the decision. A revoked member never reaches the approval, so
+authentication refuses it and no approval row exists for it.
+
+`approval-state.json` is the D295 combination of a native approval with declared run state, in all five SDKs.
+While a request is open the state is read and updated through the public calls (`balance` stays `19.99` until an
+Update sets `24.99`, the same key replays, a stale `expectedStateRevision` is `CONFLICT`/`REVISION_CONFLICT`) and the
+request stays `PENDING`. A decision, a rejection, the approval's own expiry and a cancel each end the run with the state
+exactly as the last Update left it (revision 1, readable), the request settled once (`APPROVED`, `EXPIRED`,
+`CANCELLED`), and the run no longer mutable (`RUN_NOT_MUTABLE`). A decision after the expiry or the cancel is
+`ALREADY_DECIDED`. The golden was written once with `SAGAT_SDK_BLESS=1` after reading every observation by hand and
+equals the output of the five SDKs on a rerun without bless.
+
+`approval-chain.json` is the D295 combination of a native approval with a continuation chain (an activity, then an
+approval whose approval rolls the chain over and whose rejection and expiry end it, with the declared state
+transferred). An Update through the chain address while the first request is open is what the successor segment
+starts with (`24.99` is read from the new head although its input carries `0.00`, and an Update to the predecessor is
+`RUN_CONTINUED`); the successor opens an approval of its own, is updated while it is open and ends the chain when it
+rejects. Settled requests answer from their outcome (exact replay, then `ALREADY_DECIDED`). Cancelling the chain
+settles the open request `CANCELLED` and a later decision is `ALREADY_DECIDED`; the chain's original deadline (six
+seconds in the `deadline` workflow) ends the chain `TIMED_OUT` with its open request `CANCELLED`. Segments are listed
+oldest first, so the successor is index 1.
+
+`chain-inspect-cancel.json` starts a public chain with an initial activity waiting for a worker,
+then inspects and cancels it through all five SDKs. The reviewed runtime golden requires opaque
+cross-tenant lookup, exact cancel replay and a terminal `CANCELLED` chain and run. It does not
+exercise continuation handoff or chain-target signals.
+
+`scoped-identity.json` provisions the tenant iteration quota through the public API, then runs the
+restricted collection body through the served scheduler and worker API. A retained 1.4 worker
+completes root work but cannot claim scoped work. A 1.5 worker observes two equal items at distinct
+indices plus a third distinct item, preserves each typed identity, captured `{item,index}` and
+idempotency key across a retry, and reaches a terminal graph with all three logical instances. No
+private store or control tick advances the collection.
+
+`collection-runtime.json` executes the public `map` builder with a non-identity result expression
+in all five SDKs. Its reviewed graph has two ordered scoped members and a terminal result. The
+scenario chooses polling in every language so worker-stream lifetime races do not alter attempt
+counts in this semantic comparison; stream behavior has its own conformance cases.
+
+```text
+SAGAT_SDK_SCENARIO=switch-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=collection-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=loop-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=loop-runtime cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=approval-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=continuation-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=state-operation-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=state-operations cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=approval-decisions cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=approval-settlement cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=collection-ordering cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=loop-semantics cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=collection-blob-source cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=collection-limits cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=collection-compensation cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=loop-compensation cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=loop-cancel cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=loop-error-activity cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+
+SAGAT_SDK_SCENARIO=approval-state cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=approval-chain cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=approval-security cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=chain-inspect-cancel cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=scoped-identity cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=collection-runtime cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=chain-query-handoff cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=chain-final-success cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=chain-state-final-success cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=chain-commands cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+```
+
+## Pending scenarios
+
+Files ending in `.json.pending` are reviewed contracts for behavior that the server and all five SDKs
+cannot execute yet. The harness deliberately ignores them, so they are never counted as passing evidence
+and have no golden result.
+
+`chain-commands.json` publishes `activity -> waitEvent -> continueAsNew` and exercises chain
+inspection, signal and cancellation in all five SDKs. The golden requires exact signal/cancel
+replay, including signal replay after rollover, changed-body key rejection, no buffering on a
+head without a matching wait, tenant opacity, successor head change, stale-head rejection and
+final cancellation.
+`chain-root-wait.json` publishes `waitEvent -> continueAsNew`: a continuation whose entrypoint is an
+event wait (G372). The hand-off creates each successor already waiting (key, deadline and subscription
+commit with it), so a signal sent to the new head right after the hand-off is delivered, a command fenced
+to the old head is `CHAIN_HEAD_CHANGED`, and the chain is cancelled on its third segment. All five SDKs
+agree with the golden.
+
+`chain-query.json` exercises the typed chain Query call and expected-head fence against a public
+stateful chain in all five SDK runners. Its activity remains unserved, so the observation covers
+the initial head. `chain-query-handoff.json` completes that activity through worker protocol 1.5,
+observes the successor head, queries transferred state, updates it through the chain address,
+replays the update key and queries revision 1. An Update and a Query fenced to the predecessor
+return `CHAIN_HEAD_CHANGED`. The segment wait returns the predecessor; an early chain wait times
+out without changing it, and a later chain wait returns the committed `CANCELLED` final outcome
+after public chain cancellation. The shared runtime and workflow goldens pass in all five SDKs.
+
+`chain-final-success.json` publishes a conditional input-only continuation, completes both
+segments through worker protocol 1.5 and the scheduler, and requires `waitForChainCompletion`
+to return the successor's `SUCCEEDED` final outcome. The predecessor's segment wait still returns
+that predecessor. The reviewed runtime and workflow goldens pass in all five SDKs.
+
+`chain-state-final-success.json` adds exact declared-state transfer to that conditional graph.
+After both segments finish, chain Query on the final head returns `19.99`, although the successor
+input contains `0.00`. The reviewed goldens pass in all five SDKs.
+
 ## What each SDK ships
 
 `sdks/<language>/conformance/` with two executables (shell scripts, `chmod +x`):
@@ -37,6 +304,8 @@ JSON) and equal to `expected/<scenario>.workflows.json`. Then, **for each langua
 own** (booted with the scenario's `server` settings, so no run, lease, event or quota of one language is
 there for the next to meet): publish the IR with the REST API, run `run` with a `config.json`, normalize
 the result. A scenario is `ok` when all five are equal to each other and to `expected/<scenario>.json`.
+For `buildOnly: true`, the harness stops after the common workflow golden and error comparison; no
+server run or runtime golden is implied.
 
 **config.json** (written by the harness for every run):
 
@@ -46,6 +315,8 @@ the result. A scenario is `ok` when all five are equal to each other and to `exp
   "clientToken": "<jwt of an admin>", "workerToken": "<jwt of a worker bound to every activity>",
   "otherTenantToken": "<jwt of an admin of another tenant>", "badToken": "not-a-jwt",
   "unboundWorkerToken": "<jwt of a worker identity with no binding>",
+  "operatorToken": "<jwt of an operator>", "viewerToken": "<jwt of a viewer>", "runnerToken": "<jwt of a runner>",
+  "revokedToken": "<jwt of an operator the scenario revokes>",
   "controlUrl": "http://127.0.0.1:41002", "unique": "go-7f3a9c",
   "workflows": { "<key>": { "workflowId": "<uuid>", "versionId": "<uuid>", "name": "<name>" } },
   "leaseTtlSeconds": 3
@@ -58,7 +329,7 @@ other's data). The harness puts `{{unique}}` back in the results before it compa
 
 **Control endpoint.** `POST <controlUrl>/control` with `{"action": …}` (JSON) is how a scenario step acts on
 the server without an SDK API: `expireLease {run, node}`, `elapseRetryDelay {run, node}`,
-`elapseTimer {run, node}`. It answers `{"ok": true}`. A run is addressed by the **id the step returned**.
+`elapseTimer {run, node}`, `revokeMembership {node}` (`node` names the subject, here `conformance-revoked`, whose role the tenant takes away). It answers `{"ok": true}`. A run is addressed by the **id the step returned**.
 
 ## Scenario files (`scenarios/<name>.json`)
 
@@ -66,7 +337,7 @@ the server without an SDK API: `expireLease {run, node}`, `elapseRetryDelay {run
 {
   "name": "run-lifecycle",
   "description": "…",
-  "server": { "leaseTtlSeconds": 3 },            // optional
+  "server": { "leaseTtlSeconds": 3, "iterationConcurrency": 2 }, // optional; quota is set through the public API
   "workflows": {                                   // key → builder program
     "linear": { "name": "linear-flow", "description": "…", "program": [ /* ops */ ],
                 "triggers": [], "labels": {}, "inputSchema": {}, "outputSchema": {} }
@@ -89,6 +360,12 @@ the server without an SDK API: `expireLease {run, node}`, `elapseRetryDelay {run
 | `waitForEvent` | `id`, `options` (`eventType`, `correlationExpr`, `timeoutMs`, `onTimeout?`, `lookbackMs?`) | `waitForEvent` |
 | `invokeChild` | `id`, `workflow`, `options?` | `invokeChild` |
 | `condition` | `id`, `expression`, `ifTrue`, `ifFalse` | `condition` |
+| `switch` | `id`, ordered `cases` (`id`, `when`, `target`), `default` | `switch` (`switchCase` in Java) |
+| `forEach`, `map` | `id`, `items`, `body`, `result`, `maxItems`, `maxConcurrency` | collection builder |
+| `while`, `repeatUntil` | `id`, `condition`, `body`, `initial`, `carry`, `maxIterations`, `timeoutMs`, `delayMs?`, `onError?` | sequential loop builder |
+| `continueAsNew` | `id`, `input`, `state?` | terminal continuation builder; the workflow also declares `chainPolicy: {maxSegments,timeoutMs}` |
+| top-level `state` | closed `schema`, `initial`, up to 32 named `queries` and 32 named `updates` | typed state/declaration builder; every operation explicitly declares `declared-business-result-v1` disclosure |
+| `return` | `id`, `result` inside a named body | body return builder |
 | `parallel` | `id`, `join`, `branches` (array of op arrays) | `parallel` |
 | `saga` | `id`, `options?`, `body` (op array) | `saga` |
 | `end` | `id`, `options?` | `end` |
@@ -115,6 +392,7 @@ A worker definition may carry `"token": "unbound"` to use `unboundWorkerToken` i
 | `{"throws": "text"}` | raises an ordinary error of the language (reported as `ACTIVITY_ERROR`) |
 | `{"outcomeUnknown": "text"}` | raises `ActivityFailure.outcomeUnknown` |
 | `{"sleepMs": N, "returns": V, "onCancel": {"returns": W}}` | waits `N` ms (or until cancelled: then returns `W`, or raises the SDK's cancellation error if `onCancel` is `{"raises": true}`) |
+| `{"holdUntilLogged": [n0, n1, …], …}` | a scoped instance waits until the worker's log holds at least `n[iterationIndex]` finished attempts (`0` or an index past the array: no wait), then behaves as the rest of the entry says. It orders completions by what happened, never by how long anything took |
 | `{"hang": true}` | waits until cancelled or the host stops, then returns nothing useful |
 | `{"hang": true, "onCancel": {"raises": true}}` | the same, then ends by raising the SDK's cancellation error (what a handler does that is cancelled and says so) |
 | `{"sleepMs": N, "ignoresCancel": true, "returns": V}` | a handler that **never looks at its token**: it waits `N` ms whatever happens and returns `V`; the host must not interrupt it and what it returned is reported |
@@ -139,15 +417,25 @@ stop the scenario.
 
 | `op` | Fields | Calls | Result |
 |---|---|---|---|
-| `start` | `workflow` (key), `input`, `idempotencyKey?`, `correlationId?`, `traceparent?`, `deadlineInMs?`, `token?` (`bad`\|`other`) | `start` | the Run |
-| `startWithBlob` | `workflow` (key), `inputBlobBytes`, `idempotencyKey?`, `correlationId?`, `traceparent?`, `deadlineInMs?` | `uploadRunInput` then `startWithBlob` | the Run; a successful upload response is refused unless the one-pass source reached EOF |
+| `start` | `workflow` (key), `input`, `idempotencyKey?`, `correlationId?`, `traceparent?`, `deadlineInMs?`, `token?` (`bad`\|`other`\|`worker`\|`operator`\|`viewer`\|`runner`\|`revoked`) | `start` | the Run |
+| `startWithBlob` | `workflow` (key), `inputBlobBytes` (that many `i` bytes) or `inputBlobText` (these exact UTF-8 bytes), `idempotencyKey?`, `correlationId?`, `traceparent?`, `deadlineInMs?` | `uploadRunInput` then `startWithBlob` | the Run; a successful upload response is refused unless the one-pass source reached EOF |
 | `get` | `run`, `token?` | `get` | the Run |
-| `list` | `status?`, `limit?`, `all?` | `list` / `listAll` | `{items: [runId…]}` in the order the server gave (newest first), also across pages |
+| `list` | `status?`, `limit?`, `all?`, `waitForCount?`, `countOnly?` | `list` / `listAll` | `{items: [runId…]}` in the order the server gave (newest first), also across pages (`countOnly`: `{count}` alone, for runs whose ids derive from their parent's and sort anywhere); `waitForCount` lists again (up to 100 times, 50 ms apart) until the page holds that many runs, for a state the scheduler produces (a hand-off) |
+| `listApprovals` | `run`, `cursor?`, `limit?`, `waitForItem?`, `traceparent?`, `token?` | `listApprovals` | the typed page in immutable opening order |
 | `cancel` | `run`, `reason`, `expectedRunVersion?` | `cancel` | `{accepted, runStatus}` |
-| `operate` | `run`, `action`, `reason`, … | `operate` | `{accepted, runStatus}` |
+| `operate` | `run`, `action`, `reason`, … | `operate` | `{accepted, runStatus}`, plus `newRunId` for `RERUN_AS_NEW`; a later step may name that run with `"run": "<this step>"` |
+| `decideApproval` | `approvalId` or `approval` (a list step), `decisionKey`, `decision`, `reasonCode?`, `traceparent?`, `token?` | `decideApproval` | the normalized durable receipt |
+| `query` | `run`, `name`, `args`, `traceparent?`, `token?` | `query` | `{runVersion, stateRevision, result}` |
+| `queryChain` | `namespaceId`, `chainId`, `name`, `args`, `expectedRunId?`, `traceparent?`, `token?` | `queryChain` | `{runId, runVersion, stateRevision, result}` |
+| `update` | `run`, `name`, `args`, `updateKey`, `expectedStateRevision?`, `traceparent?`, `token?` | `update` | the normalized durable receipt |
+| `updateChain` | `namespaceId`, `chainId`, `name`, `args`, `updateKey`, `expectedRunId?`, `expectedStateRevision?`, `traceparent?`, `token?` | `updateChain` | the normalized durable receipt, including the resolved `runId` and `replayed` flag |
+| `inspectChain` | `namespaceId`, `chainId`, `waitForHeadChange?`, `traceparent?`, `token?` | `inspectChain` | current head and ordered segments; `waitForHeadChange` (a `{{currentRunId:step}}`) inspects again until the head is another run |
+| `signalChain` | `namespaceId`, `chainId`, `expectedRunId`, `name`, `payload`, `idempotencyKey?`, `traceparent?`, `token?` | `signalChain` | `{deliveredTo}` |
+| `cancelChain` | `namespaceId`, `chainId`, `expectedRunId`, `reason`, `idempotencyKey?`, `traceparent?`, `token?` | `cancelChain` | `{accepted: true}` |
 | `signal` | `run`, `name`, `payload` | `signal` | `{deliveredTo}` |
 | `publishEvent` | `type`, `data`, `eventId?`, `correlationKey?` | `publishEvent` | `{eventId, status}` |
 | `waitForCompletion` | `run`, `timeoutMs` | `waitForCompletion` | the Run |
+| `waitForChainCompletion` | `namespaceId`, `chainId`, `timeoutMs` | `waitForChainCompletion` | final chain inspection; timeout records `TRANSPORT`/`WAIT_TIMEOUT` without changing the chain |
 | `events` | `run` | `events` | `{events: [{type, stepId, attempt}…]}` in order |
 | `sleep` | `ms` | — | none |
 | `control` | `action`, `run?`, `node?` | the control endpoint | none |
@@ -160,7 +448,8 @@ stop the scenario.
 
 A result is a plain JSON object with the fields named here. A **Run** is exactly
 `{runId, workflowId, versionId, status, version, paused, startedBy, createdAt, updatedAt, finishedAt,
-deadline, traceId, correlationId, depth, parent}`.
+deadline, traceId, correlationId, depth, parent}`, plus `chain` for a run in a continuation chain and `rerunOf` for a
+run started again from an ended one (both only when present).
 
 ### Faults
 
@@ -195,6 +484,21 @@ it must be non-empty and free of tokens) and `version` **of a Run** (a journal c
 into `<createdAt+Ns>`, the seconds between its creation and its deadline (an SDK that sends the deadline in
 the wrong unit shows). It sorts nothing: **order is part of the result**. Where a scenario would be racy it is written so that it is not (a worker started after the
 run, a wait that nothing wakes, `control` to move time).
+
+**Audit evidence and values that must not appear.** `"auditEvidence": true` adds the approval rows of the audit
+trail (action, actor, resource type, reason and trace), read from the table. `"mustNotLeak"` lists texts that no
+error may repeat; `"mustNotAppear"` lists texts (a secret-shaped value a scenario puts into a run's input) that
+no observation, server state or evidence may contain. The worker's log is not searched: a handler is meant to
+see its input.
+
+**Scope evidence.** A scenario with `"scopeEvidence": "ordered"` or `"summary"` adds `scopeEvidence` to the
+compared result: for every run, read from the journal and the payload store and not from what an SDK reports,
+the collection and loop events, the most iterations active at once (`peakActive`), and the payloads that
+matter (the aggregate a collection finished with, the carry of each loop checkpoint). `ordered` lists every
+event in journal order, for scopes that run one iteration at a time. `summary` lists the admission order, the
+sorted checkpoints and the entry and finish, for concurrent iterations: the order in which the scheduler
+looks at completions that arrive together is not part of the contract, the worker's log is what carries the
+completion order there.
 
 ## Optional modes
 

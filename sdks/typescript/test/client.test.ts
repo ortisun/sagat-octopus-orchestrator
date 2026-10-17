@@ -89,6 +89,159 @@ test('a call without a key gets a fresh one per call and keeps it across its ret
   assert.notEqual(seen[0]?.headers['idempotency-key'], key, 'another call, another key');
 });
 
+test('an approval decision uses its body key, returns a typed receipt and preserves server fields', async () => {
+  const approvalId = '0190aaaa-0000-7000-8000-000000000099';
+  prepare((_req, res) => reply(res, 200, {
+    receiptId: '0190aaaa-0000-7000-8000-000000000100', approvalId, decisionKey: 'review-1',
+    decision: 'APPROVE', reasonCode: 'POLICY_OK', actor: 'alice', decidedAt: '2026-10-15T10:00:00Z',
+    outcomeSequence: 7, replayed: false, futureField: 'kept',
+  }));
+  const receipt = await client().decideApproval(approvalId, 'APPROVE', {
+    decisionKey: 'review-1', reasonCode: 'POLICY_OK',
+    traceparent: '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01',
+  });
+  assert.equal(seen[0]?.url, `/v1/approvals/${approvalId}/decisions`);
+  assert.deepEqual(seen[0]?.body, { decisionKey: 'review-1', decision: 'APPROVE', reasonCode: 'POLICY_OK' });
+  assert.equal(seen[0]?.headers['idempotency-key'], undefined);
+  assert.equal(receipt.decidedAt.toISOString(), '2026-10-15T10:00:00.000Z');
+  assert.equal(receipt.outcomeSequence, 7);
+  assert.equal(receipt.raw['futureField'], 'kept');
+});
+
+test('an approval decision surfaces authorization and idempotency failures and rejects malformed input locally', async () => {
+  const approvalId = '0190aaaa-0000-7000-8000-000000000099';
+  prepare((_req, res) => reply(res, 403, { code: 'FORBIDDEN', message: 'not eligible', retryable: false, details: { reason: 'NOT_ELIGIBLE' } }));
+  await assert.rejects(client().decideApproval(approvalId, 'REJECT', { decisionKey: 'review-1' }), (error: unknown) =>
+    error instanceof SagatError && error.status === 403 && error.reason === 'NOT_ELIGIBLE');
+  prepare((_req, res) => reply(res, 409, { code: 'CONFLICT', message: 'key reused', retryable: false, details: { reason: 'IDEMPOTENCY_KEY_REUSED' } }));
+  await assert.rejects(client().decideApproval(approvalId, 'APPROVE', { decisionKey: 'review-1' }), (error: unknown) =>
+    error instanceof SagatError && error.status === 409 && error.reason === 'IDEMPOTENCY_KEY_REUSED');
+  const sent = seen.length;
+  await assert.rejects(client().decideApproval('../other' as string, 'APPROVE', { decisionKey: 'review-1' }), /approval id/);
+  await assert.rejects(client().decideApproval(approvalId, 'APPROVE', { decisionKey: 'bad key' }), /decision key/);
+  await assert.rejects(client().decideApproval(approvalId, 'APPROVE', { decisionKey: undefined as unknown as string }), /decision key/);
+  assert.equal(seen.length, sent);
+});
+
+test('approval pages are typed and listAllApprovals follows the opaque cursor', async () => {
+  const runId = '0190aaaa-0000-7000-8000-000000000020';
+  const approvalId = '0190aaaa-0000-7000-8000-000000000021';
+  prepare((request, res) => reply(res, 200, request.url.includes('cursor=next')
+    ? { items: [{ approvalId, runId, nodeId: 'review', instancePath: [], status: 'APPROVED', deadline: '2026-10-16T12:00:00Z', settledAt: '2026-10-15T12:00:00Z' }], nextCursor: null }
+    : { items: [{ approvalId, runId, nodeId: 'review', instancePath: [{ scopeNodeId: 'orders', iterationIndex: 2 }], status: 'PENDING', deadline: '2026-10-16T12:00:00Z', settledAt: null }], nextCursor: 'next' }));
+  const sdk = client();
+  const page = await sdk.listApprovals(runId, { limit: 1, cursor: 'from' });
+  const all = [];
+  for await (const item of sdk.listAllApprovals(runId, { limit: 1 })) all.push(item);
+  assert.equal(page.items[0]?.instancePath[0]?.iterationIndex, 2);
+  assert.equal(page.items[0]?.deadline.toISOString(), '2026-10-16T12:00:00.000Z');
+  assert.deepEqual(all.map((item) => item.status), ['PENDING', 'APPROVED']);
+  assert.ok(seen[0]?.url.includes('limit=1') && seen[0]?.url.includes('cursor=from'));
+  assert.ok(seen[2]?.url.includes('cursor=next'));
+});
+
+test('declared query and update calls preserve typed revisions, result and update key', async () => {
+  const runId = '0190aaaa-0000-7000-8000-000000000001';
+  prepare((req, res) => {
+    if (req.url.includes('/queries/')) {
+      reply(res, 200, { runId, runVersion: 4, stateRevision: 1, result: { balance: 12 }, future: true });
+    } else {
+      reply(res, 200, {
+        runId, operation: 'account.credit', updateKey: 'credit-1', status: 'APPLIED', result: { balance: 15 },
+        beforeStateRevision: 1, afterStateRevision: 2, runVersion: 5, replayed: false, future: true,
+      });
+    }
+  });
+  const queried = await client().query<{ balance: number }>(runId, 'account.balance', { currency: 'BRL' });
+  const updated = await client().update<{ balance: number }>(runId, 'account.credit', { amount: 3 }, {
+    updateKey: 'credit-1', expectedStateRevision: 1,
+  });
+  assert.deepEqual(seen[0]?.body, { args: { currency: 'BRL' } });
+  assert.deepEqual(seen[1]?.body, { updateKey: 'credit-1', args: { amount: 3 }, expectedStateRevision: 1 });
+  assert.equal(seen[1]?.headers['idempotency-key'], undefined);
+  assert.equal(queried.result.balance, 12);
+  assert.equal(queried.stateRevision, 1);
+  assert.equal(updated.result.balance, 15);
+  assert.equal(updated.afterStateRevision, 2);
+  assert.equal(updated.raw['future'], true);
+});
+
+test('declared updates keep their body key across retries and reject invalid input locally', async () => {
+  const runId = '0190aaaa-0000-7000-8000-000000000001';
+  let attempts = 0;
+  prepare((_req, res) => {
+    attempts++;
+    if (attempts === 1) reply(res, 503, { code: 'UNAVAILABLE', message: 'busy', retryable: true });
+    else reply(res, 200, {
+      runId, operation: 'account.credit', updateKey: 'credit-1', status: 'APPLIED', result: 15,
+      beforeStateRevision: 1, afterStateRevision: 2, runVersion: 5, replayed: false,
+    });
+  });
+  await client().update(runId, 'account.credit', { amount: 3 }, { updateKey: 'credit-1' });
+  assert.equal(seen.length, 2);
+  assert.deepEqual(seen[0]?.body, seen[1]?.body);
+  const sent = seen.length;
+  await assert.rejects(client().query(runId, 'bad operation', {}), /operation name/);
+  await assert.rejects(client().update(runId, 'account.credit', {}, { updateKey: 'bad key' }), /update key/);
+  await assert.rejects(client().update(runId, 'account.credit', {}, { updateKey: 'credit-2', expectedStateRevision: -1 }), /expectedStateRevision/);
+  assert.equal(seen.length, sent);
+});
+
+test('chain inspection and commands use namespace identity, expected head and durable keys', async () => {
+  const namespaceId = '0190aaaa-0000-7000-8000-000000000010';
+  const chainId = '0190aaaa-0000-7000-8000-000000000011';
+  const head = '0190aaaa-0000-7000-8000-000000000012';
+  prepare((request, res) => request.url.includes('/signals/')
+    ? reply(res, 202, { deliveredTo: ['wait'] })
+    : request.url.endsWith('/cancel') ? reply(res, 202, undefined) : reply(res, 200, {
+      chainId, currentRunId: head, revision: 2, cancelRequested: false, finalOutcome: null,
+      segments: [{ index: 0, runId: chainId, predecessorRunId: null, successorRunId: head }, { index: 1, runId: head, predecessorRunId: chainId, successorRunId: null }],
+    }));
+  const sdk = client();
+  const inspection = await sdk.inspectChain(namespaceId, chainId);
+  const signal = await sdk.signalChain(namespaceId, chainId, 'chain.release', { ok: true }, { expectedRunId: head, idempotencyKey: 'chain-signal-1' });
+  await sdk.cancelChain(namespaceId, chainId, 'operator requested cancellation', { expectedRunId: head, idempotencyKey: 'chain-cancel-1' });
+  assert.equal(inspection.segments[1]?.predecessorRunId, chainId);
+  assert.deepEqual(signal.deliveredTo, ['wait']);
+  assert.deepEqual(seen[1]?.body, { expectedRunId: head, payload: { ok: true } });
+  assert.equal(seen[1]?.headers['idempotency-key'], 'chain-signal-1');
+  assert.deepEqual(seen[2]?.body, { expectedRunId: head, reason: 'operator requested cancellation' });
+});
+
+test('chain query carries the optional expected head and returns the resolved run revisions', async () => {
+  const namespaceId = '0190aaaa-0000-7000-8000-000000000010';
+  const chainId = '0190aaaa-0000-7000-8000-000000000011';
+  const head = '0190aaaa-0000-7000-8000-000000000012';
+  prepare((_request, res) => reply(res, 200, {
+    runId: head, runVersion: 7, stateRevision: 3, result: { amount: '19.99', occurredAt: '2026-10-15T15:34:56.789Z' },
+  }));
+  const result = await client().queryChain<{ amount: string; occurredAt: string }>(
+    namespaceId, chainId, 'account.snapshot', {}, { expectedRunId: head },
+  );
+  assert.equal(seen[0]?.url, `/v1/namespaces/${namespaceId}/chains/${chainId}/queries/account.snapshot`);
+  assert.deepEqual(seen[0]?.body, { args: {}, expectedRunId: head });
+  assert.deepEqual(result.result, { amount: '19.99', occurredAt: '2026-10-15T15:34:56.789Z' });
+  assert.equal(result.runId, head);
+});
+
+test('cancelling a declared update stops the call without retrying it', async () => {
+  const runId = '0190aaaa-0000-7000-8000-000000000001';
+  prepare((_request, response) => {
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.write('{"runId":');
+  });
+  const abort = new AbortController();
+  const call = client({ timeoutMs: 5_000 }).update(runId, 'account.credit', { amount: '19.99' }, {
+    updateKey: 'credit-1', signal: abort.signal,
+  });
+  while (seen.length === 0) await new Promise((resolve) => setTimeout(resolve, 1));
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  abort.abort();
+  await assert.rejects(call, (error: unknown) => error instanceof SagatError && error.code === 'CANCELLED');
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(seen.length, 1);
+});
+
 test('an event without an id gets one per call, kept across retries, so a repetition is a duplicate and not a second event', async () => {
   let attempts = 0;
   prepare((_req, res) => (++attempts < 2 ? reply(res, 503, 'upstream down') : reply(res, 202, { eventId: 'e', source: 'api', status: 'ACCEPTED' })));
@@ -223,12 +376,32 @@ test('no answer at all is a retryable transport error, and a lost answer is retr
 test('cancel and signal are operations with a reason and a payload and the result is typed', async () => {
   prepare((req, res) => (req.url.endsWith('/operations') ? reply(res, 202, { operationId: 'op-1', accepted: true, runStatus: 'CANCELLING', runVersion: 9 }) : reply(res, 202, { deliveredTo: ['wait'] })));
   const cancelled = await client().cancel('0190aaaa-0000-7000-8000-000000000001', 'no longer needed', { expectedRunVersion: 3 });
-  assert.deepEqual({ ...cancelled, raw: undefined }, { operationId: 'op-1', accepted: true, runStatus: 'CANCELLING', runVersion: 9, raw: undefined });
+  assert.deepEqual({ ...cancelled, raw: undefined }, { operationId: 'op-1', accepted: true, runStatus: 'CANCELLING', runVersion: 9, newRunId: null, raw: undefined });
   assert.deepEqual(seen[0]?.body, { action: 'CANCEL', reason: 'no longer needed', expectedRunVersion: 3 });
   const signalled = await client().signal('0190aaaa-0000-7000-8000-000000000001', 'payment-confirmed', { paymentId: 'p-1' });
   assert.deepEqual(signalled.deliveredTo, ['wait']);
   assert.equal(seen[1]?.url, '/v1/runs/0190aaaa-0000-7000-8000-000000000001/signals/payment-confirmed');
   assert.deepEqual(seen[1]?.body, { paymentId: 'p-1' });
+});
+
+test('RERUN_AS_NEW is an operation whose answer names the new run, and the new run names its origin', async () => {
+  const ended = '0190aaaa-0000-7000-8000-000000000001';
+  const started = '0190aaaa-0000-7000-8000-000000000021';
+  prepare((req, res) => (req.url.endsWith('/operations')
+    ? reply(res, 202, { operationId: 'op-2', accepted: true, runStatus: 'SUCCEEDED', runVersion: 9, newRunId: started })
+    : reply(res, 200, run({ runId: started, rerunOf: ended }))));
+  const rerun = await client().rerunAsNew(ended, 'run it again after the fix', { idempotencyKey: 'rerun-key-001' });
+  assert.deepEqual({ ...rerun, raw: undefined }, { operationId: 'op-2', accepted: true, runStatus: 'SUCCEEDED', runVersion: 9, newRunId: started, raw: undefined });
+  assert.equal(seen[0]?.url, `/v1/runs/${ended}/operations`);
+  assert.deepEqual(seen[0]?.body, { action: 'RERUN_AS_NEW', reason: 'run it again after the fix' });
+  assert.equal(seen[0]?.headers['idempotency-key'], 'rerun-key-001');
+  const again = await client().get(started);
+  assert.equal(again.rerunOf, ended);
+  prepare((_req, res) => reply(res, 200, run()));
+  assert.equal((await client().get(started)).rerunOf, null);
+  // `operate` takes the same action by name.
+  prepare((_req, res) => reply(res, 202, { operationId: 'op-3', accepted: true, runStatus: 'SUCCEEDED', runVersion: 9, newRunId: started }));
+  assert.equal((await client().operate(ended, 'RERUN_AS_NEW', 'run it again after the fix')).newRunId, started);
 });
 
 test('waiting for completion polls until the run is terminal', async () => {
@@ -377,4 +550,48 @@ test('a number that is a whole number beyond 2^53 - 1 and is printed in digits i
   assert.match(text(1e21), /"maximum":1e\+21/);
   assert.match(text(9007199254740991), /"maximum":9007199254740991/);
   assert.match(text(1.5), /"maximum":1.5/);
+});
+
+test('a run in a chain names its segment, and a run outside one has none', async () => {
+  const chainId = '0190aaaa-0000-7000-8000-000000000011';
+  const successor = '0190aaaa-0000-7000-8000-000000000012';
+  prepare((_req, res) => reply(res, 200, run({
+    status: 'SUCCEEDED', chain: { chainId, segmentIndex: 0, completionKind: 'CONTINUED', successorRunId: successor },
+  })));
+  const continued = await client().get('0190aaaa-0000-7000-8000-000000000001');
+  assert.equal(continued.status, 'SUCCEEDED');
+  assert.deepEqual(continued.chain, { chainId, segmentIndex: 0, completionKind: 'CONTINUED', successorRunId: successor });
+  prepare((_req, res) => reply(res, 200, run({ chain: { chainId, segmentIndex: 2, completionKind: null, successorRunId: null } })));
+  assert.equal((await client().get('0190aaaa-0000-7000-8000-000000000001')).chain?.completionKind, null);
+  prepare((_req, res) => reply(res, 200, run()));
+  assert.equal((await client().get('0190aaaa-0000-7000-8000-000000000001')).chain, null);
+  prepare((_req, res) => reply(res, 200, run({ chain: { chainId, segmentIndex: 0, completionKind: 'SOMEDAY', successorRunId: null } })));
+  await assert.rejects(client().get('0190aaaa-0000-7000-8000-000000000001'), (error: unknown) => error instanceof SagatError && error.code === 'PROTOCOL');
+});
+
+test('the runs of a chain are listed in pages that follow the server cursor and carry no payload', async () => {
+  const namespaceId = '0190aaaa-0000-7000-8000-000000000010';
+  const chainId = '0190aaaa-0000-7000-8000-000000000011';
+  const ids = ['0190aaaa-0000-7000-8000-000000000011', '0190aaaa-0000-7000-8000-000000000012', '0190aaaa-0000-7000-8000-000000000013'];
+  const item = (index: number): Record<string, unknown> => ({
+    index, runId: ids[index], status: index < 2 ? 'SUCCEEDED' : 'RUNNING', completionKind: index < 2 ? 'CONTINUED' : null,
+    predecessorRunId: index === 0 ? null : ids[index - 1], successorRunId: index < 2 ? ids[index + 1] : null,
+    createdAt: '2026-10-10T10:00:00Z', finishedAt: index < 2 ? '2026-10-10T10:00:01Z' : null,
+  });
+  prepare((request, res) => reply(res, 200, request.url.includes('cursor=') ? { items: [item(2)], nextCursor: null } : { items: [item(0), item(1)], nextCursor: 'AAE' }));
+  const collected: number[] = [];
+  for await (const segment of client().listAllChainRuns(namespaceId, chainId, { limit: 2 })) collected.push(segment.index);
+  assert.deepEqual(collected, [0, 1, 2]);
+  assert.equal(seen[0]?.method, 'GET');
+  assert.equal(seen[0]?.url, `/v1/namespaces/${namespaceId}/chains/${chainId}/runs?limit=2`);
+  assert.equal(seen[1]?.url, `/v1/namespaces/${namespaceId}/chains/${chainId}/runs?cursor=AAE&limit=2`);
+  const page = await client().listChainRuns(namespaceId, chainId);
+  assert.equal(page.items[0]?.completionKind, 'CONTINUED');
+  assert.equal(page.items[1]?.successorRunId, ids[2]);
+  assert.equal(page.nextCursor, 'AAE');
+  assert.ok(page.items[0]?.createdAt instanceof Date);
+
+  prepare((_req, res) => reply(res, 200, { items: [{ ...item(0), index: 10_000 }], nextCursor: null }));
+  await assert.rejects(client().listChainRuns(namespaceId, chainId), (error: unknown) => error instanceof SagatError && error.code === 'PROTOCOL');
+  await assert.rejects(client().listChainRuns('not-an-id', chainId), /namespace/i);
 });

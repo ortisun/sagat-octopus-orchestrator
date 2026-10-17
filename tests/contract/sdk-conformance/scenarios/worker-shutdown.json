@@ -28,6 +28,7 @@
   "workers": {
     "w1": {
       "workerName": "shutdown-w1",
+      "protocolVersion": "1.4",
       "maxInflight": 1,
       "heartbeatIntervalMs": 150,
       "activities": {
@@ -43,6 +44,7 @@
     },
     "w2": {
       "workerName": "shutdown-w2",
+      "protocolVersion": "1.4",
       "maxInflight": 1,
       "autostart": false,
       "heartbeatIntervalMs": 150,

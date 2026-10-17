@@ -117,3 +117,12 @@ Check `docs/architecture/overview.md`, `docs/architecture/execution-semantics.md
 ## Traceability
 
 Requirements `FR-012-###` and criteria `SC-012-###` must be mapped to tasks and tests in `tasks.md` before each implementation starts.
+
+## Example catalog extension (feature 014)
+
+The authorized follow-on [feature 014](../014-workflow-primitives/spec.md) expands US03 and
+FR-012-002 with three shared order-processing workflows in all five SDK languages, using only
+existing v1 semantics. Accepted/rejected routing, static parallel fulfillment and a durable
+reminder include happy paths and an injected permanent notification failure. Its own tasks and
+validation report track this delivery; historical completion evidence above is not reused as
+proof of the new examples. Future engine primitives remain a separately specified implementation.

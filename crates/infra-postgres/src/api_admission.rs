@@ -2,16 +2,32 @@
 
 use sagat_application::api_admission::ApiAdmissionStore;
 use sagat_application::error::StoreError;
+use sagat_domain::audit::AuditRecord;
 use sagat_domain::definition::WorkflowId;
-use sagat_domain::execution::RunId;
+use sagat_domain::execution::{ApprovalRequestId, RunId};
 use sagat_domain::identity::{NamespaceId, Slug, TenantId};
 use sagat_domain::versioning::RequestId;
 use sqlx::Row;
 
 use crate::execution::PgRunStore;
-use crate::identity::store_error;
+use crate::identity::{DEFAULT_DENIAL_WINDOW, insert_denial_once, store_error};
 
 impl ApiAdmissionStore for PgRunStore {
+    async fn record_approval_denial(&self, audit: &AuditRecord) -> Result<(), StoreError> {
+        metrics::counter!("security_denials_total", "action" => audit.action().as_str())
+            .increment(1);
+        match insert_denial_once(self.pool(), audit, DEFAULT_DENIAL_WINDOW).await {
+            Ok(()) => {
+                metrics::counter!("audit_denials_total", "outcome" => "accepted").increment(1);
+                Ok(())
+            }
+            Err(error) => {
+                metrics::counter!("audit_denials_total", "outcome" => "failed").increment(1);
+                Err(error)
+            }
+        }
+    }
+
     async fn namespace_id_by_slug(
         &self,
         tenant: TenantId,
@@ -95,6 +111,31 @@ impl ApiAdmissionStore for PgRunStore {
     ) -> Result<bool, StoreError> {
         exists_outside(self, "publication_requests", tenant, request.as_uuid()).await
     }
+
+    async fn approval_request_namespace(
+        &self,
+        tenant: TenantId,
+        request: ApprovalRequestId,
+    ) -> Result<Option<NamespaceId>, StoreError> {
+        optional_namespace(
+            sqlx::query(
+                "SELECT namespace_id FROM approval_requests WHERE tenant_id = $1 AND request_id = $2",
+            )
+            .bind(tenant.as_uuid())
+            .bind(request.as_uuid())
+            .fetch_optional(self.pool())
+            .await
+            .map_err(store_error)?,
+        )
+    }
+
+    async fn approval_request_exists_outside(
+        &self,
+        tenant: TenantId,
+        request: ApprovalRequestId,
+    ) -> Result<bool, StoreError> {
+        exists_outside(self, "approval_requests", tenant, request.as_uuid()).await
+    }
 }
 
 fn optional_namespace(
@@ -119,6 +160,9 @@ async fn exists_outside(
         "runs" => "SELECT EXISTS (SELECT 1 FROM runs WHERE id = $1 AND tenant_id <> $2)",
         "publication_requests" => {
             "SELECT EXISTS (SELECT 1 FROM publication_requests WHERE id = $1 AND tenant_id <> $2)"
+        }
+        "approval_requests" => {
+            "SELECT EXISTS (SELECT 1 FROM approval_requests WHERE request_id = $1 AND tenant_id <> $2)"
         }
         _ => {
             return Err(StoreError::Internal {

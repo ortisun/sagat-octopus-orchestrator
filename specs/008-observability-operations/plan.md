@@ -99,3 +99,16 @@ so an identity remains resumable after its session expires. Unmount namespace-sc
 when context changes, preserve request scope, suppress late mutation callbacks. Do not infer
 liveness from registration alone. Verify permission denial, paging, failures, drain/resume
 confirmation and cross-context responses with component tests and a real browser/API journey.
+
+
+## Approved workflow-primitives dependency (2026-10-14)
+
+[ADR-0030](../../docs/adr/ADR-0030-structured-instances-and-continuation-chains.md) and
+[ADR-0031](../../docs/adr/ADR-0031-declared-operation-result-disclosure.md) accept the feature-014
+architecture and separate declared-result disclosure policy.
+[ADR-0032](../../docs/adr/ADR-0032-additive-workflow-ir.md) keeps the workflow IR at v1 and
+supersedes the earlier separate-revision allocation. Journal-derived projections may include scoped instance metadata, routes and chain links, with lag and bounded primitive metrics. Payload/state/argument/result values remain absent from logs, audit, spans, graph and SSE; runtime truth never comes from ephemeral telemetry.
+
+This approves the described dependency for implementation, not a runtime guarantee. Canonical
+contracts, migration/replay, tenant/fault tests and applicable five-SDK evidence remain the
+feature-014 release gates; existing feature behavior stays supported.

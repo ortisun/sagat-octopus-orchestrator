@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"google.golang.org/grpc/codes"
+	"google.golang.org/protobuf/proto"
 
 	sagat "github.com/ortisun/sagat-octopus-orchestrator/sdks/go"
 	pb "github.com/ortisun/sagat-octopus-orchestrator/sdks/go/internal/workerpb"
@@ -40,7 +41,7 @@ func TestAWorkerRegistersItsActivitiesAndTheNewestProtocolItSpeaksWithTheTokenAs
 	capabilities := request.GetCapabilities()
 	if request.GetWorkerName() != "test-worker" || request.GetNamespace() != "payments" ||
 		fmt.Sprint(capabilities.GetLanguages()) != "[go]" || fmt.Sprint(capabilities.GetActivities()) != "[a.undo b.second c.lookup]" ||
-		len(capabilities.GetPools()) != 0 || capabilities.GetMaxInflight() != 7 || capabilities.GetProtocolVersion() != "1.4" {
+		len(capabilities.GetPools()) != 0 || capabilities.GetMaxInflight() != 7 || capabilities.GetProtocolVersion() != "1.5" {
 		t.Errorf("%v", request)
 	}
 	if got := registers[0].md.Get("authorization"); len(got) != 1 || got[0] != "Bearer tok" {
@@ -48,6 +49,54 @@ func TestAWorkerRegistersItsActivitiesAndTheNewestProtocolItSpeaksWithTheTokenAs
 	}
 	if h.ProtocolVersion() != "1.2" {
 		t.Errorf("protocol %q", h.ProtocolVersion())
+	}
+}
+
+func TestProtocol15EchoesScopedIdentityAndProtocol14OmitsIt(t *testing.T) {
+	for _, test := range []struct {
+		name, version string
+		present       bool
+	}{{"current", "1.5", true}, {"legacy", "1.4", false}} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newFakeService(t)
+			f.accepted = test.version
+			h := newHost(t, f, worker.WithProtocolVersion(test.version))
+			var seen *worker.Task
+			must(t, h.RegisterActivity("charge", func(ctx context.Context, _ json.RawMessage) (any, error) {
+				seen = worker.TaskFrom(ctx)
+				return 1, nil
+			}))
+			identity := &pb.ExecutionInstanceIdentity{
+				InstancePath:     []*pb.ScopePathSegment{{ScopeNodeId: "lines", IterationIndex: 7}},
+				DefinitionNodeId: "charge",
+			}
+			f.lease(lease(func(task *pb.TaskLease) {
+				task.Instance = identity
+				task.InputJson = `{"input":{"order":7},"item":{"sku":"one"},"index":7,"steps":{}}`
+			}))
+			start(t, h)
+			until(t, "the completion", func() bool { return len(f.of("CompleteStep")) == 1 })
+			request := f.of("CompleteStep")[0].request.(*pb.CompleteStepRequest)
+			if test.present && !proto.Equal(request.GetInstance(), identity) {
+				t.Fatalf("scoped identity was not echoed: %v", request.GetInstance())
+			}
+			if !test.present && request.GetInstance() != nil {
+				t.Fatalf("legacy report carried scoped identity: %v", request.GetInstance())
+			}
+			if test.present {
+				if seen == nil || seen.Instance == nil || seen.Instance.DefinitionNodeID != "charge" ||
+					len(seen.Instance.InstancePath) != 1 || seen.Instance.InstancePath[0] != (worker.ExecutionScope{ScopeNodeID: "lines", IterationIndex: 7}) {
+					t.Fatalf("handler context did not carry scoped identity: %+v", seen)
+				}
+				if seen.Index == nil || *seen.Index != 7 || string(seen.Item) != `{"sku":"one"}` {
+					t.Fatalf("handler context did not carry the captured collection item: %+v", seen)
+				}
+			} else if seen == nil || seen.Instance != nil {
+				t.Fatalf("legacy handler context carried scoped identity: %+v", seen)
+			} else if seen.Index != nil || seen.Item != nil {
+				t.Fatalf("legacy handler context carried collection input: %+v", seen)
+			}
+		})
 	}
 }
 

@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
-import { SagatError, canonicalJson, flow, workflow } from '../src/index.js';
+import { SagatError, body, canonicalJson, flow, workflow } from '../src/index.js';
 
 test('a chain of steps is linked in order and starts at the first', () => {
   const doc = workflow('order-flow')
@@ -81,6 +81,100 @@ test('wait for an event, invoke a child, decide and end', () => {
   assert.deepEqual(nodes[5], { id: 'done', type: 'end', outputExpr: 'steps.ship.output' });
 });
 
+test('a switch keeps case order, copies its cases and has no implicit next', () => {
+  const cases = [
+    { id: 'nonnegative', when: 'input.amount >= 0', target: 'positive' },
+    { id: 'one', when: 'input.amount == 1', target: 'also-positive' },
+  ];
+  const builder = workflow('switch-flow')
+    .switch('route', cases, 'fallback')
+    .step('positive', 'amount.positive')
+    .step('also-positive', 'amount.also-positive')
+    .step('fallback', 'amount.fallback');
+  cases[0]!.target = 'tampered';
+
+  const nodes = builder.build()['nodes'] as Array<Record<string, unknown>>;
+  assert.equal(nodes[0]?.['next'], undefined);
+  assert.deepEqual(nodes[0], {
+    id: 'route',
+    type: 'switch',
+    cases: [
+      { id: 'nonnegative', when: 'input.amount >= 0', target: 'positive' },
+      { id: 'one', when: 'input.amount == 1', target: 'also-positive' },
+    ],
+    default: 'fallback',
+  });
+  assert.doesNotThrow(() => workflow('local-case-ids')
+    .switch('first', [{ id: 'same', when: 'true', target: 'done' }], 'done')
+    .switch('second', [{ id: 'same', when: 'false', target: 'done' }], 'done')
+    .end('done')
+    .build());
+});
+
+test('collections use named bodies and map writes the same forEach node', () => {
+  const line = body().step('price', 'line.price').returnValue('return', 'steps.price.output');
+  const tax = body().step('price', 'tax.price').returnValue('return', 'steps.price.output');
+  const document = workflow('collection-flow')
+    .body('line', line)
+    .body('tax', tax)
+    .forEach('notify-lines', 'input.lines', 'line', 'bodyResult', { maxItems: 17, maxConcurrency: 3 })
+    .map('prices', 'input.lines', 'tax', 'bodyResult.amount', { maxItems: 17, maxConcurrency: 2 })
+    .end('done', { outputExpr: 'steps.prices.output' })
+    .build();
+
+  assert.deepEqual(document['nodes'], [
+    { id: 'notify-lines', type: 'forEach', items: 'input.lines', body: 'line', result: 'bodyResult', maxItems: 17, maxConcurrency: 3, next: 'prices' },
+    { id: 'prices', type: 'forEach', items: 'input.lines', body: 'tax', result: 'bodyResult.amount', maxItems: 17, maxConcurrency: 2, next: 'done' },
+    { id: 'done', type: 'end', outputExpr: 'steps.prices.output' },
+  ]);
+  assert.deepEqual(document['bodies'], {
+    line: {
+      entrypoint: 'price',
+      nodes: [
+        { id: 'price', type: 'activity', activity: 'line.price', next: 'return' },
+        { id: 'return', type: 'return', result: 'steps.price.output' },
+      ],
+    },
+    tax: {
+      entrypoint: 'price',
+      nodes: [
+        { id: 'price', type: 'activity', activity: 'tax.price', next: 'return' },
+        { id: 'return', type: 'return', result: 'steps.price.output' },
+      ],
+    },
+  });
+});
+
+test('named bodies cannot reference themselves', () => {
+  const recursive = body().forEach('nested', 'input.items', 'line', 'bodyResult', { maxItems: 2, maxConcurrency: 1 }).returnValue('return', 'steps.nested.output');
+  assert.throws(
+    () => workflow('recursive-body').body('line', recursive).forEach('lines', 'input.items', 'line', 'bodyResult', { maxItems: 2, maxConcurrency: 1 }).end('done').build(),
+    (error: unknown) => error instanceof SagatError && error.code === 'VALIDATION_FAILED' && /body reference cycle/.test(error.message),
+  );
+});
+
+test('while and repeatUntil write bounded pre-test and post-test loop nodes', () => {
+  const iteration = body().step('increment', 'counter.increment').returnValue('return', 'steps.increment.output');
+  const document = workflow('loop-flow')
+    .body('iteration', iteration)
+    .while('pre', 'carry < 3', 'iteration', 'input.start', 'bodyResult', {
+      maxIterations: 3, timeoutMs: 60_000, delayMs: 250, onError: 'failed',
+    })
+    .repeatUntil('post', 'carry >= 5', 'iteration', 'steps.pre.output', 'bodyResult', {
+      maxIterations: 5, timeoutMs: 120_000,
+    })
+    .end('done')
+    .end('failed')
+    .build();
+
+  assert.deepEqual(document['nodes'], [
+    { id: 'pre', type: 'while', condition: 'carry < 3', body: 'iteration', initial: 'input.start', carry: 'bodyResult', maxIterations: 3, timeoutMs: 60_000, delayMs: 250, onError: 'failed', next: 'post' },
+    { id: 'post', type: 'repeatUntil', condition: 'carry >= 5', body: 'iteration', initial: 'steps.pre.output', carry: 'bodyResult', maxIterations: 5, timeoutMs: 120_000, next: 'done' },
+    { id: 'done', type: 'end' },
+    { id: 'failed', type: 'end' },
+  ]);
+});
+
 test('triggers, labels and schemas go where the document keeps them', () => {
   const doc = workflow('with-meta')
     .label('team', 'payments')
@@ -111,6 +205,15 @@ test('what the server would refuse and the builder can see is refused here', () 
   refused(() => workflow('bad-secret').step('a', 'x', { secrets: ['Bad Secret'] }), /secret/);
   refused(() => workflow('bad-timer').sleep('t', 0), /duration/);
   refused(() => workflow('dangling').condition('c', 'true', 'nowhere', 'a').step('a', 'x').build(), /not a node/);
+  refused(() => workflow('no-switch-cases').switch('s', [], 'a'), /between 1 and 32 cases/);
+  refused(() => workflow('too-many-cases').switch('s', Array.from({ length: 33 }, (_, i) => ({ id: `case-${i}`, when: 'true', target: 'a' })), 'a'), /between 1 and 32 cases/);
+  refused(() => workflow('duplicate-cases').switch('s', [{ id: 'same', when: 'true', target: 'a' }, { id: 'same', when: 'false', target: 'b' }], 'a'), /case id/);
+  refused(() => workflow('empty-case-id').switch('s', [{ id: '', when: 'true', target: 'a' }], 'a'), /without an id/);
+  refused(() => workflow('empty-case-when').switch('s', [{ id: 'one', when: '', target: 'a' }], 'a'), /when expression/);
+  refused(() => workflow('empty-case-target').switch('s', [{ id: 'one', when: 'true', target: '' }], 'a'), /needs a target/);
+  refused(() => workflow('empty-switch-default').switch('s', [{ id: 'one', when: 'true', target: 'a' }], ''), /default target/);
+  refused(() => workflow('dangling-switch-case').switch('s', [{ id: 'one', when: 'true', target: 'nowhere' }], 'a').step('a', 'x').build(), /not a node/);
+  refused(() => workflow('dangling-switch-default').switch('s', [{ id: 'one', when: 'true', target: 'a' }], 'nowhere').step('a', 'x').build(), /not a node/);
   refused(() => workflow('dangling-timeout').waitForEvent('w', { eventType: 'e', correlationExpr: 'x', timeoutMs: 1, onTimeout: 'nowhere' }).build(), /not a node/);
 });
 

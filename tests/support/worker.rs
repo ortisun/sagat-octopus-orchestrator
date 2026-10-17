@@ -413,6 +413,7 @@ impl Worker<'_> {
             generation: lease.generation,
             lease_token: lease.lease_token.clone(),
             traceparent: String::new(),
+            instance: lease.instance.clone(),
         }
     }
 
@@ -443,6 +444,7 @@ impl Worker<'_> {
             attempt: lease.attempt,
             generation: lease.generation,
             lease_token: lease.lease_token.clone(),
+            instance: lease.instance.clone(),
             ..header
         };
         let mut messages = vec![WriteBlobRequest {
@@ -477,6 +479,7 @@ impl Worker<'_> {
             generation: lease.generation,
             lease_token: lease.lease_token.clone(),
             blob_id: blob_id.to_owned(),
+            instance: lease.instance.clone(),
         }
     }
 
@@ -538,6 +541,7 @@ impl Worker<'_> {
             run_id: lease.run_id.clone(),
             step_id: lease.step_id.clone(),
             attempt: lease.attempt,
+            instance: lease.instance.clone(),
         }
     }
 
@@ -554,6 +558,7 @@ impl Worker<'_> {
             output_blob_ref: String::new(),
             output_sha256: String::new(),
             traceparent: String::new(),
+            instance: lease.instance.clone(),
         }
     }
 
@@ -570,6 +575,7 @@ impl Worker<'_> {
             safe_message: "declined by the issuer".into(),
             retryable,
             traceparent: String::new(),
+            instance: lease.instance.clone(),
         }
     }
 

@@ -41,6 +41,10 @@ import java.util.stream.StreamSupport;
 public final class SagatClient implements AutoCloseable {
     private static final Pattern UUID_TEXT = Pattern.compile("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", Pattern.CASE_INSENSITIVE);
     private static final Pattern KEY = Pattern.compile("^[\\x21-\\x7e]{8,160}$");
+    private static final Pattern APPROVAL_DECISION_KEY = Pattern.compile("^[\\x21-\\x7e]{1,128}$");
+    private static final Pattern APPROVAL_REASON_CODE = Pattern.compile("^[A-Za-z0-9_.:-]{1,64}$");
+    private static final Pattern DECLARED_OPERATION_NAME = Pattern.compile("^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$");
+    private static final Pattern UPDATE_KEY = Pattern.compile("^[\\x21-\\x7e]{1,128}$");
     private static final long NAME_CACHE_MILLIS = 60_000;
 
     private final ClientConfig config;
@@ -427,11 +431,26 @@ public final class SagatClient implements AutoCloseable {
                 raw.path("accepted").isBoolean() && raw.path("accepted").booleanValue(),
                 optStr(raw, "runStatus"),
                 raw.path("runVersion").isIntegralNumber() ? Long.valueOf(raw.path("runVersion").longValue()) : null,
+                optStr(raw, "newRunId"),
                 raw);
     }
 
     public CompletableFuture<OperationResult> operateAsync(String runId, OperateAction action, String reason, OperateOptions options) {
         return async(() -> operate(runId, action, reason, options));
+    }
+
+    /**
+     * Starts a new run of the same version, with the same input and correlation id, from a run that ended
+     * ({@code reason} has 8 to 2000 characters). A run that has not ended is refused with {@code CONFLICT}. The
+     * answer's {@link OperationResult#newRunId()} is the new run, which names its origin in {@link Run#rerunOf()}; a
+     * segment of a continuation chain starts a run with a chain of its own.
+     */
+    public OperationResult rerunAsNew(String runId, String reason, OperateOptions options) {
+        return operate(runId, OperateAction.RERUN_AS_NEW, reason, options);
+    }
+
+    public CompletableFuture<OperationResult> rerunAsNewAsync(String runId, String reason, OperateOptions options) {
+        return async(() -> rerunAsNew(runId, reason, options));
     }
 
     /** Cancels a run. */
@@ -441,6 +460,259 @@ public final class SagatClient implements AutoCloseable {
 
     public CompletableFuture<OperationResult> cancelAsync(String runId, String reason, OperateOptions options) {
         return async(() -> cancel(runId, reason, options));
+    }
+
+    /** Reads one bounded page of approval requests in immutable opening order. */
+    public ApprovalPage listApprovals(String runId, ApprovalListOptions options) {
+        ApprovalListOptions opts = options == null ? ApprovalListOptions.create() : options;
+        Map<String, String> query = new LinkedHashMap<>();
+        query.put("cursor", opts.cursor());
+        query.put("limit", opts.limit() == null ? null : Integer.toString(opts.limit()));
+        JsonNode raw = object(http.request(new RestClient.Request(
+                "GET", "/runs/" + runId(runId) + "/approvals", query, null, null,
+                trace(opts.traceparent()), true)).body(), "an approval page");
+        JsonNode values = raw.path("items");
+        if (!values.isArray() || values.size() > 200) {
+            throw SagatException.of(ErrorCode.PROTOCOL, "items is invalid in the answer");
+        }
+        List<ApprovalListItem> items = new ArrayList<>(values.size());
+        for (JsonNode value : values) {
+            JsonNode item = object(value, "an approval");
+            ApprovalStatus status;
+            try {
+                status = ApprovalStatus.valueOf(str(item, "status"));
+            } catch (IllegalArgumentException error) {
+                throw SagatException.of(ErrorCode.PROTOCOL, "status is invalid in the answer");
+            }
+            Instant deadline = optInstant(item, "deadline");
+            if (deadline == null) {
+                throw SagatException.of(ErrorCode.PROTOCOL, "deadline is missing from the answer");
+            }
+            JsonNode path = item.path("instancePath");
+            if (!path.isArray() || path.size() > 8) {
+                throw SagatException.of(ErrorCode.PROTOCOL, "instancePath is invalid in the answer");
+            }
+            List<ApprovalScope> scopes = new ArrayList<>(path.size());
+            for (JsonNode valueScope : path) {
+                JsonNode scope = object(valueScope, "an approval scope");
+                JsonNode indexValue = scope.path("iterationIndex");
+                if (!indexValue.isIntegralNumber() || !indexValue.canConvertToInt()
+                        || indexValue.intValue() < 0 || indexValue.intValue() > 9_999) {
+                    throw SagatException.of(ErrorCode.PROTOCOL, "iterationIndex is invalid in the answer");
+                }
+                scopes.add(new ApprovalScope(str(scope, "scopeNodeId"), indexValue.intValue()));
+            }
+            items.add(new ApprovalListItem(str(item, "approvalId"), str(item, "runId"), str(item, "nodeId"),
+                    List.copyOf(scopes), status, deadline, optInstant(item, "settledAt"), item));
+        }
+        return new ApprovalPage(List.copyOf(items), optStr(raw, "nextCursor"));
+    }
+
+    public CompletableFuture<ApprovalPage> listApprovalsAsync(String runId, ApprovalListOptions options) {
+        return async(() -> listApprovals(runId, options));
+    }
+
+    /** Every approval request for a run, following opaque cursors lazily. */
+    public Stream<ApprovalListItem> listAllApprovals(String runId, ApprovalListOptions options) {
+        ApprovalListOptions first = options == null ? ApprovalListOptions.create() : options;
+        Iterator<ApprovalListItem> iterator = new Iterator<>() {
+            private Iterator<ApprovalListItem> page = List.<ApprovalListItem>of().iterator();
+            private String cursor;
+            private boolean started;
+            private boolean done;
+
+            private void fill() {
+                while (!page.hasNext() && !done) {
+                    ApprovalPage result = listApprovals(runId, ApprovalListOptions.create()
+                            .limit(first.limit()).traceparent(first.traceparent()).cursor(started ? cursor : first.cursor()));
+                    started = true;
+                    cursor = result.nextCursor();
+                    page = result.items().iterator();
+                    if (cursor == null || cursor.isEmpty()) done = true;
+                }
+            }
+            @Override public boolean hasNext() { fill(); return page.hasNext(); }
+            @Override public ApprovalListItem next() {
+                if (!hasNext()) throw new NoSuchElementException();
+                return page.next();
+            }
+        };
+        return StreamSupport.stream(java.util.Spliterators.spliteratorUnknownSize(iterator, java.util.Spliterator.ORDERED), false);
+    }
+
+    public CompletableFuture<List<ApprovalListItem>> listAllApprovalsAsync(String runId, ApprovalListOptions options) {
+        return async(() -> {
+            try (Stream<ApprovalListItem> items = listAllApprovals(runId, options)) {
+                return items.toList();
+            }
+        });
+    }
+
+    /** Records an eligible actor's durable decision for an approval request. */
+    public ApprovalDecisionReceipt decideApproval(String approvalId, ApprovalDecision decision, ApprovalDecisionOptions options) {
+        if (approvalId == null || !UUID_TEXT.matcher(approvalId).matches()) {
+            throw SagatException.invalid("an approval id is a UUID");
+        }
+        if (decision == null) {
+            throw SagatException.invalid("an approval decision is APPROVE or REJECT");
+        }
+        if (options == null || options.decisionKey() == null || !APPROVAL_DECISION_KEY.matcher(options.decisionKey()).matches()) {
+            throw SagatException.invalid("an approval decision key is 1 to 128 printable ASCII characters");
+        }
+        if (options.reasonCode() != null && !APPROVAL_REASON_CODE.matcher(options.reasonCode()).matches()) {
+            throw SagatException.invalid("an approval reason code is 1 to 64 letters, digits, dots, underscores, colons or hyphens");
+        }
+        ObjectNode body = JsonNodeFactory.instance.objectNode();
+        body.put("decisionKey", options.decisionKey());
+        body.put("decision", decision.name());
+        if (options.reasonCode() != null) {
+            body.put("reasonCode", options.reasonCode());
+        }
+        RestClient.Response response = http.request(new RestClient.Request(
+                "POST", "/approvals/" + approvalId.toLowerCase(Locale.ROOT) + "/decisions", null, body, null,
+                trace(options.traceparent()), true));
+        JsonNode raw = object(response.body(), "an approval decision receipt");
+        ApprovalDecision received;
+        try {
+            received = ApprovalDecision.valueOf(str(raw, "decision"));
+        } catch (IllegalArgumentException error) {
+            throw SagatException.of(ErrorCode.PROTOCOL, "decision is invalid in the answer");
+        }
+        Instant decidedAt = optInstant(raw, "decidedAt");
+        if (decidedAt == null) {
+            throw SagatException.of(ErrorCode.PROTOCOL, "decidedAt is missing from the answer");
+        }
+        JsonNode sequence = raw.path("outcomeSequence");
+        if (!sequence.isIntegralNumber() || sequence.longValue() < 1) {
+            throw SagatException.of(ErrorCode.PROTOCOL, "outcomeSequence is invalid in the answer");
+        }
+        return new ApprovalDecisionReceipt(
+                str(raw, "receiptId"), str(raw, "approvalId"), str(raw, "decisionKey"), received,
+                optStr(raw, "reasonCode"), str(raw, "actor"), decidedAt, sequence.longValue(),
+                raw.path("replayed").isBoolean() && raw.path("replayed").booleanValue(), raw);
+    }
+
+    public CompletableFuture<ApprovalDecisionReceipt> decideApprovalAsync(
+            String approvalId, ApprovalDecision decision, ApprovalDecisionOptions options) {
+        return async(() -> decideApproval(approvalId, decision, options));
+    }
+
+    /** Evaluates a declared side-effect-free query over one committed state snapshot. */
+    public QueryResult query(String runId, String name, Object args, CallOptions options) {
+        CallOptions opts = options == null ? CallOptions.create() : options;
+        ObjectNode body = JsonNodeFactory.instance.objectNode();
+        body.set("args", Json.toTree(args));
+        JsonNode raw = object(http.request(new RestClient.Request(
+                "POST", declaredOperationPath(runId, "queries", name), null, body, null,
+                trace(opts.traceparent()), true)).body(), "a query result");
+        if (!raw.has("result")) {
+            throw SagatException.of(ErrorCode.PROTOCOL, "result is missing from the answer");
+        }
+        return new QueryResult(str(raw, "runId"), revision(raw, "runVersion", 0),
+                revision(raw, "stateRevision", 0), raw.get("result"), raw);
+    }
+
+    public CompletableFuture<QueryResult> queryAsync(String runId, String name, Object args, CallOptions options) {
+        return async(() -> query(runId, name, args, options));
+    }
+
+    /** Evaluates a declared query against the chain head selected under the server's chain lock. */
+    public QueryResult queryChain(
+            String namespaceId, String chainId, String name, Object args, ChainQueryOptions options) {
+        if (name == null || !DECLARED_OPERATION_NAME.matcher(name).matches()) {
+            throw SagatException.invalid("an operation name is 1 to 128 permitted characters and starts with a letter or digit");
+        }
+        ChainQueryOptions opts = options == null ? ChainQueryOptions.create() : options;
+        ObjectNode body = JsonNodeFactory.instance.objectNode();
+        body.set("args", Json.toTree(args));
+        if (opts.expectedRunId() != null) {
+            body.put("expectedRunId", runId(opts.expectedRunId()));
+        }
+        JsonNode raw = object(http.request(new RestClient.Request(
+                "POST", chainPath(namespaceId, chainId) + "/queries/" + Endpoints.encodeComponent(name), null, body, null,
+                trace(opts.traceparent()), true)).body(), "a query result");
+        if (!raw.has("result")) {
+            throw SagatException.of(ErrorCode.PROTOCOL, "result is missing from the answer");
+        }
+        return new QueryResult(str(raw, "runId"), revision(raw, "runVersion", 0),
+                revision(raw, "stateRevision", 0), raw.get("result"), raw);
+    }
+
+    public CompletableFuture<QueryResult> queryChainAsync(
+            String namespaceId, String chainId, String name, Object args, ChainQueryOptions options) {
+        return async(() -> queryChain(namespaceId, chainId, name, args, options));
+    }
+
+    /** Applies or replays a declared durable state update. */
+    public UpdateReceipt update(String runId, String name, Object args, UpdateOptions options) {
+        if (options == null || options.updateKey() == null || !UPDATE_KEY.matcher(options.updateKey()).matches()) {
+            throw SagatException.invalid("an update key is 1 to 128 printable ASCII characters");
+        }
+        if (options.expectedStateRevision() != null && options.expectedStateRevision() < 0) {
+            throw SagatException.invalid("expected state revision is non-negative");
+        }
+        ObjectNode body = JsonNodeFactory.instance.objectNode();
+        body.put("updateKey", options.updateKey());
+        body.set("args", Json.toTree(args));
+        if (options.expectedStateRevision() != null) {
+            body.put("expectedStateRevision", options.expectedStateRevision());
+        }
+        JsonNode raw = object(http.request(new RestClient.Request(
+                "POST", declaredOperationPath(runId, "updates", name), null, body, null,
+                trace(options.traceparent()), true)).body(), "an update receipt");
+        if (!"APPLIED".equals(str(raw, "status"))) {
+            throw SagatException.of(ErrorCode.PROTOCOL, "status is invalid in the answer");
+        }
+        if (!raw.has("result")) {
+            throw SagatException.of(ErrorCode.PROTOCOL, "result is missing from the answer");
+        }
+        return new UpdateReceipt(str(raw, "runId"), str(raw, "operation"), str(raw, "updateKey"), "APPLIED",
+                raw.get("result"), revision(raw, "beforeStateRevision", 0), revision(raw, "afterStateRevision", 1),
+                revision(raw, "runVersion", 1), raw.path("replayed").isBoolean() && raw.path("replayed").booleanValue(), raw);
+    }
+
+    public CompletableFuture<UpdateReceipt> updateAsync(String runId, String name, Object args, UpdateOptions options) {
+        return async(() -> update(runId, name, args, options));
+    }
+
+    /** Applies or replays a declared update against the chain's current head. */
+    public UpdateReceipt updateChain(
+            String namespaceId, String chainId, String name, Object args, ChainUpdateOptions options) {
+        if (name == null || !DECLARED_OPERATION_NAME.matcher(name).matches()) {
+            throw SagatException.invalid("an operation name is 1 to 128 permitted characters and starts with a letter or digit");
+        }
+        if (options == null || options.updateKey() == null || !UPDATE_KEY.matcher(options.updateKey()).matches()) {
+            throw SagatException.invalid("an update key is 1 to 128 printable ASCII characters");
+        }
+        if (options.expectedStateRevision() != null && options.expectedStateRevision() < 0) {
+            throw SagatException.invalid("expected state revision is non-negative");
+        }
+        ObjectNode body = JsonNodeFactory.instance.objectNode();
+        body.put("updateKey", options.updateKey());
+        body.set("args", Json.toTree(args));
+        if (options.expectedRunId() != null) {
+            body.put("expectedRunId", runId(options.expectedRunId()));
+        }
+        if (options.expectedStateRevision() != null) {
+            body.put("expectedStateRevision", options.expectedStateRevision());
+        }
+        JsonNode raw = object(http.request(new RestClient.Request(
+                "POST", chainPath(namespaceId, chainId) + "/updates/" + Endpoints.encodeComponent(name),
+                null, body, null, trace(options.traceparent()), true)).body(), "an update receipt");
+        if (!"APPLIED".equals(str(raw, "status"))) {
+            throw SagatException.of(ErrorCode.PROTOCOL, "status is invalid in the answer");
+        }
+        if (!raw.has("result")) {
+            throw SagatException.of(ErrorCode.PROTOCOL, "result is missing from the answer");
+        }
+        return new UpdateReceipt(str(raw, "runId"), str(raw, "operation"), str(raw, "updateKey"), "APPLIED",
+                raw.get("result"), revision(raw, "beforeStateRevision", 0), revision(raw, "afterStateRevision", 1),
+                revision(raw, "runVersion", 1), raw.path("replayed").isBoolean() && raw.path("replayed").booleanValue(), raw);
+    }
+
+    public CompletableFuture<UpdateReceipt> updateChainAsync(
+            String namespaceId, String chainId, String name, Object args, ChainUpdateOptions options) {
+        return async(() -> updateChain(namespaceId, chainId, name, args, options));
     }
 
     /** Sends a signal to the steps of a run that wait for it; a signal nobody waits for is a {@code CONFLICT}. */
@@ -465,6 +737,125 @@ public final class SagatClient implements AutoCloseable {
 
     public CompletableFuture<SignalResult> signalAsync(String runId, String name, Object payload, CallOptions options) {
         return async(() -> signal(runId, name, payload, options));
+    }
+
+    /** Reads one committed chain head and lineage snapshot. */
+    public ChainInspection inspectChain(String namespaceId, String chainId, CallOptions options) {
+        CallOptions opts = options == null ? CallOptions.create() : options;
+        JsonNode raw = object(http.request(new RestClient.Request(
+                "GET", chainPath(namespaceId, chainId), null, null, null, trace(opts.traceparent()), true)).body(),
+                "a chain inspection");
+        JsonNode values = raw.path("segments");
+        if (!values.isArray() || values.isEmpty()) throw SagatException.of(ErrorCode.PROTOCOL, "segments is invalid in the answer");
+        List<ChainSegment> segments = new ArrayList<>();
+        for (JsonNode value : values) {
+            long index = revision(value, "index", 0);
+            if (index > 65535) throw SagatException.of(ErrorCode.PROTOCOL, "index is invalid in the answer");
+            segments.add(new ChainSegment((int) index, str(value, "runId"), optStr(value, "predecessorRunId"), optStr(value, "successorRunId")));
+        }
+        return new ChainInspection(str(raw, "chainId"), str(raw, "currentRunId"), revision(raw, "revision", 0),
+                raw.path("cancelRequested").asBoolean(false), optStr(raw, "finalOutcome"), List.copyOf(segments), raw);
+    }
+
+    public CompletableFuture<ChainInspection> inspectChainAsync(String namespaceId, String chainId, CallOptions options) {
+        return async(() -> inspectChain(namespaceId, chainId, options));
+    }
+
+    /**
+     * Reads one bounded page of a chain's runs in segment order. The cursor is opaque and stable: a segment is only
+     * appended, so a page never repeats or skips one while the chain grows. A page carries lineage and lifecycle only,
+     * never an input, output or state.
+     */
+    public ChainRunPage listChainRuns(String namespaceId, String chainId, ChainRunListOptions options) {
+        ChainRunListOptions opts = options == null ? ChainRunListOptions.create() : options;
+        Map<String, String> query = new LinkedHashMap<>();
+        query.put("cursor", opts.cursor());
+        query.put("limit", opts.limit() == null ? null : Integer.toString(opts.limit()));
+        JsonNode raw = object(http.request(new RestClient.Request(
+                "GET", chainPath(namespaceId, chainId) + "/runs", query, null, null, trace(opts.traceparent()), true)).body(),
+                "a chain run page");
+        JsonNode values = raw.path("items");
+        if (!values.isArray() || values.size() > 200) {
+            throw SagatException.of(ErrorCode.PROTOCOL, "items is invalid in the answer");
+        }
+        List<ChainRun> items = new ArrayList<>(values.size());
+        for (JsonNode value : values) {
+            JsonNode item = object(value, "a chain run");
+            long index = revision(item, "index", 0);
+            if (index > 9_999) throw SagatException.of(ErrorCode.PROTOCOL, "index is invalid in the answer");
+            Instant created = optInstant(item, "createdAt");
+            if (created == null) throw SagatException.of(ErrorCode.PROTOCOL, "createdAt is missing from the answer");
+            items.add(new ChainRun((int) index, str(item, "runId"), str(item, "status"), completionKind(item),
+                    optStr(item, "predecessorRunId"), optStr(item, "successorRunId"), created, optInstant(item, "finishedAt"), item));
+        }
+        return new ChainRunPage(List.copyOf(items), optStr(raw, "nextCursor"));
+    }
+
+    public CompletableFuture<ChainRunPage> listChainRunsAsync(String namespaceId, String chainId, ChainRunListOptions options) {
+        return async(() -> listChainRuns(namespaceId, chainId, options));
+    }
+
+    /** Every run of a chain, in segment order, following opaque cursors lazily. */
+    public Stream<ChainRun> listAllChainRuns(String namespaceId, String chainId, ChainRunListOptions options) {
+        ChainRunListOptions first = options == null ? ChainRunListOptions.create() : options;
+        Iterator<ChainRun> iterator = new Iterator<>() {
+            private Iterator<ChainRun> page = List.<ChainRun>of().iterator();
+            private String cursor;
+            private boolean started;
+            private boolean done;
+
+            private void fill() {
+                while (!page.hasNext() && !done) {
+                    ChainRunPage result = listChainRuns(namespaceId, chainId, ChainRunListOptions.create()
+                            .limit(first.limit()).traceparent(first.traceparent()).cursor(started ? cursor : first.cursor()));
+                    started = true;
+                    cursor = result.nextCursor();
+                    page = result.items().iterator();
+                    if (cursor == null || cursor.isEmpty()) done = true;
+                }
+            }
+            @Override public boolean hasNext() { fill(); return page.hasNext(); }
+            @Override public ChainRun next() {
+                if (!hasNext()) throw new NoSuchElementException();
+                return page.next();
+            }
+        };
+        return StreamSupport.stream(java.util.Spliterators.spliteratorUnknownSize(iterator, java.util.Spliterator.ORDERED), false);
+    }
+
+    /** Signals a root wait on the expected current chain head. */
+    public SignalResult signalChain(String namespaceId, String chainId, String name, Object payload, ChainCommandOptions options) {
+        requireChainOptions(options);
+        ObjectNode body = JsonNodeFactory.instance.objectNode();
+        body.put("expectedRunId", runId(options.expectedRunId())); body.set("payload", Json.toTree(payload));
+        JsonNode raw = object(http.request(new RestClient.Request(
+                "POST", chainPath(namespaceId, chainId) + "/signals/" + pathName(name, "a signal name"), null, body,
+                key(options.idempotencyKey()), trace(options.traceparent()), true)).body(), "a chain signal result");
+        List<String> delivered = new ArrayList<>();
+        for (JsonNode item : raw.path("deliveredTo")) delivered.add(item.asText());
+        return new SignalResult(List.copyOf(delivered), raw);
+    }
+
+    public CompletableFuture<SignalResult> signalChainAsync(String namespaceId, String chainId, String name, Object payload, ChainCommandOptions options) {
+        return async(() -> signalChain(namespaceId, chainId, name, payload, options));
+    }
+
+    /** Latches cancellation and cancels the expected current chain head. */
+    public void cancelChain(String namespaceId, String chainId, String reason, ChainCommandOptions options) {
+        requireChainOptions(options);
+        if (reason == null || reason.isEmpty() || reason.codePointCount(0, reason.length()) > 512) throw SagatException.invalid("a chain cancellation reason is 1 to 512 characters");
+        ObjectNode body = JsonNodeFactory.instance.objectNode();
+        body.put("expectedRunId", runId(options.expectedRunId())); body.put("reason", reason);
+        http.request(new RestClient.Request("POST", chainPath(namespaceId, chainId) + "/cancel", null, body,
+                key(options.idempotencyKey()), trace(options.traceparent()), true));
+    }
+
+    public CompletableFuture<Void> cancelChainAsync(String namespaceId, String chainId, String reason, ChainCommandOptions options) {
+        return async(() -> { cancelChain(namespaceId, chainId, reason, options); return null; });
+    }
+
+    private static void requireChainOptions(ChainCommandOptions options) {
+        if (options == null || options.expectedRunId() == null) throw SagatException.invalid("an expected run id is a UUID");
     }
 
     // ------------------------------------------------------------------------------------------- events
@@ -555,6 +946,31 @@ public final class SagatClient implements AutoCloseable {
         return async(() -> waitForCompletion(runId, options));
     }
 
+    /** Waits for the chain's final outcome, following committed head changes. */
+    public ChainInspection waitForChainCompletion(String namespaceId, String chainId, WaitOptions options) {
+        WaitOptions opts = options == null ? WaitOptions.create() : options;
+        long start = System.nanoTime();
+        long timeoutNanos = opts.timeout().toNanos();
+        long interval = opts.pollInterval().toMillis();
+        for (;;) {
+            ChainInspection chain = inspectChain(namespaceId, chainId, null);
+            if (chain.finalOutcome() != null) {
+                return chain;
+            }
+            if (System.nanoTime() - start >= timeoutNanos) {
+                throw SagatException.builder(ErrorCode.TRANSPORT, "the chain did not finish within " + opts.timeout().toMillis() + " ms")
+                        .reason("WAIT_TIMEOUT")
+                        .build();
+            }
+            RestClient.pause(Math.round(interval * (0.8 + ThreadLocalRandom.current().nextDouble() * 0.4)));
+        }
+    }
+
+    public CompletableFuture<ChainInspection> waitForChainCompletionAsync(
+            String namespaceId, String chainId, WaitOptions options) {
+        return async(() -> waitForChainCompletion(namespaceId, chainId, options));
+    }
+
     // ------------------------------------------------------------------------------------------ parsing
 
     private static JsonNode object(JsonNode value, String what) {
@@ -594,6 +1010,28 @@ public final class SagatClient implements AutoCloseable {
         return value.isNumber() ? value.longValue() : fallback;
     }
 
+    private static long revision(JsonNode raw, String key, long minimum) {
+        JsonNode value = raw.path(key);
+        if (!value.isIntegralNumber() || !value.canConvertToLong() || value.longValue() < minimum) {
+            throw SagatException.of(ErrorCode.PROTOCOL, key + " is invalid in the answer");
+        }
+        return value.longValue();
+    }
+
+    private static String declaredOperationPath(String runId, String kind, String name) {
+        if (name == null || !DECLARED_OPERATION_NAME.matcher(name).matches()) {
+            throw SagatException.invalid("an operation name is 1 to 128 permitted characters and starts with a letter or digit");
+        }
+        return "/runs/" + runId(runId) + "/" + kind + "/" + Endpoints.encodeComponent(name);
+    }
+
+    private static String chainPath(String namespaceId, String chainId) {
+        if (namespaceId == null || !UUID_TEXT.matcher(namespaceId).matches() || chainId == null || !UUID_TEXT.matcher(chainId).matches()) {
+            throw SagatException.invalid("namespace and chain ids are UUIDs");
+        }
+        return "/namespaces/" + namespaceId.toLowerCase(Locale.ROOT) + "/chains/" + chainId.toLowerCase(Locale.ROOT);
+    }
+
     static Run toRun(JsonNode value) {
         JsonNode raw = object(value, "a run");
         Instant created = optInstant(raw, "createdAt");
@@ -622,7 +1060,25 @@ public final class SagatClient implements AutoCloseable {
                 optStr(raw, "correlationId"),
                 (int) num(raw, "depth", 0),
                 parent,
+                toRunChain(raw.path("chain")),
+                optStr(raw, "rerunOf"),
                 raw);
+    }
+
+    private static String completionKind(JsonNode node) {
+        String kind = optStr(node, "completionKind");
+        if (kind != null && !kind.equals("CONTINUED") && !kind.equals("FINAL")) {
+            throw SagatException.of(ErrorCode.PROTOCOL, "completionKind is invalid in the answer");
+        }
+        return kind;
+    }
+
+    private static Run.ChainSegmentOfRun toRunChain(JsonNode node) {
+        if (node.isMissingNode() || node.isNull()) return null;
+        JsonNode chain = object(node, "a run chain segment");
+        long index = revision(chain, "segmentIndex", 0);
+        if (index > 9_999) throw SagatException.of(ErrorCode.PROTOCOL, "segmentIndex is invalid in the answer");
+        return new Run.ChainSegmentOfRun(str(chain, "chainId"), (int) index, completionKind(chain), optStr(chain, "successorRunId"));
     }
 
     private static RunPage toPage(JsonNode body) {

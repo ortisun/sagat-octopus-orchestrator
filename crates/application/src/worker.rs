@@ -14,10 +14,10 @@ use std::time::Duration;
 
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::execution::{
-    self, FailureCode, Fence, Progress, RunEvent, RunId, RunStatus, StepStatus,
+    self, ExecutionInstanceId, FailureCode, Fence, Progress, RunEvent, RunId, RunStatus, StepStatus,
 };
 use sagat_domain::identity::{NamespaceId, Permission, Principal, Slug, TenantId};
-use sagat_domain::workflow::{ActivityName, NodeId, NodeKind};
+use sagat_domain::workflow::{ActivityName, NodeKind};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -28,8 +28,8 @@ use crate::entropy::{Entropy, Token};
 use crate::error::{AppError, StoreError};
 use crate::execution::{
     Actor, Effects, Engine, EngineError, ExpressionEvaluator, LeaseGrant, LeaseRenewal,
-    MAX_PAYLOAD_BYTES, MAX_RUN_OUTPUT_BYTES, PoolCheck, ReportedLease, RunTx, compensation_key,
-    step_id,
+    MAX_PAYLOAD_BYTES, MAX_RUN_OUTPUT_BYTES, PoolCheck, ReportedLease, RunTx,
+    instance_compensation_key, instance_reconciliation_key, instance_step_id,
 };
 use crate::quotas::QuotaLookup;
 use crate::runs::{Lock, RunStore, execution_error};
@@ -41,9 +41,13 @@ use sagat_domain::secrets::{SecretCipher, SecretName, SecretValue, associated_da
 
 /// The newest minor version of worker protocol 1 this server speaks. Every minor version adds fields
 /// and calls and removes none, so a worker of any minor version of protocol 1 can be served
-/// (`negotiate_protocol`). 1.1 added the step identity to `Heartbeat`, 1.2 `task_kind` and
-/// `ResolveSecrets`; 1.3 adds streaming blob upload/download; 1.4 adds bounded task streams.
-pub const PROTOCOL_MINOR: u32 = 4;
+/// (`negotiate_protocol`).
+pub const PROTOCOL_MINOR: u32 = 5;
+/// The newest minor a storage adapter may negotiate before it proves scoped claim and report.
+pub const ROOT_PROTOCOL_MINOR: u32 = 4;
+/// Scoped execution identity is allocated to worker protocol 1.5. A store must explicitly declare
+/// that its claim and report transactions address scoped instances before this minor is negotiated.
+pub const SCOPED_PROTOCOL_MINOR: u32 = PROTOCOL_MINOR;
 /// Streaming blob references first became safe to hand to workers in protocol 1.3.
 pub const BLOB_PROTOCOL_MINOR: u32 = 3;
 /// Server-streaming task receive first became available in protocol 1.4.
@@ -58,10 +62,10 @@ pub const UNSUPPORTED_PROTOCOL: &str = "unsupported protocol version";
 /// `None` for another major version and for anything that is not a version.
 #[must_use]
 pub fn negotiate_protocol(offered: &str) -> Option<String> {
-    negotiate_protocol_details(offered).map(|(version, _)| version)
+    negotiate_protocol_details(offered, PROTOCOL_MINOR).map(|(version, _)| version)
 }
 
-fn negotiate_protocol_details(offered: &str) -> Option<(String, u32)> {
+fn negotiate_protocol_details(offered: &str, server_minor: u32) -> Option<(String, u32)> {
     let minor = match offered.split_once('.') {
         None if offered == "1" => 0,
         Some(("1", minor))
@@ -74,7 +78,7 @@ fn negotiate_protocol_details(offered: &str) -> Option<(String, u32)> {
         }
         _ => return None,
     };
-    let agreed = minor.min(PROTOCOL_MINOR);
+    let agreed = minor.min(server_minor);
     let version = if agreed == 0 {
         "1".to_owned()
     } else {
@@ -173,6 +177,12 @@ pub struct NewSession {
 
 /// Storage port for workers. Implemented by `sagat-infra-postgres`.
 pub trait WorkerStore: QuotaLookup + Send + Sync {
+    /// Whether this adapter can claim and mutate a scoped execution instance transactionally.
+    /// The default keeps scoped work unavailable until an adapter proves the full storage path.
+    fn supports_scoped_worker_protocol(&self) -> bool {
+        false
+    }
+
     /// The activity patterns `subject` is bound to in `namespace` (canonical text, see
     /// `sagat_domain::binding`). Empty when the identity has no binding there.
     fn bound_patterns(
@@ -239,7 +249,7 @@ pub struct Registered {
 #[derive(Debug, Clone)]
 pub struct ClaimedTask {
     pub run_id: RunId,
-    pub node: NodeId,
+    pub instance: ExecutionInstanceId,
     pub step_id: Uuid,
     pub fence: Fence,
     pub lease_token: Token,
@@ -281,15 +291,40 @@ impl TaskKind {
 /// The forward step a compensation or a reconciliation is about.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskTarget {
-    pub node: NodeId,
+    pub instance: ExecutionInstanceId,
     pub idempotency_key: String,
 }
 
 impl ClaimedTask {
-    /// The identifier a worker echoes back: `run/node/generation`.
+    /// The legacy identifier a worker echoes back: `run/node/generation`.
+    /// Protocol 1.5 carries the complete logical identity in the separate `instance` field.
     #[must_use]
     pub fn task_id(&self) -> String {
-        format!("{}/{}/{}", self.run_id, self.node, self.fence.generation)
+        format!(
+            "{}/{}/{}",
+            self.run_id,
+            self.instance.node(),
+            self.fence.generation
+        )
+    }
+}
+
+#[cfg(test)]
+fn root_task_id(run_id: RunId, instance: &ExecutionInstanceId, generation: u64) -> Option<String> {
+    instance
+        .path()
+        .is_root()
+        .then(|| format!("{run_id}/{}/{generation}", instance.node()))
+}
+
+fn require_supported_task(
+    instance: &ExecutionInstanceId,
+    supports_scoped_identity: bool,
+) -> Result<(), AppError> {
+    if instance.path().is_root() || supports_scoped_identity {
+        Ok(())
+    } else {
+        Err(AppError::StaleAttempt)
     }
 }
 
@@ -297,7 +332,7 @@ impl ClaimedTask {
 #[derive(Clone)]
 pub struct TaskRef<'a> {
     pub run_id: RunId,
-    pub node: &'a NodeId,
+    pub instance: &'a ExecutionInstanceId,
     /// The step identity the worker was handed; checked when present.
     pub step_id: Option<Uuid>,
     pub fence: Fence,
@@ -309,7 +344,7 @@ impl std::fmt::Debug for TaskRef<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TaskRef")
             .field("run_id", &self.run_id)
-            .field("node", &self.node)
+            .field("instance", &self.instance)
             .field("step_id", &self.step_id)
             .field("fence", &self.fence)
             .field("lease_token", &"<redacted>")
@@ -378,7 +413,7 @@ pub struct HeartbeatAck {
 /// The lease of `task`, recorded with the report it makes (G141).
 fn reported_lease(task: &TaskRef<'_>) -> ReportedLease {
     ReportedLease {
-        node: task.node.clone(),
+        instance: task.instance.clone(),
         token_hash: Token::hash_of(task.lease_token),
     }
 }
@@ -437,6 +472,12 @@ where
         &self.settings
     }
 
+    /// Whether the storage adapter has enabled the scoped worker protocol.
+    #[must_use]
+    pub fn supports_scoped_worker_protocol(&self) -> bool {
+        self.store.supports_scoped_worker_protocol()
+    }
+
     /// Opens a session for a worker identity.
     ///
     /// # Errors
@@ -450,8 +491,13 @@ where
         capabilities: &Capabilities,
     ) -> Result<Registered, AppError> {
         principal.authorize(Permission::WorkerExecute)?;
+        let server_minor = if self.store.supports_scoped_worker_protocol() {
+            PROTOCOL_MINOR
+        } else {
+            ROOT_PROTOCOL_MINOR
+        };
         let Some((accepted_protocol_version, accepted_protocol_minor)) =
-            negotiate_protocol_details(&capabilities.protocol_version)
+            negotiate_protocol_details(&capabilities.protocol_version, server_minor)
         else {
             return Err(AppError::NotAllowed(UNSUPPORTED_PROTOCOL));
         };
@@ -774,12 +820,27 @@ where
         trace_id: Option<&str>,
         bytes: &mut usize,
     ) -> Result<Vec<ClaimedTask>, AppError> {
-        let Some(mut tx) = self
+        let mut tx = match self
             .store
             .begin(session.tenant_id, run, Lock::SkipLocked)
-            .await?
-        else {
-            return Ok(Vec::new()); // locked by someone else, or gone
+            .await
+        {
+            Ok(Some(tx)) => tx,
+            Ok(None) => return Ok(Vec::new()), // locked by someone else, or gone
+            // A run pinned to a definition this build cannot read (a rolled-back build meeting a
+            // newer run) is not this poll's to serve and is not damaged. It is skipped for this
+            // poll, counted and logged, and does not use up the failures the poll tolerates, so
+            // runs this build can read are still served (G460).
+            Err(StoreError::UnreadableDefinition) => {
+                metrics::counter!(
+                    "worker_claim_skipped_total",
+                    "reason" => "definition_unreadable"
+                )
+                .increment(1);
+                tracing::warn!(%run, "a run pinned to an unreadable definition was skipped by a poll");
+                return Ok(Vec::new());
+            }
+            Err(error) => return Err(error.into()),
         };
         // The identity may have been drained after the poll looked at its session: the check is
         // made again here, under the lock a drain waits for, so a drain that has returned has
@@ -800,18 +861,22 @@ where
         if tx.required_worker_protocol_minor().await? > session.accepted_protocol_minor {
             return Ok(Vec::new());
         }
-        let mut ready: Vec<(NodeId, ActivityName, Option<Duration>)> = {
+        let mut ready: Vec<(ExecutionInstanceId, ActivityName, Option<Duration>)> = {
             let (def, state) = tx.parts();
             state
-                .steps()
-                .filter(|(_, step)| step.status() == StepStatus::Ready)
-                .filter_map(|(node, _)| {
-                    let n = def.node(node)?;
+                .instances()
+                .filter(|(instance, step)| {
+                    step.status() == StepStatus::Ready
+                        && (instance.path().is_root()
+                            || session.accepted_protocol_minor >= SCOPED_PROTOCOL_MINOR)
+                })
+                .filter_map(|(instance, _)| {
+                    let n = def.node_for_instance(instance)?;
                     match n.kind() {
                         NodeKind::Activity { activity, .. }
                             if session.activities.iter().any(|a| a == activity.as_str()) =>
                         {
-                            Some((node.clone(), activity.clone(), n.timeout()))
+                            Some((instance.clone(), activity.clone(), n.timeout()))
                         }
                         _ => None,
                     }
@@ -821,16 +886,16 @@ where
         // A run transaction retains every activity quota (and compensation breaker) lock until
         // commit. Node-id order can invert the same activities across workflows and deadlock.
         ready.sort_by(
-            |(left_node, left_activity, _), (right_node, right_activity, _)| {
+            |(left_instance, left_activity, _), (right_instance, right_activity, _)| {
                 left_activity
                     .as_str()
                     .cmp(right_activity.as_str())
-                    .then_with(|| left_node.cmp(right_node))
+                    .then_with(|| left_instance.cmp(right_instance))
             },
         );
         let mut leased = Vec::new();
         let mut run_bytes = 0usize;
-        for (node, activity, timeout) in ready {
+        for (instance, activity, timeout) in ready {
             // Every task carries the run's data; the response is bounded by what it carries.
             // `remaining` bounds what is *leased*, not what is looked at: a step the circuit
             // breaker holds back must not use up the place of one that can run.
@@ -841,7 +906,7 @@ where
             // step is not handed to it either: it stays READY, without spending an attempt, for a
             // worker that may have the value (G48). Judged on the grants as they are in this
             // transaction, before any quota is reserved for the step.
-            let declared = Self::declared_secrets_of(&mut tx, &node);
+            let declared = Self::declared_secrets_of(&mut tx, &instance);
             if !declared.is_empty()
                 && let Some(withheld) = tx
                     .secret_pool_refusal(&declared, &session.subject, PoolCheck::Hint)
@@ -850,11 +915,17 @@ where
                 let attempt = tx
                     .parts()
                     .1
-                    .step(&node)
+                    .instance(&instance)
                     .map_or(0, sagat_domain::execution::StepState::attempt)
                     .saturating_add(1);
                 let effects = self.pool_refusal_effects(
-                    principal, &tx, &node, attempt, &withheld, "lease", trace_id,
+                    principal,
+                    &tx,
+                    instance.node(),
+                    attempt,
+                    &withheld,
+                    "lease",
+                    trace_id,
                 );
                 tx.persist(&[], effects).await?;
                 metrics::counter!("secret_delivery_refused_total", "stage" => "lease").increment(1);
@@ -862,10 +933,17 @@ where
             }
             // Measure the actual serialized context before granting any lease. Raw output sizes
             // do not bound it: JSON number normalization can expand a compact stored document.
-            let input = self.engine.evaluator().task_input(tx.data().await?, &node);
+            let input = self
+                .engine
+                .evaluator()
+                .task_input_instance(tx.data().await?, &instance)
+                .map_err(|error| {
+                    tracing::error!(%error, instance = ?instance, "failed to materialize task input");
+                    AppError::Internal
+                })?;
             if input.len() > MAX_TASK_INPUT_BYTES {
                 match self
-                    .reject_large_input(&mut tx, session, &node, trace_id)
+                    .reject_large_input(&mut tx, session, &instance, trace_id)
                     .await
                 {
                     Ok(()) | Err(AppError::StateConflict(_)) => break,
@@ -890,13 +968,16 @@ where
             }
             // A provider whose compensations keep failing is left alone until its breaker allows
             // one probe; the step stays ready and loses nothing by waiting.
-            if node.is_compensation() && !tx.compensation_admitted(&activity).await? {
+            if instance.node().is_compensation() && !tx.compensation_admitted(&activity).await? {
                 continue;
             }
             // Retention is part of admitting the effect, not of its eventual report. A forward
             // lease also freezes any script compensation/reconciliation it may obligate. The
             // store holds the policy fence and journals the pins with the lease atomically.
-            if !tx.script_execution_admitted(&node, &activity).await? {
+            if !tx
+                .script_execution_admitted_instance(&instance, &activity)
+                .await?
+            {
                 metrics::counter!(
                     "quota_exceeded_total",
                     "limit" => QuotaResource::ScriptRetentionDays.limit_name()
@@ -905,7 +986,9 @@ where
                 continue;
             }
             match self
-                .lease_one(&mut tx, session, &node, activity, timeout, input, trace_id)
+                .lease_one(
+                    &mut tx, session, &instance, activity, timeout, input, trace_id,
+                )
                 .await
             {
                 Ok(task) => {
@@ -930,33 +1013,58 @@ where
         &self,
         tx: &mut Tx,
         session: &SessionRecord,
-        node: &NodeId,
+        instance: &ExecutionInstanceId,
         trace_id: Option<&str>,
     ) -> Result<(), AppError> {
         let effects = Effects::by(
             Actor::Worker(session.id.to_string()),
             trace_id.map(str::to_owned),
         );
-        self.engine
-            .run(tx, effects, |def, state, now| {
-                let (fence, leased) = execution::lease_step(state, node)?;
-                let mut progress = execution::fail_step(
-                    def,
-                    state,
-                    node,
-                    execution::Failure {
-                        fence,
-                        code: FailureCode::run_data_limit(),
-                        retryable: false,
-                        jitter_sample: 0.0,
-                    },
-                    now,
-                )?;
-                progress.events.insert(0, leased);
-                Ok(((), progress))
-            })
-            .await
-            .map_err(engine_error)?;
+        if instance.path().is_root() {
+            let node = instance.node();
+            self.engine
+                .run(tx, effects, |def, state, now| {
+                    let (fence, leased) = execution::lease_step(state, node)?;
+                    let mut progress = execution::fail_step(
+                        def,
+                        state,
+                        node,
+                        execution::Failure {
+                            fence,
+                            code: FailureCode::run_data_limit(),
+                            retryable: false,
+                            jitter_sample: 0.0,
+                        },
+                        now,
+                    )?;
+                    progress.events.insert(0, leased);
+                    Ok(((), progress))
+                })
+                .await
+                .map_err(engine_error)?;
+        } else {
+            let instance = instance.clone();
+            self.engine
+                .run_addressed(tx, Vec::new(), effects, move |def, state, now| {
+                    let (fence, leased) = execution::lease_instance(state, &instance)?;
+                    let mut progress = execution::fail_instance(
+                        def,
+                        state,
+                        &instance,
+                        execution::Failure {
+                            fence,
+                            code: FailureCode::run_data_limit(),
+                            retryable: false,
+                            jitter_sample: 0.0,
+                        },
+                        now,
+                    )?;
+                    progress.events.insert(0, leased);
+                    Ok(((), progress))
+                })
+                .await
+                .map_err(engine_error)?;
+        }
         metrics::counter!("worker_task_input_rejected_total", "reason" => "run_data_limit")
             .increment(1);
         Ok(())
@@ -967,7 +1075,7 @@ where
         &self,
         tx: &mut Tx,
         session: &SessionRecord,
-        node: &NodeId,
+        instance: &ExecutionInstanceId,
         activity: ActivityName,
         timeout: Option<Duration>,
         input: Vec<u8>,
@@ -979,91 +1087,132 @@ where
             trace_id.map(str::to_owned),
         );
         effects.lease = Some(LeaseGrant {
-            node: node.clone(),
+            instance: instance.clone(),
             token_hash: token.hash(),
             worker_id: session.id.to_string(),
             ttl: self.settings.lease_ttl,
             attempt_timeout: timeout,
         });
-        let fence = self
-            .engine
-            .run(tx, effects, |_, state, _| {
-                let (fence, event) = execution::lease_step(state, node)?;
-                Ok((
-                    fence,
-                    Progress {
-                        events: vec![event],
-                        pending: None,
-                    },
-                ))
-            })
-            .await
-            .map_err(engine_error)?;
+        let fence = if instance.path().is_root() {
+            let node = instance.node();
+            self.engine
+                .run(tx, effects, |_, state, _| {
+                    let (fence, event) = execution::lease_step(state, node)?;
+                    Ok((
+                        fence,
+                        Progress {
+                            events: vec![event],
+                            pending: None,
+                        },
+                    ))
+                })
+                .await
+                .map_err(engine_error)?
+        } else {
+            let instance = instance.clone();
+            self.engine
+                .run_addressed(tx, Vec::new(), effects, move |_, state, _| {
+                    let (fence, event) = execution::lease_instance(state, &instance)?;
+                    Ok((
+                        fence,
+                        sagat_domain::execution::AddressedProgress {
+                            events: vec![event],
+                        },
+                    ))
+                })
+                .await
+                .map_err(engine_error)?
+        };
         let info = tx.info().clone();
         // The real expiry: a renewal never outlives the attempt deadline, so ask the row.
         let expires_at = tx
-            .lease_expiry(node)
+            .lease_expiry_instance(instance)
             .await?
             .unwrap_or_else(|| tx.now() + self.settings.lease_ttl);
         let run_id = info.run_id;
         let version = info.version_id;
         // The forward step a compensation or a reconciliation belongs to, and that step's template.
-        let (forward, kind, template) = {
+        let (forward, kind, template, templated_instance) = {
             let (def, _) = tx.parts();
-            let origin = def.node(node).map(|n| n.origin().clone());
+            let origin = def.node_for_instance(instance).map(|n| n.origin().clone());
             let forward = origin.as_ref().and_then(|o| o.forward().cloned());
             let kind = match origin {
                 Some(sagat_domain::saga::NodeOrigin::Compensation(_)) => TaskKind::Compensation,
                 Some(sagat_domain::saga::NodeOrigin::Reconciliation(_)) => TaskKind::Reconciliation,
                 _ => TaskKind::Forward,
             };
-            let templated = forward.as_ref().unwrap_or(node);
-            let template = match def.node(templated).map(sagat_domain::workflow::Node::kind) {
+            let templated_instance = ExecutionInstanceId::in_path(
+                instance.path().clone(),
+                forward.as_ref().unwrap_or(instance.node()).clone(),
+            );
+            let template = match def
+                .node_for_instance(&templated_instance)
+                .map(sagat_domain::workflow::Node::kind)
+            {
                 Some(NodeKind::Activity {
                     idempotency_template,
                     ..
                 }) => idempotency_template.clone(),
                 _ => None,
             };
-            (forward, kind, template)
+            (forward, kind, template, templated_instance)
         };
         // Borrowed, not cloned: a run's data can be megabytes and a poll leases many steps of it.
         let data = tx.data().await?;
         let input_blob = data.input_blob;
         // The key of the forward step: what identifies the effect at the provider.
-        let forward_node = forward.as_ref().unwrap_or(node);
+        let forward_node = forward.as_ref().unwrap_or(instance.node());
         let forward_key = match template {
-            Some(template) => self
-                .engine
-                .evaluator()
-                .idempotency_key(&template, data, forward_node)
-                .unwrap_or_else(|failure| {
+            Some(template) => match self.engine.evaluator().idempotency_key_instance(
+                &template,
+                data,
+                &templated_instance,
+            ) {
+                Ok(key) => key,
+                Err(failure) if instance.path().is_root() => {
                     tracing::warn!(error = %failure, node = %forward_node, "idempotency template failed; using the default key");
                     format!("{run_id}:{forward_node}")
-                }),
-            None => format!("{run_id}:{forward_node}"),
+                }
+                Err(failure) => {
+                    tracing::error!(error = %failure, instance = ?instance, "scoped idempotency context is unavailable");
+                    return Err(AppError::Internal);
+                }
+            },
+            None if instance.path().is_root() => format!("{run_id}:{forward_node}"),
+            None => format!(
+                "{run_id}:{}",
+                instance_step_id(version, run_id, &templated_instance)
+            ),
         };
+        // The forward instance a compensation or a lookup is about lives at the task's own path:
+        // the derived node shares the scope path of its forward node (D382).
         let (idempotency_key, target) = match (kind, forward) {
-            (TaskKind::Compensation, Some(forward)) => (
-                compensation_key(version, run_id, &forward),
-                Some(TaskTarget {
-                    node: forward,
-                    idempotency_key: forward_key,
-                }),
-            ),
-            (TaskKind::Reconciliation, Some(forward)) => (
-                format!("reconciliation:{run_id}:{forward}"),
-                Some(TaskTarget {
-                    node: forward,
-                    idempotency_key: forward_key,
-                }),
-            ),
+            (TaskKind::Compensation, Some(forward)) => {
+                let forward = ExecutionInstanceId::in_path(instance.path().clone(), forward);
+                (
+                    instance_compensation_key(version, run_id, &forward),
+                    Some(TaskTarget {
+                        instance: forward,
+                        idempotency_key: forward_key,
+                    }),
+                )
+            }
+            (TaskKind::Reconciliation, Some(forward)) => {
+                let forward = ExecutionInstanceId::in_path(instance.path().clone(), forward);
+                (
+                    instance_reconciliation_key(version, run_id, &forward),
+                    Some(TaskTarget {
+                        instance: forward,
+                        idempotency_key: forward_key,
+                    }),
+                )
+            }
             _ => (forward_key, None),
         };
         Ok(ClaimedTask {
             run_id,
-            node: node.clone(),
-            step_id: step_id(version, run_id, node),
+            step_id: instance_step_id(version, run_id, instance),
+            instance: instance.clone(),
             fence,
             lease_token: token,
             expires_at,
@@ -1105,39 +1254,52 @@ where
         self.ensure_bound(principal, &mut tx, task).await?;
         let mut effects = Effects::by(Actor::Worker(principal.subject().as_str().to_owned()), None);
         effects.renewal = Some(LeaseRenewal {
-            node: task.node.clone(),
+            instance: task.instance.clone(),
             ttl: self.settings.lease_ttl,
         });
-        let node = task.node.clone();
+        let instance = task.instance.clone();
         let fence = task.fence;
-        let cancel_requested = self
-            .engine
-            .run(&mut tx, effects, move |_, state, _| {
-                // A worker of protocol 1.0 does not say which attempt it is (`attempt` 0). The lease token,
-                // verified above, and the generation name the lease it holds; the attempt is the step's own.
-                let fence = if fence.attempt == 0 {
-                    Fence {
-                        attempt: state
-                            .step(&node)
-                            .map_or(0, sagat_domain::execution::StepState::attempt),
-                        ..fence
-                    }
-                } else {
-                    fence
-                };
-                let beat = execution::heartbeat(state, &node, fence)?;
-                Ok((
-                    beat.cancel_requested,
-                    Progress {
-                        events: beat.event.into_iter().collect(),
-                        pending: None,
-                    },
-                ))
-            })
-            .await
-            .map_err(engine_error)?;
+        let cancel_requested = if instance.path().is_root() {
+            let node = instance.node().clone();
+            self.engine
+                .run(&mut tx, effects, move |_, state, _| {
+                    let fence = if fence.attempt == 0 {
+                        Fence {
+                            attempt: state
+                                .step(&node)
+                                .map_or(0, sagat_domain::execution::StepState::attempt),
+                            ..fence
+                        }
+                    } else {
+                        fence
+                    };
+                    let beat = execution::heartbeat(state, &node, fence)?;
+                    Ok((
+                        beat.cancel_requested,
+                        Progress {
+                            events: beat.event.into_iter().collect(),
+                            pending: None,
+                        },
+                    ))
+                })
+                .await
+                .map_err(engine_error)?
+        } else {
+            self.engine
+                .run_addressed(&mut tx, Vec::new(), effects, move |_, state, _| {
+                    let beat = execution::heartbeat_instance(state, &instance, fence)?;
+                    Ok((
+                        beat.cancel_requested,
+                        sagat_domain::execution::AddressedProgress {
+                            events: beat.event.into_iter().collect(),
+                        },
+                    ))
+                })
+                .await
+                .map_err(engine_error)?
+        };
         let lease_expires_at = tx
-            .lease_expiry(task.node)
+            .lease_expiry_instance(task.instance)
             .await?
             .unwrap_or_else(|| tx.now());
         tx.commit().await?;
@@ -1272,14 +1434,16 @@ where
         self.verify(&mut tx, task).await?;
         self.ensure_bound(principal, &mut tx, task).await?;
         if !tx
-            .lease_unexpired(task.node, &Token::hash_of(task.lease_token))
+            .lease_unexpired_instance(task.instance, &Token::hash_of(task.lease_token))
             .await?
         {
             return Err(AppError::StaleAttempt);
         }
         {
             let (_, state) = tx.parts();
-            let step = state.step(task.node).ok_or(AppError::StaleAttempt)?;
+            let step = state
+                .instance(task.instance)
+                .ok_or(AppError::StaleAttempt)?;
             if step.attempt() != task.fence.attempt || step.generation() != task.fence.generation {
                 return Err(AppError::StaleAttempt);
             }
@@ -1304,7 +1468,10 @@ where
                 )
                 .with_reason(format!(
                     "run {} node {} attempt {} generation {}",
-                    task.run_id, task.node, task.fence.attempt, task.fence.generation
+                    task.run_id,
+                    task.instance.node(),
+                    task.fence.attempt,
+                    task.fence.generation
                 )),
             );
             tx.persist(&[], effects).await?;
@@ -1338,9 +1505,75 @@ where
                 namespace_id: info.namespace_id,
             },
             run_id: info.run_id,
-            step_id: step_id(info.version_id, info.run_id, task.node),
+            step_id: instance_step_id(info.version_id, info.run_id, task.instance),
             attempt: task.fence.attempt,
             generation: task.fence.generation,
+        }
+    }
+
+    async fn apply_scoped_or_root_failure(
+        &self,
+        tx: &mut S::Tx,
+        task: &TaskRef<'_>,
+        effects: Effects,
+        failure: execution::Failure,
+    ) -> Result<(), AppError> {
+        if task.instance.path().is_root() {
+            let node = task.instance.node().clone();
+            self.engine
+                .run(tx, effects, move |def, state, now| {
+                    Ok(((), execution::fail_step(def, state, &node, failure, now)?))
+                })
+                .await
+                .map_err(engine_error)
+        } else {
+            let instance = task.instance.clone();
+            self.engine
+                .run_addressed(tx, Vec::new(), effects, move |def, state, now| {
+                    Ok((
+                        (),
+                        execution::fail_instance(def, state, &instance, failure, now)?,
+                    ))
+                })
+                .await
+                .map_err(engine_error)
+        }
+    }
+
+    async fn apply_scoped_or_root_completion(
+        &self,
+        tx: &mut S::Tx,
+        task: &TaskRef<'_>,
+        mut effects: Effects,
+        output: Option<Vec<u8>>,
+    ) -> Result<(), AppError> {
+        if task.instance.path().is_root() {
+            if let Some(output) = output {
+                effects.outputs = vec![(task.instance.node().clone(), output)];
+            }
+            let node = task.instance.node().clone();
+            let fence = task.fence;
+            self.engine
+                .run(tx, effects, move |def, state, now| {
+                    Ok(((), execution::complete_step(def, state, &node, fence, now)?))
+                })
+                .await
+                .map_err(engine_error)
+        } else {
+            let outputs = output
+                .map(|output| vec![(task.instance.clone(), output)])
+                .unwrap_or_default();
+            let instance = task.instance.clone();
+            let fence = task.fence;
+            self.engine
+                .run_addressed(tx, outputs, effects, move |def, state, _| {
+                    Ok((
+                        (),
+                        execution::complete_instance(def, state, &instance, fence)?,
+                    ))
+                })
+                .await
+                .map_err(engine_error)
         }
     }
 
@@ -1372,7 +1605,12 @@ where
         self.verify(&mut tx, task).await?;
         self.ensure_bound(principal, &mut tx, task).await?;
         if blob.is_some() {
-            if task.node.is_reconciliation() || task.node.is_compensation() {
+            if !task.instance.path().is_root() {
+                return Err(AppError::NotAllowed(
+                    "blob output for a scoped task is not enabled",
+                ));
+            }
+            if task.instance.node().is_reconciliation() || task.instance.node().is_compensation() {
                 return Err(AppError::NotAllowed(
                     "blob output requires a forward activity",
                 ));
@@ -1383,7 +1621,7 @@ where
                 ));
             }
             if !tx
-                .lease_unexpired(task.node, &Token::hash_of(task.lease_token))
+                .lease_unexpired_instance(task.instance, &Token::hash_of(task.lease_token))
                 .await?
             {
                 return Err(AppError::StaleAttempt);
@@ -1397,22 +1635,20 @@ where
             // A detection, counted when found: should the commit below fail the retry finds it again.
             metrics::counter!("secret_output_detected_total").increment(1);
             effects.audit = Some(self.leak_audit(principal, &tx, task, &name, "output"));
-            let node = task.node.clone();
-            let fence = task.fence;
             let fallback_audit = effects.audit.clone();
             let completed = self
-                .engine
-                .run(&mut tx, effects, move |def, state, now| {
-                    let failure = execution::Failure {
-                        fence,
+                .apply_scoped_or_root_failure(
+                    &mut tx,
+                    task,
+                    effects,
+                    execution::Failure {
+                        fence: task.fence,
                         code: FailureCode::secret_in_output(),
                         retryable: false,
                         jitter_sample: 0.0,
-                    };
-                    Ok(((), execution::fail_step(def, state, &node, failure, now)?))
-                })
-                .await
-                .map_err(engine_error);
+                    },
+                )
+                .await;
             let result = match completed {
                 Ok(()) => self.finish(tx, task, idempotency.clone()).await,
                 Err(error) => {
@@ -1425,7 +1661,7 @@ where
                 .await;
         }
         // A reconciliation does not produce the output of a step, it says whether the step happened.
-        if task.node.is_reconciliation() {
+        if task.instance.node().is_reconciliation() {
             let result = self
                 .complete_reconciliation(tx, task, output, effects, idempotency.clone())
                 .await;
@@ -1437,17 +1673,21 @@ where
         // of the step it follows, not of the one that undid it), so it must not count against the
         // run's budget either, or an undo that worked would be recorded as a failure because the
         // forward steps had filled it.
-        if task.node.is_compensation() {
-            let node = task.node.clone();
+        if task.instance.node().is_compensation() {
+            let node = task.instance.node().clone();
             let fence = task.fence;
-            let completed = self
-                .engine
-                .run(&mut tx, effects, move |def, state, now| {
-                    let progress = execution::complete_step(def, state, &node, fence, now)?;
-                    Ok(((), progress))
-                })
-                .await
-                .map_err(engine_error);
+            let completed = if task.instance.path().is_root() {
+                self.engine
+                    .run(&mut tx, effects, move |def, state, now| {
+                        let progress = execution::complete_step(def, state, &node, fence, now)?;
+                        Ok(((), progress))
+                    })
+                    .await
+                    .map_err(engine_error)
+            } else {
+                self.apply_scoped_or_root_completion(&mut tx, task, effects, None)
+                    .await
+            };
             let result = match completed {
                 Ok(()) => self.finish(tx, task, idempotency.clone()).await,
                 Err(error) => {
@@ -1463,21 +1703,19 @@ where
         // a completion that would exceed it fails the step (a retry would only exceed it again).
         let retained: usize = tx.data().await?.outputs.values().map(Vec::len).sum();
         if retained + output.len() > MAX_RUN_OUTPUT_BYTES {
-            let node = task.node.clone();
-            let fence = task.fence;
             let completed = self
-                .engine
-                .run(&mut tx, effects, move |def, state, now| {
-                    let failure = execution::Failure {
-                        fence,
+                .apply_scoped_or_root_failure(
+                    &mut tx,
+                    task,
+                    effects,
+                    execution::Failure {
+                        fence: task.fence,
                         code: FailureCode::run_data_limit(),
                         retryable: false,
                         jitter_sample: 0.0,
-                    };
-                    Ok(((), execution::fail_step(def, state, &node, failure, now)?))
-                })
-                .await
-                .map_err(engine_error);
+                    },
+                )
+                .await;
             let result = match completed {
                 Ok(()) => self.finish(tx, task, idempotency.clone()).await,
                 Err(error) => {
@@ -1489,18 +1727,10 @@ where
                 .recover_success_storage_quota(principal, task, idempotency, None, result)
                 .await;
         }
-        effects.outputs = vec![(task.node.clone(), output.to_vec())];
         effects.blobs = blob.into_iter().collect();
-        let node = task.node.clone();
-        let fence = task.fence;
         let completed = self
-            .engine
-            .run(&mut tx, effects, move |def, state, now| {
-                let progress = execution::complete_step(def, state, &node, fence, now)?;
-                Ok(((), progress))
-            })
-            .await
-            .map_err(engine_error);
+            .apply_scoped_or_root_completion(&mut tx, task, effects, Some(output.to_vec()))
+            .await;
         let result = match completed {
             Ok(()) => self.finish(tx, task, idempotency.clone()).await,
             Err(error) => {
@@ -1549,19 +1779,34 @@ where
         }
         self.verify(&mut tx, task).await?;
         self.ensure_bound(principal, &mut tx, task).await?;
-        let node = task.node.clone();
-        let fence = task.fence;
         let mut effects = Effects::by(Actor::Worker(principal.subject().as_str().to_owned()), None);
         effects.reported = Some(reported_lease(task));
         effects.audit = audit;
-        self.engine
-            .run(&mut tx, effects, move |def, state, now| {
-                let progress =
-                    execution::fail_step_for_storage_quota(def, state, &node, fence, now)?;
-                Ok(((), progress))
-            })
-            .await
-            .map_err(engine_error)?;
+        if task.instance.path().is_root() {
+            let node = task.instance.node().clone();
+            let fence = task.fence;
+            self.engine
+                .run(&mut tx, effects, move |def, state, now| {
+                    let progress =
+                        execution::fail_step_for_storage_quota(def, state, &node, fence, now)?;
+                    Ok(((), progress))
+                })
+                .await
+                .map_err(engine_error)?;
+        } else {
+            self.apply_scoped_or_root_failure(
+                &mut tx,
+                task,
+                effects,
+                execution::Failure {
+                    fence: task.fence,
+                    code: FailureCode::storage_quota_exceeded(),
+                    retryable: false,
+                    jitter_sample: 0.0,
+                },
+            )
+            .await?;
+        }
         self.finish(tx, task, idempotency).await
     }
 
@@ -1576,10 +1821,10 @@ where
         mut effects: Effects,
         idempotency: Idempotency,
     ) -> Result<StepAck, AppError> {
-        let forward = task.node.forward().ok_or(AppError::Internal)?;
+        let forward = task.instance.node().forward().ok_or(AppError::Internal)?;
         let rejected = match self.engine.evaluator().reconcile_answer(output) {
             Err(failure) => {
-                tracing::warn!(error = %failure, node = %task.node, "a reconciliation answered nonsense");
+                tracing::warn!(error = %failure, node = %task.instance.node(), "a reconciliation answered nonsense");
                 Some(FailureCode::reconciliation_answer_invalid())
             }
             Ok(answer) => {
@@ -1592,40 +1837,54 @@ where
                 {
                     Some(FailureCode::run_data_limit())
                 } else {
-                    // The forward step succeeded after all: later steps read the output it would
-                    // have had.
-                    if let Some(bytes) = substitute {
-                        effects.outputs = vec![(forward.clone(), bytes)];
-                    }
-                    let (node, fence, verdict) = (task.node.clone(), task.fence, answer.verdict);
+                    let (node, fence, verdict) =
+                        (task.instance.node().clone(), task.fence, answer.verdict);
                     let jitter = self.entropy.unit();
-                    self.engine
-                        .run(&mut tx, effects, move |def, state, now| {
-                            let progress = execution::complete_reconciliation(
-                                def, state, &node, fence, verdict, jitter, now,
-                            )?;
-                            Ok(((), progress))
-                        })
-                        .await
-                        .map_err(engine_error)?;
+                    if task.instance.path().is_root() {
+                        // The forward step succeeded after all: later steps read the output it
+                        // would have had.
+                        if let Some(bytes) = substitute {
+                            effects.outputs = vec![(forward.clone(), bytes)];
+                        }
+                        self.engine
+                            .run(&mut tx, effects, move |def, state, now| {
+                                let progress = execution::complete_reconciliation(
+                                    def, state, &node, fence, verdict, jitter, now,
+                                )?;
+                                Ok(((), progress))
+                            })
+                            .await
+                            .map_err(engine_error)?;
+                    } else {
+                        let instance = task.instance.clone();
+                        let forward_instance =
+                            ExecutionInstanceId::in_path(instance.path().clone(), forward.clone());
+                        let outputs = substitute
+                            .map(|bytes| vec![(forward_instance, bytes)])
+                            .unwrap_or_default();
+                        self.engine
+                            .run_addressed(&mut tx, outputs, effects, move |def, state, now| {
+                                let progress = execution::complete_reconciliation_instance(
+                                    def, state, &instance, fence, verdict, jitter, now,
+                                )?;
+                                Ok(((), progress))
+                            })
+                            .await
+                            .map_err(engine_error)?;
+                    }
                     return self.finish(tx, task, idempotency).await;
                 }
             }
         };
         let code = rejected.ok_or(AppError::Internal)?;
-        let (node, fence) = (task.node.clone(), task.fence);
-        self.engine
-            .run(&mut tx, effects, move |def, state, now| {
-                let failure = execution::Failure {
-                    fence,
-                    code,
-                    retryable: false,
-                    jitter_sample: 0.0,
-                };
-                Ok(((), execution::fail_step(def, state, &node, failure, now)?))
-            })
-            .await
-            .map_err(engine_error)?;
+        let failure = execution::Failure {
+            fence: task.fence,
+            code,
+            retryable: false,
+            jitter_sample: 0.0,
+        };
+        self.apply_scoped_or_root_failure(&mut tx, task, effects, failure)
+            .await?;
         self.finish(tx, task, idempotency).await
     }
 
@@ -1676,30 +1935,22 @@ where
             code = FailureCode::secret_in_output();
             retryable = false;
         }
-        let node = task.node.clone();
-        let fence = task.fence;
         let jitter = self.entropy.unit();
         let fallback_code = code.clone();
         let fallback_audit = effects.audit.clone();
         let completed = self
-            .engine
-            .run(&mut tx, effects, move |def, state, now| {
-                let progress = execution::fail_step(
-                    def,
-                    state,
-                    &node,
-                    execution::Failure {
-                        fence,
-                        code,
-                        retryable,
-                        jitter_sample: jitter,
-                    },
-                    now,
-                )?;
-                Ok(((), progress))
-            })
-            .await
-            .map_err(engine_error);
+            .apply_scoped_or_root_failure(
+                &mut tx,
+                task,
+                effects,
+                execution::Failure {
+                    fence: task.fence,
+                    code,
+                    retryable,
+                    jitter_sample: jitter,
+                },
+            )
+            .await;
         let result = match completed {
             Ok(()) => self.finish(tx, task, idempotency.clone()).await,
             Err(error) => {
@@ -1753,19 +2004,35 @@ where
         }
         self.verify(&mut tx, task).await?;
         self.ensure_bound(principal, &mut tx, task).await?;
-        let node = task.node.clone();
-        let fence = task.fence;
         let mut effects = Effects::by(Actor::Worker(principal.subject().as_str().to_owned()), None);
         effects.reported = Some(reported_lease(task));
         effects.audit = audit;
-        self.engine
-            .run(&mut tx, effects, move |def, state, now| {
-                let progress =
-                    execution::fail_report_for_storage_quota(def, state, &node, fence, code, now)?;
-                Ok(((), progress))
-            })
-            .await
-            .map_err(engine_error)?;
+        if task.instance.path().is_root() {
+            let node = task.instance.node().clone();
+            let fence = task.fence;
+            self.engine
+                .run(&mut tx, effects, move |def, state, now| {
+                    let progress = execution::fail_report_for_storage_quota(
+                        def, state, &node, fence, code, now,
+                    )?;
+                    Ok(((), progress))
+                })
+                .await
+                .map_err(engine_error)?;
+        } else {
+            self.apply_scoped_or_root_failure(
+                &mut tx,
+                task,
+                effects,
+                execution::Failure {
+                    fence: task.fence,
+                    code: FailureCode::storage_quota_exceeded(),
+                    retryable: false,
+                    jitter_sample: 0.0,
+                },
+            )
+            .await?;
+        }
         self.finish(tx, task, idempotency).await
     }
 
@@ -1788,7 +2055,8 @@ where
         )
         .with_reason(format!(
             "{what} of {} on run {} contained the value of a secret",
-            task.node, task.run_id
+            task.instance.node(),
+            task.run_id
         ))
     }
 
@@ -1798,6 +2066,7 @@ where
         task: &TaskRef<'_>,
         lock: Lock,
     ) -> Result<S::Tx, AppError> {
+        require_supported_task(task.instance, self.store.supports_scoped_worker_protocol())?;
         if let Some(tx) = self
             .store
             .begin(principal.tenant_id(), task.run_id, lock)
@@ -1847,12 +2116,15 @@ where
 
     /// The secrets the step declares, from its definition.
     fn declared_secrets<Tx: RunTx>(tx: &mut Tx, task: &TaskRef<'_>) -> Vec<SecretName> {
-        Self::declared_secrets_of(tx, task.node)
+        Self::declared_secrets_of(tx, task.instance)
     }
 
-    fn declared_secrets_of<Tx: RunTx>(tx: &mut Tx, node: &NodeId) -> Vec<SecretName> {
+    fn declared_secrets_of<Tx: RunTx>(
+        tx: &mut Tx,
+        instance: &ExecutionInstanceId,
+    ) -> Vec<SecretName> {
         let (def, _) = tx.parts();
-        def.node(node)
+        def.node_for_instance(instance)
             .map(|node| node.secrets().to_vec())
             .unwrap_or_default()
     }
@@ -1867,7 +2139,7 @@ where
         &self,
         principal: &Principal,
         tx: &Tx,
-        node: &NodeId,
+        node: &sagat_domain::workflow::NodeId,
         attempt: u32,
         withheld: &SecretName,
         stage: &str,
@@ -1926,7 +2198,7 @@ where
         // The capability ends when the lease does, not when the scheduler gets round to reclaiming
         // the attempt: a worker that stopped renewing no longer gets to read secrets.
         if !tx
-            .lease_unexpired(task.node, &Token::hash_of(task.lease_token))
+            .lease_unexpired_instance(task.instance, &Token::hash_of(task.lease_token))
             .await?
         {
             return Err(AppError::StaleAttempt);
@@ -1945,7 +2217,7 @@ where
             let effects = self.pool_refusal_effects(
                 principal,
                 &tx,
-                task.node,
+                task.instance.node(),
                 task.fence.attempt,
                 &withheld,
                 "resolve",
@@ -1998,7 +2270,8 @@ where
                 AuditAction::SecretDenied,
                 format!(
                     "node {} attempt {}: {name} not usable by its publisher",
-                    task.node, task.fence.attempt
+                    task.instance.node(),
+                    task.fence.attempt
                 ),
             );
             tx.persist(&[], effects).await?;
@@ -2042,7 +2315,8 @@ where
             AuditAction::SecretResolved,
             format!(
                 "node {} attempt {}: {listed}",
-                task.node, task.fence.attempt
+                task.instance.node(),
+                task.fence.attempt
             ),
         );
         tx.persist(&[], effects).await?;
@@ -2116,7 +2390,10 @@ where
     ) -> Result<(), AppError> {
         let activity = {
             let (def, _) = tx.parts();
-            match def.node(task.node).map(sagat_domain::workflow::Node::kind) {
+            match def
+                .node_for_instance(task.instance)
+                .map(sagat_domain::workflow::Node::kind)
+            {
                 Some(NodeKind::Activity { activity, .. }) => activity.to_string(),
                 _ => return Ok(()),
             }
@@ -2143,12 +2420,12 @@ where
     ) -> Result<bool, AppError> {
         if let Some(claimed) = task.step_id {
             let info = tx.info();
-            if claimed != step_id(info.version_id, info.run_id, task.node) {
+            if claimed != instance_step_id(info.version_id, info.run_id, task.instance) {
                 return Ok(false);
             }
         }
         Ok(tx
-            .reported_by(task.node, &Token::hash_of(task.lease_token))
+            .reported_by(task.instance, &Token::hash_of(task.lease_token))
             .await?)
     }
 
@@ -2157,12 +2434,12 @@ where
         // A step id that does not belong to this run and node is a misdirected report.
         if let Some(claimed) = task.step_id {
             let info = tx.info();
-            if claimed != step_id(info.version_id, info.run_id, task.node) {
+            if claimed != instance_step_id(info.version_id, info.run_id, task.instance) {
                 return Err(AppError::StaleAttempt);
             }
         }
         if tx
-            .lease_matches(task.node, &Token::hash_of(task.lease_token))
+            .lease_matches_instance(task.instance, &Token::hash_of(task.lease_token))
             .await?
         {
             Ok(())
@@ -2181,7 +2458,7 @@ where
         let (step_status, run_status, version) = {
             let (_, state) = tx.parts();
             let step = state
-                .step(task.node)
+                .instance(task.instance)
                 .map(sagat_domain::execution::StepState::status);
             (
                 step.unwrap_or(StepStatus::Cancelled),
@@ -2243,7 +2520,9 @@ fn engine_error(error: EngineError) -> AppError {
         EngineError::Store(store) => store.into(),
         EngineError::Execution(
             sagat_domain::execution::ExecutionError::StaleAttempt { .. }
+            | sagat_domain::execution::ExecutionError::StaleInstanceAttempt { .. }
             | sagat_domain::execution::ExecutionError::IllegalTransition { .. }
+            | sagat_domain::execution::ExecutionError::IllegalInstanceTransition { .. }
             | sagat_domain::execution::ExecutionError::RunFinished(_),
         ) => AppError::StaleAttempt,
         EngineError::Execution(other) => execution_error(&other),
@@ -2256,7 +2535,23 @@ fn engine_error(error: EngineError) -> AppError {
 fn report_scope(task: &TaskRef<'_>) -> String {
     use std::fmt::Write as _;
     let hash = Token::hash_of(task.lease_token);
-    let mut scope = format!("step:{}:{}:", task.run_id, task.node);
+    let mut scope = if task.instance.path().is_root() {
+        format!("step:{}:{}:", task.run_id, task.instance.node())
+    } else {
+        let mut scoped = format!("step:{}:scoped:", task.run_id);
+        for segment in task.instance.path().segments() {
+            let name = segment.scope_node().as_str();
+            let _ = write!(
+                scoped,
+                "{}:{name}:{};",
+                name.len(),
+                segment.iteration_index()
+            );
+        }
+        let node = task.instance.node().as_str();
+        let _ = write!(scoped, "{}:{node}:", node.len());
+        scoped
+    };
     for byte in hash.iter().take(8) {
         let _ = write!(scope, "{byte:02x}");
     }
@@ -2306,8 +2601,15 @@ pub fn describe(events: &[RunEvent]) -> Vec<&'static str> {
 #[cfg(test)]
 mod tests {
     use sagat_domain::blobs::BlobId;
+    use sagat_domain::execution::{ExecutionInstanceId, Fence, InstancePath, RunId};
+    use sagat_domain::workflow::NodeId;
+    use uuid::Uuid;
 
-    use super::{PROTOCOL_MINOR, blob_report_identity, json_escaped, negotiate_protocol};
+    use super::{
+        PROTOCOL_MINOR, ROOT_PROTOCOL_MINOR, SCOPED_PROTOCOL_MINOR, TaskRef, blob_report_identity,
+        json_escaped, negotiate_protocol, negotiate_protocol_details, report_scope,
+        require_supported_task, root_task_id,
+    };
 
     #[test]
     fn blob_report_identity_normalizes_sha256_hex_case() {
@@ -2334,6 +2636,76 @@ mod tests {
         assert_eq!(negotiate_protocol(&own).as_deref(), Some(own.as_str()));
         // A worker that is ahead of the server runs at the server's version.
         assert_eq!(negotiate_protocol("1.999").as_deref(), Some(own.as_str()));
+    }
+
+    #[test]
+    fn scoped_identity_negotiation_is_gated_by_storage_support() {
+        assert_eq!(PROTOCOL_MINOR, 5);
+        assert_eq!(ROOT_PROTOCOL_MINOR, 4);
+        assert_eq!(negotiate_protocol("1.5").as_deref(), Some("1.5"));
+        assert_eq!(
+            negotiate_protocol_details("1.5", ROOT_PROTOCOL_MINOR),
+            Some(("1.4".to_owned(), ROOT_PROTOCOL_MINOR))
+        );
+        assert_eq!(
+            negotiate_protocol_details("1.999", SCOPED_PROTOCOL_MINOR),
+            Some(("1.5".to_owned(), SCOPED_PROTOCOL_MINOR))
+        );
+    }
+
+    #[test]
+    fn legacy_task_ids_and_worker_entry_points_are_root_only() {
+        let run = RunId::new(Uuid::from_u128(1));
+        let node = NodeId::parse("charge").expect("node");
+        let root = ExecutionInstanceId::root(node.clone());
+        let scoped = ExecutionInstanceId::in_path(
+            InstancePath::root()
+                .child(NodeId::parse("lines").expect("scope"), 0)
+                .expect("path"),
+            node,
+        );
+
+        assert_eq!(root_task_id(run, &root, 3), Some(format!("{run}/charge/3")));
+        assert_eq!(root_task_id(run, &scoped, 3), None);
+        assert!(require_supported_task(&root, false).is_ok());
+        assert!(matches!(
+            require_supported_task(&scoped, false),
+            Err(super::AppError::StaleAttempt)
+        ));
+        assert!(require_supported_task(&scoped, true).is_ok());
+    }
+
+    #[test]
+    fn report_identity_keeps_root_keys_and_separates_scoped_members() {
+        fn task(run: RunId, instance: &ExecutionInstanceId) -> TaskRef<'_> {
+            TaskRef {
+                run_id: run,
+                instance,
+                step_id: None,
+                fence: Fence {
+                    attempt: 1,
+                    generation: 1,
+                },
+                lease_token: "super-secret-token",
+            }
+        }
+
+        let run = RunId::new(Uuid::from_u128(1));
+        let node = NodeId::parse("charge").expect("node");
+        let scope = NodeId::parse("lines").expect("scope");
+        let root = ExecutionInstanceId::root(node.clone());
+        let first = ExecutionInstanceId::in_path(
+            InstancePath::root().child(scope.clone(), 0).expect("path"),
+            node.clone(),
+        );
+        let second =
+            ExecutionInstanceId::in_path(InstancePath::root().child(scope, 1).expect("path"), node);
+        assert!(report_scope(&task(run, &root)).starts_with(&format!("step:{run}:charge:")));
+        assert_ne!(
+            report_scope(&task(run, &first)),
+            report_scope(&task(run, &second))
+        );
+        assert!(!format!("{:?}", task(run, &first)).contains("super-secret-token"));
     }
 
     #[test]

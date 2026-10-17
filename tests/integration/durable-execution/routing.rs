@@ -60,7 +60,7 @@ async fn a_signal_wakes_a_waiting_run_and_its_payload_reaches_the_next_step() {
     let session = w.session(&["act.notify", "act.review"]).await;
     let task = w.one_task(&session).await;
     assert_eq!(
-        task.node.as_str(),
+        task.instance.node().as_str(),
         "notify",
         "the normal route, not the timeout route"
     );
@@ -214,7 +214,7 @@ async fn the_first_commit_wins_the_race_between_a_signal_and_the_timeout() {
         let expected = if signalled { "notify" } else { "review" };
         outcomes.insert(expected);
         assert_eq!(
-            w.one_task(&session).await.node.as_str(),
+            w.one_task(&session).await.instance.node().as_str(),
             expected,
             "round {round}"
         );
@@ -246,7 +246,7 @@ async fn a_condition_routes_by_the_run_input() {
     for (amount, expected) in [(500, "big"), (5, "small"), (100, "small"), (101, "big")] {
         let run = w.start(wf, &json!({ "amount": amount })).await;
         let task = w.one_task(&session).await;
-        assert_eq!(task.node.as_str(), expected, "amount {amount}");
+        assert_eq!(task.instance.node().as_str(), expected, "amount {amount}");
         assert_eq!(
             w.step_status(run, "check").await,
             Some(StepStatus::Succeeded)
@@ -279,7 +279,10 @@ async fn a_condition_over_a_previous_steps_output_waits_for_that_step() {
     w.complete(&session, &score, &json!({"risk": 0.9}))
         .await
         .expect("score");
-    assert_eq!(w.one_task(&session).await.node.as_str(), "manual");
+    assert_eq!(
+        w.one_task(&session).await.instance.node().as_str(),
+        "manual"
+    );
     w.assert_consistent(run).await;
 }
 
@@ -317,7 +320,10 @@ async fn a_correlation_expression_that_fails_routes_through_on_error() {
     let (wf, _) = w.publish(doc).await;
     let run = w.start(wf, &json!({})).await;
     let session = w.session(&["act.fallback"]).await;
-    assert_eq!(w.one_task(&session).await.node.as_str(), "fallback");
+    assert_eq!(
+        w.one_task(&session).await.instance.node().as_str(),
+        "fallback"
+    );
     w.assert_consistent(run).await;
 }
 
@@ -365,7 +371,13 @@ async fn an_all_join_waits_for_both_branches_which_run_on_different_workers() {
     let two = w.session(&["act.right"]).await;
     let left = w.one_task(&one).await;
     let right = w.one_task(&two).await;
-    assert_eq!((left.node.as_str(), right.node.as_str()), ("left", "right"));
+    assert_eq!(
+        (
+            left.instance.node().as_str(),
+            right.instance.node().as_str()
+        ),
+        ("left", "right")
+    );
 
     w.complete(&one, &left, &json!({"l": 1}))
         .await
@@ -380,7 +392,7 @@ async fn an_all_join_waits_for_both_branches_which_run_on_different_workers() {
         .await
         .expect("right");
     let after = w.one_task(&one).await;
-    assert_eq!(after.node.as_str(), "after");
+    assert_eq!(after.instance.node().as_str(), "after");
     let input: Value = serde_json::from_slice(&after.input).expect("json");
     assert_eq!(input["steps"]["left"]["output"], json!({"l": 1}));
     assert_eq!(input["steps"]["right"]["output"], json!({"r": 2}));
@@ -397,7 +409,7 @@ async fn an_all_join_fails_fast_and_tells_the_running_sibling_to_stop() {
     let session = w.session(&["act.left", "act.right", "act.after"]).await;
     let tasks = w.poll(&session, 8).await;
     assert_eq!(tasks.len(), 2);
-    let (left, right) = if tasks[0].node.as_str() == "left" {
+    let (left, right) = if tasks[0].instance.node().as_str() == "left" {
         (&tasks[0], &tasks[1])
     } else {
         (&tasks[1], &tasks[0])
@@ -442,11 +454,11 @@ async fn an_any_join_continues_with_the_first_branch_and_cancels_the_other() {
     let tasks = w.poll(&session, 8).await;
     let left = tasks
         .iter()
-        .find(|t| t.node.as_str() == "left")
+        .find(|t| t.instance.node().as_str() == "left")
         .expect("left");
     let right = tasks
         .iter()
-        .find(|t| t.node.as_str() == "right")
+        .find(|t| t.instance.node().as_str() == "right")
         .expect("right");
 
     w.complete(&session, left, &json!({}))
@@ -571,7 +583,7 @@ async fn pausing_holds_back_new_work_and_resuming_releases_it() {
             .status,
         RunStatus::Running
     );
-    assert_eq!(w.one_task(&session).await.node.as_str(), "b");
+    assert_eq!(w.one_task(&session).await.instance.node().as_str(), "b");
     w.assert_consistent(run).await;
 }
 

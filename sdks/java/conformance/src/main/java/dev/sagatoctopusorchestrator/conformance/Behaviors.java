@@ -45,6 +45,17 @@ final class Behaviors {
             measurements.enter(ctx);
             String outcome = "returned";
             try {
+                // holdUntilLogged: a scoped instance waits until the worker has logged that many finished
+                // attempts, which orders completions by what happened rather than by how long anything took.
+                if (behavior.has("holdUntilLogged")) {
+                    int holdUntil = behavior.get("holdUntilLogged").get(ctx.index() == null ? 0 : ctx.index()).asInt();
+                    while (log.size() < holdUntil) {
+                        if (ctx.cancellation().await(Duration.ofMillis(10))) {
+                            outcome = "cancelled";
+                            return F.nullNode();
+                        }
+                    }
+                }
                 if (behavior.has("failsUntilAttempt") && ctx.attempt() < behavior.get("failsUntilAttempt").asInt()) {
                     outcome = "failed";
                     throw failure(behavior.get("fails"));
@@ -235,6 +246,21 @@ final class Behaviors {
         e.put("kind", kind);
         e.put("node", ctx.node());
         e.put("attempt", ctx.attempt());
+        if (ctx.instance() != null) {
+            ObjectNode instance = e.putObject("instance");
+            var path = instance.putArray("instancePath");
+            for (var segment : ctx.instance().instancePath()) {
+                ObjectNode item = path.addObject();
+                item.put("scopeNodeId", segment.scopeNodeId());
+                item.put("iterationIndex", segment.iterationIndex());
+            }
+            instance.put("definitionNodeId", ctx.instance().definitionNodeId());
+        }
+        if (ctx.index() != null) {
+            ObjectNode scopeInput = e.putObject("scopeInput");
+            scopeInput.set("item", ctx.item());
+            scopeInput.put("index", ctx.index());
+        }
         e.set("input", input);
         e.put("taskKind", ctx.taskKind().name());
         e.put("targetNode", ctx.targetNode());

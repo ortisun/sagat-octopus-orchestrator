@@ -14,7 +14,9 @@ use std::fmt;
 use std::str::FromStr;
 use std::time::Duration;
 
-use crate::workflow::{ActivityName, NodeId, NodeKind, RetryPolicy, Scope, WorkflowDefinition};
+use crate::workflow::{
+    ActivityName, BodyDefinition, Node, NodeId, NodeKind, RetryPolicy, Scope, WorkflowDefinition,
+};
 
 /// What a saga does when one of its compensations fails after its retries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -277,22 +279,52 @@ pub struct SagaPlan {
     pub irreversible: Vec<NodeId>,
 }
 
+/// A graph whose nodes can be ordered for compensation: the root graph of a definition, or the
+/// closed graph of the body of a collection or loop. The order is the same function of either.
+pub trait DependencyGraph {
+    /// The node `id` of this graph.
+    fn graph_node(&self, id: &NodeId) -> Option<&Node>;
+
+    /// Every region around `node` in this graph, innermost first.
+    fn graph_scopes(&self, node: &NodeId) -> Vec<&Scope>;
+}
+
+impl DependencyGraph for WorkflowDefinition {
+    fn graph_node(&self, id: &NodeId) -> Option<&Node> {
+        self.node(id)
+    }
+
+    fn graph_scopes(&self, node: &NodeId) -> Vec<&Scope> {
+        self.scope_chain(node).collect()
+    }
+}
+
+impl DependencyGraph for BodyDefinition {
+    fn graph_node(&self, id: &NodeId) -> Option<&Node> {
+        self.node(id)
+    }
+
+    fn graph_scopes(&self, node: &NodeId) -> Vec<&Scope> {
+        self.scope_chain(node).collect()
+    }
+}
+
 /// Where control goes after `node`, for the purpose of ordering: where its own edges lead and,
 /// when it ends a branch of a `parallel` node, where the join leads. The end of a branch has no
 /// edge of its own, yet what comes after the join happened after it.
 ///
 /// The continuation of a saga body is not followed: the plan of a saga orders only what is inside
 /// it.
-fn following<'a>(definition: &'a WorkflowDefinition, node: &'a NodeId) -> Vec<&'a NodeId> {
-    let Some(found) = definition.node(node) else {
+fn following<'a, G: DependencyGraph>(definition: &'a G, node: &'a NodeId) -> Vec<&'a NodeId> {
+    let Some(found) = definition.graph_node(node) else {
         return Vec::new();
     };
     let mut out = found.successors();
     if found.next().is_none() {
-        for scope in definition.scope_chain(node) {
+        for scope in definition.graph_scopes(node) {
             match scope {
                 Scope::Parallel(parallel) => {
-                    if let Some(next) = definition.node(parallel).and_then(|p| p.next()) {
+                    if let Some(next) = definition.graph_node(parallel).and_then(|p| p.next()) {
                         out.push(next);
                         break;
                     }
@@ -316,8 +348,8 @@ fn following<'a>(definition: &'a WorkflowDefinition, node: &'a NodeId) -> Vec<&'
 /// thousands of branches is not walked thousands of times): the entries nearest to a node are worked
 /// out once, from those of its successors.
 #[must_use]
-pub fn reverse_dependencies(
-    definition: &WorkflowDefinition,
+pub fn reverse_dependencies<G: DependencyGraph>(
+    definition: &G,
     entries: &BTreeSet<NodeId>,
 ) -> BTreeMap<NodeId, Vec<NodeId>> {
     // The nearest entries at or after a node: itself if it is one.
