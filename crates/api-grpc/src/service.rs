@@ -322,7 +322,7 @@ async fn observe<St: Core, T>(
             trace_id: Some(trace.trace_id().to_string()),
             span_id: None,
         };
-        sagat_api_http::denial::audit_access_denied(
+        let _ = sagat_api_http::denial::spawn_audit_access_denied(
             core,
             &principal,
             &rpc_name(method),
@@ -668,7 +668,7 @@ where
                                     trace_id: request_trace.clone(),
                                     span_id: None,
                                 };
-                                sagat_api_http::denial::audit_access_denied(
+                                let _ = sagat_api_http::denial::spawn_audit_access_denied(
                                     &core,
                                     &authenticated.session.principal,
                                     &rpc_name("StreamTasks"),

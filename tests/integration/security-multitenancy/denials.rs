@@ -371,3 +371,46 @@ async fn the_trail_of_a_tenant_shows_its_own_denials_to_an_administrator() {
     assert_eq!(items[0]["actor"], "vera");
     assert_eq!(items[0]["resourceId"], "POST /v1/workflows");
 }
+
+/// A smoke test, not the proof: PostgreSQL finishes a statement it already received, so this passes
+/// whether or not the write is detached. The deterministic proof that the write outlives the request
+/// is `the_write_goes_on_when_whoever_waits_for_it_is_dropped` in `crates/api-http/src/denial.rs`.
+#[tokio::test]
+async fn a_worker_call_cancelled_by_its_deadline_does_not_cancel_the_record() {
+    let p = platform().await;
+    member(&p, "vera", Role::Viewer).await;
+    sqlx::raw_sql(
+        "CREATE FUNCTION slow_denial_audit() RETURNS trigger LANGUAGE plpgsql AS $$ \
+         BEGIN IF NEW.action = 'access.denied.permission' THEN PERFORM pg_sleep(1.5); END IF; \
+         RETURN NEW; END $$; \
+         CREATE TRIGGER slow_denial_audit BEFORE INSERT ON audit_records \
+         FOR EACH ROW EXECUTE FUNCTION slow_denial_audit();",
+    )
+    .execute(&p.api.db.pool)
+    .await
+    .expect("slow trigger");
+    let mut caller = p.connect("vera", TENANT).await;
+    let mut request = caller.req(crate::support::worker::Worker::register_message(
+        &["act.a"],
+        10,
+    ));
+    // The server drops the call when this deadline passes, while the record is being written.
+    request.set_timeout(std::time::Duration::from_millis(300));
+
+    let status = caller
+        .client
+        .register_worker(request)
+        .await
+        .expect_err("the deadline passes first");
+
+    assert!(
+        matches!(status.code(), Code::DeadlineExceeded | Code::Cancelled),
+        "{status:?}"
+    );
+    let rows = crate::support::eventually("the record outlives the call", || async {
+        let rows = denials(&p).await;
+        (!rows.is_empty()).then_some(rows)
+    })
+    .await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+}

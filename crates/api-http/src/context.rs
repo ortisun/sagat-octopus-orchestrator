@@ -115,7 +115,10 @@ pub async fn request_context(mut request: Request, next: Next) -> Response {
     let denied = response.extensions().get::<Denied>().copied();
     if let (Some(Denied(denial)), Some(caller)) = (denied, denials.take()) {
         // The route template and the method from a closed set: nothing the caller wrote.
-        caller
+        // The write is a task of its own: if this request is dropped now (the client reset the
+        // connection), the record is still written. Waiting for it keeps the normal order, record
+        // first and answer after.
+        let _ = caller
             .audit(&format!("{method} {route}"), denial)
             .instrument(span.clone())
             .await;
