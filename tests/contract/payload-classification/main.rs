@@ -9,3 +9,7 @@ fn repository_root() -> PathBuf {
 
 mod openapi;
 mod schema;
+
+mod validate;
+#[path = "../../support/mod.rs"]
+mod support;
