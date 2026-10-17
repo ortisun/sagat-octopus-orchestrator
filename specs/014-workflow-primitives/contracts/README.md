@@ -180,7 +180,9 @@ derived from the workflow version, the scope path and the forward node. A step w
 unknown inside an iteration is reconciled by the lookup of that iteration before it is repeated or
 compensated; the three verdicts conclude it as at the root. Compensation has the lease, fence, retry,
 timeout, breaker and audit of every activity, and a compensation whose budget is spent waits on
-`OPERATOR`.
+`OPERATOR`. A completed derived step retains its empty `step.routed` journal event during a stop,
+pause or owner drain. This records closure only; it must not activate a forward successor or release
+forward work beyond the global/ancestor fence.
 
 Loops may also specify `delayMs` in 1..31622400000, applied only between needed iterations. Absence
 means no delay. Shared run `maxInstances` and nesting limits are enforced even when individual node

@@ -1465,3 +1465,39 @@ fn bounded_operator_decisions_keep_failed_compensation_semantics() {
         );
     }
 }
+
+#[test]
+fn stopping_compensation_completion_retains_empty_routing_without_forward_work() {
+    use sagat_domain::execution::complete_path_instance;
+    let mut scope = failed_after_a_completed_iteration();
+    scope.advance();
+    let undo = scope.at(0, "ship").compensation();
+    let (fence, leased) = lease_instance(&mut scope.state, &undo).expect("compensation lease");
+    scope.journal.push(leased);
+    let mut bounded = PathExecutionState::from_run(&scope.state, undo.path().clone())
+        .expect("bounded stopping path");
+    let expected = complete_instance(&scope.def, &mut scope.state, &undo, fence)
+        .expect("compensation completion");
+    let actual = complete_path_instance(&scope.def, &mut bounded, &undo, fence)
+        .expect("bounded compensation completion");
+    assert_eq!(actual, expected);
+    assert!(
+        expected.events.iter().any(|event| matches!(event.event(),
+            RunEvent::StepRouted { node, activated } if node == undo.node() && activated.is_empty()
+        )),
+        "a finished compensation retains its routed journal event even during stop"
+    );
+    assert!(
+        expected
+            .events
+            .iter()
+            .all(|event| !matches!(event.event(), RunEvent::StepReleased { .. })),
+        "routing a derived completion must not reopen forward work"
+    );
+    assert_eq!(
+        bounded,
+        PathExecutionState::from_run(&scope.state, undo.path().clone()).expect("oracle")
+    );
+    scope.absorb(expected.events);
+    scope.assert_replays();
+}

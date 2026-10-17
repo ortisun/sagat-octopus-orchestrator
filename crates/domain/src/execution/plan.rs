@@ -86,9 +86,10 @@ pub fn plan_addressed(
             "addressed planning requires a scoped path",
         ));
     }
-    if state.is_finished() || state.is_paused() || state.stop_reason().is_some() {
+    if state.is_finished() {
         return Ok(AddressedPlan::Idle);
     }
+    let forward = !state.is_paused() && state.stop_reason().is_none();
     for (instance, step) in state
         .instances()
         .filter(|(instance, _)| instance.path() == path)
@@ -103,6 +104,11 @@ pub fn plan_addressed(
         let declared = def
             .node_for_instance(instance)
             .ok_or_else(|| ExecutionError::UnknownStep(instance.node().clone()))?;
+        // Derived completions always retain their empty routing event. This closes the recorded
+        // step without activating forward work when a pause, stop or draining owner fences it.
+        if !forward && declared.origin() == &NodeOrigin::Declared {
+            continue;
+        }
         let activated = if declared.origin() != &NodeOrigin::Declared {
             Vec::new()
         } else if step.status() == StepStatus::Failed {
@@ -117,6 +123,9 @@ pub fn plan_addressed(
                 activated,
             },
         );
+    }
+    if !forward {
+        return Ok(AddressedPlan::Idle);
     }
     for (instance, step) in state
         .instances()
@@ -158,9 +167,10 @@ pub fn plan_path(
     def: &WorkflowDefinition,
     state: &super::PathExecutionState,
 ) -> Result<AddressedPlan, ExecutionError> {
-    if !state.allows_forward_progress() {
+    if state.global().status().is_terminal() {
         return Ok(AddressedPlan::Idle);
     }
+    let forward = state.allows_forward_progress();
     let path = state.path();
     for (node, step) in state.local_instances() {
         if !matches!(
@@ -174,6 +184,11 @@ pub fn plan_path(
         let declared = def
             .node_for_instance(&instance)
             .ok_or_else(|| ExecutionError::UnknownStep(node.clone()))?;
+        // Derived completions always retain their empty routing event. This closes the recorded
+        // step without activating forward work when a pause, stop or draining owner fences it.
+        if !forward && declared.origin() == &NodeOrigin::Declared {
+            continue;
+        }
         let activated = if declared.origin() != &NodeOrigin::Declared {
             Vec::new()
         } else if step.status() == StepStatus::Failed {
@@ -188,6 +203,9 @@ pub fn plan_path(
                 activated,
             },
         );
+    }
+    if !forward {
+        return Ok(AddressedPlan::Idle);
     }
     for (node, step) in state.local_instances() {
         if step.status() != StepStatus::Pending {
