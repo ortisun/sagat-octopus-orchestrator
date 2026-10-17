@@ -6121,6 +6121,240 @@
       ]
     },
     {
+      "table": "scope_saga_entries",
+      "column": "after_iterations",
+      "sql_type": "_int4",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Iteration indices of the members a compensation waits for: at most 10000, each 0..9999, the same length as `after_nodes` (`scope_saga_after_valid`). Writer/source: `crates/infra-postgres/src/execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "scope_saga_entries",
+      "column": "after_nodes",
+      "sql_type": "_text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated node identifiers of the members a compensation waits for: at most 10000 of at most 64 characters, the same length as `after_iterations` (`scope_saga_after_valid`). Writer/source: `crates/infra-postgres/src/execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "scope_saga_entries",
+      "column": "kind",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum (`COMPENSATE`, `IRREVERSIBLE`) selected by trusted persistence code and enforced by the database CHECK `scope_saga_entries_kind`. Writer/source: `crates/infra-postgres/src/execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "scope_saga_entries",
+      "column": "node",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated workflow node identifier bounded to 64 characters by the domain value object (`NodeId`) and the database CHECK `scope_saga_entries_node`. Writer/source: `crates/infra-postgres/src/execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "scope_saga_entries",
+      "column": "owner_node",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated workflow node identifier bounded to 64 characters by the domain value object (`NodeId`) and the database CHECK `scope_sagas_owner_node (through its foreign key)`. Writer/source: `crates/infra-postgres/src/execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "scope_saga_entries",
+      "column": "owner_path_indices",
+      "sql_type": "_int4",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Instance path indices of the scope owner: at most 8 integers, each 0..9999 (MAX_ITERATION_INDEX), the same length as its node path (`execution_instance_path_valid`). Writer/source: `crates/infra-postgres/src/execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "scope_saga_entries",
+      "column": "owner_path_nodes",
+      "sql_type": "_text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Instance path nodes of the scope owner: at most 8 validated node identifiers of at most 64 characters (`execution_instance_path_valid`). Writer/source: `crates/infra-postgres/src/execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "scope_sagas",
+      "column": "cause_code",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Payload-free failure code of at most 64 characters from `[A-Za-z0-9_.:-]`, validated by `FailureCode` and the database CHECK `scope_sagas_cause`. Writer/source: `crates/infra-postgres/src/execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "scope_sagas",
+      "column": "outcome",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum (`COMPENSATED`, `PARTIAL`, `COMPENSATION_FAILED`) selected by trusted persistence code and enforced by the database CHECK `scope_sagas_outcome`. Writer/source: `crates/infra-postgres/src/execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "scope_sagas",
+      "column": "owner_node",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated workflow node identifier bounded to 64 characters by the domain value object (`NodeId`) and the database CHECK `scope_sagas_owner_node`. Writer/source: `crates/infra-postgres/src/execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "scope_sagas",
+      "column": "owner_path_indices",
+      "sql_type": "_int4",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Instance path indices of the scope owner: at most 8 integers, each 0..9999 (MAX_ITERATION_INDEX), the same length as its node path (`execution_instance_path_valid`). Writer/source: `crates/infra-postgres/src/execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "scope_sagas",
+      "column": "owner_path_nodes",
+      "sql_type": "_text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Instance path nodes of the scope owner: at most 8 validated node identifiers of at most 64 characters (`execution_instance_path_valid`). Writer/source: `crates/infra-postgres/src/execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "scope_sagas",
+      "column": "phase",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum (`COMPENSATING`, `DONE`) selected by trusted persistence code and enforced by the database CHECK `scope_sagas_phase`. Writer/source: `crates/infra-postgres/src/execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
       "table": "script_executions",
       "column": "instance_path_indices",
       "sql_type": "_int4",
