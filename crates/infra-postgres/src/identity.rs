@@ -715,6 +715,7 @@ fn record(mapped: StoreError) -> StoreError {
         | StoreError::MissingReference
         | StoreError::RevisionConflict { .. }
         | StoreError::QuotaExceeded { .. }
+        | StoreError::UnreadableDefinition
         | StoreError::IdempotencyKeyReused => {}
     }
     mapped

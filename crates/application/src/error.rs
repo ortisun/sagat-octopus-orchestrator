@@ -74,6 +74,11 @@ pub enum StoreError {
     Unavailable { detail: String },
     #[error("storage failure: {detail}")]
     Internal { detail: String },
+    /// The workflow version a run is pinned to is stored but this build cannot read it (it was
+    /// written by a newer build, and this one was rolled back). The run is not damaged and is not
+    /// this build's to touch: callers that serve many runs skip it and go on (G460).
+    #[error("a stored workflow version cannot be read by this build")]
+    UnreadableDefinition,
 }
 
 /// Failure of a use case, already expressed in terms the API can translate one-to-one.
@@ -215,7 +220,7 @@ impl From<StoreError> for AppError {
             StoreError::IdempotencyKeyReused => Self::IdempotencyKeyReused,
             StoreError::QuotaExceeded { what } => Self::QuotaExceeded(what),
             StoreError::Unavailable { .. } => Self::Unavailable,
-            StoreError::Internal { .. } => Self::Internal,
+            StoreError::Internal { .. } | StoreError::UnreadableDefinition => Self::Internal,
         }
     }
 }

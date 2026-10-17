@@ -32,8 +32,8 @@ use uuid::Uuid;
 use super::identity_storage::insert_legacy_root_run;
 use super::scoped_worker::{self, Fixture};
 use crate::support::engine::{
-    World, activity, chain, child_node, condition_node, document, effect_node, parallel_node,
-    saga_node, timer_node, wait_node, with, world,
+    World, activity, chain, child_node, condition_node, document, effect_node, end_node,
+    parallel_node, saga_node, timer_node, wait_node, with, world,
 };
 
 /// The last migration before the scoped-instance storage foundation (the first of feature 014).
@@ -750,17 +750,12 @@ async fn a_reader_without_the_capability_leaves_an_active_structured_run_untouch
             Some(TRACE),
         )
         .await;
-    match polled {
-        Ok(tasks) => assert!(
-            tasks.is_empty(),
-            "a reader that cannot read the definition must not lease its steps"
-        ),
-        // Observed on 2026-10-17: `Err(Internal)`, the poll fails as a whole when the only
-        // candidate is unreadable (G460). The state-preservation asserts below are what this test
-        // guarantees; the error class is not a promise.
-        Err(AppError::Internal) => {}
-        Err(other) => panic!("an unreadable definition produced {other:?}"),
-    }
+    // A run this build cannot read is skipped for the poll (G460): the poll succeeds with nothing.
+    let tasks = polled.expect("an unreadable run is skipped, it does not fail the poll");
+    assert!(
+        tasks.is_empty(),
+        "a reader that cannot read the definition must not lease its steps"
+    );
 
     let scheduler = Scheduler::new(
         old_store,
@@ -789,4 +784,82 @@ async fn a_reader_without_the_capability_leaves_an_active_structured_run_untouch
     // The capable reader comes back and the same run is served: its scoped work is leased.
     let tasks = scoped_worker::poll(&f, 8).await;
     assert_eq!(tasks.len(), 2, "the capable reader resumes the same run");
+}
+
+/// G460: runs this build cannot read, however many are ahead of a readable one in the poll's
+/// candidate list, neither fail the poll nor use up the failures it tolerates (three), so the
+/// readable run is still served. Before the fix the fourth candidate was never reached and the poll
+/// answered `Internal`.
+#[tokio::test]
+async fn runs_a_reader_cannot_read_do_not_starve_the_ones_it_can() {
+    let w = world().await;
+    let mut unreadable = Vec::new();
+    for n in 0..4 {
+        // `limits` is a field the rolled-back reader refuses (see `ReaderWithoutPrimitives`).
+        let mut doc = document(
+            &format!("compat-newer-{n}"),
+            "a",
+            vec![with(
+                json!({ "id": "a", "type": "activity", "activity": "compat.work" }),
+                "next",
+                json!("done"),
+            ), end_node("done")],
+        );
+        doc["limits"] = json!({ "maxInstances": 20 });
+        let (workflow, _) = w.publish(doc).await;
+        unreadable.push(w.start(workflow, &json!({})).await);
+    }
+    let (readable_workflow, _) = w
+        .publish(document(
+            "compat-readable",
+            "a",
+            vec![with(
+                json!({ "id": "a", "type": "activity", "activity": "compat.work" }),
+                "next",
+                json!("done"),
+            ), end_node("done")],
+        ))
+        .await;
+    let readable = w.start(readable_workflow, &json!({})).await;
+
+    let old_store = PgRunStore::new(
+        w.db.pool.clone(),
+        DefinitionCache::new(Arc::new(ReaderWithoutPrimitives), 8),
+    );
+    let old_workers: OldWorkers = WorkerService::new(
+        old_store,
+        SystemClock,
+        Engine::new(JsonEvaluator),
+        SystemEntropy,
+        WorkerSettings::default(),
+    )
+    .with_vault(w.keys.cipher());
+    let registered = old_workers
+        .register(
+            &w.worker,
+            "payments",
+            &format!("rolled-back-{}", Uuid::now_v7()),
+            &caps(&["compat.work"], "1.4"),
+        )
+        .await
+        .expect("the rolled-back build still registers workers");
+    let tasks = old_workers
+        .poll(
+            &w.worker,
+            registered.worker_id,
+            registered.session_token.expose(),
+            8,
+            Some(TRACE),
+        )
+        .await
+        .expect("unreadable runs are skipped, they do not fail the poll");
+    assert_eq!(tasks.len(), 1, "only the readable run's step is leased");
+    assert_eq!(tasks[0].run_id, readable);
+    for run in unreadable {
+        assert_eq!(
+            w.step_status(run, "a").await,
+            Some(sagat_domain::execution::StepStatus::Ready),
+            "a run the reader cannot read is left exactly as it was"
+        );
+    }
 }

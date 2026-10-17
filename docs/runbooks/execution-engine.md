@@ -134,6 +134,7 @@ that increment, so use restart monitoring and logs as well.
 | `step_attempts_total{outcome}`, `step_attempt_duration_seconds`, `step_schedule_latency_seconds`, `runs_terminal_total{status}`, `run_duration_seconds` | | Made by the projector from the journal; they lag the transitions by `telemetry_projection_lag_seconds` |
 | `telemetry_projection_pending_runs`, `telemetry_projection_lag_seconds`, `telemetry_projector_active`, `telemetry_spans_exported_total{outcome}`, `telemetry_projection_errors_total{reason}` | | The projection and its collector |
 | `worker_polls_drained_total` | | Polls answered with nothing because the identity is being drained |
+| `worker_claim_skipped_total` | `reason` | Runs a poll skipped without failing: `definition_unreadable` is a run pinned to a workflow version this build cannot read (a rolled-back build meeting a newer run). The run is untouched; update the build, or expect the same skip on every poll until then (G460) |
 | `outbox_published_total` | `event` | Messages sent to NATS (`task.ready`, `run.finished`, `other`) |
 | `outbox_publish_failed_total` | `code` | `BROKER_UNAVAILABLE`, `REJECTED` |
 | `outbox_backlog` | | Messages owed |

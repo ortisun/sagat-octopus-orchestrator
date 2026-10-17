@@ -405,25 +405,26 @@ async fn measure_collection_fanout() {
     }
 }
 
-/// RED (G461). The work of one collection transition must not depend on how many iterations the
-/// collection already has, otherwise a 10,000-item collection costs quadratic database work. Today
-/// every transition reads the whole run (every step, every item payload, every iteration and every
-/// checkpoint), so the rows returned by the median late transition are several times the early one.
-///
-/// Needs a server that preloads `pg_stat_statements`; see the report for the container command.
-#[tokio::test]
-#[ignore = "RED (G461): collection transition reads O(items) rows; run with --ignored to see it fail"]
-async fn red_collection_transition_rows_do_not_grow_with_progress() {
-    let items = 160;
+/// `SAGAT_PERF_REFERENCE_PATH=1` drives the transitions through the whole-run path instead of the
+/// frontier: the control that shows these measurements can see the growth the frontier removed.
+pub fn reference_path() -> bool {
+    std::env::var("SAGAT_PERF_REFERENCE_PATH").is_ok_and(|value| value == "1")
+}
+
+/// Drives a collection of `items` to its end through the production transition and returns what
+/// the database did for every admission and checkpoint (rows and buffer accesses, which do not
+/// depend on how loaded the host is). Needs a server that preloads `pg_stat_statements`; see the
+/// report for the container command.
+pub async fn probe_collection(items: usize, concurrency: usize) -> Vec<Probe> {
     let p = platform().await;
     open_tenant_capacity(&p, 16).await;
     let tenant = p.world.admin.tenant_id();
     let (workflow, _) = p
         .world
         .publish(collection_document(
-            &format!("perf-red-{}", Uuid::now_v7()),
+            &format!("perf-flat-{}", Uuid::now_v7()),
             items,
-            2,
+            concurrency,
         ))
         .await;
     let run = p
@@ -447,11 +448,14 @@ async fn red_collection_transition_rows_do_not_grow_with_progress() {
         }
         let before = statements(&p.world).await.expect("statements");
         let at = Instant::now();
-        let outcome = p
-            .scheduler
-            .advance_collection(tenant, run, &owner)
-            .await
-            .expect("transition");
+        let outcome = if reference_path() {
+            p.scheduler
+                .advance_collection_from_run(tenant, run, &owner)
+                .await
+        } else {
+            p.scheduler.advance_collection(tenant, run, &owner).await
+        }
+        .expect("transition");
         let elapsed = at.elapsed();
         let cost = statements(&p.world).await.expect("statements") - before;
         match outcome {
@@ -474,9 +478,64 @@ async fn red_collection_transition_rows_do_not_grow_with_progress() {
             other => panic!("unexpected {other:?}"),
         }
     }
+    p.world.assert_consistent(run).await;
+    probes
+}
+
+/// Median `rows` and `buffers` of the transitions between two thirds and 95 percent of the run, so
+/// that the two transitions that are proportional to the scope by nature (the last checkpoint and
+/// the finish) are not part of the figure.
+pub fn late_cost(probes: &[Probe]) -> (i64, i64) {
+    let from = probes.len() * 2 / 3;
+    let to = probes.len() * 95 / 100;
+    let window = &probes[from..to];
+    let median = |pick: fn(&Probe) -> i64| {
+        let mut values: Vec<i64> = window.iter().map(pick).collect();
+        values.sort_unstable();
+        values[values.len() / 2]
+    };
+    (median(|p| p.cost.rows), median(|p| p.cost.buffers))
+}
+
+/// G461. The work of one collection transition must not depend on how many iterations the
+/// collection already has, otherwise a 10,000-item collection costs quadratic database work. Before
+/// the fix every transition restored the whole run (every step, every item payload, every iteration
+/// and every checkpoint), so the rows returned by the median late transition were several times the
+/// early one (57 -> 829 over 160 items).
+#[tokio::test]
+async fn red_collection_transition_rows_do_not_grow_with_progress() {
+    let items = 160;
+    let probes = probe_collection(items, 2).await;
     let (early, late) = early_late_rows(&probes, 10).expect("enough probes");
     assert!(
         late <= early * 2,
         "rows per transition grew from {early} (first ten) to {late} (last ten) over {items} items"
     );
+}
+
+/// G461, across sizes: quadrupling the collection must not move the cost of a late transition
+/// (rows returned and buffer accesses of the median transition in the last third), within a small
+/// constant. A growth proportional to the size would multiply both by four.
+#[tokio::test]
+async fn collection_transition_cost_is_flat_across_sizes() {
+    let mut late = Vec::new();
+    for items in [160, 320, 640] {
+        let probes = probe_collection(items, 2).await;
+        let (rows, buffers) = late_cost(&probes);
+        eprintln!(
+            "collection of {items}: median late transition reads {rows} rows, {buffers} buffers"
+        );
+        late.push((items, rows, buffers));
+    }
+    let (_, base_rows, base_buffers) = late[0];
+    for (items, rows, buffers) in &late[1..] {
+        assert!(
+            *rows <= base_rows + base_rows / 5 + 4,
+            "rows per transition grew with the size: {base_rows} at 160, {rows} at {items}"
+        );
+        assert!(
+            *buffers <= base_buffers + base_buffers / 3 + 40,
+            "buffer accesses per transition grew with the size: {base_buffers} at 160, {buffers} at {items}"
+        );
+    }
 }
