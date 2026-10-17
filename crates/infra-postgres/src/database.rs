@@ -1,5 +1,6 @@
 //! Connection heads, immutable revisions and receipts. No customer database I/O.
 mod admission;
+pub(crate) mod policy;
 use crate::{
     execution::PgRunStore,
     identity::{col, corrupt, insert_audit, store_error},
@@ -13,10 +14,7 @@ use sagat_application::{
 };
 use sagat_domain::{
     audit::AuditRecord,
-    database::{
-        ConnectionConfig, ConnectionId, ConnectionStatus, DEFAULT_CONNECTIONS, DatabaseLimits,
-        TlsPolicy,
-    },
+    database::{ConnectionConfig, ConnectionId, ConnectionStatus, DatabaseLimits, TlsPolicy},
     identity::{NamespaceId, Permission, Principal, Role, Slug},
     secrets::SecretName,
 };
@@ -219,7 +217,7 @@ impl ConnectionStore for PgRunStore {
                 current: u64::from(revision),
             });
         }
-        if revision >= 1000 {
+        if revision >= 1000 && write.status != ConnectionStatus::Deleted {
             return Err(StoreError::QuotaExceeded {
                 what: "connection revisions",
             });
@@ -245,7 +243,8 @@ impl ConnectionStore for PgRunStore {
             }
             let (active,total): (i64,i64) = sqlx::query_as("SELECT count(*) FILTER (WHERE status<>'DELETED'),count(*) FROM database_connections WHERE tenant_id=$1 AND namespace_id=$2")
                 .bind(principal.tenant_id().as_uuid()).bind(namespace.as_uuid()).fetch_one(&mut *tx).await.map_err(store_error)?;
-            if active >= i64::from(DEFAULT_CONNECTIONS) || total >= 1024 {
+            let policy = policy::read(&mut tx, principal.tenant_id(), namespace).await?;
+            if active >= i64::from(policy.connections) || total >= 1024 {
                 return Err(StoreError::QuotaExceeded {
                     what: "database connections",
                 });

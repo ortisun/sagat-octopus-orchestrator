@@ -110,3 +110,28 @@ Required release evidence: current tenant/ACL checks; crash before/after provide
   state. Bound the complete response to 4 MiB/30 seconds, clear on close/scope/session
   change, paginate rows/columns and bound cell previews. Preserve numeric JSON tokens
   using pinned lossless-json; reject unsafe authoring numbers before conversion.
+
+## Database policy governance (T017-008/009/010)
+
+Use feature 009's existing operator quota grants and tenant/namespace quota settings for the
+nine operation limits, live catalog entries, namespace/tenant database leases and pending provider
+intents. Operator ceilings are the deployment authority; tenant defaults and namespace overrides
+cannot exceed them or the hard bounds above. Per-operation limits must be positive. Count limits
+allow zero, which refuses new admission. Policy resources have no scalar usage; count resources
+report authoritative database usage. No new independent settings store is introduced.
+
+Database policy mutations exclusively fence the affected tenant or namespace. Readers take shared
+tenant then namespace policy fences after the existing secret/catalog lock and keep them through
+commit. Policy editors never acquire run, connection or secret locks. Read the effective settings
+in one SQL snapshot inside the admission transaction. Publication, run admission, managed claim,
+both credential-resolution phases and output acceptance intersect the operation, pinned connection
+and current policy. Existing run/content quotas bound queued work; concurrency limits bound leased
+operations. Tightening does not rewrite retained revisions, retroactively kill dispatched SQL or
+remove already delivered credentials. Retained authorized results keep their stored bounds.
+
+The nine governance ceilings default to the hard maxima, preserving already accepted explicit
+connection limits. The smaller defaults in the table remain the operation/connection defaults.
+The four count grants use the table defaults. Catalog capacity includes paused entries. A lowered
+count does not block edits, pause/delete, receipt replay or activation of a reserved provider intent.
+Lease capacity is checked only for new claims, not again against the already occupied slot during
+credential resolution. Tightened output bounds preserve unknown-write/manual-review handling.

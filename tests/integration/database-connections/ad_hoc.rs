@@ -481,6 +481,45 @@ pub async fn http(api: &crate::support::api::TestApi, ns: &str, mut connection: 
         200
     );
     let contract = crate::support::contract::OpenApi::load();
+    let drivers_path = format!("/namespaces/{ns}/database-drivers");
+    let response = api
+        .get_as(&drivers_path, "probe-operator", "bao-http")
+        .await;
+    assert_eq!(response.status(), 200);
+    let drivers: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(drivers["items"].as_array().unwrap().len(), 1);
+    assert_eq!(drivers["items"][0]["id"], "postgresql");
+    assert_eq!(
+        drivers["items"][0]["operations"],
+        json!(["query", "execute"])
+    );
+    assert_eq!(
+        drivers["items"][0]["defaultLimits"]["maxResultBytes"],
+        1048576
+    );
+    assert_eq!(
+        drivers["items"][0]["maximumLimits"]["maxResultBytes"],
+        4194304
+    );
+    contract
+        .validate_body(
+            "GET",
+            "/namespaces/{namespaceId}/database-drivers",
+            200,
+            &drivers,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        api.get_as(
+            &format!("/namespaces/{}/database-drivers", Uuid::new_v4()),
+            "owner",
+            "bao-http"
+        )
+        .await
+        .status(),
+        404
+    );
     let mut run = serde_json::Value::Null;
     for _ in 0..2 {
         let response = api

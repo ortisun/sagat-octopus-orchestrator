@@ -75,8 +75,18 @@ impl PgRunTx {
             .and_then(Node::database_operation)
             .ok_or(StoreError::DatabaseUnavailable)?
             .limits;
-        let effective = requested.intersect(connection.config.limits());
-        Ok(tenant < 64 && namespace < 16 && pool < i64::from(effective.pool_size))
+        let policy = crate::database::policy::read(
+            &mut self.tx,
+            self.info.tenant_id,
+            self.info.namespace_id,
+        )
+        .await?;
+        let effective = requested
+            .intersect(connection.config.limits())
+            .intersect(policy.limits);
+        Ok(tenant < i64::from(policy.tenant_concurrency)
+            && namespace < i64::from(policy.namespace_concurrency)
+            && pool < i64::from(effective.pool_size))
     }
 
     pub(super) async fn database_report_owner(
@@ -137,7 +147,16 @@ impl PgRunTx {
             .and_then(Node::database_operation)
             .ok_or(StoreError::DatabaseUnavailable)?
             .clone();
-        operation.limits = operation.limits.intersect(connection.config.limits());
+        let policy = crate::database::policy::read(
+            &mut self.tx,
+            self.info.tenant_id,
+            self.info.namespace_id,
+        )
+        .await?;
+        operation.limits = operation
+            .limits
+            .intersect(connection.config.limits())
+            .intersect(policy.limits);
         operation
             .validate()
             .map_err(|_| StoreError::DatabaseLimit)?;
@@ -215,7 +234,18 @@ impl PgRunTx {
             .node(node)
             .and_then(Node::database_operation)
             .ok_or(StoreError::DatabaseUnavailable)?;
-        Ok(operation.limits.intersect(connection.config.limits()))
+        crate::quotas::lock_secrets(&mut self.tx, self.info.tenant_id, self.info.namespace_id)
+            .await?;
+        let policy = crate::database::policy::read(
+            &mut self.tx,
+            self.info.tenant_id,
+            self.info.namespace_id,
+        )
+        .await?;
+        Ok(operation
+            .limits
+            .intersect(connection.config.limits())
+            .intersect(policy.limits))
     }
 
     pub(super) async fn database_pinned_secret(

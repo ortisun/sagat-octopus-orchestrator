@@ -192,3 +192,18 @@ pub struct ConnectionListBody {
 pub struct RevisionQuery {
     pub revision: Option<u32>,
 }
+
+/// Implemented server capabilities; a healthy runner and target access still require a probe.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DatabaseDriverBody {
+    pub id: &'static str,
+    pub operations: [&'static str; 2],
+    pub parameter_types: [&'static str; 10],
+    pub default_limits: LimitsBody,
+    pub maximum_limits: LimitsBody,
+}
+#[derive(Serialize)]
+pub struct DatabaseDriverListBody {
+    pub items: [DatabaseDriverBody; 1],
+}

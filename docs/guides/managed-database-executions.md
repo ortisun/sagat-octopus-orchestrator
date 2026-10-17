@@ -131,3 +131,47 @@ unlock a potentially committed write. After successful recovery, **New execution
 starts a new intent. Signing out or reloading clears session memory; use Runs to locate/reconcile
 an earlier execution before submitting another write. Credentials, SQL and input are not persisted
 in browser storage for recovery.
+
+## Driver discovery and effective limits
+
+`GET /v1/namespaces/{namespaceId}/database-drivers` advertises PostgreSQL, the query/execute
+operations, tagged parameter types and default/hard execution bounds. It requires namespace
+access and reports implemented server support. Use a probe to verify the saved target.
+
+Database limits use the existing quota API and operator `control-plane quota-ceiling` command.
+Administrators may set tenant defaults or namespace overrides up to the operator's ceiling:
+
+| Quota resource | Unit | Default ceiling | Hard ceiling |
+|---|---|---:|---:|
+| `database_statement_bytes` | UTF-8 bytes | 65,536 | 65,536 |
+| `database_parameters` | parameters | 256 | 256 |
+| `database_parameter_bytes` | bytes | 262,144 | 262,144 |
+| `database_rows` | rows | 10,000 | 10,000 |
+| `database_result_bytes` | bytes | 4,194,304 | 4,194,304 |
+| `database_timeout_ms` | milliseconds | 30,000 | 30,000 |
+| `database_connect_timeout_ms` | milliseconds | 10,000 | 10,000 |
+| `database_pool_size` | concurrent connections per target | 16 | 16 |
+| `database_idle_timeout_ms` | milliseconds | 60,000 | 60,000 |
+| `database_connections` | nondeleted entries, including paused | 100 | 1,000 |
+| `database_concurrency` | namespace managed leases | 16 | 64 |
+| `tenant_database_concurrency` | tenant managed leases | 64 | 256 |
+| `secret_provider_operations` | namespace pending intents | 32 | 128 |
+
+The first nine are positive per-operation ceilings and have no scalar `used` value. Connection
+and operation defaults remain smaller (for example, 1 MiB results and a ten-second query).
+The effective operation uses the minimum of its request, pinned connection, current server policy
+and runner policy. Setting a count quota to zero blocks new capacity admission; zero never means
+unlimited. Tenant database concurrency accepts only a tenant setting. Existing run/content quotas
+also bound queued work and retained data.
+
+For example, `PUT /v1/namespaces/{namespaceId}/quotas/database_rows` with `{"limit": 100}`
+limits later operations to 100 result rows. `DELETE` on that quota path clears the namespace
+override. A namespace override takes precedence over the tenant default, while the operator
+ceiling bounds both. A lowered catalog count still permits editing, pausing and deleting existing
+entries. An already reserved provider operation can still activate or replay its receipt.
+
+Policy changes fence subsequent admission and capability release. They do not rewrite revisions,
+terminate already dispatched SQL, or erase credentials already delivered to a process. A result
+that exceeds a newly lowered bound is refused. If a write's result cannot be accepted, its lease
+expiry leaves the run in manual review; do not submit the write again before reconciliation.
+Already retained authorized results remain readable under their original retained bounds.

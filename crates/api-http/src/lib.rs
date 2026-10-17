@@ -373,6 +373,10 @@ where
     if state.connections().is_some() {
         router = router
             .route(
+                "/namespaces/{namespace_id}/database-drivers",
+                get(routes::database::drivers::<B<S, C, G>>),
+            )
+            .route(
                 "/namespaces/{namespace_id}/connections",
                 get(routes::database::list::<B<S, C, G>>),
             )

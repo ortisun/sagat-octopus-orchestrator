@@ -284,6 +284,91 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
     }
     // Failure to retain an already performed write is ambiguous, even at a full content quota.
     w.workers = w.workers.with_secret_provider(provider);
+    // A current result ceiling can tighten after a write capability was dispatched. Its rejected
+    // report cannot be retained; losing the lease must settle uncertainty without another attempt.
+    let tightened_run = w.start(write, &json!({})).await;
+    let tasks = w.poll(&session, 1).await;
+    let tightened_task = &tasks[0];
+    w.workers
+        .resolve_database(&machine, &task_ref(tightened_task), None)
+        .await
+        .unwrap();
+    w.quotas
+        .set(
+            &w.admin,
+            Some(ns),
+            sagat_domain::quota::QuotaResource::DatabaseResultBytes,
+            1,
+            &ctx(),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        w.workers
+            .complete(
+                &machine,
+                &task_ref(tightened_task),
+                &clean,
+                "tightened-output"
+            )
+            .await,
+        Err(AppError::NotAllowed(_))
+    ));
+    let retained: Option<Vec<u8>> =
+        sqlx::query_scalar("SELECT output_digest FROM steps WHERE run_id=$1 AND node='database'")
+            .bind(tightened_run.as_uuid())
+            .fetch_one(&w.db.pool)
+            .await
+            .unwrap();
+    assert!(retained.is_none());
+    w.age_lease(tightened_run, "database").await;
+    w.scheduler.tick().await;
+    assert_eq!(w.run_status(tightened_run).await.as_str(), "MANUAL_REVIEW");
+    assert!(
+        w.journal(tightened_run)
+            .await
+            .contains(&"step.needs_review".to_owned())
+    );
+    assert!(w.poll(&session, 4).await.is_empty());
+    let attempt: i32 =
+        sqlx::query_scalar("SELECT attempt FROM steps WHERE run_id=$1 AND node='database'")
+            .bind(tightened_run.as_uuid())
+            .fetch_one(&w.db.pool)
+            .await
+            .unwrap();
+    assert_eq!(attempt, 1);
+    w.assert_consistent(tightened_run).await;
+    // Current execution policy does not retroactively hide an already retained, authorized result.
+    let results = sagat_application::database_results::DatabaseResultService::new(
+        w.store.clone(),
+        SystemClock,
+        JsonDatabaseResultValidator,
+        None,
+    );
+    use sagat_application::database_results::DatabaseResultUseCase;
+    let prepared = results
+        .prepare(sagat_application::database_results::DatabaseResultRequest {
+            principal: w.admin.clone(),
+            namespace: ns,
+            run: clean_run,
+            node: sagat_domain::workflow::NodeId::parse("database").unwrap(),
+            trace_id: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        results.read(prepared).await.unwrap().as_slice(),
+        clean.as_slice()
+    );
+    w.quotas
+        .clear(
+            &w.admin,
+            Some(ns),
+            sagat_domain::quota::QuotaResource::DatabaseResultBytes,
+            &ctx(),
+        )
+        .await
+        .unwrap();
     let quota_run = w.start(write, &json!({})).await;
     let tasks = w.poll(&session, 1).await;
     let task = &tasks[0];

@@ -331,3 +331,39 @@ Final checks for this Studio checkpoint: **1,133 tests passed** across **82 file
 TypeScript typecheck and ESLint passed, and Clippy with `-D warnings` passed for the HTTP crate and
 both modified Rust integration/browser targets. The final bounded error path has its focused unit
 coverage above; full deployment/SDK/crash gates remain T017-023/024/025.
+
+## Current database policies and driver discovery — 2026-10-17
+
+- Added 13 resources to existing quota governance, with SQL range/scope constraints and the
+  existing operator grant/admin narrowing/audit paths. The nine positive per-operation ceilings
+  default to hard maxima; smaller operation/connection defaults remain unchanged. Count defaults
+  remain 100 connections, 16 namespace/64 tenant leases and 32 pending provider operations.
+- Shared tenant/namespace policy fences cover one-snapshot reads inside publication, admission,
+  new claims, both capability phases and output validation. Tests prove operator narrowing of an
+  existing override, all nine delivered bounds, zero concurrency, same-lease resolution at cap=1,
+  provider-policy change during external I/O and a policy writer blocked by an admission fence.
+- Catalog capacity includes paused entries. Tests prove new creation refusal, replay/edit/delete
+  at zero capacity, pending intent settlement after lowering its count to zero, and one final
+  tombstone at revision 1,000. Retained revisions and historical result bounds are preserved.
+- Added authenticated namespace driver discovery, advertising PostgreSQL and explicit defaults/
+  maxima/type families. Real runtime-role HTTP checks validate the canonical response schema and
+  foreign/missing namespace refusal. Generated Studio client and API parity/typecheck pass.
+- `cargo test -p sagat-tests --test integration_database_connections --locked`: 3 combined real
+  PostgreSQL/OpenBao targets passed in 26.30 seconds after the final revision-cap assertion.
+  Includes a dispatched write whose result is refused after lowering the current result bound:
+  no output retained, expired lease settled to MANUAL_REVIEW, step.needs_review journal, attempt=1,
+  no new task and journal/projection consistency. A previously retained authorized result remains
+  readable. This tests server settlement; the separate process-crash drill remains T017-024.
+- `cargo test -p sagat-domain --locked`: 312 tests passed across 15 targets, including positive
+  policy bounds, zero-count semantics, scopes/units and compatibility defaults.
+- `cargo test -p sagat-tests --test integration_security_multitenancy quota --locked`: 28 passed,
+  67 filtered out, 7.98 seconds. Initial run exposed the expected-list expansion and missing storage
+  classification for private-definition actor/digest and run origin from T017-016. Added concrete
+  protected bounds/owner evidence; the exhaustive catalog/trigger check now passes.
+- OpenAPI lint passes with the existing seven tag-description warnings. Architecture passes for
+  24 crates. Independent read-only review found no Required/Critical policy/discovery issue and
+  requested the result-tightening/expiry evidence above, which was subsequently added and passed.
+- Focused `cargo clippy -p sagat-api-http -p sagat-infra-postgres -p sagat-tests --test
+  integration_database_connections --locked -- -D warnings` passes in 10.93 seconds. Its first
+  run caught identical validation branches; combined the range predicate and reran successfully.
+  Formatting and diff whitespace checks pass.

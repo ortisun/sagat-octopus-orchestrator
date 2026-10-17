@@ -827,6 +827,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/namespaces/{namespaceId}/database-drivers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+            };
+            cookie?: never;
+        };
+        /**
+         * List implemented database drivers and supported operation types
+         * @description Requires namespace:read. Advertises server capabilities, not target connectivity or
+         *     available runner capacity. PostgreSQL is the only implemented driver. Current namespace
+         *     and operator quotas can narrow the advertised hard maxima; a saved connection needs a probe.
+         */
+        get: operations["listDatabaseDrivers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/namespaces/{namespaceId}/connections": {
         parameters: {
             query?: never;
@@ -3040,6 +3064,16 @@ export interface components {
             /** Format: date-time */
             updatedAt: string;
         };
+        DatabaseDriverList: {
+            items: {
+                /** @enum {string} */
+                id: "postgresql";
+                operations: ("query" | "execute")[];
+                parameterTypes: ("null" | "boolean" | "integer" | "decimal" | "float" | "text" | "timestamp" | "date" | "binary" | "json")[];
+                defaultLimits: components["schemas"]["DatabaseLimits"];
+                maximumLimits: components["schemas"]["DatabaseLimits"];
+            }[];
+        };
         DatabaseConnectionList: {
             items: components["schemas"]["DatabaseConnection"][];
         };
@@ -3079,12 +3113,21 @@ export interface components {
          *     tenant_content_bytes and tenant_log_bytes are logical retained bytes (maximum 2^50);
          *     api_requests_per_second and events_per_second are requests/second (maximum 1,000,000,
          *     fixed two-second burst); event_retention_seconds is 0 or 60..2,592,000 seconds;
-         *     script_retention_days is 0..365 days. Zero disables new admission for that resource.
+         *     script_retention_days is 0..365 days. Database operation ceilings are positive:
+         *     database_statement_bytes <= 65536, database_parameters <= 256,
+         *     database_parameter_bytes <= 262144, database_rows <= 10000,
+         *     database_result_bytes <= 4194304, database_timeout_ms <= 30000,
+         *     database_connect_timeout_ms <= 10000, database_pool_size <= 16,
+         *     database_idle_timeout_ms <= 60000. These governance ceilings default to the hard maximum;
+         *     operation and connection defaults remain smaller. Count ceilings default/max are
+         *     database_connections 100/1000 (including paused), database_concurrency 16/64,
+         *     tenant_database_concurrency 64/256, secret_provider_operations 32/128.
+         *     Zero disables new admission for count/rate/retention resources, never means unlimited.
          *     Lowering a limit does not erase retained content or rewrite existing expiry.
          */
         Quota: {
             /** @enum {string} */
-            resource: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "activity_concurrency" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "broker_subscriptions" | "event_connectors" | "scripts" | "script_jobs" | "tenant_content_bytes" | "tenant_log_bytes" | "api_requests_per_second" | "events_per_second" | "event_retention_seconds" | "script_retention_days";
+            resource: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "activity_concurrency" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "broker_subscriptions" | "event_connectors" | "scripts" | "script_jobs" | "tenant_content_bytes" | "tenant_log_bytes" | "api_requests_per_second" | "events_per_second" | "event_retention_seconds" | "script_retention_days" | "database_statement_bytes" | "database_parameters" | "database_parameter_bytes" | "database_rows" | "database_result_bytes" | "database_timeout_ms" | "database_connect_timeout_ms" | "database_pool_size" | "database_idle_timeout_ms" | "database_connections" | "database_concurrency" | "tenant_database_concurrency" | "secret_provider_operations";
             /** Format: int64 */
             limit: number;
             /**
@@ -3099,7 +3142,7 @@ export interface components {
             ceiling: number;
             /**
              * Format: int64
-             * @description Exact charged items or bytes, including outstanding content reservations. Absent for rate/retention policies and for a per-namespace resource in the tenant-wide view.
+             * @description Exact charged items or bytes, including outstanding content reservations. Absent for per-operation database and rate/retention policies and for a per-namespace resource in the tenant-wide view.
              */
             used?: number;
         };
@@ -4367,7 +4410,7 @@ export interface components {
         DeliveryId: string;
         ConnectorId: string;
         DeadLetterId: string;
-        QuotaResourceName: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "activity_concurrency" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "broker_subscriptions" | "event_connectors" | "scripts" | "script_jobs" | "tenant_content_bytes" | "tenant_log_bytes" | "api_requests_per_second" | "events_per_second" | "event_retention_seconds" | "script_retention_days";
+        QuotaResourceName: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "activity_concurrency" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "broker_subscriptions" | "event_connectors" | "scripts" | "script_jobs" | "tenant_content_bytes" | "tenant_log_bytes" | "api_requests_per_second" | "events_per_second" | "event_retention_seconds" | "script_retention_days" | "database_statement_bytes" | "database_parameters" | "database_parameter_bytes" | "database_rows" | "database_result_bytes" | "database_timeout_ms" | "database_connect_timeout_ms" | "database_pool_size" | "database_idle_timeout_ms" | "database_connections" | "database_concurrency" | "tenant_database_concurrency" | "secret_provider_operations";
         ActivityName: string;
         WorkflowId: string;
         VersionNumber: number;
@@ -6062,6 +6105,32 @@ export interface operations {
             429: components["responses"]["TooManyRequests"];
             503: components["responses"]["Unavailable"];
             default: components["responses"]["InternalError"];
+        };
+    };
+    listDatabaseDrivers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Implemented drivers */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DatabaseDriverList"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
         };
     };
     listDatabaseConnections: {

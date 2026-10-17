@@ -159,7 +159,8 @@ impl ManagedSecretStore for PgRunStore {
         }
         let pending: i64 = sqlx::query_scalar("SELECT count(*) FROM secret_provider_operations WHERE tenant_id=$1 AND namespace_id=$2 AND state='pending'")
             .bind(tenant.as_uuid()).bind(namespace.as_uuid()).fetch_one(&mut *tx).await.map_err(store_error)?;
-        if pending >= 32 {
+        let policy = crate::database::policy::read(&mut tx, tenant, namespace).await?;
+        if pending >= i64::from(policy.provider_operations) {
             return Err(StoreError::QuotaExceeded {
                 what: "pending secret operations",
             });

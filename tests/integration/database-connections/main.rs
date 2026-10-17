@@ -4,6 +4,7 @@ mod admission;
 mod executor;
 mod output;
 mod output_blobs;
+mod policies;
 mod results;
 #[path = "../../support/mod.rs"]
 mod support;
@@ -215,6 +216,7 @@ async fn durable_provider_intents_reconcile_without_plaintext_or_duplicate_rotat
     connection_catalog(&w).await;
     ad_hoc::run(&w).await;
     admission::run(&w, &service).await;
+    policies::run(provider.clone()).await;
     executor::run(provider.clone()).await;
     executor::grpc(provider.clone()).await;
     output::run(provider.clone()).await;

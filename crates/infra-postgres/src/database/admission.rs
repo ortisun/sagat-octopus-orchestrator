@@ -116,6 +116,7 @@ async fn check_definition(
     // Same order as catalog/secret writes. Membership and existing ACL rows remain locked through
     // commit, so a revocation that has returned stops every subsequent admission.
     lock_secrets(conn, tenant, namespace).await?;
+    let policy = super::policy::read(conn, tenant, namespace).await?;
     let roles: Vec<(String, String)> =
         sqlx::query_as("SELECT subject,role FROM public.sagat_lock_memberships($1,$2)")
             .bind(tenant.as_uuid())
@@ -234,7 +235,10 @@ async fn check_definition(
             return Err(StoreError::DatabaseUnavailable);
         }
         let mut effective = operation.clone();
-        effective.limits = effective.limits.intersect(config.limits());
+        effective.limits = effective
+            .limits
+            .intersect(config.limits())
+            .intersect(policy.limits);
         effective
             .validate()
             .map_err(|_| StoreError::DatabaseLimit)?;

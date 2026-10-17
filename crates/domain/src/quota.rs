@@ -1,9 +1,10 @@
 //! Quotas: how much of the platform one tenant or one namespace may use (FR-009-006, US04).
 //!
-//! Quotas cover exact live counts, retained bytes, admission rates and retention ceilings. Count and
+//! Quotas cover exact live counts, retained bytes, admission rates, retention and operation ceilings. Count and
 //! storage admission is decided against authoritative usage in the transaction that creates the
 //! counted data. Rate admission uses durable database-time token buckets. Retention quotas bound new
-//! policy choices rather than reporting a scalar current usage.
+//! policy choices rather than reporting a scalar current usage. Database operation ceilings likewise
+//! have no scalar usage; they narrow each managed attempt.
 //!
 //! The defaults below are **provisional**: the specification leaves "capacity and quota values per
 //! tier" to be defined after benchmark and security testing (spec.md, open design questions). They
@@ -66,6 +67,32 @@ pub enum QuotaResource {
     EventRetentionSeconds,
     /// Longest script retention newly selected in a namespace.
     ScriptRetentionDays,
+    /// Sql bytes per database operation (feature 017).
+    DatabaseStatementBytes,
+    /// Parameters per database operation (feature 017).
+    DatabaseParameters,
+    /// Parameter bytes per database operation (feature 017).
+    DatabaseParameterBytes,
+    /// Rows per database result (feature 017).
+    DatabaseRows,
+    /// Bytes per database result (feature 017).
+    DatabaseResultBytes,
+    /// Database operation deadline (feature 017).
+    DatabaseTimeoutMs,
+    /// Database connect deadline (feature 017).
+    DatabaseConnectTimeoutMs,
+    /// Concurrent connections per database target (feature 017).
+    DatabasePoolSize,
+    /// Database idle lifetime (feature 017).
+    DatabaseIdleTimeoutMs,
+    /// Database connections in the namespace (feature 017).
+    DatabaseConnections,
+    /// Concurrent database operations in the namespace (feature 017).
+    DatabaseConcurrency,
+    /// Concurrent database operations of the tenant (feature 017).
+    TenantDatabaseConcurrency,
+    /// Pending secret provider operations in the namespace (feature 017).
+    SecretProviderOperations,
 }
 
 /// At which level a resource is counted.
@@ -84,6 +111,8 @@ pub enum QuotaKind {
     Storage,
     Rate,
     Retention,
+    /// A positive per-operation ceiling, without scalar usage.
+    Policy,
 }
 
 /// The scalar unit carried by a quota value.
@@ -94,10 +123,11 @@ pub enum QuotaUnit {
     RequestsPerSecond,
     Seconds,
     Days,
+    Milliseconds,
 }
 
 impl QuotaResource {
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 31] = [
         Self::ActiveRuns,
         Self::TenantActiveRuns,
         Self::Workflows,
@@ -116,6 +146,19 @@ impl QuotaResource {
         Self::EventsPerSecond,
         Self::EventRetentionSeconds,
         Self::ScriptRetentionDays,
+        Self::DatabaseStatementBytes,
+        Self::DatabaseParameters,
+        Self::DatabaseParameterBytes,
+        Self::DatabaseRows,
+        Self::DatabaseResultBytes,
+        Self::DatabaseTimeoutMs,
+        Self::DatabaseConnectTimeoutMs,
+        Self::DatabasePoolSize,
+        Self::DatabaseIdleTimeoutMs,
+        Self::DatabaseConnections,
+        Self::DatabaseConcurrency,
+        Self::TenantDatabaseConcurrency,
+        Self::SecretProviderOperations,
     ];
 
     #[must_use]
@@ -139,6 +182,19 @@ impl QuotaResource {
             Self::EventsPerSecond => "events_per_second",
             Self::EventRetentionSeconds => "event_retention_seconds",
             Self::ScriptRetentionDays => "script_retention_days",
+            Self::DatabaseStatementBytes => "database_statement_bytes",
+            Self::DatabaseParameters => "database_parameters",
+            Self::DatabaseParameterBytes => "database_parameter_bytes",
+            Self::DatabaseRows => "database_rows",
+            Self::DatabaseResultBytes => "database_result_bytes",
+            Self::DatabaseTimeoutMs => "database_timeout_ms",
+            Self::DatabaseConnectTimeoutMs => "database_connect_timeout_ms",
+            Self::DatabasePoolSize => "database_pool_size",
+            Self::DatabaseIdleTimeoutMs => "database_idle_timeout_ms",
+            Self::DatabaseConnections => "database_connections",
+            Self::DatabaseConcurrency => "database_concurrency",
+            Self::TenantDatabaseConcurrency => "tenant_database_concurrency",
+            Self::SecretProviderOperations => "secret_provider_operations",
         }
     }
 
@@ -158,11 +214,24 @@ impl QuotaResource {
             | Self::ApiRequestsPerSecond
             | Self::EventsPerSecond
             | Self::EventRetentionSeconds
-            | Self::ScriptRetentionDays => QuotaScope::Namespace,
+            | Self::ScriptRetentionDays
+            | Self::DatabaseStatementBytes
+            | Self::DatabaseParameters
+            | Self::DatabaseParameterBytes
+            | Self::DatabaseRows
+            | Self::DatabaseResultBytes
+            | Self::DatabaseTimeoutMs
+            | Self::DatabaseConnectTimeoutMs
+            | Self::DatabasePoolSize
+            | Self::DatabaseIdleTimeoutMs
+            | Self::DatabaseConnections
+            | Self::DatabaseConcurrency
+            | Self::SecretProviderOperations => QuotaScope::Namespace,
             Self::TenantActiveRuns
             | Self::WorkerSessions
             | Self::TenantContentBytes
-            | Self::TenantLogBytes => QuotaScope::Tenant,
+            | Self::TenantLogBytes
+            | Self::TenantDatabaseConcurrency => QuotaScope::Tenant,
         }
     }
 
@@ -172,6 +241,15 @@ impl QuotaResource {
             Self::TenantContentBytes | Self::TenantLogBytes => QuotaKind::Storage,
             Self::ApiRequestsPerSecond | Self::EventsPerSecond => QuotaKind::Rate,
             Self::EventRetentionSeconds | Self::ScriptRetentionDays => QuotaKind::Retention,
+            Self::DatabaseStatementBytes
+            | Self::DatabaseParameters
+            | Self::DatabaseParameterBytes
+            | Self::DatabaseRows
+            | Self::DatabaseResultBytes
+            | Self::DatabaseTimeoutMs
+            | Self::DatabaseConnectTimeoutMs
+            | Self::DatabasePoolSize
+            | Self::DatabaseIdleTimeoutMs => QuotaKind::Policy,
             _ => QuotaKind::Count,
         }
     }
@@ -183,14 +261,44 @@ impl QuotaResource {
             Self::ApiRequestsPerSecond | Self::EventsPerSecond => QuotaUnit::RequestsPerSecond,
             Self::EventRetentionSeconds => QuotaUnit::Seconds,
             Self::ScriptRetentionDays => QuotaUnit::Days,
+            Self::DatabaseStatementBytes => QuotaUnit::Bytes,
+            Self::DatabaseParameterBytes => QuotaUnit::Bytes,
+            Self::DatabaseResultBytes => QuotaUnit::Bytes,
+            Self::DatabaseTimeoutMs => QuotaUnit::Milliseconds,
+            Self::DatabaseConnectTimeoutMs => QuotaUnit::Milliseconds,
+            Self::DatabaseIdleTimeoutMs => QuotaUnit::Milliseconds,
             _ => QuotaUnit::Items,
         }
+    }
+
+    /// Database policies share one tenant/namespace revocation fence.
+    #[must_use]
+    pub const fn is_database(self) -> bool {
+        matches!(
+            self,
+            Self::DatabaseStatementBytes
+                | Self::DatabaseParameters
+                | Self::DatabaseParameterBytes
+                | Self::DatabaseRows
+                | Self::DatabaseResultBytes
+                | Self::DatabaseTimeoutMs
+                | Self::DatabaseConnectTimeoutMs
+                | Self::DatabasePoolSize
+                | Self::DatabaseIdleTimeoutMs
+                | Self::DatabaseConnections
+                | Self::DatabaseConcurrency
+                | Self::TenantDatabaseConcurrency
+                | Self::SecretProviderOperations
+        )
     }
 
     /// Whether the quota view can report one exact retained/live usage value.
     #[must_use]
     pub const fn has_usage(self) -> bool {
-        !matches!(self.kind(), QuotaKind::Rate | QuotaKind::Retention)
+        !matches!(
+            self.kind(),
+            QuotaKind::Rate | QuotaKind::Retention | QuotaKind::Policy
+        )
     }
 
     /// Largest value accepted for this resource without expanding legacy count limits.
@@ -201,6 +309,19 @@ impl QuotaResource {
             Self::ApiRequestsPerSecond | Self::EventsPerSecond => 1_000_000,
             Self::EventRetentionSeconds => 2_592_000,
             Self::ScriptRetentionDays => 365,
+            Self::DatabaseStatementBytes => 65_536,
+            Self::DatabaseParameters => 256,
+            Self::DatabaseParameterBytes => 262_144,
+            Self::DatabaseRows => 10_000,
+            Self::DatabaseResultBytes => 4_194_304,
+            Self::DatabaseTimeoutMs => 30_000,
+            Self::DatabaseConnectTimeoutMs => 10_000,
+            Self::DatabasePoolSize => 16,
+            Self::DatabaseIdleTimeoutMs => 60_000,
+            Self::DatabaseConnections => 1_000,
+            Self::DatabaseConcurrency => 64,
+            Self::TenantDatabaseConcurrency => 256,
+            Self::SecretProviderOperations => 128,
             _ => MAX_LIMIT,
         }
     }
@@ -229,6 +350,19 @@ impl QuotaResource {
             Self::EventsPerSecond => 1_000,
             Self::EventRetentionSeconds => 2_592_000,
             Self::ScriptRetentionDays => 365,
+            Self::DatabaseStatementBytes => 65_536,
+            Self::DatabaseParameters => 256,
+            Self::DatabaseParameterBytes => 262_144,
+            Self::DatabaseRows => 10_000,
+            Self::DatabaseResultBytes => 4_194_304,
+            Self::DatabaseTimeoutMs => 30_000,
+            Self::DatabaseConnectTimeoutMs => 10_000,
+            Self::DatabasePoolSize => 16,
+            Self::DatabaseIdleTimeoutMs => 60_000,
+            Self::DatabaseConnections => 100,
+            Self::DatabaseConcurrency => 16,
+            Self::TenantDatabaseConcurrency => 64,
+            Self::SecretProviderOperations => 32,
         }
     }
 
@@ -254,6 +388,19 @@ impl QuotaResource {
             Self::EventsPerSecond => "events per second in the namespace",
             Self::EventRetentionSeconds => "event retention in the namespace",
             Self::ScriptRetentionDays => "script retention in the namespace",
+            Self::DatabaseStatementBytes => "SQL bytes per database operation",
+            Self::DatabaseParameters => "parameters per database operation",
+            Self::DatabaseParameterBytes => "parameter bytes per database operation",
+            Self::DatabaseRows => "rows per database result",
+            Self::DatabaseResultBytes => "bytes per database result",
+            Self::DatabaseTimeoutMs => "database operation deadline",
+            Self::DatabaseConnectTimeoutMs => "database connect deadline",
+            Self::DatabasePoolSize => "concurrent connections per database target",
+            Self::DatabaseIdleTimeoutMs => "database idle lifetime",
+            Self::DatabaseConnections => "database connections in the namespace",
+            Self::DatabaseConcurrency => "concurrent database operations in the namespace",
+            Self::TenantDatabaseConcurrency => "concurrent database operations of the tenant",
+            Self::SecretProviderOperations => "pending secret provider operations in the namespace",
         }
     }
 }
@@ -341,6 +488,9 @@ pub fn validate(
     if value > resource.maximum() {
         return Err(QuotaError::TooLarge);
     }
+    if value == 0 && resource.kind() == QuotaKind::Policy {
+        return Err(QuotaError::OutsideRange);
+    }
     if resource == QuotaResource::EventRetentionSeconds && (1..60).contains(&value) {
         return Err(QuotaError::OutsideRange);
     }
@@ -360,7 +510,9 @@ pub fn validate(
 pub const fn validate_ceiling(resource: QuotaResource, value: u64) -> Result<u64, QuotaError> {
     if value > resource.maximum() {
         Err(QuotaError::TooLarge)
-    } else if matches!(resource, QuotaResource::EventRetentionSeconds) && value > 0 && value < 60 {
+    } else if (value == 0 && matches!(resource.kind(), QuotaKind::Policy))
+        || (matches!(resource, QuotaResource::EventRetentionSeconds) && value > 0 && value < 60)
+    {
         Err(QuotaError::OutsideRange)
     } else {
         Ok(value)
@@ -515,7 +667,7 @@ mod tests {
 
     #[test]
     fn durable_resources_have_explicit_scope_kind_unit_range_and_usage_semantics() {
-        assert_eq!(QuotaResource::ALL.len(), 18);
+        assert_eq!(QuotaResource::ALL.len(), 31);
         for (resource, scope, kind, unit, maximum, default, has_usage) in [
             (
                 QuotaResource::TenantContentBytes,
@@ -618,5 +770,28 @@ mod tests {
             validate(QuotaResource::EventRetentionSeconds, true, 0, 2_592_000),
             Ok(0)
         );
+    }
+    #[test]
+    fn database_policy_bounds_are_positive_but_zero_counts_disable_admission() {
+        for resource in QuotaResource::ALL.into_iter().filter(|r| r.is_database()) {
+            let expected = if resource.kind() == QuotaKind::Policy {
+                Err(QuotaError::OutsideRange)
+            } else {
+                Ok(0)
+            };
+            assert_eq!(validate(resource, false, 0, resource.maximum()), expected);
+            assert_eq!(validate_ceiling(resource, 0), expected);
+            assert_eq!(
+                validate_ceiling(resource, resource.maximum() + 1),
+                Err(QuotaError::TooLarge)
+            );
+            assert_eq!(resource.has_usage(), resource.kind() == QuotaKind::Count);
+        }
+        assert_eq!(
+            QuotaResource::DatabaseTimeoutMs.unit(),
+            QuotaUnit::Milliseconds
+        );
+        assert_eq!(QuotaResource::DatabaseRows.default_limit(), 10_000);
+        assert_eq!(QuotaResource::DatabaseConcurrency.default_limit(), 16);
     }
 }

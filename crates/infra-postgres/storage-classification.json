@@ -4810,6 +4810,60 @@
       "owner_paths": [
         "crates/infra-postgres/src/identity.rs"
       ]
+    },
+    {
+      "table": "private_execution_definitions",
+      "column": "actor",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated identity subject bounded to 255 non-control characters. ALWAYS insertion guard requires equality with the retained version publisher. One retained identity per immutable private workflow, counted by namespace workflow quota."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution/ad_hoc.rs"
+      ]
+    },
+    {
+      "table": "private_execution_definitions",
+      "column": "digest",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Canonical IR SHA-256 digest constrained to 64 lowercase hexadecimal characters; one retained identity per quota-counted private workflow."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution/ad_hoc.rs"
+      ]
+    },
+    {
+      "table": "runs",
+      "column": "origin",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed CHECK enumeration AD_HOC_STEP, AD_HOC_WORKFLOW, CONNECTION_PROBE or NULL; immutable execution provenance per retained run."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution/ad_hoc.rs"
+      ]
     }
   ],
   "external_content": [

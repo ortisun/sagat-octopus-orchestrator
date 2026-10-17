@@ -525,6 +525,19 @@ async fn the_tenant_view_has_no_single_usage_for_a_per_namespace_resource() {
             (QuotaResource::EventsPerSecond, false),
             (QuotaResource::EventRetentionSeconds, false),
             (QuotaResource::ScriptRetentionDays, false),
+            (QuotaResource::DatabaseStatementBytes, false),
+            (QuotaResource::DatabaseParameters, false),
+            (QuotaResource::DatabaseParameterBytes, false),
+            (QuotaResource::DatabaseRows, false),
+            (QuotaResource::DatabaseResultBytes, false),
+            (QuotaResource::DatabaseTimeoutMs, false),
+            (QuotaResource::DatabaseConnectTimeoutMs, false),
+            (QuotaResource::DatabasePoolSize, false),
+            (QuotaResource::DatabaseIdleTimeoutMs, false),
+            (QuotaResource::DatabaseConnections, false),
+            (QuotaResource::DatabaseConcurrency, false),
+            (QuotaResource::TenantDatabaseConcurrency, true),
+            (QuotaResource::SecretProviderOperations, false),
         ]
     );
     let used = tenant_view
@@ -560,6 +573,18 @@ async fn the_tenant_view_has_no_single_usage_for_a_per_namespace_resource() {
             (QuotaResource::EventsPerSecond, None),
             (QuotaResource::EventRetentionSeconds, None),
             (QuotaResource::ScriptRetentionDays, None),
+            (QuotaResource::DatabaseStatementBytes, None),
+            (QuotaResource::DatabaseParameters, None),
+            (QuotaResource::DatabaseParameterBytes, None),
+            (QuotaResource::DatabaseRows, None),
+            (QuotaResource::DatabaseResultBytes, None),
+            (QuotaResource::DatabaseTimeoutMs, None),
+            (QuotaResource::DatabaseConnectTimeoutMs, None),
+            (QuotaResource::DatabasePoolSize, None),
+            (QuotaResource::DatabaseIdleTimeoutMs, None),
+            (QuotaResource::DatabaseConnections, Some(0)),
+            (QuotaResource::DatabaseConcurrency, Some(0)),
+            (QuotaResource::SecretProviderOperations, Some(0)),
         ]
     );
 }

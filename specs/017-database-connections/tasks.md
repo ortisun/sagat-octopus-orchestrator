@@ -14,9 +14,9 @@ Status: Implementing after user approval on 2026-10-16. Check a task only after 
 ## B. Reusable connection catalog
 
 - [x] T017-007 Domain connection/operation/limits and validation tests. FR-017-001..003,010,011,021.
-- [ ] T017-008 Persist immutable revisions, tombstones, current state and run bindings, with tenant/retention constraints. FR-017-001..003,019.
-- [ ] T017-009 Add catalog authorization/service, safe audits and current secret checks; real store tests. FR-017-001..004,019,020.
-- [ ] T017-010 Extend canonical OpenAPI/error/capability contracts and management routes; request limits/idempotency/current-role tests. FR-017-001..010,019,021.
+- [x] T017-008 Persist immutable revisions, tombstones, current state and run bindings, with tenant/retention constraints. FR-017-001..003,019. Evidence: immutable revision/run pins, tombstones, bounded catalog/revisions, final deletion at the revision ceiling and current-policy count tests.
+- [x] T017-009 Add catalog authorization/service, safe audits and current secret checks; real store tests. FR-017-001..004,019,020. Evidence: current roles/ACLs, cross-tenant refusal, audited mutations, policy revocation fences and real PostgreSQL/OpenBao coverage.
+- [x] T017-010 Extend canonical OpenAPI/error/capability contracts and management routes; request limits/idempotency/current-role tests. FR-017-001..010,019,021. Evidence: management/probe/ad hoc/result contracts, PostgreSQL driver discovery, quota ranges/scopes, generated Studio parity and real runtime-role HTTP checks.
 
 ## C. Durable managed execution
 

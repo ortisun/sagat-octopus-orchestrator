@@ -120,3 +120,31 @@ pub async fn delete<B: Governance>(
         .await?;
     Ok(Json(ConnectionBody::from(&row)))
 }
+
+pub async fn drivers<B: Governance>(
+    caller: Caller,
+    State(state): State<B>,
+    Path(ns): Path<String>,
+) -> Result<Json<DatabaseDriverListBody>, ApiError> {
+    namespace(&state, &caller, &ns, ApiOperation::NamespaceRead).await?;
+    Ok(Json(DatabaseDriverListBody {
+        items: [DatabaseDriverBody {
+            id: "postgresql",
+            operations: ["query", "execute"],
+            parameter_types: [
+                "null",
+                "boolean",
+                "integer",
+                "decimal",
+                "float",
+                "text",
+                "timestamp",
+                "date",
+                "binary",
+                "json",
+            ],
+            default_limits: sagat_domain::database::DatabaseLimits::default().into(),
+            maximum_limits: sagat_domain::database::DatabaseLimits::MAX.into(),
+        }],
+    }))
+}
