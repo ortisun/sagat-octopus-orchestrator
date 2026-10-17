@@ -830,3 +830,129 @@ async fn the_scheduler_releases_the_route_of_every_settled_approval_exactly_once
         );
     }
 }
+
+fn keyed_decision(
+    fixture: &Fixture,
+    request_id: ApprovalRequestId,
+    key: &str,
+    marker: u8,
+    decision: ApprovalDecision,
+) -> ApprovalDecisionAttempt {
+    let at = now();
+    ApprovalDecisionAttempt::new(
+        address(fixture, request_id),
+        fixture.actor.subject().clone(),
+        ApprovalReceiptId::generate(),
+        ApprovalDecisionCommand::new(
+            DecisionKey::parse(key).expect("decision key"),
+            Digest::new([marker; 32]),
+            decision,
+            None,
+        ),
+        AuditRecord::by(
+            &fixture.actor,
+            AuditAction::ApprovalDecided,
+            ResourceType::ApprovalRequest,
+            request_id.to_string(),
+            Some("0af7651916cd43dd8448eb211c80319c".into()),
+            at,
+        ),
+        Uuid::now_v7(),
+        at,
+    )
+}
+
+#[tokio::test]
+async fn a_decision_sent_after_the_run_ended_replays_or_names_the_settled_outcome() {
+    // The run ended after the approval was decided (the route was cancelled): the approver's retry
+    // of the lost answer still gets its receipt, and any other attempt learns the outcome.
+    let decided = fixture("approval-late-after-decision", 60_000).await;
+    let request_id = opened_request(&decided).await;
+    let first = keyed_decision(
+        &decided,
+        request_id,
+        "late-key",
+        31,
+        ApprovalDecision::Approve,
+    );
+    decided
+        .store
+        .decide(&first)
+        .await
+        .expect("decision commits");
+    cancel_run(&decided, "cancel-after-decision")
+        .await
+        .expect("cancel run");
+    let run_status: String = sqlx::query_scalar("SELECT status FROM runs WHERE id=$1")
+        .bind(decided.run.as_uuid())
+        .fetch_one(&decided.world.db.pool)
+        .await
+        .expect("run status");
+    assert_eq!(run_status, "CANCELLED");
+
+    let replay = decided
+        .store
+        .decide(&keyed_decision(
+            &decided,
+            request_id,
+            "late-key",
+            31,
+            ApprovalDecision::Approve,
+        ))
+        .await
+        .expect("an identical retry replays the committed receipt");
+    assert!(replay.replayed());
+    assert!(matches!(
+        decided
+            .store
+            .decide(&keyed_decision(
+                &decided,
+                request_id,
+                "late-key",
+                32,
+                ApprovalDecision::Reject
+            ))
+            .await,
+        Err(ApprovalProgressError::Approval(
+            ApprovalError::IdempotencyKeyReused
+        ))
+    ));
+    assert!(matches!(
+        decided
+            .store
+            .decide(&keyed_decision(
+                &decided,
+                request_id,
+                "other-key",
+                33,
+                ApprovalDecision::Reject
+            ))
+            .await,
+        Err(ApprovalProgressError::Approval(
+            ApprovalError::AlreadyDecided
+        ))
+    ));
+
+    // The run ended while the request was still open: cancellation settled it, so a decision
+    // learns that outcome too.
+    let cancelled = fixture("approval-late-after-cancel", 60_000).await;
+    let request_id = opened_request(&cancelled).await;
+    cancel_run(&cancelled, "cancel-open-request")
+        .await
+        .expect("cancel run");
+    assert!(matches!(
+        cancelled
+            .store
+            .decide(&keyed_decision(
+                &cancelled,
+                request_id,
+                "after-cancel",
+                34,
+                ApprovalDecision::Approve
+            ))
+            .await,
+        Err(ApprovalProgressError::Approval(
+            ApprovalError::AlreadyDecided
+        ))
+    ));
+}
