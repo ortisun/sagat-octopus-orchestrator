@@ -1709,6 +1709,7 @@ where
                                 tenant_id: tenant,
                                 run_id: run,
                             },
+                            owner.node(),
                             state.version(),
                         )
                         .await?
@@ -2099,14 +2100,12 @@ where
         } else if let Some(delay) = delay {
             let due_at = occurred_at + delay;
             if due_at > loop_state.deadline() {
-                self.store
-                    .start_drain(&LoopDrainCommand::new(
-                        transition(state.version()),
-                        execution::LoopDrainReason::TimedOut,
-                        uuid::Uuid::now_v7(),
-                    )?)
-                    .await?;
-                return Ok(LoopAdvance::DrainStarted);
+                // The delay cannot end inside the loop's budget, so it is never scheduled. The
+                // timeout code means the deadline was reached, which the store insists on before it
+                // accepts a timed-out drain (it refused the early one this branch used to ask for on
+                // every tick): the returned iteration waits and the deadline check above ends the
+                // loop when it is reached.
+                return Ok(LoopAdvance::Waiting);
             }
             (
                 LoopContinuation::DelayUntil(due_at),
@@ -2581,10 +2580,18 @@ where
         view: &View,
         hold: &Hold,
         run: RunRef,
+        owner: &NodeId,
         version: u64,
     ) -> Result<Outcome, EngineError> {
-        self.stop_with_code(view, hold, run, version, FailureCode::expression_error())
-            .await
+        self.stop_with_code_routing(
+            view,
+            hold,
+            run,
+            version,
+            FailureCode::expression_error(),
+            Some(owner),
+        )
+        .await
     }
 
     /// Fails the run with a declared hard budget's durable code, counting the refusal under the
@@ -2617,12 +2624,28 @@ where
         &self,
         view: &View,
         hold: &Hold,
+        run: RunRef,
+        version: u64,
+        code: FailureCode,
+    ) -> Result<Outcome, EngineError> {
+        self.stop_with_code_routing(view, hold, run, version, code, None)
+            .await
+    }
+
+    /// Stops the run with `code`, unless `unentered_loop` names a loop that declares `onError`: its
+    /// pending owner then fails with `code` and the edge is taken, since no scope or iteration
+    /// exists to drain (G341). The run is only stopped when nothing handles the failure.
+    async fn stop_with_code_routing(
+        &self,
+        view: &View,
+        hold: &Hold,
         RunRef {
             tenant_id: tenant,
             run_id: run,
         }: RunRef,
         version: u64,
         code: FailureCode,
+        unentered_loop: Option<&NodeId>,
     ) -> Result<Outcome, EngineError> {
         let Some(mut tx) = self
             .store
@@ -2641,9 +2664,25 @@ where
         }
         self.engine
             .run(&mut tx, self.effects(), |definition, state, now| {
+                let routed = unentered_loop.filter(|owner| {
+                    definition
+                        .node(owner)
+                        .is_some_and(|n| n.on_error().is_some())
+                });
                 Ok((
                     (),
-                    execution::stop_run(definition, state, StopReason::Failed, Some(code), now)?,
+                    match routed {
+                        Some(owner) => {
+                            execution::fail_unentered_loop(definition, state, owner, code, now)?
+                        }
+                        None => execution::stop_run(
+                            definition,
+                            state,
+                            StopReason::Failed,
+                            Some(code),
+                            now,
+                        )?,
+                    },
                 ))
             })
             .await?;

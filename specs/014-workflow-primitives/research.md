@@ -933,3 +933,91 @@ Evidence, by clause (test names; the files are under `crates/domain/tests`, `tes
   individual commit of a long compensation is not enumerated.
 - **G387 — SDK `operate` and Studio show a scoped step by its id only.** The graph lists
   `lines[2]/reserve~c`; there is no screen that groups a scope's compensations.
+
+## Decisions of the public loops increment (D400+)
+
+Closes the public parts of T014-019..021 that D340-D345 left open (G340, G341, G343) and adds the
+zero-worker delay evidence. Evidence is in `tests/integration/workflow-primitives/loops_http.rs`,
+`tests/fault/workflow-primitives/loops.rs`, `tests/contract/workflow-primitives/loops.rs`,
+`crates/domain/tests/primitive_loops.rs` and the scenarios `loop-cancel` and `loop-error-activity`.
+
+- **D400 — A loop's `onError` edge may lead to a chain of root activities ending at an `end`
+  (closes G340).** Publication (`published_loop_definition`) allows an `Activity` only when it is
+  reached by a loop's `onError` edge (directly or through further activities) and the chain ends at
+  an `end`. Such an activity declares no `onError`, `compensateWith`, `reconcileWith`, `irreversible`
+  or `highRisk`: root compensation of a recovery activity is not part of the proven slice. An
+  activity after a loop's success edge stays unsupported, and an activity nothing reaches is refused
+  earlier by the structure check (`Unreachable`). The recovery activity is an ordinary root task, so
+  the worker protocol is the same as at the root. D294 is unchanged: every loop failure drains the
+  active iteration first and then follows the edge.
+- **D401 — An expression error at loop entry follows `onError` (closes G341).** No new journal event
+  and no owner decision was needed: `step.failed` already applies to a `PENDING` step. When the
+  loop declares `onError`, the scheduler calls the new domain command `fail_unentered_loop`, which
+  applies `step.failed` (`EXPRESSION_ERROR`, no fence) to the pending owner and settles; the planner
+  then routes it like any failed step with an edge, in the same transaction. No scope, iteration,
+  reservation or tenant usage exists to release. A loop without `onError` still stops the run
+  `FAILED` with `EXPRESSION_ERROR`, so no existing journal changes. A stop already in flight is never
+  overwritten (`AlreadyStopping`).
+- **D402 — A delay that cannot end inside the loop budget is not scheduled; the loop times out at its
+  deadline.** The scheduler asked the store for a timed-out drain as soon as `now + delay` passed
+  the deadline, but the store (rightly) accepts `TimedOut` only at or after the deadline, so every
+  tick counted a failed action (`InvalidTransition`) until the deadline arrived. The scheduler now
+  leaves the returned iteration waiting and the existing deadline check ends the loop with
+  `RUN_TIMED_OUT`. The outcome is the same as before, minus the failing ticks. See O400.
+- **D403 — The public cancel and pause of an active loop are proven (closes G343).** G343 was stale:
+  commit 76d13b7 had already made the planner leave a cancelled active loop to the scheduler's
+  drain (`plan()` only fails closed for the run deadline, G381). What was missing was the proof
+  through the public API and the real scheduler; it now exists for a leased body (the attempt is
+  told to stop, `cancelRequested` on the heartbeat), a loop waiting on its delay (timer
+  `CANCELLED`), and a loop not yet entered (owner cancelled, no scope). Each ends `CANCELLED` with
+  `run_instance_usage.reserved_instances` and `tenant_iteration_usage.active_iterations` at zero,
+  and `verify_run` rebuilds the projection. A cancel that commits before or after the timeout drain
+  starts wins either way and the edge is not taken (D342, now also over HTTP).
+- **D404 — The zero-worker delay is proven in both loop kinds over the public path.** `while` and
+  `repeatUntil` with `delayMs` wait with no `READY`/`LEASED`/`RUNNING` step and only a `WAITING`
+  `loop_timers` row, the scheduler fires it once, and a worker that registers only afterwards takes
+  iteration 1. The five-SDK `loop-semantics` scenario already pins the same behaviour from outside.
+
+### Gaps and owner questions of this increment
+
+- **G400 — Delay and timeout tests use real clocks.** The public delay tests sleep between 1.5 and
+  9.3 s (the margin between delay and budget is 4 s in the timeout test). They passed under a loaded
+  shared machine, but a much slower host could make the margins too tight; the timeout test fails
+  loudly (not silently) in that case. Nothing in the production code depends on these values.
+- **G401 — A returned iteration whose delay overruns the budget is re-evaluated on every tick.**
+  D402 returns `Waiting`, so the checkpoint expressions are computed again each scheduler tick until
+  the deadline (nothing is written). It is bounded by the loop `timeoutMs` and has no measurement
+  behind it; a cheaper wait (a due time for the scheduler to skip until) is not built.
+- **G402 — `onError` to another loop is accepted by publication and not tested.** The public kind
+  check allows `while`/`repeatUntil`/`end`/recovery activities at the root, so an edge from one
+  loop to another loop publishes. Only `end` and activity targets are proven.
+- **G403 — Updates cannot race the loop timer publicly.** A declared state document is not
+  publishable with a loop, so a loop run has no Update to send; the Update-versus-timer race is
+  proven only at store level (`timer_delivery_fails_closed_after_cancel_signal_or_update_commit`). A
+  signal to a loop run is refused with `CONFLICT` and writes nothing (tested during the delay and
+  racing the fire).
+- **G404 — The entry-failure route has no cut-at-every-await sweep.** `fail_unentered_loop` runs in
+  the generic engine transaction (journal, projection, outbox, audit in one commit); it is proven by
+  the domain tests (replay included) and three HTTP tests, not by a crash at each await of that one
+  transaction. The generic engine fault tests cover the transaction, not this command.
+- **G405 — Pause is proven over the delay only.** Pausing a run while a body attempt is leased, and
+  the completion of that attempt while paused, are not exercised for loops.
+- **G406 — A recovery activity is not compensable.** An activity after a failed loop cannot declare
+  compensation, so a failure after recovery has nothing to undo; the combination of loops, scoped
+  compensation and root recovery effects is not designed (O401).
+- **G407 — `scope_compensation::a_scheduler_replica_that_takes_over_mid_compensation_finishes_it` is
+  flaky (2 of 6 runs alone, 2 of 4 inside the full fault target).** It is not touched by this
+  increment. The likely cause is the one fixed in the new replica tests: a replica with another
+  owner name makes the shard keeper rebalance, so the replica holds only part of the shards and the
+  run's shard may stay with the other owner; the test never runs another keeper round. Not fixed
+  here (another increment's file); a deterministic version keeps the owner name and bumps the fence
+  generation, as `a_replica_that_lost_its_shards_cannot_fire_the_timer` does.
+- **O400 — Should a delay that can never fit fail the loop at once?** Recommendation: no. Failing
+  early would need a distinct code (not `RUN_TIMED_OUT`, which means the deadline was reached) and a
+  new drain reason in the store; waiting for the deadline costs only idle time and keeps one meaning
+  for the timeout code. Owner to confirm, or ask for `DELAY_EXCEEDS_TIMEOUT` checked at publication
+  when `delayMs >= timeoutMs` (the cheapest honest fix: refuse the document).
+- **O401 — Which root graph may follow a loop?** Today only `end`, and recovery activities after an
+  error edge. Recommendation: allow activities after the success edge too, with the same plain
+  recovery rules, once the owner decides how a root activity after a loop is compensated if a later
+  step fails (a loop saga boundary).

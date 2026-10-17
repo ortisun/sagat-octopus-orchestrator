@@ -30,6 +30,7 @@ use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
 use crate::support::engine::{chain, world};
+use crate::support::scope_flow::{Flow, Sched, activity};
 
 const BEFORE_LOOP_PROGRESS: i64 = 20_261_030_000_000;
 
@@ -1389,4 +1390,385 @@ async fn a_completing_body_that_commits_first_beats_the_timeout() {
         "the loop completed and its error edge was not taken: {state:?}"
     );
     verify(&fixture, "completion won the race").await;
+}
+
+// ---------------------------------------------------------------------------------------------
+// The public delay path: a run published over HTTP, advanced by the scheduler, with no worker
+// connected while the loop waits on its durable timer (T014-021, FR-014-006, FR-014-014).
+// ---------------------------------------------------------------------------------------------
+
+/// A `while` loop that asks for a second iteration after its first one returns `0`, with a delay
+/// between iterations.
+fn delayed_loop(name: &str, delay_ms: u64, timeout_ms: u64, on_error: bool) -> serde_json::Value {
+    let mut poll = json!({
+        "id": "poll", "type": "while", "condition": "carry < 1", "body": "pass",
+        "initial": "0", "carry": "bodyResult", "maxIterations": 3, "timeoutMs": timeout_ms,
+        "delayMs": delay_ms, "next": "done"
+    });
+    let mut graph = vec![json!({"id": "done", "type": "end"})];
+    if on_error {
+        poll["onError"] = json!("failed");
+        graph.push(json!({"id": "failed", "type": "end"}));
+    }
+    graph.insert(0, poll);
+    json!({
+        "apiVersion": "sagat-octopus-orchestrator.io/v1",
+        "kind": "Workflow",
+        "metadata": {"name": name},
+        "entrypoint": "poll",
+        "bodies": {"pass": {"entrypoint": "check", "nodes": [
+            activity("check", "line.reserve", "returned", json!({})),
+            json!({"id": "returned", "type": "return", "result": "steps.check.output"})
+        ]}},
+        "nodes": graph
+    })
+}
+
+/// The shards of the flow's scheduler, taken again by a process that starts from the database
+/// alone: the generation of the fence moves on, so the scheduler the flow started with is stale.
+async fn retake_the_shards(flow: &Flow, name: &str) -> sagat_scheduler::Placement {
+    let placement = sagat_scheduler::Placement::new(format!("scope-compensation-{name}"));
+    sagat_scheduler::Keeper::new(
+        flow.api.executions.clone(),
+        placement.clone(),
+        sagat_scheduler::KeeperSettings {
+            ttl: std::time::Duration::from_secs(60),
+        },
+    )
+    .round()
+    .await
+    .expect("the new process acquires the shards");
+    placement
+}
+
+fn scheduler_on(flow: &Flow, placement: &sagat_scheduler::Placement) -> Sched {
+    sagat_scheduler::Scheduler::new(
+        flow.api.executions.clone(),
+        sagat_application::execution::Engine::new(sagat_infra_ir::JsonEvaluator),
+        sagat_application::entropy::SystemEntropy,
+        sagat_scheduler::SchedulerSettings::default(),
+    )
+    .with_placement(placement.clone())
+}
+
+/// Runs the first iteration to its checkpoint, which leaves only the delay timer.
+async fn until_the_delay(flow: &Flow) {
+    flow.drive().await;
+    let first = flow.poll().await;
+    assert_eq!(first.len(), 1);
+    flow.complete(&first[0], json!(0)).await;
+    flow.drive().await;
+    assert_eq!(timer(flow).await.as_deref(), Some("WAITING"));
+    assert!(
+        flow.try_poll().await.expect("poll").is_empty(),
+        "no task waits for a worker during the delay"
+    );
+}
+
+async fn timer(flow: &Flow) -> Option<String> {
+    sqlx::query_scalar(
+        "SELECT lifecycle FROM loop_timers WHERE run_id=$1 ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(flow.run.as_uuid())
+    .fetch_optional(&flow.api.db.pool)
+    .await
+    .expect("loop timer")
+}
+
+async fn events_of(flow: &Flow, kind: &str) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM run_events WHERE run_id=$1 AND event_type=$2")
+        .bind(flow.run.as_uuid())
+        .bind(kind)
+        .fetch_one(&flow.api.db.pool)
+        .await
+        .expect("event count")
+}
+
+async fn loop_usage(flow: &Flow) -> (i32, i32) {
+    let reserved: i32 =
+        sqlx::query_scalar("SELECT reserved_instances FROM run_instance_usage WHERE run_id=$1")
+            .bind(flow.run.as_uuid())
+            .fetch_one(&flow.api.db.pool)
+            .await
+            .expect("run instance usage");
+    let active: i32 = sqlx::query_scalar("SELECT active_iterations FROM tenant_iteration_usage")
+        .fetch_one(&flow.api.db.pool)
+        .await
+        .expect("tenant iteration usage");
+    (reserved, active)
+}
+
+/// Ticks `scheduler` until it advances a loop (a pass may rest its search for a moment after it
+/// found nothing), returning how many loops it advanced and how many actions failed.
+async fn tick_until_a_loop_advances(scheduler: &Sched) -> (u32, u32) {
+    let (mut advanced, mut failed) = (0, 0);
+    for _ in 0..8 {
+        let report = scheduler.tick().await;
+        advanced += report.loops_advanced;
+        failed += report.failed;
+        if advanced > 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    }
+    (advanced, failed)
+}
+
+/// Ticks `scheduler` and completes what it releases until the run reaches `status`.
+async fn finish_with(flow: &Flow, scheduler: &Sched, status: &str) {
+    for _ in 0..40 {
+        if flow.run_status().await == status {
+            return;
+        }
+        let report = scheduler.tick().await;
+        assert_eq!(report.failed, 0, "{report:?}");
+        for task in flow.try_poll().await.expect("poll") {
+            flow.complete(&task, json!(1)).await;
+        }
+    }
+    panic!("the run never became {status}: {}", flow.run_status().await);
+}
+
+#[tokio::test]
+async fn a_scheduler_restarted_during_the_delay_wakes_the_loop_exactly_once() {
+    let name = format!("delay-restart-{}", Uuid::now_v7());
+    let flow = Flow::start(&name, delayed_loop(&name, 2_000, 120_000, false), json!([])).await;
+    until_the_delay(&flow).await;
+    let version_before: i64 = sqlx::query_scalar("SELECT run_version FROM runs WHERE id=$1")
+        .bind(flow.run.as_uuid())
+        .fetch_one(&flow.api.db.pool)
+        .await
+        .expect("run version");
+
+    // The process that scheduled the timer is gone; a new one starts from the database alone.
+    let restarted = scheduler_on(&flow, &retake_the_shards(&flow, &name).await);
+    let early = restarted.tick().await;
+    assert_eq!((early.failed, early.loops_advanced), (0, 0), "{early:?}");
+    assert_eq!(timer(&flow).await.as_deref(), Some("WAITING"));
+    tokio::time::sleep(std::time::Duration::from_millis(2_300)).await;
+
+    assert_eq!(tick_until_a_loop_advances(&restarted).await, (1, 0));
+    assert_eq!(events_of(&flow, "loop.delay_elapsed").await, 1);
+    assert_eq!(timer(&flow).await.as_deref(), Some("FIRED"));
+    let version_after: i64 = sqlx::query_scalar("SELECT run_version FROM runs WHERE id=$1")
+        .bind(flow.run.as_uuid())
+        .fetch_one(&flow.api.db.pool)
+        .await
+        .expect("run version");
+    assert!(version_after > version_before);
+    finish_with(&flow, &restarted, "SUCCEEDED").await;
+    assert_eq!(events_of(&flow, "loop.delay_elapsed").await, 1);
+    assert_eq!(loop_usage(&flow).await, (0, 0));
+    flow.verify().await;
+}
+
+#[tokio::test]
+async fn two_replicas_delivering_the_same_due_timer_admit_one_iteration() {
+    let name = format!("delay-duplicate-{}", Uuid::now_v7());
+    let flow = Flow::start(&name, delayed_loop(&name, 1_500, 120_000, false), json!([])).await;
+    until_the_delay(&flow).await;
+    // Two replicas under the same fence both find the timer due and deliver it together.
+    let placement = retake_the_shards(&flow, &name).await;
+    let (first, second) = (
+        scheduler_on(&flow, &placement),
+        scheduler_on(&flow, &placement),
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(1_800)).await;
+
+    let mut advanced = 0;
+    for _ in 0..8 {
+        let (a, b) = tokio::join!(first.tick(), second.tick());
+        advanced += a.loops_advanced + b.loops_advanced;
+        if advanced > 0 {
+            assert_eq!(
+                advanced, 1,
+                "only one replica commits the fire: {a:?} {b:?}"
+            );
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    }
+    assert_eq!(advanced, 1, "the due timer was delivered");
+    assert_eq!(events_of(&flow, "loop.delay_elapsed").await, 1);
+    let iterations: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM loop_iterations WHERE run_id=$1")
+            .bind(flow.run.as_uuid())
+            .fetch_one(&flow.api.db.pool)
+            .await
+            .expect("iterations");
+    assert_eq!(iterations, 2, "the second iteration was admitted once");
+    // A delivery that arrives after the fire is a no-op.
+    let late = first.tick().await;
+    assert_eq!((late.failed, late.loops_advanced), (0, 0), "{late:?}");
+    assert_eq!(events_of(&flow, "loop.delay_elapsed").await, 1);
+    finish_with(&flow, &first, "SUCCEEDED").await;
+    assert_eq!(loop_usage(&flow).await, (0, 0));
+    flow.verify().await;
+}
+
+#[tokio::test]
+async fn a_replica_that_lost_its_shards_cannot_fire_the_timer() {
+    let name = format!("delay-stale-{}", Uuid::now_v7());
+    let flow = Flow::start(&name, delayed_loop(&name, 1_500, 120_000, false), json!([])).await;
+    until_the_delay(&flow).await;
+    // The shards are taken over (their fence generation moves on) and the replacement process, which
+    // keeps the identity, adopts the new generation: the process the flow started with is stale.
+    sqlx::query(
+        "UPDATE scheduler_shards SET generation=generation+1, \
+                expires_at=clock_timestamp() + interval '1 hour', acquired_at=clock_timestamp()",
+    )
+    .execute(&flow.api.db.pool)
+    .await
+    .expect("the fence generation moves on");
+    let placement = retake_the_shards(&flow, &name).await;
+    let successor = scheduler_on(&flow, &placement);
+    tokio::time::sleep(std::time::Duration::from_millis(1_800)).await;
+
+    for _ in 0..3 {
+        let stale = flow.scheduler.tick().await;
+        assert_eq!(stale.loops_advanced, 0, "{stale:?}");
+        assert_eq!(
+            stale.fenced, 1,
+            "the stale replica is fenced out: {stale:?}"
+        );
+    }
+    assert_eq!(events_of(&flow, "loop.delay_elapsed").await, 0);
+    assert_eq!(timer(&flow).await.as_deref(), Some("WAITING"));
+    assert_eq!(tick_until_a_loop_advances(&successor).await, (1, 0));
+    assert_eq!(events_of(&flow, "loop.delay_elapsed").await, 1);
+    finish_with(&flow, &successor, "SUCCEEDED").await;
+    flow.verify().await;
+}
+
+async fn step_status(flow: &Flow, node: &str) -> Option<String> {
+    sqlx::query_scalar("SELECT status FROM steps WHERE run_id=$1 AND node=$2")
+        .bind(flow.run.as_uuid())
+        .bind(node)
+        .fetch_optional(&flow.api.db.pool)
+        .await
+        .expect("step status")
+}
+
+async fn cancel(flow: &Flow) {
+    let (status, body) = flow
+        .operate(json!({"action": "CANCEL", "reason": "cancelled while the loop waits"}))
+        .await;
+    assert_eq!(status, reqwest::StatusCode::ACCEPTED, "{body}");
+}
+
+async fn scope_lifecycle(flow: &Flow) -> String {
+    sqlx::query_scalar("SELECT lifecycle FROM loop_scopes WHERE run_id=$1")
+        .bind(flow.run.as_uuid())
+        .fetch_one(&flow.api.db.pool)
+        .await
+        .expect("loop scope")
+}
+
+/// The deadline passed during the delay and a cancel committed before the scheduler noticed: the
+/// run-level cancellation wins and the `onError` edge is never taken (D342).
+#[tokio::test]
+async fn a_cancel_that_commits_before_the_timeout_is_noticed_ends_the_run_cancelled() {
+    let name = format!("delay-cancel-first-{}", Uuid::now_v7());
+    let flow = Flow::start(&name, delayed_loop(&name, 3_000, 4_000, true), json!([])).await;
+    until_the_delay(&flow).await;
+    tokio::time::sleep(std::time::Duration::from_millis(4_300)).await;
+    cancel(&flow).await;
+
+    flow.drive().await;
+    assert_eq!(flow.run_status().await, "CANCELLED");
+    assert_eq!(scope_lifecycle(&flow).await, "CANCELLED");
+    assert_eq!(timer(&flow).await.as_deref(), Some("CANCELLED"));
+    assert_ne!(
+        step_status(&flow, "failed").await.as_deref(),
+        Some("SUCCEEDED")
+    );
+    assert_eq!(events_of(&flow, "loop.delay_elapsed").await, 0);
+    assert_eq!(loop_usage(&flow).await, (0, 0));
+    flow.verify().await;
+}
+
+/// The timeout drain started first; the cancel lands while it is in flight. The loop still ends
+/// `FAILED` with its timeout code, the run ends `CANCELLED` and the edge is not taken (D342).
+#[tokio::test]
+async fn a_cancel_that_lands_after_the_timeout_started_draining_still_wins() {
+    let name = format!("delay-cancel-second-{}", Uuid::now_v7());
+    let flow = Flow::start(&name, delayed_loop(&name, 3_000, 4_000, true), json!([])).await;
+    until_the_delay(&flow).await;
+    tokio::time::sleep(std::time::Duration::from_millis(4_300)).await;
+    let drain = flow.scheduler.tick().await;
+    assert_eq!((drain.failed, drain.loops_advanced), (0, 1), "{drain:?}");
+    assert_eq!(scope_lifecycle(&flow).await, "DRAINING");
+    assert_ne!(
+        flow.run_status().await,
+        "CANCELLING",
+        "a timeout drain stops nothing"
+    );
+    cancel(&flow).await;
+
+    flow.drive().await;
+    assert_eq!(flow.run_status().await, "CANCELLED");
+    assert_eq!(scope_lifecycle(&flow).await, "FAILED");
+    let owner: (String, Option<String>) =
+        sqlx::query_as("SELECT status,failure_code FROM steps WHERE run_id=$1 AND node='poll'")
+            .bind(flow.run.as_uuid())
+            .fetch_one(&flow.api.db.pool)
+            .await
+            .expect("loop owner");
+    assert_eq!(owner.1.as_deref(), Some("RUN_TIMED_OUT"));
+    assert_ne!(
+        step_status(&flow, "failed").await.as_deref(),
+        Some("SUCCEEDED")
+    );
+    assert_eq!(loop_usage(&flow).await, (0, 0));
+    flow.verify().await;
+}
+
+/// A loop waits for no signal: one sent during the delay, and one sent exactly while the timer is
+/// delivered, are refused with a typed `CONFLICT` and change neither the timer nor the outcome.
+/// (Declared updates cannot race the timer: a declared state document is not publishable with a
+/// loop, so a loop run has no update to send.)
+#[tokio::test]
+async fn a_signal_during_or_racing_the_delay_is_refused_and_leaves_the_loop_alone() {
+    let name = format!("delay-signal-{}", Uuid::now_v7());
+    let flow = Flow::start(&name, delayed_loop(&name, 1_500, 120_000, false), json!([])).await;
+    until_the_delay(&flow).await;
+    let signal = |key: &'static str| {
+        flow.api
+            .as_user(
+                reqwest::Method::POST,
+                &format!("/runs/{}/signals/nudge", flow.run),
+                "alice",
+                "acme",
+            )
+            .header("x-octopus-namespace", "payments")
+            .header("idempotency-key", key)
+            .header("content-type", "application/json")
+            .body("{}")
+            .send()
+    };
+    let version = || async {
+        sqlx::query_scalar::<_, i64>("SELECT run_version FROM runs WHERE id=$1")
+            .bind(flow.run.as_uuid())
+            .fetch_one(&flow.api.db.pool)
+            .await
+            .expect("run version")
+    };
+    let before = version().await;
+    let during = signal("signal-during-the-delay").await.expect("signal");
+    assert_eq!(during.status(), reqwest::StatusCode::CONFLICT);
+    assert_eq!(version().await, before, "a refused signal writes nothing");
+    assert_eq!(timer(&flow).await.as_deref(), Some("WAITING"));
+
+    tokio::time::sleep(std::time::Duration::from_millis(1_800)).await;
+    let (racing, tick) = tokio::join!(signal("signal-at-the-fire"), flow.scheduler.tick());
+    assert_eq!(
+        racing.expect("signal").status(),
+        reqwest::StatusCode::CONFLICT
+    );
+    assert_eq!((tick.failed, tick.loops_advanced), (0, 1), "{tick:?}");
+    assert_eq!(events_of(&flow, "loop.delay_elapsed").await, 1);
+    finish_with(&flow, &flow.scheduler, "SUCCEEDED").await;
+    assert_eq!(events_of(&flow, "loop.delay_elapsed").await, 1);
+    assert_eq!(loop_usage(&flow).await, (0, 0));
+    flow.verify().await;
 }

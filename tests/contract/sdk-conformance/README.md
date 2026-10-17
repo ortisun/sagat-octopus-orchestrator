@@ -138,6 +138,20 @@ adds the journal's `scope.compensation_planned` (the instances to undo and what 
 charge, stopped by `maxIterations: 3`, ends `FAILED` with `ITERATION_LIMIT` after undoing iteration 2, then 1,
 then 0 (and the refund before the release in each), with the plan and its outcome in the journal.
 
+`loop-cancel.json` is the WP-05 cancel contract. A `while` whose body attempt is running when the run is
+cancelled: the engine journals `run.stop_requested`, `loop.drain_started`, `step.cancel_requested` and
+`step.cancelled`, the worker's handler sees its cancellation signal (`abortedReason: run-cancelled`), then
+`loop.iteration_drained`, `loop.finished` (cancelled) and `run.finished`. A second `while` with a delay between
+iterations is cancelled after its first checkpoint (the continuation is `delay`) with its worker stopped: the
+journal goes from `loop.iteration_checkpointed` straight to the drain without `loop.delay_elapsed` or another
+iteration. Its delay is shorter than its `timeoutMs`; a delay that cannot fit the budget is never scheduled
+(D402). The golden was written after reading both journals and the scope evidence by hand.
+
+`loop-error-activity.json` is the WP-05 recovery contract: the body activity fails for good, the engine drains
+the active iteration (`loop.drain_started`, `loop.iteration_drained`, `loop.finished` with the body's code), the
+run continues at the activity the loop's `onError` names, which a worker takes as a root task (empty instance
+path), and the run ends `SUCCEEDED` through the recovery `end` while the success `end` stays `NOT_STARTED`.
+
 `approval-security.json` is the WP-14 contract for approvals. The workflow's policy admits `admin` and `operator`
 and keeps the default exclusion of the initiator, and the run's input carries a secret-shaped value that the
 scenario lists under `mustNotLeak` and `mustNotAppear`: it must not come back in any error, observation, the
@@ -183,6 +197,8 @@ SAGAT_SDK_SCENARIO=collection-ordering cargo test -p sagat-tests --test sdk_conf
 SAGAT_SDK_SCENARIO=loop-semantics cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=collection-compensation cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=loop-compensation cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=loop-cancel cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=loop-error-activity cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=approval-security cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=chain-inspect-cancel cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=scoped-identity cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture

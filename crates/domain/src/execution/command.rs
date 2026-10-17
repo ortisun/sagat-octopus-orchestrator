@@ -1337,6 +1337,62 @@ pub fn time_out_wait(
     )
 }
 
+/// Fails the owner of a loop that cannot be entered (its initial carry or condition cannot be
+/// computed) and follows its `onError` edge (G341).
+///
+/// No scope or iteration exists yet, so there is nothing to drain: the owner goes from `PENDING`
+/// to `FAILED` with `code` by the same `step.failed` event any failed step records, and the planner
+/// routes it like any other failure that has an edge. The run is not asked to stop.
+///
+/// # Errors
+/// [`ExecutionError::RunFinished`] / [`ExecutionError::AlreadyStopping`], and
+/// [`ExecutionError::Invariant`] when `owner` is not a loop that declares `onError`, was already
+/// entered or is not pending: a loop without an edge fails the run through [`stop_run`] instead.
+pub fn fail_unentered_loop(
+    def: &WorkflowDefinition,
+    state: &mut RunState,
+    owner: &NodeId,
+    code: FailureCode,
+    now: OffsetDateTime,
+) -> Result<Progress, ExecutionError> {
+    if state.is_finished() {
+        return Err(ExecutionError::RunFinished(state.status()));
+    }
+    if state.stop_reason().is_some() {
+        return Err(ExecutionError::AlreadyStopping);
+    }
+    let declared = def
+        .node(owner)
+        .ok_or_else(|| ExecutionError::UnknownStep(owner.clone()))?;
+    if !matches!(
+        declared.kind(),
+        NodeKind::While { .. } | NodeKind::RepeatUntil { .. }
+    ) || declared.on_error().is_none()
+    {
+        return Err(ExecutionError::Invariant(
+            "only a loop that declares onError fails before it is entered",
+        ));
+    }
+    let instance = ExecutionInstanceId::root(owner.clone());
+    if state.loop_state(&instance).is_some()
+        || state.step(owner).map(StepState::status) != Some(StepStatus::Pending)
+    {
+        return Err(ExecutionError::Invariant(
+            "the loop was already entered or is not pending",
+        ));
+    }
+    apply_then_settle(
+        def,
+        state,
+        now,
+        RunEvent::StepFailed {
+            node: owner.clone(),
+            code,
+            fence: None,
+        },
+    )
+}
+
 /// Starts winding the run down: cancellation, deadline, or an unrecoverable failure.
 ///
 /// # Errors

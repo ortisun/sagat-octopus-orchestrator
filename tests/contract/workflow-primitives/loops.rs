@@ -158,3 +158,134 @@ fn loop_bounds_are_refused_at_publication() {
     );
     assert!(!accepted(with("timeoutMs", None)), "timeoutMs is required");
 }
+
+/// A one-loop workflow whose `onError` edge recovers through an activity (G340).
+fn recovery_document(edit: impl FnOnce(&mut Vec<Value>)) -> Vec<u8> {
+    let mut nodes = vec![
+        serde_json::json!({
+            "id": "poll", "type": "while", "condition": "carry < 1", "body": "iteration",
+            "initial": "0", "carry": "bodyResult", "maxIterations": 3, "timeoutMs": 60000,
+            "next": "done", "onError": "recover"
+        }),
+        serde_json::json!({"id": "done", "type": "end"}),
+        serde_json::json!({
+            "id": "recover", "type": "activity", "activity": "recover.cleanup",
+            "next": "recovered"
+        }),
+        serde_json::json!({"id": "recovered", "type": "end"}),
+    ];
+    edit(&mut nodes);
+    serde_json::to_vec(&serde_json::json!({
+        "apiVersion": "sagat-octopus-orchestrator.io/v1",
+        "kind": "Workflow",
+        "metadata": {"name": "loop-recovery"},
+        "entrypoint": "poll",
+        "bodies": {"iteration": {"entrypoint": "increment", "nodes": [
+            {"id": "increment", "type": "activity", "activity": "counter.increment",
+             "next": "return-value"},
+            {"id": "return-value", "type": "return", "result": "steps.increment.output"}
+        ]}},
+        "nodes": nodes
+    }))
+    .expect("workflow JSON")
+}
+
+fn node_mut<'a>(nodes: &'a mut [Value], id: &str) -> &'a mut Value {
+    nodes
+        .iter_mut()
+        .find(|node| node["id"] == id)
+        .expect("declared node")
+}
+
+#[test]
+fn a_loop_error_edge_may_recover_through_a_chain_of_activities_ending_at_end() {
+    let single = JsonIrCodec
+        .parse(&recovery_document(|_| {}))
+        .expect("an onError edge to an activity is publishable");
+    let chained = JsonIrCodec
+        .parse(&recovery_document(|nodes| {
+            node_mut(nodes, "recover")["next"] = "notify".into();
+            nodes.push(serde_json::json!({
+                "id": "notify", "type": "activity", "activity": "recover.notify",
+                "next": "recovered"
+            }));
+        }))
+        .expect("a chain of recovery activities is publishable");
+    assert_ne!(single.digest, chained.digest);
+    // The same document parsed twice is the same canonical definition.
+    let again = JsonIrCodec
+        .parse(&recovery_document(|_| {}))
+        .expect("publishable again");
+    assert_eq!(
+        (single.digest, &single.canonical),
+        (again.digest, &again.canonical)
+    );
+}
+
+#[test]
+fn a_loop_recovery_activity_stays_as_plain_as_the_runtime_proves() {
+    let refused = |edit: &dyn Fn(&mut Vec<Value>), reason: &str| {
+        let bytes = recovery_document(|nodes| edit(nodes));
+        let error = JsonIrCodec
+            .parse(&bytes)
+            .expect_err("the shape is not enabled by the runtime");
+        assert!(format!("{error:?}").contains(reason), "{reason}: {error:?}");
+    };
+    let plain = "no onError edge, compensation, reconciliation or effect policy";
+    refused(
+        &|nodes| node_mut(nodes, "recover")["onError"] = "recovered".into(),
+        plain,
+    );
+    refused(
+        &|nodes| node_mut(nodes, "recover")["compensateWith"] = "recover.undo".into(),
+        plain,
+    );
+    refused(
+        &|nodes| node_mut(nodes, "recover")["irreversible"] = true.into(),
+        plain,
+    );
+    refused(
+        &|nodes| node_mut(nodes, "recover")["highRisk"] = true.into(),
+        plain,
+    );
+    refused(
+        &|nodes| {
+            node_mut(nodes, "recover")["next"] = "again".into();
+            nodes.push(serde_json::json!({
+                "id": "again", "type": "while", "condition": "carry < 1", "body": "iteration",
+                "initial": "0", "carry": "bodyResult", "maxIterations": 3, "timeoutMs": 60000,
+                "next": "recovered"
+            }));
+        },
+        "chain ends at end",
+    );
+}
+
+#[test]
+fn an_activity_is_enabled_only_as_a_loop_recovery() {
+    let refused = |edit: &dyn Fn(&mut Vec<Value>), reason: &str| {
+        let bytes = recovery_document(|nodes| edit(nodes));
+        let error = JsonIrCodec
+            .parse(&bytes)
+            .expect_err("the shape is not enabled by the runtime");
+        assert!(format!("{error:?}").contains(reason), "{reason}: {error:?}");
+    };
+    // After the success edge of a loop.
+    refused(
+        &|nodes| {
+            node_mut(nodes, "poll")["next"] = "recover".into();
+            nodes.retain(|node| node["id"] != "done");
+        },
+        "after a loop's success edge",
+    );
+    // Declared but reached by nothing: the structure check refuses it before the subset check.
+    refused(
+        &|nodes| {
+            node_mut(nodes, "poll")
+                .as_object_mut()
+                .expect("loop object")
+                .remove("onError");
+        },
+        "Unreachable",
+    );
+}

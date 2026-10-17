@@ -4,7 +4,8 @@ The public workflow document remains additive `sagat-octopus-orchestrator.io/v1`
 `switch`, run-addressed declared Query/Update and a bounded root human approval are available
 with the existing basic root nodes. A public collection workflow is a chain of `forEach` nodes that
 ends at `end`; every referenced body contains exactly one activity followed by one `return`.
-The restricted public loop shape uses an activity followed by a return in its body. Nested
+The restricted public loop shape uses an activity followed by a return in its body; a loop's
+`onError` edge may lead to an `end` or to recovery activities that end at an `end`. Nested
 collections, triggers, structured-primitive combinations and broader body graphs remain closed.
 The public continuation subset accepts an activity followed by `continueAsNew`, including exact
 declared-state transfer, or an activity and condition that select the same continuation or `end`.
@@ -44,7 +45,8 @@ stale timer fire. Evaluated carry and result bytes now commit in the same progre
 the scheduler fence, replay, revision and quota checks; rollback tests prove that outbox and audit
 failures leave no orphan payload. A focused public PostgreSQL test covers the restricted loop
 shape through worker completion, scheduler restart, `repeatUntil` and rollback retry. Broader
-bodies, five-SDK runtime parity and the full failure matrix remain release gates.
+bodies and the remaining failure matrix remain release gates; the public delay, cancel and
+error-edge paths are described below.
 
 ## Check the running system
 
@@ -199,6 +201,44 @@ are runs of the parent's tree and spend its 1,024-run budget: a full tree ends t
 `CHAIN_LIMIT` (the same durable code as the segment limit). The `chain-child` scenario runs this in all
 five SDKs. Nothing the chain owns is ever deleted (D298): the segment count of a chain and the run
 count of a tree only grow, and the runtime role has no `DELETE` on them.
+
+## A loop that waits, is cancelled, or recovers
+
+A loop with `delayMs` waits on one durable timer (`loop_timers`, state `WAITING`) and nothing else.
+While it waits the run is `WAITING`, no step is `READY`, `LEASED` or `RUNNING`, and a worker may be
+down entirely: the scheduler fires the timer when it is due and the next iteration becomes `READY` for
+whichever worker comes. Check it from the API: `GET /runs/{id}` shows `WAITING`, and
+`GET /runs/{id}/events` shows `loop.iteration_checkpointed` followed by exactly one
+`loop.delay_elapsed` once the delay has passed (never two, even when two scheduler replicas deliver
+the timer together or the scheduler restarts during the wait).
+
+- **A delay that cannot end inside the loop budget is never scheduled.** If `delayMs` is longer than
+  what is left of `timeoutMs`, no timer exists; the returned iteration waits and the loop ends
+  `FAILED` with `RUN_TIMED_OUT` when the deadline passes (then `onError`, or the run fails). An
+  operator who sees a loop sitting in `RUNNING` with no timer and no leased step is looking at this
+  case; it resolves itself at the deadline.
+- **Cancel** (`POST /runs/{id}/operations` with `CANCEL`) of a run with an active loop answers `202` and
+  `CANCELLING`. The scheduler cancels the timer or asks the leased body attempt to stop (its heartbeat
+  answers `cancelRequested`; the worker's report ends that attempt), drains the iteration and ends the
+  loop and the run `CANCELLED`. The `onError` edge is never taken by a cancelled run, even when the
+  loop had already timed out and was draining. Tenant iteration usage and the run's reserved
+  instances return to zero.
+- **Pause** holds the run; a delay that falls due while paused admits nothing until `RESUME`.
+- **A signal** sent to a run whose loop waits is refused with `CONFLICT` (`STATE_CONFLICT`, "not
+  waiting for that signal") and writes nothing. A declared Query/Update cannot be combined with a loop
+  at publication.
+- **A loop that fails** (permanent body failure, loop timeout, or an initial expression that cannot
+  be computed) drains the active iteration and follows its `onError` edge. When the edge leads to an
+  activity, the worker takes it as an ordinary root task (any protocol); the loop owner reads
+  `FAILED` with the failure code and `routed`, the success `end` stays `NOT_STARTED`.
+  A scheduler action that keeps failing is counted in `failed` of the tick report and logged as
+  `a loop scheduler action failed`; a stale replica fenced out of a shard reports this and changes
+  nothing.
+
+Run the proofs with `cargo test -p sagat-tests --test integration_workflow_primitives --locked
+loops_http::` and `cargo test -p sagat-tests --test fault_workflow_primitives --locked loops::`; the
+step-by-step demo with the exact `curl` commands is in
+`specs/014-workflow-primitives/quickstart.md`.
 
 ## A collection or loop that compensates
 
