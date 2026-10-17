@@ -1352,6 +1352,6 @@ are in `research.md`.
 |---|---|
 | `integration_workflow_primitives` | 200/200 |
 | `fault_workflow_primitives` | 30/30 |
-| `contract_workflow_primitives` | 29/29 |
+| `contract_workflow_primitives` | 30/30 |
 | `integration_security_multitenancy` | 95/95 |
 | `integration_durable_execution` | 178/178 |
