@@ -468,6 +468,249 @@ fn numeric_validation_never_uses_a_rounded_value_as_authority() {
 }
 
 #[test]
+fn fractional_lexemes_fail_closed_when_integer_types_are_indirect() {
+    let classifier = Classifier::default();
+    let fractional = b"1.0000000000000000000000000001";
+    for schema in [
+        json!({
+            "type": "number", "x-sagat-classification": "public",
+            "if": true,
+            "then": {"type": "integer"}
+        }),
+        json!({
+            "type": "number", "x-sagat-classification": "public",
+            "if": false,
+            "else": {"type": "integer"}
+        }),
+        json!({
+            "x-sagat-classification": "public",
+            "allOf": [{"type": "number"}, {"anyOf": [{"type": "integer"}, {"type": "string"}]}]
+        }),
+        json!({
+            "type": ["number", "integer"], "x-sagat-classification": "public"
+        }),
+        json!({
+            "type": "number", "x-sagat-classification": "public",
+            "not": {"type": "integer"}
+        }),
+    ] {
+        let doc = document(schema);
+        assert!(
+            classifier
+                .project(request(
+                    &doc,
+                    fractional,
+                    Audience::new(false, false, false),
+                ))
+                .is_err(),
+            "an indirect integer restriction must never validate a rounded fraction"
+        );
+    }
+
+    let overlapping = document(json!({
+        "type": "object", "x-sagat-classification": "public",
+        "properties": {"x": {"type": "number"}},
+        "patternProperties": {"^x$": {"type": "integer"}},
+        "additionalProperties": false
+    }));
+    assert!(
+        classifier
+            .project(request(
+                &overlapping,
+                br#"{"x":1.0000000000000000000000000001}"#,
+                Audience::new(false, false, false),
+            ))
+            .is_err()
+    );
+
+    let dependent = document(json!({
+        "type": "object", "x-sagat-classification": "public",
+        "properties": {
+            "enabled": {"type": "boolean"},
+            "x": {"type": "number"}
+        },
+        "dependentSchemas": {
+            "enabled": {"properties": {"x": {"type": "integer"}}}
+        }
+    }));
+    assert!(
+        classifier
+            .project(request(
+                &dependent,
+                br#"{"enabled":true,"x":1.0000000000000000000000000001}"#,
+                Audience::new(false, false, false),
+            ))
+            .is_err()
+    );
+}
+
+#[test]
+fn exact_integer_lexemes_survive_indirect_integer_constraints() {
+    let doc = document(json!({
+        "type": "number", "x-sagat-classification": "public",
+        "if": true,
+        "then": {"type": ["integer", "string"]}
+    }));
+    for exact in [b"9007199254740993".as_slice(), b"1e3".as_slice()] {
+        let result = Classifier::default()
+            .project(request(&doc, exact, Audience::new(false, false, false)))
+            .expect("mathematically exact integer");
+        let ClassifiedNode::Value {
+            value: ScalarValue::Number(number),
+            ..
+        } = result.tree
+        else {
+            panic!("number")
+        };
+        assert_eq!(number.as_str().as_bytes(), exact);
+    }
+}
+
+#[test]
+fn hidden_object_children_do_not_consume_the_visible_child_limit() {
+    let doc = document(json!({
+        "type": "object", "x-sagat-classification": "public",
+        "properties": {"z": {"type": "string"}},
+        "additionalProperties": true
+    }));
+    let classifier = Classifier::default();
+    let only_visible = classifier
+        .project(request(
+            &doc,
+            br#"{"z":"shown"}"#,
+            Audience::new(false, false, false),
+        ))
+        .expect("visible projection");
+    let mut crowded = serde_json::Map::new();
+    for index in 0..128 {
+        crowded.insert(format!("a{index:03}"), Value::String("hidden".into()));
+    }
+    crowded.insert("z".into(), Value::String("shown".into()));
+    let crowded = serde_json::to_vec(&Value::Object(crowded)).expect("payload");
+    let with_hidden = classifier
+        .project(request(&doc, &crowded, Audience::new(false, false, false)))
+        .expect("hidden fields do not crowd out the visible field");
+
+    assert_eq!(wire_node(&only_visible.tree), wire_node(&with_hidden.tree));
+    assert_eq!(only_visible.truncated, with_hidden.truncated);
+    assert!(!with_hidden.truncated);
+}
+
+#[test]
+fn hidden_children_at_the_depth_boundary_do_not_change_truncation() {
+    let mut schema = json!({"additionalProperties": true});
+    let mut empty_payload = json!({});
+    let mut hidden_payload = json!({"hidden": "private"});
+    for _ in 0..16 {
+        schema = json!({"additionalProperties": schema});
+        empty_payload = json!({"next": empty_payload});
+        hidden_payload = json!({"next": hidden_payload});
+    }
+    schema
+        .as_object_mut()
+        .expect("root schema")
+        .insert("x-sagat-classification".into(), json!("public"));
+    let doc = document(schema);
+    let empty_payload = serde_json::to_vec(&empty_payload).expect("payload");
+    let hidden_payload = serde_json::to_vec(&hidden_payload).expect("payload");
+    let classifier = Classifier::default();
+    let empty = classifier
+        .project(request(
+            &doc,
+            &empty_payload,
+            Audience::new(false, false, false),
+        ))
+        .expect("empty boundary");
+    let hidden = classifier
+        .project(request(
+            &doc,
+            &hidden_payload,
+            Audience::new(false, false, false),
+        ))
+        .expect("hidden boundary");
+
+    assert_eq!(wire_node(&empty.tree), wire_node(&hidden.tree));
+    assert_eq!(empty.truncated, hidden.truncated);
+    assert!(!hidden.truncated);
+}
+
+#[test]
+fn hidden_array_items_do_not_leak_positions_or_consume_the_child_limit() {
+    let mut prefix = vec![
+        json!({
+            "type": "string", "x-sagat-classification": "pii"
+        });
+        128
+    ];
+    prefix.push(json!({
+        "type": "string", "x-sagat-classification": "public"
+    }));
+    let doc = document(json!({
+        "type": "array", "x-sagat-classification": "public",
+        "prefixItems": prefix,
+        "items": false
+    }));
+    let mut payload = vec![Value::String("hidden".into()); 128];
+    payload.push(Value::String("shown".into()));
+    let payload = serde_json::to_vec(&payload).expect("payload");
+    let result = Classifier::default()
+        .project(request(&doc, &payload, Audience::new(false, false, false)))
+        .expect("visible array item");
+    let ClassifiedNode::Container {
+        child_count,
+        omitted_children,
+        children,
+        ..
+    } = result.tree
+    else {
+        panic!("array")
+    };
+    assert_eq!(child_count, 1);
+    assert_eq!(omitted_children, 0);
+    assert_eq!(children.len(), 1);
+    assert_eq!(children[0].ordinal, 0);
+    assert!(matches!(
+        children[0].node.as_ref(),
+        ClassifiedNode::Value {
+            value: ScalarValue::String(value),
+            ..
+        } if value == "shown"
+    ));
+    assert!(!result.truncated);
+}
+
+#[test]
+fn structure_audience_keeps_real_counts_when_the_child_limit_is_reached() {
+    let doc = document(json!({
+        "type": "object", "x-sagat-classification": "public",
+        "properties": {"z": {"type": "string"}},
+        "additionalProperties": true
+    }));
+    let mut payload = serde_json::Map::new();
+    for index in 0..128 {
+        payload.insert(format!("a{index:03}"), Value::String("hidden".into()));
+    }
+    payload.insert("z".into(), Value::String("shown".into()));
+    let payload = serde_json::to_vec(&Value::Object(payload)).expect("payload");
+    let result = Classifier::default()
+        .project(request(&doc, &payload, Audience::new(false, false, true)))
+        .expect("structural projection");
+    let ClassifiedNode::Container {
+        child_count,
+        omitted_children,
+        children,
+        ..
+    } = result.tree
+    else {
+        panic!("object")
+    };
+    assert_eq!(child_count, 129);
+    assert_eq!(omitted_children, 1);
+    assert_eq!(children.len(), 128);
+    assert!(result.truncated);
+}
+
+#[test]
 fn unsupported_pattern_governance_keeps_unknown_properties_at_least_pii() {
     let doc = document(json!({
         "type": "object", "x-sagat-classification": "public",
