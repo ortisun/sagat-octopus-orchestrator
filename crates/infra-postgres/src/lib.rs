@@ -30,6 +30,7 @@ mod managed_secrets;
 mod operations;
 mod outbound;
 mod partitioning;
+mod payload_disclosure;
 mod payload_inspection;
 mod pool;
 mod primitives;
