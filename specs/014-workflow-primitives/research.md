@@ -1023,7 +1023,12 @@ Written 2026-10-17 for T014-041 and T014-042. The coordinator ticks the tasks; n
   `42375f3` and from this branch and run alternately on the same container, the idle tick over 10,000
   approvals and 1,000 timers took 118.7 and 118.1 ms before and 198.0 and 197.6 ms now (+67 percent) while
   run creation did not change (194 and 203 against 191 and 191 runs/s). The new collection, loop and
-  continuation passes each add a discovery read; which dominates was not isolated. At the default 500 ms
+  continuation passes each add a discovery read. `pg_stat_statements` over the idle ticks of a 2,000-approval
+  run (80 calls each, 0 rows returned) puts the collection discovery query at 14.8 ms per call and the loop
+  discovery query at 14.7 ms per call, against 7.3 ms for the approval-opening query and about 3 ms for the
+  next one: the two new passes are about half of a 59 to 75 ms idle tick. Both scan the pending root steps of
+  every run and read each run's stored document as JSON to find a `forEach` node; the 10,000-approval
+  population was not repeated under statement accounting. At the default 500 ms
   idle pause a replica would be busy for a whole interval at roughly 20,000 to 30,000 pending approvals if
   the growth stays linear (extrapolated, not measured).
 - **G467 — Three conformance scenarios failed once under host load and passed alone.** In the first full
