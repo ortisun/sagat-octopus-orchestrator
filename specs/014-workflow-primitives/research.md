@@ -1136,3 +1136,111 @@ Task clauses of T014-024 and the tests that prove them (the storage is `approval
   (`state`)?** It would turn G442 into a typed error at publication.
 - **O443 — Is anything outside this repository reading `workflow_approval_http_*`?** Nothing in the repository
   does (D446); restore them under a declared name if something does.
+
+## Decisions of the wait-entry continuation increment (D500+)
+
+Closes the open parts of T014-038: G372 (a continuation whose entrypoint is a `waitEvent`), G370 (a parent
+cancelled mid-chain in the five SDKs) and G371 (`RERUN_AS_NEW` in the SDKs); G375 is decided, not built.
+Evidence is in `tests/integration/workflow-primitives/chain_wait.rs`, the `wait`-chain tests at the end of
+`tests/fault/workflow-primitives/chains.rs`, `crates/infra-ir/tests/continuation.rs` and the scenarios
+`chain-root-wait`, `chain-cancel-parent` and `chain-rerun`.
+
+- **D500 — The successor of a wait-entry chain is created already waiting, in the hand-off transaction.** The
+  scheduler evaluates the entry node's correlation expression over the successor's input and state (a
+  `RunData` with no outputs), and `ContinuationSelection::with_correlation_key` carries the key to the write.
+  The write reads the definition's entrypoint and refuses a selection that does not match it
+  (`RuntimeNotIntegrated`: a key for an activity entry, or none for a wait). For a wait it inserts the run
+  `WAITING`, the entry step `WAITING/EVENT` with `due_at`, `event_type`, `correlation_key` and `event_since`
+  (the row the event dispatcher and the chain signal read: there is no separate subscription table), and
+  `wait.started` as the third journal event instead of `step.released`. No `task.ready` outbox row is written
+  (a wait is not a task). Everything else of the hand-off is unchanged (predecessor `SUCCEEDED`, lineage, quota,
+  audit, `run.continued` outbox). `a_continuation_that_starts_with_a_wait_hands_off_to_a_successor_that_already_waits`
+  pins the rows, the journal (`run.started`, `execution_chain.successor_linked`, `wait.started`) and the absence of
+  a hint; `the_store_refuses_a_selection_that_does_not_match_the_entry_the_definition_declares` pins the refusal.
+- **D501 — Published shapes: `waitEvent -> continueAsNew`, and `waitEvent -> condition -> continueAsNew | end`.**
+  Closed with a typed `Unsupported` at publication: `onTimeout`, a look-back above 0, declared state, a wait
+  followed by another wait, an activity, an approval or any extra node, and every other entry kind (the message
+  now says "an activity or an event wait"). Look-back stays closed on purpose: events are delivered per consumer
+  (`wait:{run}/{node}`), so a successor that looked back would be a new consumer of the very event that ended its
+  predecessor's wait and would be woken by it again. (`publishes_an_event_wait_entrypoint_followed_by_a_continuation_or_one_condition`,
+  `publication_keeps_every_other_wait_entrypoint_shape_closed_with_a_typed_refusal`.)
+- **D502 — The wait is measured from the write transaction's clock; the run keeps the chain's original deadline.**
+  `event_since` and the wait deadline use the `clock_timestamp()` read inside the write, not the scheduler's
+  earlier read, so an event admitted between the two is not older than the wait it finds. An event (or signal)
+  that arrived before the hand-off is not held back for the successor: it is not matched by a wait that does not
+  look back, which is the documented non-buffered rule
+  (`an_event_admitted_before_the_hand_off_does_not_wake_the_successor_and_one_after_does`); one admitted after it
+  finds the wait through the dispatcher's unscanned-wait scan. The brief for this increment said the deadline
+  written is the chain's original one; that is the run's `deadline_at`, which the successor inherits
+  (asserted equal to `execution_chains.original_deadline_at`). The wait's own deadline is the node's `timeoutMs`
+  from the hand-off, as for any wait. It is deliberately not capped at the chain's deadline: both would be due
+  at the same instant and the wait timeout (`FAILED`, `WAIT_TIMED_OUT`) would race the deadline pass
+  (`TIMED_OUT`); uncapped, the deadline is strictly earlier whenever it is the binding one
+  (`the_original_deadline_ends_a_waiting_successor_and_its_chain_as_timed_out`,
+  `the_wait_of_the_successor_times_out_by_its_own_timeout_like_any_other_wait`). See O500.
+- **D503 — A correlation expression that fails over the successor's input ends the chain, like a failing transfer
+  expression.** The scheduler reuses the continuation-expression path: the predecessor's run stops `FAILED` with
+  `EXPRESSION_ERROR`, the segment is `FINAL` and the chain `FAILED`, in one fenced transaction, and no successor
+  exists (`a_successor_whose_correlation_cannot_be_computed_ends_the_chain_with_a_typed_failure`).
+- **D504 — Signal and hand-off, both orders, are decided by the chain lock and never buffered.** At a boundary the
+  predecessor's wait is already satisfied, so a signal fenced to the old head is refused (`not waiting`) when it
+  is first and `CHAIN_HEAD_CHANGED` when the hand-off is first; one that names no head and queues behind the
+  hand-off reaches the wait the hand-off opened, once. Held locks, not sleeps (D482):
+  `a_signal_and_the_hand_off_of_a_wait_chain_commit_in_either_order_and_the_next_signal_is_not_lost`.
+  A hand-off that fails after it wrote the step row leaves no subscription and the retry writes exactly one
+  (`a_failed_hand_off_of_a_wait_chain_leaves_no_subscription_and_the_retry_writes_one`); after a restart a new
+  scheduler and a new dispatcher find the wait in the database and wake it once
+  (`a_restart_between_the_hand_off_and_the_event_still_wakes_the_successor_once`). A duplicate event id and a
+  replayed signal key wake the successor once (`a_duplicate_delivery_wakes_the_successor_once`).
+- **D505 — The SDK harness learned three things, all additive.** `list` takes `waitForCount` (list again until a
+  hand-off has produced that many runs in a status, the way `inspectChain` already waits for a head) and
+  `countOnly` (answer `{count}`): the ids of the first run of a child chain are derived from the parent's and
+  `GET /runs` orders by id, so a list of runs mixing them has no stable order across languages (the same cause as
+  D483). A step whose result has `newRunId` and no `runId` (a rerun) can be named by `run`. The goldens of every
+  earlier scenario are unchanged.
+- **D506 — G370 is closed by `chain-cancel-parent`.** The chain waits on an event the scenario publishes, so a
+  segment is held open without a sleep: one hand-off is awaited by counting `SUCCEEDED` runs, the parent is
+  cancelled while the second segment waits (`propagate`: the head is cancelled, the parent ends `CANCELLED`), and a
+  parent that `detach`es its chain is cancelled while the chain keeps going (an event still hands it off).
+  `request_cancel` has no SDK scenario (G502).
+- **D507 — G371 is closed: `RERUN_AS_NEW` is public, so the SDKs name it.** `operate` accepts the action,
+  `rerunAsNew(runId, reason, options)` is its shorthand (like `cancel`), `OperationResult.newRunId` is set only
+  for it and `Run.rerunOf` only for a rerun, in TypeScript, Python, Go, .NET and Java. Java and .NET keep the old
+  constructors/positional shapes, so nothing that compiled stops compiling. `chain-rerun` shows the rerun of a
+  continued segment as an unrelated run with a chain, a fresh deadline (`<chain-deadline:2>`) and `rerunOf`, a rerun
+  of a run that has not ended refused `CONFLICT`, and the original chain untouched. The command line gains
+  `workflow rerun <RUN> --reason <TEXT>` (exit 1 on 409); the Studio already had the operation.
+- **D508 — G375 is not built: `inspectChain` keeps returning every segment (at most 10,000 small entries).**
+  Bounding it by default changes the answer of every existing client with a long chain, and an opt-in `limit` /
+  `cursor` on the same route would duplicate `GET …/runs`, which is the paged read (D378). The OpenAPI description
+  of `inspectExecutionChain` now says so and points to it. Revisit if a client ever needs the head and the page in
+  one answer.
+
+### Gaps and owner questions of this increment
+
+- **G500 — The correlation key is not covered by the transfer digest.** The store checks the input and state
+  bytes against their digests under the locks, but it cannot evaluate the correlation expression, so it trusts
+  the key the fenced scheduler selected. Only the scheduler holds that fence, the key is journaled in
+  `wait.started`, and a wrong key would only make the wait unreachable (a deadline ends it), but the store does
+  not prove it.
+- **G501 — `MARK_MANUAL_REVIEW` has no SDK method either.** It has the same shape as `RERUN_AS_NEW` (an
+  `operate` action); it was not part of G371.
+- **G502 — A parent cancelled with `request_cancel` has no five-SDK scenario.** The behaviour (the parent waits
+  until the chain settles) is proved in Rust (`request_cancel_makes_the_parent_wait_until_the_child_chain_has_settled`).
+- **G503 — A wait-entry chain cannot use declared state, `onTimeout`, a look-back or a longer graph.** See O501.
+- **G504 — Pre-existing, seen while running the SDK suites.** `mypy` reports five errors in
+  `sdks/python/conformance/runner.py` (the `listChainRuns` code) and `ruff format --check` lists seven files, both
+  on the base commit too. The .NET test `Protocol14StreamsTwoFramesDispatchesBeforeEofAndCancelsTheIdleReceiveOnStop`
+  failed once in a full run on a loaded machine and passes alone (a timing assertion).
+- **G505 — An approval entrypoint (O441) is still closed.** The wait entry shows the pattern (open the step and
+  its durable row in the hand-off transaction); an approval additionally needs its request row and
+  `approval.opened` journaled the same way. Not started.
+- **O500 — Should the wait of a successor count its `timeoutMs` from the chain's start rather than from the
+  hand-off?** Recommendation: keep it (D502). The chain's own `timeoutMs` already bounds the whole process, and a
+  per-segment wait that counted from the chain start would make the wait of a late segment shorter than the
+  author wrote.
+- **O501 — Should a wait-entry chain accept `onTimeout` (to an `end`) and declared state?** Recommendation:
+  `onTimeout` to an `end`, yes, later: it is the natural way for an idle chain to finish `SUCCEEDED` instead of
+  `FAILED` with `WAIT_TIMED_OUT`, and it needs only a test that the routed `end` finalizes the chain. Declared
+  state is independent of the entry kind and could be allowed with the same state-transfer tests as the
+  activity shapes. Look-back stays closed (D501).
