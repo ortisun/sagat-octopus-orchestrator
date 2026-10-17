@@ -1518,3 +1518,86 @@ async fn a_delay_longer_than_the_loop_budget_waits_for_the_deadline_without_a_ti
     assert_eq!(public.usage().await, (0, 0));
     public.verify("a loop timed out before its delay").await;
 }
+
+/// A loop whose initial carry cannot be computed: `input.missing` is absent from the run input.
+fn unreadable_entry_document(name: &str, error: ErrorTarget) -> Value {
+    let mut document = shaped_loop_document(name, "while", None, 60_000, error);
+    document["nodes"][0]["initial"] = json!("input.missing");
+    document
+}
+
+#[tokio::test]
+async fn an_entry_expression_error_without_an_error_edge_still_fails_the_run() {
+    let public = start_public_loop(|name| unreadable_entry_document(name, ErrorTarget::None)).await;
+    let placement = acquire_scheduler(&public.api, "entry-no-edge").await;
+    let scheduler = scheduler(&public.api, placement);
+    public.tick_until_run(&scheduler, "FAILED").await;
+    let (_, reason, code) = public.run_state().await;
+    assert_eq!(
+        (reason.as_deref(), code.as_deref()),
+        (Some("FAILED"), Some("EXPRESSION_ERROR"))
+    );
+    public
+        .verify("an unreadable loop entry failed the run")
+        .await;
+}
+
+#[tokio::test]
+async fn an_entry_expression_error_follows_the_error_edge_to_an_end() {
+    let public = start_public_loop(|name| unreadable_entry_document(name, ErrorTarget::End)).await;
+    let placement = acquire_scheduler(&public.api, "entry-edge-end").await;
+    let scheduler = scheduler(&public.api, placement);
+    public.tick_until_run(&scheduler, "SUCCEEDED").await;
+    let (_, reason, code) = public.run_state().await;
+    assert_eq!(
+        (reason, code),
+        (None, None),
+        "the run was never asked to stop"
+    );
+    let owner: (String, bool, Option<String>) = sqlx::query_as(
+        "SELECT status,routed,failure_code FROM steps WHERE run_id=$1 AND node='poll'",
+    )
+    .bind(public.run.as_uuid())
+    .fetch_one(&public.api.db.pool)
+    .await
+    .expect("loop owner");
+    assert_eq!(
+        owner,
+        ("FAILED".into(), true, Some("EXPRESSION_ERROR".into()))
+    );
+    let scopes: i64 = sqlx::query_scalar("SELECT count(*) FROM loop_scopes WHERE run_id=$1")
+        .bind(public.run.as_uuid())
+        .fetch_one(&public.api.db.pool)
+        .await
+        .expect("loop scopes");
+    assert_eq!(scopes, 0, "no scope or iteration was ever created");
+    assert_eq!(public.usage().await.1, 0);
+    public
+        .verify("an unreadable loop entry took the error edge")
+        .await;
+}
+
+#[tokio::test]
+async fn an_entry_expression_error_follows_the_error_edge_to_a_recovery_activity() {
+    let mut public =
+        start_public_loop(|name| unreadable_entry_document(name, ErrorTarget::Activity)).await;
+    let placement = acquire_scheduler(&public.api, "entry-edge-activity").await;
+    let scheduler = scheduler(&public.api, placement);
+    for _ in 0..4 {
+        let report = scheduler.tick().await;
+        assert_eq!(report.failed, 0, "{report:?}");
+    }
+    let recovery = public.poll_one("recover.cleanup").await;
+    public.complete(&recovery, "{\"cleaned\":true}").await;
+    public.tick_until_run(&scheduler, "SUCCEEDED").await;
+    let owner: (String, Option<String>) =
+        sqlx::query_as("SELECT status,failure_code FROM steps WHERE run_id=$1 AND node='poll'")
+            .bind(public.run.as_uuid())
+            .fetch_one(&public.api.db.pool)
+            .await
+            .expect("loop owner");
+    assert_eq!(owner, ("FAILED".into(), Some("EXPRESSION_ERROR".into())));
+    public
+        .verify("an unreadable loop entry recovered by an activity")
+        .await;
+}

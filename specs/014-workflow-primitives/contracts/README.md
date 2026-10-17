@@ -123,7 +123,10 @@ protocol), it may chain to further activities and must end at an `end`, and it d
 `compensateWith`, `reconcileWith`, `irreversible` or `highRisk` of its own. An activity after a loop's
 success edge, or anywhere else in the root graph, stays unsupported.
 An expression error while evaluating the loop's initial carry or condition at entry happens before
-any iteration exists and still fails the run (pending decision G341 in `research.md`).
+any scope or iteration exists, so there is nothing to drain: when the loop declares `onError`, its
+pending owner fails with `EXPRESSION_ERROR` (the ordinary `step.failed` event) and the edge is taken
+in the same transaction, with the run never asked to stop (D401). A loop without `onError` still
+fails the run with `EXPRESSION_ERROR`.
 
 ### Bodies that compensate (T014-014..021, D380-D389)
 

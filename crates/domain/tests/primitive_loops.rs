@@ -6,7 +6,8 @@ use time::OffsetDateTime;
 use sagat_domain::execution::{
     AddressedRunEvent, ExecutionError, ExecutionInstanceId, FailureCode, InstancePath,
     LoopContinuation, LoopDrainReason, LoopKind, LoopOutcome, LoopPhase, Plan, RunEvent, RunId,
-    RunState, RunStatus, StepStatus, StopReason, lease_instance, plan, start_run,
+    RunState, RunStatus, StepStatus, StopReason, fail_unentered_loop, lease_instance, plan,
+    start_run,
 };
 use sagat_domain::identity::Slug;
 use sagat_domain::workflow::{
@@ -1142,4 +1143,122 @@ fn an_outer_cancel_before_the_loop_is_entered_cancels_its_owner() {
     });
     assert!(planned.contains(&RunEvent::StepCancelled { node: node("poll") }));
     assert_eq!(state.status(), RunStatus::Cancelled);
+}
+
+/// G341: the initial carry or condition of a loop cannot be computed. No scope or iteration exists,
+/// so the pending owner fails with the ordinary `step.failed` event and its edge is taken.
+#[test]
+fn an_unreadable_entry_fails_the_unentered_owner_and_takes_the_error_edge() {
+    let definition = definition_with_error_route(ErrorRoute::Activity);
+    let (mut state, _) = start_run(&definition, RunId::generate(), at(0)).expect("run starts");
+
+    let progress = fail_unentered_loop(
+        &definition,
+        &mut state,
+        &node("poll"),
+        FailureCode::expression_error(),
+        at(10),
+    )
+    .expect("the owner fails");
+    let kinds = progress
+        .events
+        .iter()
+        .map(|event| match event {
+            RunEvent::StepFailed { .. } => "failed",
+            RunEvent::StepRouted { .. } => "routed",
+            RunEvent::StepReleased { .. } => "released",
+            other => panic!("unexpected {other:?}"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(kinds, ["failed", "routed", "released"]);
+    let owner = state.step(&node("poll")).expect("owner");
+    assert_eq!(owner.status(), StepStatus::Failed);
+    assert_eq!(owner.failure(), Some(&FailureCode::expression_error()));
+    assert!(owner.routed());
+    assert_eq!(
+        state.step(&node("recover")).map(|step| step.status()),
+        Some(StepStatus::Ready)
+    );
+    assert_eq!(state.stop_reason(), None, "the run is never asked to stop");
+    assert!(state.loop_state(&loop_instance()).is_none());
+}
+
+#[test]
+fn an_unreadable_entry_to_an_end_finishes_the_run_succeeded_and_replays() {
+    let definition = definition_with_error_route(ErrorRoute::End);
+    let run = RunId::generate();
+    let (mut state, started) = start_run(&definition, run, at(0)).expect("run starts");
+    let progress = fail_unentered_loop(
+        &definition,
+        &mut state,
+        &node("poll"),
+        FailureCode::expression_error(),
+        at(10),
+    )
+    .expect("the owner fails");
+    assert_eq!(
+        progress.events.last(),
+        Some(&RunEvent::RunFinished {
+            status: RunStatus::Succeeded
+        })
+    );
+    assert!(state.is_finished());
+    let journal = started
+        .events
+        .iter()
+        .chain(progress.events.iter())
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(
+        RunState::replay(run, &journal).expect("the journal replays"),
+        state
+    );
+}
+
+#[test]
+fn only_a_pending_loop_with_an_error_edge_fails_before_entry() {
+    // No edge: the run stops instead.
+    let plain = definition(LoopKind::While);
+    let (mut state, _) = start_run(&plain, RunId::generate(), at(0)).expect("run starts");
+    assert!(matches!(
+        fail_unentered_loop(
+            &plain,
+            &mut state,
+            &node("poll"),
+            FailureCode::expression_error(),
+            at(10)
+        ),
+        Err(ExecutionError::Invariant(_))
+    ));
+    // Entered: the drain owns the failure.
+    let routed = definition_with_error_route(ErrorRoute::End);
+    let mut entered = start(LoopKind::While, 2, Some(true));
+    assert!(matches!(
+        fail_unentered_loop(
+            &routed,
+            &mut entered,
+            &node("poll"),
+            FailureCode::expression_error(),
+            at(10)
+        ),
+        Err(ExecutionError::Invariant(_))
+    ));
+    // Stopping: a stop in flight is never overwritten.
+    let (mut stopping, _) = start_run(&routed, RunId::generate(), at(0)).expect("run starts");
+    stopping
+        .apply(&RunEvent::RunStopRequested {
+            reason: StopReason::Cancelled,
+            code: None,
+        })
+        .expect("cancel");
+    assert_eq!(
+        fail_unentered_loop(
+            &routed,
+            &mut stopping,
+            &node("poll"),
+            FailureCode::expression_error(),
+            at(10)
+        ),
+        Err(ExecutionError::AlreadyStopping)
+    );
 }
