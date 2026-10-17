@@ -383,11 +383,13 @@ runs. Publication checks enabled capabilities; the API version alone does not se
   separately approved dependent delivery; the runtime journal remains the source of graph truth.
 - First native approval release supports one eligible decision, not quorum or delegation. Query and
   Update use declared expressions over persisted state, not arbitrary language callbacks.
-- Pending decisions, not settled by this document: the value-disclosure decision for Query/Update
-  results (refines ADR-0028); the compensation rule for iterations (refines ADR-0005); the role
-  grants of the new permissions; whether workflow nodes may assign declared state and whether a
-  node may wait on a state predicate (neither exists in the first increment). The product choices
-  made while specifying are listed for confirmation in [research.md](./research.md#product-decisions-to-confirm).
+- Settled on 2026-10-14: the value-disclosure policy for Query/Update results (ADR-0031, refining
+  ADR-0028), the compensation rule for iterations and the role grants of the new permissions
+  (ADR-0030, refining ADR-0005) and the additive v1 IR (ADR-0032). The bounded product defaults are
+  listed in [research.md](./research.md#accepted-bounded-product-decisions). Accepting them proves no
+  runtime behavior; each primitive still needs its release evidence in `tasks.md`.
+- Still pending, outside the first increment: whether workflow nodes may assign declared state and
+  whether a node may wait on a state predicate (neither exists today).
 - Loops and fanout operate on bounded captured data; streaming/infinite iterators are out of scope.
 - Automatic migration to a new definition, arbitrary procedural replay, external exactly-once effects,
   distributed/multi-region execution and automatic history deletion are out of scope. Explicit

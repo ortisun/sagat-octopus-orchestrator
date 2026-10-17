@@ -1259,3 +1259,57 @@ unknown-node card tests passed 76/76 across `RunNodeCard` and `RunDetailPage`. T
 projection task remains open: this evidence covers unknown journal events, but does not prove
 that every future definition node kind has an explicit unsupported representation in telemetry.
 Rust formatting, focused Clippy with denied warnings and `git diff --check` passed.
+
+## Declared-operation telemetry, published hints and terminal deliveries (2026-10-16)
+
+**Declared Query/Update telemetry (T014-009).** The endpoints recorded an ad hoc
+`workflow_declared_operations_total` counter and no primitive span, although `contracts/README.md`
+§6 names `workflow.query`/`workflow.update` spans, `workflow_operation_duration_seconds{kind,outcome}`
+and `workflow_primitive_rejections_total{kind,code}`. The handlers in
+`crates/api-http/src/routes/declared_operations.rs` now open the contracted span under the request
+span and record the contracted series; outcomes come from `WorkflowPrimitiveOutcome` (`succeeded`,
+`applied`, `rejected`, `failed`) and codes from `WorkflowPrimitiveRejectionCode::from_reason`, so a
+`details.reason` outside the closed set cannot become a label. The ad hoc counter is gone; no
+dashboard, alert or document referenced it. `tests/integration/workflow-primitives/observability.rs`
+adds three real HTTP/PostgreSQL tests: spans received by the test OTLP collector carry only the
+four closed attributes and hang from their request span; every primitive series on the metrics page
+has only contracted label keys and closed values, and neither the page nor any span contains the
+operation name, a secret-shaped update key, the run or the tenant; the query access audit carries
+the caller's trace id and an error body has a distinct request id; a failed audit insert fails both
+Query and Update closed with `INTERNAL`, no evaluated value, and no state, receipt, journal or outbox
+change.
+
+**Two runs finished without telling their subscribers.** A run whose loop is followed by `end`
+was finished through the loop hint helper, which wrote `run.finished` with an extra `node` field
+and never called `outbound::fan_out`; webhook and broker subscribers of `run.finished` received
+nothing. `finalize_chain` had the same omission (no production caller yet) and wrote
+`chain.finished` without `traceId`. New tests failed on the previous code with 0 deliveries
+(`loop_progress::a_run_finished_by_its_loop_is_delivered_to_run_finished_subscribers`,
+`chain_progress::final_head_is_delivered_to_run_finished_subscribers_once`) and pass now: both
+paths use the documented RunFinished hint plus the fan-out in the same transaction, keeping the
+command's outbox id so replay stays idempotent.
+
+**Published hints against the contract (T014-006, AsyncAPI part).** The outbox published 15
+event types that `events.asyncapi.yaml` did not document. The document (0.2.0 → 0.3.0, additive)
+now has a channel and message for each, `TaskReady.instancePath` is documented as optional, and
+`loop.timer.scheduled` gained the `tenantId`/`namespaceId` every other hint carries. The baseline
+was regenerated and compared with the previous one: no property, type or enum value was removed
+(8 → 19 messages). `@asyncapi/cli@3.6.0 validate` reports the document valid (one pre-existing
+informational note). `tests/integration/workflow-primitives/hint_contract.rs` validates every
+`event_outbox` row of 11 scenarios (loops, collections, approvals, chains, declared updates)
+against its documented message and rejects undocumented properties; it first caught a test-seeded
+conflict row, which is now excluded explicitly. The worker 1.5 proto and OpenAPI parts of T014-006
+are unchanged, so the task stays open.
+
+| Command (`DOCKER_HOST` = Colima, real PostgreSQL) | Result |
+|---|---|
+| `cargo test -p sagat-telemetry -p sagat-api-http -p sagat-infra-postgres -p sagat-scheduler --locked` | all passed |
+| `cargo test -p sagat-tests --test contract_workflow_primitives --locked` | 27/27 |
+| `cargo test -p sagat-tests --test contract_asyncapi_events_webhooks_messaging --locked` | 4/4 |
+| `cargo test -p sagat-tests --test integration_workflow_primitives --locked -- --test-threads=2` | 144/144 |
+| `cargo test -p sagat-tests --test fault_workflow_primitives --locked -- --test-threads=2` | 25/25 |
+| `cargo clippy -p sagat-infra-postgres -p sagat-api-http -p sagat-telemetry -p sagat-tests --all-targets --locked -- -D warnings`, `cargo fmt --all -- --check` | clean |
+
+Not run here: the five-SDK conformance matrix (the SDKs did not change), Compose smoke and the
+dependency advisory audit. The `chain.started` journal event is still written without the run's
+trace id (`chain_progress.rs`, `initialize_chain_in_transaction`); recorded, not changed.

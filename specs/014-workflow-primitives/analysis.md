@@ -4,6 +4,10 @@ Date: 2026-10-14. Two reviews: a read-only consistency review of the feature's o
 a validation of those documents against the codebase, accepted ADRs and canonical contracts. This is
 a design and delivery review, not evidence of future primitive runtime behavior.
 
+The counts and statuses below are a snapshot of 2026-10-14. Since then ADR-0030/0031/0032 settled
+the disclosure, iteration-compensation and role-grant decisions, and more tasks closed with
+evidence; `tasks.md` is the current status.
+
 ## Result
 
 | Measure | Result |

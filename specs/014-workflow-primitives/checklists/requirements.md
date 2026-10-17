@@ -32,14 +32,18 @@
 - [x] Tenant/RBAC/secret protection, OTel, typed errors and authorization replay are specified.
 - [x] Five-language common fixtures and crash/duplicate/race/compensation/restart coverage are planned.
 - [x] Same-version continuation, old-run addressing, explicit chain operations and child semantics agree.
-- [x] All proposed engine/SDK/API implementation and release gates remain unchecked in `tasks.md`.
+- [x] An engine/SDK/API implementation or release task in `tasks.md` is checked only with its named evidence.
 
 ## Open implementation gates
 
-- [ ] Accept and number the proposed ADR and dependency contract changes before engine implementation,
+- [x] Accept and number the proposed ADR and dependency contract changes before engine implementation,
   including the iteration compensation rule (ADR-0005) and the new permissions' role grants.
-- [ ] Accept a value-disclosure decision refining ADR-0028 before releasing Query/Update (US06).
-- [ ] Confirm the product decisions listed in `research.md` (Product decisions to confirm).
+  _ADR-0030 and ADR-0032 (accepted 2026-10-14); T014-002._
+- [x] Accept a value-disclosure decision refining ADR-0028 before releasing Query/Update (US06).
+  _ADR-0031 (accepted 2026-10-14)._
+- [x] Confirm the product decisions listed in `research.md`.
+  _Adopted as the bounded defaults in `research.md` (Accepted bounded product decisions) through
+  ADR-0030/0031/0032; their runtime evidence is still required._
 - [ ] Implement and validate versioned canonical schemas, storage and runtime primitives.
 - [ ] Execute new fault/security/compatibility/performance suites and all-five primitive conformance.
 
