@@ -31,6 +31,7 @@ pub mod managed_secrets;
 pub mod operation_evaluation;
 pub mod operations;
 pub mod outbound;
+pub mod payload_disclosure;
 pub mod payloads;
 pub mod primitives;
 pub mod publishing;
