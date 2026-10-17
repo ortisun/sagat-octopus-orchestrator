@@ -10,6 +10,7 @@ pub use payload_projection::JsonPayloadProjector;
 mod canonical;
 mod convert;
 pub mod cron;
+mod database;
 mod diff;
 mod evaluator;
 mod schema;
@@ -80,6 +81,16 @@ fn expression_error(node: &str, field: &'static str, error: impl ToString) -> Ir
 fn check_expressions(definition: &WorkflowDefinition) -> Result<(), IrError> {
     for node in definition.nodes() {
         let id = node.id().as_str();
+        if let Some(operation) = node.database_operation() {
+            for parameter in operation.parameters() {
+                if let sagat_domain::database::Parameter::Expression { expression, .. } = parameter
+                {
+                    Compiled::compile(expression.as_str()).map_err(|_| {
+                        expression_error(id, "parameters", "invalid database parameter expression")
+                    })?;
+                }
+            }
+        }
         match node.kind() {
             NodeKind::Condition { expression, .. } => {
                 Compiled::compile(expression.as_str())

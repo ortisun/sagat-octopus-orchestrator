@@ -53,3 +53,11 @@ Final checkpoint rerun: both feature tests passed, including current-role metada
 - Screenshots were generated under `frontend/e2e/test-results/database-connections-*/` and visually inspected at 320 and 1440. The first view showed an unnecessarily tall form; the final layout groups target and credential fields and collapses optional CA settings. The browser test passed again after that change.
 
 The separate browser harness sets `STUDIO_DATABASE_CONNECTIONS=1`; the existing workflow-only harness does not discover this journey because it does not start OpenBao. CI wiring of the complete feature remains T017-025. Probe, database workflow steps, ad hoc execution, result view and five-SDK support remain pending.
+# Managed database IR checkpoint — 2026-10-17
+
+- `cargo test -p sagat-infra-ir -p sagat-domain --tests`: 383 passed, 0 failed, 0 ignored across 20 targets; then `cargo test -p sagat-domain --test database_connections`: 4 passed after adding cache-weight/policy-mutation coverage (one additional test).
+- `cargo clippy -p sagat-domain -p sagat-application -p sagat-infra-ir --lib -- -D warnings`: passed.
+- `python3 scripts/check-architecture.py`, `cargo fmt --all`, `git diff --check`: passed.
+- Initial red tests rejected the unsupported database node and exposed ordinary reserved-activity forgery. Both pass with the typed node metadata and domain guard. Six IR tests cover lossless values/shared fixture, write safety overrides, reserved names, canary redaction, expression syntax, UTF-8 byte ceilings and invalid tagged values.
+- Domain cache weight includes SQL/parameter bytes. Writes carry existing high-risk/irreversible semantics and one attempt. No SQL or network operation executes in the codec/domain. Ordinary leasing explicitly excludes managed nodes; dedicated admission/executor capability work remains T017-012..017, and five-SDK consumption remains T017-018..019.
+

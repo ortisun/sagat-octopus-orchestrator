@@ -23,6 +23,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::time::Duration;
 
+use crate::database::{
+    DatabaseOperation, MANAGED_DATABASE_ACTIVITY, MANAGED_DATABASE_PREFIX, OperationKind,
+};
 use crate::identity::{Slug, clip};
 use crate::saga::{EffectPolicy, NodeOrigin, OnCompensationFailure, SagaCancelPolicy};
 use crate::secrets::{MAX_DECLARED_SECRETS, SecretName};
@@ -55,6 +58,8 @@ const MAX_EXPRESSION_LEN: usize = 2048;
 /// Typed errors of the definition model. Messages echo at most a clipped fragment of the input.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum WorkflowError {
+    #[error("invalid managed database node or reserved activity name")]
+    InvalidDatabaseNode,
     #[error("invalid node id '{0}'")]
     InvalidNodeId(String),
     #[error("invalid activity name '{0}'")]
@@ -657,6 +662,7 @@ pub struct Node {
     timeout: Option<Duration>,
     effect: EffectPolicy,
     origin: NodeOrigin,
+    database: Option<DatabaseOperation>,
 }
 
 impl Node {
@@ -670,7 +676,41 @@ impl Node {
             timeout: None,
             effect: EffectPolicy::NONE,
             origin: NodeOrigin::Declared,
+            database: None,
         }
+    }
+
+    /// Managed operations always use one attempt. An ambiguous write requires manual review.
+    #[must_use]
+    pub fn database(id: NodeId, operation: DatabaseOperation) -> Self {
+        let effect = if operation.kind == OperationKind::Execute {
+            EffectPolicy {
+                high_risk: true,
+                irreversible: true,
+                ..EffectPolicy::NONE
+            }
+        } else {
+            EffectPolicy::NONE
+        };
+        let mut node = Self::new(
+            id,
+            NodeKind::Activity {
+                activity: ActivityName(MANAGED_DATABASE_ACTIVITY.to_owned()),
+                retry: RetryPolicy::no_retry(),
+                compensate_with: None,
+                reconcile_with: None,
+                idempotency_template: None,
+                secrets: Vec::new(),
+            },
+        )
+        .with_effect(effect);
+        node.database = Some(operation);
+        node
+    }
+
+    #[must_use]
+    pub const fn database_operation(&self) -> Option<&DatabaseOperation> {
+        self.database.as_ref()
     }
 
     /// What the author says about the effect of this activity (irreversible, high risk, how its
@@ -1027,6 +1067,12 @@ impl WorkflowDefinition {
         let saga_entries: usize = self.saga_regions.values().map(BTreeSet::len).sum();
         4096 + self.nodes.len() * PER_NODE
             + (region_entries + saga_entries + self.scopes.len()) * PER_REGION_ENTRY
+            + self
+                .nodes
+                .values()
+                .filter_map(Node::database_operation)
+                .map(DatabaseOperation::footprint)
+                .sum::<usize>()
     }
 
     #[must_use]
@@ -1124,6 +1170,49 @@ fn duration_in_range(
 }
 
 fn check_node(node: &Node) -> Result<(), WorkflowError> {
+    if let NodeKind::Activity {
+        activity,
+        compensate_with,
+        reconcile_with,
+        retry,
+        secrets,
+        idempotency_template,
+    } = &node.kind
+    {
+        let reserved = |a: &ActivityName| a.as_str().starts_with(MANAGED_DATABASE_PREFIX);
+        if compensate_with.as_ref().is_some_and(reserved)
+            || reconcile_with.as_ref().is_some_and(reserved)
+            || (reserved(activity) && node.database.is_none())
+        {
+            return Err(WorkflowError::InvalidDatabaseNode);
+        }
+        if let Some(operation) = &node.database {
+            operation
+                .validate()
+                .map_err(|_| WorkflowError::InvalidDatabaseNode)?;
+            let expected = if operation.kind == OperationKind::Execute {
+                EffectPolicy {
+                    high_risk: true,
+                    irreversible: true,
+                    ..EffectPolicy::NONE
+                }
+            } else {
+                EffectPolicy::NONE
+            };
+            if activity.as_str() != MANAGED_DATABASE_ACTIVITY
+                || *retry != RetryPolicy::no_retry()
+                || !secrets.is_empty()
+                || compensate_with.is_some()
+                || reconcile_with.is_some()
+                || idempotency_template.is_some()
+                || node.effect != expected
+            {
+                return Err(WorkflowError::InvalidDatabaseNode);
+            }
+        }
+    } else if node.database.is_some() {
+        return Err(WorkflowError::InvalidDatabaseNode);
+    }
     if let Some(timeout) = node.timeout {
         duration_in_range(&node.id, "timeout", timeout)?;
     }

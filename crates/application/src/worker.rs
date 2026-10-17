@@ -801,6 +801,11 @@ where
                 .filter(|(_, step)| step.status() == StepStatus::Ready)
                 .filter_map(|(node, _)| {
                     let n = def.node(node)?;
+                    // T017-013 opens this path only for the dedicated managed executor, under a
+                    // current-role/capability fence. Ordinary sessions cannot lease this IR type.
+                    if n.database_operation().is_some() {
+                        return None;
+                    }
                     match n.kind() {
                         NodeKind::Activity { activity, .. }
                             if session.activities.iter().any(|a| a == activity.as_str()) =>

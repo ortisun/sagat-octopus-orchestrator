@@ -379,7 +379,12 @@ pub(crate) fn definition(document: &Value) -> Result<WorkflowDefinition, IrError
                 reason,
             });
         }
-        let mut built = Node::new(node_id(id, &format!("{at}/id"))?, kind_of(node, kind, &at)?);
+        let id = node_id(id, &format!("{at}/id"))?;
+        let mut built = if kind == "database" {
+            Node::database(id, crate::database::operation(node, &at)?)
+        } else {
+            Node::new(id, kind_of(node, kind, &at)?)
+        };
         if let Some(next) = reference(node, "next", &at)? {
             built = built.with_next(next);
         }

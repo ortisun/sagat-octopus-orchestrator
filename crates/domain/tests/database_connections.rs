@@ -136,3 +136,47 @@ fn operation_content_is_bounded_and_never_in_debug_or_validation_errors() {
             .is_ok()
     );
 }
+
+#[test]
+fn managed_node_policies_and_cache_weight_cannot_be_bypassed() {
+    use sagat_domain::{
+        saga::EffectPolicy,
+        workflow::{Node, NodeId, WorkflowDefinition},
+    };
+    let build = |node| {
+        WorkflowDefinition::new(
+            Slug::parse("database-flow").expect("name"),
+            NodeId::parse("query").expect("id"),
+            vec![node],
+        )
+    };
+    let make = |size| {
+        Node::database(
+            NodeId::parse("query").expect("id"),
+            operation(&"x".repeat(size), vec![], DatabaseLimits::default()).expect("operation"),
+        )
+    };
+    let small = build(make(10)).expect("small");
+    let large = build(make(10_010)).expect("large");
+    assert_eq!(large.footprint() - small.footprint(), 10_000);
+    let mut write = operation(
+        "UPDATE orders SET done = true",
+        vec![],
+        DatabaseLimits::default(),
+    )
+    .expect("operation");
+    write.kind = OperationKind::Execute;
+    let node = Node::database(NodeId::parse("query").expect("id"), write);
+    assert!(build(node.clone()).is_ok());
+    assert!(build(node.with_effect(EffectPolicy::NONE)).is_err());
+    let mut operation =
+        operation("SELECT 1", vec![], DatabaseLimits::default()).expect("operation");
+    operation.limits.max_rows = 0;
+    assert!(
+        build(Node::database(
+            NodeId::parse("query").expect("id"),
+            operation
+        ))
+        .is_err()
+    );
+}

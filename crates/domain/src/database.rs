@@ -8,6 +8,7 @@ uuid_id!(
 );
 
 pub const MANAGED_DATABASE_ACTIVITY: &str = "sagat.database.postgresql";
+pub const MANAGED_DATABASE_PREFIX: &str = "sagat.database.";
 pub const MAX_CONNECTIONS: u32 = 1000;
 pub const DEFAULT_CONNECTIONS: u32 = 100;
 
@@ -333,10 +334,28 @@ fn decimal(s: &str, fractional: bool) -> bool {
         }
 }
 
+/// An expression declares its wire type, so SDK number conventions cannot change a binding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DatabaseType {
+    Null,
+    Boolean,
+    Integer,
+    Decimal,
+    Float,
+    Text,
+    Timestamp,
+    Date,
+    Binary,
+    Json,
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub enum Parameter {
     Literal(TypedValue),
-    Expression(Expression),
+    Expression {
+        value_type: DatabaseType,
+        expression: Expression,
+    },
 }
 impl fmt::Debug for Parameter {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -368,46 +387,65 @@ impl DatabaseOperation {
         parameters: Vec<Parameter>,
         limits: DatabaseLimits,
     ) -> Result<Self, DatabaseError> {
-        limits.validate()?;
-        if connection.revision == Some(0) {
-            return Err(DatabaseError::InvalidRevision);
-        }
-        if statement.trim().is_empty()
-            || statement.len() > limits.max_statement_bytes as usize
-            || statement.contains('\0')
-        {
-            return Err(DatabaseError::InvalidStatement);
-        }
-        let mut bytes = 0_usize;
-        for parameter in &parameters {
-            let length = match parameter {
-                Parameter::Literal(value) => {
-                    value.validate()?;
-                    value.byte_len()
-                }
-                Parameter::Expression(expression) => expression.as_str().len(),
-            };
-            bytes = bytes
-                .checked_add(length)
-                .ok_or(DatabaseError::ParameterLimit)?;
-        }
-        if parameters.len() > limits.max_parameters as usize
-            || bytes > limits.max_parameter_bytes as usize
-        {
-            return Err(DatabaseError::ParameterLimit);
-        }
-        Ok(Self {
+        let operation = Self {
             connection,
             kind,
             statement: statement.to_owned(),
             parameters,
             limits,
-        })
+        };
+        operation.validate()?;
+        Ok(operation)
+    }
+    pub fn validate(&self) -> Result<(), DatabaseError> {
+        self.limits.validate()?;
+        if self.connection.revision == Some(0) {
+            return Err(DatabaseError::InvalidRevision);
+        }
+        if self.statement.trim().is_empty()
+            || self.statement.len() > self.limits.max_statement_bytes as usize
+            || self.statement.contains('\0')
+        {
+            return Err(DatabaseError::InvalidStatement);
+        }
+        let mut bytes = 0_usize;
+        for parameter in &self.parameters {
+            let length = match parameter {
+                Parameter::Literal(value) => {
+                    value.validate()?;
+                    value.byte_len()
+                }
+                Parameter::Expression { expression, .. } => expression.as_str().len(),
+            };
+            bytes = bytes
+                .checked_add(length)
+                .ok_or(DatabaseError::ParameterLimit)?;
+        }
+        if self.parameters.len() > self.limits.max_parameters as usize
+            || bytes > self.limits.max_parameter_bytes as usize
+        {
+            return Err(DatabaseError::ParameterLimit);
+        }
+        Ok(())
     }
     pub fn statement(&self) -> &str {
         &self.statement
     }
     pub fn parameters(&self) -> &[Parameter] {
         &self.parameters
+    }
+    pub fn footprint(&self) -> usize {
+        self.statement.len()
+            + self
+                .parameters
+                .iter()
+                .map(|p| {
+                    std::mem::size_of::<Parameter>()
+                        + match p {
+                            Parameter::Literal(value) => value.byte_len(),
+                            Parameter::Expression { expression, .. } => expression.as_str().len(),
+                        }
+                })
+                .sum::<usize>()
     }
 }
