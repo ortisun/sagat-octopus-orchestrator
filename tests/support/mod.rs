@@ -94,8 +94,19 @@ async fn start_server() -> Server {
             admin_url,
         };
     }
+    // `pg_stat_statements` is preloaded so that a test can count the rows and buffers a statement
+    // touched (the work-per-transition assertions of the performance target, G461). It records
+    // nothing until a database creates the extension.
     let container = Postgres::default()
         .with_tag("16-alpine")
+        .with_cmd([
+            "-c",
+            "shared_preload_libraries=pg_stat_statements",
+            "-c",
+            "pg_stat_statements.track=all",
+            "-c",
+            "pg_stat_statements.max=10000",
+        ])
         .start()
         .await
         .expect("start PostgreSQL (is Docker running? or set SAGAT_TEST_DATABASE_URL)");

@@ -293,20 +293,16 @@ async fn measure_sequential_loops() {
     }
 }
 
-/// RED (G461). The same property for sequential loops: the work of one iteration transition must
-/// not depend on the number of iterations already done. Today it grows by about five rows per
-/// completed iteration.
-#[tokio::test]
-#[ignore = "RED (G461): loop transition reads O(iterations) rows; run with --ignored to see it fail"]
-async fn red_loop_transition_rows_do_not_grow_with_progress() {
-    let iterations = 160;
+/// Drives a sequential loop of `iterations` to its end through the production transition and
+/// returns what the database did for every checkpoint.
+pub async fn probe_loop(iterations: usize) -> Vec<Probe> {
     let p = platform().await;
     super::collections::open_tenant_capacity(&p, 16).await;
     let tenant = p.world.admin.tenant_id();
     let (workflow, _) = p
         .world
         .publish(loop_document(
-            &format!("perf-red-loop-{}", Uuid::now_v7()),
+            &format!("perf-flat-loop-{}", Uuid::now_v7()),
             iterations,
             None,
         ))
@@ -326,11 +322,14 @@ async fn red_loop_transition_rows_do_not_grow_with_progress() {
         }
         let before = statements(&p.world).await.expect("statements");
         let at = Instant::now();
-        let outcome = p
-            .scheduler
-            .advance_loop(tenant, run, &owner, None)
-            .await
-            .expect("transition");
+        let outcome = if super::collections::reference_path() {
+            p.scheduler
+                .advance_loop_from_run(tenant, run, &owner, None)
+                .await
+        } else {
+            p.scheduler.advance_loop(tenant, run, &owner, None).await
+        }
+        .expect("transition");
         let elapsed = at.elapsed();
         let cost = statements(&p.world).await.expect("statements") - before;
         match outcome {
@@ -357,9 +356,45 @@ async fn red_loop_transition_rows_do_not_grow_with_progress() {
             other => panic!("unexpected {other:?}"),
         }
     }
+    p.world.assert_consistent(run).await;
+    probes
+}
+
+/// G461. The same property for sequential loops: the work of one iteration transition must not
+/// depend on the number of iterations already done. Before the fix it grew by about five rows per
+/// completed iteration (91 -> 841 over 160 iterations).
+#[tokio::test]
+async fn red_loop_transition_rows_do_not_grow_with_progress() {
+    let iterations = 160;
+    let probes = probe_loop(iterations).await;
     let (early, late) = early_late_rows(&probes, 10).expect("enough probes");
     assert!(
         late <= early * 2,
         "rows per transition grew from {early} (first ten) to {late} (last ten) over {iterations} iterations"
     );
+}
+
+/// G461, across sizes (see `collection_transition_cost_is_flat_across_sizes`).
+#[tokio::test]
+async fn loop_transition_cost_is_flat_across_sizes() {
+    let mut late = Vec::new();
+    for iterations in [160, 320, 640] {
+        let probes = probe_loop(iterations).await;
+        let (rows, buffers) = super::collections::late_cost(&probes);
+        eprintln!(
+            "loop of {iterations}: median late transition reads {rows} rows, {buffers} buffers"
+        );
+        late.push((iterations, rows, buffers));
+    }
+    let (_, base_rows, base_buffers) = late[0];
+    for (iterations, rows, buffers) in &late[1..] {
+        assert!(
+            *rows <= base_rows + base_rows / 5 + 4,
+            "rows per transition grew with the size: {base_rows} at 160, {rows} at {iterations}"
+        );
+        assert!(
+            *buffers <= base_buffers + base_buffers / 3 + 40,
+            "buffer accesses per transition grew with the size: {base_buffers} at 160, {buffers} at {iterations}"
+        );
+    }
 }

@@ -32,6 +32,11 @@ pub struct Platform {
 
 pub async fn platform() -> Platform {
     let world = world().await;
+    // Statement accounting needs the extension in this database; a server that does not preload
+    // it refuses, and `statements` then reports it as unavailable.
+    let _ = sqlx::query("CREATE EXTENSION IF NOT EXISTS pg_stat_statements")
+        .execute(&world.db.pool)
+        .await;
     let store =
         PgRunStore::new(world.db.pool.clone(), world.cache.clone()).with_scoped_worker_protocol();
     let workers = WorkerService::new(
