@@ -349,6 +349,7 @@ error codes.
 | Situation | Durable failure code | API `code` (HTTP) | `details.reason` | Retryable |
 | --- | --- | --- | --- | --- |
 | IR version/kind/worker capability unavailable | — | `VALIDATION_FAILED` (422) | `UNSUPPORTED_NODE` (existing) | false |
+| Combination accepted by the design whose prerequisite is not built (an approval in a collection or loop body, D295) | — | `VALIDATION_FAILED` (422) | `UNSUPPORTED_NODE` (existing), plus `details.dependency` = `SCOPED_COMPENSATION`, `details.node`, `details.kind` | false |
 | Cycle, escape, overlap, illegal continuation location, recursive body | — | `VALIDATION_FAILED` (422) | `INVALID_SCOPE` | false |
 | Next work exceeds a declared hard budget | `ITERATION_LIMIT` / `INSTANCE_LIMIT` / `CHAIN_LIMIT` | command: `QUOTA_EXCEEDED` (429) with `details.limit` | — | false |
 | Existing byte/context bound exceeded | `RUN_DATA_LIMIT` (existing) | command body too large: `BAD_REQUEST` (413) with `PAYLOAD_TOO_LARGE`; run's retained data would exceed: `QUOTA_EXCEEDED` (429) with `details.limit`, as signals do today | existing | false |

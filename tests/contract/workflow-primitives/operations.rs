@@ -113,10 +113,9 @@ fn explicit_disclosure_is_typed_and_the_bounded_runtime_slice_is_publishable() {
         {"id": "rejected", "type": "end"},
         {"id": "expired", "type": "end"}
     ]);
-    assert!(matches!(
-        JsonIrCodec.parse(structured.to_string().as_bytes()),
-        Err(IrError::Unsupported { kind, .. }) if kind == "approval"
-    ));
+    JsonIrCodec
+        .parse(structured.to_string().as_bytes())
+        .expect("declared state combines with a native approval (D295)");
 }
 
 #[test]

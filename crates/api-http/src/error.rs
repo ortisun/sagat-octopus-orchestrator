@@ -789,6 +789,14 @@ fn definition_details(error: &IrError) -> Value {
         IrError::Unsupported { node, kind, .. } => {
             json!({ "reason": "UNSUPPORTED_NODE", "node": node, "kind": kind })
         }
+        IrError::Pending {
+            node,
+            kind,
+            dependency,
+            ..
+        } => {
+            json!({ "reason": "UNSUPPORTED_NODE", "node": node, "kind": kind, "dependency": dependency })
+        }
         IrError::UnsupportedDeclaration { field, .. } => {
             json!({ "reason": "UNSUPPORTED_NODE", "path": format!("/{field}") })
         }

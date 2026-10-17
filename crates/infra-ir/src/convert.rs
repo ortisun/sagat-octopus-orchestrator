@@ -555,6 +555,13 @@ pub(crate) fn definition(document: &Value) -> Result<WorkflowDefinition, IrError
             });
         }
     }
+    root_graph_definition(document)
+}
+
+/// The root graph of a document without bodies: the legacy graph, or the structured one when an
+/// approval is declared. An approval and a `parallel` stay apart; every other primitive is gated by
+/// the caller.
+fn root_graph_definition(document: &Value) -> Result<WorkflowDefinition, IrError> {
     let limits = document_limits(document)?;
     let (name, entrypoint) = identity(document)?;
     let nodes = root_nodes(document, false)?;
@@ -583,6 +590,9 @@ pub(crate) fn definition(document: &Value) -> Result<WorkflowDefinition, IrError
         .map_err(IrError::Invalid)
 }
 
+/// A published document with declared state. An approval may be declared beside the state
+/// (decision D295): the state is read and updated by the declared operations while the request is
+/// open, and neither the decision nor its route reads or writes it.
 pub(crate) fn published_declared_state_definition(
     document: &Value,
 ) -> Result<WorkflowDefinition, IrError> {
@@ -594,34 +604,7 @@ pub(crate) fn published_declared_state_definition(
             });
         }
     }
-    let limits = document_limits(document)?;
-    if let Some(node) = document
-        .get("nodes")
-        .and_then(Value::as_array)
-        .and_then(|nodes| {
-            nodes
-                .iter()
-                .find(|node| node.get("type").and_then(Value::as_str) == Some("approval"))
-        })
-    {
-        return Err(IrError::Unsupported {
-            node: node
-                .get("id")
-                .and_then(Value::as_str)
-                .unwrap_or("approval")
-                .chars()
-                .take(64)
-                .collect(),
-            kind: "approval".into(),
-            reason: "declared state and approval are not enabled together",
-        });
-    }
-    let (name, entrypoint) = identity(document)?;
-    let nodes = root_nodes(document, false)?;
-    WorkflowDefinition::new(name, entrypoint, nodes)
-        .and_then(|definition| definition.with_limits(limits))
-        .and_then(|definition| definition.with_triggers(triggers(document)?))
-        .map_err(IrError::Invalid)
+    root_graph_definition(document)
 }
 
 pub(crate) fn structured_definition(document: &Value) -> Result<WorkflowDefinition, IrError> {
@@ -671,6 +654,31 @@ fn is_activity_chain(body: &sagat_domain::workflow::BodyDefinition, limit: usize
     activities >= 1 && activities + 1 == declared
 }
 
+/// The first approval a document declares inside a named body, if any. An approval in an iteration
+/// needs the iteration's scoped compensation to settle (decision D295), so publication names that
+/// dependency before it looks at the body's shape.
+fn approval_in_a_body(document: &Value) -> Option<IrError> {
+    let bodies = document.get("bodies")?.as_object()?;
+    bodies.values().find_map(|body| {
+        body.get("nodes")?.as_array()?.iter().find_map(|node| {
+            (node.get("type").and_then(Value::as_str) == Some("approval")).then(|| {
+                IrError::Pending {
+                    node: node
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("approval")
+                        .chars()
+                        .take(64)
+                        .collect(),
+                    kind: "approval".into(),
+                    dependency: "SCOPED_COMPENSATION",
+                    reason: "approvals inside collection and loop bodies wait for scoped compensation (D295)",
+                }
+            })
+        })
+    })
+}
+
 pub(crate) fn published_collection_definition(
     document: &Value,
 ) -> Result<WorkflowDefinition, IrError> {
@@ -685,6 +693,9 @@ pub(crate) fn published_collection_definition(
             field: "triggers",
             reason: "triggered collections are not enabled by the runtime",
         });
+    }
+    if let Some(pending) = approval_in_a_body(document) {
+        return Err(pending);
     }
     let definition = structured_definition(document)?;
     if !definition
@@ -771,6 +782,9 @@ pub(crate) fn published_loop_definition(document: &Value) -> Result<WorkflowDefi
             field: "triggers",
             reason: "triggered loops are not enabled by the runtime",
         });
+    }
+    if let Some(pending) = approval_in_a_body(document) {
+        return Err(pending);
     }
     let definition = structured_definition(document)?;
     if !definition
