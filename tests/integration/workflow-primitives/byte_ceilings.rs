@@ -218,6 +218,15 @@ async fn a_member_output_over_the_value_ceiling_is_refused_and_the_lease_survive
             .await
             .expect("logical output ledger after replay");
     assert_eq!(replayed, charged, "a replay charges zero bytes");
+    let node_kind: String = sqlx::query_scalar(
+        "SELECT node_kind FROM steps WHERE run_id=$1 AND node='work' \
+           AND cardinality(instance_path_nodes)>0",
+    )
+    .bind(run.as_uuid())
+    .fetch_one(&world.db.pool)
+    .await
+    .expect("scoped node kind");
+    assert_eq!(node_kind, "activity");
     assert_eq!(world.run_status(run).await.as_str(), "RUNNING");
 }
 

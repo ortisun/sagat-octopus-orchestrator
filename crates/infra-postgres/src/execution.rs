@@ -2535,6 +2535,33 @@ impl std::fmt::Debug for PgRunTx {
 }
 
 impl PgRunTx {
+    async fn ensure_node_kind(
+        &mut self,
+        instance: &ExecutionInstanceId,
+        node_kind: &str,
+    ) -> Result<(), StoreError> {
+        let (path_nodes, path_indices) = stored_path_parts(instance.path());
+        let updated = sqlx::query(
+            "UPDATE steps SET node_kind=$6 \
+             WHERE tenant_id=$1 AND run_id=$2 AND instance_path_nodes=$3 \
+               AND instance_path_indices=$4 AND node=$5 \
+               AND node_kind IN ('legacyControl',$6)",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.run_id.as_uuid())
+        .bind(path_nodes)
+        .bind(path_indices)
+        .bind(instance.node().as_str())
+        .bind(node_kind)
+        .execute(&mut *self.tx)
+        .await
+        .map_err(store_error)?;
+        if updated.rows_affected() != 1 {
+            return Err(corrupt("immutable step node kind"));
+        }
+        Ok(())
+    }
+
     async fn charge_logical_output_bytes(
         &mut self,
         outputs: &[(ExecutionInstanceId, usize)],
@@ -4873,6 +4900,10 @@ impl PgRunTx {
             .def
             .node_for_instance(instance)
             .map_or("FORWARD", |node| node.origin().label());
+        let node_kind = self
+            .def
+            .node_for_instance(instance)
+            .map_or("activity", |node| node.kind().label());
         let status = step.status().as_str();
         let attempt = i32::try_from(step.attempt()).map_err(|_| corrupt("attempt"))?;
         let generation = i64::try_from(step.generation()).map_err(|_| corrupt("generation"))?;
@@ -4932,10 +4963,10 @@ impl PgRunTx {
                  (tenant_id, run_id, node, step_id, namespace_id, status, attempt, generation, \
                   cancel_requested, routed, timed_out, failure_code, next_attempt_at, activity, \
                   ready_at, last_hinted_at, output_digest, updated_at, kind, \
-                  instance_path_nodes, instance_path_indices, waiting_kind, secrets) \
+                  instance_path_nodes, instance_path_indices, waiting_kind, secrets, node_kind) \
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, \
                          CASE WHEN $6 = 'READY' THEN $15 END, CASE WHEN $16 THEN $15 END, $17, \
-                         $15, $20, $18, $19, $21, $22)",
+                         $15, $20, $18, $19, $21, $22, $23)",
             )
             .bind(self.info.tenant_id.as_uuid())
             .bind(self.info.run_id.as_uuid())
@@ -4959,12 +4990,15 @@ impl PgRunTx {
             .bind(kind)
             .bind(waiting_kind)
             .bind(declared)
+            .bind(node_kind)
             .execute(&mut *self.tx)
             .await
             .map_err(store_error)?;
             self.stored.insert(instance.clone());
             return Ok(());
         }
+
+        self.ensure_node_kind(instance, node_kind).await?;
 
         let updated = sqlx::query(
             "UPDATE steps SET status = $6, attempt = $7, generation = $8, \
@@ -5101,16 +5135,16 @@ impl PgRunTx {
         rehinted: bool,
         output: Option<&Vec<u8>>,
     ) -> Result<(), StoreError> {
-        let Some(step) = self.state.step(node) else {
+        let Some(step) = self.state.step(node).cloned() else {
             return Ok(());
         };
         let def_node = self.def.node(node);
         let activity = match def_node.map(sagat_domain::workflow::Node::kind) {
-            Some(NodeKind::Activity { activity, .. }) => Some(activity.as_str()),
+            Some(NodeKind::Activity { activity, .. }) => Some(activity.as_str().to_owned()),
             _ => None,
         };
         let event_type = match def_node.map(sagat_domain::workflow::Node::kind) {
-            Some(NodeKind::WaitEvent { event_type, .. }) => Some(event_type.as_str()),
+            Some(NodeKind::WaitEvent { event_type, .. }) => Some(event_type.as_str().to_owned()),
             _ => None,
         };
         let (waiting_kind, due_at, correlation_key) = match step.waiting_on() {
@@ -5152,6 +5186,7 @@ impl PgRunTx {
             _ => 0,
         };
         let kind = def_node.map_or("FORWARD", |n| n.origin().label());
+        let node_kind = def_node.map_or("legacyControl", |node| node.kind().label());
         // A `child` step reserved in this transaction: the run id, and the input it starts with.
         let spawn = effects.children.iter().find(|c| &c.node == node);
         let child_run = match step.waiting_on() {
@@ -5205,11 +5240,11 @@ impl PgRunTx {
                   cancel_requested, routed, condition, timed_out, failure_code, next_attempt_at, \
                   waiting_kind, due_at, event_type, correlation_key, activity, ready_at, \
                   last_hinted_at, output_digest, child_run_id, child_input, updated_at, kind, \
-                  event_since, switch_case_id, secrets) \
+                  event_since, switch_case_id, secrets, node_kind) \
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, \
                          $18, $19, CASE WHEN $6 = 'READY' THEN $20 END, CASE WHEN $21 THEN $20 END, \
                          $22, $23, $24, $20, $25, \
-                         CASE WHEN $15 = 'EVENT' THEN $20 - $26 * interval '1 microsecond' END, $27, $28)",
+                         CASE WHEN $15 = 'EVENT' THEN $20 - $26 * interval '1 microsecond' END, $27, $28, $29)",
             )
             .bind(self.info.tenant_id.as_uuid())
             .bind(self.info.run_id.as_uuid())
@@ -5227,9 +5262,13 @@ impl PgRunTx {
             .bind(step.next_attempt_at())
             .bind(waiting_kind)
             .bind(due_at)
-            .bind(if waiting_kind == Some("EVENT") { event_type } else { None })
+            .bind(if waiting_kind == Some("EVENT") {
+                event_type.as_deref()
+            } else {
+                None
+            })
             .bind(correlation_key)
-            .bind(activity)
+            .bind(activity.as_deref())
             .bind(self.now)
             .bind(hinted)
             .bind(output.cloned())
@@ -5239,12 +5278,14 @@ impl PgRunTx {
             .bind(lookback)
             .bind(switch_case_id)
             .bind(declared)
+            .bind(node_kind)
             .execute(&mut *self.tx)
             .await
             .map_err(store_error)?;
             self.stored.insert(instance);
             return Ok(());
         }
+        self.ensure_node_kind(&instance, node_kind).await?;
         sqlx::query(
             "UPDATE steps SET \
                 status = $6, attempt = $7, generation = $8, cancel_requested = $9, routed = $10, \
@@ -5306,9 +5347,13 @@ impl PgRunTx {
         .bind(step.next_attempt_at())
         .bind(waiting_kind)
         .bind(due_at)
-        .bind(if waiting_kind == Some("EVENT") { event_type } else { None })
+        .bind(if waiting_kind == Some("EVENT") {
+            event_type.as_deref()
+        } else {
+            None
+        })
         .bind(correlation_key)
-        .bind(activity)
+        .bind(activity.as_deref())
         .bind(self.now)
         .bind(hinted)
         .bind(fresh_grant.map(|g| g.token_hash.clone()))
