@@ -10,6 +10,9 @@ use uuid::Uuid;
 use crate::support;
 use crate::support::api::{TestApi, json_of};
 
+mod engine;
+mod races;
+
 const CANARY: &str = "sagat-secret-canary-operations-7c692e9b";
 
 struct Fixture {
