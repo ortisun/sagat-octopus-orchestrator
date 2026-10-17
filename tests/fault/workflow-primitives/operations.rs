@@ -2,19 +2,30 @@
 #![allow(clippy::expect_used, clippy::panic)]
 
 use reqwest::{Method, StatusCode};
+use sagat_application::clock::SystemClock;
+use sagat_application::identity::RequestContext;
+use sagat_application::secrets::SecretService;
 use sagat_domain::execution::RunId;
-use sagat_domain::identity::TenantId;
+use sagat_domain::identity::{NamespaceId, Principal, Role, Subject, TenantId};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::support;
 use crate::support::api::{TestApi, json_of};
 
+mod crash;
+mod engine;
+mod mutability;
+mod query_invariance;
+mod races;
+mod redaction;
+
 const CANARY: &str = "sagat-secret-canary-operations-7c692e9b";
 
 struct Fixture {
     api: TestApi,
     tenant: TenantId,
+    namespace: NamespaceId,
     run: RunId,
 }
 
@@ -81,16 +92,43 @@ fn document(name: &str) -> Value {
 }
 
 async fn fixture(name: &str) -> Fixture {
+    fixture_for(name, document(name), &[]).await
+}
+
+/// A started run of `workflow` (its `metadata.name` must be `name`), published through the API.
+async fn fixture_for(name: &str, workflow: Value, secrets: &[(&str, &str)]) -> Fixture {
     let api = support::api::start().await;
     let tenant = api.tenant("acme", "alice").await;
     let workspace = api.create_workspace("alice", "acme", "operations").await;
-    api.create_namespace("alice", "acme", &workspace, "payments", "dev")
-        .await;
+    let namespace: NamespaceId = api
+        .create_namespace("alice", "acme", &workspace, "payments", "dev")
+        .await
+        .parse::<Uuid>()
+        .map(NamespaceId::new)
+        .expect("namespace id");
+    // A workflow whose step declares a secret can be published only once the secret exists.
+    let admin = Principal::new(
+        tenant,
+        Subject::parse("alice").expect("subject"),
+        Role::Admin,
+    );
+    for (secret, value) in secrets {
+        SecretService::new(api.executions.clone(), SystemClock, api.keys.cipher())
+            .put(
+                &admin,
+                namespace,
+                secret,
+                value.as_bytes().to_vec(),
+                &RequestContext::default(),
+            )
+            .await
+            .expect("store the secret");
+    }
     let created = api
         .as_user(Method::POST, "/workflows", "alice", "acme")
         .header("x-octopus-namespace", "payments")
         .header("idempotency-key", Uuid::now_v7().to_string())
-        .json(&json!({"name": name, "ir": document(name)}))
+        .json(&json!({"name": name, "ir": workflow}))
         .send()
         .await
         .expect("create workflow");
@@ -138,7 +176,12 @@ async fn fixture(name: &str) -> Fixture {
         .expect("run id")
         .parse()
         .expect("run id");
-    Fixture { api, tenant, run }
+    Fixture {
+        api,
+        tenant,
+        namespace,
+        run,
+    }
 }
 
 fn query_path(fixture: &Fixture) -> String {
