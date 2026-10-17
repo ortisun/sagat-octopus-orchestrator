@@ -447,6 +447,20 @@ pub trait ExpressionEvaluator: Send + Sync {
         data: &RunData,
     ) -> Result<Vec<Vec<u8>>, ExpressionFailure>;
 
+    /// What a collection expression selects: the array itself, or the descriptor of a blob whose
+    /// content is the array (T014-016). The default only knows arrays.
+    ///
+    /// # Errors
+    /// [`ExpressionFailure`] when the expression fails or yields neither.
+    fn collection_source(
+        &self,
+        expression: &Expression,
+        data: &RunData,
+    ) -> Result<crate::collection_source::CollectionSource, ExpressionFailure> {
+        self.collection_items(expression, data)
+            .map(crate::collection_source::CollectionSource::Items)
+    }
+
     /// Evaluates a body return in the exact iteration context.
     fn collection_return(
         &self,

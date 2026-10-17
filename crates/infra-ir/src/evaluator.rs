@@ -6,6 +6,7 @@
 
 use std::collections::BTreeSet;
 
+use sagat_application::collection_source::{CollectionSource, descriptor_from_json};
 use sagat_application::dispatch::EventView;
 use sagat_application::execution::{
     ExpressionEvaluator, ExpressionFailure, ReconcileAnswer, RunData, ScopeInput,
@@ -252,17 +253,35 @@ impl ExpressionEvaluator for JsonEvaluator {
         expression: &Expression,
         data: &RunData,
     ) -> Result<Vec<Vec<u8>>, ExpressionFailure> {
+        match self.collection_source(expression, data)? {
+            CollectionSource::Items(items) => Ok(items),
+            CollectionSource::Blob(_) => Err(failure(
+                "a collection items expression must yield an array, not a blob reference",
+            )),
+        }
+    }
+
+    fn collection_source(
+        &self,
+        expression: &Expression,
+        data: &RunData,
+    ) -> Result<CollectionSource, ExpressionFailure> {
         let compiled = Compiled::compile(expression.as_str()).map_err(failure)?;
         let value = compiled
             .eval(&environment(&compiled.variables(), data, None)?)
             .map_err(failure)?;
-        let Value::Array(items) = value else {
-            return Err(failure("a collection items expression must yield an array"));
-        };
-        items
-            .into_iter()
-            .map(|item| serde_json::to_vec(&item).map_err(failure))
-            .collect()
+        match value {
+            Value::Array(items) => items
+                .into_iter()
+                .map(|item| serde_json::to_vec(&item).map_err(failure))
+                .collect::<Result<_, _>>()
+                .map(CollectionSource::Items),
+            other => descriptor_from_json(&other)
+                .map(CollectionSource::Blob)
+                .ok_or_else(|| {
+                    failure("a collection items expression must yield an array or a blob reference")
+                }),
+        }
     }
 
     fn collection_return(

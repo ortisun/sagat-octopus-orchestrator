@@ -10,6 +10,7 @@ pub mod authz;
 pub mod bindings;
 pub mod chain_progress;
 pub mod clock;
+pub mod collection_source;
 pub mod connectors;
 pub mod declared_operations;
 pub mod definitions;

@@ -1,5 +1,6 @@
 use std::future::Future;
 use std::hash::Hash;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
@@ -7,10 +8,14 @@ use futures_util::stream;
 use sagat_application::approval_scheduler::{
     ApprovalAdvance, ApprovalAdvanceError, ApprovalScheduler, ApprovalSchedulerStore, DueApproval,
 };
+use sagat_application::blobs::BlobAccess;
 use sagat_application::chain_progress::{
     ChainCommandStore, ChainHandoffCommand, ChainHandoffWrite, ChainProgressError,
     ChainProgressStore, ChainRunTx, ContinuationPreparationError, ContinuationSelection,
     LockedChainHead,
+};
+use sagat_application::collection_source::{
+    CollectionItemSource, CollectionSource, CollectionSourceError, CollectionSourceRequest,
 };
 use sagat_application::definitions::{Applied, DefinitionStore, Idempotency};
 use sagat_application::entropy::Entropy;
@@ -184,6 +189,10 @@ pub enum CollectionAdvanceError {
     Execution(#[from] ExecutionError),
     #[error("collection expression evaluation failed")]
     Expression,
+    /// The items live in a blob this replica cannot read right now (no blob source configured, or
+    /// the store or catalog is unavailable). The run is left alone and the next pass tries again.
+    #[error("the collection item source is not available")]
+    SourceUnavailable,
 }
 
 /// One durable sequential-loop transition committed by the scheduler.
@@ -464,6 +473,9 @@ pub struct Scheduler<S, E, R> {
     definitions: Option<DefinitionCache>,
     /// Which shards this replica works on; without it the scheduler is the only replica.
     placement: Option<Placement>,
+    /// Reads the array of a collection whose `items` expression yields a blob reference; without
+    /// it such a collection waits (it is never failed for a replica that cannot read blobs).
+    item_source: Option<Arc<dyn CollectionItemSource>>,
     /// Until when each pass rests its search for other tenants (see [`SchedulerSettings::discovery_rest`]).
     rests: std::sync::Mutex<std::collections::BTreeMap<&'static str, Instant>>,
 }
@@ -493,8 +505,16 @@ where
             settings,
             definitions: None,
             placement: None,
+            item_source: None,
             rests: std::sync::Mutex::new(std::collections::BTreeMap::new()),
         }
+    }
+
+    /// Lets the scheduler materialize collection items from blob references (T014-016).
+    #[must_use]
+    pub fn with_item_source(mut self, source: Arc<dyn CollectionItemSource>) -> Self {
+        self.item_source = Some(source);
+        self
     }
 
     /// Makes the scheduler one of several replicas: it works only on the shards the placement says
@@ -907,7 +927,7 @@ where
             .body(body)
             .ok_or(CollectionAdvanceError::NotCollection)?;
         let authority = SchedulerAuthority::new(view.owner.clone(), lease);
-        let transition = |expected_run_version| {
+        let audited = |expected_run_version, audit: Option<AuditRecord>| {
             CollectionTransition::new(
                 tenant,
                 info.namespace_id,
@@ -918,54 +938,141 @@ where
                 Subject::engine(),
                 info.trace_id.clone(),
                 occurred_at,
-                None,
+                audit,
             )
         };
+        let transition = |expected_run_version| audited(expected_run_version, None);
 
         let Some(collection) = state.collection(owner) else {
-            let item_values = self
-                .engine
-                .evaluator()
-                .collection_items(items, &data)
-                .map_err(|_| CollectionAdvanceError::Expression)?;
-            let json_items = item_values
-                .iter()
-                .map(|item| serde_json::from_slice::<serde_json::Value>(item))
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|_| CollectionAdvanceError::Expression)?;
-            let snapshot =
-                serde_json::to_vec(&json_items).map_err(|_| CollectionAdvanceError::Expression)?;
-            // The captured membership is one value: over the ceiling nothing of it is retained.
-            if snapshot.len() > MAX_PAYLOAD_BYTES {
-                return self
-                    .stop_collection_for_limit(
-                        view,
-                        &hold,
-                        tenant,
-                        run,
-                        state.version(),
-                        FailureCode::run_data_limit(),
-                    )
-                    .await;
-            }
             let limits = CollectionLimits::new(
                 *max_items,
                 *max_concurrency,
                 definition.limits().max_instances(),
                 definition.limits().max_depth(),
             )?;
-            let entry = match CollectionEntry::from_snapshot(
-                transition(state.version()),
-                CollectionScopeId::generate(),
-                u32::try_from(item_values.len())
-                    .map_err(|_| CollectionAdvanceError::InvalidProgress)?,
-                snapshot,
-                limits,
-            ) {
-                Ok(entry) => entry.with_iteration_charge(
-                    u32::try_from(body.all_nodes().count())
-                        .map_err(|_| CollectionAdvanceError::InvalidProgress)?,
-                ),
+            let source = match self.engine.evaluator().collection_source(items, &data) {
+                Ok(source) => source,
+                // The expression is deterministic over immutable run data: it will fail the same
+                // way again, so the run fails with a typed code instead of retrying for ever.
+                Err(_) => {
+                    return self
+                        .stop_collection_for_source(
+                            view,
+                            &hold,
+                            tenant,
+                            run,
+                            state.version(),
+                            FailureCode::expression_error(),
+                            "expression",
+                        )
+                        .await;
+                }
+            };
+            let iteration_charge = u32::try_from(body.all_nodes().count())
+                .map_err(|_| CollectionAdvanceError::InvalidProgress)?;
+            let built = match source {
+                CollectionSource::Items(item_values) => {
+                    let json_items = item_values
+                        .iter()
+                        .map(|item| serde_json::from_slice::<serde_json::Value>(item))
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(|_| CollectionAdvanceError::Expression)?;
+                    let snapshot = serde_json::to_vec(&json_items)
+                        .map_err(|_| CollectionAdvanceError::Expression)?;
+                    // The captured membership is one value: over the ceiling nothing of it is
+                    // retained.
+                    if snapshot.len() > MAX_PAYLOAD_BYTES {
+                        return self
+                            .stop_collection_for_limit(
+                                view,
+                                &hold,
+                                tenant,
+                                run,
+                                state.version(),
+                                FailureCode::run_data_limit(),
+                            )
+                            .await;
+                    }
+                    CollectionEntry::from_snapshot(
+                        transition(state.version()),
+                        CollectionScopeId::generate(),
+                        u32::try_from(item_values.len())
+                            .map_err(|_| CollectionAdvanceError::InvalidProgress)?,
+                        snapshot,
+                        limits,
+                    )
+                }
+                CollectionSource::Blob(descriptor) => {
+                    let Some(reader) = &self.item_source else {
+                        return Err(CollectionAdvanceError::SourceUnavailable);
+                    };
+                    let request = CollectionSourceRequest {
+                        access: BlobAccess {
+                            tenant_id: tenant,
+                            namespace_id: info.namespace_id,
+                        },
+                        run_id: run,
+                        run_input: data.input_blob,
+                        descriptor,
+                        max_items: *max_items,
+                    };
+                    match reader.materialize(&request).await {
+                        Ok(materialized) => {
+                            let audit = AuditRecord::engine(
+                                tenant,
+                                AuditAction::BlobRead,
+                                ResourceType::Blob,
+                                request.descriptor.id().to_string(),
+                                "collection items materialized",
+                                info.trace_id.clone(),
+                                occurred_at,
+                            );
+                            CollectionEntry::from_blob_source(
+                                audited(state.version(), Some(audit)),
+                                CollectionScopeId::generate(),
+                                materialized,
+                                limits,
+                            )
+                        }
+                        Err(CollectionSourceError::Unavailable) => {
+                            return Err(CollectionAdvanceError::SourceUnavailable);
+                        }
+                        Err(error) => {
+                            let (code, reason) = match error {
+                                CollectionSourceError::NotFound | CollectionSourceError::Lost => {
+                                    (FailureCode::blob_unavailable(), "unavailable")
+                                }
+                                CollectionSourceError::Corrupt => {
+                                    (FailureCode::blob_corrupt(), "corrupt")
+                                }
+                                CollectionSourceError::NotAnArray => {
+                                    (FailureCode::expression_error(), "not_an_array")
+                                }
+                                CollectionSourceError::TooManyItems => {
+                                    (FailureCode::iteration_limit(), "too_many_items")
+                                }
+                                CollectionSourceError::TooLarge
+                                | CollectionSourceError::Unavailable => {
+                                    (FailureCode::run_data_limit(), "too_large")
+                                }
+                            };
+                            return self
+                                .stop_collection_for_source(
+                                    view,
+                                    &hold,
+                                    tenant,
+                                    run,
+                                    state.version(),
+                                    code,
+                                    reason,
+                                )
+                                .await;
+                        }
+                    }
+                }
+            };
+            let entry = match built {
+                Ok(entry) => entry.with_iteration_charge(iteration_charge),
                 // More items than the node declared it would iterate over: a hard budget, so the
                 // run fails with a durable typed code instead of retrying an entry that cannot
                 // succeed.
@@ -1541,6 +1648,48 @@ where
             Outcome::Failed | Outcome::QuotaStopped => Err(CollectionAdvanceError::Engine(
                 EngineError::Store(StoreError::Internal {
                     detail: "unexpected collection limit recovery outcome".to_owned(),
+                }),
+            )),
+        }
+    }
+
+    /// Fails the run before its collection starts because the items it was to iterate over cannot
+    /// be used: a typed, journaled failure and a bounded-label counter, with nothing admitted.
+    #[allow(clippy::too_many_arguments)]
+    async fn stop_collection_for_source(
+        &self,
+        view: &View,
+        hold: &Hold,
+        tenant: TenantId,
+        run: RunId,
+        version: u64,
+        code: FailureCode,
+        reason: &'static str,
+    ) -> Result<CollectionAdvance, CollectionAdvanceError> {
+        tracing::warn!(%run, code = code.as_str(), reason, "a collection source was refused");
+        match self
+            .stop_with_code(
+                view,
+                hold,
+                RunRef {
+                    tenant_id: tenant,
+                    run_id: run,
+                },
+                version,
+                code,
+            )
+            .await?
+        {
+            Outcome::Done => {
+                metrics::counter!("scheduler_collection_source_failures_total", "reason" => reason)
+                    .increment(1);
+                Ok(CollectionAdvance::LimitStopped)
+            }
+            Outcome::Skipped | Outcome::DoesNotFit => Ok(CollectionAdvance::Waiting),
+            Outcome::Fenced => Err(CollectionAdvanceError::FenceUnavailable),
+            Outcome::Failed | Outcome::QuotaStopped => Err(CollectionAdvanceError::Engine(
+                EngineError::Store(StoreError::Internal {
+                    detail: "unexpected collection source recovery outcome".to_owned(),
                 }),
             )),
         }
