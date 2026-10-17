@@ -41,6 +41,19 @@ impl PgLoopProgressStore {
         Self { pool, definitions }
     }
 
+    /// Whether the loop being transitioned declares an `onError` route (D294).
+    async fn loop_has_error_route(
+        &self,
+        conn: &mut PgConnection,
+        run: &LockedRun,
+        transition: &LoopTransition,
+    ) -> Result<bool, LoopProgressError> {
+        let definition = self
+            .definition(conn, transition.tenant_id().as_uuid(), run.version_id)
+            .await?;
+        Ok(terminal_successor(&definition, transition.owner(), true)?.is_some())
+    }
+
     async fn definition(
         &self,
         conn: &mut PgConnection,
@@ -528,6 +541,8 @@ struct LoopSuccessor {
     instance: ExecutionInstanceId,
     activity: Option<ActivityName>,
     is_end: bool,
+    /// The loop failed and this is its `onError` route (D294), not its `next`.
+    error_route: bool,
 }
 
 fn terminal_successor(
@@ -572,6 +587,7 @@ fn terminal_successor(
         instance,
         activity,
         is_end,
+        error_route: failed,
     }))
 }
 
@@ -631,6 +647,11 @@ async fn append_run_event(
     Ok(())
 }
 
+/// Routes the loop's owner to `successor`, in the transaction that ended the loop.
+///
+/// An `onError` successor (`LoopSuccessor::error_route`) means the loop ended in failure: the hint
+/// for a non-activity successor then reports `FAILED`, since the loop did. Returns the last
+/// journal sequence written and whether the run finished.
 async fn route_loop_successor(
     conn: &mut PgConnection,
     transition: &LoopTransition,
@@ -750,7 +771,12 @@ async fn route_loop_successor(
         outbox_run_finished(conn, transition, definition, outbox_id, "SUCCEEDED").await?;
         Ok((routed_sequence + 2, true))
     } else {
-        insert_loop_hint(conn, transition, outbox_id, "loop.finished", "SUCCEEDED").await?;
+        let status = if successor.error_route {
+            "FAILED"
+        } else {
+            "SUCCEEDED"
+        };
+        insert_loop_hint(conn, transition, outbox_id, "loop.finished", status).await?;
         Ok((routed_sequence, false))
     }
 }
@@ -832,14 +858,58 @@ async fn finish_iteration_limit(
     Ok(())
 }
 
+/// Asks the run to stop because its loop failed and declares no `onError` route: the journal event
+/// and the `CANCELLING` projection commit with the rest of the drain start.
+async fn stop_run_for_loop_failure(
+    conn: &mut PgConnection,
+    transition: &LoopTransition,
+    sequence: u64,
+    code: &FailureCode,
+) -> Result<(), LoopProgressError> {
+    append_run_event(
+        conn,
+        transition,
+        sequence,
+        "run.stop_requested",
+        json!({"reason":"FAILED","code":code.as_str()}),
+    )
+    .await?;
+    let stopped = sqlx::query(
+        "UPDATE runs SET status='CANCELLING',stop_reason='FAILED',stop_code=$3 \
+         WHERE tenant_id=$1 AND id=$2 AND status IN ('RUNNING','WAITING') \
+           AND stop_reason IS NULL AND stop_code IS NULL",
+    )
+    .bind(transition.tenant_id().as_uuid())
+    .bind(transition.run_id().as_uuid())
+    .bind(code.as_str())
+    .execute(&mut *conn)
+    .await
+    .map_err(store_error)?;
+    if stopped.rows_affected() != 1 {
+        return Err(LoopProgressError::InvalidTransition);
+    }
+    Ok(())
+}
+
+/// Records the drain's journal version on the run. A run that is being stopped stays
+/// `CANCELLING`; a run whose loop drains on the loop alone (it declares `onError`) keeps the status
+/// its steps imply, which is what a replay of the journal derives.
 async fn finish_drain_version(
     conn: &mut PgConnection,
     transition: &LoopTransition,
     version: u64,
 ) -> Result<(), LoopProgressError> {
     let updated = sqlx::query(
-        "UPDATE runs SET run_version=$3,updated_at=$4 \
-         WHERE tenant_id=$1 AND id=$2 AND status='CANCELLING'",
+        "UPDATE runs SET run_version=$3,updated_at=$4, \
+                status = CASE \
+                    WHEN status='CANCELLING' THEN status \
+                    WHEN EXISTS (SELECT 1 FROM steps WHERE tenant_id = $1 AND run_id = $2 \
+                                 AND status IN ('PENDING','READY','LEASED','RUNNING','RETRY_WAIT')) \
+                        THEN 'RUNNING' \
+                    WHEN EXISTS (SELECT 1 FROM steps WHERE tenant_id = $1 AND run_id = $2 \
+                                 AND status = 'WAITING') THEN 'WAITING' \
+                    ELSE 'RUNNING' END \
+         WHERE tenant_id=$1 AND id=$2 AND status IN ('CANCELLING','RUNNING','WAITING')",
     )
     .bind(transition.tenant_id().as_uuid())
     .bind(transition.run_id().as_uuid())
@@ -2418,6 +2488,27 @@ impl LoopProgressStore for PgLoopProgressStore {
         }
         check_revision(&run, &command.transition)?;
 
+        // D294: a failure or a timeout of a loop that declares `onError` drains on the loop scope
+        // alone. The run is not asked to stop; the error edge decides what happens next once the
+        // active iteration is gone. A cancellation is always a run-level stop.
+        let definition = self
+            .definition(
+                &mut tx,
+                command.transition.tenant_id().as_uuid(),
+                run.version_id,
+            )
+            .await?;
+        let routed = match &command.reason {
+            sagat_domain::execution::LoopDrainReason::Cancelled => false,
+            sagat_domain::execution::LoopDrainReason::Failed { .. }
+            | sagat_domain::execution::LoopDrainReason::TimedOut => {
+                terminal_successor(&definition, command.transition.owner(), true)?.is_some()
+            }
+        };
+        if routed {
+            check_run_active(&run)?;
+        }
+
         let mut sequence = run.run_version;
         match &command.reason {
             sagat_domain::execution::LoopDrainReason::Cancelled => {
@@ -2433,28 +2524,15 @@ impl LoopProgressStore for PgLoopProgressStore {
                 if command.transition.occurred_at() < deadline {
                     return Err(LoopProgressError::InvalidTransition);
                 }
-                sequence += 1;
-                append_run_event(
-                    &mut tx,
-                    &command.transition,
-                    sequence,
-                    "run.stop_requested",
-                    json!({"reason":"FAILED","code":timeout_code.as_str()}),
-                )
-                .await?;
-                let stopped = sqlx::query(
-                    "UPDATE runs SET status='CANCELLING',stop_reason='FAILED',stop_code=$3 \
-                     WHERE tenant_id=$1 AND id=$2 AND status IN ('RUNNING','WAITING') \
-                       AND stop_reason IS NULL AND stop_code IS NULL",
-                )
-                .bind(command.transition.tenant_id().as_uuid())
-                .bind(command.transition.run_id().as_uuid())
-                .bind(timeout_code.as_str())
-                .execute(&mut *tx)
-                .await
-                .map_err(store_error)?;
-                if stopped.rows_affected() != 1 {
-                    return Err(LoopProgressError::InvalidTransition);
+                if !routed {
+                    sequence += 1;
+                    stop_run_for_loop_failure(
+                        &mut tx,
+                        &command.transition,
+                        sequence,
+                        &timeout_code,
+                    )
+                    .await?;
                 }
             }
             sagat_domain::execution::LoopDrainReason::Failed { iteration, code } => {
@@ -2490,13 +2568,6 @@ impl LoopProgressStore for PgLoopProgressStore {
                 .fetch_all(&mut *tx)
                 .await
                 .map_err(store_error)?;
-                let definition = self
-                    .definition(
-                        &mut tx,
-                        command.transition.tenant_id().as_uuid(),
-                        run.version_id,
-                    )
-                    .await?;
                 let proven = members.iter().any(|member| {
                     let status = member.get::<String, _>("status");
                     let member_code = member.get::<Option<String>, _>("failure_code");
@@ -2522,28 +2593,9 @@ impl LoopProgressStore for PgLoopProgressStore {
                 if !proven {
                     return Err(LoopProgressError::InvalidTransition);
                 }
-                sequence += 1;
-                append_run_event(
-                    &mut tx,
-                    &command.transition,
-                    sequence,
-                    "run.stop_requested",
-                    json!({"reason":"FAILED","code":code.as_str()}),
-                )
-                .await?;
-                let stopped = sqlx::query(
-                    "UPDATE runs SET status='CANCELLING',stop_reason='FAILED',stop_code=$3 \
-                     WHERE tenant_id=$1 AND id=$2 AND status IN ('RUNNING','WAITING') \
-                       AND stop_reason IS NULL AND stop_code IS NULL",
-                )
-                .bind(command.transition.tenant_id().as_uuid())
-                .bind(command.transition.run_id().as_uuid())
-                .bind(code.as_str())
-                .execute(&mut *tx)
-                .await
-                .map_err(store_error)?;
-                if stopped.rows_affected() != 1 {
-                    return Err(LoopProgressError::InvalidTransition);
+                if !routed {
+                    sequence += 1;
+                    stop_run_for_loop_failure(&mut tx, &command.transition, sequence, code).await?;
                 }
             }
         }
@@ -2751,8 +2803,18 @@ impl LoopProgressStore for PgLoopProgressStore {
             });
         }
         check_revision(&run, &command.transition)?;
+        // A stopping run drains its loop under the stop. A loop that declares `onError` also drains
+        // while its run keeps running (D294).
         if run.status != "CANCELLING" {
-            return Err(LoopProgressError::InvalidTransition);
+            let on_error = matches!(
+                scope.get::<Option<String>, _>("drain_kind").as_deref(),
+                Some("FAILED" | "TIMED_OUT")
+            ) && self
+                .loop_has_error_route(&mut tx, &run, &command.transition)
+                .await?;
+            if !(on_error && run.active) {
+                return Err(LoopProgressError::InvalidTransition);
+            }
         }
         if scope.get::<String, _>("lifecycle") != "DRAINING"
             || scope.get::<Option<i32>, _>("active_iteration")
@@ -2935,17 +2997,40 @@ impl LoopProgressStore for PgLoopProgressStore {
                     .ok_or_else(|| invalid_storage("loop finish sequence"))?,
             )
             .map_err(|_| invalid_storage("loop finish sequence"))?;
+            // `loop.finished` is followed by `run.finished`, or by the error edge's `step.routed`
+            // when the loop ended in failure and the run went on (D294): the journal says which.
+            let routed: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM run_events WHERE tenant_id=$1 AND run_id=$2 \
+                   AND seq=$3 AND event_type='step.routed')",
+            )
+            .bind(command.transition.tenant_id().as_uuid())
+            .bind(command.transition.run_id().as_uuid())
+            .bind(number(sequence + 1, "journal sequence")?)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(store_error)?;
+            let run_version = if routed {
+                let definition = self
+                    .definition(
+                        &mut tx,
+                        command.transition.tenant_id().as_uuid(),
+                        run.version_id,
+                    )
+                    .await?;
+                let successor = terminal_successor(&definition, command.transition.owner(), true)?
+                    .ok_or_else(|| invalid_storage("loop error route"))?;
+                routed_last_sequence(sequence + 1, &successor)
+            } else {
+                sequence + 1
+            };
             tx.rollback().await.map_err(store_error)?;
             return Ok(LoopWrite {
                 applied: false,
-                run_version: sequence + 1,
+                run_version,
             });
         }
         check_revision(&run, &command.transition)?;
-        if run.status != "CANCELLING"
-            || lifecycle != "DRAINING"
-            || scope.get::<Option<i32>, _>("active_iteration").is_some()
-        {
+        if lifecycle != "DRAINING" || scope.get::<Option<i32>, _>("active_iteration").is_some() {
             return Err(LoopProgressError::InvalidTransition);
         }
         let unsettled: bool = sqlx::query_scalar(
@@ -2994,13 +3079,43 @@ impl LoopProgressStore for PgLoopProgressStore {
             ("CANCELLED", None) => (json!({"outcome":"cancelled"}), "CANCELLED", "CANCELLED"),
             _ => return Err(invalid_storage("loop drain reason")),
         };
-        if run.stop_reason.as_deref() != Some(expected_reason)
-            || (expected_reason == "FAILED" && run.stop_code.as_deref() != code.as_deref())
-        {
+        let definition = self
+            .definition(
+                &mut tx,
+                command.transition.tenant_id().as_uuid(),
+                run.version_id,
+            )
+            .await?;
+        let route = if status == "FAILED" {
+            terminal_successor(&definition, command.transition.owner(), true)?
+        } else {
+            None
+        };
+        // How the run stands decides how the loop ends. A stopped run finishes with the stop that
+        // drained the loop; a cancel that landed during a failure drain wins over the error edge
+        // (the loop still ends FAILED with its code). A running run, whose loop declares
+        // `onError`, takes the edge. Anything else fails closed.
+        let run_status = if run.status == "CANCELLING" {
+            let stop_matches = run.stop_reason.as_deref() == Some(expected_reason)
+                && (expected_reason != "FAILED" || run.stop_code.as_deref() == code.as_deref());
+            let cancelled_over_route = route.is_some()
+                && run.stop_reason.as_deref() == Some("CANCELLED")
+                && run.stop_code.is_none();
+            if stop_matches {
+                Some(status)
+            } else if cancelled_over_route {
+                Some("CANCELLED")
+            } else {
+                return Err(LoopProgressError::InvalidTransition);
+            }
+        } else if route.is_some() && run.active {
+            None
+        } else {
             return Err(LoopProgressError::InvalidTransition);
-        }
+        };
         let owner = sqlx::query(
-            "UPDATE steps SET status=$6,waiting_kind=NULL,failure_code=$7,updated_at=$8 \
+            "UPDATE steps SET status=$6,waiting_kind=NULL,failure_code=$7,routed=$9, \
+                    updated_at=$8 \
              WHERE tenant_id=$1 AND run_id=$2 AND instance_path_nodes=$3 \
                AND instance_path_indices=$4 AND node=$5 \
                AND status='WAITING' AND waiting_kind='LOOP'",
@@ -3013,6 +3128,7 @@ impl LoopProgressStore for PgLoopProgressStore {
         .bind(status)
         .bind(code.as_deref())
         .bind(command.transition.occurred_at())
+        .bind(run_status.is_none())
         .execute(&mut *tx)
         .await
         .map_err(store_error)?;
@@ -3020,7 +3136,6 @@ impl LoopProgressStore for PgLoopProgressStore {
             return Err(LoopProgressError::InvalidTransition);
         }
         let finish_sequence = run.run_version + 1;
-        let final_sequence = finish_sequence + 1;
         let scope_updated = sqlx::query(
             "UPDATE loop_scopes SET lifecycle=$4,finish_sequence=$5,finish_outbox_id=$6, \
                     updated_at=$7 WHERE tenant_id=$1 AND run_id=$2 AND owner_instance_id=$3",
@@ -3047,59 +3162,85 @@ impl LoopProgressStore for PgLoopProgressStore {
             detail,
         )
         .await?;
-        append_run_event(
-            &mut tx,
-            &command.transition,
-            final_sequence,
-            "run.finished",
-            json!({"status":status}),
-        )
-        .await?;
-        let run_updated = sqlx::query(
-            "UPDATE runs SET status=$3,run_version=$4,updated_at=$5,finished_at=$5 \
-             WHERE tenant_id=$1 AND id=$2 AND status='CANCELLING'",
-        )
-        .bind(command.transition.tenant_id().as_uuid())
-        .bind(command.transition.run_id().as_uuid())
-        .bind(status)
-        .bind(number(final_sequence, "run version")?)
-        .bind(command.transition.occurred_at())
-        .execute(&mut *tx)
-        .await
-        .map_err(store_error)?;
-        if run_updated.rows_affected() != 1 {
-            return Err(LoopProgressError::InvalidTransition);
-        }
-        insert_audit(&mut tx, command.transition.audit()).await?;
-        insert_loop_hint(
-            &mut tx,
-            &command.transition,
-            command.outbox_id,
-            "loop.finished",
-            status,
-        )
-        .await?;
-        let definition = self
-            .definition(
+        let final_sequence = if let (None, Some(successor)) = (run_status, route.as_ref()) {
+            let (last, finished) = route_loop_successor(
                 &mut tx,
-                command.transition.tenant_id().as_uuid(),
-                run.version_id,
+                &command.transition,
+                &run,
+                &definition,
+                successor,
+                finish_sequence + 1,
+                command.outbox_id,
             )
             .await?;
-        outbox_run_finished(
-            &mut tx,
-            &command.transition,
-            &definition,
-            uuid::Uuid::now_v7(),
-            status,
-        )
-        .await?;
+            if finished {
+                finish_succeeded_version(&mut tx, &command.transition, last).await?;
+            } else {
+                finish_version(&mut tx, &command.transition, last).await?;
+            }
+            last
+        } else {
+            let run_status = run_status.ok_or(LoopProgressError::InvalidTransition)?;
+            let final_sequence = finish_sequence + 1;
+            append_run_event(
+                &mut tx,
+                &command.transition,
+                final_sequence,
+                "run.finished",
+                json!({"status":run_status}),
+            )
+            .await?;
+            let run_updated = sqlx::query(
+                "UPDATE runs SET status=$3,run_version=$4,updated_at=$5,finished_at=$5 \
+                 WHERE tenant_id=$1 AND id=$2 AND status='CANCELLING'",
+            )
+            .bind(command.transition.tenant_id().as_uuid())
+            .bind(command.transition.run_id().as_uuid())
+            .bind(run_status)
+            .bind(number(final_sequence, "run version")?)
+            .bind(command.transition.occurred_at())
+            .execute(&mut *tx)
+            .await
+            .map_err(store_error)?;
+            if run_updated.rows_affected() != 1 {
+                return Err(LoopProgressError::InvalidTransition);
+            }
+            insert_audit(&mut tx, command.transition.audit()).await?;
+            insert_loop_hint(
+                &mut tx,
+                &command.transition,
+                command.outbox_id,
+                "loop.finished",
+                status,
+            )
+            .await?;
+            outbox_run_finished(
+                &mut tx,
+                &command.transition,
+                &definition,
+                uuid::Uuid::now_v7(),
+                run_status,
+            )
+            .await?;
+            final_sequence
+        };
         mark_telemetry_pending(&mut tx, &command.transition, final_sequence).await?;
         tx.commit().await.map_err(store_error)?;
         Ok(LoopWrite {
             applied: true,
             run_version: final_sequence,
         })
+    }
+}
+
+/// The last journal sequence of an `onError` route whose `step.routed` has `routed_sequence`.
+fn routed_last_sequence(routed_sequence: u64, successor: &LoopSuccessor) -> u64 {
+    if successor.is_end {
+        routed_sequence + 2
+    } else if successor.activity.is_some() {
+        routed_sequence + 1
+    } else {
+        routed_sequence
     }
 }
 

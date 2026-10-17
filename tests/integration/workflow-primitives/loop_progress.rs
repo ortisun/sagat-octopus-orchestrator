@@ -120,7 +120,50 @@ fn path_parts(instance: &ExecutionInstanceId) -> (Vec<String>, Vec<i32>) {
         .unzip()
 }
 
+/// How the loop under test declares `onError` (D294).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OnError {
+    /// No error edge: a loop failure fails the run after the drain.
+    None,
+    /// An error edge to the `poll.recover` activity, followed by an `end`.
+    Activity,
+    /// An error edge straight to an `end` without output.
+    End,
+}
+
 fn loop_workflow_with(name: &str, loop_type: &str, max_iterations: u32) -> serde_json::Value {
+    loop_workflow_routed(name, loop_type, max_iterations, OnError::None)
+}
+
+fn loop_workflow_routed(
+    name: &str,
+    loop_type: &str,
+    max_iterations: u32,
+    on_error: OnError,
+) -> serde_json::Value {
+    let mut document = loop_workflow_plain(name, loop_type, max_iterations);
+    let nodes = document["nodes"].as_array_mut().expect("workflow nodes");
+    match on_error {
+        OnError::None => {}
+        OnError::Activity => {
+            nodes[0]["onError"] = json!("recover");
+            nodes.push(json!({
+                "id": "recover",
+                "type": "activity",
+                "activity": "poll.recover",
+                "next": "recovered"
+            }));
+            nodes.push(json!({"id": "recovered", "type": "end"}));
+        }
+        OnError::End => {
+            nodes[0]["onError"] = json!("recover");
+            nodes.push(json!({"id": "recover", "type": "end"}));
+        }
+    }
+    document
+}
+
+fn loop_workflow_plain(name: &str, loop_type: &str, max_iterations: u32) -> serde_json::Value {
     json!({
         "apiVersion": "sagat-octopus-orchestrator.io/v1",
         "kind": "Workflow",
@@ -213,6 +256,15 @@ struct LoopFixture {
 type LoopWorkers = WorkerService<PgRunStore, SystemClock, JsonEvaluator, SystemEntropy>;
 
 async fn lease_loop_member(fixture: &LoopFixture) -> (LoopWorkers, Registered, ClaimedTask) {
+    let (workers, registered, task) = lease_activity(fixture, "poll.check").await;
+    assert_eq!(task.instance, fixture.entry);
+    (workers, registered, task)
+}
+
+async fn lease_activity(
+    fixture: &LoopFixture,
+    activity: &str,
+) -> (LoopWorkers, Registered, ClaimedTask) {
     let workers = WorkerService::new(
         PgRunStore::new(fixture.db.pool.clone(), fixture.definitions.clone())
             .with_scoped_worker_protocol(),
@@ -225,9 +277,9 @@ async fn lease_loop_member(fixture: &LoopFixture) -> (LoopWorkers, Registered, C
         .register(
             &fixture.worker,
             "payments",
-            &format!("loop-worker-{}", Uuid::now_v7()),
+            &format!("loop-worker-{activity}-{}", Uuid::now_v7()),
             &Capabilities {
-                activities: vec!["poll.check".into()],
+                activities: vec![activity.into()],
                 languages: vec!["rust".into()],
                 pools: Vec::new(),
                 max_inflight: 1,
@@ -246,10 +298,9 @@ async fn lease_loop_member(fixture: &LoopFixture) -> (LoopWorkers, Registered, C
             Some("0af7651916cd43dd8448eb211c80319c"),
         )
         .await
-        .expect("lease loop member");
+        .expect("lease loop task");
     assert_eq!(tasks.len(), 1);
-    let task = tasks.pop().expect("one loop member");
-    assert_eq!(task.instance, fixture.entry);
+    let task = tasks.pop().expect("one loop task");
     (workers, registered, task)
 }
 
@@ -258,20 +309,38 @@ async fn seed_running_loop(name: &str) -> LoopFixture {
 }
 
 async fn seed_leasable_loop(name: &str) -> LoopFixture {
-    seed_loop_fixture(name, 3, true).await
+    seed_loop_fixture(name, 3, true, OnError::None).await
 }
 
 async fn seed_running_loop_with_limit(name: &str, max_iterations: u32) -> LoopFixture {
-    seed_loop_fixture(name, max_iterations, false).await
+    seed_loop_fixture(name, max_iterations, false, OnError::None).await
 }
 
-async fn seed_loop_fixture(name: &str, max_iterations: u32, member_ready: bool) -> LoopFixture {
+async fn seed_running_loop_routed(name: &str, on_error: OnError) -> LoopFixture {
+    seed_loop_fixture(name, 3, false, on_error).await
+}
+
+async fn seed_leasable_loop_routed(name: &str, on_error: OnError) -> LoopFixture {
+    seed_loop_fixture(name, 3, true, on_error).await
+}
+
+async fn seed_loop_fixture(
+    name: &str,
+    max_iterations: u32,
+    member_ready: bool,
+    on_error: OnError,
+) -> LoopFixture {
     let w = world().await;
     let worker = w.worker.clone();
     let tenant = w.admin.tenant_id().as_uuid();
     let (workflow, _) = w.publish(chain(name)).await;
-    let document = serde_json::to_vec(&loop_workflow_with(name, "while", max_iterations))
-        .expect("loop document");
+    let document = serde_json::to_vec(&loop_workflow_routed(
+        name,
+        "while",
+        max_iterations,
+        on_error,
+    ))
+    .expect("loop document");
     let version = WorkflowVersionId::new(Uuid::now_v7());
     sqlx::query(
         "INSERT INTO workflow_versions \
@@ -2634,4 +2703,899 @@ async fn drain_outbox_failure_rolls_back_stop_projection_audit_and_journal() {
         unchanged,
         (8, "RUNNING".into(), None, "RUNNING".into(), None, 8, 0)
     );
+}
+
+// ---------------------------------------------------------------------------------------------
+// D294: a loop's `onError` routes every loop failure, after the active iteration drains.
+// ---------------------------------------------------------------------------------------------
+
+/// A store on a replica that has never seen the workflow: its definition cache is cold.
+fn replica(fixture: &LoopFixture) -> PgLoopProgressStore {
+    PgLoopProgressStore::new(
+        fixture.db.pool.clone(),
+        DefinitionCache::new(Arc::new(StructuredJsonIrCodec), 8),
+    )
+}
+
+async fn verify(fixture: &LoopFixture, what: &str) {
+    PgRunStore::new(
+        fixture.db.pool.clone(),
+        DefinitionCache::new(Arc::new(StructuredJsonIrCodec), 8),
+    )
+    .verify_run(
+        sagat_domain::identity::TenantId::new(fixture.tenant),
+        fixture.run,
+    )
+    .await
+    .unwrap_or_else(|error| panic!("{what}: {error}"));
+}
+
+/// `(journal events, outbox rows, audit records)` of the run.
+async fn counts(fixture: &LoopFixture) -> (i64, i64, i64) {
+    sqlx::query_as(
+        "SELECT (SELECT count(*) FROM run_events WHERE tenant_id=$1 AND run_id=$2), \
+                (SELECT count(*) FROM event_outbox WHERE tenant_id=$1 AND aggregate_id=$2), \
+                (SELECT count(*) FROM audit_records WHERE tenant_id=$1 AND resource_id=$2::text)",
+    )
+    .bind(fixture.tenant)
+    .bind(fixture.run.as_uuid())
+    .fetch_one(&fixture.db.pool)
+    .await
+    .expect("run counts")
+}
+
+async fn events_of(fixture: &LoopFixture, kind: &str) -> i64 {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM run_events WHERE tenant_id=$1 AND run_id=$2 AND event_type=$3",
+    )
+    .bind(fixture.tenant)
+    .bind(fixture.run.as_uuid())
+    .bind(kind)
+    .fetch_one(&fixture.db.pool)
+    .await
+    .expect("event count")
+}
+
+async fn outbox_of(fixture: &LoopFixture, kind: &str) -> i64 {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM event_outbox WHERE tenant_id=$1 AND aggregate_id=$2 \
+           AND event_type=$3",
+    )
+    .bind(fixture.tenant)
+    .bind(fixture.run.as_uuid())
+    .bind(kind)
+    .fetch_one(&fixture.db.pool)
+    .await
+    .expect("outbox count")
+}
+
+/// `(status, routed)` of a root step.
+async fn root_step(fixture: &LoopFixture, node: &str) -> Option<(String, bool)> {
+    sqlx::query_as(
+        "SELECT status,routed FROM steps WHERE tenant_id=$1 AND run_id=$2 AND node=$3 \
+           AND cardinality(instance_path_nodes)=0",
+    )
+    .bind(fixture.tenant)
+    .bind(fixture.run.as_uuid())
+    .bind(node)
+    .fetch_optional(&fixture.db.pool)
+    .await
+    .expect("root step")
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct Settled {
+    run_status: String,
+    stop_reason: Option<String>,
+    stop_code: Option<String>,
+    owner_status: String,
+    owner_routed: bool,
+    owner_failure: Option<String>,
+    scope: String,
+    iteration: String,
+    tenant_active: i32,
+    reserved: i32,
+}
+
+async fn settled(fixture: &LoopFixture) -> Settled {
+    let row: (
+        String,
+        Option<String>,
+        Option<String>,
+        String,
+        bool,
+        Option<String>,
+        String,
+        String,
+        i32,
+        i32,
+    ) = sqlx::query_as(
+        "SELECT run.status,run.stop_reason,run.stop_code,owner.status,owner.routed, \
+                owner.failure_code,scope.lifecycle,iteration.lifecycle, \
+                usage.active_iterations,run_usage.reserved_instances \
+         FROM loop_scopes scope \
+         JOIN runs run ON run.tenant_id=scope.tenant_id AND run.id=scope.run_id \
+         JOIN steps owner ON owner.tenant_id=scope.tenant_id AND owner.run_id=scope.run_id \
+           AND owner.step_id=scope.owner_instance_id \
+         JOIN loop_iterations iteration ON iteration.tenant_id=scope.tenant_id \
+           AND iteration.run_id=scope.run_id AND iteration.owner_instance_id=scope.owner_instance_id \
+           AND iteration.iteration_index=0 \
+         JOIN tenant_iteration_usage usage ON usage.tenant_id=scope.tenant_id \
+         JOIN run_instance_usage run_usage ON run_usage.tenant_id=scope.tenant_id \
+           AND run_usage.run_id=scope.run_id \
+         WHERE scope.tenant_id=$1 AND scope.run_id=$2",
+    )
+    .bind(fixture.tenant)
+    .bind(fixture.run.as_uuid())
+    .fetch_one(&fixture.db.pool)
+    .await
+    .expect("settled loop projection");
+    Settled {
+        run_status: row.0,
+        stop_reason: row.1,
+        stop_code: row.2,
+        owner_status: row.3,
+        owner_routed: row.4,
+        owner_failure: row.5,
+        scope: row.6,
+        iteration: row.7,
+        tenant_active: row.8,
+        reserved: row.9,
+    }
+}
+
+fn drain_start(
+    fixture: &LoopFixture,
+    version: u64,
+    reason: LoopDrainReason,
+    at: OffsetDateTime,
+    outbox: Uuid,
+) -> LoopDrainCommand {
+    LoopDrainCommand::new(
+        transition(
+            fixture,
+            version,
+            fixture.authority.clone(),
+            audit(fixture),
+            at,
+        ),
+        reason,
+        outbox,
+    )
+    .expect("drain command")
+}
+
+fn drain_iteration_command(fixture: &LoopFixture, version: u64) -> LoopIterationDrainCommand {
+    LoopIterationDrainCommand::new(
+        transition(
+            fixture,
+            version,
+            fixture.authority.clone(),
+            audit(fixture),
+            crate::support::now(),
+        ),
+        0,
+        Uuid::now_v7(),
+    )
+    .expect("iteration drain command")
+}
+
+fn drain_finish_command(fixture: &LoopFixture, version: u64) -> LoopDrainFinishCommand {
+    LoopDrainFinishCommand::new(
+        transition(
+            fixture,
+            version,
+            fixture.authority.clone(),
+            audit(fixture),
+            crate::support::now(),
+        ),
+        Uuid::now_v7(),
+    )
+}
+
+async fn current_version(fixture: &LoopFixture) -> u64 {
+    run_version(fixture).await
+}
+
+/// Drives start, iteration drain and finish, each on a replica with a cold definition cache. Every
+/// command is delivered twice; the duplicate changes nothing. The journal is replayed against the
+/// projection after each step. Returns the final `(run version, finish version)`.
+async fn drain_on_replicas(
+    fixture: &LoopFixture,
+    reason: LoopDrainReason,
+    at: OffsetDateTime,
+) -> u64 {
+    let version = current_version(fixture).await;
+    let start = drain_start(fixture, version, reason, at, Uuid::now_v7());
+    let started = replica(fixture)
+        .start_drain(&start)
+        .await
+        .expect("start drain");
+    assert!(started.applied);
+    let after_start = counts(fixture).await;
+    let duplicate = replica(fixture)
+        .start_drain(&start)
+        .await
+        .expect("duplicate start");
+    assert!(!duplicate.applied);
+    assert_eq!(duplicate.run_version, started.run_version);
+    assert_eq!(counts(fixture).await, after_start);
+    verify(fixture, "drain start").await;
+
+    let iteration = drain_iteration_command(fixture, started.run_version);
+    let drained = replica(fixture)
+        .drain_iteration(&iteration)
+        .await
+        .expect("drain iteration");
+    assert!(drained.applied);
+    let after_drain = counts(fixture).await;
+    let duplicate = replica(fixture)
+        .drain_iteration(&iteration)
+        .await
+        .expect("duplicate iteration drain");
+    assert!(!duplicate.applied);
+    assert_eq!(duplicate.run_version, drained.run_version);
+    assert_eq!(counts(fixture).await, after_drain);
+    verify(fixture, "iteration drain").await;
+
+    let finish = drain_finish_command(fixture, drained.run_version);
+    let finished = replica(fixture)
+        .finish_drain(&finish)
+        .await
+        .expect("finish drain");
+    assert!(finished.applied);
+    let after_finish = counts(fixture).await;
+    let duplicate = replica(fixture)
+        .finish_drain(&finish)
+        .await
+        .expect("duplicate finish");
+    assert!(!duplicate.applied);
+    assert_eq!(duplicate.run_version, finished.run_version);
+    assert_eq!(counts(fixture).await, after_finish);
+    verify(fixture, "drain finish").await;
+    finished.run_version
+}
+
+async fn assert_routed_to_recovery(fixture: &LoopFixture, code: &str, final_version: u64) {
+    assert_eq!(
+        settled(fixture).await,
+        Settled {
+            run_status: "RUNNING".into(),
+            stop_reason: None,
+            stop_code: None,
+            owner_status: "FAILED".into(),
+            owner_routed: true,
+            owner_failure: Some(code.into()),
+            scope: "FAILED".into(),
+            iteration: "DRAINED".into(),
+            tenant_active: 0,
+            reserved: 0,
+        }
+    );
+    assert_eq!(run_version(fixture).await, final_version);
+    assert_eq!(events_of(fixture, "run.stop_requested").await, 0);
+    assert_eq!(events_of(fixture, "run.finished").await, 0);
+    assert_eq!(
+        root_step(fixture, "recover").await,
+        Some(("READY".into(), false)),
+        "the recovery activity is released with the failure"
+    );
+    assert_eq!(outbox_of(fixture, "task.ready").await, 1);
+    let head: i64 = sqlx::query_scalar(
+        "SELECT head_seq FROM telemetry_pending WHERE tenant_id=$1 AND run_id=$2",
+    )
+    .bind(fixture.tenant)
+    .bind(fixture.run.as_uuid())
+    .fetch_one(&fixture.db.pool)
+    .await
+    .expect("telemetry head");
+    assert_eq!(u64::try_from(head).expect("head"), final_version);
+    let published =
+        crate::hint_contract::assert_outbox_matches_the_contract(&fixture.db.pool).await;
+    crate::hint_contract::assert_published(&published, &["loop.drain_started", "task.ready"]);
+}
+
+/// The recovery activity is an ordinary task: a worker completes it and the run finishes.
+async fn complete_recovery_and_finish(fixture: &LoopFixture) {
+    let (workers, _registered, task) = lease_activity(fixture, "poll.recover").await;
+    assert_eq!(
+        task.instance,
+        ExecutionInstanceId::root(NodeId::parse("recover").expect("node"))
+    );
+    workers
+        .complete(
+            &fixture.worker,
+            &task_ref(&task),
+            b"{}",
+            "loop-recover-complete",
+        )
+        .await
+        .expect("complete recovery");
+    let status: (String, bool) = sqlx::query_as(
+        "SELECT run.status,run.finished_at IS NOT NULL FROM runs run WHERE tenant_id=$1 AND id=$2",
+    )
+    .bind(fixture.tenant)
+    .bind(fixture.run.as_uuid())
+    .fetch_one(&fixture.db.pool)
+    .await
+    .expect("run after recovery");
+    assert_eq!(status, ("SUCCEEDED".into(), true));
+    assert_eq!(
+        root_step(fixture, "recovered").await,
+        Some(("SUCCEEDED".into(), true))
+    );
+    verify(fixture, "run finished after the recovery activity").await;
+}
+
+#[tokio::test]
+async fn expression_error_with_an_error_edge_routes_the_recovery_activity_and_the_run_completes() {
+    let fixture = seed_running_loop_routed("loop-error-expression", OnError::Activity).await;
+    let finish_version = drain_on_replicas(
+        &fixture,
+        LoopDrainReason::Failed {
+            iteration: 0,
+            code: FailureCode::expression_error(),
+        },
+        crate::support::now(),
+    )
+    .await;
+    // drain started 9, iteration drained 10, loop finished 11, error edge routed 12, released 13.
+    assert_eq!(finish_version, 13);
+    assert_routed_to_recovery(&fixture, "EXPRESSION_ERROR", 13).await;
+    complete_recovery_and_finish(&fixture).await;
+}
+
+#[tokio::test]
+async fn permanent_body_failure_with_an_error_edge_routes_the_recovery_activity() {
+    let fixture = seed_leasable_loop_routed("loop-error-body", OnError::Activity).await;
+    let (workers, _registered, task) = lease_loop_member(&fixture).await;
+    workers
+        .heartbeat(&fixture.worker, &task_ref(&task))
+        .await
+        .expect("body starts");
+    workers
+        .fail(
+            &fixture.worker,
+            &task_ref(&task),
+            "WORKER_ERROR",
+            false,
+            "loop-body-fails",
+        )
+        .await
+        .expect("body fails permanently");
+    verify(&fixture, "failed body").await;
+    let finish_version = drain_on_replicas(
+        &fixture,
+        LoopDrainReason::Failed {
+            iteration: 0,
+            code: FailureCode::worker_error(),
+        },
+        crate::support::now(),
+    )
+    .await;
+    assert_routed_to_recovery(&fixture, "WORKER_ERROR", finish_version).await;
+    complete_recovery_and_finish(&fixture).await;
+}
+
+#[tokio::test]
+async fn loop_timeout_with_an_error_edge_routes_the_recovery_activity() {
+    let fixture = seed_running_loop_routed("loop-error-timeout", OnError::Activity).await;
+    let finish_version = drain_on_replicas(
+        &fixture,
+        LoopDrainReason::TimedOut,
+        crate::support::now() + Duration::minutes(2),
+    )
+    .await;
+    assert_eq!(finish_version, 13);
+    assert_routed_to_recovery(&fixture, "RUN_TIMED_OUT", 13).await;
+    complete_recovery_and_finish(&fixture).await;
+}
+
+#[tokio::test]
+async fn loop_failure_with_an_error_edge_to_an_end_finishes_the_run_through_the_terminal_path() {
+    let fixture = seed_running_loop_routed("loop-error-end", OnError::End).await;
+    let subscription = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO webhook_subscriptions \
+         (id,tenant_id,namespace_id,name,destination_kind,destination_settings,url,secret_name, \
+          kinds,rate_per_second,timeout_ms,status,created_by) \
+         VALUES ($1,$2,$3,'loop-error-end','WEBHOOK','{}','https://example.invalid/loop', \
+                 'loop-key',ARRAY['run.finished'],100,1000,'ACTIVE','test')",
+    )
+    .bind(subscription)
+    .bind(fixture.tenant)
+    .bind(fixture.namespace.as_uuid())
+    .execute(&fixture.db.pool)
+    .await
+    .expect("run finished subscription");
+    let finish_version = drain_on_replicas(
+        &fixture,
+        LoopDrainReason::Failed {
+            iteration: 0,
+            code: FailureCode::expression_error(),
+        },
+        crate::support::now(),
+    )
+    .await;
+    // loop finished 11, error edge routed 12, end reached 13, run finished 14.
+    assert_eq!(finish_version, 14);
+    let settled = settled(&fixture).await;
+    assert_eq!(
+        (
+            settled.run_status.as_str(),
+            settled.stop_reason,
+            settled.owner_status.as_str(),
+            settled.owner_routed,
+            settled.owner_failure.as_deref(),
+            settled.scope.as_str(),
+            settled.tenant_active,
+            settled.reserved,
+        ),
+        (
+            "SUCCEEDED",
+            None,
+            "FAILED",
+            true,
+            Some("EXPRESSION_ERROR"),
+            "FAILED",
+            0,
+            0
+        )
+    );
+    assert_eq!(
+        root_step(&fixture, "recover").await,
+        Some(("SUCCEEDED".into(), true))
+    );
+    assert_eq!(events_of(&fixture, "run.stop_requested").await, 0);
+    assert_eq!(events_of(&fixture, "run.finished").await, 1);
+    assert_eq!(outbox_of(&fixture, "run.finished").await, 1);
+    let delivered: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM webhook_deliveries WHERE tenant_id=$1 AND subscription_id=$2",
+    )
+    .bind(fixture.tenant)
+    .bind(subscription)
+    .fetch_one(&fixture.db.pool)
+    .await
+    .expect("outbound fan-out");
+    assert_eq!(delivered, 1, "subscribers hear of the run once");
+    let finished_at: Option<OffsetDateTime> =
+        sqlx::query_scalar("SELECT finished_at FROM runs WHERE tenant_id=$1 AND id=$2")
+            .bind(fixture.tenant)
+            .bind(fixture.run.as_uuid())
+            .fetch_one(&fixture.db.pool)
+            .await
+            .expect("finish time");
+    assert!(finished_at.is_some());
+    let published =
+        crate::hint_contract::assert_outbox_matches_the_contract(&fixture.db.pool).await;
+    crate::hint_contract::assert_published(&published, &["loop.drain_started", "run.finished"]);
+}
+
+/// Without an `onError` edge a loop failure keeps failing the run after the drain.
+#[tokio::test]
+async fn permanent_body_failure_without_an_error_edge_still_fails_the_run() {
+    let fixture = seed_leasable_loop("loop-no-edge-body").await;
+    let (workers, _registered, task) = lease_loop_member(&fixture).await;
+    workers
+        .heartbeat(&fixture.worker, &task_ref(&task))
+        .await
+        .expect("body starts");
+    workers
+        .fail(
+            &fixture.worker,
+            &task_ref(&task),
+            "WORKER_ERROR",
+            false,
+            "loop-body-fails",
+        )
+        .await
+        .expect("body fails permanently");
+    let version = current_version(&fixture).await;
+    let store = replica(&fixture);
+    let started = store
+        .start_drain(&drain_start(
+            &fixture,
+            version,
+            LoopDrainReason::Failed {
+                iteration: 0,
+                code: FailureCode::worker_error(),
+            },
+            crate::support::now(),
+            Uuid::now_v7(),
+        ))
+        .await
+        .expect("start drain");
+    assert_eq!(events_of(&fixture, "run.stop_requested").await, 1);
+    let drained = store
+        .drain_iteration(&drain_iteration_command(&fixture, started.run_version))
+        .await
+        .expect("drain");
+    let finished = store
+        .finish_drain(&drain_finish_command(&fixture, drained.run_version))
+        .await
+        .expect("finish");
+    let settled = settled(&fixture).await;
+    assert_eq!(
+        (
+            settled.run_status.as_str(),
+            settled.stop_reason.as_deref(),
+            settled.stop_code.as_deref(),
+            settled.owner_status.as_str(),
+            settled.scope.as_str()
+        ),
+        (
+            "FAILED",
+            Some("FAILED"),
+            Some("WORKER_ERROR"),
+            "FAILED",
+            "FAILED"
+        )
+    );
+    assert!(root_step(&fixture, "recover").await.is_none());
+    assert_eq!(finished.run_version, drained.run_version + 2);
+    verify(&fixture, "failed run without an error edge").await;
+}
+
+#[tokio::test]
+async fn cancellation_with_an_error_edge_still_cancels_the_run() {
+    let fixture = seed_running_loop_routed("loop-error-cancel", OnError::Activity).await;
+    let requested_at = crate::support::now();
+    sqlx::query(
+        "INSERT INTO run_events \
+         (tenant_id,run_id,seq,event_type,detail,actor,occurred_at) \
+         VALUES ($1,$2,9,'run.stop_requested',$3,'loop-fixture',$4)",
+    )
+    .bind(fixture.tenant)
+    .bind(fixture.run.as_uuid())
+    .bind(json!({"reason":"CANCELLED","code":null}))
+    .bind(requested_at)
+    .execute(&fixture.db.pool)
+    .await
+    .expect("cancellation journal");
+    sqlx::query(
+        "UPDATE runs SET status='CANCELLING',stop_reason='CANCELLED',stop_code=NULL, \
+                run_version=9,updated_at=$3 WHERE tenant_id=$1 AND id=$2 AND run_version=8",
+    )
+    .bind(fixture.tenant)
+    .bind(fixture.run.as_uuid())
+    .bind(requested_at)
+    .execute(&fixture.db.pool)
+    .await
+    .expect("cancellation projection");
+    verify(&fixture, "canonical cancellation").await;
+    let finish_version =
+        drain_on_replicas(&fixture, LoopDrainReason::Cancelled, crate::support::now()).await;
+    assert_eq!(finish_version, 13);
+    let settled = settled(&fixture).await;
+    assert_eq!(
+        (
+            settled.run_status.as_str(),
+            settled.owner_status.as_str(),
+            settled.scope.as_str(),
+            settled.tenant_active,
+            settled.reserved
+        ),
+        ("CANCELLED", "CANCELLED", "CANCELLED", 0, 0)
+    );
+    assert!(
+        root_step(&fixture, "recover").await.is_none(),
+        "a cancelled loop takes no error edge"
+    );
+    assert_eq!(outbox_of(&fixture, "task.ready").await, 0);
+}
+
+/// A cancel that lands between the failure drain and its finish wins: the loop still ends FAILED
+/// with its code, the run ends CANCELLED and the error edge is not taken.
+#[tokio::test]
+async fn cancel_during_a_failure_drain_finishes_the_run_cancelled_without_routing() {
+    let fixture = seed_running_loop_routed("loop-error-cancel-race", OnError::Activity).await;
+    let store = replica(&fixture);
+    let started = store
+        .start_drain(&drain_start(
+            &fixture,
+            8,
+            LoopDrainReason::Failed {
+                iteration: 0,
+                code: FailureCode::expression_error(),
+            },
+            crate::support::now(),
+            Uuid::now_v7(),
+        ))
+        .await
+        .expect("start failure drain");
+    assert_eq!(started.run_version, 9);
+    let requested_at = crate::support::now();
+    sqlx::query(
+        "INSERT INTO run_events \
+         (tenant_id,run_id,seq,event_type,detail,actor,occurred_at) \
+         VALUES ($1,$2,10,'run.stop_requested',$3,'loop-fixture',$4)",
+    )
+    .bind(fixture.tenant)
+    .bind(fixture.run.as_uuid())
+    .bind(json!({"reason":"CANCELLED","code":null}))
+    .bind(requested_at)
+    .execute(&fixture.db.pool)
+    .await
+    .expect("cancellation journal");
+    sqlx::query(
+        "UPDATE runs SET status='CANCELLING',stop_reason='CANCELLED',stop_code=NULL, \
+                run_version=10,updated_at=$3 WHERE tenant_id=$1 AND id=$2 AND run_version=9",
+    )
+    .bind(fixture.tenant)
+    .bind(fixture.run.as_uuid())
+    .bind(requested_at)
+    .execute(&fixture.db.pool)
+    .await
+    .expect("cancellation projection");
+    verify(&fixture, "cancel landed mid drain").await;
+    let drained = replica(&fixture)
+        .drain_iteration(&drain_iteration_command(&fixture, 10))
+        .await
+        .expect("drain continues under the cancel");
+    assert_eq!(drained.run_version, 11);
+    let finished = replica(&fixture)
+        .finish_drain(&drain_finish_command(&fixture, 11))
+        .await
+        .expect("finish under the cancel");
+    assert_eq!(finished.run_version, 13);
+    let settled = settled(&fixture).await;
+    assert_eq!(
+        (
+            settled.run_status.as_str(),
+            settled.stop_reason.as_deref(),
+            settled.owner_status.as_str(),
+            settled.owner_failure.as_deref(),
+            settled.scope.as_str(),
+        ),
+        (
+            "CANCELLED",
+            Some("CANCELLED"),
+            "FAILED",
+            Some("EXPRESSION_ERROR"),
+            "FAILED"
+        )
+    );
+    assert!(root_step(&fixture, "recover").await.is_none());
+    assert_eq!(outbox_of(&fixture, "task.ready").await, 0);
+    verify(&fixture, "cancelled run keeps the loop failure").await;
+}
+
+/// The existing route out of an exhausted loop, which had no test of its own.
+#[tokio::test]
+async fn iteration_limit_with_an_error_edge_routes_instead_of_stopping_the_run() {
+    let fixture = {
+        let fixture = seed_loop_fixture("loop-error-limit", 1, false, OnError::Activity).await;
+        fixture
+    };
+    let command = LoopCheckpointCommand::new(
+        transition(
+            &fixture,
+            8,
+            fixture.authority.clone(),
+            audit(&fixture),
+            crate::support::now(),
+        ),
+        0,
+        fixture.returned.clone(),
+        fixture.initial_carry,
+        fixture.initial_carry,
+        true,
+        crate::support::now(),
+        LoopContinuation::IterationLimit,
+        None,
+        None,
+        Uuid::now_v7(),
+    )
+    .expect("iteration-limit checkpoint");
+    let applied = replica(&fixture)
+        .checkpoint(&command)
+        .await
+        .expect("route exhausted loop");
+    assert!(applied.applied);
+    // returned 9, checkpointed 10, error edge routed 11, released 12.
+    assert_eq!(applied.run_version, 12);
+    let duplicate = replica(&fixture)
+        .checkpoint(&command)
+        .await
+        .expect("limit replay");
+    assert!(!duplicate.applied);
+    assert_eq!(duplicate.run_version, 12);
+    let settled = settled(&fixture).await;
+    assert_eq!(
+        (
+            settled.run_status.as_str(),
+            settled.stop_reason.as_deref(),
+            settled.owner_status.as_str(),
+            settled.owner_routed,
+            settled.owner_failure.as_deref(),
+            settled.scope.as_str(),
+            settled.tenant_active,
+        ),
+        (
+            "RUNNING",
+            None,
+            "FAILED",
+            true,
+            Some("ITERATION_LIMIT"),
+            "FAILED",
+            0
+        )
+    );
+    assert_eq!(
+        root_step(&fixture, "recover").await,
+        Some(("READY".into(), false))
+    );
+    assert_eq!(outbox_of(&fixture, "task.ready").await, 1);
+    assert_eq!(events_of(&fixture, "run.stop_requested").await, 0);
+    verify(&fixture, "iteration limit routed").await;
+    complete_recovery_and_finish(&fixture).await;
+}
+
+async fn start_and_drain_failure(fixture: &LoopFixture) -> u64 {
+    let store = replica(fixture);
+    let started = store
+        .start_drain(&drain_start(
+            fixture,
+            8,
+            LoopDrainReason::Failed {
+                iteration: 0,
+                code: FailureCode::expression_error(),
+            },
+            crate::support::now(),
+            Uuid::now_v7(),
+        ))
+        .await
+        .expect("start drain");
+    store
+        .drain_iteration(&drain_iteration_command(fixture, started.run_version))
+        .await
+        .expect("drain iteration")
+        .run_version
+}
+
+async fn rolled_back_before_finish(fixture: &LoopFixture, version: u64) {
+    assert_eq!(run_version(fixture).await, version);
+    let projection = settled(fixture).await;
+    assert_eq!(
+        (
+            projection.run_status.as_str(),
+            projection.owner_status.as_str(),
+            projection.owner_routed,
+            projection.scope.as_str(),
+            projection.iteration.as_str(),
+        ),
+        ("WAITING", "WAITING", false, "DRAINING", "DRAINED")
+    );
+    assert!(root_step(fixture, "recover").await.is_none());
+    assert_eq!(events_of(fixture, "loop.finished").await, 0);
+    let owner_routed: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM run_events WHERE tenant_id=$1 AND run_id=$2 \
+           AND event_type='step.routed' AND node='poll'",
+    )
+    .bind(fixture.tenant)
+    .bind(fixture.run.as_uuid())
+    .fetch_one(&fixture.db.pool)
+    .await
+    .expect("owner routing events");
+    assert_eq!(owner_routed, 0);
+}
+
+#[tokio::test]
+async fn error_edge_outbox_failure_rolls_back_the_whole_finish_and_a_retry_completes_it() {
+    let fixture = seed_running_loop_routed("loop-error-rollback", OnError::Activity).await;
+    let version = start_and_drain_failure(&fixture).await;
+    assert_eq!(version, 10);
+    let before = counts(&fixture).await;
+    sqlx::raw_sql(
+        "CREATE FUNCTION reject_loop_error_edge() RETURNS trigger LANGUAGE plpgsql AS $$ \
+         BEGIN RAISE EXCEPTION 'injected error-edge outbox failure'; END $$; \
+         CREATE TRIGGER reject_loop_error_edge BEFORE INSERT ON event_outbox \
+         FOR EACH ROW WHEN (NEW.event_type = 'task.ready') \
+         EXECUTE FUNCTION reject_loop_error_edge()",
+    )
+    .execute(&fixture.db.pool)
+    .await
+    .expect("install error-edge fault");
+    let finish = drain_finish_command(&fixture, version);
+    assert!(matches!(
+        replica(&fixture).finish_drain(&finish).await,
+        Err(LoopProgressError::Storage(_))
+    ));
+    rolled_back_before_finish(&fixture, version).await;
+    assert_eq!(counts(&fixture).await, before);
+    verify(&fixture, "rolled back finish").await;
+    sqlx::raw_sql(
+        "DROP TRIGGER reject_loop_error_edge ON event_outbox; \
+         DROP FUNCTION reject_loop_error_edge()",
+    )
+    .execute(&fixture.db.pool)
+    .await
+    .expect("remove error-edge fault");
+    let finished = replica(&fixture)
+        .finish_drain(&finish)
+        .await
+        .expect("retry finish");
+    assert!(finished.applied);
+    assert_eq!(finished.run_version, 13);
+    assert_routed_to_recovery(&fixture, "EXPRESSION_ERROR", 13).await;
+}
+
+#[tokio::test]
+async fn error_edge_to_an_end_rolls_back_when_the_terminal_hint_cannot_be_stored() {
+    let fixture = seed_running_loop_routed("loop-error-end-rollback", OnError::End).await;
+    let version = start_and_drain_failure(&fixture).await;
+    sqlx::raw_sql(
+        "CREATE FUNCTION reject_loop_error_end() RETURNS trigger LANGUAGE plpgsql AS $$ \
+         BEGIN RAISE EXCEPTION 'injected terminal outbox failure'; END $$; \
+         CREATE TRIGGER reject_loop_error_end BEFORE INSERT ON event_outbox \
+         FOR EACH ROW WHEN (NEW.event_type = 'run.finished') \
+         EXECUTE FUNCTION reject_loop_error_end()",
+    )
+    .execute(&fixture.db.pool)
+    .await
+    .expect("install terminal fault");
+    let finish = drain_finish_command(&fixture, version);
+    assert!(matches!(
+        replica(&fixture).finish_drain(&finish).await,
+        Err(LoopProgressError::Storage(_))
+    ));
+    rolled_back_before_finish(&fixture, version).await;
+    assert_eq!(events_of(&fixture, "run.finished").await, 0);
+    sqlx::raw_sql(
+        "DROP TRIGGER reject_loop_error_end ON event_outbox; \
+         DROP FUNCTION reject_loop_error_end()",
+    )
+    .execute(&fixture.db.pool)
+    .await
+    .expect("remove terminal fault");
+    let finished = replica(&fixture)
+        .finish_drain(&finish)
+        .await
+        .expect("retry finish");
+    assert_eq!(finished.run_version, 14);
+    assert_eq!(settled(&fixture).await.run_status, "SUCCEEDED");
+    verify(&fixture, "finished after retry").await;
+}
+
+#[tokio::test]
+async fn a_stale_scheduler_fence_stops_every_routed_drain_step() {
+    let fixture = seed_running_loop_routed("loop-error-fence", OnError::Activity).await;
+    let stale = SchedulerAuthority::for_run(
+        fixture.authority.owner(),
+        fixture.run,
+        fixture.authority.lease().generation + 1,
+    );
+    let stale_transition = |version: u64| {
+        transition(
+            &fixture,
+            version,
+            stale.clone(),
+            audit(&fixture),
+            crate::support::now(),
+        )
+    };
+    let failure = LoopDrainReason::Failed {
+        iteration: 0,
+        code: FailureCode::expression_error(),
+    };
+    assert_eq!(
+        replica(&fixture)
+            .start_drain(
+                &LoopDrainCommand::new(stale_transition(8), failure.clone(), Uuid::now_v7())
+                    .expect("stale start")
+            )
+            .await,
+        Err(LoopProgressError::SchedulerFenceLost)
+    );
+    let version = start_and_drain_failure(&fixture).await;
+    assert_eq!(
+        replica(&fixture)
+            .finish_drain(&LoopDrainFinishCommand::new(
+                stale_transition(version),
+                Uuid::now_v7()
+            ))
+            .await,
+        Err(LoopProgressError::SchedulerFenceLost)
+    );
+    rolled_back_before_finish(&fixture, version).await;
 }
