@@ -8,8 +8,8 @@ use sagat_domain::execution::{
     ApprovalDecision, ApprovalReasonCode, ApprovalReceiptId, ApprovalRequestId, ChildOutcome,
     CollectionDrainReason, CollectionOutcome, CorrelationKey, ExecutionInstanceId, FailureCode,
     Fence, InstancePath, JoinOutcome, LoopContinuation, LoopDrainReason, LoopKind, LoopOutcome,
-    PlannedEntry, ReconcileResult, ReviewOutcome, RunEvent, RunId, RunStatus, StopReason,
-    SwitchSelection,
+    PlannedEntry, ReconcileResult, ReviewOutcome, RunEvent, RunId, RunStatus, ScopedPlannedEntry,
+    StopReason, SwitchSelection,
 };
 use sagat_domain::identity::Subject;
 use sagat_domain::saga::{ReconcileVerdict, SagaOutcome};
@@ -364,6 +364,23 @@ pub(crate) fn encode(event: &RunEvent) -> Encoded {
             "irreversible": names(irreversible),
         }),
         RunEvent::SagaCompensated { outcome, .. } => json!({ "outcome": outcome.as_str() }),
+        RunEvent::ScopeCompensationPlanned {
+            cause,
+            entries,
+            irreversible,
+            ..
+        } => json!({
+            "cause": cause.as_str(),
+            "entries": entries
+                .iter()
+                .map(|e| json!({
+                    "instance": instance_value(&e.instance),
+                    "after": e.after.iter().map(instance_value).collect::<Vec<_>>(),
+                }))
+                .collect::<Vec<_>>(),
+            "irreversible": irreversible.iter().map(instance_value).collect::<Vec<_>>(),
+        }),
+        RunEvent::ScopeCompensated { outcome, .. } => json!({ "outcome": outcome.as_str() }),
         RunEvent::ReconciliationRequested { fence, cause, .. } => json!({
             "attempt": fence.attempt,
             "generation": fence.generation,
@@ -784,6 +801,37 @@ pub(crate) fn decode(event_type: &str, node: Option<&str>, detail: &Value) -> Op
             node: node_id()?,
             outcome: text(d, "outcome")?.parse::<SagaOutcome>().ok()?,
         },
+        "scope.compensation_planned" => RunEvent::ScopeCompensationPlanned {
+            node: node_id()?,
+            cause: FailureCode::parse(text(d, "cause")?).ok()?,
+            entries: d
+                .get("entries")?
+                .as_array()?
+                .iter()
+                .map(|entry| {
+                    let entry = entry.as_object()?;
+                    Some(ScopedPlannedEntry {
+                        instance: instance_of(entry.get("instance")?)?,
+                        after: entry
+                            .get("after")?
+                            .as_array()?
+                            .iter()
+                            .map(instance_of)
+                            .collect::<Option<Vec<_>>>()?,
+                    })
+                })
+                .collect::<Option<Vec<_>>>()?,
+            irreversible: d
+                .get("irreversible")?
+                .as_array()?
+                .iter()
+                .map(instance_of)
+                .collect::<Option<Vec<_>>>()?,
+        },
+        "scope.compensated" => RunEvent::ScopeCompensated {
+            node: node_id()?,
+            outcome: text(d, "outcome")?.parse::<SagaOutcome>().ok()?,
+        },
         "reconciliation.requested" => {
             let (attempt, generation) = fence(d)?;
             RunEvent::ReconciliationRequested {
@@ -876,8 +924,10 @@ pub(crate) fn decode(event_type: &str, node: Option<&str>, detail: &Value) -> Op
 mod tests {
     use sagat_domain::execution::{
         CollectionDrainReason, CollectionOutcome, ExecutionInstanceId, FailureCode, InstancePath,
-        LoopContinuation, LoopDrainReason, LoopKind, LoopOutcome, RunEvent, SwitchSelection,
+        LoopContinuation, LoopDrainReason, LoopKind, LoopOutcome, RunEvent, ScopedPlannedEntry,
+        SwitchSelection,
     };
+    use sagat_domain::saga::SagaOutcome;
     use sagat_domain::workflow::{ActivityName, Digest, NodeId};
     use serde_json::json;
 
@@ -1014,6 +1064,60 @@ mod tests {
                 .is_none()
             );
         }
+    }
+
+    #[test]
+    fn scope_compensation_events_are_exact_codec_inverses() {
+        let owner = node("items");
+        let at = |index: u32, name: &str| {
+            ExecutionInstanceId::in_path(
+                InstancePath::root()
+                    .child(owner.clone(), index)
+                    .expect("bounded path"),
+                node(name),
+            )
+        };
+        let planned = RunEvent::ScopeCompensationPlanned {
+            node: owner.clone(),
+            cause: FailureCode::parse("PAYMENT_DECLINED").expect("failure code"),
+            entries: vec![
+                ScopedPlannedEntry {
+                    instance: at(0, "ship"),
+                    after: Vec::new(),
+                },
+                ScopedPlannedEntry {
+                    instance: at(0, "reserve"),
+                    after: vec![at(0, "ship"), at(1, "reserve")],
+                },
+            ],
+            irreversible: vec![at(2, "notify")],
+        };
+        let compensated = RunEvent::ScopeCompensated {
+            node: owner,
+            outcome: SagaOutcome::Partial,
+        };
+        for event in [planned, compensated] {
+            let encoded = encode(&event);
+            assert_eq!(
+                decode(encoded.event_type, encoded.node.as_deref(), &encoded.detail),
+                Some(event)
+            );
+        }
+        for detail in [
+            json!({}),
+            json!({"cause": "X", "entries": [{"instance": {"node": "a", "path": "bad"}, "after": []}], "irreversible": []}),
+            json!({"cause": "bad cause", "entries": [], "irreversible": []}),
+        ] {
+            assert!(decode("scope.compensation_planned", Some("items"), &detail).is_none());
+        }
+        assert!(
+            decode(
+                "scope.compensated",
+                Some("items"),
+                &json!({"outcome": "NOPE"})
+            )
+            .is_none()
+        );
     }
 
     #[test]

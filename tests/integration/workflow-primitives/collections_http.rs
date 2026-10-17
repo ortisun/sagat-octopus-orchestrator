@@ -522,15 +522,16 @@ async fn publication_keeps_unproven_collection_bodies_closed() {
                 "id": "price",
                 "type": "activity",
                 "activity": "line.price",
-                "next": "discount"
+                "next": "return-price",
+                "onError": "fallback"
             },
             {
-                "id": "discount",
+                "id": "fallback",
                 "type": "activity",
-                "activity": "line.discount",
+                "activity": "line.fallback",
                 "next": "return-price"
             },
-            {"id": "return-price", "type": "return", "result": "steps.discount.output"}
+            {"id": "return-price", "type": "return", "result": "steps.price.output"}
         ]),
     );
     let workflow = create(&api, &name, document).await;

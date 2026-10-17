@@ -147,6 +147,8 @@ pub enum CollectionAdvance {
     },
     DrainFinished,
     Finished,
+    /// A compensating scope planned, released or ended its compensation (feature 014, D380).
+    Compensated,
     /// The attempted transition retained no value and the run began its durable quota drain.
     QuotaStopped,
     /// A declared hard budget (`ITERATION_LIMIT`, `INSTANCE_LIMIT`) was exceeded before the
@@ -175,6 +177,8 @@ pub enum CollectionAdvanceError {
     Primitive(#[from] PrimitiveStoreError),
     #[error(transparent)]
     Input(#[from] PrimitiveInputError),
+    #[error(transparent)]
+    Execution(#[from] ExecutionError),
     #[error("collection expression evaluation failed")]
     Expression,
 }
@@ -910,7 +914,7 @@ where
                 limits,
             ) {
                 Ok(entry) => entry.with_iteration_charge(
-                    u32::try_from(body.nodes().count())
+                    u32::try_from(body.all_nodes().count())
                         .map_err(|_| CollectionAdvanceError::InvalidProgress)?,
                 ),
                 // More items than the node declared it would iterate over: a hard budget, so the
@@ -1034,10 +1038,16 @@ where
                                 step.status(),
                                 execution::StepStatus::Succeeded | execution::StepStatus::Skipped
                             );
-                        let safe_unstarted = step.attempt() == 0
+                        // Nothing is in flight: a step that has not started, or that waits to
+                        // retry (or is ready to) in a run that is stopping and cannot lease it.
+                        let safe_unstarted = (step.attempt() == 0
                             && matches!(
                                 step.status(),
                                 execution::StepStatus::Pending | execution::StepStatus::Ready
+                            ))
+                            || matches!(
+                                step.status(),
+                                execution::StepStatus::Ready | execution::StepStatus::RetryWait
                             );
                         step.status().is_terminal() && !instance.node().is_derived()
                             || settled_derived
@@ -1060,6 +1070,46 @@ where
                 instance != owner && instance.path().is_root() && !step.status().is_terminal()
             }) {
                 return Ok(CollectionAdvance::Waiting);
+            }
+            // A scope that can be compensated undoes what its iterations completed before it ends
+            // (D380): the pure planner says what is next, and the commit is the scheduler's own,
+            // under its fence, like every other transition of the run.
+            if definition.scope_compensates(owner) {
+                let finished = state
+                    .scope_saga(owner)
+                    .is_some_and(|saga| saga.phase() == execution::SagaPhase::Done);
+                if !finished {
+                    if !matches!(
+                        execution::plan_scope_compensation(&definition, &state)?,
+                        execution::AddressedPlan::Emit(_)
+                    ) {
+                        return Ok(CollectionAdvance::Waiting);
+                    }
+                    return match self
+                        .apply_addressed(
+                            view,
+                            tenant,
+                            run,
+                            "scope_compensation",
+                            self.effects(),
+                            |def, state, _| {
+                                Ok(((), execution::advance_scope_compensation(def, state)?))
+                            },
+                        )
+                        .await
+                    {
+                        Outcome::Done => Ok(CollectionAdvance::Compensated),
+                        Outcome::Skipped => Ok(CollectionAdvance::Waiting),
+                        Outcome::Fenced => Err(CollectionAdvanceError::FenceUnavailable),
+                        Outcome::Failed | Outcome::QuotaStopped => {
+                            Err(CollectionAdvanceError::Engine(EngineError::Store(
+                                StoreError::Internal {
+                                    detail: "scope compensation could not be committed".to_owned(),
+                                },
+                            )))
+                        }
+                    };
+                }
             }
             self.store
                 .finish_collection_drain(&CollectionDrainFinish::new(
@@ -1196,9 +1246,6 @@ where
         if collection.next_admission() < collection.item_count()
             && collection.active_count() < usize::from(collection.max_concurrency())
         {
-            if body.all_nodes().count() != body.nodes().count() {
-                return Err(CollectionAdvanceError::InvalidProgress);
-            }
             let index = collection.next_admission();
             let entry = ExecutionInstanceId::in_path(
                 owner
@@ -1214,7 +1261,9 @@ where
             else {
                 return Err(CollectionAdvanceError::InvalidProgress);
             };
-            let reserved_instances = u16::try_from(body.nodes().count().saturating_sub(1))
+            // The iteration reserves every other node of its body, the compensations and lookups
+            // of its activities included, so the budget cannot stop them (D384).
+            let reserved_instances = u16::try_from(body.all_nodes().count().saturating_sub(1))
                 .map_err(|_| CollectionAdvanceError::InvalidProgress)?;
             let item = progress
                 .items
@@ -2684,6 +2733,7 @@ where
                         | CollectionAdvance::DrainStarted
                         | CollectionAdvance::Drained { .. }
                         | CollectionAdvance::DrainFinished
+                        | CollectionAdvance::Compensated
                         | CollectionAdvance::Finished,
                     ) => Outcome::Done,
                     Ok(CollectionAdvance::QuotaStopped) => Outcome::QuotaStopped,

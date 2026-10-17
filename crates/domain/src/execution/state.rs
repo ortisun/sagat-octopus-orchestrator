@@ -1300,6 +1300,48 @@ impl RunChainState {
     }
 }
 
+/// The terminal status a stopped run reaches: the status of the reason, worsened by the sagas that
+/// ran while it was stopping. `failure_compensated` says that the failure that stopped the run was
+/// itself the failure a compensating scope ran into, so undoing it completely is what ends the run
+/// `COMPENSATED` rather than `FAILED`.
+fn end_status(
+    reason: StopReason,
+    failure_compensated: bool,
+    outcomes: impl Iterator<Item = SagaOutcome>,
+) -> RunStatus {
+    let own = match reason {
+        StopReason::Compensated => Some(SagaOutcome::Compensated),
+        StopReason::Partial => Some(SagaOutcome::Partial),
+        StopReason::CompensationFailed => Some(SagaOutcome::CompensationFailed),
+        StopReason::Failed if failure_compensated => Some(SagaOutcome::Compensated),
+        StopReason::Cancelled | StopReason::TimedOut | StopReason::Failed => None,
+    };
+    match own.into_iter().chain(outcomes).max() {
+        Some(SagaOutcome::CompensationFailed) => RunStatus::CompensationFailed,
+        Some(SagaOutcome::Partial) => RunStatus::Partial,
+        Some(SagaOutcome::Compensated) if own.is_some() => RunStatus::Compensated,
+        _ => reason.final_status(),
+    }
+}
+
+/// The terminal status of a run that one compensating scope stopped or ended while it was stopping:
+/// the same answer as [`RunState::final_status_for`] for a run with that one scope, for the adapters
+/// that finish the run in the transaction that finishes the scope.
+#[must_use]
+pub fn scope_final_status(
+    reason: StopReason,
+    stop_code: Option<&FailureCode>,
+    cause: &FailureCode,
+    outcome: SagaOutcome,
+    during_stop: bool,
+) -> RunStatus {
+    end_status(
+        reason,
+        Some(cause) == stop_code,
+        during_stop.then_some(outcome).into_iter(),
+    )
+}
+
 fn illegal_transition(
     instance: &ExecutionInstanceId,
     status: StepStatus,
@@ -1686,16 +1728,18 @@ impl RunState {
                     });
                 }
                 let path = entry.path();
-                let mut scoped = self
-                    .steps
-                    .iter()
-                    .filter(|(instance, _)| instance.path() == path);
+                // The compensations of a scope that stopped are created after its iterations
+                // drain, so they are no part of what a drained iteration had settled.
+                let mut scoped = self.steps.iter().filter(|(instance, _)| {
+                    instance.path() == path && !instance.node().is_compensation()
+                });
                 if !scoped.any(|(instance, step)| {
                     step.status.is_terminal()
                         && (!instance.node().is_derived()
                             || matches!(step.status, StepStatus::Succeeded | StepStatus::Skipped))
                 }) || self.steps.iter().any(|(instance, step)| {
                     instance.path() == path
+                        && !instance.node().is_compensation()
                         && (!step.status.is_terminal()
                             || (instance.node().is_derived()
                                 && !matches!(
@@ -2122,18 +2166,10 @@ impl RunState {
     pub fn final_status_for(&self, reason: StopReason) -> RunStatus {
         // A scope whose own failure stopped the run (D385) is the saga that failure ran into: if it
         // undid everything the run ends `COMPENSATED`, as a failure inside a `saga` node does.
-        let scope_failure = reason == StopReason::Failed
-            && self
-                .scope_sagas
-                .values()
-                .any(|saga| Some(&saga.cause) == self.stop_code() && saga.outcome.is_some());
-        let own = match reason {
-            StopReason::Compensated => Some(SagaOutcome::Compensated),
-            StopReason::Partial => Some(SagaOutcome::Partial),
-            StopReason::CompensationFailed => Some(SagaOutcome::CompensationFailed),
-            StopReason::Failed if scope_failure => Some(SagaOutcome::Compensated),
-            StopReason::Cancelled | StopReason::TimedOut | StopReason::Failed => None,
-        };
+        let scope_failure = self
+            .scope_sagas
+            .values()
+            .any(|saga| Some(&saga.cause) == self.stop_code() && saga.outcome.is_some());
         let worst = self
             .sagas
             .values()
@@ -2145,12 +2181,7 @@ impl RunState {
                     .filter(|saga| saga.during_stop)
                     .filter_map(|saga| saga.outcome),
             );
-        match own.into_iter().chain(worst).max() {
-            Some(SagaOutcome::CompensationFailed) => RunStatus::CompensationFailed,
-            Some(SagaOutcome::Partial) => RunStatus::Partial,
-            Some(SagaOutcome::Compensated) if own.is_some() => RunStatus::Compensated,
-            _ => reason.final_status(),
-        }
+        end_status(reason, scope_failure, worst)
     }
 
     /// How `saga` ends, judged from its compensations: failed or cancelled ones make it
@@ -2608,8 +2639,11 @@ impl RunState {
                     found = true;
                     let unresolved_derived = instance.node().is_derived()
                         && !matches!(step.status, StepStatus::Succeeded | StepStatus::Skipped);
-                    let safe_to_stop = step.attempt == 0
-                        && matches!(step.status, StepStatus::Pending | StepStatus::Ready);
+                    // Nothing is in flight: a step that has not started, or one that waits to retry
+                    // (or is ready to) in a run that is stopping and can no longer lease it.
+                    let safe_to_stop = (step.attempt == 0
+                        && matches!(step.status, StepStatus::Pending | StepStatus::Ready))
+                        || matches!(step.status, StepStatus::Ready | StepStatus::RetryWait);
                     if unresolved_derived || (!step.status.is_terminal() && !safe_to_stop) {
                         return Err(ExecutionError::IllegalCollectionTransition {
                             collection: collection.clone(),

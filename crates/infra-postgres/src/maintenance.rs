@@ -178,7 +178,7 @@ impl MaintenanceStore for PgRunStore {
                  FROM iteration_scopes scope JOIN runs run \
                    ON run.tenant_id=scope.tenant_id AND run.id=scope.run_id \
                  WHERE run_shard(scope.run_id)=sh.s \
-                   AND run.status IN ('RUNNING','WAITING','CANCELLING') \
+                   AND run.status IN ('RUNNING','WAITING','CANCELLING','COMPENSATING') \
                    AND scope.kind='COLLECTION' \
                    AND scope.tenant_id <> ALL($3::uuid[]) \
                    AND ( \

@@ -910,6 +910,34 @@ fn review_event(
     settle_addressed(def, state, instance.path(), events)
 }
 
+/// Advances the compensation of the collection and loop scopes of the run as far as the pure
+/// planner can in one commit: plans a scope whose drain has settled, releases the compensations
+/// that have nothing left to wait for, gives up on the ones whose dependency failed, and ends the
+/// scope when its last compensation is over (D380..D385).
+///
+/// # Errors
+/// [`ExecutionError::NotYetDue`] when there is nothing to advance (another commit did it first);
+/// any other error means the state belongs to another version of the definition.
+pub fn advance_scope_compensation(
+    def: &WorkflowDefinition,
+    state: &mut RunState,
+) -> Result<AddressedProgress, ExecutionError> {
+    let mut events = Vec::new();
+    for _ in 0..(16 + 4 * def.total_len()) {
+        match super::scoped_sagas::plan_scope_compensation(def, state)? {
+            AddressedPlan::Emit(event) => {
+                state.apply_addressed(&event)?;
+                events.push(event);
+            }
+            AddressedPlan::Idle => break,
+        }
+    }
+    if events.is_empty() {
+        return Err(ExecutionError::NotYetDue(def.entrypoint().clone()));
+    }
+    Ok(AddressedProgress { events })
+}
+
 /// An operator asks for another attempt of a scoped step that waits for a decision.
 ///
 /// # Errors

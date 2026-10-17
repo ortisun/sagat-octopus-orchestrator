@@ -28,7 +28,8 @@ use crate::entropy::{Entropy, Token};
 use crate::error::{AppError, StoreError};
 use crate::execution::{
     Actor, Effects, Engine, EngineError, ExpressionEvaluator, LeaseGrant, LeaseRenewal,
-    MAX_PAYLOAD_BYTES, MAX_RUN_OUTPUT_BYTES, RunTx, compensation_key, instance_step_id,
+    MAX_PAYLOAD_BYTES, MAX_RUN_OUTPUT_BYTES, RunTx, instance_compensation_key,
+    instance_reconciliation_key, instance_step_id,
 };
 use crate::quotas::QuotaLookup;
 use crate::runs::{Lock, RunStore, execution_error};
@@ -838,11 +839,6 @@ where
                 })
                 .filter_map(|(instance, _)| {
                     let n = def.node_for_instance(instance)?;
-                    if !instance.path().is_root()
-                        && n.origin() != &sagat_domain::saga::NodeOrigin::Declared
-                    {
-                        return None;
-                    }
                     match n.kind() {
                         NodeKind::Activity { activity, .. }
                             if session.activities.iter().any(|a| a == activity.as_str()) =>
@@ -1121,23 +1117,34 @@ where
                 }
             },
             None if instance.path().is_root() => format!("{run_id}:{forward_node}"),
-            None => format!("{run_id}:{}", instance_step_id(version, run_id, instance)),
+            None => format!(
+                "{run_id}:{}",
+                instance_step_id(version, run_id, &templated_instance)
+            ),
         };
+        // The forward instance a compensation or a lookup is about lives at the task's own path:
+        // the derived node shares the scope path of its forward node (D382).
         let (idempotency_key, target) = match (kind, forward) {
-            (TaskKind::Compensation, Some(forward)) => (
-                compensation_key(version, run_id, &forward),
-                Some(TaskTarget {
-                    instance: ExecutionInstanceId::root(forward),
-                    idempotency_key: forward_key,
-                }),
-            ),
-            (TaskKind::Reconciliation, Some(forward)) => (
-                format!("reconciliation:{run_id}:{forward}"),
-                Some(TaskTarget {
-                    instance: ExecutionInstanceId::root(forward),
-                    idempotency_key: forward_key,
-                }),
-            ),
+            (TaskKind::Compensation, Some(forward)) => {
+                let forward = ExecutionInstanceId::in_path(instance.path().clone(), forward);
+                (
+                    instance_compensation_key(version, run_id, &forward),
+                    Some(TaskTarget {
+                        instance: forward,
+                        idempotency_key: forward_key,
+                    }),
+                )
+            }
+            (TaskKind::Reconciliation, Some(forward)) => {
+                let forward = ExecutionInstanceId::in_path(instance.path().clone(), forward);
+                (
+                    instance_reconciliation_key(version, run_id, &forward),
+                    Some(TaskTarget {
+                        instance: forward,
+                        idempotency_key: forward_key,
+                    }),
+                )
+            }
             _ => (forward_key, None),
         };
         Ok(ClaimedTask {
@@ -1593,14 +1600,18 @@ where
         if task.instance.node().is_compensation() {
             let node = task.instance.node().clone();
             let fence = task.fence;
-            let completed = self
-                .engine
-                .run(&mut tx, effects, move |def, state, now| {
-                    let progress = execution::complete_step(def, state, &node, fence, now)?;
-                    Ok(((), progress))
-                })
-                .await
-                .map_err(engine_error);
+            let completed = if task.instance.path().is_root() {
+                self.engine
+                    .run(&mut tx, effects, move |def, state, now| {
+                        let progress = execution::complete_step(def, state, &node, fence, now)?;
+                        Ok(((), progress))
+                    })
+                    .await
+                    .map_err(engine_error)
+            } else {
+                self.apply_scoped_or_root_completion(&mut tx, task, effects, None)
+                    .await
+            };
             let result = match completed {
                 Ok(()) => self.finish(tx, task, idempotency.clone()).await,
                 Err(error) => {
@@ -1749,41 +1760,54 @@ where
                 {
                     Some(FailureCode::run_data_limit())
                 } else {
-                    // The forward step succeeded after all: later steps read the output it would
-                    // have had.
-                    if let Some(bytes) = substitute {
-                        effects.outputs = vec![(forward.clone(), bytes)];
-                    }
                     let (node, fence, verdict) =
                         (task.instance.node().clone(), task.fence, answer.verdict);
                     let jitter = self.entropy.unit();
-                    self.engine
-                        .run(&mut tx, effects, move |def, state, now| {
-                            let progress = execution::complete_reconciliation(
-                                def, state, &node, fence, verdict, jitter, now,
-                            )?;
-                            Ok(((), progress))
-                        })
-                        .await
-                        .map_err(engine_error)?;
+                    if task.instance.path().is_root() {
+                        // The forward step succeeded after all: later steps read the output it
+                        // would have had.
+                        if let Some(bytes) = substitute {
+                            effects.outputs = vec![(forward.clone(), bytes)];
+                        }
+                        self.engine
+                            .run(&mut tx, effects, move |def, state, now| {
+                                let progress = execution::complete_reconciliation(
+                                    def, state, &node, fence, verdict, jitter, now,
+                                )?;
+                                Ok(((), progress))
+                            })
+                            .await
+                            .map_err(engine_error)?;
+                    } else {
+                        let instance = task.instance.clone();
+                        let forward_instance =
+                            ExecutionInstanceId::in_path(instance.path().clone(), forward.clone());
+                        let outputs = substitute
+                            .map(|bytes| vec![(forward_instance, bytes)])
+                            .unwrap_or_default();
+                        self.engine
+                            .run_addressed(&mut tx, outputs, effects, move |def, state, now| {
+                                let progress = execution::complete_reconciliation_instance(
+                                    def, state, &instance, fence, verdict, jitter, now,
+                                )?;
+                                Ok(((), progress))
+                            })
+                            .await
+                            .map_err(engine_error)?;
+                    }
                     return self.finish(tx, task, idempotency).await;
                 }
             }
         };
         let code = rejected.ok_or(AppError::Internal)?;
-        let (node, fence) = (task.instance.node().clone(), task.fence);
-        self.engine
-            .run(&mut tx, effects, move |def, state, now| {
-                let failure = execution::Failure {
-                    fence,
-                    code,
-                    retryable: false,
-                    jitter_sample: 0.0,
-                };
-                Ok(((), execution::fail_step(def, state, &node, failure, now)?))
-            })
-            .await
-            .map_err(engine_error)?;
+        let failure = execution::Failure {
+            fence: task.fence,
+            code,
+            retryable: false,
+            jitter_sample: 0.0,
+        };
+        self.apply_scoped_or_root_failure(&mut tx, task, effects, failure)
+            .await?;
         self.finish(tx, task, idempotency).await
     }
 

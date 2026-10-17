@@ -21,7 +21,7 @@ use sagat_application::definitions::{
 use sagat_application::error::StoreError;
 use sagat_application::execution::{
     BreakerPolicy, DefinitionCache, Effects, LeaseDeadlines, ParentLink, RunData, RunInfo,
-    RunRecord, RunTx, ScopeInput, compensation_id, instance_step_id,
+    RunRecord, RunTx, ScopeInput, compensation_id, instance_compensation_id, instance_step_id,
 };
 use sagat_application::runs::{
     ApprovalView, ChainView, GraphSnapshot, JournalEntry, Lock, NewRun, RunFilter, RunStore,
@@ -34,8 +34,8 @@ use sagat_domain::execution::{
     CollectionDrainReason, CollectionIterationRestore, CollectionPhase, ContinuationTransfer,
     CorrelationKey, ExecutionInstanceId, FailureCode, InstancePath, LoopContinuation,
     LoopDrainReason, LoopIterationRestore, LoopKind, LoopPhase, RunChainState, RunEvent, RunId,
-    RunState, RunStatus, SagaPhase, SagaState, SegmentCompletionKind, SegmentIndex, StepState,
-    StepStatus, StopReason, SwitchSelection, WaitingOn,
+    RunState, RunStatus, SagaPhase, SagaState, ScopeSagaState, SegmentCompletionKind, SegmentIndex,
+    StepState, StepStatus, StopReason, SwitchSelection, WaitingOn,
 };
 use sagat_domain::identity::{Namespace, NamespaceId, Principal, Slug, TenantId};
 use sagat_domain::saga::{NodeOrigin, SagaOutcome};
@@ -229,6 +229,7 @@ impl PgRunStore {
         );
         load_collections(&mut tx, tenant, run, &mut state).await?;
         load_loops(&mut tx, tenant, run, &mut state).await?;
+        load_scope_sagas(&mut tx, tenant, run, &mut state).await?;
         load_chain(&mut tx, tenant, run, &mut state).await?;
         let definition = self
             .definition(&mut tx, tenant, record.info.version_id)
@@ -1489,8 +1490,11 @@ async fn load_collections(
                 let checkpoint = checkpoints
                     .remove(&(scope_id, index))
                     .ok_or_else(|| corrupt("collection checkpoint projection"))?;
+                // What is left reserved is the derived work (compensations and lookups) the body
+                // declares and the iteration never needed: it stays counted against the run's
+                // lifetime budget (D384).
                 if checkpoint != (return_id_value, result, sequence)
-                    || col::<i32>(row, "remaining_reservations")? != 0
+                    || col::<i32>(row, "remaining_reservations")? < 0
                 {
                     return Err(corrupt("collection checkpoint projection"));
                 }
@@ -1513,7 +1517,7 @@ async fn load_collections(
             }
             "DRAINED"
                 if !col::<bool>(row, "slot_held")?
-                    && col::<i32>(row, "remaining_reservations")? == 0
+                    && col::<i32>(row, "remaining_reservations")? >= 0
                     && return_nodes.is_none()
                     && return_indices.is_none()
                     && return_node.is_none()
@@ -1951,7 +1955,7 @@ async fn load_loops(
             }
             "CHECKPOINTED"
                 if !slot_held
-                    && remaining == 0
+                    && remaining >= 0
                     && drained_sequence.is_none()
                     && drain_outbox_id.is_none() =>
             {
@@ -1999,7 +2003,7 @@ async fn load_loops(
             }
             "DRAINED"
                 if !slot_held
-                    && remaining == 0
+                    && remaining >= 0
                     && return_id.is_none()
                     && return_node.is_none()
                     && result.is_none()
@@ -2220,6 +2224,126 @@ async fn load_chain(
         transfer,
     ));
     Ok(())
+}
+
+/// Whether the event names a collection or loop scope's compensation rather than one step.
+fn is_scope_saga_event(event: &RunEvent) -> bool {
+    matches!(
+        event,
+        RunEvent::ScopeCompensationPlanned { .. } | RunEvent::ScopeCompensated { .. }
+    )
+}
+
+/// The compensation of the collection and loop scopes of a run, rebuilt from their rows. The scopes
+/// themselves are restored first: a compensation without its scope is a corrupt projection.
+async fn load_scope_sagas(
+    tx: &mut Transaction<'static, Postgres>,
+    tenant: TenantId,
+    run: RunId,
+    state: &mut RunState,
+) -> Result<(), StoreError> {
+    let sagas = sqlx::query(
+        "SELECT owner_path_nodes, owner_path_indices, owner_node, phase, cause_code, outcome, \
+                during_stop \
+         FROM scope_sagas WHERE tenant_id = $1 AND run_id = $2 \
+         ORDER BY owner_path_nodes, owner_path_indices, owner_node",
+    )
+    .bind(tenant.as_uuid())
+    .bind(run.as_uuid())
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(store_error)?;
+    if sagas.is_empty() {
+        return Ok(());
+    }
+    let entries = sqlx::query(
+        "SELECT owner_path_nodes, owner_path_indices, owner_node, iteration_index, node, kind, \
+                after_iterations, after_nodes \
+         FROM scope_saga_entries WHERE tenant_id = $1 AND run_id = $2",
+    )
+    .bind(tenant.as_uuid())
+    .bind(run.as_uuid())
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(store_error)?;
+    type Planned = (
+        BTreeMap<ExecutionInstanceId, Vec<ExecutionInstanceId>>,
+        Vec<ExecutionInstanceId>,
+    );
+    let mut planned: BTreeMap<ExecutionInstanceId, Planned> = BTreeMap::new();
+    for row in &entries {
+        let owner = scope_owner_instance(row)?;
+        let iteration = u32::try_from(col::<i32>(row, "iteration_index")?)
+            .map_err(|_| corrupt("scope compensation iteration"))?;
+        let member = |iteration: u32, node: &str| -> Result<ExecutionInstanceId, StoreError> {
+            Ok(ExecutionInstanceId::in_path(
+                owner
+                    .path()
+                    .child(owner.node().clone(), iteration)
+                    .map_err(|_| corrupt("scope compensation member path"))?,
+                NodeId::parse_stored(node).map_err(|_| corrupt("scope compensation member"))?,
+            ))
+        };
+        let forward = member(iteration, &col::<String>(row, "node")?)?;
+        let slot = planned.entry(owner.clone()).or_default();
+        match col::<String>(row, "kind")?.as_str() {
+            "COMPENSATE" => {
+                let iterations = col::<Vec<i32>>(row, "after_iterations")?;
+                let nodes = col::<Vec<String>>(row, "after_nodes")?;
+                let after = iterations
+                    .iter()
+                    .zip(&nodes)
+                    .map(|(iteration, node)| {
+                        member(
+                            u32::try_from(*iteration)
+                                .map_err(|_| corrupt("scope compensation dependency"))?,
+                            node,
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                slot.0.insert(forward, after);
+            }
+            "IRREVERSIBLE" => slot.1.push(forward),
+            _ => return Err(corrupt("scope compensation entry kind")),
+        }
+    }
+    for row in &sagas {
+        let owner = scope_owner_instance(row)?;
+        let (entries, irreversible) = planned.remove(&owner).unwrap_or_default();
+        let saga = ScopeSagaState::restore(
+            col::<String>(row, "phase")?
+                .parse::<SagaPhase>()
+                .map_err(|_| corrupt("scope compensation phase"))?,
+            FailureCode::parse(&col::<String>(row, "cause_code")?)
+                .map_err(|_| corrupt("scope compensation cause"))?,
+            entries,
+            irreversible,
+            col::<Option<String>>(row, "outcome")?
+                .map(|outcome| outcome.parse::<SagaOutcome>())
+                .transpose()
+                .map_err(|()| corrupt("scope compensation outcome"))?,
+            col(row, "during_stop")?,
+        );
+        state
+            .restore_scope_saga(owner, saga)
+            .map_err(|_| corrupt("scope compensation owner"))?;
+    }
+    if !planned.is_empty() {
+        return Err(corrupt("orphan scope compensation entry"));
+    }
+    Ok(())
+}
+
+fn scope_owner_instance(row: &PgRow) -> Result<ExecutionInstanceId, StoreError> {
+    Ok(ExecutionInstanceId::in_path(
+        instance_path(
+            col(row, "owner_path_nodes")?,
+            col(row, "owner_path_indices")?,
+            "scope compensation owner path",
+        )?,
+        NodeId::parse_stored(&col::<String>(row, "owner_node")?)
+            .map_err(|_| corrupt("scope compensation owner"))?,
+    ))
 }
 
 /// The sagas of a run, rebuilt from their rows.
@@ -2445,7 +2569,14 @@ impl RunTx for PgRunTx {
                 "SELECT i.entry_path_nodes, i.entry_path_indices, i.iteration_index, p.content \
                  FROM collection_iterations i JOIN payloads p \
                    ON p.tenant_id=i.tenant_id AND p.digest=i.item_digest \
-                 WHERE i.tenant_id=$1 AND i.run_id=$2 AND i.lifecycle='ADMITTED'",
+                 WHERE i.tenant_id=$1 AND i.run_id=$2 \
+                   AND (i.lifecycle='ADMITTED' OR EXISTS ( \
+                        SELECT 1 FROM steps open_step \
+                         WHERE open_step.tenant_id=i.tenant_id AND open_step.run_id=i.run_id \
+                           AND open_step.instance_path_nodes=i.entry_path_nodes \
+                           AND open_step.instance_path_indices=i.entry_path_indices \
+                           AND open_step.kind='COMPENSATION' \
+                           AND open_step.status NOT IN ('SUCCEEDED','FAILED','CANCELLED','SKIPPED')))",
             )
             .bind(tenant)
             .bind(self.info.run_id.as_uuid())
@@ -3264,7 +3395,12 @@ impl RunTx for PgRunTx {
         outputs: &[(ExecutionInstanceId, Vec<u8>)],
         mut effects: Effects,
     ) -> Result<(), StoreError> {
-        if events.iter().all(|event| event.path().is_root())
+        // The events that name a scope are addressed at its owner, which may be a root step, but
+        // their effects (the compensations they create) are scoped.
+        if !events
+            .iter()
+            .any(|event| is_scope_saga_event(event.event()))
+            && events.iter().all(|event| event.path().is_root())
             && outputs
                 .iter()
                 .all(|(instance, _)| instance.path().is_root())
@@ -3594,7 +3730,9 @@ impl PgRunTx {
         outputs: &[(ExecutionInstanceId, Vec<u8>)],
         effects: Effects,
     ) -> Result<(), StoreError> {
-        if events.iter().any(|event| event.path().is_root())
+        if events
+            .iter()
+            .any(|event| event.path().is_root() && !is_scope_saga_event(event.event()))
             || outputs
                 .iter()
                 .any(|(instance, _)| instance.path().is_root())
@@ -3642,6 +3780,14 @@ impl PgRunTx {
                     | RunEvent::StepReleased { .. }
                     | RunEvent::StepCancelRequested { .. }
                     | RunEvent::StepCancelled { .. }
+                    | RunEvent::ReconciliationRequested { .. }
+                    | RunEvent::ReconciliationConcluded { .. }
+                    | RunEvent::StepNeedsReview { .. }
+                    | RunEvent::StepRetryRequested { .. }
+                    | RunEvent::StepSkipped { .. }
+                    | RunEvent::StepResolved { .. }
+                    | RunEvent::ScopeCompensationPlanned { .. }
+                    | RunEvent::ScopeCompensated { .. }
             ) {
                 return Err(StoreError::Internal {
                     detail: "the scoped event is not supported by addressed storage".into(),
@@ -3661,9 +3807,12 @@ impl PgRunTx {
         let completed = events
             .iter()
             .filter_map(|addressed| {
-                matches!(addressed.event(), RunEvent::StepCompleted { .. })
-                    .then(|| addressed.instance())
-                    .flatten()
+                matches!(
+                    addressed.event(),
+                    RunEvent::StepCompleted { .. } | RunEvent::ReconciliationConcluded { .. }
+                )
+                .then(|| addressed.instance())
+                .flatten()
             })
             .collect::<BTreeSet<_>>();
         let mut output_digest = BTreeMap::new();
@@ -3692,6 +3841,7 @@ impl PgRunTx {
         let mut touched = BTreeSet::new();
         let mut hinted = BTreeSet::new();
         let mut rehinted = BTreeSet::new();
+        let mut scope_owners: BTreeSet<ExecutionInstanceId> = BTreeSet::new();
         for (offset, addressed) in events.iter().enumerate() {
             let instance = addressed.instance().ok_or_else(|| StoreError::Internal {
                 detail: "a scoped event has no logical instance".into(),
@@ -3701,9 +3851,12 @@ impl PgRunTx {
             let seq = i64::try_from(self.persisted + 1 + offset as u64)
                 .map_err(|_| corrupt("sequence"))?;
             let (path_nodes, path_indices) = stored_path_parts(instance.path());
-            let payload = matches!(event, RunEvent::StepCompleted { .. })
-                .then(|| output_digest.get(&instance))
-                .flatten();
+            let payload = matches!(
+                event,
+                RunEvent::StepCompleted { .. } | RunEvent::ReconciliationConcluded { .. }
+            )
+            .then(|| output_digest.get(&instance))
+            .flatten();
             sqlx::query(
                 "INSERT INTO run_events \
                  (tenant_id, run_id, seq, event_type, node, attempt, detail, payload_digest, actor, \
@@ -3727,13 +3880,38 @@ impl PgRunTx {
             .execute(&mut *self.tx)
             .await
             .map_err(store_error)?;
-            touched.extend(addressed.changed_instances());
-            if matches!(
-                event,
-                RunEvent::StepReleased { .. } | RunEvent::StepRetryDue { .. }
-            ) {
-                hinted.insert(instance);
+            // The owner of a scope is a step the collection or loop store writes; the events that
+            // name it change the compensations they plan, not the owner row.
+            if is_scope_saga_event(event) {
+                if let RunEvent::ScopeCompensationPlanned { entries, .. } = event {
+                    touched.extend(entries.iter().map(|entry| entry.instance.compensation()));
+                }
+                scope_owners.insert(instance);
+            } else {
+                touched.extend(addressed.changed_instances());
+                if matches!(
+                    event,
+                    RunEvent::StepReleased { .. }
+                        | RunEvent::StepRetryDue { .. }
+                        | RunEvent::StepRetryRequested { .. }
+                ) {
+                    hinted.insert(instance.clone());
+                }
+                match event {
+                    RunEvent::StepCompleted { .. } if instance.node().is_compensation() => {
+                        self.breaker_outcome_instance(&instance, true).await?;
+                    }
+                    RunEvent::StepRetryScheduled { .. }
+                    | RunEvent::StepFailed { fence: Some(_), .. }
+                    | RunEvent::StepNeedsReview { fence: Some(_), .. }
+                        if instance.node().is_compensation() =>
+                    {
+                        self.breaker_outcome_instance(&instance, false).await?;
+                    }
+                    _ => {}
+                }
             }
+            self.signals.extend(of_event(event));
         }
 
         if let Some(grant) = &effects.lease {
@@ -3784,6 +3962,9 @@ impl PgRunTx {
         }
         for instance in &hinted {
             self.outbox_task_ready_instance(instance).await?;
+        }
+        for owner in &scope_owners {
+            self.upsert_scope_saga(owner, events).await?;
         }
 
         if written > 0 {
@@ -3936,7 +4117,31 @@ impl PgRunTx {
         let Some(NodeKind::Activity { activity, .. }) = self.def.node(node).map(Node::kind) else {
             return Ok(());
         };
-        let activity = activity.as_str().to_owned();
+        self.breaker_outcome_of(activity.as_str().to_owned(), succeeded)
+            .await
+    }
+
+    /// An attempt of a scoped compensation ended: tells the breaker of its activity, which is the
+    /// same breaker the root compensations of that activity share (per tenant, namespace, name).
+    async fn breaker_outcome_instance(
+        &mut self,
+        instance: &ExecutionInstanceId,
+        succeeded: bool,
+    ) -> Result<(), StoreError> {
+        let Some(NodeKind::Activity { activity, .. }) =
+            self.def.node_for_instance(instance).map(Node::kind)
+        else {
+            return Ok(());
+        };
+        self.breaker_outcome_of(activity.as_str().to_owned(), succeeded)
+            .await
+    }
+
+    async fn breaker_outcome_of(
+        &mut self,
+        activity: String,
+        succeeded: bool,
+    ) -> Result<(), StoreError> {
         let (tenant, namespace) = (
             self.info.tenant_id.as_uuid(),
             self.info.namespace_id.as_uuid(),
@@ -4225,6 +4430,133 @@ impl PgRunTx {
         Ok(())
     }
 
+    /// Writes the compensation of the scope `owner` and the plan it recorded in `events`.
+    async fn upsert_scope_saga(
+        &mut self,
+        owner: &ExecutionInstanceId,
+        events: &[AddressedRunEvent],
+    ) -> Result<(), StoreError> {
+        let Some(saga) = self.state.scope_saga(owner).cloned() else {
+            return Err(corrupt("scope compensation projection"));
+        };
+        let (path_nodes, path_indices) = stored_path_parts(owner.path());
+        let sequence = i64::try_from(self.state.version()).map_err(|_| corrupt("sequence"))?;
+        let planned = events.iter().any(|event| {
+            matches!(event.event(), RunEvent::ScopeCompensationPlanned { .. })
+                && event.instance().as_ref() == Some(owner)
+        });
+        if planned {
+            sqlx::query(
+                "INSERT INTO scope_sagas \
+                 (tenant_id, run_id, owner_path_nodes, owner_path_indices, owner_node, phase, \
+                  cause_code, outcome, during_stop, planned_sequence, created_at, updated_at) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)",
+            )
+            .bind(self.info.tenant_id.as_uuid())
+            .bind(self.info.run_id.as_uuid())
+            .bind(&path_nodes)
+            .bind(&path_indices)
+            .bind(owner.node().as_str())
+            .bind(saga.phase().as_str())
+            .bind(saga.cause().as_str())
+            .bind(saga.outcome().map(SagaOutcome::as_str))
+            .bind(saga.during_stop())
+            .bind(sequence)
+            .bind(self.now)
+            .execute(&mut *self.tx)
+            .await
+            .map_err(store_error)?;
+            for (forward, after) in saga.entries() {
+                self.insert_scope_saga_entry(
+                    owner,
+                    forward,
+                    Some(instance_compensation_id(self.info.version_id, forward)),
+                    after,
+                )
+                .await?;
+            }
+            for forward in saga.irreversible() {
+                self.insert_scope_saga_entry(owner, forward, None, &[])
+                    .await?;
+            }
+        }
+        if saga.outcome().is_some() {
+            let updated = sqlx::query(
+                "UPDATE scope_sagas SET phase = $6, outcome = $7, during_stop = $8, \
+                        ended_sequence = $9, updated_at = $10 \
+                 WHERE tenant_id = $1 AND run_id = $2 AND owner_path_nodes = $3 \
+                   AND owner_path_indices = $4 AND owner_node = $5 AND phase = 'COMPENSATING'",
+            )
+            .bind(self.info.tenant_id.as_uuid())
+            .bind(self.info.run_id.as_uuid())
+            .bind(&path_nodes)
+            .bind(&path_indices)
+            .bind(owner.node().as_str())
+            .bind(saga.phase().as_str())
+            .bind(saga.outcome().map(SagaOutcome::as_str))
+            .bind(saga.during_stop())
+            .bind(sequence)
+            .bind(self.now)
+            .execute(&mut *self.tx)
+            .await
+            .map_err(store_error)?
+            .rows_affected();
+            if updated != 1 {
+                return Err(corrupt("scope compensation projection"));
+            }
+        }
+        Ok(())
+    }
+
+    async fn insert_scope_saga_entry(
+        &mut self,
+        owner: &ExecutionInstanceId,
+        forward: &ExecutionInstanceId,
+        compensation_id: Option<Uuid>,
+        after: &[ExecutionInstanceId],
+    ) -> Result<(), StoreError> {
+        let (path_nodes, path_indices) = stored_path_parts(owner.path());
+        let iteration = |instance: &ExecutionInstanceId| {
+            instance
+                .path()
+                .segments()
+                .last()
+                .map(|segment| i32::try_from(segment.iteration_index()))
+                .and_then(Result::ok)
+                .ok_or_else(|| corrupt("scope compensation member"))
+        };
+        let after_iterations = after.iter().map(iteration).collect::<Result<Vec<_>, _>>()?;
+        let after_nodes: Vec<String> = after
+            .iter()
+            .map(|instance| instance.node().as_str().to_owned())
+            .collect();
+        sqlx::query(
+            "INSERT INTO scope_saga_entries \
+             (tenant_id, run_id, owner_path_nodes, owner_path_indices, owner_node, \
+              iteration_index, node, kind, compensation_id, after_iterations, after_nodes) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.run_id.as_uuid())
+        .bind(&path_nodes)
+        .bind(&path_indices)
+        .bind(owner.node().as_str())
+        .bind(iteration(forward)?)
+        .bind(forward.node().as_str())
+        .bind(if compensation_id.is_some() {
+            "COMPENSATE"
+        } else {
+            "IRREVERSIBLE"
+        })
+        .bind(compensation_id)
+        .bind(&after_iterations)
+        .bind(&after_nodes)
+        .execute(&mut *self.tx)
+        .await
+        .map_err(store_error)?;
+        Ok(())
+    }
+
     async fn upsert_scoped_instance(
         &mut self,
         instance: &ExecutionInstanceId,
@@ -4238,14 +4570,28 @@ impl PgRunTx {
             .instance(instance)
             .cloned()
             .ok_or_else(|| corrupt("scoped step projection"))?;
-        if step.waiting_on().is_some()
-            || step.condition().is_some()
-            || step.switch_selection().is_some()
-        {
+        // A scoped step can wait for the answer of its lookup or for a person (D386, D387); the
+        // other waits belong to the stores of their own primitive.
+        let waiting_kind = match step.waiting_on() {
+            None => None,
+            Some(WaitingOn::Reconciliation) => Some("RECONCILIATION"),
+            Some(WaitingOn::Operator { .. }) => Some("OPERATOR"),
+            Some(_) => {
+                return Err(StoreError::Internal {
+                    detail: "the scoped step projection is not supported by addressed storage"
+                        .into(),
+                });
+            }
+        };
+        if step.condition().is_some() || step.switch_selection().is_some() {
             return Err(StoreError::Internal {
                 detail: "the scoped step projection is not supported by addressed storage".into(),
             });
         }
+        let kind = self
+            .def
+            .node_for_instance(instance)
+            .map_or("FORWARD", |node| node.origin().label());
         let status = step.status().as_str();
         let attempt = i32::try_from(step.attempt()).map_err(|_| corrupt("attempt"))?;
         let generation = i64::try_from(step.generation()).map_err(|_| corrupt("generation"))?;
@@ -4289,10 +4635,10 @@ impl PgRunTx {
                  (tenant_id, run_id, node, step_id, namespace_id, status, attempt, generation, \
                   cancel_requested, routed, timed_out, failure_code, next_attempt_at, activity, \
                   ready_at, last_hinted_at, output_digest, updated_at, kind, \
-                  instance_path_nodes, instance_path_indices) \
+                  instance_path_nodes, instance_path_indices, waiting_kind) \
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, \
                          CASE WHEN $6 = 'READY' THEN $15 END, CASE WHEN $16 THEN $15 END, $17, \
-                         $15, 'FORWARD', $18, $19)",
+                         $15, $20, $18, $19, $21)",
             )
             .bind(self.info.tenant_id.as_uuid())
             .bind(self.info.run_id.as_uuid())
@@ -4313,6 +4659,8 @@ impl PgRunTx {
             .bind(output.cloned())
             .bind(path_nodes)
             .bind(path_indices)
+            .bind(kind)
+            .bind(waiting_kind)
             .execute(&mut *self.tx)
             .await
             .map_err(store_error)?;
@@ -4345,7 +4693,8 @@ impl PgRunTx {
                                                ELSE attempt_deadline_at END, \
                     leased_by = CASE WHEN $6 NOT IN ('LEASED', 'RUNNING') THEN NULL \
                                      WHEN $19::bytea IS NOT NULL THEN $22 ELSE leased_by END, \
-                    output_digest = COALESCE($16, output_digest), updated_at = $14 \
+                    output_digest = COALESCE($16, output_digest), waiting_kind = $25, \
+                    updated_at = $14 \
              WHERE tenant_id = $1 AND run_id = $2 AND node = $3 AND step_id = $4 \
                AND namespace_id = $5 AND instance_path_nodes = $17 AND instance_path_indices = $18",
         )
@@ -4377,6 +4726,7 @@ impl PgRunTx {
         .bind(fresh_grant.map(|grant| grant.worker_id.clone()))
         .bind(renewal.map(|renewal| micros(renewal.ttl)))
         .bind(rehinted)
+        .bind(waiting_kind)
         .execute(&mut *self.tx)
         .await
         .map_err(store_error)?
@@ -4396,7 +4746,7 @@ impl PgRunTx {
             "UPDATE collection_iterations SET remaining_reservations=remaining_reservations-1, \
                     updated_at=$5 \
              WHERE tenant_id=$1 AND run_id=$2 AND entry_path_nodes=$3 AND entry_path_indices=$4 \
-               AND lifecycle='ADMITTED' AND remaining_reservations>0",
+               AND lifecycle IN ('ADMITTED','CHECKPOINTED','DRAINED') AND remaining_reservations>0",
         )
         .bind(self.info.tenant_id.as_uuid())
         .bind(self.info.run_id.as_uuid())
@@ -4411,7 +4761,7 @@ impl PgRunTx {
             "UPDATE loop_iterations SET remaining_reservations=remaining_reservations-1, \
                     updated_at=$5 \
              WHERE tenant_id=$1 AND run_id=$2 AND entry_path_nodes=$3 AND entry_path_indices=$4 \
-               AND lifecycle='ADMITTED' AND remaining_reservations>0",
+               AND lifecycle IN ('ADMITTED','CHECKPOINTED','DRAINED') AND remaining_reservations>0",
         )
         .bind(self.info.tenant_id.as_uuid())
         .bind(self.info.run_id.as_uuid())

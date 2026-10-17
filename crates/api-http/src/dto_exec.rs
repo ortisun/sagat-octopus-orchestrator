@@ -258,6 +258,20 @@ pub struct OperationBody {
     /// For `RESOLVE_STEP` with `FAILED`: the code the step is recorded as failed with.
     #[serde(default)]
     pub error_code: Option<String>,
+    /// For a decision about a step of an iteration of a collection or loop: the scopes around the
+    /// step, outermost first, each with the index of the iteration. Absent for a step of the root
+    /// graph.
+    #[serde(default)]
+    pub instance_path: Option<Vec<ScopeSegmentBody>>,
+}
+
+/// One scope around a step: the collection or loop node and the iteration the step runs in
+/// (`ApprovalScope` in the OpenAPI, the same shape the runtime graph reports).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ScopeSegmentBody {
+    pub scope_node_id: String,
+    pub iteration_index: u32,
 }
 
 #[derive(Debug, Serialize)]

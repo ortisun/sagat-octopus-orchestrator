@@ -148,6 +148,76 @@ pub fn compensation_key(version: WorkflowVersionId, run: RunId, forward: &NodeId
     format!("compensation:{}:{run}", compensation_id(version, forward))
 }
 
+/// The stable identity of the compensation of the forward instance `forward` in a workflow version
+/// (D382). For a root instance it is [`compensation_id`], byte for byte. For an instance in a scope
+/// it is a domain-separated, length-delimited derivation over the version, the path of scope
+/// segments and the node, so two iterations of one body node never share the id of their
+/// compensation and a path cannot collide by concatenating user-controlled names. An attempt or
+/// generation never enters it: a retry, a lost response and a restart ask the provider for the same
+/// thing.
+#[must_use]
+pub fn instance_compensation_id(
+    version: WorkflowVersionId,
+    forward: &ExecutionInstanceId,
+) -> uuid::Uuid {
+    use sha2::{Digest, Sha256};
+
+    if forward.path().is_root() {
+        return compensation_id(version, forward.node());
+    }
+    let mut digest = Sha256::new();
+    digest.update(b"sagat.compensation.instance.v1\0");
+    digest.update(version.as_uuid().as_bytes());
+    digest.update([forward.path().depth() as u8]);
+    for segment in forward.path().segments() {
+        let name = segment.scope_node().as_str().as_bytes();
+        digest.update([name.len() as u8]);
+        digest.update(name);
+        digest.update((segment.iteration_index() as u16).to_be_bytes());
+    }
+    let name = forward.node().as_str().as_bytes();
+    digest.update([name.len() as u8]);
+    digest.update(name);
+    let hash = digest.finalize();
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&hash[..16]);
+    bytes[6] = (bytes[6] & 0x0f) | 0x80;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    uuid::Uuid::from_bytes(bytes)
+}
+
+/// The idempotency key of the compensation of the forward instance `forward` in one run:
+/// `compensation:{id}:{run}`, stable per run, instance and action.
+#[must_use]
+pub fn instance_compensation_key(
+    version: WorkflowVersionId,
+    run: RunId,
+    forward: &ExecutionInstanceId,
+) -> String {
+    format!(
+        "compensation:{}:{run}",
+        instance_compensation_id(version, forward)
+    )
+}
+
+/// The idempotency key of the lookup of the forward instance `forward` in one run. A root lookup
+/// keeps `reconciliation:{run}:{node}`; a scoped one names the instance by its step id.
+#[must_use]
+pub fn instance_reconciliation_key(
+    version: WorkflowVersionId,
+    run: RunId,
+    forward: &ExecutionInstanceId,
+) -> String {
+    if forward.path().is_root() {
+        format!("reconciliation:{run}:{}", forward.node())
+    } else {
+        format!(
+            "reconciliation:{run}:{}",
+            instance_step_id(version, run, forward)
+        )
+    }
+}
+
 /// When the compensations of one provider operation stop being asked for (FR-003-003).
 ///
 /// A provider that is down would otherwise be called again by every run that has something to

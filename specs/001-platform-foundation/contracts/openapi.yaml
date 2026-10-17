@@ -4073,6 +4073,11 @@ components:
         stepId: {type: string, description: 'The node id of the step the operation is about (`reserve~c` for the compensation of `reserve`). Required for RETRY_STEP, RETRY_COMPENSATION, SKIP_COMPENSATION, RESOLVE_STEP and MARK_MANUAL_REVIEW; refused for the others.'}
         outcome: {type: string, enum: [SUCCEEDED, FAILED], description: 'For RESOLVE_STEP: the step happened, or it did not.'}
         errorCode: {type: string, description: 'For RESOLVE_STEP with outcome FAILED: the code the step is recorded as failed with.'}
+        instancePath:
+          type: array
+          maxItems: 8
+          description: 'For a decision about a step of an iteration of a collection or loop (the compensation `reserve~c` of iteration 1 of `lines`): the scopes around the step, outermost first, with the iteration of each, as the runtime graph reports them. Absent for a step of the root graph. Refused for the operations that apply to the whole run.'
+          items: {$ref: '#/components/schemas/ApprovalScope'}
         reason: {type: string, minLength: 8, maxLength: 2000, description: 'Counted after trimming; for the decisions of a saga it is kept whole in the audit trail.'}
         expectedRunVersion: {type: integer, minimum: 0, description: 'Optimistic concurrency: refused with 409 if the run moved on.'}
     OperationResult:

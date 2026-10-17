@@ -182,6 +182,85 @@ async fn retain_payload_in_transaction(
     Ok(retained)
 }
 
+/// How the run ends when the compensating scope `owner` finishes: the stop of the run, worsened by
+/// how the compensations of the scope ended. The scope's compensation must be over.
+async fn run_status_after_compensation(
+    tx: &mut sqlx::Transaction<'static, sqlx::Postgres>,
+    transition: &CollectionTransition,
+    owner_nodes: &[String],
+    owner_indices: &[i32],
+    locked: &LockedDrainRun,
+) -> Result<String, PrimitiveStoreError> {
+    let saga = sqlx::query(
+        "SELECT phase,cause_code,outcome,during_stop FROM scope_sagas \
+         WHERE tenant_id=$1 AND run_id=$2 AND owner_path_nodes=$3 AND owner_path_indices=$4 \
+           AND owner_node=$5 FOR UPDATE",
+    )
+    .bind(transition.tenant_id().as_uuid())
+    .bind(transition.run_id().as_uuid())
+    .bind(owner_nodes)
+    .bind(owner_indices)
+    .bind(transition.owner().node().as_str())
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(store_error)?;
+    let Some(saga) = saga.filter(|row| row.get::<String, _>("phase") == "DONE") else {
+        return Err(PrimitiveStoreError::InvalidTransition);
+    };
+    let reason = locked
+        .stop_reason
+        .as_deref()
+        .and_then(|reason| reason.parse::<sagat_domain::execution::StopReason>().ok())
+        .ok_or_else(|| invalid_storage("run stop reason"))?;
+    let cause = FailureCode::parse(&saga.get::<String, _>("cause_code"))
+        .map_err(|_| invalid_storage("scope compensation cause"))?;
+    let stop_code = locked
+        .stop_code
+        .as_deref()
+        .map(FailureCode::parse)
+        .transpose()
+        .map_err(|_| invalid_storage("run stop code"))?;
+    let outcome = saga
+        .get::<Option<String>, _>("outcome")
+        .and_then(|outcome| outcome.parse::<sagat_domain::saga::SagaOutcome>().ok())
+        .ok_or_else(|| invalid_storage("scope compensation outcome"))?;
+    Ok(sagat_domain::execution::scope_final_status(
+        reason,
+        stop_code.as_ref(),
+        &cause,
+        outcome,
+        saga.get("during_stop"),
+    )
+    .as_str()
+    .to_owned())
+}
+
+/// The reservations an iteration keeps when it is drained (D384): the compensations its body
+/// declares, if its scope compensates, so that exhausting the forward budget cannot stop them.
+/// Everything else it still held is released.
+pub(crate) fn kept_reservations(
+    definition: &sagat_domain::workflow::WorkflowDefinition,
+    owner: &ExecutionInstanceId,
+    remaining: i32,
+) -> i32 {
+    if !definition.scope_compensates(owner) {
+        return 0;
+    }
+    let compensations = definition.scope_body(owner).map_or(0, |body| {
+        body.all_nodes()
+            .filter(|node| {
+                matches!(
+                    node.origin(),
+                    sagat_domain::saga::NodeOrigin::Compensation(_)
+                )
+            })
+            .count()
+    });
+    i32::try_from(compensations)
+        .unwrap_or(i32::MAX)
+        .min(remaining)
+}
+
 fn number(value: u64, field: &'static str) -> Result<i64, PrimitiveStoreError> {
     i64::try_from(value).map_err(|_| {
         PrimitiveStoreError::Storage(StoreError::Internal {
@@ -417,7 +496,7 @@ async fn outbox_run_finished(
     conn: &mut PgConnection,
     transition: &CollectionTransition,
     definition: &WorkflowDefinition,
-    status: &'static str,
+    status: &str,
 ) -> Result<(), PrimitiveStoreError> {
     let message = Uuid::now_v7();
     sqlx::query(
@@ -2009,6 +2088,14 @@ impl CollectionStore for PgCollectionStore {
         let path_indices = iteration.get::<Vec<i32>, _>("entry_path_indices");
         let entry_node = iteration.get::<String, _>("entry_node");
         let remaining = iteration.get::<i32, _>("remaining_reservations");
+        let definition = self
+            .definition(
+                &mut tx,
+                drain.transition.tenant_id().as_uuid(),
+                locked.run.version_id,
+            )
+            .await?;
+        let kept = kept_reservations(&definition, drain.transition.owner(), remaining);
         let member_steps = sqlx::query(
             "SELECT node,status,attempt FROM steps WHERE tenant_id=$1 AND run_id=$2 \
                AND instance_path_nodes=$3 AND instance_path_indices=$4 ORDER BY node FOR UPDATE",
@@ -2031,8 +2118,12 @@ impl CollectionStore for PgCollectionStore {
                 status.as_str(),
                 "SUCCEEDED" | "FAILED" | "CANCELLED" | "SKIPPED"
             );
-            let safe_unstarted = matches!(status.as_str(), "PENDING" | "READY")
-                && step.get::<i32, _>("attempt") == 0;
+            // Nothing is in flight: a step that has not started, or that waits to retry or is
+            // ready to retry in a run that is stopping (it can no longer be leased). One whose last
+            // attempt was lost keeps saying so when it is cancelled, and is compensated.
+            let safe_unstarted = (matches!(status.as_str(), "PENDING" | "READY")
+                && step.get::<i32, _>("attempt") == 0)
+                || matches!(status.as_str(), "READY" | "RETRY_WAIT");
             if (node.is_derived() && !matches!(status.as_str(), "SUCCEEDED" | "SKIPPED"))
                 || (!terminal && !safe_unstarted)
             {
@@ -2050,7 +2141,8 @@ impl CollectionStore for PgCollectionStore {
                     routed=true,waiting_kind=NULL,due_at=NULL,event_type=NULL,correlation_key=NULL, \
                     next_attempt_at=NULL,cancel_requested=false,updated_at=$8 \
              WHERE tenant_id=$1 AND run_id=$2 AND instance_path_nodes=$3 \
-               AND instance_path_indices=$4 AND status IN ('PENDING','READY') AND attempt=0",
+               AND instance_path_indices=$4 \
+               AND ((status IN ('PENDING','READY') AND attempt=0) OR status IN ('READY','RETRY_WAIT'))",
         )
         .bind(drain.transition.tenant_id().as_uuid())
         .bind(drain.transition.run_id().as_uuid())
@@ -2066,7 +2158,7 @@ impl CollectionStore for PgCollectionStore {
         let sequence = locked.run.run_version + 1;
         sqlx::query(
             "UPDATE collection_iterations SET lifecycle='DRAINED',slot_held=false, \
-                    remaining_reservations=0,drained_sequence=$5,drain_outbox_id=$6,updated_at=$7 \
+                    remaining_reservations=$8,drained_sequence=$5,drain_outbox_id=$6,updated_at=$7 \
              WHERE tenant_id=$1 AND run_id=$2 AND scope_id=$3 AND iteration_index=$4",
         )
         .bind(drain.transition.tenant_id().as_uuid())
@@ -2076,6 +2168,7 @@ impl CollectionStore for PgCollectionStore {
         .bind(number(sequence, "journal sequence")?)
         .bind(drain.outbox_id)
         .bind(drain.transition.occurred_at())
+        .bind(kept)
         .execute(&mut *tx)
         .await
         .map_err(store_error)?;
@@ -2104,7 +2197,7 @@ impl CollectionStore for PgCollectionStore {
         )
         .bind(drain.transition.tenant_id().as_uuid())
         .bind(drain.transition.run_id().as_uuid())
-        .bind(remaining)
+        .bind(remaining - kept)
         .execute(&mut *tx)
         .await
         .map_err(store_error)?;
@@ -2244,6 +2337,27 @@ impl CollectionStore for PgCollectionStore {
         {
             return Err(PrimitiveStoreError::InvalidTransition);
         }
+        // A scope that compensates ends the run with the worse of the stop and how its
+        // compensations ended (D385); it cannot end while one is still open.
+        let definition = self
+            .definition(
+                &mut tx,
+                finish.transition.tenant_id().as_uuid(),
+                locked.run.version_id,
+            )
+            .await?;
+        let run_status = if definition.scope_compensates(finish.transition.owner()) {
+            run_status_after_compensation(
+                &mut tx,
+                &finish.transition,
+                &owner_nodes,
+                &owner_indices,
+                &locked,
+            )
+            .await?
+        } else {
+            terminal_status.to_owned()
+        };
         let owner = sqlx::query(
             "UPDATE steps SET status=$6,waiting_kind=NULL,failure_code=$7,updated_at=$8 \
              WHERE tenant_id=$1 AND run_id=$2 AND instance_path_nodes=$3 \
@@ -2294,7 +2408,7 @@ impl CollectionStore for PgCollectionStore {
             &finish.transition,
             final_sequence,
             "run.finished",
-            json!({"status":terminal_status}),
+            json!({"status":run_status}),
         )
         .await?;
         let run_finished = sqlx::query(
@@ -2303,7 +2417,7 @@ impl CollectionStore for PgCollectionStore {
         )
         .bind(finish.transition.tenant_id().as_uuid())
         .bind(finish.transition.run_id().as_uuid())
-        .bind(terminal_status)
+        .bind(&run_status)
         .bind(number(final_sequence, "run version")?)
         .bind(finish.transition.occurred_at())
         .execute(&mut *tx)
@@ -2335,14 +2449,7 @@ impl CollectionStore for PgCollectionStore {
         .execute(&mut *tx)
         .await
         .map_err(store_error)?;
-        let definition = self
-            .definition(
-                &mut tx,
-                finish.transition.tenant_id().as_uuid(),
-                locked.run.version_id,
-            )
-            .await?;
-        outbox_run_finished(&mut tx, &finish.transition, &definition, terminal_status).await?;
+        outbox_run_finished(&mut tx, &finish.transition, &definition, &run_status).await?;
         mark_telemetry_pending(&mut tx, &finish.transition, final_sequence).await?;
         tx.commit().await.map_err(store_error)?;
         Ok(PrimitiveWrite {
