@@ -21,7 +21,7 @@ use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::execution::PgRunStore;
-use crate::identity::{col, corrupt, insert_audit, store_error};
+use crate::identity::{best_effort_denial_audit, col, corrupt, insert_audit, store_error};
 use crate::pool::BeginSafely;
 use crate::reveal_grants::has_effective_payload_reveal_grant;
 
@@ -182,18 +182,10 @@ async fn finish<T>(
             EventPayloadRead::Ready(value)
         }
         Err(EventPayloadFailure::PiiRevealNotGranted) => {
-            if let Err(error) = insert_audit(&mut *tx, &audits.denied).await {
-                tracing::error!(
-                    error = %error,
-                    action = %audits.denied.action(),
-                    "failed to record event payload reveal denial"
-                );
-                tx.rollback().await.map_err(store_error)?;
-                return Ok(EventPayloadRead::Refused(
-                    EventPayloadFailure::PiiRevealNotGranted,
-                ));
-            }
-            EventPayloadRead::Refused(EventPayloadFailure::PiiRevealNotGranted)
+            best_effort_denial_audit(tx, &audits.denied).await;
+            return Ok(EventPayloadRead::Refused(
+                EventPayloadFailure::PiiRevealNotGranted,
+            ));
         }
         Err(f) => EventPayloadRead::Refused(f),
     };

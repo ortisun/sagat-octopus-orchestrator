@@ -380,9 +380,9 @@ impl<S: EventPayloadStore, C: Clock, P: PayloadProjector> EventPayloadService<S,
             denied: make(AuditAction::PayloadRevealDenied, "permission".into()),
         }
     }
-    fn audits_letter(&self, p: &PreparedDeadLetter) -> EventPayloadAudits {
+    fn audits_letter(&self, p: &PreparedDeadLetter) -> Result<EventPayloadAudits, AppError> {
         let id = p.connector_id.to_string();
-        let letter = p.letter_id.expect("detail preparation has a letter");
+        let letter = p.letter_id.ok_or(AppError::NotFound)?;
         let make = |action, reason: String| {
             AuditRecord::by(
                 &p.principal,
@@ -394,13 +394,13 @@ impl<S: EventPayloadStore, C: Clock, P: PayloadProjector> EventPayloadService<S,
             )
             .with_reason(reason)
         };
-        EventPayloadAudits {
+        Ok(EventPayloadAudits {
             revealed: make(
                 AuditAction::PayloadPiiRevealed,
                 format!("dead-letter:{letter}:reveal=pii"),
             ),
             denied: make(AuditAction::PayloadRevealDenied, "permission".into()),
-        }
+        })
     }
     fn evaluator<'a>(&'a self, reveal: EventReveal) -> Evaluator<'a, P> {
         Evaluator {
@@ -471,7 +471,7 @@ impl<S: EventPayloadStore + 'static, C: Clock + 'static, P: PayloadProjector + '
     }
     fn dead_letter<'a>(&'a self, p: PreparedDeadLetter) -> EventReadFuture<'a, DeadLetterRead> {
         Box::pin(async move {
-            let a = self.audits_letter(&p);
+            let a = self.audits_letter(&p)?;
             let read = self
                 .store
                 .read_dead_letter(&p, &self.evaluator(p.reveal), &a)

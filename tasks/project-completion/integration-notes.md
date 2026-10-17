@@ -86,3 +86,41 @@ values before the guards. All 20 focused classifier tests then passed
 closed when exact validation cannot be established; large integer values remain supported with
 proven exact small divisors. This conservative boundary and the final service composition still
 require the final integrated security/contract gates.
+
+### Disclosure composition and deferred audit failures
+
+The run disclosure service and US08 event read service are now mounted in both production and
+real-API test factories. Root's combined PostgreSQL run passed 18 of 19 cases; the remaining result
+case exposed a logical-output ledger defect: an `end` output created in the same transaction had
+no preexisting projection row. A narrow fix and exact two-reference/replayed-report assertion are
+under verification; this checkpoint does not claim the result case passed.
+
+Two real PostgreSQL fault tests use `DEFERRABLE INITIALLY DEFERRED` audit triggers. The denial
+commit first returned an internal storage error instead of the required typed refusal. Both run
+and event denial paths now treat the entire denial audit transaction as best effort, including
+commit/rollback failures, while a failed mandatory success commit still returns no values. Both
+fault tests passed (`/tmp/sagat-completion-denial-commit-green.log`, 1.99 s). The initial success
+control's expected error class was corrected from unavailable to the adapter's actual internal
+classification; its refusal of values was already closed.
+
+The actual authoring REST contract target passed 13/13
+(`/tmp/sagat-completion-authoring-contract-green.log`). Its unrelated-operation digest baseline
+changed only for approved 014 `getChain` pagination guidance (112f1e1d); the operation remains in
+the checksum. API request unit tests passed 4/4 after endpoint-only unknown-field handling. Actual
+REST audience and request boundary gates are still being finalized by the owning test stream.
+
+### Authoring review corrections
+
+Independent static review found reference-reachable annotations beneath unsupported applicators,
+and two diff fallback errors involving explicit ancestors and secret inheritance. Commit
+`b1d96a4b` reproduced the publication and diff regressions RED, then passed publication classification
+14/14, semantic classification diff 14/14, publication 3/3 and carrier compilation 2/2 on its isolated
+warmed target. Focused adapter Clippy passed. These fixes are merged; complete integrated gates remain.
+
+### Python SDK integration gates
+
+The combined Python SDK passed 261 tests in 22.23 s
+(`/tmp/sagat-completion-python-tests.log`). Mypy passed all 38 checked files and Ruff passed after
+renaming the chain page local variable (which had reused the run-page inferred type), sorting the
+public export list, and applying the pinned formatter. This is SDK-local proof, not the all-five
+runtime server conformance gate.

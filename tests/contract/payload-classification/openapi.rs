@@ -362,8 +362,11 @@ fn operations_outside_the_approved_additions_and_event_extensions_are_byte_stabl
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
+    // Approved 014 dependency 112f1e1d appends the pagination guidance to getChain
+    // (the only operation diff from bc6b74c0 to 5f4f1c6b). Keep every operation in
+    // this digest; the baseline update does not exclude the changed operation.
     assert_eq!(
-        digest, "503bbd6391b9c142ccee0a3ba7215874193870567f409ff35480418ca8b665f5",
+        digest, "60c58b37add3b597a3d94a25e000f25b04d6dd3505e076ed283eaf192a8ed614",
         "an existing operation outside feature 016 changed"
     );
 }

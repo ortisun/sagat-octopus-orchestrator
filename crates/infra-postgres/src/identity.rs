@@ -219,6 +219,24 @@ async fn insert_namespace(
     Ok(())
 }
 
+/// Denial audit is best effort across the entire transaction, including deferred checks at
+/// commit and a rollback failure. Callers must still return their original typed refusal.
+pub(crate) async fn best_effort_denial_audit(
+    mut tx: sqlx::Transaction<'_, sqlx::Postgres>,
+    audit: &AuditRecord,
+) {
+    if insert_audit(&mut tx, audit).await.is_err() {
+        tracing::warn!(action = %audit.action(), phase = "insert", "failed to record reveal denial");
+        if tx.rollback().await.is_err() {
+            tracing::warn!(action = %audit.action(), phase = "rollback", "failed to record reveal denial");
+        }
+        return;
+    }
+    if tx.commit().await.is_err() {
+        tracing::warn!(action = %audit.action(), phase = "commit", "failed to record reveal denial");
+    }
+}
+
 pub(crate) async fn insert_audit(
     conn: &mut PgConnection,
     audit: &AuditRecord,
