@@ -270,7 +270,25 @@ fn the_commands_for_one_workflow_take_the_words_and_flags_they_document() {
         parse(&argv(&format!("workflow inspect {RUN}")))
             .expect("parses")
             .command,
-        Command::WorkflowInspect { run: RUN.into() }
+        Command::WorkflowInspect {
+            run: RUN.into(),
+            values: false,
+            reveal_pii: false,
+            sequence: None,
+        }
+    );
+    assert_eq!(
+        parse(&argv(&format!(
+            "workflow inspect {RUN} --values --reveal-pii --sequence 42"
+        )))
+        .expect("parses")
+        .command,
+        Command::WorkflowInspect {
+            run: RUN.into(),
+            values: true,
+            reveal_pii: true,
+            sequence: Some(42),
+        }
     );
     assert_eq!(
         parse(&argv(&format!(
@@ -303,6 +321,71 @@ fn the_commands_for_one_workflow_take_the_words_and_flags_they_document() {
             limit: 200
         }
     );
+}
+
+#[test]
+fn reveal_grant_commands_are_closed_and_subjects_are_validated() {
+    assert_eq!(
+        parse(&argv("namespace reveal-grants list"))
+            .expect("parses")
+            .command,
+        Command::RevealGrantsList
+    );
+    assert_eq!(
+        parse(&argv(
+            "namespace reveal-grants grant oidc|developer@example.test"
+        ))
+        .expect("parses")
+        .command,
+        Command::RevealGrant {
+            subject: "oidc|developer@example.test".into()
+        }
+    );
+    assert_eq!(
+        parse(&argv("namespace reveal-grants revoke dev-developer"))
+            .expect("parses")
+            .command,
+        Command::RevealRevoke {
+            subject: "dev-developer".into()
+        }
+    );
+    for (line, mentions) in [
+        ("namespace reveal-grants grant system:engine", "subject"),
+        ("namespace reveal-grants revoke", "subject is required"),
+        (
+            "namespace reveal-grants unknown",
+            "not a command (list, grant, revoke)",
+        ),
+    ] {
+        let error = parse(&argv(line)).expect_err(line);
+        assert!(error.0.contains(mentions), "{line}: {}", error.0);
+    }
+}
+
+#[test]
+fn disclosure_only_flags_require_values_and_sequence_is_a_positive_i64() {
+    let cases = [
+        (
+            format!("workflow inspect {RUN} --reveal-pii"),
+            "--reveal-pii needs --values",
+        ),
+        (
+            format!("workflow inspect {RUN} --sequence 1"),
+            "--sequence needs --values",
+        ),
+        (
+            format!("workflow inspect {RUN} --values --sequence 0"),
+            "--sequence is a positive sequence",
+        ),
+        (
+            format!("workflow inspect {RUN} --values --sequence 9223372036854775808"),
+            "--sequence is a positive sequence",
+        ),
+    ];
+    for (line, mentions) in cases {
+        let error = parse(&argv(&line)).expect_err(&line);
+        assert!(error.0.contains(mentions), "{line}: {}", error.0);
+    }
 }
 
 #[test]
@@ -508,6 +591,9 @@ fn the_usage_names_every_command_the_parser_takes() {
         "workflow inspect",
         "workflow cancel",
         "workflow rerun",
+        "namespace reveal-grants list",
+        "namespace reveal-grants grant",
+        "namespace reveal-grants revoke",
         "script test",
         "script publish",
         "worker dev",

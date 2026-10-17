@@ -260,13 +260,13 @@ impl Client {
     }
 
     /// Sends a request; any status is an answer.
-    async fn send(
+    async fn send_raw(
         &self,
         method: &str,
         path: &str,
         body: Option<&Value>,
         key: Option<&str>,
-    ) -> Result<(u16, Value), CallError> {
+    ) -> Result<(u16, Vec<u8>), CallError> {
         let method = reqwest::Method::from_bytes(method.as_bytes())
             .map_err(|_| CallError::Transport("a method".to_owned()))?;
         let mut request = self
@@ -294,8 +294,21 @@ impl Client {
             .map_err(|e| CallError::Transport(describe(&e)))?;
         let status = response.status().as_u16();
         let bytes = read_capped(response, MAX_ANSWER).await?;
-        let value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-        Ok((status, value))
+        Ok((status, bytes))
+    }
+
+    async fn send(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&Value>,
+        key: Option<&str>,
+    ) -> Result<(u16, Value), CallError> {
+        let (status, bytes) = self.send_raw(method, path, body, key).await?;
+        Ok((
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        ))
     }
 
     /// A GET that carries no credentials: the probes (`/health`, `/ready`) and the Studio. Any
@@ -367,6 +380,29 @@ impl Client {
         if (200..300).contains(&status) {
             Ok((status, value))
         } else {
+            Err(CallError::Refused(Box::new(Failure::from_body(
+                status, &value,
+            ))))
+        }
+    }
+
+    /// Sends a request and preserves the exact JSON spelling of a successful answer. Callers must
+    /// deserialize it into bounded typed fields and must never print the raw body.
+    ///
+    /// # Errors
+    /// [`CallError`] for no answer or a refusal.
+    pub async fn call_raw(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&Value>,
+        key: Option<&str>,
+    ) -> Result<(u16, Vec<u8>), CallError> {
+        let (status, bytes) = self.send_raw(method, path, body, key).await?;
+        if (200..300).contains(&status) {
+            Ok((status, bytes))
+        } else {
+            let value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
             Err(CallError::Refused(Box::new(Failure::from_body(
                 status, &value,
             ))))

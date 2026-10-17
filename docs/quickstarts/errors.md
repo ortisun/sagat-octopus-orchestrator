@@ -242,3 +242,67 @@ compensateWith only runs inside a saga. Put the node in a saga, or remove the co
 ### RECURSIVE_CHILD
 
 This child node starts the workflow it belongs to. It is legal, and the depth limit ends it at the latest: make sure a condition stops it before.
+
+### INVALID_SCOPE
+
+A structured node has an invalid body, target or boundary. Keep each loop or approval inside its named body and follow the location named by the message.
+
+### DUPLICATE_BODY
+
+Two structured bodies have the same name. Body names are unique in a workflow.
+
+### UNKNOWN_BODY
+
+A structured node refers to a body that the workflow does not declare. Fix the body name or add that body.
+
+### UNREACHABLE_BODY
+
+The workflow declares a body that no structured node uses. Reference it from a node or remove it.
+
+### RECURSIVE_BODY
+
+Structured bodies cannot refer back to themselves through a chain of body references. Break the cycle into a finite structured flow.
+
+### BODY_DEPTH_EXCEEDED
+
+Body references exceed the workflow's maximum nesting depth. Flatten the structured flow or raise maxDepth within the supported limit.
+
+### INVALID_WORKFLOW_LIMIT
+
+Set maxInstances from 1 to 100000 and maxDepth from 1 to 8.
+
+### INVALID_CONTINUATION_POLICY
+
+Set maxSegments from 1 to 10000 and a timeout from 1 millisecond to 366 days; a chain policy also needs a continueAsNew node.
+
+### INVALID_SWITCH
+
+A switch has 1 to 32 uniquely named cases with bounded predicates, and it does not declare next, onError or timeout.
+
+### CLASSIFICATION_INVALID_LEVEL
+
+Use one of the four classification levels: public, internal, pii or secret.
+
+### CLASSIFICATION_LOOSENED
+
+A child cannot be less restrictive than its effective parent. Raise the child level or lower the parent only after reviewing every child.
+
+### CLASSIFICATION_UNSUPPORTED_KEYWORD
+
+Move the classification annotation to a supported schema location such as a carrier root, property, item or local reference target.
+
+### CLASSIFICATION_UNRESOLVED_REF
+
+Use a local JSON Pointer that resolves inside this carrier. Remote and cross-carrier references are not accepted.
+
+### CLASSIFICATION_NOT_APPLICABLE
+
+Classification annotations apply only to inputSchema, outputSchema and supported node outputSchema carriers. Remove the annotation from this location.
+
+### CLASSIFICATION_TOO_COMPLEX
+
+Keep the classification carrier within the fixed schema size, depth and reference-expansion limits.
+
+### CLASSIFICATION_INHERITED_OPEN
+
+A declared child inherits public or internal access. Declare a stricter level when that child should not stay open.
