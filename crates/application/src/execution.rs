@@ -602,6 +602,7 @@ pub struct PathExecutionSnapshot {
     pub info: RunInfo,
     pub definition: Arc<WorkflowDefinition>,
     pub state: PathExecutionState,
+    pub data: RunData,
 }
 
 /// Read side for bounded scoped execution. Mutation remains on [`RunTx`] until the caller rechecks

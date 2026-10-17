@@ -4,7 +4,9 @@
 
 use sagat_application::clock::SystemClock;
 use sagat_application::entropy::SystemEntropy;
-use sagat_application::execution::{MAX_PAYLOAD_BYTES, MAX_RUN_OUTPUT_BYTES, PathExecutionStore};
+use sagat_application::execution::{
+    MAX_PAYLOAD_BYTES, MAX_RUN_OUTPUT_BYTES, PathExecutionStore, ScopeInput,
+};
 use sagat_application::worker::{MAX_TASK_INPUT_BYTES, WorkerService};
 use sagat_domain::execution::{InstancePath, RunId};
 use sagat_domain::workflow::NodeId;
@@ -243,6 +245,15 @@ async fn a_member_output_over_the_value_ceiling_is_refused_and_the_lease_survive
         "the completed activity and its local return are the complete path body"
     );
     assert_eq!(bounded.state.ancestors().len(), 1);
+    assert_eq!(
+        bounded.data.outputs_in(bounded.state.path()).count(),
+        1,
+        "only the exact path's completed activity output is loaded"
+    );
+    assert!(matches!(
+        bounded.data.scope_input(bounded.state.path()),
+        Some(ScopeInput::Collection { index: 0, .. })
+    ));
     assert_eq!(world.run_status(run).await.as_str(), "RUNNING");
 }
 

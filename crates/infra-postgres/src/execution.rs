@@ -698,6 +698,119 @@ impl PathExecutionStore for PgRunStore {
             owner_nodes.push(segment.scope_node().as_str().to_owned());
             owner_indices.push(index);
         }
+        let input_row = sqlx::query(
+            "SELECT payload.content,runs.input_blob_id FROM runs JOIN payloads payload \
+               ON payload.tenant_id=runs.tenant_id AND payload.digest=runs.input_digest \
+             WHERE runs.tenant_id=$1 AND runs.id=$2",
+        )
+        .bind(tenant.as_uuid())
+        .bind(run.as_uuid())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        let output_rows = sqlx::query(
+            "SELECT step.node,payload.content FROM steps step JOIN payloads payload \
+               ON payload.tenant_id=step.tenant_id AND payload.digest=step.output_digest \
+             WHERE step.tenant_id=$1 AND step.run_id=$2 \
+               AND step.instance_path_nodes=$3 AND step.instance_path_indices=$4 \
+             ORDER BY step.node",
+        )
+        .bind(tenant.as_uuid())
+        .bind(run.as_uuid())
+        .bind(&path_nodes)
+        .bind(&path_indices)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        let mut outputs = BTreeMap::new();
+        for row in &output_rows {
+            let node = NodeId::parse_stored(&col::<String>(row, "node")?)
+                .map_err(|_| corrupt("bounded output node"))?;
+            outputs.insert(
+                ExecutionInstanceId::in_path(path.clone(), node),
+                col::<Vec<u8>>(row, "content")?,
+            );
+        }
+        let state_row = sqlx::query(
+            "SELECT payload.content,state.state_revision \
+             FROM workflow_operation_states state JOIN payloads payload \
+               ON payload.tenant_id=state.tenant_id AND payload.digest=state.state_digest \
+             WHERE state.tenant_id=$1 AND state.run_id=$2",
+        )
+        .bind(tenant.as_uuid())
+        .bind(run.as_uuid())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        let mut scope_rows = sqlx::query(
+            "SELECT 'COLLECTION' AS family,member.iteration_index,payload.content \
+             FROM collection_iterations member JOIN payloads payload \
+               ON payload.tenant_id=member.tenant_id AND payload.digest=member.item_digest \
+             WHERE member.tenant_id=$1 AND member.run_id=$2 \
+               AND member.entry_path_nodes=$3 AND member.entry_path_indices=$4 \
+             UNION ALL \
+             SELECT 'LOOP',member.iteration_index,payload.content \
+             FROM loop_iterations member JOIN loop_scopes scope \
+               ON scope.tenant_id=member.tenant_id AND scope.run_id=member.run_id \
+              AND scope.owner_instance_id=member.owner_instance_id \
+             JOIN payloads payload ON payload.tenant_id=scope.tenant_id \
+              AND payload.digest=CASE WHEN member.iteration_index=0 \
+                   THEN scope.initial_carry_digest ELSE ( \
+                       SELECT predecessor.carry_digest FROM loop_iterations predecessor \
+                        WHERE predecessor.tenant_id=member.tenant_id \
+                          AND predecessor.run_id=member.run_id \
+                          AND predecessor.owner_instance_id=member.owner_instance_id \
+                          AND predecessor.iteration_index=member.iteration_index-1) END \
+             WHERE member.tenant_id=$1 AND member.run_id=$2 \
+               AND member.entry_path_nodes=$3 AND member.entry_path_indices=$4",
+        )
+        .bind(tenant.as_uuid())
+        .bind(run.as_uuid())
+        .bind(&path_nodes)
+        .bind(&path_indices)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        if scope_rows.len() != 1 {
+            return Err(corrupt("bounded scope input"));
+        }
+        let scope_row = scope_rows.remove(0);
+        let scope_index = u32::try_from(col::<i32>(&scope_row, "iteration_index")?)
+            .map_err(|_| corrupt("bounded scope input index"))?;
+        let scope_input = match col::<String>(&scope_row, "family")?.as_str() {
+            "COLLECTION" => ScopeInput::Collection {
+                index: scope_index,
+                item: col(&scope_row, "content")?,
+            },
+            "LOOP" => ScopeInput::Loop {
+                iteration: scope_index,
+                carry: col(&scope_row, "content")?,
+            },
+            _ => return Err(corrupt("bounded scope input kind")),
+        };
+        let mut scope_inputs = BTreeMap::new();
+        scope_inputs.insert(path.clone(), scope_input);
+        let operation_state = state_row
+            .as_ref()
+            .map(|row| col::<Vec<u8>>(row, "content"))
+            .transpose()?;
+        let state_revision = state_row
+            .as_ref()
+            .map(|row| {
+                u64::try_from(col::<i64>(row, "state_revision")?)
+                    .map_err(|_| corrupt("bounded operation state revision"))
+            })
+            .transpose()?;
+        let data = RunData {
+            run_id: Some(run),
+            input: col(&input_row, "content")?,
+            input_blob: col::<Option<Uuid>>(&input_row, "input_blob_id")?
+                .map(sagat_domain::blobs::BlobId::new),
+            state: operation_state,
+            state_revision,
+            outputs,
+            scope_inputs,
+        };
         let definition = self
             .definition(&mut tx, tenant, record.info.version_id)
             .await?;
@@ -742,6 +855,7 @@ impl PathExecutionStore for PgRunStore {
             info: record.info,
             definition,
             state,
+            data,
         }))
     }
 }
