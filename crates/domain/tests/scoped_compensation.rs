@@ -1178,6 +1178,40 @@ fn a_cancellation_whose_completed_iterations_were_all_undone_ends_cancelled() {
     );
 }
 
+#[test]
+fn a_collection_stopped_by_the_storage_quota_still_undoes_its_completed_iterations() {
+    let mut scope = Scope::start(
+        collection_definition(vec![step("reserve", true, false)], 1),
+        "lines",
+    );
+    scope.enter_collection(2, 1);
+    scope.admit_collection(0, "reserve");
+    let reserve = scope.at(0, "reserve");
+    scope.complete(&reserve);
+    scope.checkpoint_collection(0);
+    scope.event(RunEvent::RunStopRequested {
+        reason: StopReason::Failed,
+        code: Some(FailureCode::storage_quota_exceeded()),
+    });
+    scope.event(RunEvent::CollectionDrainStarted {
+        node: scope.owner.node().clone(),
+        reason: CollectionDrainReason::StorageQuotaExceeded,
+    });
+    let chosen = scope.advance();
+    assert!(chosen.iter().any(|event| matches!(
+        event.event(),
+        RunEvent::ScopeCompensationPlanned { cause, .. }
+            if *cause == FailureCode::storage_quota_exceeded()
+    )));
+    let undo = scope.at(0, "reserve~c");
+    scope.complete(&undo);
+    scope.advance();
+    assert_eq!(
+        scope.state.final_status_for(StopReason::Failed),
+        RunStatus::Compensated
+    );
+}
+
 // -------------------------------------------------------------------- scopes with no compensation
 
 #[test]

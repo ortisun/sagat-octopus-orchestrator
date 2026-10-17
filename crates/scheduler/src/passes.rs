@@ -2025,9 +2025,10 @@ where
                 .await?;
             return Ok(LoopAdvance::DrainStarted);
         }
-        // What the next body would charge: one instance per node, charged when it is admitted.
+        // What the next body would charge: one instance per node (the compensations and lookups it may
+        // need included), charged when it is admitted.
         let budget = definition.limits().max_instances();
-        let next_charge = body.nodes().count();
+        let next_charge = body.all_nodes().count();
         let affordable = state
             .charged_instances()
             .checked_add(next_charge)
@@ -2074,6 +2075,25 @@ where
                 None,
             )
         };
+        // A loop whose completed iterations must be undone does not end at a limit checkpoint: that
+        // would fail the loop with nothing compensated. The iteration that met the limit is stopped at
+        // its result boundary instead, as for an expression that cannot be computed, and the loop
+        // drains, compensates last iteration first and then fails with the limit's code (D390).
+        if let Some(code) = continuation.limit_failure()
+            && definition.scope_compensates(owner)
+        {
+            self.store
+                .start_drain(&LoopDrainCommand::new(
+                    transition(state.version()),
+                    execution::LoopDrainReason::Failed {
+                        iteration: index,
+                        code,
+                    },
+                    uuid::Uuid::now_v7(),
+                )?)
+                .await?;
+            return Ok(LoopAdvance::DrainStarted);
+        }
         let checkpoint = LoopCheckpointCommand::from_evaluation(
             transition(state.version()),
             index,
@@ -2095,6 +2115,19 @@ where
                 LoopContinuation::Continue | LoopContinuation::Complete
             )
         {
+            if definition.scope_compensates(owner) {
+                self.store
+                    .start_drain(&LoopDrainCommand::new(
+                        transition(state.version()),
+                        execution::LoopDrainReason::Failed {
+                            iteration: index,
+                            code: FailureCode::instance_limit(),
+                        },
+                        uuid::Uuid::now_v7(),
+                    )?)
+                    .await?;
+                return Ok(LoopAdvance::DrainStarted);
+            }
             let refused = LoopCheckpointCommand::from_evaluation(
                 transition(state.version()),
                 index,

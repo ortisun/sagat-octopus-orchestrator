@@ -1869,7 +1869,7 @@ impl LoopProgressStore for PgLoopProgressStore {
                 let body = definition
                     .body(body_name)
                     .ok_or(LoopProgressError::InvalidTransition)?;
-                i64::try_from(body.nodes().count())
+                i64::try_from(body.all_nodes().count())
                     .map_err(|_| LoopProgressError::InvalidTransition)?
             } else {
                 1
@@ -2467,7 +2467,7 @@ impl LoopProgressStore for PgLoopProgressStore {
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         let run = lock_run(&mut tx, &command.transition).await?;
         check_scheduler_fence(&mut tx, &command.transition).await?;
-        let _usage = lock_usage(&mut tx, &command.transition, false).await?;
+        let usage = lock_usage(&mut tx, &command.transition, false).await?;
         let owner_id = instance_step_id(
             run.version_id,
             command.transition.run_id(),
@@ -2475,8 +2475,8 @@ impl LoopProgressStore for PgLoopProgressStore {
         );
         let scope = sqlx::query(
             "SELECT namespace_id,owner_path_nodes,owner_path_indices,owner_node,lifecycle, \
-                    active_iteration,deadline_at,drain_kind,drain_iteration,drain_failure_code, \
-                    drain_sequence,drain_outbox_id \
+                    active_iteration,max_iterations,deadline_at,drain_kind,drain_iteration, \
+                    drain_failure_code,drain_sequence,drain_outbox_id \
              FROM loop_scopes WHERE tenant_id=$1 AND run_id=$2 AND owner_instance_id=$3 \
              FOR UPDATE",
         )
@@ -2607,6 +2607,29 @@ impl LoopProgressStore for PgLoopProgressStore {
                         )
                     })
                     .unzip();
+                // A loop whose completed iterations are undone stops at its limit like at any other
+                // failure of an iteration (D390): the iteration that met it is stopped at its result
+                // boundary. The store re-proves the budget the scheduler claims ran out.
+                let max_iterations = u32::try_from(scope.get::<i32, _>("max_iterations"))
+                    .map_err(|_| invalid_storage("loop max iterations"))?;
+                let body_charge = match definition
+                    .node_for_instance(command.transition.owner())
+                    .map(sagat_domain::workflow::Node::kind)
+                {
+                    Some(
+                        NodeKind::While { body, .. } | NodeKind::RepeatUntil { body, .. },
+                    ) => definition
+                        .body(body)
+                        .map_or(1, |body| i64::try_from(body.all_nodes().count()).unwrap_or(i64::MAX)),
+                    _ => return Err(LoopProgressError::InvalidTransition),
+                };
+                let consumed = i64::from(usage.admitted) + i64::from(usage.reserved);
+                let limit_reached = |code: &FailureCode| {
+                    (code == &FailureCode::iteration_limit()
+                        && iteration.saturating_add(1) >= max_iterations)
+                        || (code == &FailureCode::instance_limit()
+                            && consumed + body_charge > i64::from(usage.max_instances))
+                };
                 let members = sqlx::query(
                     "SELECT node,status,failure_code FROM steps WHERE tenant_id=$1 AND run_id=$2 \
                        AND instance_path_nodes=$3 AND instance_path_indices=$4 FOR UPDATE",
@@ -2626,7 +2649,8 @@ impl LoopProgressStore for PgLoopProgressStore {
                     // The pending `return` is the result boundary: its value could not be
                     // evaluated, or was over a ceiling.
                     let expression_boundary = (code == &FailureCode::expression_error()
-                        || code == &FailureCode::run_data_limit())
+                        || code == &FailureCode::run_data_limit()
+                        || limit_reached(code))
                         && status == "PENDING"
                         && NodeId::parse_stored(&member.get::<String, _>("node")).is_ok_and(
                             |node| {

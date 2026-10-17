@@ -10,7 +10,7 @@ use uuid::Uuid;
 use crate::support::scope_flow::{
     Flow, activity, all_compensations, collection_document, compensating_loop, compensation_order,
     compensation_order_with_carry, forward, loop_until_a_charge_is_declined,
-    one_release_that_cannot_be_delivered, reserve_and_charge, reserve_with_a_lost_attempt, retry,
+    iteration, node, one_release_that_cannot_be_delivered, reserve_and_charge, reserve_with_a_lost_attempt, retry,
     row, summary,
 };
 
@@ -119,6 +119,169 @@ async fn a_failed_collection_undoes_what_its_iterations_completed_in_reverse_ord
             true
         )
     );
+    flow.verify().await;
+}
+
+#[tokio::test]
+async fn a_collection_undoes_no_more_iterations_at_once_than_it_may_run() {
+    let name = format!("scope-cap-{}", Uuid::now_v7());
+    let flow = Flow::start(
+        &name,
+        reserve_and_charge(&name, 2),
+        json!([{"sku": "a"}, {"sku": "b"}, {"sku": "c"}]),
+    )
+    .await;
+    // Iterations 0 and 1 run together and complete; iteration 2 then reserves and is declined.
+    for _ in 0..2 {
+        flow.drive().await;
+        let reserves = flow.poll().await;
+        for task in &reserves {
+            flow.complete(task, json!({"hold": true})).await;
+        }
+        flow.drive().await;
+        let charges = flow.poll().await;
+        for task in &charges {
+            if iteration(task) == 2 {
+                flow.fail(task, "PAYMENT_DECLINED", false).await;
+            } else {
+                flow.complete(task, json!({"charged": true})).await;
+            }
+        }
+        flow.drive().await;
+    }
+    flow.drive().await;
+
+    assert_eq!(flow.run_status().await, "COMPENSATING");
+    let first = flow.poll().await;
+    let mut iterations: Vec<u32> = first.iter().map(iteration).collect();
+    iterations.sort_unstable();
+    iterations.dedup();
+    assert_eq!(
+        iterations.len(),
+        2,
+        "three iterations have something to undo, the collection may run two at once: {:?}",
+        summary(&first)
+    );
+    let held_back = (0..3_u32)
+        .find(|index| !iterations.contains(index))
+        .expect("an iteration that waits for a free slot");
+    for task in &first {
+        flow.complete(task, json!({"undone": true})).await;
+    }
+    // Their reservations are still to release, so the slots are still taken.
+    flow.drive().await;
+    let second = flow.poll().await;
+    assert!(
+        second.iter().all(|task| iteration(task) != held_back),
+        "iteration {held_back} waits while two others are being undone: {:?}",
+        summary(&second)
+    );
+    for task in &second {
+        flow.complete(task, json!({"undone": true})).await;
+    }
+    let mut undone = first.len() + second.len();
+    for _ in 0..8 {
+        flow.drive().await;
+        let tasks = flow.poll().await;
+        if tasks.is_empty() {
+            break;
+        }
+        for task in &tasks {
+            flow.complete(task, json!({"undone": true})).await;
+        }
+        undone += tasks.len();
+    }
+    // Iterations 0 and 1 each undo a charge and a reservation, iteration 2 only its reservation.
+    assert_eq!(undone, 5);
+    assert_eq!(flow.run_status().await, "COMPENSATED");
+    flow.verify().await;
+}
+
+/// Closes the tenant's content quota at what it holds now, so that the next payload it must retain
+/// is refused.
+async fn close_content_quota(flow: &Flow) {
+    let tenant = flow.tenant.as_uuid();
+    let used: i64 = sqlx::query_scalar(
+        "SELECT content_bytes + content_reserved_bytes FROM tenant_retained_usage WHERE tenant_id=$1",
+    )
+    .bind(tenant)
+    .fetch_one(&flow.api.db.pool)
+    .await
+    .expect("retained usage");
+    sqlx::query(
+        "INSERT INTO quota_limits (tenant_id,namespace_id,resource,max_value,updated_by) \
+         VALUES ($1,NULL,'tenant_content_bytes',$2,'scope-compensation-test')",
+    )
+    .bind(tenant)
+    .bind(used)
+    .execute(&flow.api.db.pool)
+    .await
+    .expect("close the content limit");
+    sqlx::query("UPDATE quota_accounting_control SET content_enforcement_enabled=true")
+        .execute(&flow.api.db.pool)
+        .await
+        .expect("enable content enforcement");
+}
+
+#[tokio::test]
+async fn a_closed_storage_quota_does_not_stop_the_compensation() {
+    let name = format!("scope-quota-{}", Uuid::now_v7());
+    let flow = Flow::start(
+        &name,
+        reserve_and_charge(&name, 1),
+        json!([{"sku": "a"}, {"sku": "b"}]),
+    )
+    .await;
+    // Iteration 0 completes; iteration 1 reserves and is declined.
+    flow.drive().await;
+    let reserve = flow.poll().await;
+    flow.complete(&reserve[0], json!({"hold": 0})).await;
+    flow.drive().await;
+    let charge = flow.poll().await;
+    flow.complete(&charge[0], json!({"charged": 0})).await;
+    flow.drive().await;
+    let reserve = flow.poll().await;
+    flow.complete(&reserve[0], json!({"hold": 1})).await;
+    flow.drive().await;
+    let charge = flow.poll().await;
+    flow.fail(&charge[0], "PAYMENT_DECLINED", false).await;
+    flow.drive().await;
+    assert_eq!(flow.run_status().await, "COMPENSATING");
+
+    // The tenant may not retain anything more from here on. What a compensation answers is not
+    // retained, so undoing what was done never depends on free storage.
+    close_content_quota(&flow).await;
+    let mut order = Vec::new();
+    for _ in 0..8 {
+        flow.drive().await;
+        let tasks = flow.poll().await;
+        if tasks.is_empty() {
+            break;
+        }
+        for task in &tasks {
+            order.push((iteration(task), node(task)));
+            flow.complete(task, json!({"undone": true})).await;
+        }
+    }
+    flow.drive().await;
+    let mut undone = order.clone();
+    undone.sort();
+    assert_eq!(
+        undone,
+        vec![
+            (0, "charge~c".to_owned()),
+            (0, "reserve~c".to_owned()),
+            (1, "reserve~c".to_owned()),
+        ]
+    );
+    let position = |entry: (u32, &str)| {
+        order
+            .iter()
+            .position(|(index, node)| (*index, node.as_str()) == entry)
+            .expect("compensation ran")
+    };
+    assert!(position((0, "charge~c")) < position((0, "reserve~c")));
+    assert_eq!(flow.run_status().await, "COMPENSATED");
     flow.verify().await;
 }
 
@@ -514,6 +677,100 @@ async fn a_failed_loop_undoes_its_completed_iterations_last_first() {
             .await
             .expect("loop scope");
     assert_eq!(scope, ("FAILED".into(), Some("PAYMENT_DECLINED".into())));
+    flow.verify().await;
+}
+
+/// A loop of `max_iterations` passes whose condition never ends it: the limit is what stops it.
+fn limited_loop(name: &str, max_iterations: u32, limits: Option<Value>) -> Value {
+    let mut document = compensating_loop(name, false, false);
+    let poll = document["nodes"]
+        .as_array_mut()
+        .and_then(|nodes| nodes.iter_mut().find(|node| node["id"] == "poll"))
+        .expect("the loop node");
+    poll["condition"] = json!("carry < 100");
+    poll["maxIterations"] = json!(max_iterations);
+    if let Some(limits) = limits {
+        document["limits"] = limits;
+    }
+    document
+}
+
+/// Every pass of the loop reserves and charges; none is declined.
+async fn complete_passes(flow: &Flow, passes: u32) {
+    for pass in 0..passes {
+        flow.drive().await;
+        let reserve = flow.poll().await;
+        flow.complete(&reserve[0], json!({"hold": pass})).await;
+        flow.drive().await;
+        let charge = flow.poll().await;
+        flow.complete(&charge[0], json!({"charged": pass})).await;
+    }
+    flow.drive().await;
+}
+
+#[tokio::test]
+async fn a_loop_stopped_by_its_iteration_limit_undoes_its_iterations_last_first() {
+    let name = format!("scope-loop-limit-{}", Uuid::now_v7());
+    let flow = Flow::start(&name, limited_loop(&name, 3, None), json!([])).await;
+    complete_passes(&flow, 3).await;
+
+    assert_eq!(flow.run_status().await, "COMPENSATING");
+    let (order, carries) = compensation_order_with_carry(&flow).await;
+    assert_eq!(carries, vec![2, 2, 1, 1, 0, 0]);
+    assert_eq!(
+        order,
+        vec![
+            (2, "charge~c".to_owned()),
+            (2, "reserve~c".to_owned()),
+            (1, "charge~c".to_owned()),
+            (1, "reserve~c".to_owned()),
+            (0, "charge~c".to_owned()),
+            (0, "reserve~c".to_owned()),
+        ],
+        "the iteration that met the limit completed too, and is undone first"
+    );
+    assert_eq!(flow.run_status().await, "COMPENSATED");
+    let scope: (String, Option<String>) =
+        sqlx::query_as("SELECT lifecycle, drain_failure_code FROM loop_scopes WHERE run_id = $1")
+            .bind(flow.run.as_uuid())
+            .fetch_one(&flow.api.db.pool)
+            .await
+            .expect("loop scope");
+    assert_eq!(scope, ("FAILED".into(), Some("ITERATION_LIMIT".into())));
+    flow.verify().await;
+}
+
+#[tokio::test]
+async fn a_loop_stopped_by_the_instance_budget_undoes_its_iterations_last_first() {
+    let name = format!("scope-loop-budget-{}", Uuid::now_v7());
+    // Room for two passes (five instances each, the compensations included) and the two root nodes,
+    // not for a third body.
+    let flow = Flow::start(
+        &name,
+        limited_loop(&name, 8, Some(json!({"maxInstances": 14}))),
+        json!([]),
+    )
+    .await;
+    complete_passes(&flow, 2).await;
+
+    let (order, _) = compensation_order_with_carry(&flow).await;
+    assert_eq!(
+        order,
+        vec![
+            (1, "charge~c".to_owned()),
+            (1, "reserve~c".to_owned()),
+            (0, "charge~c".to_owned()),
+            (0, "reserve~c".to_owned()),
+        ]
+    );
+    assert_eq!(flow.run_status().await, "COMPENSATED");
+    let scope: (String, Option<String>) =
+        sqlx::query_as("SELECT lifecycle, drain_failure_code FROM loop_scopes WHERE run_id = $1")
+            .bind(flow.run.as_uuid())
+            .fetch_one(&flow.api.db.pool)
+            .await
+            .expect("loop scope");
+    assert_eq!(scope, ("FAILED".into(), Some("INSTANCE_LIMIT".into())));
     flow.verify().await;
 }
 
