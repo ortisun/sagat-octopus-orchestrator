@@ -18,11 +18,25 @@ Connection identities, immutable revisions, current enabled/tombstoned state and
 
 `run_database_connections` has one immutable tenant/namespace/run/node → connection/revision binding with tenant-and-namespace composite FKs. Publication validates every connection against the author's current role and secret ACL. Run admission now populates bindings in the run transaction, after acquiring any parent reservation and before commit. Current connection state, OpenBao authority, publisher and initiating actor permissions/ACLs are checked under locks. Triggered trees use their publisher when there is no human initiator; `system:engine` grants no database authority. Receipt replay validates the persisted pins and current authority. A new rerun resolves floating references at its own admission; an explicit revision remains explicit. Settings/names are charged through existing ALWAYS retained-byte triggers. The initial catalog enforces 100 current connections, 1,024 retained identities per namespace and 1,000 revisions per identity; configurable namespace/deployment catalog ceilings and eventual retention cleanup remain delivery work.
 
-Lock order for admission is an existing parent/root run reservation (for children), then namespace secret/catalog lock, current membership rows, namespace, connection heads, secret rows and existing ACL rows. Revision selection, run/pin insertion, initial journal/task/outbox records and receipt commit together. ACL removal and role changes wait for an admission already holding their share locks; subsequent admissions see the revocation. A crash before commit leaves no run or pin. A denied child admission completes the parent step with `DATABASE_UNAVAILABLE`; a denied event/cron admission creates no run and records a bounded `database.denied` audit. Dedicated managed leases/capability use remain pending T017-013.
+Lock order for admission is an existing parent/root run reservation (for children), then namespace secret/catalog lock, current membership rows, namespace, connection heads, secret rows and existing ACL rows. Revision selection, run/pin insertion, initial journal/task/outbox records and receipt commit together. ACL removal and role changes wait for an admission already holding their share locks; subsequent admissions see the revocation. A crash before commit leaves no run or pin. A denied child admission completes the parent step with `DATABASE_UNAVAILABLE`; a denied event/cron admission creates no run and records a bounded `database.denied` audit. Dedicated managed leases/capability use recheck the same current authority under their fenced attempt (T017-013).
 
-A catalog write takes the existing namespace secret-management lock, checks the current membership and OpenBao authority, then commits revision/head/audit together. Creates and rotations cannot race the count or head. Historical reads show historical settings with current lifecycle status. Catalog HTTP routes are metadata operations only; no route executes SQL or claims a successful probe.
+A catalog write takes the existing namespace secret-management lock, checks the current membership and OpenBao authority, then commits revision/head/audit together. Creates and rotations cannot race the count or head. Historical reads show historical settings with current lifecycle status. Catalog writes/reads are metadata operations. Probe routes admit a fixed durable execution and expose its status/revision; no API route executes customer SQL.
 
 Implementation status: the intent/version schema, immutable content-binding guard, byte-accounting trigger, explicit migration fence and provider-aware resolution have real-service evidence. Scheduled provider-object/receipt cleanup is still pending T017-024; current hard bounds fail closed when full. Explicit OpenBao settings now enable management routes and runtime resolution; production deployment profiles and the database connection feature remain incomplete.
+
+## Private execution definitions
+
+`workflows.internal` is immutable and implies no active version. Private retained definitions have
+an immutable index keyed by `(tenant_id, namespace_id, actor, digest)`, with scoped foreign keys
+to their workflow and version. Their publisher is the indexed actor. Definition insertion/reuse
+and durable run admission share one transaction and the existing workflow quota lock. Definition
+bytes remain subject to the existing retained-content triggers. Ordinary definition and promotion
+queries exclude these records; runtime and owner-authorized rerun use private access.
+
+`runs.origin` is nullable for existing/public workflows and otherwise one of `AD_HOC_STEP`,
+`AD_HOC_WORKFLOW`, `CONNECTION_PROBE`. The origin is immutable and must agree with a private
+definition owned by the initiator. Definition deduplication excludes origin, but receipt identity
+includes origin, so submitting an identical operation as ad hoc cannot relabel a probe run.
 
 ## Attempt credential evidence
 

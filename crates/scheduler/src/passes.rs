@@ -1085,6 +1085,7 @@ where
         };
         let child_id = pending.child;
         let info = RunInfo {
+            origin: None,
             run_id: child_id,
             tenant_id: tenant,
             namespace_id: parent.info.namespace_id,
@@ -1118,6 +1119,7 @@ where
         );
         let limits = RunLimits::of(&self.store, tenant, parent.info.namespace_id).await?;
         let new = NewRun {
+            retained: None,
             limits,
             info,
             definition: std::sync::Arc::clone(&definition),

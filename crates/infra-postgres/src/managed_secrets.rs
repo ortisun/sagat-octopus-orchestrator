@@ -24,14 +24,13 @@ async fn current_admin(
     tenant: TenantId,
     actor: &str,
 ) -> Result<(), StoreError> {
-    let role: Option<String> = sqlx::query_scalar(
-        "SELECT role FROM memberships WHERE tenant_id = $1 AND subject = $2 FOR SHARE",
-    )
-    .bind(tenant.as_uuid())
-    .bind(actor)
-    .fetch_optional(conn)
-    .await
-    .map_err(store_error)?;
+    let role: Option<String> =
+        sqlx::query_scalar("SELECT role FROM public.sagat_lock_memberships($1, ARRAY[$2::text])")
+            .bind(tenant.as_uuid())
+            .bind(actor)
+            .fetch_optional(conn)
+            .await
+            .map_err(store_error)?;
     if role.as_deref() == Some("admin") {
         Ok(())
     } else {

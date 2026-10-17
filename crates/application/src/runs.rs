@@ -5,6 +5,12 @@
 //! [`RunTx`], so the journal, the projections, the audit record and the idempotency record commit
 //! together or not at all.
 
+mod ad_hoc;
+pub(crate) use ad_hoc::audit_denied as audit_database_execution_denied;
+pub use ad_hoc::{
+    AdHocMode, ConnectionProbe, RetainedDefinition, RunOrigin, StartDatabaseExecution,
+};
+
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
@@ -46,6 +52,8 @@ pub enum Lock {
 /// A run about to be created.
 #[derive(Debug, Clone)]
 pub struct NewRun {
+    /// Private definition to retain atomically with this run; only managed admission constructs it.
+    pub retained: Option<RetainedDefinition>,
     /// The quotas the creation is judged against, atomically with the insert.
     pub limits: RunLimits,
     pub info: RunInfo,
@@ -150,12 +158,15 @@ impl GraphChanges {
 pub struct RunFilter {
     pub workflow: Option<WorkflowId>,
     pub status: Option<RunStatus>,
+    pub origin: Option<RunOrigin>,
 }
 
 /// Storage port for runs. Implemented by `sagat-infra-postgres`.
 ///
 /// Every method takes the tenant explicitly; adapters MUST apply it as a filter on every statement.
-pub trait RunStore: QuotaLookup + crate::telemetry::TelemetryStore + Send + Sync {
+pub trait RunStore:
+    QuotaLookup + crate::telemetry::TelemetryStore + crate::authz::NamespaceDirectory + Send + Sync
+{
     type Tx: RunTx;
 
     /// Reads an already committed start before resolving an ephemeral upload. `create` repeats
@@ -173,6 +184,21 @@ pub trait RunStore: QuotaLookup + crate::telemetry::TelemetryStore + Send + Sync
         &self,
         new: NewRun,
     ) -> impl Future<Output = Result<Applied<Self::Tx>, StoreError>> + Send;
+
+    /// Private immutable document, only for its initiating actor's rerun.
+    fn private_definition(
+        &self,
+        tenant: TenantId,
+        actor: &str,
+        run: RunId,
+    ) -> impl Future<Output = Result<Option<Vec<u8>>, StoreError>> + Send;
+
+    fn latest_connection_probe(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        name: &sagat_domain::identity::Slug,
+    ) -> impl Future<Output = Result<Option<ConnectionProbe>, StoreError>> + Send;
 
     /// Opens a run for a command. `None` when it does not exist (or, with
     /// [`Lock::SkipLocked`], when another transaction holds it).
@@ -487,6 +513,18 @@ where
         let Some(source) = self.store.rerun_source(principal.tenant_id(), id).await? else {
             return Err(self.missing(principal, id, ctx).await);
         };
+        if original.info.origin.is_some() {
+            return self
+                .rerun_private(
+                    principal,
+                    &original,
+                    &source,
+                    Rerun { of: id, reason },
+                    key,
+                    ctx,
+                )
+                .await;
+        }
         self.start_with(
             principal,
             &StartRun {
@@ -600,6 +638,7 @@ where
         }
         let run_id = RunId::generate();
         let info = RunInfo {
+            origin: None,
             run_id,
             tenant_id: principal.tenant_id(),
             namespace_id: namespace.id(),
@@ -697,6 +736,7 @@ where
         };
         let limits = RunLimits::of(&self.store, principal.tenant_id(), namespace.id()).await?;
         let new = NewRun {
+            retained: None,
             limits,
             info,
             definition: Arc::clone(&definition),
@@ -713,6 +753,16 @@ where
                 return Err(error.into());
             }
         };
+        self.finish_start(principal, run_id, created, ctx).await
+    }
+
+    async fn finish_start(
+        &self,
+        principal: &Principal,
+        run_id: RunId,
+        created: Applied<S::Tx>,
+        ctx: &RequestContext,
+    ) -> Result<RunRecord, AppError> {
         match created {
             Applied::Replayed(existing) => {
                 let id = existing.parse::<RunId>().map_err(|_| AppError::Internal)?;

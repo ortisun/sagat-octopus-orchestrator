@@ -699,6 +699,21 @@ where
         Router::new()
     };
 
+    let database_executions = Router::new()
+        .route(
+            "/namespaces/{namespace_id}/database-executions",
+            axum::routing::post(routes::database_executions::create::<B<S, C, P, X, E>>),
+        )
+        .route(
+            "/namespaces/{namespace_id}/connections/{name}/probe",
+            axum::routing::post(routes::database_executions::probe::<B<S, C, P, X, E>>)
+                .get(routes::database_executions::latest_probe::<B<S, C, P, X, E>>),
+        )
+        .layer(RequestBodyLimitLayer::new(2 * 1024 * 1024))
+        .route_layer(shed())
+        .route_layer(from_fn(routes::database_results::no_store))
+        .with_state(state.clone());
+
     let database_results = if state.database_results().is_some() {
         Router::new()
             .route(
@@ -885,6 +900,7 @@ where
         .merge(identity_routes)
         .merge(payload_inspections)
         .merge(database_results)
+        .merge(database_executions)
         .merge(exec_routes)
         .merge(extra_routes)
         .route_layer(from_fn(context::record_route))

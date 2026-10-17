@@ -227,3 +227,59 @@ Actual evidence:
 This closes the SDK slice, not the feature. Retained ad hoc/probe admission,
 Studio execution/results, deployment isolation, cleanup/restore and final feature
 regression/fault gates remain pending.
+
+
+## 2026-10-17 — retained ad hoc executions and fixed probes (T017-012/014/016)
+
+- Added private immutable definitions indexed by tenant/namespace/actor/canonical digest. Internal
+  workflows remain inactive and absent from normal definition/version/publication APIs. Existing
+  workflow and content quotas apply; identical definitions reuse their version at the count ceiling.
+- The private definition/version, run, connection pins, initial journal/tasks/outbox, audit and
+  receipt commit atomically. A deferred precommit fault proved every affected table count unchanged,
+  then the same key succeeded after removing the injected fault. Concurrent submissions returned
+  one run. Changed input/actor/origin conflicted. Ad hoc submission of the exact fixed probe IR reused
+  its definition without changing probe provenance.
+- New closed HTTP routes admit ad hoc step/workflow and fixed connection probes; normal runs omit
+  origin. Probe status, tested revision and safe failure are read from one SQL snapshot. Paused
+  connections refuse admission. Connection edits retain evidence for the tested older revision.
+- Current membership/ACL checks cover replay and later capabilities. Review identified missing
+  current RunOperate on private reruns and missing early permission-denial auditing; both were
+  corrected. The cached Admin→Developer test permits an ordinary ad hoc query but rejects new and
+  replayed reruns. HTTP and direct-use-case permission denials emit namespace-scoped, content-free
+  audits through the existing bounded asynchronous writer; tests await its documented completion.
+- Real OpenBao/PostgreSQL/separate runner executed the fixed probe successfully, returned typed
+  integer 1, and produced DATABASE_AUTHENTICATION_FAILED for wrong credentials. A retained ad hoc
+  workflow bound run input into one query and the first inline result into a second query (value 42).
+- `integration_database_connections`: **3 passed** (12.76 s in the final expanded regression before
+  the runtime-role variant); `integration_database_runner`: **1 passed** (19.41 s).
+- `integration_durable_execution`: **178 passed** (50.90 s); `integration_gitops_versioning`:
+  **35 passed** (9.60 s). REST durable-execution **2 passed**, REST GitOps-versioning **1 passed**.
+- Clippy with `-D warnings` passed for application, HTTP, PostgreSQL and scheduler all targets,
+  and for both feature integration targets. Formatting and diff checks passed. Architecture check
+  passed for **24 crates**, with **8 checker tests**. Generated Studio OpenAPI parity and TypeScript
+  typecheck passed.
+- Initial red tests failed because the new service/types were absent. During implementation,
+  compile checks caught method visibility, UUID serialization and dynamically built SQL in a test;
+  these were corrected. Tests caught the exact no-store header expectation and asynchronous denial
+  audit timing; the tests now match existing behavior, without strengthening the audit guarantee.
+- Independent read-only review found no remaining Required/Critical findings. The reviewer did not
+  run tests. Studio controls, policy ceilings, provider cleanup, deployment and final delivery gates
+  remain unchecked tasks; this checkpoint does not claim the complete feature is shipped.
+
+### Runtime application-role verification
+
+The real HTTP and separate-runner fixtures now connect as `sagat_app`. This exposed
+a PostgreSQL privilege bug: `SELECT ... FOR SHARE` on membership/namespace/secret ACL
+rows needs update authority, which this role intentionally lacks. Migration 031 adds
+three narrowly scoped SQL SECURITY DEFINER read-lock functions with fixed search
+paths, qualified relations, tenant filters, and EXECUTE revoked from PUBLIC. Callers
+retain the same transaction and lock order. No UPDATE privileges were added.
+
+- Real feature regression: **3 passed** (17.97 s), including assertions that UPDATE
+  of all three authority tables still fails with 42501 and PUBLIC has no EXECUTE
+  permission on the functions.
+- Separate-runner regression with the runtime role: **1 passed** (17.67 s); preceding
+  feature run with the same role: **3 passed** (12.45 s).
+- Clippy for both integration targets passed after the privilege assertions.
+- Independent review of the functions and all call sites found no Required/Critical
+  findings; the reviewer did not run tests.

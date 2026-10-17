@@ -47,6 +47,7 @@ pub enum ApiOperation {
     SecretRead,
     SecretManage,
     DatabaseManage,
+    DatabaseAdHoc,
     EgressManage,
     WorkerBind,
     EventPublish,
@@ -89,6 +90,7 @@ impl ApiOperation {
             Self::QuotaManage => &[QuotaManage],
             Self::SecretRead => &[SecretRead],
             Self::SecretManage => &[SecretManage],
+            Self::DatabaseAdHoc => &[RunStart, Permission::DatabaseAdHoc, Permission::DatabaseUse],
             Self::DatabaseManage => &[Permission::DatabaseManage],
             Self::EgressManage => &[EgressManage],
             Self::WorkerBind => &[WorkerBind],
@@ -195,7 +197,21 @@ where
         ctx: &RequestContext,
     ) -> Result<NamespaceId, AppError> {
         for permission in operation.permissions() {
-            principal.authorize(*permission)?;
+            if let Err(error) = principal.authorize(*permission) {
+                if operation == ApiOperation::DatabaseAdHoc
+                    && let ApiTarget::Namespace(namespace) = &target
+                {
+                    crate::runs::audit_database_execution_denied(
+                        &self.store,
+                        &self.clock,
+                        principal,
+                        *namespace,
+                        ctx,
+                    )
+                    .await;
+                }
+                return Err(error.into());
+            }
         }
 
         let tenant = principal.tenant_id();

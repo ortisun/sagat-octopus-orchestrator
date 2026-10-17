@@ -267,6 +267,8 @@ pub struct ChildSpawn {
 /// Everything about a run that does not change after it is created.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunInfo {
+    /// Private managed execution provenance; ordinary published runs omit it.
+    pub origin: Option<crate::runs::RunOrigin>,
     pub run_id: RunId,
     pub tenant_id: TenantId,
     pub namespace_id: NamespaceId,
@@ -844,6 +846,14 @@ impl DefinitionCache {
             capacity: capacity.max(1),
             max_bytes,
         }
+    }
+
+    /// Validates/canonicalizes a new document through the same codec used by published runs.
+    pub fn parse_document(
+        &self,
+        document: &[u8],
+    ) -> Result<crate::definitions::ParsedDefinition, IrError> {
+        self.codec.parse(document)
     }
 
     /// The parsed definition of `version` if it is cached.

@@ -1,4 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod ad_hoc;
 mod fairness;
 mod proxy;
 #[path = "../../support/mod.rs"]
@@ -152,6 +153,7 @@ async fn isolated_process_executes_openbao_capabilities_and_reports_bounded_resu
     );
     let p = platform_with(Options {
         secret_provider: Some(provider),
+        runtime_role: true,
         blobs: Some(BlobLimits::default()),
         worker: WorkerSettings {
             lease_ttl: Duration::from_secs(8),
@@ -232,6 +234,7 @@ async fn isolated_process_executes_openbao_capabilities_and_reports_bounded_resu
             .spawn()
             .unwrap(),
     );
+    ad_hoc::run(&p, &ns).await;
     let run = start(
         &p,
         "typed-process",

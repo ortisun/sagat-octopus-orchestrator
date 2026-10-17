@@ -483,6 +483,7 @@ async fn rollback_and_acl_fence(w: &World, existing: RunId, publisher: &str) {
     info.root = info.run_id;
     let run = info.run_id;
     let new = NewRun {
+        retained: None,
         limits: RunLimits::of(&w.store, info.tenant_id, info.namespace_id)
             .await
             .unwrap(),

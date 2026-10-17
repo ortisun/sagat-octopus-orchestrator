@@ -413,6 +413,7 @@ where
             None => (sagat_telemetry::TraceId::generate().to_string(), None),
         };
         let info = RunInfo {
+            origin: None,
             run_id,
             tenant_id: tenant,
             namespace_id: trigger.namespace_id,
@@ -442,6 +443,7 @@ where
         );
         let limits = RunLimits::of(&self.store, tenant, trigger.namespace_id).await?;
         let new = NewRun {
+            retained: None,
             limits,
             info,
             definition: Arc::clone(&definition),

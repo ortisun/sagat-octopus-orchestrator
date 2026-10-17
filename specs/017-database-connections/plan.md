@@ -21,6 +21,16 @@ The delivery extends features 001, 002, 003, 006, 007, 008, 009 and 011 in the b
 
 New permissions are distinct even where a built-in role receives several. Admin: catalog manage/use, ad hoc execute, write and result read, plus existing secret management. Developer: connection use and ad hoc query execution, subject to current secret ACL; no write or result disclosure by default. Operator/viewer: metadata only through existing namespace access; no database use/write/result by default. A dedicated managed executor role receives worker execution and managed capability access, with current bindings required; ordinary worker/runner roles cannot claim managed database tasks. Result reads require explicit result permission and namespace/run scope, regardless of run authorship. Foreign resources use the existing opaque not-found response.
 
+### Authority row locks with runtime privileges
+
+The runtime role retains read-only access to operator-provisioned memberships and namespace
+identity. PostgreSQL requires UPDATE privilege for direct FOR SHARE reads; use narrow SECURITY
+DEFINER SQL functions for locking selected membership rows, one namespace and selected secret ACL
+rows instead of granting mutation rights. Functions fix search_path to pg_catalog/pg_temp, qualify
+all table names, filter tenant and exact identities, return only metadata, revoke PUBLIC execution,
+and grant sagat_app EXECUTE. Locks survive in the caller's admission transaction and retain the
+same ordering and revocation fence. Real runtime-role HTTP and runner tests verify this path.
+
 ## Finite ceilings
 
 | Resource | Default | Hard ceiling |
@@ -42,6 +52,39 @@ New permissions are distinct even where a built-in role receives several. Admin:
 Effective values are the minimum of request, namespace and deployment limits. Zero is not unlimited. Queue admission fails before accepting work beyond a ceiling. Existing retained-content, run and request quotas also apply.
 
 ## Delivery sequence and verification
+
+### Ad hoc and probe admission (T017-014/016)
+
+Retain one private immutable workflow/version per tenant, namespace, actor and canonical IR digest.
+Repeated identical submissions by the same actor reuse that definition, including at the workflow
+count ceiling. Different actors retain their own publisher identity. Internal workflows cannot be
+activated, edited, published, promoted or discovered by the ordinary definition APIs. They count
+toward the existing namespace workflow quota (default 1,000) and retained-content quota. This
+delivery does not delete immutable versions automatically; distinct definitions consume finite
+retention capacity and admission fails when full.
+
+The workflow quota lock precedes private definition lookup; charge the count only on insertion.
+Definition, version, run, connection pins, initial journal/tasks/outbox, audit and request receipt
+commit together. Generated identifiers are excluded from request fingerprints. The receipt binds
+actor, namespace, origin, canonical definition, input, timeout and rerun source/reason. Replay
+rechecks current role, ACL and persisted pins under the existing secret/catalog → membership lock
+order. Ad hoc authorization (`run:start`, `database:adhoc`, `database:use`, and write permission
+when applicable) is distinct from publication approval, including in protected namespaces.
+
+`POST /namespaces/{id}/database-executions` accepts mode `step` or `workflow`. Step mode contains
+exactly one database node; workflow mode supports database, timer, condition, parallel and end,
+requires at least one database node, allows at most 64 nodes and no triggers. Its timeout defaults
+to five minutes and is at most one hour. SQL still executes only in the isolated managed runner.
+`POST /namespaces/{id}/connections/{name}/probe` accepts only an optional revision and uses a
+server-generated `SELECT 1::bigint` operation. Paused connections refuse probe admission as well.
+The origin `CONNECTION_PROBE` cannot be supplied to the ad hoc endpoint. Probe metadata comes from
+the durable run and its pinned revision; a prior revision's success is not current evidence.
+
+Runs expose optional origin `AD_HOC_STEP`, `AD_HOC_WORKFLOW` or `CONNECTION_PROBE`; ordinary runs
+omit it. Generic rerun of an internal run requires its original actor and current ad hoc authority,
+loads its private retained definition and repeats the same admission path, preserving probe
+provenance. Normal start cannot execute an internal version. Result access remains separately
+authorized and audited.
 
 See `tasks.md`. Each checkpoint records actual commands and outcomes in `verification.md`; unchecked tasks are not shipped guarantees. Start with provider configuration/path/error/redaction tests and real OpenBao CAS/retry behavior. Then durable provisioning and catalog tests against PostgreSQL, then managed execution, API, SDK parity and UI. Add integration/fault targets under `tests` and reuse the repository's Postgres fixtures. Reuse the same contract fixtures in all five SDKs.
 

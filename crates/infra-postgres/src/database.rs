@@ -29,14 +29,13 @@ pub(crate) async fn current_permission(
     principal: &Principal,
     permission: Permission,
 ) -> Result<Role, StoreError> {
-    let role: Option<String> = sqlx::query_scalar(
-        "SELECT role FROM memberships WHERE tenant_id=$1 AND subject=$2 FOR SHARE",
-    )
-    .bind(principal.tenant_id().as_uuid())
-    .bind(principal.subject().as_str())
-    .fetch_optional(conn)
-    .await
-    .map_err(store_error)?;
+    let role: Option<String> =
+        sqlx::query_scalar("SELECT role FROM public.sagat_lock_memberships($1, ARRAY[$2::text])")
+            .bind(principal.tenant_id().as_uuid())
+            .bind(principal.subject().as_str())
+            .fetch_optional(conn)
+            .await
+            .map_err(store_error)?;
     let role = role
         .and_then(|s| s.parse::<Role>().ok())
         .filter(|r| r.grants(permission))
@@ -163,14 +162,13 @@ impl ConnectionStore for PgRunStore {
         // its authority check and committing the connection revision.
         lock_secrets(&mut tx, principal.tenant_id(), namespace).await?;
         current_permission(&mut tx, principal, Permission::DatabaseManage).await?;
-        let environment: Option<String> = sqlx::query_scalar(
-            "SELECT environment FROM namespaces WHERE tenant_id=$1 AND id=$2 FOR SHARE",
-        )
-        .bind(principal.tenant_id().as_uuid())
-        .bind(namespace.as_uuid())
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(store_error)?;
+        let environment: Option<String> =
+            sqlx::query_scalar("SELECT environment FROM public.sagat_lock_namespace($1,$2)")
+                .bind(principal.tenant_id().as_uuid())
+                .bind(namespace.as_uuid())
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(store_error)?;
         let environment = environment.ok_or(StoreError::MissingReference)?;
         if matches!(
             &write.config,

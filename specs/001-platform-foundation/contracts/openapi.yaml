@@ -461,6 +461,7 @@ paths:
         - {$ref: '#/components/parameters/Cursor'}
         - {$ref: '#/components/parameters/Limit'}
         - {name: workflowId, in: query, schema: {type: string}}
+        - {name: origin, in: query, schema: {$ref: '#/components/schemas/DatabaseExecutionOrigin'}}
         - {name: status, in: query, schema: {type: string, enum: [RUNNING, WAITING, PAUSED, CANCELLING, COMPENSATING, MANUAL_REVIEW, SUCCEEDED, FAILED, CANCELLED, TIMED_OUT, COMPENSATED, PARTIAL, COMPENSATION_FAILED]}}
       responses:
         '200': {description: 'Page of runs', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/RunPage'}}}}
@@ -1002,6 +1003,73 @@ paths:
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/database-executions:
+    post:
+      operationId: startDatabaseExecution
+      summary: Retain and execute an ad hoc database step or workflow
+      description: Requires current run:start, database:adhoc, database:use, secret ACL and database:write for writes. Definition, pins and run admission commit together. Identical requests replay with current authorization. SQL executes in the managed runner. Private definitions consume workflow and retained-content quotas.
+      tags: [Runs]
+      x-implemented: '017'
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/StartDatabaseExecutionRequest'}}}
+      responses:
+        '201': {description: 'Durable managed execution', headers: {Cache-Control: {schema: {type: string, const: 'private, no-store'}}, X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Run'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/connections/{connectionName}/probe:
+    parameters:
+      - {$ref: '#/components/parameters/NamespaceId'}
+      - {name: connectionName, in: path, required: true, schema: {type: string, minLength: 3, maxLength: 63, pattern: '^[a-z][a-z0-9-]{1,61}[a-z0-9]$'}}
+    post:
+      operationId: probeDatabaseConnection
+      summary: Admit a fixed SELECT 1 probe in the managed runner
+      description: Uses current ad hoc permissions and secret ACL. A paused connection is refused. Only durable SUCCEEDED is evidence of connectivity, for the run's pinned revision. SQL and parameters cannot be supplied.
+      tags: [Runs]
+      x-implemented: '017'
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/ProbeDatabaseConnectionRequest'}}}
+      responses:
+        '201': {description: 'Durable fixed probe', headers: {Cache-Control: {schema: {type: string, const: 'private, no-store'}}, X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Run'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    get:
+      operationId: latestDatabaseConnectionProbe
+      summary: Read the latest durable connection probe metadata
+      description: Requires namespace:read and run:read. Includes the tested revision, timestamps, durable run status and a closed failure code. Returns null when none exists. Never returns SQL, results or credentials.
+      tags: [Runs]
+      x-implemented: '017'
+      responses:
+        '200': {description: 'Latest probe or null', headers: {Cache-Control: {schema: {type: string, const: 'private, no-store'}}, X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {oneOf: [{$ref: '#/components/schemas/DatabaseConnectionProbe'}, {type: 'null'}]}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
@@ -3473,10 +3541,36 @@ components:
         size: {type: integer, format: int64, minimum: 0}
         sha256: {type: string, pattern: '^[0-9a-f]{64}$'}
         contentType: {type: string, maxLength: 127}
+    DatabaseExecutionOrigin:
+      type: string
+      enum: [AD_HOC_STEP, AD_HOC_WORKFLOW, CONNECTION_PROBE]
+    StartDatabaseExecutionRequest:
+      type: object
+      required: [mode, definition]
+      additionalProperties: false
+      properties:
+        mode: {type: string, enum: [step, workflow]}
+        definition: {$ref: '#/components/schemas/JsonObject', description: 'Canonical IR. Step: one database node. Workflow: at most 64 database/timer/condition/parallel/end nodes, at least one database node, no triggers.'}
+        input: {$ref: '#/components/schemas/JsonObject', default: {}}
+        timeoutMs: {type: integer, minimum: 1, maximum: 3600000, default: 300000}
+    ProbeDatabaseConnectionRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        revision: {type: integer, minimum: 1, maximum: 2147483646}
+    DatabaseConnectionProbe:
+      type: object
+      required: [run, revision, failureCode]
+      additionalProperties: false
+      properties:
+        run: {$ref: '#/components/schemas/Run'}
+        revision: {type: integer, minimum: 1, maximum: 2147483646}
+        failureCode: {type: [string, 'null']}
     Run:
       type: object
       required: [runId, workflowId, versionId, status, version, createdAt]
       properties:
+        origin: {$ref: '#/components/schemas/DatabaseExecutionOrigin', description: 'Present only for retained private managed executions.'}
         runId: {type: string, format: uuid}
         workflowId: {type: string, format: uuid}
         versionId: {type: string, format: uuid}

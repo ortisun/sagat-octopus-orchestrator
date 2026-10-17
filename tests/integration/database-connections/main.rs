@@ -1,4 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+mod ad_hoc;
 mod admission;
 mod executor;
 mod output;
@@ -212,6 +213,7 @@ async fn durable_provider_intents_reconcile_without_plaintext_or_duplicate_rotat
     assert_eq!(authority, "openbao");
     managed_http_facade(provider.clone()).await;
     connection_catalog(&w).await;
+    ad_hoc::run(&w).await;
     admission::run(&w, &service).await;
     executor::run(provider.clone()).await;
     executor::grpc(provider.clone()).await;
@@ -304,9 +306,28 @@ impl SecretProvider for ReadBarrier {
 async fn managed_http_facade(provider: Arc<dyn SecretProvider>) {
     let api = support::api::start_with(support::api::Options {
         secret_provider: Some(provider),
+        runtime_role: true,
         ..Default::default()
     })
     .await;
+    for statement in [
+        "UPDATE memberships SET role=role WHERE false",
+        "UPDATE namespaces SET environment=environment WHERE false",
+        "UPDATE secret_access SET subject=subject WHERE false",
+    ] {
+        let error = sqlx::query(statement)
+            .execute(&api.api_pool)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.as_database_error().unwrap().code().as_deref(),
+            Some("42501"),
+            "read-lock functions must not grant identity/ACL mutation"
+        );
+    }
+    let public_execute: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_proc p CROSS JOIN LATERAL aclexplode(p.proacl) a WHERE p.proname IN ('sagat_lock_memberships','sagat_lock_namespace','sagat_lock_secret_access') AND a.grantee=0 AND a.privilege_type='EXECUTE'")
+        .fetch_one(&api.db.pool).await.unwrap();
+    assert_eq!(public_execute, 0);
     api.tenant("bao-http", "owner").await;
     let workspace = api.create_workspace("owner", "bao-http", "workspace").await;
     let namespace = api
@@ -365,6 +386,7 @@ async fn managed_http_facade(provider: Arc<dyn SecretProvider>) {
             .unwrap()
             .unwrap();
     }
+    ad_hoc::http(&api, &namespace, connection_body.clone()).await;
     let mut bad = connection_body.clone();
     bad["config"]["password"] = serde_json::json!("must-not-accept");
     assert_eq!(

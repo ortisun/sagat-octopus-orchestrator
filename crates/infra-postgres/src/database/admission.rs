@@ -52,12 +52,16 @@ pub(crate) async fn admit_definition(
     actors: &[&str],
     definition: &WorkflowDefinition,
     pinned: Option<RunId>,
+    run_info: Option<&RunInfo>,
 ) -> Result<Vec<(NodeId, ConnectionId, u32)>, StoreError> {
     if !definition.nodes().any(|n| n.database_operation().is_some()) {
         return Ok(Vec::new());
     }
     let started = std::time::Instant::now();
-    let result = check_definition(conn, tenant, namespace, actors, definition, pinned, None).await;
+    let result = check_definition(
+        conn, tenant, namespace, actors, definition, pinned, run_info, None,
+    )
+    .await;
     let outcome = match &result {
         Ok(_) => "authorized",
         Err(StoreError::DatabaseUnavailable | StoreError::DatabaseLimit) => "denied",
@@ -83,6 +87,7 @@ pub(crate) async fn admit_node(
         &actors.iter().map(String::as_str).collect::<Vec<_>>(),
         definition,
         Some(info.run_id),
+        Some(info),
         Some(node),
     )
     .await?;
@@ -97,6 +102,7 @@ async fn check_definition(
     actors: &[&str],
     definition: &WorkflowDefinition,
     pinned: Option<RunId>,
+    run_info: Option<&RunInfo>,
     selected: Option<&NodeId>,
 ) -> Result<Vec<(NodeId, ConnectionId, u32)>, StoreError> {
     let operations: Vec<_> = definition
@@ -110,9 +116,13 @@ async fn check_definition(
     // Same order as catalog/secret writes. Membership and existing ACL rows remain locked through
     // commit, so a revocation that has returned stops every subsequent admission.
     lock_secrets(conn, tenant, namespace).await?;
-    let roles: Vec<(String, String)> = sqlx::query_as(
-        "SELECT subject,role FROM memberships WHERE tenant_id=$1 AND subject=ANY($2) ORDER BY subject FOR SHARE")
-        .bind(tenant.as_uuid()).bind(actors).fetch_all(&mut *conn).await.map_err(store_error)?;
+    let roles: Vec<(String, String)> =
+        sqlx::query_as("SELECT subject,role FROM public.sagat_lock_memberships($1,$2)")
+            .bind(tenant.as_uuid())
+            .bind(actors)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(store_error)?;
     let roles: BTreeMap<_, _> = roles
         .into_iter()
         .map(|(subject, role)| {
@@ -130,21 +140,26 @@ async fn check_definition(
         || actors.iter().any(|a| {
             roles.get(*a).is_none_or(|r| {
                 !r.grants(Permission::DatabaseUse)
+                    || (run_info.is_some_and(|info| info.origin.is_some())
+                        && (!r.grants(Permission::DatabaseAdHoc)
+                            || !r.grants(Permission::RunStart)))
+                    || (run_info
+                        .is_some_and(|info| info.origin.is_some() && info.rerun_of.is_some())
+                        && !r.grants(Permission::RunOperate))
                     || (writes && !r.grants(Permission::DatabaseWrite))
             })
         })
     {
         return Err(StoreError::DatabaseUnavailable);
     }
-    let environment: String = sqlx::query_scalar(
-        "SELECT environment FROM namespaces WHERE tenant_id=$1 AND id=$2 FOR SHARE",
-    )
-    .bind(tenant.as_uuid())
-    .bind(namespace.as_uuid())
-    .fetch_optional(&mut *conn)
-    .await
-    .map_err(store_error)?
-    .ok_or(StoreError::DatabaseUnavailable)?;
+    let environment: String =
+        sqlx::query_scalar("SELECT environment FROM public.sagat_lock_namespace($1,$2)")
+            .bind(tenant.as_uuid())
+            .bind(namespace.as_uuid())
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(store_error)?
+            .ok_or(StoreError::DatabaseUnavailable)?;
     let pins: BTreeMap<String, (Uuid, i32)> = if let Some(run) = pinned {
         let rows: Vec<(String,Uuid,i32)> = sqlx::query_as(
             "SELECT node_id,connection_id,revision FROM run_database_connections WHERE tenant_id=$1 AND namespace_id=$2 AND run_id=$3")
@@ -195,9 +210,14 @@ async fn check_definition(
                 "SELECT id FROM secrets WHERE tenant_id=$1 AND namespace_id=$2 AND name=$3 AND authority='openbao' FOR SHARE")
                 .bind(tenant.as_uuid()).bind(namespace.as_uuid()).bind(config.secret().as_str())
                 .fetch_optional(&mut *conn).await.map_err(store_error)?.ok_or(StoreError::DatabaseUnavailable)?;
-            let granted: Vec<String> = sqlx::query_scalar(
-                "SELECT subject FROM secret_access WHERE tenant_id=$1 AND secret_id=$2 AND subject=ANY($3) ORDER BY subject FOR SHARE")
-                .bind(tenant.as_uuid()).bind(secret).bind(actors).fetch_all(&mut *conn).await.map_err(store_error)?;
+            let granted: Vec<String> =
+                sqlx::query_scalar("SELECT subject FROM public.sagat_lock_secret_access($1,$2,$3)")
+                    .bind(tenant.as_uuid())
+                    .bind(secret)
+                    .bind(actors)
+                    .fetch_all(&mut *conn)
+                    .await
+                    .map_err(store_error)?;
             if roles.iter().any(|(subject, role)| {
                 !sagat_domain::secrets::may_use(*role, granted.contains(subject))
             }) {

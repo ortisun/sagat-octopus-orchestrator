@@ -9,7 +9,7 @@ use sagat_domain::secrets::SecretMeta;
 impl PgRunTx {
     pub(super) async fn database_role(&mut self, subject: &str) -> Result<bool, StoreError> {
         let role: Option<String> = sqlx::query_scalar(
-            "SELECT role FROM memberships WHERE tenant_id=$1 AND subject=$2 FOR SHARE",
+            "SELECT role FROM public.sagat_lock_memberships($1, ARRAY[$2::text])",
         )
         .bind(self.info.tenant_id.as_uuid())
         .bind(subject)

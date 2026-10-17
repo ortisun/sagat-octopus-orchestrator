@@ -59,7 +59,7 @@ macro_rules! select_workflow {
             "w.active_version_id, w.created_at, w.updated_at, ",
             "v.id AS v_id, v.version_number AS v_number, v.digest AS v_digest, ",
             "v.published_by AS v_published_by, v.published_at AS v_published_at ",
-            "FROM workflows w ",
+            "FROM (SELECT * FROM workflows WHERE NOT internal) w ",
             "LEFT JOIN workflow_versions v ON v.tenant_id = w.tenant_id AND v.id = w.active_version_id ",
             $tail
         )
@@ -130,6 +130,7 @@ impl DefinitionStore for PgDefinitionStore {
             namespace,
             &[principal.subject().as_str()],
             definition,
+            None,
             None,
         )
         .await?;
@@ -284,7 +285,7 @@ impl DefinitionStore for PgDefinitionStore {
         let updated = sqlx::query(
             "UPDATE workflows SET draft = $4, draft_revision = draft_revision + 1, updated_at = $5, \
                     draft_edited_by = $6 \
-             WHERE tenant_id = $1 AND id = $2 AND draft_revision = $3",
+             WHERE tenant_id = $1 AND id = $2 AND NOT internal AND draft_revision = $3",
         )
         .bind(tenant.as_uuid())
         .bind(id.as_uuid())
@@ -298,7 +299,7 @@ impl DefinitionStore for PgDefinitionStore {
         .rows_affected();
         if updated == 0 {
             let current: Option<i64> = sqlx::query_scalar(
-                "SELECT draft_revision FROM workflows WHERE tenant_id = $1 AND id = $2",
+                "SELECT draft_revision FROM workflows WHERE tenant_id = $1 AND id = $2 AND NOT internal",
             )
             .bind(tenant.as_uuid())
             .bind(id.as_uuid())
@@ -367,7 +368,7 @@ impl DefinitionStore for PgDefinitionStore {
             let Some(locked) = sqlx::query(
                 "SELECT id, tenant_id, namespace_id, name, draft_revision, active_version_id, \
                         created_at, updated_at \
-                 FROM workflows WHERE tenant_id = $1 AND id = $2 FOR UPDATE",
+                 FROM workflows WHERE tenant_id = $1 AND id = $2 AND NOT internal FOR UPDATE",
             )
             .bind(tenant.as_uuid())
             .bind(id.as_uuid())
@@ -384,6 +385,7 @@ impl DefinitionStore for PgDefinitionStore {
                 workflow.namespace_id(),
                 &[principal.subject().as_str()],
                 definition,
+                None,
                 None,
             )
             .await?;
@@ -591,7 +593,7 @@ impl DefinitionStore for PgDefinitionStore {
         sqlx::query(
             "SELECT id, tenant_id, workflow_id, version_number, digest, document, release_notes, \
                     published_by, published_at \
-             FROM workflow_versions WHERE tenant_id = $1 AND id = $2",
+             FROM workflow_versions WHERE tenant_id = $1 AND id = $2 AND workflow_id IN (SELECT id FROM workflows WHERE tenant_id=$1 AND NOT internal)",
         )
         .bind(tenant.as_uuid())
         .bind(id.as_uuid())
@@ -613,7 +615,7 @@ impl DefinitionStore for PgDefinitionStore {
             "SELECT id, tenant_id, workflow_id, version_number, digest, document, release_notes, \
                     published_by, published_at \
              FROM workflow_versions \
-             WHERE tenant_id = $1 AND workflow_id = $2 AND version_number > $3 \
+             WHERE tenant_id = $1 AND workflow_id = $2 AND workflow_id IN (SELECT id FROM workflows WHERE tenant_id=$1 AND NOT internal) AND version_number > $3 \
              ORDER BY version_number LIMIT $4",
         )
         .bind(tenant.as_uuid())
@@ -651,7 +653,7 @@ impl DefinitionStore for PgDefinitionStore {
 
 const VERSION_SELECT_ONE: &str = "SELECT id, tenant_id, workflow_id, version_number, digest, \
      document, release_notes, published_by, published_at \
-     FROM workflow_versions WHERE tenant_id = $1 AND workflow_id = $2 AND version_number = $3";
+     FROM workflow_versions WHERE tenant_id = $1 AND workflow_id = $2 AND workflow_id IN (SELECT id FROM workflows WHERE tenant_id=$1 AND NOT internal) AND version_number = $3";
 
 // ----------------------------------------------------------------------------- idempotency
 

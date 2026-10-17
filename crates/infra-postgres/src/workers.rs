@@ -143,7 +143,7 @@ impl WorkerStore for PgRunStore {
         }
         // A cached principal or wildcard binding is not authority for managed execution.
         let current_role: Option<String> = sqlx::query_scalar(
-            "SELECT role FROM memberships WHERE tenant_id=$1 AND subject=$2 FOR SHARE",
+            "SELECT role FROM public.sagat_lock_memberships($1, ARRAY[$2::text])",
         )
         .bind(session.tenant_id.as_uuid())
         .bind(&session.subject)

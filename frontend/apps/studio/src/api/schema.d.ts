@@ -780,6 +780,53 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/namespaces/{namespaceId}/database-executions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Retain and execute an ad hoc database step or workflow
+         * @description Requires current run:start, database:adhoc, database:use, secret ACL and database:write for writes. Definition, pins and run admission commit together. Identical requests replay with current authorization. SQL executes in the managed runner. Private definitions consume workflow and retained-content quotas.
+         */
+        post: operations["startDatabaseExecution"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/connections/{connectionName}/probe": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                connectionName: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Read the latest durable connection probe metadata
+         * @description Requires namespace:read and run:read. Includes the tested revision, timestamps, durable run status and a closed failure code. Returns null when none exists. Never returns SQL, results or credentials.
+         */
+        get: operations["latestDatabaseConnectionProbe"];
+        put?: never;
+        /**
+         * Admit a fixed SELECT 1 probe in the managed runner
+         * @description Uses current ad hoc permissions and secret ACL. A paused connection is refused. Only durable SUCCEEDED is evidence of connectivity, for the run's pinned revision. SQL and parameters cannot be supplied.
+         */
+        post: operations["probeDatabaseConnection"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/namespaces/{namespaceId}/connections": {
         parameters: {
             query?: never;
@@ -2454,7 +2501,29 @@ export interface components {
             sha256: string;
             contentType: string;
         };
+        /** @enum {string} */
+        DatabaseExecutionOrigin: "AD_HOC_STEP" | "AD_HOC_WORKFLOW" | "CONNECTION_PROBE";
+        StartDatabaseExecutionRequest: {
+            /** @enum {string} */
+            mode: "step" | "workflow";
+            /** @description Canonical IR. Step: one database node. Workflow: at most 64 database/timer/condition/parallel/end nodes, at least one database node, no triggers. */
+            definition: components["schemas"]["JsonObject"];
+            /** @default {} */
+            input: components["schemas"]["JsonObject"];
+            /** @default 300000 */
+            timeoutMs: number;
+        };
+        ProbeDatabaseConnectionRequest: {
+            revision?: number;
+        };
+        DatabaseConnectionProbe: {
+            run: components["schemas"]["Run"];
+            revision: number;
+            failureCode: string | null;
+        };
         Run: {
+            /** @description Present only for retained private managed executions. */
+            origin?: components["schemas"]["DatabaseExecutionOrigin"];
             /** Format: uuid */
             runId: string;
             /** Format: uuid */
@@ -5043,6 +5112,7 @@ export interface operations {
                 /** @description Page size; values outside 1..200 are clamped. */
                 limit?: components["parameters"]["Limit"];
                 workflowId?: string;
+                origin?: components["schemas"]["DatabaseExecutionOrigin"];
                 status?: "RUNNING" | "WAITING" | "PAUSED" | "CANCELLING" | "COMPENSATING" | "MANUAL_REVIEW" | "SUCCEEDED" | "FAILED" | "CANCELLED" | "TIMED_OUT" | "COMPENSATED" | "PARTIAL" | "COMPENSATION_FAILED";
             };
             header: {
@@ -5872,6 +5942,122 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    startDatabaseExecution: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StartDatabaseExecutionRequest"];
+            };
+        };
+        responses: {
+            /** @description Durable managed execution */
+            201: {
+                headers: {
+                    "Cache-Control"?: "private, no-store";
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Run"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    latestDatabaseConnectionProbe: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                connectionName: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Latest probe or null */
+            200: {
+                headers: {
+                    "Cache-Control"?: "private, no-store";
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DatabaseConnectionProbe"] | null;
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    probeDatabaseConnection: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                connectionName: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProbeDatabaseConnectionRequest"];
+            };
+        };
+        responses: {
+            /** @description Durable fixed probe */
+            201: {
+                headers: {
+                    "Cache-Control"?: "private, no-store";
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Run"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
             429: components["responses"]["TooManyRequests"];
             503: components["responses"]["Unavailable"];
             default: components["responses"]["InternalError"];

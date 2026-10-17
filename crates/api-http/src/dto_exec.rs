@@ -281,6 +281,8 @@ pub struct SignalResultBody {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunBody {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<&'static str>,
     pub run_id: String,
     pub workflow_id: String,
     pub version_id: String,
@@ -318,6 +320,10 @@ pub struct ParentBody {
 impl From<&RunRecord> for RunBody {
     fn from(r: &RunRecord) -> Self {
         Self {
+            origin: r
+                .info
+                .origin
+                .map(sagat_application::runs::RunOrigin::as_str),
             run_id: r.info.run_id.to_string(),
             workflow_id: r.info.workflow_id.to_string(),
             version_id: r.info.version_id.to_string(),

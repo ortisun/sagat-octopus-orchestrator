@@ -197,6 +197,15 @@ pub(crate) async fn ensure_room_for_run(
     judge(QuotaResource::TenantActiveRuns, in_tenant, tenant_limit)
 }
 
+/// Serializes workflow retention/deduplication with ordinary workflow creation.
+pub(crate) async fn lock_workflows(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    namespace: NamespaceId,
+) -> Result<(), StoreError> {
+    lock(conn, QuotaResource::Workflows, tenant, Some(namespace)).await
+}
+
 /// A new workflow fits in its namespace.
 pub(crate) async fn ensure_room_for_workflow(
     conn: &mut PgConnection,
