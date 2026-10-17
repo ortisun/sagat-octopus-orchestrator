@@ -1060,6 +1060,8 @@ where
             // A beat already on its way when this same lease reported (G141): not an error, and
             // nothing to renew. Any other lease, lost or forged, stays a stale attempt.
             if matches!(stale, AppError::StaleAttempt) && self.reported_by(&mut tx, task).await? {
+                // The same binding rule as a live beat: a worker no longer bound is refused.
+                self.ensure_bound(principal, &mut tx, task).await?;
                 metrics::counter!("worker_heartbeats_after_report_total").increment(1);
                 return Ok(HeartbeatAck {
                     cancel_requested: false,
@@ -2036,7 +2038,6 @@ where
         Ok(())
     }
 
-    /// The presented token must be the one hashed into the step's current lease.
     /// Whether `task` names the lease that reported the attempt of its step (G141), with the same
     /// step-id check as [`Self::verify`].
     async fn reported_by<Tx: RunTx>(
@@ -2055,6 +2056,7 @@ where
             .await?)
     }
 
+    /// The presented token must be the one hashed into the step's current lease.
     async fn verify<Tx: RunTx>(&self, tx: &mut Tx, task: &TaskRef<'_>) -> Result<(), AppError> {
         // A step id that does not belong to this run and node is a misdirected report.
         if let Some(claimed) = task.step_id {
