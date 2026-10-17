@@ -1315,3 +1315,16 @@ dependency advisory audit. The `execution_chain.started` journal event was writt
 run's trace id; `initialize_chain_in_transaction` now copies it from the run row, and
 `chain_handoff::public_activity_completion_is_handed_to_a_successor_by_the_scheduler` asserts it
 (it failed with `None` first). Integration 144/144 and fault 25/25 after the change.
+
+
+## Foundation closers and contract hygiene (2026-10-17)
+
+Production negotiates worker protocol 1.5 (`with_scoped_worker_protocol` in the engine); earlier
+sections that say 1.4 describe their own checkpoints. `worker.baseline.json` now holds the 1.5
+fields (additions only). The reason table of `contracts/README.md` §5 gained the four reasons the
+code already used (D292) and a contract test ties it to the OpenAPI and to the remediation rows.
+New tests: a cut-off primitive transaction commits whole or not at all and leaves no transaction
+open (`approval_progress::a_decision_cut_off_at_any_await_commits_whole_or_not_at_all`, 400 rounds
+on a one-connection pool, some cut off), duplicate loop-iteration admission, loop bounds at
+publication, and approval principal and key bounds over HTTP and at publication. Decisions D291–D301
+are in `research.md`.

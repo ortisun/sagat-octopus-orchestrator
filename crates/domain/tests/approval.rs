@@ -83,6 +83,17 @@ fn policy_is_non_empty_unique_bounded_and_limited_to_human_decision_roles() {
         ),
         Err(ApprovalError::TooManyPolicyEntries)
     );
+    // The bound is on subjects and roles together: 29 + 3 = 32 is accepted, 30 + 3 = 33 is not.
+    let principals = |subjects: usize| {
+        ApprovalPolicy::new(
+            (0..subjects)
+                .map(|index| subject(&format!("approver-{index}")))
+                .collect(),
+            vec![Role::Admin, Role::Developer, Role::Operator],
+        )
+    };
+    assert!(principals(29).is_ok(), "exactly 32 principals are accepted");
+    assert_eq!(principals(30), Err(ApprovalError::TooManyPolicyEntries));
 
     let default_policy =
         ApprovalPolicy::new(vec![subject("default-approver")], Vec::new()).expect("valid policy");

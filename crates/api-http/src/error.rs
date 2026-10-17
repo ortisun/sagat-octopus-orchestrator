@@ -90,6 +90,18 @@ impl ErrorCode {
             (Self::ValidationFailed, "UPDATE_REJECTED") => {
                 "Change the update arguments so they satisfy the declared business validator."
             }
+            (Self::ValidationFailed, "INVALID_ARGUMENTS") => {
+                "Send arguments that match the argument schema the operation declares."
+            }
+            (Self::ValidationFailed, "INVALID_UPDATE_KEY") => {
+                "Use an update key of 1 to 128 printable ASCII characters without spaces, and keep it for retries."
+            }
+            (Self::ValidationFailed, "INVALID_DECISION_KEY") => {
+                "Use a decision key of 1 to 128 permitted ASCII characters, and keep it for retries."
+            }
+            (Self::ValidationFailed, "INVALID_REASON_CODE") => {
+                "Send a reason code of 1 to 64 machine characters, or none; free text is not accepted."
+            }
             (Self::Forbidden, "NOT_ELIGIBLE") => {
                 "Ask an eligible decision maker with the approval permission to decide this request."
             }

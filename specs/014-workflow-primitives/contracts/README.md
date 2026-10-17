@@ -251,11 +251,18 @@ error codes.
 | Same key, different canonical request | — | `CONFLICT` (409) | `IDEMPOTENCY_KEY_REUSED` (existing) | false |
 | Expected state revision or chain head does not match | — | `CONFLICT` (409) | `REVISION_CONFLICT` (existing); `CHAIN_HEAD_CHANGED` | false |
 | Declared validator returned false | — | `VALIDATION_FAILED` (422) | `UPDATE_REJECTED` | false |
+| Query/Update arguments do not match the declared argument schema | — | `VALIDATION_FAILED` (422) | `INVALID_ARGUMENTS` | false |
+| `updateKey` outside 1..128 printable ASCII | — | `VALIDATION_FAILED` (422) | `INVALID_UPDATE_KEY` | false |
+| `decisionKey` outside 1..128 permitted ASCII | — | `VALIDATION_FAILED` (422) | `INVALID_DECISION_KEY` | false |
+| `reasonCode` outside 1..64 machine characters, or free text | — | `VALIDATION_FAILED` (422) | `INVALID_REASON_CODE` | false |
 | Mutation targets an ineligible state or an old segment | — | `CONFLICT` (409) | `RUN_NOT_MUTABLE`; `RUN_CONTINUED` | false |
 | Signal to a head that is not waiting for it | — | `CONFLICT` (409) | `STATE_CONFLICT` (existing) | false |
 | Boundary reached with unresolved obligations | `CONTINUATION_NOT_QUIESCENT` | — | — | false |
 | Rate or temporary capacity | — | `RATE_LIMITED` / `QUOTA_EXCEEDED` (429, Retry-After) | existing | true; reuse the same key |
 | Worker or scheduler no longer owns the attempt/transition | existing stale-fence handling | existing worker error | — | false |
+
+`tests/contract/workflow-primitives/errors.rs` reads this table: every reason it introduces has a
+specific remediation row and is named in the OpenAPI `Error.details` description (D292).
 
 Workflow deadlines use existing TIMED_OUT behavior; request wait deadlines do not implicitly cancel
 runs/updates. T014-006 adds the new reasons and their remediation rows to the canonical OpenAPI

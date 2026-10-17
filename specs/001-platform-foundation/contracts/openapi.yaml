@@ -3473,7 +3473,8 @@ components:
             `NOT_FOUND` without those reasons. Structured workflow capabilities refine existing codes with
             `INVALID_SCOPE`, `INVALID_OPERATION_STATE`, `NOT_ELIGIBLE`, `INITIATOR_CANNOT_DECIDE`,
             `CHAIN_HEAD_CHANGED`, `RUN_NOT_MUTABLE`, `RUN_CONTINUED`, `INVALID_ARGUMENTS`,
-            `INVALID_UPDATE_KEY`, `REVISION_CONFLICT` and `UPDATE_REJECTED`;
+            `INVALID_UPDATE_KEY`, `INVALID_DECISION_KEY`, `INVALID_REASON_CODE`, `REVISION_CONFLICT` and
+            `UPDATE_REJECTED`;
             they do not add a new `Error.code` value.
     Health:
       type: object

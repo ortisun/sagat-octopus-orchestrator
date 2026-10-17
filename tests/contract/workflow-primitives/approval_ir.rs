@@ -42,3 +42,40 @@ fn approval_golden_maps_to_the_public_structured_v1_definition() {
         assert_eq!(published.digest, parsed.digest);
     }
 }
+
+/// Publication enforces the principal bound on subjects and roles together (T014-022): 32 is
+/// accepted, 33 is refused before a version exists.
+#[test]
+fn publication_counts_subjects_and_roles_together() {
+    let path = super::repository_root()
+        .join("tests/contract/sdk-conformance/expected/approval-builders.workflows.json");
+    let golden: Value = serde_json::from_slice(&std::fs::read(path).expect("reviewed SDK golden"))
+        .expect("golden JSON");
+    let document = golden["workflows"]
+        .as_object()
+        .and_then(|workflows| workflows.values().next())
+        .expect("an approval workflow")
+        .clone();
+    let with_subjects = |count: usize| {
+        let mut document = document.clone();
+        let review = document["nodes"]
+            .as_array_mut()
+            .expect("nodes")
+            .iter_mut()
+            .find(|node| node["id"] == "review")
+            .expect("approval node");
+        review["policy"]["subjects"] = (0..count)
+            .map(|index| Value::from(format!("approver-{index}")))
+            .collect();
+        review["policy"]["roles"] = serde_json::json!(["admin", "developer", "operator"]);
+        serde_json::to_vec(&document).expect("workflow JSON")
+    };
+    assert!(
+        JsonIrCodec.parse(&with_subjects(29)).is_ok(),
+        "29 subjects + 3 roles"
+    );
+    assert!(
+        JsonIrCodec.parse(&with_subjects(30)).is_err(),
+        "30 subjects + 3 roles"
+    );
+}

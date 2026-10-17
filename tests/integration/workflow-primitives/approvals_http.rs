@@ -607,3 +607,50 @@ async fn opaque_approval_lookup_has_a_request_id_index() {
 
     assert!(definition.ends_with("USING btree (request_id)"));
 }
+
+/// A decision key or reason code outside its bounds is refused before anything is decided
+/// (T014-022): `VALIDATION_FAILED` with the reason the contract names, and the request stays open.
+#[tokio::test]
+async fn out_of_bound_decision_keys_and_reason_codes_are_refused_without_a_decision() {
+    let fixture = fixture("http-approval-bounds").await;
+    for (body, reason) in [
+        (
+            json!({"decisionKey": "", "decision": "APPROVE"}),
+            "INVALID_DECISION_KEY",
+        ),
+        (
+            json!({"decisionKey": "k".repeat(129), "decision": "APPROVE"}),
+            "INVALID_DECISION_KEY",
+        ),
+        (
+            json!({"decisionKey": "has space", "decision": "APPROVE"}),
+            "INVALID_DECISION_KEY",
+        ),
+        (
+            json!({"decisionKey": "bounds-1", "decision": "APPROVE", "reasonCode": "R".repeat(65)}),
+            "INVALID_REASON_CODE",
+        ),
+        (
+            json!({"decisionKey": "bounds-2", "decision": "APPROVE", "reasonCode": "because I said so"}),
+            "INVALID_REASON_CODE",
+        ),
+    ] {
+        let response = decision(&fixture, "olga", &body).await;
+        let status = response.status();
+        let error = json_of(response).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}: {error}");
+        assert_eq!(error["code"], "VALIDATION_FAILED", "{body}");
+        assert_eq!(error["details"]["reason"], reason, "{body}");
+    }
+    let pending: (String, i64) = sqlx::query_as(
+        "SELECT r.status, (SELECT count(*) FROM approval_decision_receipts x \
+           WHERE x.tenant_id = r.tenant_id AND x.request_id = r.request_id) \
+         FROM approval_requests r WHERE r.tenant_id = $1 AND r.request_id = $2",
+    )
+    .bind(fixture.tenant.as_uuid())
+    .bind(fixture.request.id().as_uuid())
+    .fetch_one(&fixture.api.db.pool)
+    .await
+    .expect("request state");
+    assert_eq!(pending, ("PENDING".to_owned(), 0));
+}
