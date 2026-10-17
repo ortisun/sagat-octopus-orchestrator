@@ -84,6 +84,46 @@ async fn result_of(p: &Platform, run: &str) -> Option<Value> {
     bytes.map(|b| serde_json::from_slice(&b).expect("a result is JSON"))
 }
 
+/// A payload digest as a column holds it.
+type Digest = Option<Vec<u8>>;
+
+/// The journal alone names the result: `end.reached` carries the child's result digest and the
+/// parent's `child.finished` the same digest, and `verify_run` agrees with the projections.
+async fn assert_journal_names_the_result(p: &Platform, child: &str, parent: &str) {
+    let (end, finished, result): (Digest, Digest, Digest) =
+        sqlx::query_as(
+            "SELECT (SELECT payload_digest FROM run_events WHERE run_id = $1 AND event_type = 'end.reached'), \
+                    (SELECT payload_digest FROM run_events WHERE run_id = $2 AND event_type = 'child.finished'), \
+                    (SELECT result_digest FROM runs WHERE id = $1)",
+        )
+        .bind(Uuid::parse_str(child).expect("child id"))
+        .bind(Uuid::parse_str(parent).expect("parent id"))
+        .fetch_one(&p.api.db.pool)
+        .await
+        .expect("journal digests");
+    assert!(result.is_some(), "the child has a result");
+    assert_eq!(end, result, "end.reached names the result");
+    assert_eq!(
+        finished, result,
+        "child.finished hands the same payload to the parent"
+    );
+    for run in [child, parent] {
+        let tenant: Uuid = sqlx::query_scalar("SELECT tenant_id FROM runs WHERE id = $1")
+            .bind(Uuid::parse_str(run).expect("run id"))
+            .fetch_one(&p.api.db.pool)
+            .await
+            .expect("tenant");
+        p.api
+            .executions
+            .verify_run(
+                sagat_domain::identity::TenantId::new(tenant),
+                run.parse().expect("run id"),
+            )
+            .await
+            .expect("the journal reproduces the projections and the result");
+    }
+}
+
 async fn stop_code(p: &Platform, run: &str) -> Option<String> {
     sqlx::query_scalar("SELECT stop_code FROM runs WHERE id = $1")
         .bind(Uuid::parse_str(run).expect("run id"))
@@ -132,6 +172,7 @@ async fn a_child_result_becomes_the_output_of_the_parent_step() {
         None,
         "the mother's end declares no result"
     );
+    assert_journal_names_the_result(&p, &child, &run).await;
 }
 
 #[tokio::test]

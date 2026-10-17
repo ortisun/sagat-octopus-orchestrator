@@ -136,6 +136,14 @@ enum Condition<'a> {
 }
 
 impl Condition<'_> {
+    /// What a pass reports when the condition does not hold.
+    const fn refused(&self) -> Outcome {
+        match self {
+            Self::RetainedFits { .. } => Outcome::DoesNotFit,
+            Self::Always | Self::LeaseLost { .. } => Outcome::Skipped,
+        }
+    }
+
     async fn holds<Tx: RunTx>(&self, tx: &mut Tx) -> Result<bool, StoreError> {
         match self {
             Self::Always => Ok(true),
@@ -167,6 +175,8 @@ enum Outcome {
     Fenced,
     /// The attempted transition rolled back and the same run was stopped for retained storage.
     QuotaStopped,
+    /// The run cannot keep the output this transition would give it (`RetainedFits`).
+    DoesNotFit,
 }
 
 impl Outcome {
@@ -177,6 +187,7 @@ impl Outcome {
             Self::Failed => "failed",
             Self::Fenced => "fenced",
             Self::QuotaStopped => "quota_stopped",
+            Self::DoesNotFit => "does_not_fit",
         }
     }
 }
@@ -471,7 +482,7 @@ where
                     return Ok(Outcome::Fenced);
                 }
                 if !condition.holds(&mut tx).await.map_err(EngineError::Store)? {
-                    return Ok(Outcome::Skipped);
+                    return Ok(condition.refused());
                 }
                 let version = tx.parts().1.version();
                 match self.engine.run(&mut tx, effects, command).await {
@@ -562,7 +573,7 @@ where
             return Ok(outcome);
         }
         if !condition.holds(&mut tx).await.map_err(EngineError::Store)? {
-            return Ok(Outcome::Skipped);
+            return Ok(condition.refused());
         }
         self.engine
             .run(&mut tx, self.effects(), |def, state, now| {
@@ -617,7 +628,7 @@ where
     fn tally(report: &mut Report, outcome: Outcome, done: impl FnOnce(&mut Report)) {
         match outcome {
             Outcome::Done => done(report),
-            Outcome::Skipped => report.skipped += 1,
+            Outcome::Skipped | Outcome::DoesNotFit => report.skipped += 1,
             Outcome::Failed => report.failed += 1,
             Outcome::Fenced => report.fenced += 1,
             Outcome::QuotaStopped => report.quota_stops += 1,
@@ -1295,10 +1306,9 @@ where
                 },
             )
             .await;
-        if outcome != Outcome::Skipped {
+        if outcome != Outcome::DoesNotFit {
             return outcome;
         }
-        // Skipped: the parent cannot keep the result (or is gone, and this is skipped again).
         self.finish_with(
             view,
             tenant,
