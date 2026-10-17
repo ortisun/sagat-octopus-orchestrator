@@ -520,19 +520,35 @@ pub async fn serve_with_admin(
         SystemClock,
         serve.runbook_base.clone(),
     ));
-    if let Some(secrets) = &serve.secrets {
+    let provider: Option<Arc<dyn sagat_application::secret_provider::SecretProvider>> =
+        match &serve.openbao {
+            Some(settings) => Some(
+                settings
+                    .provider()
+                    .await
+                    .map_err(|_| RunError::Refused("could not configure OpenBao"))?,
+            ),
+            None => None,
+        };
+    let mut secret_reader = sagat_application::secrets::SecretReader::default();
+    if let Some(keys) = &serve.secrets {
+        secret_reader = secret_reader.with_cipher(keys.cipher());
+    }
+    if let Some(provider) = &provider {
+        secret_reader = secret_reader.with_provider(provider.clone());
+    }
+    if serve.secrets.is_some() || provider.is_some() {
         governance = governance
-            .with_secrets(SecretService::new(
-                executions.clone(),
-                SystemClock,
-                secrets.cipher(),
-            ))
-            // Webhooks are verified with secrets of the namespace, so they need the key ring too.
+            .with_secrets(match &serve.secrets {
+                Some(keys) => SecretService::new(executions.clone(), SystemClock, keys.cipher()),
+                None => SecretService::metadata_only(executions.clone(), SystemClock),
+            })
+            // Webhooks use the same namespace-scoped secret reader.
             .with_events(
-                EventService::new(
+                EventService::with_reader(
                     executions.clone(),
                     SystemClock,
-                    secrets.cipher(),
+                    secret_reader.clone(),
                     Arc::new(JsonEvaluator),
                 )
                 .with_identities(Arc::new(
@@ -558,6 +574,22 @@ pub async fn serve_with_admin(
                 EgressService::new(executions.clone(), SystemClock),
                 Arc::new(JsonEvaluator),
             ));
+    }
+    if let (Some(settings), Some(provider)) = (&serve.openbao, provider) {
+        let key = settings.intent_key().await.map_err(|_| {
+            RunError::Refused("OpenBao management requires a 32-byte SAGAT_OPENBAO_INTENT_KEY_FILE")
+        })?;
+        let mut service = sagat_application::managed_secrets::ManagedSecretService::new(
+            executions.clone(),
+            SystemClock,
+            provider,
+            key,
+        )
+        .map_err(|_| RunError::Refused("could not configure managed secrets"))?;
+        if let Some(keys) = &serve.secrets {
+            service = service.with_legacy_cipher(keys.cipher());
+        }
+        governance = governance.with_managed_secrets(service);
     }
     // An artifact is only trusted if the platform signed it, so without a key there are no scripts.
     if let Some(scripts) = &serve.scripts {

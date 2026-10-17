@@ -205,6 +205,8 @@ async fn durable_provider_intents_reconcile_without_plaintext_or_duplicate_rotat
     let authority: String = sqlx::query_scalar("SELECT authority FROM secrets WHERE tenant_id=$1 AND namespace_id=$2 AND name='legacy-credential'")
         .bind(w.admin.tenant_id().as_uuid()).bind(ns.as_uuid()).fetch_one(&w.db.pool).await.unwrap();
     assert_eq!(authority, "openbao");
+    managed_http_facade(provider.clone()).await;
+
     // An ACL/membership change during provider I/O must discard the value already read.
     let gated = Arc::new(ReadBarrier {
         inner: provider.clone(),
@@ -262,4 +264,58 @@ impl SecretProvider for ReadBarrier {
     ) -> sagat_application::secret_provider::ProviderFuture<'a, ()> {
         self.inner.delete(reference)
     }
+}
+
+async fn managed_http_facade(provider: Arc<dyn SecretProvider>) {
+    let api = support::api::start_with(support::api::Options {
+        secret_provider: Some(provider),
+        ..Default::default()
+    })
+    .await;
+    api.tenant("bao-http", "owner").await;
+    let workspace = api.create_workspace("owner", "bao-http", "workspace").await;
+    let namespace = api
+        .create_namespace("owner", "bao-http", &workspace, "database", "dev")
+        .await;
+    let path = format!("/namespaces/{namespace}/secrets/postgres-password");
+    let key = Uuid::new_v4();
+    let body = serde_json::json!({"value":"http-credential-canary", "requestId": key.to_string(), "expectedVersion":0});
+    for _ in 0..2 {
+        let response = api
+            .as_user(reqwest::Method::PUT, &path, "owner", "bao-http")
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let metadata: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(metadata["provider"], "openbao");
+        assert_eq!(metadata["version"], 1);
+        assert!(metadata["keyId"].is_null());
+        assert!(!metadata.to_string().contains("canary"));
+    }
+    let response = api
+        .post_as(
+            &format!("/namespaces/{namespace}/secret-operations/{key}/reconcile"),
+            "owner",
+            "bao-http",
+            &serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(response.status(), 200);
+    let changed = serde_json::json!({"value":"changed-http-canary", "requestId":key.to_string(), "expectedVersion":0});
+    let response = api
+        .as_user(reqwest::Method::PUT, &path, "owner", "bao-http")
+        .json(&changed)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 409);
+    let response = api
+        .as_user(reqwest::Method::PUT, &path, "owner", "bao-http")
+        .json(&serde_json::json!({"value":"missing-receipt-canary"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 422);
 }

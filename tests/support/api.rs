@@ -213,6 +213,7 @@ impl IdentityStore for CountingStore {
 
 /// Settings tests may tighten before the API starts.
 pub struct Options {
+    pub secret_provider: Option<Arc<dyn sagat_application::secret_provider::SecretProvider>>,
     pub http_tls: Option<sagat_api_http::HttpTlsConfig>,
     pub http_tls_ca: Option<Vec<u8>>,
     pub webhook_oidc_profiles: Vec<sagat_api_http::auth::WebhookOidcConfig>,
@@ -250,6 +251,7 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
+            secret_provider: None,
             http_tls: None,
             http_tls_ca: None,
             webhook_oidc_profiles: Vec::new(),
@@ -329,7 +331,7 @@ pub async fn start_with(options: Options) -> TestApi {
     let signer =
         Signer::from_pkcs8(&Signer::generate_pkcs8().expect("a signing key")).expect("a signer");
     let script_key = signer.public_key();
-    let governance = GovState::new(
+    let mut governance = GovState::new(
         state.clone(),
         sagat_application::api_admission::ApiAdmissionService::new(executions.clone(), SystemClock),
         QuotaService::new(executions.clone(), SystemClock),
@@ -385,6 +387,18 @@ pub async fn start_with(options: Options) -> TestApi {
             options.script_ceiling,
         ),
     );
+    if let Some(provider) = &options.secret_provider {
+        governance = governance.with_managed_secrets(
+            sagat_application::managed_secrets::ManagedSecretService::new(
+                executions.clone(),
+                SystemClock,
+                provider.clone(),
+                sagat_domain::secrets::SecretValue::new(vec![43; 32]).unwrap(),
+            )
+            .unwrap()
+            .with_legacy_cipher(keys.cipher()),
+        );
+    }
     let blob_backend = options.blobs.as_ref().map(|_| {
         let store = options
             .blob_store

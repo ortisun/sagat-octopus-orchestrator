@@ -305,6 +305,24 @@ impl<S: ManagedSecretStore, C: Clock> ManagedSecretService<S, C> {
             .await
     }
 
+    pub async fn reconcile_request(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+        request: Uuid,
+        ctx: &RequestContext,
+    ) -> Result<SecretView, AppError> {
+        principal.authorize(Permission::SecretManage)?;
+        require_namespace(&self.store, &self.clock, principal, namespace, ctx).await?;
+        let intent = self
+            .store
+            .provider_request(principal, namespace, request)
+            .await?
+            .ok_or(AppError::NotFound)?;
+        self.reconcile(principal, namespace, intent.reference.operation, ctx)
+            .await
+    }
+
     /// A provider receipt can finish a write without resubmitting plaintext. If none exists, ask
     /// for secure resubmission; no plaintext retry queue is created.
     pub async fn reconcile(

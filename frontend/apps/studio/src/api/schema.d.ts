@@ -760,7 +760,7 @@ export interface paths {
         };
         /**
          * The secrets of a namespace, by name, without values
-         * @description Needs `secret:read`. These operations exist only on instances configured with a key ring (`SAGAT_SECRETS_KEYS`); elsewhere they answer 404. A value is accepted here and nowhere else, and is never returned by any operation: workers receive it through `ResolveSecrets` of the worker protocol while they hold the lease of a step whose definition declares it.
+         * @description Needs `secret:read`. These operations exist on instances configured with a local key ring or OpenBao; elsewhere they answer 404. A value is accepted here and nowhere else, and is never returned by any operation: workers receive it through `ResolveSecrets` of the worker protocol while they hold the lease of a step whose definition declares it.
          */
         get: operations["listSecrets"];
         put?: never;
@@ -781,7 +781,7 @@ export interface paths {
         get?: never;
         /**
          * Store a secret, or a new version of it
-         * @description Needs `secret:manage`. Stores the value sealed under the active key and keeps the last five versions. Counts against the namespace's `secrets` quota when the secret is new. Audited (the name and the actor, never the value). These operations exist only on instances configured with a key ring (`SAGAT_SECRETS_KEYS`); elsewhere they answer 404. A value is accepted here and nowhere else, and is never returned by any operation: workers receive it through `ResolveSecrets` of the worker protocol while they hold the lease of a step whose definition declares it.
+         * @description Needs `secret:manage`. With OpenBao enabled, requires requestId and expectedVersion, persists a recoverable intent and activates only a verified provider receipt. Same-key/same-body replay returns the original version; changed content or revision conflicts. Legacy instances seal under the local key ring. Keeps the last five logical versions. Counts against the namespace's `secrets` quota when the secret is new. Audited (the name and the actor, never the value). These operations exist on instances configured with a local key ring or OpenBao; elsewhere they answer 404. A value is accepted here and nowhere else, and is never returned by any operation: workers receive it through `ResolveSecrets` of the worker protocol while they hold the lease of a step whose definition declares it.
          */
         put: operations["putSecret"];
         post?: never;
@@ -790,6 +790,46 @@ export interface paths {
          * @description Needs `secret:manage`. Workflows that declare it stop resolving it at once. Audited.
          */
         delete: operations["deleteSecret"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/secrets/{secretName}/migrate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Explicitly migrate one local secret while preserving its logical name and ACL
+         * @description Needs current secret:manage. Provider receipt is verified before authority changes. No local fallback after cutover. Requires configured OpenBao and the legacy key ring.
+         */
+        post: operations["migrateSecretToOpenBao"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/secret-operations/{requestId}/reconcile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Recover the caller's pending provider receipt without resubmitting the secret
+         * @description Needs current secret:manage. The UUID is the client request identity, never an OpenBao path. Missing receipt requires secure value resubmission with the same request identity; changed content conflicts. Does not reactivate deleted secrets.
+         */
+        post: operations["reconcileSecretWrite"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -2709,8 +2749,13 @@ export interface components {
         Secret: {
             name: string;
             version: number;
-            /** @description The key of the ring the current version is sealed under. */
-            keyId: string;
+            /** @description Local encryption key identifier; null for OpenBao. */
+            keyId: string | null;
+            /**
+             * @description Authority for the current secret version.
+             * @enum {string}
+             */
+            provider?: "local" | "openbao";
             createdBy: string;
             /** Format: date-time */
             updatedAt: string;
@@ -2724,6 +2769,18 @@ export interface components {
         SetSecretRequest: {
             /** @description The secret, UTF-8 text of 1 to 16384 bytes. Never returned. */
             value: string;
+            /**
+             * Format: uuid
+             * @description Required with OpenBao. Stable identity for retries of this exact write.
+             */
+            requestId?: string;
+            /** @description Required with OpenBao. Zero creates; otherwise matches the current logical version. */
+            expectedVersion?: number;
+        };
+        MigrateSecretRequest: {
+            /** Format: uuid */
+            requestId: string;
+            expectedVersion: number;
         };
         EgressPolicy: {
             /** @description Exact hosts, `*.domain` rules and CIDR networks, lower-cased and masked. */
@@ -5638,6 +5695,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
             422: components["responses"]["ValidationError"];
             429: components["responses"]["TooManyRequests"];
             503: components["responses"]["Unavailable"];
@@ -5668,6 +5726,77 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    migrateSecretToOpenBao: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                secretName: components["parameters"]["SecretName"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MigrateSecretRequest"];
+            };
+        };
+        responses: {
+            /** @description Activated secret metadata, never the value */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Secret"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    reconcileSecretWrite: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                requestId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Activated secret metadata, never the value */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Secret"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
             429: components["responses"]["TooManyRequests"];
             503: components["responses"]["Unavailable"];
             default: components["responses"]["InternalError"];

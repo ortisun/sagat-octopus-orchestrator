@@ -42,6 +42,9 @@ fn body_of(operation: &str) -> Option<Value> {
         "setTenantQuota" | "setNamespaceQuota" | "setActivityQuota" => json!({"limit": 1}),
         "bindWorker" => json!({"activities": ["*"]}),
         "putSecret" => json!({"value": "attacker-supplied-value-0001"}),
+        "migrateSecretToOpenBao" => {
+            json!({"requestId": Uuid::now_v7().to_string(), "expectedVersion": 1})
+        }
         "setEgressPolicy" => json!({"rules": ["attacker.example.net"]}),
         // Feature 004: what an attacker would send to take over the victim's event plumbing.
         "publishEvent" => json!({"type": "order.created", "data": {"attacker": true}}),

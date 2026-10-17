@@ -517,10 +517,24 @@ where
         cipher: Arc<dyn SecretCipher>,
         evaluator: Arc<dyn ExpressionEvaluator>,
     ) -> Self {
+        Self::with_reader(
+            store,
+            clock,
+            crate::secrets::SecretReader::local(cipher),
+            evaluator,
+        )
+    }
+
+    pub fn with_reader(
+        store: S,
+        clock: C,
+        reader: crate::secrets::SecretReader,
+        evaluator: Arc<dyn ExpressionEvaluator>,
+    ) -> Self {
         Self {
             store,
             clock,
-            cipher: crate::secrets::SecretReader::local(cipher),
+            cipher: reader,
             evaluator,
             gate: Gate::default(),
             identities: Arc::new(NoWebhookIdentities),

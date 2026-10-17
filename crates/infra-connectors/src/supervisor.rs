@@ -89,11 +89,31 @@ where
         holder: String,
         refresh: Duration,
     ) -> Self {
+        Self::with_reader(
+            runtime,
+            guard,
+            clients,
+            sagat_application::secrets::SecretReader::local(cipher),
+            evaluator,
+            holder,
+            refresh,
+        )
+    }
+
+    pub fn with_reader(
+        runtime: Arc<R>,
+        guard: G,
+        clients: Clients<S, F>,
+        reader: sagat_application::secrets::SecretReader,
+        evaluator: Arc<dyn ExpressionEvaluator>,
+        holder: String,
+        refresh: Duration,
+    ) -> Self {
         Self {
             runtime,
             guard,
             clients,
-            cipher: sagat_application::secrets::SecretReader::local(cipher),
+            cipher: reader,
             evaluator,
             holder,
             refresh,

@@ -18,3 +18,15 @@ This evidence does not establish durable provisioning, production TLS/workload p
 - `cargo clippy -p sagat-application -p sagat-infra-secrets -p sagat-infra-postgres --lib --locked -- -D warnings`: passed.
 
 Runtime services now support async local/provider resolution. Deployment wiring and management HTTP routes are still pending. Receipt cleanup, production manifests, API/UI/database execution and SDK work remain open; no UI/database product completion is claimed.
+
+## Management API and deployment wiring (2026-10-17)
+
+- `cargo test -p sagat-tests --test integration_database_connections --locked`: passed with managed HTTP create/replay/reconcile, changed-body conflict, mandatory receipt fields, and metadata-only responses against real PostgreSQL/OpenBao.
+- `cargo test -p sagat-control-plane -p sagat-execution-engine --test config --locked`: 35 control-plane and 22 engine tests passed, including provider-only secret transport guards.
+- `cargo test -p sagat-infra-secrets --test openbao deployment_settings --locked`: passed for complete/partial settings and development-only restrictions.
+- `cargo test -p sagat-tests --test contract_platform_foundation --test contract_rest_security_multitenancy --locked`: foundation 30 passed; security initially failed because the new migrate operation lacked a valid request fixture. After adding the fixture, `cargo test -p sagat-tests --test contract_rest_security_multitenancy --locked` passed all 17, including the foreign-tenant battery.
+- Studio RED: 2 new assertions failed because the credential form omitted the receipt fields and generated a different reference for retry. GREEN: `npm test -- --run src/features/integrations/IntegrationsPage.test.tsx` passed 12 tests, including stable retry and changed-value/new-request behavior.
+- `npm run api` and `npm run typecheck` passed after updating the generated client and React ref typing.
+- `cargo clippy -p sagat-api-http -p sagat-control-plane -p sagat-execution-engine -p sagat-infra-secrets --lib --locked -- -D warnings`: passed.
+
+Control plane and engine now accept explicit OpenBao settings; provider-only deployments need no legacy keyring. Existing integration credential creation sends the recoverable write contract. The connection catalog, database execution, standalone secret UI, deployment profiles/cleanup and SDK support remain incomplete. No browser verification has been performed for this slice yet.

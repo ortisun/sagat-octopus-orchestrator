@@ -974,7 +974,7 @@ paths:
       tags: [Governance]
       x-implemented: '009'
       description: |
-        Needs `secret:read`. These operations exist only on instances configured with a key ring (`SAGAT_SECRETS_KEYS`); elsewhere they answer 404. A value is accepted here and nowhere else, and is never returned by any operation: workers receive it through `ResolveSecrets` of the worker protocol while they hold the lease of a step whose definition declares it.
+        Needs `secret:read`. These operations exist on instances configured with a local key ring or OpenBao; elsewhere they answer 404. A value is accepted here and nowhere else, and is never returned by any operation: workers receive it through `ResolveSecrets` of the worker protocol while they hold the lease of a step whose definition declares it.
       parameters:
         - {$ref: '#/components/parameters/NamespaceId'}
       responses:
@@ -992,7 +992,7 @@ paths:
       tags: [Governance]
       x-implemented: '009'
       description: |
-        Needs `secret:manage`. Stores the value sealed under the active key and keeps the last five versions. Counts against the namespace's `secrets` quota when the secret is new. Audited (the name and the actor, never the value). These operations exist only on instances configured with a key ring (`SAGAT_SECRETS_KEYS`); elsewhere they answer 404. A value is accepted here and nowhere else, and is never returned by any operation: workers receive it through `ResolveSecrets` of the worker protocol while they hold the lease of a step whose definition declares it.
+        Needs `secret:manage`. With OpenBao enabled, requires requestId and expectedVersion, persists a recoverable intent and activates only a verified provider receipt. Same-key/same-body replay returns the original version; changed content or revision conflicts. Legacy instances seal under the local key ring. Keeps the last five logical versions. Counts against the namespace's `secrets` quota when the secret is new. Audited (the name and the actor, never the value). These operations exist on instances configured with a local key ring or OpenBao; elsewhere they answer 404. A value is accepted here and nowhere else, and is never returned by any operation: workers receive it through `ResolveSecrets` of the worker protocol while they hold the lease of a step whose definition declares it.
       parameters:
         - {$ref: '#/components/parameters/NamespaceId'}
         - {$ref: '#/components/parameters/SecretName'}
@@ -1004,6 +1004,7 @@ paths:
       responses:
         '200': {description: 'What is now stored: the name and the version, never the value', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Secret'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
+        '409': {$ref: '#/components/responses/Conflict'}
         '422': {$ref: '#/components/responses/ValidationError'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -1025,6 +1026,52 @@ paths:
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/secrets/{secretName}/migrate:
+    post:
+      operationId: migrateSecretToOpenBao
+      summary: Explicitly migrate one local secret while preserving its logical name and ACL
+      tags: [Governance]
+      x-implemented: '017'
+      description: Needs current secret:manage. Provider receipt is verified before authority changes. No local fallback after cutover. Requires configured OpenBao and the legacy key ring.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/SecretName'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MigrateSecretRequest'}
+      responses:
+        '200': {description: 'Activated secret metadata, never the value', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Secret'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/secret-operations/{requestId}/reconcile:
+    post:
+      operationId: reconcileSecretWrite
+      summary: Recover the caller's pending provider receipt without resubmitting the secret
+      tags: [Governance]
+      x-implemented: '017'
+      description: Needs current secret:manage. The UUID is the client request identity, never an OpenBao path. Missing receipt requires secure value resubmission with the same request identity; changed content conflicts. Does not reactivate deleted secrets.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {name: requestId, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: 'Activated secret metadata, never the value', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Secret'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
@@ -3609,7 +3656,8 @@ components:
       properties:
         name: {type: string}
         version: {type: integer, minimum: 1}
-        keyId: {type: string, description: 'The key of the ring the current version is sealed under.'}
+        keyId: {type: [string, 'null'], description: 'Local encryption key identifier; null for OpenBao.'}
+        provider: {type: string, enum: [local, openbao], description: 'Authority for the current secret version.'}
         createdBy: {type: string}
         updatedAt: {type: string, format: date-time}
     SecretList:
@@ -3628,6 +3676,15 @@ components:
       required: [value]
       properties:
         value: {type: string, minLength: 1, maxLength: 16384, writeOnly: true, description: 'The secret, UTF-8 text of 1 to 16384 bytes. Never returned.'}
+        requestId: {type: string, format: uuid, description: 'Required with OpenBao. Stable identity for retries of this exact write.'}
+        expectedVersion: {type: integer, minimum: 0, maximum: 2147483646, description: 'Required with OpenBao. Zero creates; otherwise matches the current logical version.'}
+    MigrateSecretRequest:
+      type: object
+      additionalProperties: false
+      required: [requestId, expectedVersion]
+      properties:
+        requestId: {type: string, format: uuid}
+        expectedVersion: {type: integer, minimum: 1, maximum: 2147483646}
     EgressPolicy:
       type: object
       required: [rules, ports, allowHttp]

@@ -286,7 +286,8 @@ impl ManagedSecretStore for PgRunStore {
         Ok(SecretView {
             name: intent.name.to_string(),
             version: number,
-            key_id: String::new(),
+            key_id: None,
+            provider: "openbao",
             created_by: intent.actor,
             updated_at,
         })

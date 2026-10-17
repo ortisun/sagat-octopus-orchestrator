@@ -427,7 +427,7 @@ where
     /// Lets workers resolve the secrets their steps declare, opened with `cipher`.
     #[must_use]
     pub fn with_vault(mut self, cipher: Arc<dyn SecretCipher>) -> Self {
-        self.vault = Some(crate::secrets::SecretReader::local(cipher));
+        self.vault = Some(self.vault.take().unwrap_or_default().with_cipher(cipher));
         self
     }
 

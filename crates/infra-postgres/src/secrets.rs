@@ -42,7 +42,7 @@ pub(crate) fn stored_from(row: &PgRow) -> Result<StoredSecret, StoreError> {
             namespace_id: NamespaceId::new(col::<Uuid>(row, "namespace_id")?),
             name: name_of(row, "name")?,
             version: u32::try_from(version).map_err(|_| corrupt("secret version"))?,
-            key_id: key_id.clone().unwrap_or_default(),
+            key_id: key_id.clone(),
             created_by: col(row, "created_by")?,
             created_at: col(row, "created_at")?,
         },
@@ -349,7 +349,7 @@ impl SecretStore for PgRunStore {
             namespace_id: namespace,
             name: name.clone(),
             version: u32::try_from(number).map_err(|_| corrupt("secret version"))?,
-            key_id: version.sealed.key_id.clone(),
+            key_id: Some(version.sealed.key_id.clone()),
             created_by: version.created_by.clone(),
             created_at,
         })

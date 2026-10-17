@@ -287,3 +287,39 @@ async fn production_tls_scoped_short_lived_token_and_sealed_provider_fail_closed
         ProviderError::Unavailable
     );
 }
+
+#[test]
+fn deployment_settings_fail_closed_and_require_explicit_development() {
+    use sagat_infra_secrets::openbao::OpenBaoSettings;
+    use std::collections::BTreeMap;
+    let empty = |_: &str| None;
+    assert!(
+        OpenBaoSettings::from_lookup(&empty, false)
+            .unwrap()
+            .is_none()
+    );
+    let mut vars = BTreeMap::from([
+        ("SAGAT_OPENBAO_ADDRESS", "https://bao:8200"),
+        ("SAGAT_OPENBAO_TOKEN_FILE", "/run/secrets/token-canary"),
+    ]);
+    let configured =
+        OpenBaoSettings::from_lookup(&|name| vars.get(name).map(|v| v.to_string()), false)
+            .unwrap()
+            .unwrap();
+    assert!(!format!("{configured:?}").contains("canary"));
+    vars.insert("SAGAT_OPENBAO_ADDRESS", "http://127.0.0.1:8200");
+    assert!(
+        OpenBaoSettings::from_lookup(&|name| vars.get(name).map(|v| v.to_string()), true).is_err()
+    );
+    vars.insert("SAGAT_OPENBAO_DEVELOPMENT", "true");
+    assert!(
+        OpenBaoSettings::from_lookup(&|name| vars.get(name).map(|v| v.to_string()), false).is_err()
+    );
+    assert!(
+        OpenBaoSettings::from_lookup(&|name| vars.get(name).map(|v| v.to_string()), true).is_ok()
+    );
+    vars.remove("SAGAT_OPENBAO_ADDRESS");
+    assert!(
+        OpenBaoSettings::from_lookup(&|name| vars.get(name).map(|v| v.to_string()), true).is_err()
+    );
+}

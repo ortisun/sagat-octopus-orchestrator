@@ -257,6 +257,7 @@ where
         + sagat_application::api_admission::ApiAdmissionStore
         + sagat_application::bindings::BindingStore
         + sagat_application::secrets::SecretStore
+        + sagat_application::managed_secrets::ManagedSecretStore
         + sagat_application::egress::EgressStore
         + sagat_application::events::EventStore
         + sagat_application::outbound::OutboundStore
@@ -287,6 +288,7 @@ where
         + sagat_application::api_admission::ApiAdmissionStore
         + sagat_application::bindings::BindingStore
         + sagat_application::secrets::SecretStore
+        + sagat_application::managed_secrets::ManagedSecretStore
         + sagat_application::egress::EgressStore
         + sagat_application::events::EventStore
         + sagat_application::outbound::OutboundStore
@@ -384,6 +386,17 @@ where
                 "/namespaces/{namespace_id}/secrets/{name}/access/{subject}",
                 axum::routing::put(gov::grant_secret_access::<B<S, C, G>>)
                     .delete(gov::revoke_secret_access::<B<S, C, G>>),
+            );
+    }
+    if serves_secrets {
+        router = router
+            .route(
+                "/namespaces/{namespace_id}/secrets/{name}/migrate",
+                axum::routing::post(gov::migrate_secret::<B<S, C, G>>),
+            )
+            .route(
+                "/namespaces/{namespace_id}/secret-operations/{request_id}/reconcile",
+                axum::routing::post(gov::reconcile_secret::<B<S, C, G>>),
             );
     }
     let mut router = router.layer(RequestBodyLimitLayer::new(limits.max_body_bytes));

@@ -135,12 +135,30 @@ where
         cipher: Arc<dyn SecretCipher>,
         settings: DeliverySettings,
     ) -> Self {
+        Self::with_broker_reader(
+            store,
+            sender,
+            broker,
+            entropy,
+            sagat_application::secrets::SecretReader::local(cipher),
+            settings,
+        )
+    }
+
+    pub fn with_broker_reader(
+        store: S,
+        sender: T,
+        broker: P,
+        entropy: R,
+        reader: sagat_application::secrets::SecretReader,
+        settings: DeliverySettings,
+    ) -> Self {
         Self {
             store,
             sender,
             broker,
             entropy,
-            cipher: sagat_application::secrets::SecretReader::local(cipher),
+            cipher: reader,
             clock: SystemClock,
             settings,
         }

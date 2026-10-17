@@ -59,6 +59,10 @@ impl SecretReader {
             provider: None,
         }
     }
+    pub fn with_cipher(mut self, cipher: Arc<dyn SecretCipher>) -> Self {
+        self.cipher = Some(cipher);
+        self
+    }
     pub fn with_provider(
         mut self,
         provider: Arc<dyn crate::secret_provider::SecretProvider>,
@@ -106,7 +110,8 @@ impl SecretReader {
 pub struct SecretView {
     pub name: String,
     pub version: u32,
-    pub key_id: String,
+    pub key_id: Option<String>,
+    pub provider: &'static str,
     pub created_by: String,
     pub updated_at: OffsetDateTime,
 }
@@ -117,6 +122,11 @@ impl From<&SecretMeta> for SecretView {
             name: meta.name.to_string(),
             version: meta.version,
             key_id: meta.key_id.clone(),
+            provider: if meta.key_id.is_some() {
+                "local"
+            } else {
+                "openbao"
+            },
             created_by: meta.created_by.clone(),
             updated_at: meta.created_at,
         }
@@ -304,7 +314,7 @@ pub struct ResealBatch {
 pub struct SecretService<S, C> {
     store: S,
     clock: C,
-    cipher: Arc<dyn SecretCipher>,
+    cipher: Option<Arc<dyn SecretCipher>>,
 }
 
 impl<S, C> SecretService<S, C>
@@ -317,7 +327,15 @@ where
         Self {
             store,
             clock,
-            cipher,
+            cipher: Some(cipher),
+        }
+    }
+
+    pub fn metadata_only(store: S, clock: C) -> Self {
+        Self {
+            store,
+            clock,
+            cipher: None,
         }
     }
 
@@ -343,12 +361,13 @@ where
 
         let tenant = principal.tenant_id();
         let row_id = Uuid::now_v7();
-        let key_id = self.cipher.active_key_id().to_owned();
-        let aad = associated_data(tenant, namespace, &name, row_id, &key_id);
-        let sealed = self
+        let cipher = self
             .cipher
-            .seal(&value, &aad)
-            .map_err(|_| AppError::Internal)?;
+            .as_ref()
+            .ok_or(AppError::NotAllowed("local secret writes are disabled"))?;
+        let key_id = cipher.active_key_id().to_owned();
+        let aad = associated_data(tenant, namespace, &name, row_id, &key_id);
+        let sealed = cipher.seal(&value, &aad).map_err(|_| AppError::Internal)?;
         if sealed.key_id != key_id {
             // The key the associated data names is not the one that sealed: it would never open.
             return Err(AppError::Internal);
@@ -565,7 +584,11 @@ where
     /// [`AppError::Unavailable`] and [`AppError::Internal`] when the store fails; what was moved
     /// before stays moved.
     pub async fn reseal(&self, after: Option<Uuid>, limit: u32) -> Result<ResealBatch, AppError> {
-        let active = self.cipher.active_key_id().to_owned();
+        let cipher = self
+            .cipher
+            .as_ref()
+            .ok_or(AppError::NotAllowed("local secret re-sealing is disabled"))?;
+        let active = cipher.active_key_id().to_owned();
         let stale = self
             .store
             .versions_not_sealed_under(&active, after, limit)
@@ -588,7 +611,7 @@ where
                 meta.id,
                 &old_sealed.key_id,
             );
-            let Ok(value) = self.cipher.open(old_sealed, &aad) else {
+            let Ok(value) = cipher.open(old_sealed, &aad) else {
                 tracing::error!(
                     key = %old_sealed.key_id,
                     version = %meta.id,
@@ -604,8 +627,7 @@ where
                 meta.id,
                 &active,
             );
-            let sealed = self
-                .cipher
+            let sealed = cipher
                 .seal(&value, &new_aad)
                 .map_err(|_| AppError::Internal)?;
             let audit = AuditRecord::engine(

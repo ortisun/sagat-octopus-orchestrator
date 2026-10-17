@@ -23,6 +23,7 @@ const MAX_TOKEN: u64 = 8192;
 
 /// Deployment configuration. Callers cannot select addresses, mounts or token files in API input.
 /// `development_loopback` is explicitly opt-in; production always verifies TLS and token policy.
+#[derive(Clone)]
 pub struct OpenBaoConfig {
     pub address: String,
     pub mount: String,
@@ -389,4 +390,119 @@ struct TokenLookup {
 struct TokenData {
     ttl: u64,
     policies: Vec<String>,
+}
+
+/// Shared deployment settings for management and worker processes. No secret values are read
+/// from environment variables or printed by Debug. OpenBao Agent owns token renewal.
+#[derive(Clone)]
+pub struct OpenBaoSettings {
+    config: OpenBaoConfig,
+    ca_file: Option<PathBuf>,
+    intent_key_file: Option<PathBuf>,
+}
+
+impl std::fmt::Debug for OpenBaoSettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenBaoSettings")
+            .field("development", &self.config.development_loopback)
+            .finish_non_exhaustive()
+    }
+}
+
+impl OpenBaoSettings {
+    pub fn from_lookup(
+        get: &dyn Fn(&str) -> Option<String>,
+        development: bool,
+    ) -> Result<Option<Self>, ProviderError> {
+        let Some(address) = get("SAGAT_OPENBAO_ADDRESS").filter(|v| !v.is_empty()) else {
+            if [
+                "SAGAT_OPENBAO_TOKEN_FILE",
+                "SAGAT_OPENBAO_MOUNT",
+                "SAGAT_OPENBAO_CA_FILE",
+                "SAGAT_OPENBAO_INTENT_KEY_FILE",
+                "SAGAT_OPENBAO_DEVELOPMENT",
+                "SAGAT_OPENBAO_TIMEOUT_MS",
+            ]
+            .iter()
+            .any(|name| get(name).is_some())
+            {
+                return Err(ProviderError::Configuration);
+            }
+            return Ok(None);
+        };
+        let development_loopback = match get("SAGAT_OPENBAO_DEVELOPMENT").as_deref() {
+            None | Some("false") => false,
+            Some("true") if development => true,
+            _ => return Err(ProviderError::Configuration),
+        };
+        let timeout = get("SAGAT_OPENBAO_TIMEOUT_MS").map_or(Ok(5000), |raw| {
+            raw.parse::<u64>().map_err(|_| ProviderError::Configuration)
+        })?;
+        let config = OpenBaoConfig {
+            address,
+            mount: get("SAGAT_OPENBAO_MOUNT").unwrap_or_else(|| "secret".to_owned()),
+            token_file: PathBuf::from(
+                get("SAGAT_OPENBAO_TOKEN_FILE").ok_or(ProviderError::Configuration)?,
+            ),
+            timeout: Duration::from_millis(timeout),
+            development_loopback,
+            ca_pem: None,
+        };
+        // Validate transport and path settings before a service enables the feature.
+        OpenBao::new(config.clone())?;
+        let settings = Self {
+            config,
+            ca_file: get("SAGAT_OPENBAO_CA_FILE").map(PathBuf::from),
+            intent_key_file: get("SAGAT_OPENBAO_INTENT_KEY_FILE").map(PathBuf::from),
+        };
+        if settings
+            .ca_file
+            .iter()
+            .chain(settings.intent_key_file.iter())
+            .any(|path| !path.is_absolute())
+        {
+            return Err(ProviderError::Configuration);
+        }
+        Ok(Some(settings))
+    }
+
+    pub async fn provider(&self) -> Result<std::sync::Arc<OpenBao>, ProviderError> {
+        let mut config = self.config.clone();
+        if let Some(path) = &self.ca_file {
+            config.ca_pem = Some(read_file_bounded(path, 256 * 1024).await?.to_vec());
+        }
+        Ok(std::sync::Arc::new(OpenBao::new(config)?))
+    }
+
+    /// Management-only key: 32 random bytes, persisted across replicas/restarts and backed up.
+    /// Workers never need it. Rotation requires draining pending receipts under the old key.
+    pub async fn intent_key(&self) -> Result<SecretValue, ProviderError> {
+        let path = self
+            .intent_key_file
+            .as_ref()
+            .ok_or(ProviderError::Configuration)?;
+        let mut bytes = read_file_bounded(path, 32).await?;
+        if bytes.len() != 32 {
+            return Err(ProviderError::Configuration);
+        }
+        SecretValue::new(std::mem::take(&mut *bytes)).map_err(|_| ProviderError::Configuration)
+    }
+}
+
+async fn read_file_bounded(
+    path: &std::path::Path,
+    limit: u64,
+) -> Result<Zeroizing<Vec<u8>>, ProviderError> {
+    let file = tokio::fs::File::open(path)
+        .await
+        .map_err(|_| ProviderError::Configuration)?;
+    let mut bytes = Zeroizing::new(Vec::new());
+    file.take(limit + 1)
+        .read_to_end(&mut bytes)
+        .await
+        .map_err(|_| ProviderError::Configuration)?;
+    if bytes.is_empty() || bytes.len() as u64 > limit {
+        return Err(ProviderError::Configuration);
+    }
+    Ok(bytes)
 }
