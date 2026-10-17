@@ -9,6 +9,7 @@ fn repository_root() -> PathBuf {
 
 mod events;
 mod openapi;
+mod rest;
 mod schema;
 
 #[path = "../../support/mod.rs"]

@@ -7,6 +7,7 @@ mod events;
 mod grants;
 mod journal;
 mod pinning;
+mod rest;
 mod result;
 #[path = "../../support/mod.rs"]
 mod support;
