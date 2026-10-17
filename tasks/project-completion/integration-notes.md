@@ -318,3 +318,33 @@ answer proves successful restoration without an old-server mutation. The first p
 name in the optional UUID step_id field and received InvalidArgument; using the supported legacy
 empty step_id form fixed the harness. This strengthens the earlier readiness-only evidence while
 retaining the explicit limit on arbitrary old-server writes into new scoped workflows.
+
+
+### Grant REST and tenant security completion
+
+Two new live grant contract tests passed (13.05 s) in
+`/tmp/sagat-completion-grant-contract-3.log`. Six non-manager roles cannot manage grants;
+Admin can self-grant, repeated PUT preserves the response, pagination and repeated DELETE
+follow the contract. Unknown/ineligible subjects return closed 422 reasons. At 256 entries the
+service correctly returns the documented **429 QUOTA_EXCEEDED / GRANT_LIMIT**. The initial test
+expected 422 and was corrected to the existing contract, not a production behavior change. Actual
+PostgreSQL catalog checks prove runtime SELECT/INSERT/DELETE without UPDATE and tenant-composite
+namespace/membership foreign keys with membership cascade. The application and real-PG grant
+suites already cover transaction rollback, concurrent cap enforcement and current authority.
+
+The live tenant-boundary test passed 1/1 in 4.84 s in
+`/tmp/sagat-completion-security-http.log`. A positive namespace-A reveal witnesses the grant;
+namespace-B run/event/letter reveals remain forbidden. Foreign and absent run/journal, namespaces,
+events, connectors, letters and grants remain opaque. A foreign-only subject is indistinguishable
+from an unknown one; invalid selectors/reveal values are not reflected. The foreign namespace's
+actual quota bucket tuples stay byte-for-byte equivalent, including timestamps. A real restricted
+cross-tenant audit exists in storage but is omitted from the tenant's audit API.
+
+The original registered event gates passed: contract 2/2 (18.82 s), e2e 11/11 (93.65 s), integration
+111/111 (357.46 s), no ignored tests, in `/tmp/sagat-completion-original-event-suites.log`:
+`cargo test --locked -p sagat-tests --test contract_rest_events_webhooks_messaging
+--test integration_events_webhooks_messaging --test e2e_events_webhooks_messaging -- --test-threads=1`.
+The source reader inventory used `rg -n 'getInboxEvent|listConnectorDeadLetters|getConnectorDeadLetter|
+dead-letters|InboxEvent|DeadLetter' frontend/apps/studio/src apps/cli/src sdks`, excluding generated
+`schema.d.ts`, target/bin/obj/node_modules/dist/.venv/.mypy_cache/build artifacts. It found no
+handwritten product reader of these event values. Canonical generated types retain the new shapes.

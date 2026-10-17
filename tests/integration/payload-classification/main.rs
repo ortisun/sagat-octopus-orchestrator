@@ -12,6 +12,7 @@ mod pinning;
 mod pinning_routes;
 mod rest;
 mod result;
+mod security;
 mod step_outputs;
 #[path = "../../support/mod.rs"]
 mod support;

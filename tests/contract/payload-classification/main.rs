@@ -8,6 +8,7 @@ fn repository_root() -> PathBuf {
 }
 
 mod events;
+mod grants;
 mod openapi;
 mod rest;
 mod schema;
