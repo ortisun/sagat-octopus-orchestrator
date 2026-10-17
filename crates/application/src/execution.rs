@@ -333,6 +333,9 @@ pub struct Effects {
     pub children: Vec<ChildSpawn>,
     /// Blobs the outputs above are descriptors of: committed with them, or the transaction fails.
     pub blobs: Vec<BlobCommit>,
+    /// The lease whose holder reports its attempt in this transaction (G141): kept so that a
+    /// heartbeat of that same lease arriving after the report can be told apart from a lost lease.
+    pub reported: Option<ReportedLease>,
 }
 
 impl Effects {
@@ -349,6 +352,7 @@ impl Effects {
             rehint: Vec::new(),
             children: Vec::new(),
             blobs: Vec::new(),
+            reported: None,
         }
     }
 }
@@ -372,6 +376,13 @@ pub struct LeaseGrant {
     pub ttl: std::time::Duration,
     /// The step's `timeout`, if any: renewals never extend an attempt past it.
     pub attempt_timeout: Option<std::time::Duration>,
+}
+
+/// The lease that reported the attempt of `node`: the hash of its token, never the token.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReportedLease {
+    pub node: NodeId,
+    pub token_hash: Vec<u8>,
 }
 
 /// A heartbeat: push the lease expiry out by `ttl` (capped by the attempt deadline).
@@ -537,6 +548,14 @@ pub trait RunTx: Send {
 
     /// Whether `token_hash` is the hash of the lease currently held on `node`.
     fn lease_matches(
+        &mut self,
+        node: &NodeId,
+        token_hash: &[u8],
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    /// Whether `token_hash` is the hash of the lease that reported the attempt of `node` and the
+    /// step has not been leased again since (G141).
+    fn reported_by(
         &mut self,
         node: &NodeId,
         token_hash: &[u8],

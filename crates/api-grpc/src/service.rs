@@ -4,8 +4,8 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::task::{Context, Poll};
 use std::time::Duration;
 use std::time::Instant;
@@ -16,11 +16,13 @@ use sagat_application::blobs::BlobService;
 use sagat_application::clock::Clock;
 use sagat_application::definitions::DefinitionStore;
 use sagat_application::entropy::Entropy;
-use sagat_application::error::AppError;
+use sagat_application::error::{AccessDenial, AppError};
 use sagat_application::execution::{ExpressionEvaluator, MAX_PAYLOAD_BYTES};
+use sagat_application::identity::RequestContext;
 use sagat_application::runs::RunStore;
 use sagat_application::worker::{Capabilities, ClaimedTask, StepAck, WorkerService, WorkerStore};
 use sagat_domain::blobs::BlobId;
+use sagat_domain::identity::Principal;
 use sagat_telemetry::TraceContext;
 use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
@@ -212,11 +214,34 @@ impl Drop for TaskBody {
 }
 
 fn app(error: AppError) -> Status {
-    to_status(&ApiError::from(error))
+    api(&ApiError::from(error))
 }
 
 fn api(error: &ApiError) -> Status {
+    if let Some(denial) = error.access_denial() {
+        // Leaves the denial for `observe`, which knows the call and, once the call authenticated,
+        // the caller (gap G9).
+        let _ = DENIAL.try_with(|slot| {
+            *slot.denial.lock().unwrap_or_else(PoisonError::into_inner) = Some(denial);
+        });
+    }
     to_status(error)
+}
+
+/// What a call learns about itself on the way, for the audit of a denial.
+#[derive(Default)]
+struct DenialNote {
+    principal: Mutex<Option<Principal>>,
+    denial: Mutex<Option<AccessDenial>>,
+}
+
+tokio::task_local! {
+    static DENIAL: Arc<DenialNote>;
+}
+
+/// The RPC as named in the audit trail: the service and the method, never the request.
+fn rpc_name(method: &str) -> String {
+    format!("grpc WorkerService/{method}")
 }
 
 fn trace_of<T>(request: &Request<T>) -> TraceContext {
@@ -252,7 +277,8 @@ const fn code_label(code: Code) -> &'static str {
 
 /// Runs one call under a span carrying the trace id, and counts and times it. The `method` label
 /// comes from a fixed set of RPC names, so the metric cardinality is fixed.
-async fn observe<T>(
+async fn observe<St: Core, T>(
+    core: &St,
     method: &'static str,
     trace: TraceContext,
     call: impl Future<Output = Result<T, Status>>,
@@ -273,7 +299,39 @@ async fn observe<T>(
         grpc.status_code = tracing::field::Empty,
         otel.status_code = tracing::field::Empty,
     );
-    let result = call.instrument(span.clone()).await;
+    let note = Arc::new(DenialNote::default());
+    let result = DENIAL
+        .scope(Arc::clone(&note), call.instrument(span.clone()))
+        .await;
+    let denied = note
+        .denial
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take();
+    let caller = note
+        .principal
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take();
+    let refused = result
+        .as_ref()
+        .err()
+        .is_some_and(|status| status.code() == Code::PermissionDenied);
+    if let (true, Some(denial), Some(principal)) = (refused, denied, caller) {
+        let ctx = RequestContext {
+            trace_id: Some(trace.trace_id().to_string()),
+            span_id: None,
+        };
+        let _ = sagat_api_http::denial::spawn_audit_access_denied(
+            core,
+            &principal,
+            &rpc_name(method),
+            denial,
+            &ctx,
+        )
+        .instrument(span.clone())
+        .await;
+    }
     let code = result.as_ref().err().map_or(Code::Ok, Status::code);
     span.record("grpc.status_code", code_label(code));
     if code == Code::Internal || code == Code::Unknown {
@@ -297,9 +355,17 @@ where
     /// member of a tenant. The returned value holds the tenant's concurrency slot until dropped.
     async fn authenticate<T>(&self, request: &Request<T>) -> Result<Authenticated, Status> {
         let token = self.bearer(request)?;
-        authenticate_bearer(&self.core, token)
+        let authenticated = authenticate_bearer(&self.core, token)
             .await
-            .map_err(|e| api(&e))
+            .map_err(|e| api(&e))?;
+        let _ = DENIAL.try_with(|note| {
+            *note
+                .principal
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) =
+                Some(authenticated.session.principal.clone());
+        });
+        Ok(authenticated)
     }
 
     fn bearer<'a, T>(&self, request: &'a Request<T>) -> Result<&'a str, Status> {
@@ -330,7 +396,7 @@ where
         &self,
         request: Request<pb::RegisterWorkerRequest>,
     ) -> Result<Response<pb::RegisterWorkerResponse>, Status> {
-        observe("RegisterWorker", trace_of(&request), async {
+        observe(&self.core, "RegisterWorker", trace_of(&request), async {
             let auth = self.authenticate(&request).await?;
             let message = request.get_ref();
             let wanted = message
@@ -382,7 +448,7 @@ where
         let request_trace = trace
             .is_continuation()
             .then(|| trace.trace_id().to_string());
-        observe("PollTasks", trace, async {
+        observe(&self.core, "PollTasks", trace, async {
             let auth = self.authenticate(&request).await?;
             let message = request.get_ref();
             let worker = worker_id(&message.worker_id)?;
@@ -420,7 +486,7 @@ where
         let request_trace = trace
             .is_continuation()
             .then(|| trace.trace_id().to_string());
-        observe("StreamTasks", trace, async {
+        observe(&self.core, "StreamTasks", trace, async {
             let message = request.get_ref();
             let max_tasks = u32::try_from(message.max_tasks)
                 .map_err(|_| invalid("max_tasks must be between 1 and 64"))?;
@@ -593,7 +659,25 @@ where
                     let tasks = match tokio::time::timeout_at(producer_end, claim).await {
                         Ok(Ok(tasks)) => tasks,
                         Ok(Err(error)) => {
-                            let status = app(error);
+                            // The role may have been lowered since the stream opened: the
+                            // refusal is a denial like any other, but this task is outside the
+                            // call that `observe` watches.
+                            let refusal = ApiError::from(error);
+                            if let Some(denial) = refusal.access_denial() {
+                                let ctx = RequestContext {
+                                    trace_id: request_trace.clone(),
+                                    span_id: None,
+                                };
+                                let _ = sagat_api_http::denial::spawn_audit_access_denied(
+                                    &core,
+                                    &authenticated.session.principal,
+                                    &rpc_name("StreamTasks"),
+                                    denial,
+                                    &ctx,
+                                )
+                                .await;
+                            }
+                            let status = api(&refusal);
                             producer_reason.store(
                                 match status.code() {
                                     Code::Unauthenticated | Code::PermissionDenied => 5,
@@ -673,7 +757,7 @@ where
         request: Request<pb::ResolveSecretsRequest>,
     ) -> Result<Response<pb::ResolveSecretsResponse>, Status> {
         let trace = trace_of(&request);
-        observe("ResolveSecrets", trace, async {
+        observe(&self.core, "ResolveSecrets", trace, async {
             let auth = self.authenticate(&request).await?;
             let message = request.get_ref();
             let attempt = Attempt::parse(
@@ -711,7 +795,7 @@ where
         &self,
         request: Request<pb::HeartbeatRequest>,
     ) -> Result<Response<pb::HeartbeatResponse>, Status> {
-        observe("Heartbeat", trace_of(&request), async {
+        observe(&self.core, "Heartbeat", trace_of(&request), async {
             let auth = self.authenticate(&request).await?;
             let message = request.get_ref();
             if !message.worker_id.is_empty() {
@@ -731,7 +815,8 @@ where
                 .await
                 .map_err(app)?;
             Ok(pb::HeartbeatResponse {
-                lease_expires_at_epoch_ms: epoch_ms(ack.lease_expires_at),
+                // `0` when this lease already reported the attempt (G141, SDK SPEC §6.4).
+                lease_expires_at_epoch_ms: ack.lease_expires_at.map_or(0, epoch_ms),
                 cancel_requested: ack.cancel_requested,
             })
         })
@@ -742,7 +827,7 @@ where
         &self,
         request: Request<pb::CompleteStepRequest>,
     ) -> Result<Response<pb::StepCommandResponse>, Status> {
-        observe("CompleteStep", trace_of(&request), async {
+        observe(&self.core, "CompleteStep", trace_of(&request), async {
             let auth = self.authenticate(&request).await?;
             let message = request.get_ref();
             let attempt = Attempt::parse(
@@ -824,7 +909,7 @@ where
         request: Request<tonic::Streaming<pb::WriteBlobRequest>>,
     ) -> Result<Response<pb::WriteBlobResponse>, Status> {
         let trace = trace_of(&request);
-        observe("WriteBlob", trace, async {
+        observe(&self.core, "WriteBlob", trace, async {
             let started = Instant::now();
             let auth = self.authenticate(&request).await?;
             let blobs = self.blob_access()?;
@@ -892,7 +977,7 @@ where
         request: Request<pb::ReadBlobRequest>,
     ) -> Result<Response<Self::ReadBlobStream>, Status> {
         let trace = trace_of(&request);
-        observe("ReadBlob", trace, async {
+        observe(&self.core, "ReadBlob", trace, async {
             let auth = self.authenticate(&request).await?;
             let blobs = self.blob_access()?;
             let place = blobs.permit()?;
@@ -946,7 +1031,7 @@ where
         &self,
         request: Request<pb::FailStepRequest>,
     ) -> Result<Response<pb::StepCommandResponse>, Status> {
-        observe("FailStep", trace_of(&request), async {
+        observe(&self.core, "FailStep", trace_of(&request), async {
             let auth = self.authenticate(&request).await?;
             let message = request.get_ref();
             let attempt = Attempt::parse(

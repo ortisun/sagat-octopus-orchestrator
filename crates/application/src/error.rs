@@ -144,7 +144,50 @@ pub enum AppError {
     Internal,
 }
 
+/// Why a caller was refused with a `403` / `PERMISSION_DENIED` (gap G9): what an audit record of the
+/// denial says. Never carries a value the caller chose (a secret's name, an identifier).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccessDenial {
+    /// The caller's role does not grant the permission.
+    MissingPermission(Permission),
+    /// The identity holds the permission but may not do this: a closed code (`NOT_BOUND`,
+    /// `SECRET_NOT_USABLE`, `AUTHOR_CANNOT_DECIDE`, `NOT_THE_AUTHOR`, or `FORBIDDEN` for any other).
+    Refused(&'static str),
+}
+
+impl AccessDenial {
+    /// The text stored as the reason of the audit record.
+    #[must_use]
+    pub fn reason(&self) -> String {
+        match self {
+            Self::MissingPermission(permission) => {
+                format!("missing permission {}", permission.as_str())
+            }
+            Self::Refused(code) => format!("refused: {code}"),
+        }
+    }
+}
+
 impl AppError {
+    /// The denial this error is answered with, when it is answered with `403` /
+    /// `PERMISSION_DENIED`. A `404` that hides a foreign resource is not one: it has its own
+    /// cross-tenant record.
+    #[must_use]
+    pub const fn denial(&self) -> Option<AccessDenial> {
+        match self {
+            Self::Forbidden { permission } => Some(AccessDenial::MissingPermission(*permission)),
+            Self::NotBound => Some(AccessDenial::Refused("NOT_BOUND")),
+            Self::SecretUnavailable { .. } => Some(AccessDenial::Refused("SECRET_NOT_USABLE")),
+            Self::Versioning(Refusal::Request(VersioningError::AuthorCannotDecide)) => {
+                Some(AccessDenial::Refused("AUTHOR_CANNOT_DECIDE"))
+            }
+            Self::Versioning(Refusal::Request(VersioningError::NotTheAuthor)) => {
+                Some(AccessDenial::Refused("NOT_THE_AUTHOR"))
+            }
+            _ => None,
+        }
+    }
+
     /// Whether the same request may succeed if repeated later.
     #[must_use]
     pub const fn is_retryable(&self) -> bool {

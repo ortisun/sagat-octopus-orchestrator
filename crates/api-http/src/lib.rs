@@ -22,6 +22,7 @@ pub mod blobs;
 mod concurrency;
 mod context;
 mod core;
+pub mod denial;
 mod dto;
 mod dto_events;
 mod dto_exec;

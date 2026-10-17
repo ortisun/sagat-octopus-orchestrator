@@ -1426,6 +1426,21 @@ impl RunTx for PgRunTx {
         .map_err(store_error)
     }
 
+    async fn reported_by(&mut self, node: &NodeId, token_hash: &[u8]) -> Result<bool, StoreError> {
+        sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM steps WHERE tenant_id = $1 AND run_id = $2 AND node = $3 \
+                            AND status NOT IN ('LEASED', 'RUNNING') \
+                            AND reported_lease_token_hash = $4)",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.run_id.as_uuid())
+        .bind(node.as_str())
+        .bind(token_hash)
+        .fetch_one(&mut *self.tx)
+        .await
+        .map_err(store_error)
+    }
+
     async fn replay(&mut self, idempotency: &Idempotency) -> Result<Option<String>, StoreError> {
         replay(
             &mut self.tx,
@@ -2120,6 +2135,7 @@ impl PgRunTx {
         let child_input = spawn.map(|c| c.input.clone());
         let grant = effects.lease.as_ref().filter(|g| &g.node == node);
         let renewal = effects.renewal.as_ref().filter(|r| &r.node == node);
+        let reported = effects.reported.as_ref().filter(|r| &r.node == node);
         let leased = matches!(step.status(), StepStatus::Leased | StepStatus::Running);
         let fresh_grant = grant.filter(|_| leased);
         let step_uuid = step_id(self.info.version_id, self.info.run_id, node);
@@ -2201,6 +2217,9 @@ impl PgRunTx {
                 hint_count = CASE WHEN $30 THEN hint_count + 1 WHEN $21 THEN 0 ELSE hint_count END, \
                 lease_token_hash = CASE WHEN $6 IN ('LEASED', 'RUNNING') \
                                         THEN COALESCE($22, lease_token_hash) END, \
+                reported_lease_token_hash = CASE WHEN $6 IN ('LEASED', 'RUNNING') THEN NULL \
+                                                 WHEN $32::bytea IS NOT NULL THEN $32 \
+                                                 ELSE reported_lease_token_hash END, \
                 lease_expires_at = CASE WHEN $6 NOT IN ('LEASED', 'RUNNING') THEN NULL \
                                         WHEN $22::bytea IS NOT NULL THEN $20 + $23 * interval '1 microsecond' \
                                         WHEN $27::bigint IS NOT NULL THEN LEAST( \
@@ -2258,6 +2277,7 @@ impl PgRunTx {
         .bind(child_input)
         .bind(rehinted)
         .bind(lookback)
+        .bind(reported.map(|r| r.token_hash.clone()))
         .execute(&mut *self.tx)
         .await
         .map_err(store_error)?;

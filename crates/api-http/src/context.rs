@@ -12,6 +12,7 @@ use serde::Serialize;
 use serde_json::Value;
 use tracing::Instrument;
 
+use crate::denial::{DenialSlot, Denied};
 use crate::error::{ErrorCode, ErrorParts};
 
 static REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
@@ -86,6 +87,10 @@ pub async fn request_context(mut request: Request, next: Next) -> Response {
     // starts: a run's span hangs from the request that started it.
     let ingress = SpanId::generate();
     request.extensions_mut().insert(IngressSpan(ingress));
+    // The extractor of an authenticated caller leaves the caller here, so that a `403` is audited
+    // with who it was and which call it was (gap G9).
+    let denials = DenialSlot::default();
+    request.extensions_mut().insert(denials.clone());
 
     let method = method_label(request.method());
     let span = tracing::info_span!(
@@ -107,6 +112,17 @@ pub async fn request_context(mut request: Request, next: Next) -> Response {
         .extensions()
         .get::<RouteTemplate>()
         .map_or_else(|| "unmatched".to_owned(), |r| r.0.clone());
+    let denied = response.extensions().get::<Denied>().copied();
+    if let (Some(Denied(denial)), Some(caller)) = (denied, denials.take()) {
+        // The route template and the method from a closed set: nothing the caller wrote.
+        // The write is a task of its own: if this request is dropped now (the client reset the
+        // connection), the record is still written. Waiting for it keeps the normal order, record
+        // first and answer after.
+        let _ = caller
+            .audit(&format!("{method} {route}"), denial)
+            .instrument(span.clone())
+            .await;
+    }
     let response = finalize(response, trace_id, request_id);
     span.record("http.route", route.as_str());
     span.record("http.status_code", response.status().as_u16());
