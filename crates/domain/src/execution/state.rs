@@ -1108,7 +1108,7 @@ pub struct StepState {
 }
 
 impl StepState {
-    const fn pending() -> Self {
+    pub(super) const fn pending() -> Self {
         Self {
             status: StepStatus::Pending,
             attempt: 0,
@@ -1150,6 +1150,10 @@ impl StepState {
     #[must_use]
     pub const fn routed(&self) -> bool {
         self.routed
+    }
+
+    pub(super) fn mark_routed(&mut self) {
+        self.routed = true;
     }
 
     #[must_use]
@@ -1227,6 +1231,123 @@ impl StepState {
 
     const fn fenced_by(&self, attempt: u32, generation: u64) -> bool {
         self.attempt == attempt && self.generation == generation
+    }
+
+    pub(super) fn apply_instance_lifecycle(
+        &mut self,
+        instance: &ExecutionInstanceId,
+        event: &RunEvent,
+    ) -> Result<(), ExecutionError> {
+        use StepStatus::{
+            Cancelled, Failed, Leased, Pending, Ready, RetryWait, Running, Succeeded, Waiting,
+        };
+        let name = event.name();
+        let require = |step: &Self, allowed: &[StepStatus]| {
+            if allowed.contains(&step.status) {
+                Ok(())
+            } else {
+                Err(illegal_transition(instance, step.status, name))
+            }
+        };
+        match event {
+            RunEvent::StepReleased { .. } => {
+                require(self, &[Pending])?;
+                self.status = Ready;
+            }
+            RunEvent::StepLeased {
+                attempt,
+                generation,
+                ..
+            } => {
+                require(self, &[Ready])?;
+                if *attempt != self.attempt + 1 || *generation != self.generation + 1 {
+                    return Err(stale_attempt(instance));
+                }
+                self.status = Leased;
+                self.attempt = *attempt;
+                self.generation = *generation;
+                self.cancel_requested = false;
+                self.next_attempt_at = None;
+            }
+            RunEvent::StepStarted {
+                attempt,
+                generation,
+                ..
+            } => {
+                require(self, &[Leased])?;
+                if !self.fenced_by(*attempt, *generation) {
+                    return Err(stale_attempt(instance));
+                }
+                self.status = Running;
+            }
+            RunEvent::StepCompleted {
+                attempt,
+                generation,
+                ..
+            } => {
+                require(self, &[Leased, Running])?;
+                if !self.fenced_by(*attempt, *generation) {
+                    return Err(stale_attempt(instance));
+                }
+                self.status = Succeeded;
+                self.cancel_requested = false;
+            }
+            RunEvent::StepRetryScheduled {
+                attempt,
+                generation,
+                code,
+                not_before,
+                ..
+            } => {
+                require(self, &[Leased, Running])?;
+                if !self.fenced_by(*attempt, *generation) {
+                    return Err(stale_attempt(instance));
+                }
+                self.status = RetryWait;
+                self.failure = Some(code.clone());
+                self.next_attempt_at = Some(*not_before);
+            }
+            RunEvent::StepRetryDue { .. } => {
+                require(self, &[RetryWait])?;
+                self.status = Ready;
+                self.next_attempt_at = None;
+            }
+            RunEvent::StepFailed { code, fence, .. } => {
+                require(self, &[Leased, Running, Pending, Waiting])?;
+                match (self.status.is_leased(), fence) {
+                    (true, Some(fence)) if self.fenced_by(fence.attempt, fence.generation) => {}
+                    (true, _) => return Err(stale_attempt(instance)),
+                    (false, None) => {}
+                    (false, Some(_)) => {
+                        return Err(illegal_transition(instance, self.status, name));
+                    }
+                }
+                self.status = Failed;
+                self.failure = Some(code.clone());
+                self.waiting = None;
+                self.cancel_requested = false;
+            }
+            RunEvent::StepCancelRequested { .. } => {
+                require(self, &[Leased, Running, Waiting])?;
+                if (self.status == Waiting
+                    && !matches!(self.waiting, Some(WaitingOn::Child { .. })))
+                    || self.cancel_requested
+                {
+                    return Err(illegal_transition(instance, self.status, name));
+                }
+                self.cancel_requested = true;
+            }
+            RunEvent::StepCancelled { .. } => {
+                require(self, &[Pending, Ready, Leased, Running, Waiting, RetryWait])?;
+                self.status = Cancelled;
+                self.routed = true;
+                self.waiting = None;
+                self.next_attempt_at = None;
+                self.cancel_requested = false;
+            }
+            _ => return Err(ExecutionError::UnsupportedScopedEvent(name)),
+        }
+        Ok(())
     }
 }
 
@@ -2276,24 +2397,6 @@ impl RunState {
                 instance: instance.clone(),
                 status: step.status,
                 event,
-            })
-        }
-    }
-
-    fn fenced_instance(
-        &mut self,
-        instance: &ExecutionInstanceId,
-        event: &'static str,
-        allowed: &[StepStatus],
-        attempt: u32,
-        generation: u64,
-    ) -> Result<&mut StepState, ExecutionError> {
-        let step = self.instance_mut(instance, event, allowed)?;
-        if step.fenced_by(attempt, generation) {
-            Ok(step)
-        } else {
-            Err(ExecutionError::StaleInstanceAttempt {
-                instance: instance.clone(),
             })
         }
     }
@@ -3877,10 +3980,7 @@ impl RunState {
     /// # Errors
     /// An [`ExecutionError`] when the addressed transition is illegal or not enabled.
     pub fn apply_addressed(&mut self, addressed: &AddressedRunEvent) -> Result<(), ExecutionError> {
-        use StepStatus::{
-            Cancelled, Failed, Leased, Pending, Ready, RetryWait, Running, Skipped, Succeeded,
-            Waiting,
-        };
+        use StepStatus::{Failed, Pending, Skipped, Succeeded, Waiting};
 
         if addressed.path().is_root() {
             return self.apply(addressed.event());
@@ -3912,117 +4012,19 @@ impl RunState {
                     ))?
                     .routed = true;
             }
-            RunEvent::StepReleased { .. } => {
-                self.instance_mut(&instance, name, &[Pending])?.status = Ready;
-            }
-            RunEvent::StepLeased {
-                attempt,
-                generation,
-                ..
-            } => {
-                let step = self.instance_mut(&instance, name, &[Ready])?;
-                if *attempt != step.attempt + 1 || *generation != step.generation + 1 {
-                    return Err(ExecutionError::StaleInstanceAttempt { instance });
-                }
-                step.status = Leased;
-                step.attempt = *attempt;
-                step.generation = *generation;
-                step.cancel_requested = false;
-                step.next_attempt_at = None;
-            }
-            RunEvent::StepStarted {
-                attempt,
-                generation,
-                ..
-            } => {
-                self.fenced_instance(&instance, name, &[Leased], *attempt, *generation)?
-                    .status = StepStatus::Running;
-            }
-            RunEvent::StepCompleted {
-                attempt,
-                generation,
-                ..
-            } => {
-                let step = self.fenced_instance(
-                    &instance,
-                    name,
-                    &[Leased, Running],
-                    *attempt,
-                    *generation,
-                )?;
-                step.status = Succeeded;
-                step.cancel_requested = false;
-            }
-            RunEvent::StepRetryScheduled {
-                attempt,
-                generation,
-                code,
-                not_before,
-                ..
-            } => {
-                let step = self.fenced_instance(
-                    &instance,
-                    name,
-                    &[Leased, Running],
-                    *attempt,
-                    *generation,
-                )?;
-                step.status = RetryWait;
-                step.failure = Some(code.clone());
-                step.next_attempt_at = Some(*not_before);
-            }
-            RunEvent::StepRetryDue { .. } => {
-                let step = self.instance_mut(&instance, name, &[RetryWait])?;
-                step.status = Ready;
-                step.next_attempt_at = None;
-            }
-            RunEvent::StepFailed { code, fence, .. } => {
-                let step =
-                    self.instance_mut(&instance, name, &[Leased, Running, Pending, Waiting])?;
-                match (step.status.is_leased(), fence) {
-                    (true, Some(fence)) if step.fenced_by(fence.attempt, fence.generation) => {}
-                    (true, _) => {
-                        return Err(ExecutionError::StaleInstanceAttempt { instance });
-                    }
-                    (false, None) => {}
-                    (false, Some(_)) => {
-                        return Err(ExecutionError::IllegalInstanceTransition {
-                            instance,
-                            status: step.status,
-                            event: name,
-                        });
-                    }
-                }
-                step.status = Failed;
-                step.failure = Some(code.clone());
-                step.waiting = None;
-                step.cancel_requested = false;
-            }
-            RunEvent::StepCancelRequested { .. } => {
-                let step = self.instance_mut(&instance, name, &[Leased, Running, Waiting])?;
-                if (step.status == Waiting
-                    && !matches!(step.waiting, Some(WaitingOn::Child { .. })))
-                    || step.cancel_requested
-                {
-                    return Err(ExecutionError::IllegalInstanceTransition {
-                        instance,
-                        status: step.status,
-                        event: name,
-                    });
-                }
-                step.cancel_requested = true;
-            }
-            RunEvent::StepCancelled { .. } => {
-                let step = self.instance_mut(
-                    &instance,
-                    name,
-                    &[Pending, Ready, Leased, Running, Waiting, RetryWait],
-                )?;
-                step.status = Cancelled;
-                step.routed = true;
-                step.waiting = None;
-                step.next_attempt_at = None;
-                step.cancel_requested = false;
+            event @ (RunEvent::StepReleased { .. }
+            | RunEvent::StepLeased { .. }
+            | RunEvent::StepStarted { .. }
+            | RunEvent::StepCompleted { .. }
+            | RunEvent::StepRetryScheduled { .. }
+            | RunEvent::StepRetryDue { .. }
+            | RunEvent::StepFailed { .. }
+            | RunEvent::StepCancelRequested { .. }
+            | RunEvent::StepCancelled { .. }) => {
+                self.steps
+                    .get_mut(&instance)
+                    .ok_or_else(|| ExecutionError::UnknownInstance(instance.clone()))?
+                    .apply_instance_lifecycle(&instance, event)?;
             }
             RunEvent::ApprovalOpened { request_id, .. } => {
                 let step = self.instance_mut(&instance, name, &[Pending])?;

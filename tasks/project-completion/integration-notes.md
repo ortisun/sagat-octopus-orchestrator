@@ -375,3 +375,29 @@ loosening from an unmarked-root child and lists all 22 unique runtime canary cla
 `cargo test --locked -p sagat-infra-ir --test classification` passed 14/14 after this update
 (`/tmp/sagat-completion-fixture-corpus.log`). These results close the named corpus and event cases;
 full integrated release/workspace gates remain open.
+
+
+### Bounded path mutation foundation integration
+
+Merged the committed bounded-execution work through 4f70bd08 into the integration tree. The
+shared step lifecycle reducer is used by both full replay and the exact-path reducer. The new
+PostgreSQL transaction rechecks the run revision, exact instance/lease/session identity, current
+worker authority, quotas and script retention and persists the journal, output accounting, next
+task hints, receipts and audit atomically. It remains a foundation: production WorkerService still
+uses the complete RunTx path; bounded failure/control/blob/reconciliation and compensation
+authority must be completed and verified before switching that service.
+
+Actual local gates on this integration:
+- `cargo test --locked -p sagat-domain`: 501 passed across 37 targets including doc tests; 0 failed or
+  ignored (`/tmp/sagat-completion-bounded-domain.log`). This includes full-state lifecycle/property
+  tests and the five bounded/full-replay differential/planning cases.
+- `cargo test --locked -p sagat-tests --test integration_workflow_primitives byte_ceilings::
+  -- --test-threads=1`: 13 passed, 117.27 s, no ignored cases
+  (`/tmp/sagat-completion-bounded-byte-gate.log`). Actual PostgreSQL verifies bounded lease and
+  completion persistence, retention admission and all logical/value/aggregate/task-input ceilings.
+- `python3 scripts/check-architecture.py`: passed, 24 crates, no forbidden layers or cycles
+  (`/tmp/sagat-completion-architecture-latest.log`).
+
+A follow-up regression is being added for snapshot reads queuing behind the run writer and for
+indexed compensation authority. Neither the foundation nor these focused gates close the remaining
+feature-014 runtime, large-workload or release tasks.

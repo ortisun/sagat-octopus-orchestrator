@@ -2,12 +2,24 @@
 //! hold for collection and loop values too, against real PostgreSQL. A value over a ceiling is a
 //! durable `RUN_DATA_LIMIT` failure, never a retry loop and never a silently stored oversize value.
 
+use std::time::Duration;
+
 use sagat_application::clock::SystemClock;
+use sagat_application::definitions::Idempotency;
 use sagat_application::entropy::SystemEntropy;
-use sagat_application::execution::{MAX_PAYLOAD_BYTES, MAX_RUN_OUTPUT_BYTES, PathExecutionStore};
+use sagat_application::entropy::Token;
+use sagat_application::execution::{
+    Actor, Effects, LeaseGrant, MAX_PAYLOAD_BYTES, MAX_RUN_OUTPUT_BYTES, PathExecutionStore,
+    PathExecutionTx, ReportedLease, ScopeInput,
+};
+use sagat_application::runs::Lock;
 use sagat_application::worker::{MAX_TASK_INPUT_BYTES, WorkerService};
-use sagat_domain::execution::{InstancePath, RunId};
-use sagat_domain::workflow::NodeId;
+use sagat_domain::execution::{
+    ExecutionInstanceId, InstancePath, RunId, StepStatus, complete_path_instance,
+    heartbeat_path_instance, lease_path_instance,
+};
+use sagat_domain::quota::QuotaResource;
+use sagat_domain::workflow::{ActivityName, NodeId};
 use sagat_infra_ir::JsonEvaluator;
 use sagat_infra_postgres::PgRunStore;
 use serde_json::{Value, json};
@@ -15,13 +27,97 @@ use serde_json::{Value, json};
 use crate::limits::{
     allow_iterations, assert_failed_with, register_scoped, scheduler, scoped_workers, scopes,
 };
-use crate::support::engine::{World, task_ref, world};
+use crate::support::engine::ctx;
+use crate::support::engine::{World, activity, document, end_node, task_ref, with, world};
 
 type Workers = WorkerService<PgRunStore, SystemClock, JsonEvaluator, SystemEntropy>;
+
+const SCRIPT_DIGEST: &str =
+    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 fn text_of(bytes: usize) -> String {
     // A JSON string of exactly `bytes` bytes: the quotes count.
     format!("\"{}\"", "x".repeat(bytes - 2))
+}
+
+async fn ready_script(world: &World, retention_days: i16) -> ActivityName {
+    sqlx::query(
+        "INSERT INTO script_artifacts \
+         (tenant_id,digest,language,content,signature,key_id,sbom,toolchain) \
+         VALUES ($1,$2,'typescript','\\x01',decode(repeat('ab',64),'hex'),'key-1','\\x7b7d','node@sha256:aa')",
+    )
+    .bind(world.admin.tenant_id().as_uuid())
+    .bind(SCRIPT_DIGEST)
+    .execute(&world.db.pool)
+    .await
+    .expect("script artifact");
+    let script = uuid::Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO scripts \
+         (id,tenant_id,namespace_id,name,language,source,policy,retention_days,created_by) \
+         VALUES ($1,$2,$3,'bounded-script','typescript','export default 1','v1',$4,'test')",
+    )
+    .bind(script)
+    .bind(world.admin.tenant_id().as_uuid())
+    .bind(world.namespace.id().as_uuid())
+    .bind(retention_days)
+    .execute(&world.db.pool)
+    .await
+    .expect("script");
+    sqlx::query(
+        "INSERT INTO script_versions \
+         (id,tenant_id,namespace_id,script_id,number,language,status,source,policy,retention_days, \
+          content_digest,artifact_digest,created_by,created_at) \
+         VALUES ($1,$2,$3,$4,1,'typescript','READY','export default 1','v1',$5,$6,$6,'test',now())",
+    )
+    .bind(uuid::Uuid::now_v7())
+    .bind(world.admin.tenant_id().as_uuid())
+    .bind(world.namespace.id().as_uuid())
+    .bind(script)
+    .bind(retention_days)
+    .bind(SCRIPT_DIGEST)
+    .execute(&world.db.pool)
+    .await
+    .expect("READY script version");
+    let activity = format!("script.sha256-{}", &SCRIPT_DIGEST["sha256:".len()..]);
+    ActivityName::parse(&activity).expect("script activity")
+}
+
+async fn set_script_retention(world: &World, days: u64) {
+    world
+        .quotas
+        .set(
+            &world.admin,
+            Some(world.namespace.id()),
+            QuotaResource::ScriptRetentionDays,
+            days,
+            &ctx(),
+        )
+        .await
+        .expect("set script retention policy");
+}
+
+fn script_collection(name: &str) -> Value {
+    json!({
+        "apiVersion": "sagat-octopus-orchestrator.io/v1",
+        "kind": "Workflow",
+        "metadata": {"name": name},
+        "entrypoint": "items",
+        "bodies": {"line": {"entrypoint": "work", "nodes": [
+            {
+                "id": "work", "type": "script", "artifactDigest": SCRIPT_DIGEST,
+                "language": "typescript", "next": "returned"
+            },
+            {"id": "returned", "type": "return", "result": "steps.work.output"}
+        ]}},
+        "nodes": [
+            {
+                "id": "items", "type": "forEach", "items": "input.items", "body": "line",
+                "result": "bodyResult", "maxItems": 2, "maxConcurrency": 2, "next": "done"
+            },
+            {"id": "done", "type": "end"}
+        ]
+    })
 }
 
 pub(crate) fn collection(
@@ -121,6 +217,37 @@ async fn is_over(world: &World, run: RunId) -> bool {
 async fn start_collection(world: &World, document: Value, input: &Value) -> RunId {
     let (workflow, _) = world.publish(document).await;
     world.start(workflow, input).await
+}
+
+#[tokio::test]
+async fn an_end_output_created_with_the_report_is_charged_once_as_a_logical_output() {
+    let world = world().await;
+    let work = with(activity("work"), "next", json!("done"));
+    let done = with(end_node("done"), "outputExpr", json!("steps.work.output"));
+    let (workflow, _) = world
+        .publish(document("root-output-ledger", "work", vec![work, done]))
+        .await;
+    let run = world.start(workflow, &json!({})).await;
+    let session = world.session(&["act.work"]).await;
+    let task = world.one_task(&session).await;
+    let output = json!({"answer": "retained twice"});
+    world
+        .complete(&session, &task, &output)
+        .await
+        .expect("the report and end result commit together");
+
+    let charged: i64 =
+        sqlx::query_scalar("SELECT logical_output_bytes FROM run_instance_usage WHERE run_id=$1")
+            .bind(run.as_uuid())
+            .fetch_one(&world.db.pool)
+            .await
+            .expect("logical output ledger");
+    let one_output = serde_json::to_vec(&output).expect("output JSON").len() as i64;
+    assert_eq!(
+        charged,
+        2 * one_output,
+        "the worker output and the end result are distinct logical references"
+    );
 }
 
 #[tokio::test]
@@ -233,7 +360,7 @@ async fn a_member_output_over_the_value_ceiling_is_refused_and_the_lease_survive
         .expect("member path");
     let bounded = world
         .store
-        .load_path(world.admin.tenant_id(), run, path)
+        .load_path(world.admin.tenant_id(), run, path.clone())
         .await
         .expect("bounded path read")
         .expect("run");
@@ -243,7 +370,343 @@ async fn a_member_output_over_the_value_ceiling_is_refused_and_the_lease_survive
         "the completed activity and its local return are the complete path body"
     );
     assert_eq!(bounded.state.ancestors().len(), 1);
+    assert_eq!(
+        bounded.data.outputs_in(bounded.state.path()).count(),
+        1,
+        "only the exact path's completed activity output is loaded"
+    );
+    assert!(matches!(
+        bounded.data.scope_input(bounded.state.path()),
+        Some(ScopeInput::Collection { index: 0, .. })
+    ));
     assert_eq!(world.run_status(run).await.as_str(), "RUNNING");
+    let stale = bounded.clone();
+    let contended = bounded.clone();
+    let mut fenced = world
+        .store
+        .begin_path(bounded, Lock::Wait)
+        .await
+        .expect("bounded mutation fence")
+        .expect("run");
+    assert_eq!(fenced.snapshot().state.path(), &path);
+    assert!(
+        !fenced
+            .worker_drained(world.worker.subject().as_str())
+            .await
+            .expect("drain fence")
+    );
+    assert!(
+        fenced
+            .worker_session_room(
+                session.0,
+                &Token::hash_of(&session.1),
+                world.worker.subject().as_str(),
+            )
+            .await
+            .expect("session room")
+            > 0
+    );
+    assert!(
+        !fenced
+            .bound_patterns(world.worker.subject().as_str())
+            .await
+            .expect("bindings")
+            .is_empty()
+    );
+    assert!(
+        fenced
+            .current_worker_authorized(world.worker.subject().as_str())
+            .await
+            .expect("current worker authority")
+    );
+    assert_eq!(
+        fenced
+            .required_worker_protocol_minor()
+            .await
+            .expect("protocol fence"),
+        0
+    );
+    assert!(
+        fenced
+            .activity_admitted(&ActivityName::parse("limits.step").expect("activity"))
+            .await
+            .expect("activity quota")
+    );
+    let completed =
+        ExecutionInstanceId::in_path(path.clone(), NodeId::parse("work").expect("activity node"));
+    assert!(
+        fenced
+            .script_execution_admitted(
+                &completed,
+                &ActivityName::parse("limits.step").expect("activity"),
+            )
+            .await
+            .expect("script retention fence")
+    );
+    let reported_token = tasks[0].lease_token.hash();
+    assert!(
+        !fenced
+            .lease_matches(&completed, &reported_token)
+            .await
+            .expect("lease match")
+    );
+    assert!(
+        !fenced
+            .lease_unexpired(&completed, &reported_token)
+            .await
+            .expect("lease expiry")
+    );
+    assert!(
+        fenced
+            .reported_by(&completed, &reported_token)
+            .await
+            .expect("report token")
+    );
+    assert_eq!(
+        fenced.lease_expiry(&completed).await.expect("lease expiry"),
+        None
+    );
+    assert!(
+        world
+            .store
+            .begin_path(contended, Lock::SkipLocked)
+            .await
+            .expect("skip locked fence")
+            .is_none(),
+        "a competing bounded writer does not wait behind the run lock"
+    );
+    fenced.commit().await.expect("read-only fenced commit");
+    assert_eq!(scheduler.tick().await.collections_advanced, 1);
+    assert!(matches!(
+        world.store.begin_path(stale, Lock::Wait).await,
+        Err(sagat_application::error::StoreError::RevisionConflict { .. })
+    ));
+}
+
+#[tokio::test]
+async fn a_bounded_completion_commits_without_reopening_the_run_history() {
+    let world = world().await;
+    allow_iterations(&world, 4).await;
+    let run = start_collection(
+        &world,
+        collection("bounded-completion", "input.items", 1, 1, "bodyResult"),
+        &json!({"items": [1]}),
+    )
+    .await;
+    let scheduler = scheduler(&world, "bounded-completion").await;
+    let workers = scoped_workers(&world);
+    let session = register_scoped(&world, &workers).await;
+    assert_eq!(scheduler.tick().await.collections_advanced, 1);
+    assert_eq!(scheduler.tick().await.collections_advanced, 1);
+    let task = workers
+        .poll(&world.worker, session.0, &session.1, 1, None)
+        .await
+        .expect("poll")
+        .pop()
+        .expect("task");
+
+    let bounded = world
+        .store
+        .load_path(world.admin.tenant_id(), run, task.instance.path().clone())
+        .await
+        .expect("bounded path")
+        .expect("run");
+    let mut tx = world
+        .store
+        .begin_path(bounded, Lock::Wait)
+        .await
+        .expect("bounded transaction")
+        .expect("run");
+    let heartbeat = heartbeat_path_instance(&mut tx.snapshot().state, &task.instance, task.fence)
+        .expect("bounded heartbeat");
+    let definition = tx.snapshot().definition.clone();
+    let progress = complete_path_instance(
+        &definition,
+        &mut tx.snapshot().state,
+        &task.instance,
+        task.fence,
+    )
+    .expect("bounded completion");
+    let mut events = heartbeat.event.into_iter().collect::<Vec<_>>();
+    events.extend(progress.events);
+    let mut effects = Effects::by(Actor::Worker(session.0.to_string()), None);
+    let idempotency = Idempotency {
+        scope: format!("bounded-test:{run}"),
+        key: "complete".into(),
+        fingerprint: vec![1, 2, 3],
+    };
+    effects.idempotency = Some((idempotency.clone(), "ack".into()));
+    effects.reported = Some(ReportedLease {
+        instance: task.instance.clone(),
+        token_hash: task.lease_token.hash(),
+    });
+    tx.persist_addressed(&events, &[(task.instance.clone(), b"{}".to_vec())], effects)
+        .await
+        .expect("bounded persist");
+    tx.commit().await.expect("bounded commit");
+
+    let persisted = world
+        .store
+        .load_path(world.admin.tenant_id(), run, task.instance.path().clone())
+        .await
+        .expect("persisted path")
+        .expect("run");
+    assert_eq!(
+        persisted
+            .state
+            .local_instance(task.instance.node())
+            .map(|step| step.status()),
+        Some(StepStatus::Succeeded)
+    );
+    assert_eq!(persisted.data.output(&task.instance), Some(&b"{}"[..]));
+    let payload_events: Vec<String> = sqlx::query_scalar(
+        "SELECT event_type FROM run_events WHERE run_id=$1 AND payload_digest IS NOT NULL \
+         ORDER BY seq",
+    )
+    .bind(run.as_uuid())
+    .fetch_all(&world.db.pool)
+    .await
+    .expect("payload journal events");
+    assert_eq!(payload_events, ["step.completed"]);
+    let charged: i64 =
+        sqlx::query_scalar("SELECT logical_output_bytes FROM run_instance_usage WHERE run_id=$1")
+            .bind(run.as_uuid())
+            .fetch_one(&world.db.pool)
+            .await
+            .expect("bounded output ledger");
+    assert_eq!(charged, 2);
+    let mut replay = world
+        .store
+        .begin_path(persisted, Lock::Wait)
+        .await
+        .expect("replay transaction")
+        .expect("run");
+    assert_eq!(
+        replay.replay(&idempotency).await.expect("bounded replay"),
+        Some("ack".into())
+    );
+    replay.commit().await.expect("read-only replay commit");
+}
+
+#[tokio::test]
+async fn a_bounded_script_lease_pins_retention_and_zero_withholds_a_new_member() {
+    let world = world().await;
+    allow_iterations(&world, 4).await;
+    let script_activity = ready_script(&world, 30).await;
+    set_script_retention(&world, 5).await;
+    let run = start_collection(
+        &world,
+        script_collection("bounded-script-retention"),
+        &json!({"items": [1]}),
+    )
+    .await;
+    let active_scheduler = scheduler(&world, "bounded-script-retention").await;
+    assert_eq!(active_scheduler.tick().await.collections_advanced, 1);
+    assert_eq!(active_scheduler.tick().await.collections_advanced, 1);
+
+    let owner = NodeId::parse("items").expect("collection owner");
+    let node = NodeId::parse("work").expect("script node");
+    let first_path = InstancePath::root()
+        .child(owner.clone(), 0)
+        .expect("first member path");
+    let first = ExecutionInstanceId::in_path(first_path.clone(), node.clone());
+    let bounded = world
+        .store
+        .load_path(world.admin.tenant_id(), run, first_path)
+        .await
+        .expect("first bounded path")
+        .expect("run");
+    assert_eq!(
+        bounded
+            .state
+            .local_instance(&node)
+            .map(|step| step.status()),
+        Some(StepStatus::Ready)
+    );
+    let mut tx = world
+        .store
+        .begin_path(bounded, Lock::Wait)
+        .await
+        .expect("first bounded transaction")
+        .expect("run");
+    assert!(
+        tx.script_execution_admitted(&first, &script_activity)
+            .await
+            .expect("script retention fence")
+    );
+    let (_, leased) = lease_path_instance(&mut tx.snapshot().state, &first)
+        .expect("lease admitted bounded script");
+    let token = Token::from_bytes([7_u8; 32]).expect("lease token");
+    let mut effects = Effects::by(Actor::Worker("bounded-script-test".into()), None);
+    effects.lease = Some(LeaseGrant {
+        instance: first.clone(),
+        token_hash: token.hash(),
+        worker_id: "bounded-script-test".into(),
+        ttl: Duration::from_secs(30),
+        attempt_timeout: None,
+    });
+    tx.persist_addressed(&[leased], &[], effects)
+        .await
+        .expect("persist bounded script lease");
+    tx.commit().await.expect("commit bounded script lease");
+
+    let detail: serde_json::Value = sqlx::query_scalar(
+        "SELECT detail FROM run_events WHERE run_id=$1 AND node='work' \
+         AND instance_path_nodes=$2 AND instance_path_indices=$3 \
+         AND event_type='step.leased' AND attempt=1",
+    )
+    .bind(run.as_uuid())
+    .bind(vec!["items".to_owned()])
+    .bind(vec![0_i32])
+    .fetch_one(&world.db.pool)
+    .await
+    .expect("bounded script lease detail");
+    assert_eq!(detail["scriptRetentionPolicyVersion"], 1);
+    assert_eq!(detail["scriptRetentionDays"], 5);
+
+    set_script_retention(&world, 0).await;
+    let blocked_run = start_collection(
+        &world,
+        script_collection("bounded-script-retention-blocked"),
+        &json!({"items": [1]}),
+    )
+    .await;
+    assert_eq!(active_scheduler.tick().await.collections_advanced, 1);
+    assert_eq!(active_scheduler.tick().await.collections_advanced, 1);
+    let second_path = InstancePath::root()
+        .child(owner, 0)
+        .expect("new member path");
+    let second = ExecutionInstanceId::in_path(second_path.clone(), node);
+    let bounded = world
+        .store
+        .load_path(world.admin.tenant_id(), blocked_run, second_path)
+        .await
+        .expect("second bounded path")
+        .expect("run");
+    let mut tx = world
+        .store
+        .begin_path(bounded, Lock::Wait)
+        .await
+        .expect("second bounded transaction")
+        .expect("run");
+    assert!(
+        !tx.script_execution_admitted(&second, &script_activity)
+            .await
+            .expect("closed script retention fence"),
+        "a zero policy leaves new scoped script work ready"
+    );
+    tx.commit().await.expect("commit withheld script probe");
+    let leases: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM run_events WHERE run_id=$1 AND node='work' \
+         AND instance_path_nodes=$2 AND instance_path_indices=$3 AND event_type='step.leased'",
+    )
+    .bind(blocked_run.as_uuid())
+    .bind(vec!["items".to_owned()])
+    .bind(vec![0_i32])
+    .fetch_one(&world.db.pool)
+    .await
+    .expect("withheld member leases");
+    assert_eq!(leases, 0);
 }
 
 #[tokio::test]

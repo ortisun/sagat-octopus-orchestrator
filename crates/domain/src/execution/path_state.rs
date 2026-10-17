@@ -7,9 +7,10 @@
 use std::collections::BTreeMap;
 
 use super::{
-    CollectionDrainReason, CollectionPhase, CollectionState, ExecutionError, ExecutionInstanceId,
-    FailureCode, InstancePath, LoopDrainReason, LoopKind, LoopPhase, LoopState, RunId, RunState,
-    RunStatus, ScopeSagaState, StepState, StopReason,
+    AddressedRunEvent, CollectionDrainReason, CollectionPhase, CollectionState, ExecutionError,
+    ExecutionInstanceId, FailureCode, InstancePath, LoopDrainReason, LoopKind, LoopPhase,
+    LoopState, RunEvent, RunId, RunState, RunStatus, ScopeSagaState, StepState, StepStatus,
+    StopReason,
 };
 use crate::workflow::{Digest, NodeId};
 
@@ -620,6 +621,79 @@ impl PathExecutionState {
     #[must_use]
     pub fn local_scope_saga(&self, node: &NodeId) -> Option<&ScopeSagaState> {
         self.scope_sagas.get(node)
+    }
+
+    /// Applies one exact-path worker lifecycle or routing event with the same step reducer used by
+    /// the full replay oracle.
+    ///
+    /// # Errors
+    /// The event addresses another path, the run is terminal, or the local transition is illegal.
+    pub fn apply_addressed(&mut self, addressed: &AddressedRunEvent) -> Result<(), ExecutionError> {
+        let instance = addressed.instance().ok_or(ExecutionError::Invariant(
+            "a bounded event has no execution instance",
+        ))?;
+        if addressed.path() != &self.path {
+            return Err(ExecutionError::UnknownInstance(instance));
+        }
+        if self.global.status.is_terminal() {
+            return Err(ExecutionError::RunFinished(self.global.status));
+        }
+        let next_version = self
+            .global
+            .version
+            .checked_add(1)
+            .ok_or(ExecutionError::Invariant("the run version overflowed"))?;
+        let name = addressed.event().name();
+        match addressed.event() {
+            RunEvent::StepRouted { activated, .. } => {
+                let step = self
+                    .steps
+                    .get(instance.node())
+                    .ok_or_else(|| ExecutionError::UnknownInstance(instance.clone()))?;
+                if !matches!(
+                    step.status(),
+                    StepStatus::Succeeded | StepStatus::Failed | StepStatus::Skipped
+                ) || step.routed()
+                {
+                    return Err(ExecutionError::IllegalInstanceTransition {
+                        instance,
+                        status: step.status(),
+                        event: name,
+                    });
+                }
+                for (position, node) in activated.iter().enumerate() {
+                    if self.steps.contains_key(node) || activated[..position].contains(node) {
+                        return Err(ExecutionError::AlreadyScheduled(node.clone()));
+                    }
+                }
+                for node in activated {
+                    self.steps.insert(node.clone(), StepState::pending());
+                }
+                self.steps
+                    .get_mut(instance.node())
+                    .ok_or(ExecutionError::Invariant(
+                        "validated bounded step disappeared",
+                    ))?
+                    .mark_routed();
+            }
+            event @ (RunEvent::StepReleased { .. }
+            | RunEvent::StepLeased { .. }
+            | RunEvent::StepStarted { .. }
+            | RunEvent::StepCompleted { .. }
+            | RunEvent::StepRetryScheduled { .. }
+            | RunEvent::StepRetryDue { .. }
+            | RunEvent::StepFailed { .. }
+            | RunEvent::StepCancelRequested { .. }
+            | RunEvent::StepCancelled { .. }) => {
+                self.steps
+                    .get_mut(instance.node())
+                    .ok_or_else(|| ExecutionError::UnknownInstance(instance.clone()))?
+                    .apply_instance_lifecycle(&instance, event)?;
+            }
+            _ => return Err(ExecutionError::UnsupportedScopedEvent(name)),
+        }
+        self.global.version = next_version;
+        Ok(())
     }
 
     #[must_use]

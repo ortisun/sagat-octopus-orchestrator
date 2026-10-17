@@ -2,8 +2,10 @@
 #![allow(clippy::expect_used)]
 
 use sagat_domain::execution::{
-    AddressedPlan, AddressedRunEvent, CollectionPhase, ExecutionInstanceId, InstancePath,
-    PathExecutionState, RunEvent, RunId, RunState, plan_addressed, plan_path,
+    AddressedPlan, AddressedRunEvent, CollectionPhase, ExecutionInstanceId, Fence, InstancePath,
+    PathExecutionState, RunEvent, RunId, RunState, StepStatus, complete_instance,
+    complete_path_instance, heartbeat_instance, heartbeat_path_instance, lease_instance,
+    lease_path_instance, plan_addressed, plan_path,
 };
 use sagat_domain::identity::Slug;
 use sagat_domain::workflow::{
@@ -226,4 +228,65 @@ fn global_pause_fences_both_bounded_and_oracle_planners() {
         plan_addressed(&definition, &full, &chosen),
         Ok(AddressedPlan::Idle)
     );
+}
+
+#[test]
+fn bounded_worker_lifecycle_matches_the_full_run_oracle() {
+    let definition = definition();
+    let mut full = state(3);
+    let chosen = path(1);
+    let work = member(1, "work");
+    let mut local =
+        PathExecutionState::from_run(&full, chosen.clone()).expect("complete local snapshot");
+
+    let release = match plan_path(&definition, &local).expect("bounded release") {
+        AddressedPlan::Emit(event) => event,
+        AddressedPlan::Idle => panic!("pending activity must be released"),
+    };
+    local
+        .apply_addressed(&release)
+        .expect("bounded release applies");
+    full.apply_addressed(&release)
+        .expect("oracle release applies");
+
+    let (full_fence, full_lease) = lease_instance(&mut full, &work).expect("oracle lease");
+    let (local_fence, local_lease) = lease_path_instance(&mut local, &work).expect("bounded lease");
+    assert_eq!((local_fence, &local_lease), (full_fence, &full_lease));
+
+    let before_stale = local.clone();
+    assert!(matches!(
+        heartbeat_path_instance(
+            &mut local,
+            &work,
+            Fence {
+                attempt: local_fence.attempt,
+                generation: local_fence.generation + 1,
+            },
+        ),
+        Err(sagat_domain::execution::ExecutionError::StaleInstanceAttempt { .. })
+    ));
+    assert_eq!(local, before_stale);
+
+    let full_heartbeat =
+        heartbeat_instance(&mut full, &work, full_fence).expect("oracle heartbeat");
+    let local_heartbeat =
+        heartbeat_path_instance(&mut local, &work, local_fence).expect("bounded heartbeat");
+    assert_eq!(local_heartbeat, full_heartbeat);
+
+    let full_progress =
+        complete_instance(&definition, &mut full, &work, full_fence).expect("oracle completion");
+    let local_progress = complete_path_instance(&definition, &mut local, &work, local_fence)
+        .expect("bounded completion");
+    assert_eq!(local_progress, full_progress);
+    assert_eq!(
+        local.local_instance(&id("work")).map(|step| step.status()),
+        Some(StepStatus::Succeeded)
+    );
+    assert_eq!(
+        local
+            .local_instance(&id("return"))
+            .map(|step| step.status()),
+        Some(StepStatus::Pending)
+    );
+    assert_eq!(local.global().version(), full.version());
 }

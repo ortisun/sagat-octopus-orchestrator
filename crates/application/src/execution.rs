@@ -618,17 +618,139 @@ pub struct PathExecutionSnapshot {
     pub info: RunInfo,
     pub definition: Arc<WorkflowDefinition>,
     pub state: PathExecutionState,
+    pub data: RunData,
 }
 
-/// Read side for bounded scoped execution. Mutation remains on [`RunTx`] until the caller rechecks
-/// the run revision, lease and authority in the write transaction.
+/// Bounded scoped execution store. Writes start from an evaluated snapshot and recheck its revision
+/// under the run lock; they never reopen the full [`RunTx`] restoration path.
 pub trait PathExecutionStore: Send + Sync {
+    type Tx: PathExecutionTx;
+
     fn load_path(
         &self,
         tenant: TenantId,
         run: RunId,
         path: InstancePath,
     ) -> impl Future<Output = Result<Option<PathExecutionSnapshot>, StoreError>> + Send;
+
+    /// Opens a short mutation transaction for an already evaluated snapshot. The adapter locks the
+    /// run and compares its revision before returning, so a caller never applies a decision made
+    /// from stale path state.
+    fn begin_path(
+        &self,
+        snapshot: PathExecutionSnapshot,
+        lock: crate::runs::Lock,
+    ) -> impl Future<Output = Result<Option<Self::Tx>, StoreError>> + Send;
+}
+
+/// One revision-fenced exact-path transaction. Scoped mutation capabilities belong on this port;
+/// [`RunTx`] intentionally remains the full replay oracle.
+pub trait PathExecutionTx: Send {
+    fn snapshot(&mut self) -> &mut PathExecutionSnapshot;
+
+    /// Database time observed after the run lock was acquired.
+    fn now(&self) -> OffsetDateTime;
+
+    fn lease_expiry(
+        &mut self,
+        instance: &ExecutionInstanceId,
+    ) -> impl Future<Output = Result<Option<OffsetDateTime>, StoreError>> + Send;
+
+    fn worker_drained(
+        &mut self,
+        subject: &str,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    fn worker_session_room(
+        &mut self,
+        session_id: uuid::Uuid,
+        token_hash: &[u8],
+        subject: &str,
+    ) -> impl Future<Output = Result<u32, StoreError>> + Send;
+
+    fn bound_patterns(
+        &mut self,
+        subject: &str,
+    ) -> impl Future<Output = Result<Vec<String>, StoreError>> + Send;
+
+    fn secret_inputs(
+        &mut self,
+        names: &[SecretName],
+    ) -> impl Future<Output = Result<SecretInputs, StoreError>> + Send;
+
+    fn secret_pool_refusal(
+        &mut self,
+        names: &[SecretName],
+        subject: &str,
+        check: PoolCheck,
+    ) -> impl Future<Output = Result<Option<SecretName>, StoreError>> + Send;
+
+    fn secret_versions(
+        &mut self,
+        names: &[SecretName],
+    ) -> impl Future<Output = Result<Vec<StoredSecret>, StoreError>> + Send;
+
+    /// Locks and checks the worker's current tenant authority through the bounded commit.
+    fn current_worker_authorized(
+        &mut self,
+        subject: &str,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    fn required_worker_protocol_minor(
+        &mut self,
+    ) -> impl Future<Output = Result<u32, StoreError>> + Send;
+
+    fn activity_admitted(
+        &mut self,
+        activity: &ActivityName,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    fn compensation_admitted(
+        &mut self,
+        activity: &ActivityName,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    /// Freezes script retention for a lease of `instance` in this exact structured path.
+    /// Forward work also freezes any script compensation or reconciliation it can create.
+    /// Derived work inherits the pin recorded by its originating forward attempt.
+    fn script_execution_admitted(
+        &mut self,
+        instance: &ExecutionInstanceId,
+        activity: &ActivityName,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    fn lease_unexpired(
+        &mut self,
+        instance: &ExecutionInstanceId,
+        token_hash: &[u8],
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    fn lease_matches(
+        &mut self,
+        instance: &ExecutionInstanceId,
+        token_hash: &[u8],
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    fn reported_by(
+        &mut self,
+        instance: &ExecutionInstanceId,
+        token_hash: &[u8],
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    fn replay(
+        &mut self,
+        idempotency: &Idempotency,
+    ) -> impl Future<Output = Result<Option<String>, StoreError>> + Send;
+
+    /// Journals and projects already-reduced exact-path events in this short transaction.
+    fn persist_addressed(
+        &mut self,
+        events: &[AddressedRunEvent],
+        outputs: &[(ExecutionInstanceId, Vec<u8>)],
+        effects: Effects,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
+    fn commit(self) -> impl Future<Output = Result<(), StoreError>> + Send;
 }
 
 /// Who caused the events of one transaction (stored with every journal entry).
