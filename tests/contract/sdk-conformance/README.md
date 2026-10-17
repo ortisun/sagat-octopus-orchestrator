@@ -225,7 +225,11 @@ restricted collection body through the served scheduler and worker API. A retain
 completes root work but cannot claim scoped work. A 1.5 worker observes two equal items at distinct
 indices plus a third distinct item, preserves each typed identity, captured `{item,index}` and
 idempotency key across a retry, and reaches a terminal graph with all three logical instances. No
-private store or control tick advances the collection.
+private store or control tick advances the collection. Before inspecting the run, the scenario
+awaits the public `collection.iteration_admitted` journal event with a bounded deadline. A fixed
+500 ms sleep could observe either the entered scope (`WAITING`) or its admitted ready activity
+(`RUNNING`) under load. The journal barrier makes the existing `RUNNING` observation reproducible;
+the reviewed expected document changes only the observation's operation label to `awaitJournal`.
 
 `collection-runtime.json` executes the public `map` builder with a non-identity result expression
 in all five SDKs. Its reviewed graph has two ordered scoped members and a terminal result. The

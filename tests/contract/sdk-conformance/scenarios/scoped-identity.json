@@ -246,8 +246,10 @@
     },
     {
       "id": "old-cannot-lease",
-      "op": "sleep",
-      "ms": 500
+      "op": "awaitJournal",
+      "run": "run-scoped",
+      "eventType": "collection.iteration_admitted",
+      "timeoutMs": 30000
     },
     {
       "id": "still-waiting",
