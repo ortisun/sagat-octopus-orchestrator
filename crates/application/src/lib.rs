@@ -9,6 +9,7 @@ pub mod approval_scheduler;
 pub mod authz;
 pub mod bindings;
 pub mod chain_progress;
+pub mod classification;
 pub mod clock;
 pub mod collection_source;
 pub mod connectors;
