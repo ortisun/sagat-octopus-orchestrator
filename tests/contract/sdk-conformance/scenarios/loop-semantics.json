@@ -1,0 +1,387 @@
+{
+  "name": "loop-semantics",
+  "description": "A false while runs no body, repeatUntil runs one body before it checks, three iterations commit three carry checkpoints, maxIterations stops a loop that would go on, and a delay between iterations is durable and holds no worker.",
+  "server": {
+    "iterationConcurrency": 2
+  },
+  "scopeEvidence": "ordered",
+  "workflows": {
+    "false-while": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "name": "loop-false-while",
+      "bodies": {
+        "iteration": {
+          "program": [
+            {
+              "op": "step",
+              "id": "work",
+              "activity": "loop.never"
+            },
+            {
+              "op": "return",
+              "id": "returned",
+              "result": "steps.work.output"
+            }
+          ]
+        }
+      },
+      "program": [
+        {
+          "op": "while",
+          "id": "loop",
+          "condition": "carry > 0",
+          "body": "iteration",
+          "initial": "0",
+          "carry": "bodyResult",
+          "maxIterations": 3,
+          "timeoutMs": 60000
+        },
+        {
+          "op": "end",
+          "id": "done",
+          "options": {
+            "outputExpr": "steps.loop.output"
+          }
+        }
+      ]
+    },
+    "post-test": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "name": "loop-post-test",
+      "bodies": {
+        "iteration": {
+          "program": [
+            {
+              "op": "step",
+              "id": "work",
+              "activity": "loop.once"
+            },
+            {
+              "op": "return",
+              "id": "returned",
+              "result": "steps.work.output"
+            }
+          ]
+        }
+      },
+      "program": [
+        {
+          "op": "repeatUntil",
+          "id": "loop",
+          "condition": "carry >= 0",
+          "body": "iteration",
+          "initial": "0",
+          "carry": "bodyResult",
+          "maxIterations": 3,
+          "timeoutMs": 60000
+        },
+        {
+          "op": "end",
+          "id": "done",
+          "options": {
+            "outputExpr": "steps.loop.output"
+          }
+        }
+      ]
+    },
+    "three": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "name": "loop-three-iterations",
+      "bodies": {
+        "iteration": {
+          "program": [
+            {
+              "op": "step",
+              "id": "work",
+              "activity": "loop.three"
+            },
+            {
+              "op": "return",
+              "id": "returned",
+              "result": "steps.work.output"
+            }
+          ]
+        }
+      },
+      "program": [
+        {
+          "op": "while",
+          "id": "loop",
+          "condition": "carry < 3",
+          "body": "iteration",
+          "initial": "0",
+          "carry": "carry + 1",
+          "maxIterations": 5,
+          "timeoutMs": 60000
+        },
+        {
+          "op": "end",
+          "id": "done",
+          "options": {
+            "outputExpr": "steps.loop.output"
+          }
+        }
+      ]
+    },
+    "limit": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "name": "loop-iteration-limit",
+      "bodies": {
+        "iteration": {
+          "program": [
+            {
+              "op": "step",
+              "id": "work",
+              "activity": "loop.limit"
+            },
+            {
+              "op": "return",
+              "id": "returned",
+              "result": "steps.work.output"
+            }
+          ]
+        }
+      },
+      "program": [
+        {
+          "op": "while",
+          "id": "loop",
+          "condition": "carry < 100",
+          "body": "iteration",
+          "initial": "0",
+          "carry": "carry + 1",
+          "maxIterations": 1,
+          "timeoutMs": 60000
+        },
+        {
+          "op": "end",
+          "id": "done",
+          "options": {
+            "outputExpr": "steps.loop.output"
+          }
+        }
+      ]
+    },
+    "delay": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "name": "loop-durable-delay",
+      "bodies": {
+        "iteration": {
+          "program": [
+            {
+              "op": "step",
+              "id": "work",
+              "activity": "loop.delay"
+            },
+            {
+              "op": "return",
+              "id": "returned",
+              "result": "steps.work.output"
+            }
+          ]
+        }
+      },
+      "program": [
+        {
+          "op": "while",
+          "id": "loop",
+          "condition": "carry < 2",
+          "body": "iteration",
+          "initial": "0",
+          "carry": "carry + 1",
+          "maxIterations": 3,
+          "timeoutMs": 60000,
+          "delayMs": 4000
+        },
+        {
+          "op": "end",
+          "id": "done",
+          "options": {
+            "outputExpr": "steps.loop.output"
+          }
+        }
+      ]
+    }
+  },
+  "workers": {
+    "current": {
+      "workerName": "loop-semantics",
+      "protocolVersion": "1.5",
+      "maxInflight": 1,
+      "autostart": false,
+      "activities": {
+        "loop.never": {
+          "behavior": {
+            "returns": 0
+          }
+        },
+        "loop.once": {
+          "behavior": {
+            "returns": 1
+          }
+        },
+        "loop.three": {
+          "behavior": {
+            "returns": "x"
+          }
+        },
+        "loop.limit": {
+          "behavior": {
+            "returns": "x"
+          }
+        }
+      }
+    },
+    "before": {
+      "workerName": "loop-delay-before",
+      "protocolVersion": "1.5",
+      "maxInflight": 1,
+      "autostart": false,
+      "activities": {
+        "loop.delay": {
+          "behavior": {
+            "returns": "x"
+          }
+        }
+      }
+    },
+    "after": {
+      "workerName": "loop-delay-after",
+      "protocolVersion": "1.5",
+      "maxInflight": 1,
+      "autostart": false,
+      "activities": {
+        "loop.delay": {
+          "behavior": {
+            "returns": "x"
+          }
+        }
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "start-worker",
+      "op": "startWorker",
+      "worker": "current"
+    },
+    {
+      "id": "false-run",
+      "op": "start",
+      "workflow": "false-while",
+      "input": {}
+    },
+    {
+      "id": "false-done",
+      "op": "waitForCompletion",
+      "run": "false-run",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "post-run",
+      "op": "start",
+      "workflow": "post-test",
+      "input": {}
+    },
+    {
+      "id": "post-done",
+      "op": "waitForCompletion",
+      "run": "post-run",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "three-run",
+      "op": "start",
+      "workflow": "three",
+      "input": {}
+    },
+    {
+      "id": "three-done",
+      "op": "waitForCompletion",
+      "run": "three-run",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "limit-run",
+      "op": "start",
+      "workflow": "limit",
+      "input": {}
+    },
+    {
+      "id": "limit-done",
+      "op": "waitForCompletion",
+      "run": "limit-run",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "attempts-so-far",
+      "op": "awaitWorkerLog",
+      "worker": "current",
+      "count": 5,
+      "timeoutMs": 30000
+    },
+    {
+      "id": "stop-worker",
+      "op": "stopWorker",
+      "worker": "current"
+    },
+    {
+      "id": "start-before",
+      "op": "startWorker",
+      "worker": "before"
+    },
+    {
+      "id": "delay-run",
+      "op": "start",
+      "workflow": "delay",
+      "input": {}
+    },
+    {
+      "id": "first-body",
+      "op": "awaitWorkerLog",
+      "worker": "before",
+      "count": 1,
+      "timeoutMs": 30000
+    },
+    {
+      "id": "stop-before",
+      "op": "stopWorker",
+      "worker": "before"
+    },
+    {
+      "id": "delay-elapsed",
+      "op": "awaitJournal",
+      "run": "delay-run",
+      "eventType": "loop.delay_elapsed",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "delay-waiting",
+      "op": "get",
+      "run": "delay-run"
+    },
+    {
+      "id": "start-after",
+      "op": "startWorker",
+      "worker": "after"
+    },
+    {
+      "id": "delay-done",
+      "op": "waitForCompletion",
+      "run": "delay-run",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "second-body",
+      "op": "awaitWorkerLog",
+      "worker": "after",
+      "count": 1,
+      "timeoutMs": 30000
+    },
+    {
+      "id": "stop-after",
+      "op": "stopWorker",
+      "worker": "after"
+    }
+  ]
+}

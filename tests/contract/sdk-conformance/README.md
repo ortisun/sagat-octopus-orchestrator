@@ -113,6 +113,15 @@ from sleeps. Equal values stay at separate indices, the aggregate the journal re
 journal never shows more than three iterations active, every attempt is the first, and an empty list succeeds
 with an empty aggregate without calling the worker.
 
+`loop-semantics.json` is the WP-05 contract, with `scopeEvidence: "ordered"` so that the journal, not only the
+SDK, shows each iteration. A `while` whose condition is false at entry runs no body (no worker attempt, no
+iteration event); a `repeatUntil` runs one body before it checks, whatever the condition says; a `while` that
+counts to three commits three checkpoints whose carries are 1, 2 and 3; `maxIterations: 1` on a loop that
+would go on stops it after the first checkpoint with `ITERATION_LIMIT` and the run ends `FAILED`. The delay
+case stops its worker after the first body, waits (by the journal, not by sleeping) for the engine to record
+`loop.delay_elapsed`, and only then starts a second worker for the next body: the delay was the engine's timer
+and held no worker.
+
 `chain-inspect-cancel.json` starts a public chain with an initial activity waiting for a worker,
 then inspects and cancels it through all five SDKs. The reviewed runtime golden requires opaque
 cross-tenant lookup, exact cancel replay and a terminal `CANCELLED` chain and run. It does not
@@ -142,6 +151,7 @@ SAGAT_SDK_SCENARIO=state-operations cargo test -p sagat-tests --test sdk_conform
 SAGAT_SDK_SCENARIO=approval-decisions cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=approval-settlement cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=collection-ordering cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=loop-semantics cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=chain-inspect-cancel cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=scoped-identity cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=collection-runtime cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
