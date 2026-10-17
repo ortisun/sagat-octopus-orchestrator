@@ -149,3 +149,25 @@ impl<S: ConnectionStore, C: Clock> ConnectionService<S, C> {
         Ok(self.store.connections(principal, namespace).await?)
     }
 }
+
+/// Credential fields have independent semantics and always own zeroized secret memory.
+#[derive(Debug)]
+pub struct DatabaseCredentials {
+    pub username: sagat_domain::secrets::SecretValue,
+    pub password: sagat_domain::secrets::SecretValue,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("invalid managed database credential")]
+pub struct InvalidDatabaseCredential;
+/// Credential syntax belongs to an adapter. The output guard uses the same decoder as the runner.
+pub trait DatabaseCredentialsCodec: Send + Sync {
+    fn decode(
+        &self,
+        value: &sagat_domain::secrets::SecretValue,
+    ) -> Result<DatabaseCredentials, InvalidDatabaseCredential>;
+    fn contains_credential(
+        &self,
+        value: &sagat_domain::secrets::SecretValue,
+        content: &[u8],
+    ) -> Result<bool, InvalidDatabaseCredential>;
+}

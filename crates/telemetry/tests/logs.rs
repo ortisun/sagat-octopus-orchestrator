@@ -183,3 +183,18 @@ fn a_very_long_value_is_cut() {
     assert!(note.chars().count() < 2_200, "{}", note.chars().count());
     assert!(note.contains("characters cut"));
 }
+
+#[test]
+fn postgres_driver_diagnostics_never_reach_either_log_format() {
+    for style in [Style::Json, Style::Text] {
+        let out = lines(style, || {
+            tracing::debug!(target: "tokio_postgres::prepare", "SELECT driver-sql-canary");
+            tracing::debug!(target: "sqlparser::parser", "SELECT parser-sql-canary");
+            tracing::info!(target: "tokio_postgres::connection", "NOTICE driver-password-canary");
+            tracing::info!(target: "sagat_infra_database", outcome = "failed", "database execution completed");
+        });
+        assert_eq!(out.len(), 1);
+        assert!(!out.join("\n").contains("canary"));
+        assert!(out[0].contains("database execution completed"));
+    }
+}

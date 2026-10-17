@@ -46,3 +46,7 @@ OpenBao's [MPL-2.0 license](https://github.com/openbao/openbao/blob/main/LICENSE
 ## Evidence status
 
 Implementation is authorized. Actual checks are recorded in `verification.md`; tasks and success criteria remain open until their own evidence exists. The adapter fixture pins OpenBao 2.7.1, verified against the official release and KV v2 documentation. Workload identity renewal uses the OpenBao Agent token sink; production rejects root and non-expiring tokens at lookup-self.
+
+## Target driver implementation decision (2026-10-17)
+
+Use tokio-postgres 0.7.18 with an already pinned TCP/TLS socket and sqlparser 0.63.0 for a conservative single-statement AST subset. Inspecting dependency sources identified DEBUG query logging, INFO notices and an unbounded individual frame codec; the adapter adds a pre-allocation frame/aggregate budget, discards asynchronous notices and the Sagat log layer suppresses the driver and SQL-parser targets. Use fresh sessions per attempt under distributed lease capacity and a local semaphore; zero idle lifetime avoids credential retention and untrusted session-state reuse. This refines the bounded pool implementation without changing ADR-0033 authority/execution semantics. See [adapter contract](contracts/postgres-executor.md) for sources, result format and limitations.

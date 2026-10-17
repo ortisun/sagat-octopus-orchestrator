@@ -46,3 +46,5 @@ Until T017-017 has pin-based credential-field scanning for every result transpor
 `WORKER_ERROR` and `OUTCOME_UNKNOWN` codes; the transport already discards `safe_message`.
 This deliberately leaves SQL execution incomplete at the capability checkpoint. The final
 feature delivery must replace this gate with the tested scanner before enabling the runner.
+
+PostgreSQL adapter details and current runtime gates: [target adapter](postgres-executor.md).

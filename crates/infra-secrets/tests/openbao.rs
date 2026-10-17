@@ -156,7 +156,7 @@ async fn provider_never_follows_redirects_or_returns_untrusted_error_bodies() {
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut request = [0; 4096];
-            stream.read(&mut request).await.unwrap();
+            assert!(stream.read(&mut request).await.unwrap() > 0);
             stream.write_all(format!("HTTP/1.1 {status} Response\r\n{header}Content-Length: {length}\r\nConnection: close\r\n\r\n{body}").as_bytes()).await.unwrap();
         });
         let temp = tempfile::tempdir().unwrap();
