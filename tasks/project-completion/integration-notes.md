@@ -592,3 +592,46 @@ The added schema-diagnostic canary regression passed on the incoming implementat
 red test is claimed (`/tmp/sagat-completion-reader-diagnostics-red.log` is a misleading
 historical filename). This finding does not prove every other parser diagnostic is safe.
 The default whole-run worker and the remaining large/nested runtime criteria stay open.
+
+
+### Current-instance charge projection
+
+The incoming frontier still used a full historical `count(*)` over steps for every scope read.
+Migration `20261207000000` now materializes the exact `RunState::charged_instances` predicate in
+the existing tenant/run usage row. The always-enabled trigger updates it with the step transaction;
+unchanged contributions do no write. This is separate from lifetime admission/reservation counts:
+a root cancellation changes the current predicate but releases no admission/reservation budget.
+The initial backfill explicitly pauses writers, with table locks ordered run/step/usage. It does
+not rewrite steps, workflow definitions or journal history; down removes derived metadata only.
+
+Actual tests:
+
+- The new cancellation/rollback case initially failed because the new column did not exist:
+  `/tmp/sagat-completion-charge-projection-red.log` (0 passed / 1 failed).
+- `integration_workflow_primitives -- scope_frontier:: byte_ceilings:: --test-threads=1`:
+  **25/25**, 78.33 s (`/tmp/sagat-completion-charge-projection-green.log`). Includes the
+  new runtime-role transactional cancellation test and the existing full-replay differentials
+  across collection/loop success, failure, cancellation and delays, plus byte ceilings.
+- Added nonempty backfill, rollback then retry of schema creation, and byte-identical retained
+  step assertions. The five focused migration/identity/counter cases passed with
+  `SAGAT_TEST_AS_RUNTIME_ROLE=1`: **5/5**, 6.71 s
+  (`/tmp/sagat-completion-charge-upgrade-runtime.log`).
+
+The broader pre-counter merge regression also completed: database connections **3/3**, 33.89 s.
+Classification initially returned 20 passed / 15 failed / 2 ignored: a temporary PostgreSQL failed
+its 60-second readiness check, followed by 14 poisoned harness-lock failures. That failed log is
+retained (`/tmp/sagat-completion-merged-classification-database.log`). Repeating the whole target
+against an exclusively owned, query-verified PostgreSQL with fresh databases, now also including
+the new counter migration, passed **35/35**, 59.25 s, with the two explicitly external binary
+compatibility gates ignored (`/tmp/sagat-completion-merged-classification-retry.log`). Those binary
+gates retain their separately executed earlier evidence; this retry does not claim to execute them.
+AsyncAPI validation also passed (one informational schema-version suggestion, no errors/warnings).
+The full bounded worker, nested runtime and 10,000/100,000 workloads remain open.
+
+
+Strict whole-workspace/all-target Clippy passed again with the counter migration and both new
+cases (93 s, `/tmp/sagat-completion-charge-clippy.log`). The existing 160/320/640 transition-cost
+checks are executing separately; their result will be recorded when complete, not presumed here.
+The clean detached release source `run.1mfG99/source-retry` was removed after verifying its
+immutable release HEAD and empty status. Its read-only directories required finishing Git's
+otherwise successful unregister/removal; the actual binaries/manifests/responses remain intact.

@@ -66,3 +66,14 @@ Standalone unreleased 017 installations must keep their own compatible binaries 
 backups until an explicit migration bridge is implemented and proven. The combined migrator
 must refuse conflicting SQLx history rather than treating different migrations as equivalent.
 No production upgrade or rollout is authorized by this ADR alone.
+
+
+### Current-instance charge projection
+
+The combined scope frontier reads `run_instance_usage.charged_instances`, a transactionally
+maintained projection of the domain's current step predicate. This keeps admission/reservation
+accounting separate and replaces the per-transition historical count. The additive migration
+`20261207000000` locks run/step/usage tables while backfilling and installing its trigger; rollback
+removes only derived metadata. Existing migration identities and bytes are preserved.
+This is an implementation of the accepted bounded-read design, not evidence that the complete
+worker, nested scope or root-finalization resource criteria have passed.

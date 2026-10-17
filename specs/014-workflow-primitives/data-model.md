@@ -311,3 +311,20 @@ Migration adds nullable/defaulted root identity and completion fields for old ro
 constraints and new primitive tables. Old journal events replay to the empty root path; never rewrite
 history or assign new meaning to old event types. New events are versioned. Rollback disables new
 starts/publications but retains compatible readers until all runs using the new capabilities have drained.
+
+
+## Current-instance charge projection (integrated execution)
+
+`run_instance_usage.charged_instances` materializes the exact predicate used by
+`RunState::charged_instances`: every scoped step contributes one; a root contributes unless its
+status is `PENDING` or `CANCELLED`. This is a current-state projection, so root cancellation can
+reduce it. It does not replace or release `admitted_instances`, `reserved_instances` or
+`retired_reservations`, which remain the lifetime admission authority.
+
+Migration `20261207000000` backfills under writer-excluding table locks taken in run/step/usage
+order, then installs an always-enabled trigger. Insert, status/path change and deletion update
+the tenant/run row in the same transaction as the step; rollback undoes both. Retry and heartbeat
+updates with an unchanged contribution add nothing. The scheduler frontier reads this single
+keyed row instead of counting all historical step entries. The migration pauses writers during
+the initial backfill; no online migration or bounded total runtime is implied. Other remaining
+bounded worker/control/finalization requirements remain tracked in tasks.md.
