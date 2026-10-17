@@ -38,7 +38,8 @@ use uuid::Uuid;
 use crate::support::engine::{Session, World, chain, ctx, task_ref, world};
 use crate::support::now;
 
-type ScopedWorkers = WorkerService<PgRunStore, SystemClock, JsonEvaluator, SystemEntropy>;
+pub(super) type ScopedWorkers =
+    WorkerService<PgRunStore, SystemClock, JsonEvaluator, SystemEntropy>;
 
 #[derive(Debug)]
 struct StructuredJsonIrCodec;
@@ -104,13 +105,13 @@ fn digest(bytes: &[u8]) -> Digest {
     Digest::new(Sha256::digest(bytes).into())
 }
 
-struct Fixture {
-    world: World,
-    store: PgRunStore,
-    workers: ScopedWorkers,
-    session: Session,
-    run: RunId,
-    placement: Placement,
+pub(super) struct Fixture {
+    pub(super) world: World,
+    pub(super) store: PgRunStore,
+    pub(super) workers: ScopedWorkers,
+    pub(super) session: Session,
+    pub(super) run: RunId,
+    pub(super) placement: Placement,
 }
 
 async fn register_scoped(world: &World, workers: &ScopedWorkers) -> Session {
@@ -389,11 +390,11 @@ async fn fixture_with_progress(name: &str, prepare_collection: bool) -> Fixture 
     }
 }
 
-async fn fixture(name: &str) -> Fixture {
+pub(super) async fn fixture(name: &str) -> Fixture {
     fixture_with_progress(name, true).await
 }
 
-async fn poll(fixture: &Fixture, max: u32) -> Vec<ClaimedTask> {
+pub(super) async fn poll(fixture: &Fixture, max: u32) -> Vec<ClaimedTask> {
     fixture
         .workers
         .poll(
@@ -407,7 +408,7 @@ async fn poll(fixture: &Fixture, max: u32) -> Vec<ClaimedTask> {
         .expect("poll scoped work")
 }
 
-fn index(task: &ClaimedTask) -> u32 {
+pub(super) fn index(task: &ClaimedTask) -> u32 {
     task.instance.path().segments()[0].iteration_index()
 }
 
