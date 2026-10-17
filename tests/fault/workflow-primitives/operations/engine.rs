@@ -13,6 +13,7 @@ use sagat_application::declared_operations::{
 };
 use sagat_application::operation_evaluation::DeclaredOperationArguments;
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
+use sagat_domain::definition::WorkflowId;
 use sagat_domain::execution::{
     OperationAddress, OperationError, OperationScope, RunId, UpdateKey, UpdateReceiptStatus,
     UpdateRequest, UpdateResolution,
@@ -97,6 +98,7 @@ pub(super) fn input(balance: u64) -> Value {
 /// A published declared workflow, one started run, and the store that serves its operations.
 pub(super) struct Declared {
     pub(super) w: World,
+    pub(super) workflow: WorkflowId,
     pub(super) run: RunId,
     pub(super) ops: Ops,
 }
@@ -106,7 +108,12 @@ pub(super) async fn start(document: Value, input: &Value) -> Declared {
     let (workflow, _) = w.publish(document).await;
     let run = w.start(workflow, input).await;
     let ops = Ops::on(&w, w.db.pool.clone());
-    Declared { w, run, ops }
+    Declared {
+        w,
+        workflow,
+        run,
+        ops,
+    }
 }
 
 /// What an applied Update answered: the durable resolution and the retained result.
@@ -136,6 +143,14 @@ impl Ops {
             store: PgDeclaredOperationStore::new(pool),
             actor: w.admin.clone(),
             namespace: w.namespace.id(),
+        }
+    }
+
+    /// The same operations served over another pool.
+    pub(super) fn over(&self, pool: PgPool) -> Self {
+        Self {
+            store: PgDeclaredOperationStore::new(pool),
+            ..self.clone()
         }
     }
 
@@ -205,6 +220,17 @@ impl Ops {
         &self,
         command: &DeclaredUpdate,
     ) -> Result<Answer, DeclaredOperationStoreError> {
+        self.apply_gated(command, || {}).await
+    }
+
+    /// [`Self::apply`] that calls `gate` inside the serialized section: after the run row is locked
+    /// and the snapshot read, before anything is written. The gate blocks its thread, so the test
+    /// that uses it runs on a multi-threaded runtime.
+    pub(super) async fn apply_gated(
+        &self,
+        command: &DeclaredUpdate,
+        gate: impl FnOnce() + Send,
+    ) -> Result<Answer, DeclaredOperationStoreError> {
         let evaluator = JsonDeclaredOperationEvaluator;
         let operation = command.request().operation().clone();
         let evaluated_arguments = command.arguments().clone();
@@ -219,6 +245,7 @@ impl Ops {
                     .map_err(|_| OperationError::InvalidArguments)
                 },
                 |snapshot| {
+                    gate();
                     DeclaredOperationEvaluator::update(
                         &evaluator,
                         snapshot,

@@ -10,6 +10,7 @@ use uuid::Uuid;
 use crate::support;
 use crate::support::api::{TestApi, json_of};
 
+mod crash;
 mod engine;
 mod races;
 
