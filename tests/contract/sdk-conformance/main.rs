@@ -49,9 +49,30 @@ fn every_scenario_declares_phases_with_reviewed_expected_documents() {
                 std::fs::read(root.join("expected").join(&filename)).unwrap_or_else(|error| {
                     panic!("{name}: missing reviewed phase evidence {filename}: {error}")
                 });
-            let _: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_else(|error| {
-                panic!("{name}: invalid reviewed phase evidence {filename}: {error}")
-            });
+            let expected: serde_json::Value =
+                serde_json::from_slice(&bytes).unwrap_or_else(|error| {
+                    panic!("{name}: invalid reviewed phase evidence {filename}: {error}")
+                });
+            if filename.ends_with(".workflows.json") {
+                for (workflow, source) in scenario["workflows"].as_object().into_iter().flatten() {
+                    if let Some(limits) = source.get("limits") {
+                        assert_eq!(
+                            &expected["workflows"][workflow]["limits"], limits,
+                            "{name}/{workflow}: reviewed document must preserve the authored limits"
+                        );
+                        let canonical: serde_json::Value = serde_json::from_str(
+                            expected["canonical"][workflow]
+                                .as_str()
+                                .expect("reviewed canonical text"),
+                        )
+                        .expect("reviewed canonical JSON");
+                        assert_eq!(
+                            &canonical["limits"], limits,
+                            "{name}/{workflow}: reviewed canonical text must preserve the authored limits"
+                        );
+                    }
+                }
+            }
         }
         count += 1;
     }

@@ -866,3 +866,25 @@ preload, passed **19/19**, no ignored, 58.32 s, as `sagat_app`
 (`/tmp/sagat-completion-fresh-postgres-clock-byte-regression.log`). This functional profile does
 not supply performance evidence or establish that instrumentation caused the crash. The exact
 new container/image/port profile is recorded in `replacement.json` alongside the crash evidence.
+
+### Reviewed SDK fixture alignment
+
+The complete 55-scenario/five-language checkpoint completed in 2291.45 s and failed four scenarios
+(`/tmp/sagat-completion-current-sdk-conformance-3.log`). All other selected scenarios passed. The
+three stale expected-document fixes are narrowly reviewed: loop-runtime and scoped-identity now
+preserve their explicitly authored limits in both workflow JSON and canonical text; the registry
+preflight checks that relationship. Protocol negotiation now expects 1.4 and 1.5 for the two
+workers that explicitly offer those versions; the newer 1.9 probe still negotiates the current
+server ceiling 1.6. No SDK source, runtime policy or unrelated golden was changed or auto-blessed.
+
+The fourth discrepancy was an optional `step.started` event when a 200 ms heartbeat beat a short
+secret-read activity. The secrets fixture now explicitly schedules that heartbeat at 60 seconds,
+after its 30-second completion timeout. Its golden and raw no-leak assertions remain unchanged;
+normalization removes no journal events. Dedicated heartbeat scenarios remain in the matrix.
+
+All four reviewed repeats passed in all five languages: loop-runtime 35.88 s,
+protocol-negotiation 56.19 s, scoped-identity 46.04 s, secrets 24.19 s
+(`/tmp/sagat-completion-sdk-reviewed-{loop-runtime,protocol-negotiation,scoped-identity}.log`,
+`/tmp/sagat-completion-sdk-secrets-heartbeat-fixture.log`). Registry preflight passed 1/1, 0.05 s
+(`/tmp/sagat-completion-sdk-reviewed-registry.log`). These targeted repeats repair the recorded
+failed checkpoint; they are not a claim that a later whole matrix has already completed.

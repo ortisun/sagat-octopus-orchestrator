@@ -25,6 +25,12 @@ successful run is separate from current-client conformance; it does not bless ne
 
 ## Protocol compatibility
 
+The short `secrets` journal fixture schedules the current worker's first heartbeat after its
+30-second completion deadline (60 seconds). It therefore compares secret resolution and completion
+without racing an optional `step.started` heartbeat event against the short activity. The full raw
+result is still checked for secret leaks, and no journal event is removed by normalization.
+Heartbeat renewal and cancellation are exercised separately by their dedicated scenarios.
+
 `protocol-negotiation.json` keeps the production worker ceiling and old-minor path executable in
 all five SDKs. It probes the accepted 1.x minors, malformed input and incompatible majors, then
 runs the same root activity through protocol 1, a retained 1.4 worker and the current 1.5 worker.
@@ -141,8 +147,11 @@ its status, its stop code and whether its collection was entered from a blob.
 
 `collection-limits.json` is the item-limit case of WP-12: three items under `maxItems: 3` run to the end, four fail with
 `ITERATION_LIMIT` before any iteration is admitted and with no worker call (`sourceEvidence` shows the stop code). The
-instance budget (`limits.maxInstances`) is not settable through the SDK builders yet (a scenario's `limits` key is
-ignored by every runner), so it is covered only by the Rust suite `limits.rs`.
+instance budget (`limits.maxInstances`) and nesting ceiling (`limits.maxDepth`) are carried by all
+five builders and conformance runners. `loop-runtime` explicitly authors 12 instances/depth 1 and
+`scoped-identity` authors 24/depth 1; both their canonical text and document goldens preserve these
+fields, while runtime output is checked separately. The Rust `limits.rs` suite covers admission
+boundaries and policy reduction; this small SDK matrix does not establish the large workload ceilings.
 
 `collection-compensation.json` is the WP-04 contract for a collection that stops. A `map` with concurrency one
 over bodies of several activities: when `ship` fails for good in the first iteration, the iteration's completed

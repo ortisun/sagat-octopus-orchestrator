@@ -1,7 +1,7 @@
 {
   "canonical": {
     "root": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"work\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"identity-root\"},\"nodes\":[{\"activity\":\"identity.work\",\"id\":\"work\",\"type\":\"activity\"}]}",
-    "scoped": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"bodies\":{\"line\":{\"entrypoint\":\"work\",\"nodes\":[{\"activity\":\"identity.work\",\"id\":\"work\",\"next\":\"return\",\"type\":\"activity\"},{\"id\":\"return\",\"result\":\"steps.work.output\",\"type\":\"return\"}]}},\"entrypoint\":\"lines\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"identity-scoped\"},\"nodes\":[{\"body\":\"line\",\"id\":\"lines\",\"items\":\"input.items\",\"maxConcurrency\":1,\"maxItems\":3,\"next\":\"done\",\"result\":\"bodyResult\",\"type\":\"forEach\"},{\"id\":\"done\",\"outputExpr\":\"steps.lines.output\",\"type\":\"end\"}]}"
+    "scoped": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"bodies\":{\"line\":{\"entrypoint\":\"work\",\"nodes\":[{\"activity\":\"identity.work\",\"id\":\"work\",\"next\":\"return\",\"type\":\"activity\"},{\"id\":\"return\",\"result\":\"steps.work.output\",\"type\":\"return\"}]}},\"entrypoint\":\"lines\",\"kind\":\"Workflow\",\"limits\":{\"maxDepth\":1,\"maxInstances\":24},\"metadata\":{\"name\":\"identity-scoped\"},\"nodes\":[{\"body\":\"line\",\"id\":\"lines\",\"items\":\"input.items\",\"maxConcurrency\":1,\"maxItems\":3,\"next\":\"done\",\"result\":\"bodyResult\",\"type\":\"forEach\"},{\"id\":\"done\",\"outputExpr\":\"steps.lines.output\",\"type\":\"end\"}]}"
   },
   "errors": {
     "body-terminal": {
@@ -58,6 +58,10 @@
       },
       "entrypoint": "lines",
       "kind": "Workflow",
+      "limits": {
+        "maxDepth": 1,
+        "maxInstances": 24
+      },
       "metadata": {
         "name": "identity-scoped"
       },

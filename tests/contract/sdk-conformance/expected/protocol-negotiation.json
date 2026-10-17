@@ -172,7 +172,7 @@
       "ok": true,
       "op": "startWorker",
       "result": {
-        "protocolVersion": "1.5"
+        "protocolVersion": "1.4"
       }
     },
     {
@@ -229,7 +229,7 @@
       "ok": true,
       "op": "startWorker",
       "result": {
-        "protocolVersion": "1.6"
+        "protocolVersion": "1.5"
       }
     },
     {
