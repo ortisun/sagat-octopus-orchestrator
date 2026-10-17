@@ -644,22 +644,22 @@ Taken while closing US07 (T014-034..039). D296, D298, D299 and D301 are the owne
   `SUCCEEDED` with `CONTINUED` and a client that predates it sees an ordinary succeeded run
   (`chains_http::a_continued_segment_is_an_ordinary_succeeded_run_...` compares the key sets). The five SDKs
   parse it and expose `listChainRuns` (`listAll` follows the cursor).
-- **D380 — Chain command keys stay 8..160 (D293 built).** The code already used the shared
+- **D480 — Chain command keys stay 8..160 (D293 built).** The code already used the shared
   `Idempotency-Key` rule; `chains_http::chain_commands_take_a_key_of_eight_to_one_hundred_sixty_...` pins
   7/8/160/161 and a space, and the contract test ties both chain commands to the shared parameter. T014-037's
   "stable chain keys (1..128)" should read "(8..160)"; `tasks.md` is the coordinator's to amend.
-- **D381 — A run-addressed operation on a continued segment is `CONFLICT`.** A cancel of an earlier segment,
+- **D481 — A run-addressed operation on a continued segment is `CONFLICT`.** A cancel of an earlier segment,
   or of a chain that is already latched or finished, tried to latch the chain, found nothing to latch and
   reported corruption (`INTERNAL` 500). The `chain-three-segments` scenario first recorded that 500 as the
   expected result. Only the open head of an open chain latches now; any other run is refused by the reducer
   as an ended run is.
-- **D382 — Ordered races use held locks, not sleeps.** A test transaction holds a lock; each competitor is
+- **D482 — Ordered races use held locks, not sleeps.** A test transaction holds a lock; each competitor is
   started and the test waits until `pg_stat_activity` shows the backend blocked on a lock before it starts
   the next; releasing the gate commits them in arrival order. A hand-off reads in one transaction and writes
   in another, so there are two gates: the chain row (who looks first) and the quota advisory lock the write
   takes after the chain and run locks (a hand-off already committed to winning). A dropped connection is
   `pg_terminate_backend` of a waiting hand-off.
-- **D383 — Chain runs compare as one instant in the SDK goldens.** A run with a `chain` has its `deadline`
+- **D483 — Chain runs compare as one instant in the SDK goldens.** A run with a `chain` has its `deadline`
   normalized to `<chain-deadline:N>` by the instant, not `<createdAt+Ns>`: every segment must show the same
   one, and a successor that moved it would show another. The server state of a scenario is listed by creation
   time, because the first run of a child chain has an id derived from its parent's that sorts anywhere among
