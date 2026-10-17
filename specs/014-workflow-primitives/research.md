@@ -1005,6 +1005,13 @@ zero-worker delay evidence. Evidence is in `tests/integration/workflow-primitive
 - **G406 — A recovery activity is not compensable.** An activity after a failed loop cannot declare
   compensation, so a failure after recovery has nothing to undo; the combination of loops, scoped
   compensation and root recovery effects is not designed (O401).
+- **G407 — `scope_compensation::a_scheduler_replica_that_takes_over_mid_compensation_finishes_it` is
+  flaky (2 of 6 runs alone, 2 of 4 inside the full fault target).** It is not touched by this
+  increment. The likely cause is the one fixed in the new replica tests: a replica with another
+  owner name makes the shard keeper rebalance, so the replica holds only part of the shards and the
+  run's shard may stay with the other owner; the test never runs another keeper round. Not fixed
+  here (another increment's file); a deterministic version keeps the owner name and bumps the fence
+  generation, as `a_replica_that_lost_its_shards_cannot_fire_the_timer` does.
 - **O400 — Should a delay that can never fit fail the loop at once?** Recommendation: no. Failing
   early would need a distinct code (not `RUN_TIMED_OUT`, which means the deadline was reached) and a
   new drain reason in the store; waiting for the deadline costs only idle time and keeps one meaning
