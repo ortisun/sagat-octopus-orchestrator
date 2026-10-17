@@ -16,7 +16,7 @@
 | [010 scalability-ha](../specs/010-scalability-ha/spec.md) | FR-010-001..007 | 4 | `tests/e2e/scalability-ha/`, `tests/integration/scalability-ha/`, `tests/contract/scalability-ha/`, `tests/fault/scalability-ha/`, `tests/fault/failover/`, `tests/performance/scalability-ha/`, `infra/dr/` | Implemented within the measured scope, including exact per-activity concurrency admission and one-node full-product KEDA validation; 5 000 transitions/s, journal partitioning, a generic pool/queue quota and multi-node disruption remain unproven |
 | [011 gitops-versioning](../specs/011-gitops-versioning/spec.md) | FR-011-001..006 | 4 | `tests/e2e/gitops-versioning/`, `tests/integration/gitops-versioning/`, `tests/contract/gitops-versioning/`, `tests/fault/gitops-versioning/`, `tests/performance/gitops-versioning/`, `apps/cli/tests/` | Implemented; artifact/history retention, scripts in the manifest and a packaged binary remain open |
 | [012 developer-experience](../specs/012-developer-experience/spec.md) | FR-012-001..006 | 4 | `tests/e2e/developer-experience/`, `tests/fault/developer-experience/`, `tests/contract/developer-experience/`, `tests/performance/developer-experience/`, `apps/cli/tests/`, `apps/dev-idp/tests/` | Implemented; human acceptance remains open (no person was timed for SC-012-001, and there is no packaged binary, published SDK or hosted documentation) |
-| [016 payload-classification](../specs/016-payload-classification/spec.md) | FR-016-001..025 | 7 | `tests/contract/payload-classification/`, `tests/integration/payload-classification/`, `tests/fault/payload-classification/`, `tests/e2e/payload-classification/`, `tests/performance/payload-classification/`, `frontend/e2e/tests/payload-disclosure.spec.ts` (all planned, none exist) | Specified; not built |
+| [016 payload-classification](../specs/016-payload-classification/spec.md) | FR-016-001..029 | 8 | `tests/contract/payload-classification/`, `tests/integration/payload-classification/`, `tests/fault/payload-classification/`, `tests/e2e/payload-classification/`, `tests/performance/payload-classification/`, `frontend/e2e/tests/payload-disclosure.spec.ts` (all planned, none exist) | Specified; not built |
 
 ## Evidence protocol
 
@@ -352,20 +352,21 @@ Gaps and decisions: `specs/010-scalability-ha/research.md` (D229–D260 and G239
 
 ## Evidence: 016 payload-classification
 
-Decision: [ADR-0033](adr/ADR-0033-payload-values-are-classified-per-field.md). Design, gaps (G272-G290), decisions (D261-D290) and the open product questions P1-P4: `specs/016-payload-classification/research.md`. Tasks: `specs/016-payload-classification/tasks.md` (56, none ticked). **Specified; not built.** Every row below is a placeholder: no code, test or measurement exists, and nothing in this block is evidence of behaviour.
+Decision: [ADR-0033](adr/ADR-0033-payload-values-are-classified-per-field.md). Design, gaps (G272-G293), decisions (D261-D295) and the owner's answers of 2026-10-17 to P1-P4: `specs/016-payload-classification/research.md`. Tasks: `specs/016-payload-classification/tasks.md` (65; only T016-002, the recording of the owner's answers, is ticked). **Specified; not built.** Every row below is a placeholder: no code, test or measurement exists, and nothing in this block is evidence of behaviour.
 
 | Requirement or criterion | State | Evidence |
 |---|---|---|
 | FR-016-001..005 annotation, carriers, semantics, publication checks, pinning to the version | Specified; not built | none yet (T016-005..008, T016-013..022) |
 | FR-016-006..009, 013..015 the disclosure operation, audiences, validity gate, withheld nodes, result, step outputs, external content | Specified; not built | none yet (T016-023..031, T016-038..039) |
-| FR-016-010..012 permissions, reveal grants, audit | Specified; not built; grant mechanism awaits the owner (P1) | none yet (T016-009..012, T016-032..037) |
+| FR-016-010..012 permissions, reveal grants (per-namespace list, decided 2026-10-17), audit | Specified; not built | none yet (T016-009..012, T016-032..037) |
 | FR-016-016..017 unchanged surfaces; no value in telemetry, logs, metrics, audit or errors | Specified; not built | none yet (T016-026, T016-049) |
 | FR-016-018..019 Studio and CLI | Specified; not built | none yet (T016-043..048) |
 | FR-016-020 five SDK builders | Specified; not built | none yet (T016-040..042) |
 | FR-016-021..025 compatibility, typed errors, tenant boundary, bounds, version diff | Specified; not built | none yet (T016-018, T016-051..053) |
+| FR-016-026..029 event values restricted to the reveal grant (`getInboxEvent` `data`, dead-letter `body` and `headers`); breaking for current readers | Specified; not built | none yet (T016-057..065) |
 | NFR-016-001..006 security, consistency, performance, compatibility, observability, accessibility | Specified; not built | none yet |
-| SC-016-001..009 | Not proven | none yet |
-| Known exception: the event inbox (`getInboxEvent` `data`, connector dead-letter `body`) discloses values to `event:read` today | Open (G272, decision P2) | `crates/api-http/src/dto_events.rs` (`EventBody`, `DeadLetterBody`) |
+| SC-016-001..010 | Not proven | none yet |
+| Today, before the change: the event inbox (`getInboxEvent` `data`, connector dead-letter `body` and `headers`) discloses values to every `event:read` holder | To be restricted by US08 (G272, D291); still the behaviour of the code | `crates/api-http/src/dto_events.rs` (`EventBody`, `DeadLetterBody`) |
 
 ## Completion follow-up — 2026-10-12
 

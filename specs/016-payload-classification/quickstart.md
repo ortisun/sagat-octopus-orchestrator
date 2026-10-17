@@ -117,6 +117,29 @@ checked with tools and a keyboard walkthrough, not claimed from assistive-techno
 version diff shows `CLASSIFICATION_RELAXED`. Suites: `--test contract_payload_classification -- validate`,
 `npm --prefix frontend test -- WorkflowSettings`.
 
+## US08 - event values need the reveal grant
+
+Publish an event that carries a canary (`POST $SAGAT_SERVER/events` as in `docs/runbooks/events.md`) and set
+aside a dead letter on a connector (the integration suite inserts one; on a stack, send a message with no
+event type to a connector). Then, with `NS` the namespace id:
+
+```sh
+curl -s "$SAGAT_SERVER/namespaces/$NS/events/api/evt-canary-1" -H "Authorization: Bearer $VIEWER"
+curl -s "$SAGAT_SERVER/namespaces/$NS/events/api/evt-canary-1?reveal=pii" -H "Authorization: Bearer $DEVELOPER"
+curl -s "$SAGAT_SERVER/namespaces/$NS/connectors/$CONNECTOR/dead-letters" -H "Authorization: Bearer $VIEWER"
+curl -s "$SAGAT_SERVER/namespaces/$NS/connectors/$CONNECTOR/dead-letters/$LETTER?reveal=pii" -H "Authorization: Bearer $DEVELOPER"
+```
+
+The first answer has the status, attempts and deliveries, `dataDisclosure: "structure-only"`, `dataSizeBytes`
+and `dataStructure`, and no `data` and no canary. The second is `403` with `details.reason =
+PII_REVEAL_NOT_GRANTED` until an administrator grants the developer (`sagat namespace reveal-grants grant`),
+then returns `data` and leaves one `payload.pii_revealed` record for the event. The list carries no `body`
+or `headers`; the single letter with `reveal=pii` and the grant carries both. A client that read `data` as
+`event:read` before now gets the structure answer: this is the documented break (G292). Suites:
+`cargo test -p sagat-tests --test contract_rest_events_webhooks_messaging`,
+`--test integration_payload_classification -- events`, `--test e2e_events_webhooks_messaging`. Pass when no
+canary reaches a caller without the grant and the audit count matches the reveals.
+
 ## Performance and failure
 
 `cargo test -p sagat-tests --test perf_payload_classification -- --ignored` writes
@@ -126,6 +149,6 @@ and the races of T016-050. A skipped infrastructure test fails the run; report a
 
 ## What this guide does not prove
 
-It does not prove the event inbox (still disclosing, G272), erasure, retention, taint tracking, or the
+It does not prove field classification of events (their data is `pii` as a whole, G282, G291), erasure, retention, taint tracking, or the
 production values of the bounds. The numbers of the benchmark are measurements on one environment, not
 capacity claims.

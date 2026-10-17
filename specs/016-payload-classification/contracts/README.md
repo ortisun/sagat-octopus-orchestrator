@@ -2,7 +2,7 @@
 
 **Status: designed, not built.** Nothing below is deployed. The canonical contracts stay in
 `specs/001-platform-foundation/contracts/` (`workflow.schema.json`, `openapi.yaml`); the changes listed
-here are made there by the tasks of `tasks.md` (T016-006, T016-008), never by this document. `worker.proto`
+here are made there by the tasks of `tasks.md` (T016-006, T016-008, T016-060), never by this document. `worker.proto`
 and `events.asyncapi.yaml` do not change.
 
 ## 1. Workflow IR (`workflow.schema.json`)
@@ -125,8 +125,9 @@ changes the interpretation adds `2` and publishes new versions under it; it neve
 ## 2. OpenAPI (`openapi.yaml`)
 
 All additions are new operations and new schemas, `x-implemented: '016'`. Existing operations,
-schemas and responses are unchanged, except the documented `permissions` examples of `AuthContext`,
-which gains `payload:read-internal` for the roles that hold it.
+schemas and responses are unchanged, except the three event reads of section 2.4 (a breaking change,
+owner decision D291) and the documented `permissions` examples of `AuthContext`,
+which gain `payload:read-internal` for the roles that hold it.
 
 ### 2.1 `POST /runs/{runId}/payload-disclosures` (`discloseRunPayload`, tag Runs)
 
@@ -141,7 +142,7 @@ Needs `run:read`. Request body, at most 1 KiB, unknown fields refused:
 
 `reveal` is optional, holds at most the single value `"pii"`. `sequence` is only for `journal`, a
 positive int64. Canonical namespace API admission is charged once after authorization and run resolution
-(`ApiOperation::PayloadDisclose`, permissions `[run:read]`).
+(`ApiOperation::PayloadDisclose`, permissions `[run:read]`). The event reads keep `ApiOperation::EventRead`.
 
 Response `200`, headers `Cache-Control: private, no-store`, `X-Trace-Id`, `X-Request-Id`:
 
@@ -249,8 +250,8 @@ Remediation rows are added to `ErrorCode::remediation` in `crates/api-http/src/e
 | `revokePayloadReveal` | `DELETE /namespaces/{namespaceId}/payload-reveal-grants/{subject}` | `membership:manage` | `200` with an empty object; `404` when there is no grant; audited `payload.reveal_revoked` |
 
 `{subject}` uses the same pattern as `WorkerSubject`. Namespace admission is charged as for the sibling
-`worker-bindings` operations. *Section 2.2 describes the recommended mechanism; if the owner picks
-another (decision P1) this section and `data-model.md` are rewritten before T016-032 starts.*
+`worker-bindings` operations. The mechanism is the owner's decision of 2026-10-17 (D275). The subject may
+be the caller (D295); the audit record shows actor and subject.
 
 ### 2.3 Other additions
 
@@ -264,13 +265,79 @@ another (decision P1) this section and `data-model.md` are rewritten before T016
   (attention, not breaking).
 - `Error.details.reason` description gains the five reasons above.
 
+### 2.4 Event inbox and dead letters (US08, `x-implemented` stays `'004'`, marked `x-extended: '016'`)
+
+Existing operations whose responses change. They need `event:read` as today; the reveal needs, in
+addition, `payload:read-internal` and the grant of `payload:reveal-pii` in the namespace of the event or
+connector.
+
+| Operation | Path | Change |
+|---|---|---|
+| `getInboxEvent` | `GET /namespaces/{namespaceId}/events/{source}/{eventId}` | optional query `reveal` (`pii`); `data` conditional; new `dataDisclosure`, `dataSizeBytes`, `dataStructure` |
+| `getConnectorDeadLetter` | `GET /namespaces/{namespaceId}/connectors/{connectorId}/dead-letters/{deadLetterId}` | optional query `reveal` (`pii`); `body` and `headers` conditional; new `bodyDisclosure`, `bodySizeBytes`, `bodyStructure`, `headerCount` |
+| `listConnectorDeadLetters` | `GET .../dead-letters` | never returns `body` or `headers`; same new fields per item; `reveal` is not a parameter and is ignored |
+
+Schemas (shape; the rest of `InboxEvent` and `DeadLetter` is unchanged):
+
+```typescript
+type InboxEvent = {
+  eventId: string; source: string; type: string; subject?: string; correlationKey?: string;
+  occurredAt?: string; receivedAt: string; expiresAt: string;
+  status: "PENDING" | "DISPATCHED" | "DEAD"; attempts: number; lastError?: string; dispatchedAt?: string;
+  deliveries: EventDelivery[];
+  dataDisclosure: "revealed" | "structure-only";   // required (new)
+  dataSizeBytes: number;                           // required (new): bytes of the stored payload
+  data?: object;                                   // present only when dataDisclosure is "revealed"; was required
+  dataStructure?: PayloadStructure;                // present only when "structure-only"; the ADR-0028 type
+};
+
+type DeadLetter = {
+  id: string; position: string; reason: "NO_EVENT_TYPE" | "BAD_ENVELOPE" | "NOT_A_JSON_OBJECT" | "TOO_LARGE" | "EVENT_ID_REUSED";
+  truncated: boolean; receivedAt: string;
+  bodyDisclosure: "revealed" | "structure-only";   // required (new)
+  bodySizeBytes: number;                           // required (new): bytes kept (at most 64 KiB)
+  headerCount: number;                             // required (new)
+  headers?: Record<string, string>;                // present only when revealed; was required
+  body?: string;                                   // present only when revealed; was required
+  bodyStructure?: PayloadStructure | { kind: "opaque" };   // when "structure-only"
+};
+```
+
+Rules:
+
+- `reveal` accepts only `pii`; another value is `422 VALIDATION_FAILED`. Without it, or without the grant, the
+  answer is the structure answer. With it and without the right, the answer is `403 FORBIDDEN` with
+  `details.reason = PII_REVEAL_NOT_GRANTED` (no new reason, no new `Error.code`).
+- A revealed answer carries every value of the event or letter, because events have no classification
+  carrier: the data is `pii` as a whole (D291, G291). No `secret` handling exists for events.
+- The structure is the ADR-0028 `PayloadStructure` with its bounds (depth 16, 256 nodes, 32 children), built
+  by the existing `JsonPayloadProjector`; it holds no key and no scalar. A dead-letter body that is not
+  bounded JSON, or is cut at 64 KiB mid-document, is `{"kind": "opaque"}`.
+- Both answers carry `Cache-Control: private, no-store`. The Studio, the CLI and the SDKs do not read these
+  fields today (checked in `frontend/apps/studio/src`, `apps/cli/src`, `sdks/*`); the operations of this
+  table are read by API clients.
+- Compatibility: this is a **breaking change** for any client that read `data`, `body` or `headers` as a plain
+  `event:read` holder (G292). `data`, `body` and `headers` leave the `required` lists; the three new
+  disclosure fields join them. The OpenAPI descriptions, `docs/reference/api.md`, `docs/runbooks/events.md` and
+  the release notes state it.
+
+Audience for events and dead letters ("grant" means `payload:reveal-pii` in the event's namespace):
+
+| Caller | no `reveal` | `reveal=pii` |
+|---|---|---|
+| any `event:read` holder, no grant | structure | `403 PII_REVEAL_NOT_GRANTED` |
+| `viewer` with a grant (inert) | structure | `403 PII_REVEAL_NOT_GRANTED` |
+| `developer`, `operator`, `admin` with a grant | structure | values, audited |
+| no `event:read` (`worker`, `runner`) | `403` | `403` |
+| another tenant's event, connector or letter | `404` | `404` |
+
 ## 3. Audit
 
 | Action | Resource | Written when | Reason (server-built) | Repeats |
 |---|---|---|---|---|
 | `payload.disclosed` | run | a disclosure returned at least one `internal` value | `classified-v1:input`, `classified-v1:result`, `classified-v1:journal:<sequence>` | collapse 300 s |
-| `payload.pii_revealed` | run | a reveal returned at least one `pii` value | the same with `:reveal=pii` | never collapse |
-| `payload.reveal_denied` | run | `reveal` without a grant | `permission` | collapse 300 s, best effort |
+| `payload.pii_revealed` | run; for events `ResourceType::Event` (id `source/event id`, reason `event-data:reveal=pii`); for a dead letter `ResourceType::Connector` (reason `dead-letter:<letter id>:reveal=pii`) | a reveal returned at least one `pii` value, or an event or letter value | run: the same with `:reveal=pii` | never collapse |
+| `payload.reveal_denied` | run, event or connector, as above | `reveal` without a grant | `permission` | collapse 300 s, best effort |
 | `payload.reveal_granted` | payload reveal grant (`ResourceType::PayloadRevealGrant`, id `namespace-id/subject`, as `Worker`) | a grant is created | `granted` | none |
 | `payload.reveal_revoked` | payload reveal grant | a grant is removed | `revoked` | none |
 
@@ -288,6 +355,7 @@ are visible to `audit:read`; `CrossTenantAccessDenied` stays withheld from the t
 | counter | `payload_reveal_total` | `outcome` = `granted`, `denied` |
 | counter | `payload_disclosure_truncated_total` | none |
 | counter | `classification_cache_total` | `outcome` = `hit`, `miss`, `evict` |
+| counter | `event_value_reads_total` | `surface` = `event`, `dead_letter`; `outcome` = `structure_only`, `revealed`, `denied` (no tenant, namespace, source, connector or letter) |
 | histogram | `payload_disclosure_duration_seconds` | none |
 | counter | `payload_reveal_grant_changes_total` | `op` = `grant`, `revoke` |
 
@@ -302,4 +370,7 @@ The telemetry text scrubber (`crates/telemetry/src/redact.rs`) is defense in dep
 - The new node `outputSchema` is ignored by an older engine; publication on a newer server then pins
   rules `1`, and the document is only meaningful to a server that has this feature (the same document
   published to an older server discloses nothing, which is the safe direction).
+- Events: older clients keep a working call but receive the structure answer (FR-016-028, G292); the three
+  fields they depended on are conditional. A server without this feature ignores `reveal` and returns the
+  values as before.
 - No change to `worker.proto`, no change to the SDK wire protocol minor.

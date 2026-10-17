@@ -47,9 +47,9 @@ fragment reaches a log, span, metric, audit record or error; `begin_safely` for 
 (ADR-0014); the API admission of ADR-0027 is charged once; existing published versions disclose nothing;
 secrets and credentials are never classified into the journal by this feature.
 
-**Scale/Scope**: 7 user stories, 25 functional and 6 non-functional requirements, 9 success criteria,
-one new endpoint family (1 disclosure, 3 grant operations), 2 permissions, 5 audit actions, 1 column,
-1 table, 5 error reasons, 7 problem codes, 2 diff codes.
+**Scale/Scope**: 8 user stories, 29 functional and 6 non-functional requirements, 10 success criteria,
+one new endpoint family (1 disclosure, 3 grant operations) and three event reads whose response changes,
+2 permissions, 5 audit actions, 1 column, 1 table, 5 error reasons, 7 problem codes, 2 diff codes.
 
 ## Constitution Check
 
@@ -63,12 +63,13 @@ These are design checks, not implementation approvals or test results.
 | IV - pinned, compatible | Pass | Pass | `classification_rules` pins the interpretation to the version; legacy is `0`; IR and OpenAPI changes are additive; five-SDK golden. T016-006, T016-008, T016-020, T016-042. |
 | V - isolation of code, tenant and secrets | Pass | Pass | Tenant-scoped joins and composite foreign keys; opaque `404`; `secret` never returned; no oracle for callers without structure permission; classification is not the secret store (D287). T016-025, T016-049, T016-051. |
 | VI - observability and audit | Pass | Pass | Span, closed-label metrics, five audit actions, typed errors with remediation, canary across logs, spans and metrics. T016-030, T016-049. |
-| VII - inbox/outbox | Pass (not applicable) | Pass with a stated exception | The feature neither writes the outbox nor consumes events. The event inbox still discloses `data` to `event:read` (G272); the plan records it rather than hiding it. |
+| VII - inbox/outbox | Pass | Pass | The feature neither writes the outbox nor consumes events, and does not change how events are admitted, deduplicated or dispatched. It restricts what the inbox and dead-letter reads return (US08, D291): a read-side change with no effect on the transaction that stores an event. T016-057 to T016-064. |
 | VIII - failure tested, contracts verified, honest | Pass | Pass | Crash before and after the audit commit, audit failure, duplicate reveal, grant revoked mid-flight, restart with an empty cache, concurrent publish; OpenAPI and IR schema compiled in CI; nothing ticked without evidence. T016-033, T016-050. |
 
-**Governance gate**: no new ADR (D290). ADR-0033 is the decision; the grant mechanism (P1), the event
-inbox (P2) and the two readings of P3 are product questions in `research.md` and block only the tasks
-that name them. A change of the audience table in ADR-0033 would need a new ADR before it is built.
+**Governance gate**: no new ADR (D290). ADR-0033 is the decision. The owner answered the four product
+questions on 2026-10-17 (P1 grant list, P2 restrict event values now, P3 restrictive readings, P4 audited
+self-grant); the answers are an addendum to ADR-0033's Consequences and rows of `docs/owner-decisions.md`.
+A change of the audience table in ADR-0033 would need a new ADR before it is built.
 
 ## Project Structure
 
@@ -97,21 +98,22 @@ crates/domain/src/audit.rs                           # five actions, collapse ru
 crates/domain/tests/{classification.rs,identity.rs}
 crates/application/src/payload_disclosure.rs         # new: prepare/disclose use case, ports (store, projector)
 crates/application/src/reveal_grants.rs              # new: grant use case and port
-crates/application/src/{api_admission.rs,definitions.rs,diff.rs}
+crates/application/src/{api_admission.rs,definitions.rs,diff.rs,events.rs,connectors.rs}   # events.rs, connectors.rs: US08
 crates/infra-schema/src/classification.rs            # new: publication check, walker, projector, validator cache
 crates/infra-ir/src/{classification_check.rs,schema.rs,convert.rs,lib.rs,diff.rs}
 crates/infra-postgres/migrations/<timestamp>_payload_classification.{up,down}.sql
-crates/infra-postgres/src/{payload_disclosure.rs,reveal_grants.rs,definitions.rs}
+crates/infra-postgres/src/{payload_disclosure.rs,reveal_grants.rs,definitions.rs,events.rs,connectors.rs}   # events.rs, connectors.rs: US08
 crates/infra-postgres/storage-classification.json    # the two new text columns
-crates/api-http/src/routes/{payload_disclosure.rs,reveal_grants.rs}
-crates/api-http/src/{error.rs,lib.rs,exec.rs,dto_gov.rs}
+crates/api-http/src/routes/{payload_disclosure.rs,reveal_grants.rs,events.rs,connectors.rs}   # events.rs, connectors.rs: US08
+crates/api-http/src/{error.rs,lib.rs,exec.rs,dto_gov.rs,dto_events.rs}
 apps/cli/src/{workflow.rs,args.rs,reveal.rs}
 frontend/apps/studio/src/features/runs/{PayloadDisclosure.tsx,NodePanel.tsx,RunDetailPage.tsx}
 frontend/apps/studio/src/features/workflows/WorkflowSettings.tsx   # classification report
 frontend/apps/studio/src/api/schema.d.ts             # generated from OpenAPI
 sdks/{typescript,go,python,dotnet,java}/             # outputSchema setters, node outputSchema option
 specs/001-platform-foundation/contracts/{workflow.schema.json,openapi.yaml}
-tests/contract/payload-classification/               # IR corpus, OpenAPI, audience matrix
+tests/contract/payload-classification/               # IR corpus, OpenAPI, audience matrix, events
+tests/{contract,integration,e2e}/events-webhooks-messaging/   # existing readers of event data updated for US08
 tests/integration/payload-classification/            # real PostgreSQL
 tests/fault/payload-classification/                  # crashes, audit failure, races
 tests/e2e/payload-classification/                    # API + engine + CLI
@@ -119,6 +121,7 @@ tests/contract/sdk-conformance/scenarios/classification.json   # + expected/
 tests/performance/payload-classification/            # + tests/performance/reports/payload-classification.md
 frontend/e2e/tests/payload-disclosure.spec.ts
 docs/runbooks/payload-classification.md              # new
+docs/runbooks/events.md                              # US08: what GET events and dead letters return now
 docs/reference/{workflow-document.md,api.md,cli.md}  # regenerated
 ```
 
@@ -131,10 +134,10 @@ the same code.
 
 ## Phase 0 - Research and decisions
 
-`research.md` records the repository evidence, decisions D261-D290, gaps G272-G290 and the four product
-questions. The ones that block code are P1 (the grant mechanism) and P2 (the event inbox, which blocks
-nothing in this increment because the recommendation is to leave it). P3 and P4 refine behaviour that the
-tests pin; a different answer changes a constant or a rule in one place.
+`research.md` records the repository evidence, decisions D261-D295, gaps G272-G293 and the owner's
+answers of 2026-10-17 to the four product questions. Nothing blocks code on a product question any more.
+What stays undecided (event field classification, dead-letter reveal on the list, retention, taint
+tracking, a membership surface) is listed at the end of `research.md`.
 
 ## Phase 1 - Design and contracts
 
@@ -154,12 +157,15 @@ tests pin; a different answer changes a constant or a rule in one place.
    publish path pinning `classification_rules`; `validate`, diff findings; OpenAPI problem codes.
 3. **US02 + US04 core (disclosure of input and result)**: application use case, store, projector,
    endpoint, admission; the canary suite starts here and grows with each surface.
-4. **US03 (reveal)**: grant table and resource, reveal path, audit; CLI grants. Needs P1.
-5. **US05 (step outputs)**: node-level `outputSchema` in the IR, codec and journal selector; SDK
+4. **US03 (reveal)**: grant table and resource, reveal path, audit; CLI grants (P1 decided: per-namespace list).
+5. **US08 (event values)**: tests first, then the OpenAPI change, application, stores, routes; the
+   repository's own readers of `data`, `body` and `headers` are updated with it. Depends on the grant
+   table and the reveal path of step 4.
+6. **US05 (step outputs)**: node-level `outputSchema` in the IR, codec and journal selector; SDK
    setters and golden.
-6. **US06 (Studio)** and CLI `--values`.
-7. **US07 (report)**: Studio settings panel, CLI validate report.
-8. **Release gates**: fault suite, canary across all boundaries, benchmark, runbook, documentation,
+7. **US06 (Studio)** and CLI `--values`.
+8. **US07 (report)**: Studio settings panel, CLI validate report.
+9. **Release gates**: fault suite, canary across all boundaries, benchmark, runbook, documentation,
    traceability, ADR-0033 follow-up note. `source: "result"` ships when the G21 change is merged.
 
 ## Rollout, compatibility and rollback
@@ -170,7 +176,9 @@ Publish and disclosure ship together behind the same release; there is no featur
 operation is additive and discloses nothing for a version without annotations. Rolling back the
 application leaves the column and table in place (the migration's `down` removes them only on an
 explicit down-migration, after which versions revert to disclosing nothing). No stored run, journal
-event or payload is rewritten. Old Studios and clients keep working: they never call the new paths.
+event or payload is rewritten. Old Studios and clients keep working: they never call the new paths. The exception is the three event
+reads of US08, whose response changes for every client that read the values (G292); that change is
+announced in the release notes and has no switch.
 
 ## Risks and mitigations
 
@@ -180,7 +188,7 @@ event or payload is rewritten. Old Studios and clients keep working: they never 
 | An evaluator and validator disagree about the shape | The validity gate runs first on the whole payload; any doubt (cycle, budget, unsupported) ends as structure only, never as a value |
 | `jsonschema` 0.58 reacts to the unknown keyword | T016-013 proves the validation result is identical with and without annotations; fallback: compile a stripped copy |
 | An annotated root makes every unannotated child public | `CLASSIFICATION_INHERITED_OPEN` warning, the report and the diff findings (G286) |
-| The event inbox keeps disclosing values (G272) | Stated in spec and runbook; owner decision P2; not hidden |
+| Restricting event values breaks clients that read `data`, `body` or `headers` (G292) | Owner decision D291; OpenAPI descriptions, API reference, runbook and release notes; the repository's own readers (contract and e2e suites) updated in T016-064; Studio, CLI and SDKs read none of them (checked) |
 | Cost of compiling and validating per response | Bounds, cache, one admission charge; measured (T016-053); a request cannot exceed 256 KiB of payload and 64 KiB of schema |
 | Reveal audit records grow without bound | They are bounded by the namespace API bucket (ADR-0027) and the number of holders; the audit retention of feature 009 applies |
 | A grant outlives a demotion or a removed member | The grant row cascades with the membership; the effective check also requires `payload:read-internal` at read time |
@@ -192,7 +200,7 @@ event or payload is rewritten. Old Studios and clients keep working: they never 
 
 | Item | Why it is needed | Simpler alternative rejected |
 |---|---|---|
-| A grant table outside the role-to-permission matrix | ADR-0033 requires `payload:reveal-pii` to be granted explicitly while the roles stay six; G39's pattern for narrower control is a list at the resource | Granting it by role (not explicit), a seventh role (breaks one role per membership), a tenant-wide flag (wider than needed; P1 keeps it as the fallback) |
+| A grant table outside the role-to-permission matrix | ADR-0033 requires `payload:reveal-pii` to be granted explicitly while the roles stay six; G39's pattern for narrower control is a list at the resource | Granting it by role (not explicit), a seventh role (breaks one role per membership), a tenant-wide flag (wider than needed); the owner chose the list on 2026-10-17 |
 | `workflow_versions.classification_rules` | Makes "immutable with the version" true of the interpretation, not only of the document | Storing nothing (a later release reinterprets old versions); a derived index per version (a second artifact to keep consistent) |
 | A second payload operation beside `payload-inspections` | Different audience, different response, different policy; the old one must not change | Changing the old response (breaks clients); a policy switch on one operation (two shapes under one id) |
 | A per-process validator cache | Compiling a 64 KiB schema per request dominates the cost | Compile per request (simple, expensive); a shared cache (needs invalidation the immutable version removes) |

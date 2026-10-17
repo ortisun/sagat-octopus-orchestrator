@@ -2,7 +2,7 @@
 
 **Feature Branch**: `feature/016-payload-classification`
 **Created**: 2026-10-16
-**Status**: Specified; not built. The direction is accepted in [ADR-0033](../../docs/adr/ADR-0033-payload-values-are-classified-per-field.md); this set turns it into requirements, a plan and tasks. Four product choices are still open ([research.md](./research.md#product-decisions-to-confirm)).
+**Status**: Specified; not built. The direction is accepted in [ADR-0033](../../docs/adr/ADR-0033-payload-values-are-classified-per-field.md); this set turns it into requirements, a plan and tasks. The four product choices were answered by the owner on 2026-10-17 ([research.md](./research.md#product-decisions-answered-2026-10-17)); nothing in this set is an open product question, and what is still undecided is listed there.
 **Input**: Deliver ADR-0033: the author classifies the values of a workflow as `public`, `internal`, `pii` or `secret` on the JSON Schemas of the workflow, and the platform discloses a value only to a principal the level allows.
 
 ## Context and delivery boundary
@@ -27,15 +27,21 @@ This feature builds it and nothing else. It adds:
 4. the permissions that gate the levels, and a way to grant `payload:reveal-pii` while the built-in
    roles stay six;
 5. the same disclosure in the Studio run views and in `sagat workflow inspect`;
-6. a canary suite that proves a `secret`, unmarked or non-validating value crosses no boundary.
+6. a canary suite that proves a `secret`, unmarked or non-validating value crosses no boundary;
+7. a restriction of the event values that REST returns today: `getInboxEvent` `data` and connector
+   dead-letter `body` and `headers` stop being returned to plain `event:read` holders and require the
+   same reveal grant (US08).
 
 What it leaves alone, and says so: declared Query and Update results (ADR-0031, unchanged), the
 structure-only inspection endpoint (ADR-0028, unchanged), the ordinary run, journal, graph and stream
 reads (payload-free, unchanged), the worker protocol, and retention per customer or regulator
-(ADR-0033, point 6). One existing surface discloses values today and is not brought under
-classification by this increment: the event inbox (`getInboxEvent` returns `data`, connector
-dead letters return `body`, both to any holder of `event:read`, viewers included). That is a finding of
-this specification, not an accepted state; it is recorded as G272 and put to the owner as decision P2.
+(ADR-0033, point 6). One existing surface disclosed values before this feature: the event inbox
+(`getInboxEvent` returned `data`, connector dead letters returned `body` and `headers`, both to any
+holder of `event:read`, viewers included). That contradicted the premise of ADR-0033, and the owner
+decided on 2026-10-17 (D291) to restrict it in this increment: the values now need the reveal grant,
+everyone else gets structure only. The restriction is a breaking change for readers of those fields
+(FR-016-028). Field-by-field classification of events waits for event type schemas (G282); until then
+an event's data is `pii` as a whole.
 
 ## Domain vocabulary
 
@@ -152,7 +158,8 @@ confirm no value is returned.
    scenario 1; a request already past its authorization check may complete (the check and the read
    share one transaction, so there is no later window).
 7. **Given** an administrator, **when** they have not been granted the right, **then** they cannot
-   reveal: `admin` does not hold `payload:reveal-pii` by role.
+   reveal: `admin` does not hold `payload:reveal-pii` by role. They may grant it to themselves; that
+   grant is audited like any other (D295).
 8. **Given** a grant in namespace A, **when** the subject reveals a run of namespace B, **then** it is
    refused; **given** a subject whose membership is removed, **then** its grants are removed with it.
 
@@ -251,6 +258,47 @@ validate` show the same.
 2. **Given** a publication request under an approvals policy (feature 011), **when** the reviewer opens
    the diff, **then** relaxations and tightenings of levels are listed as attention findings.
 
+### US08 — Event values need the reveal grant (Priority: P1)
+
+A person who reads an inbox event or a connector dead letter sees its status, attempts and structure, and
+sees the values only when they hold the reveal grant of the namespace and ask for them; every such reveal
+is audited.
+
+**Why this priority**: the event inbox is the one surface that returned values to every viewer; the
+owner decided to close it now (D291) rather than wait for event schemas.
+
+**Independent Test**: publish an event and set aside a dead letter that carry canaries; read both as a
+viewer, an operator, a developer without a grant and a developer with a grant, with and without
+`reveal=pii`; count the audit records; read an event of another tenant and one of another namespace.
+
+**Acceptance Scenarios**:
+
+1. **Given** an inbox event and a caller who holds `event:read` but no reveal grant, **when** they call
+   `getInboxEvent` with no `reveal`, **then** the answer has the same status, attempts, last error and
+   deliveries as before, no `data`, `dataDisclosure: "structure-only"`, the data size and the ADR-0028
+   structure of the data (types and counts, no key, no scalar).
+2. **Given** a developer holding the grant in the event's namespace, **when** they call it with
+   `reveal=pii`, **then** `data` is returned whole (events have no field classification yet, so all of it
+   is `pii`), `dataDisclosure` is `revealed`, the response is `Cache-Control: private, no-store` and one
+   `payload.pii_revealed` record exists for the event, with no value in it.
+3. **Given** a caller without the grant, **when** they send `reveal=pii`, **then** the answer is `403
+   FORBIDDEN` with `details.reason = PII_REVEAL_NOT_GRANTED`; the same for a `viewer` who holds a grant
+   (the role lacks `payload:read-internal`, so the grant is inert).
+4. **Given** a connector dead letter, **when** it is listed, **then** no item carries `body` or
+   `headers`; each carries its size, `headerCount` and, when the body is bounded JSON, its structure
+   (otherwise `opaque`), and the list ignores `reveal`.
+5. **Given** one dead letter and the grant, **when** it is read with `reveal=pii`, **then** `body` and
+   `headers` are returned and one `payload.pii_revealed` record names the connector and the letter; without
+   the grant the same call is the `403` of scenario 3.
+6. **Given** an event, connector or dead letter of another tenant, or a grant held for another
+   namespace, **when** it is read, **then** the answer is the opaque `404` or the `403` above, and the
+   attempt leaves the other namespace's rate bucket unchanged.
+7. **Given** an integration that read `data` or `body` as `event:read` before, **when** it runs against
+   the new server, **then** it receives the structure answer and no value; the change is listed in the
+   release notes and the API reference.
+8. **Given** redrive or discard of a dead letter (`event:manage`), **when** they run, **then** they behave
+   as before and return no value.
+
 ### Edge Cases
 
 - A payload larger than 256 KiB, a schema larger than 64 KiB, depth beyond 16, a `$ref` cycle, a
@@ -340,8 +388,9 @@ validate` show the same.
   (`/v1/namespaces/{namespaceId}/payload-reveal-grants[/{subject}]`), and the CLI MUST offer the same.
   Each change is audited in the transaction that makes it and is effective on the next request. A grant
   is removed with its membership, and is refused for a subject whose role lacks `payload:read-internal`
-  (such a grant would be inert). At most 256 grants exist per namespace. *(The mechanism is a pending
-  owner decision, P1; this requirement describes the recommended one.)*
+  (such a grant would be inert). At most 256 grants exist per namespace. The mechanism, a per-namespace
+  grant list managed by administrators, was decided by the owner on 2026-10-17 (D275); an administrator
+  may grant it to themselves, audited (D295).
 - **FR-016-012**: Every reveal MUST be audited as `payload.pii_revealed`, with actor, tenant, run, the
   server-built reason `classified-v1:<selector>:reveal=pii` and the trace id, committed in the same
   transaction that selects the payload and before any byte is returned; it never collapses repeats.
@@ -363,7 +412,8 @@ validate` show the same.
   `inspectRunPayload` (structure-only), and the declared Query/Update results of ADR-0031. A Query or
   Update result is never filtered by this feature, and a classification annotation inside its result
   schema is a publication error (`CLASSIFICATION_NOT_APPLICABLE`) so that nobody believes it protects
-  anything there. The event inbox and dead letters are not changed by this increment (G272, decision P2).
+  anything there. The event inbox and the connector dead letters are the one exception and change as FR-016-026 and
+  FR-016-027 say.
 - **FR-016-017**: Telemetry, structured logs, metrics, spans, audit records, error bodies and the
   `Debug` output of every type that carries a payload MUST NOT contain a value, a key of a payload or a
   schema fragment, at any level. Metric labels MUST come from closed sets and never include a tenant,
@@ -402,6 +452,35 @@ validate` show the same.
   as `CLASSIFICATION_RELAXED` and a tightening as `CLASSIFICATION_TIGHTENED`, both as attention findings
   (not breaking).
 
+- **FR-016-026**: `getInboxEvent` MUST return the `data` of the event only when the request carries
+  `reveal=pii` and the caller holds `event:read`, `payload:read-internal` and `payload:reveal-pii` in the
+  event's namespace. The reveal is audited as `payload.pii_revealed` (`ResourceType::Event`, id
+  `source/event id`, reason `event-data:reveal=pii`) in the transaction that reads the payload, before the
+  bytes return, and never collapses. In every other case the answer has no `data` and carries
+  `dataDisclosure: "structure-only"`, `dataSizeBytes` and `dataStructure` (the ADR-0028 structure with
+  its bounds: no key, no scalar). `reveal=pii` without the right is `403 FORBIDDEN` with
+  `details.reason = PII_REVEAL_NOT_GRANTED`. Status, attempts, last error and deliveries are unchanged.
+  Both answers are `Cache-Control: private, no-store`. Event data has no classification carrier, so a
+  reveal returns all of it, `secret`-looking content included (G291, G282).
+- **FR-016-027**: `getConnectorDeadLetter` and `listConnectorDeadLetters` MUST return neither `body` nor
+  `headers` unless the single-resource call carries `reveal=pii` under the conditions of FR-016-026
+  (audited, `ResourceType::Connector`, reason `dead-letter:<letter id>:reveal=pii`). Otherwise each
+  letter carries `bodyDisclosure: "structure-only"`, `bodySizeBytes`, `bodyStructure` (the ADR-0028
+  structure when the body is bounded JSON, otherwise `{"kind": "opaque"}`) and `headerCount`. The list
+  never returns a body or header, with or without the grant (a page can hold 200 letters of 64 KiB), and
+  ignores `reveal`. `position`, `reason`, `truncated`, `receivedAt` and the letter id are unchanged;
+  `redriveConnectorDeadLetter` and `discardConnectorDeadLetter` are unchanged and return no value.
+- **FR-016-028**: The restriction of FR-016-026 and FR-016-027 is a breaking change for any client that
+  reads `data`, `body` or `headers` as a plain `event:read` holder: they receive the structure answer. It
+  is documented in the OpenAPI description of the three operations (`data`, `body` and `headers` leave
+  the `required` lists and become conditional), in `docs/runbooks/events.md`, in `docs/reference/api.md`
+  and in the release notes. There is no transitional switch. A client that needs the values holds the
+  grant and sends `reveal=pii`. Nothing that writes events (publish, signal, webhook, connector) changes.
+- **FR-016-029**: Event and dead-letter reads MUST be scoped by the authenticated tenant in their SQL; an
+  event, connector or letter of another tenant is the opaque `404`; the grant is looked up for the event's
+  or connector's own namespace, so a grant in another namespace reveals nothing; namespace API admission is
+  charged as today (`ApiOperation::EventRead`) and never debits a foreign namespace.
+
 ### Non-functional requirements
 
 - **NFR-016-001 (security)**: fail closed everywhere. No caller can learn that a field they may not
@@ -435,6 +514,8 @@ validate` show the same.
   [contracts/README.md](./contracts/README.md).
 - **Audit actions**: `payload.disclosed`, `payload.pii_revealed`, `payload.reveal_denied`,
   `payload.reveal_granted`, `payload.reveal_revoked`.
+- **Event view**: the answer of `getInboxEvent` and of the dead-letter reads: unchanged metadata plus
+  either the revealed values or their size and structure (FR-016-026, FR-016-027).
 
 ## Success Criteria *(mandatory)*
 
@@ -442,7 +523,8 @@ validate` show the same.
   reveal; values of a non-validating payload; values of a legacy version; keys of withheld nodes) are
   absent from 100% of captured responses, errors, logs, spans, metrics, audit records, streams, CLI
   output and Studio DOM, storage and network traffic in the real PostgreSQL/API/Chromium suites, for
-  every built-in role and with a grant.
+  every built-in role and with a grant. Event data, dead-letter bodies and dead-letter headers are
+  forbidden classes for every caller who has not sent `reveal=pii` with the grant.
 - **SC-016-002**: The audience matrix (six roles x four levels x reveal requested or not x grant or not)
   produces exactly the specified result in a contract test, one row per cell.
 - **SC-016-003**: Every successful reveal has exactly one `payload.pii_revealed` record committed
@@ -462,10 +544,16 @@ validate` show the same.
   hold under it.
 - **SC-016-009**: Every error and refusal of the feature exposes `code`, `traceId`, `retryable` and a
   remediation without payload, key, schema fragment or secret.
+- **SC-016-010**: Every `getInboxEvent` and dead-letter read by a caller without the reveal grant, or
+  without `reveal=pii`, returns zero event values, body bytes, header values and keys in the real
+  PostgreSQL/API suites; every successful event reveal has exactly one `payload.pii_revealed` record
+  committed before the response; a foreign tenant's event or letter is the opaque `404` and a grant of
+  another namespace reveals nothing.
 
 ## Assumptions and dependencies
 
-- Depends on features 001 (contracts, identity), 002 (journal, `payloads`, run result), 007
+- Depends on features 001 (contracts, identity), 002 (journal, `payloads`, run result), 004 (the
+  event inbox and connector dead letters that US08 restricts), 007
   (inspection API and Studio), 008 (telemetry), 009 (roles, permissions, audit, quotas), 011
   (publication and diff), 012 (CLI) and 006 (SDK builders), and on ADR-0014, ADR-0023, ADR-0027,
   ADR-0028.
@@ -487,8 +575,9 @@ validate` show the same.
 
 - Retention per customer or regulator, deletion of personal data on request, and data residency
   (ADR-0033, point 6; G283, G284).
-- Classification of the event inbox, connector dead letters and webhook or broker deliveries; an event
-  type schema registry (G272, G282; decision P2).
+- Field-by-field classification of events, connector dead letters and webhook or broker deliveries: an
+  event's data is `pii` as a whole until an event type schema registry exists (G282, D291). The
+  values of events are restricted by this feature (FR-016-026, FR-016-027); their classification is not.
 - Disclosure of external (blob) content, raw download or export, and any field-selection or JSON-path
   API.
 - Taint tracking: the classification of a value copied by an expression, a child input or a result

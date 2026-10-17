@@ -17,7 +17,7 @@
 | 13 | 013 Federated Login | Studio sign-in through each organization's OIDC or SAML provider | Draft specification only |
 | 14 | 014 Workflow Primitives | forEach/map, loops, approval, switch, Query/Update, Continue-As-New | In progress on `feature/workflow-primitives` |
 | 15 | 015 OpenTelemetry and OpenBao | all three signals through a Collector; OpenBao as the secret and key authority | Draft specification only (was the second 013; renumbered by the owner on 2026-10-16) |
-| 16 | 016 Payload Classification | per-field classification (`public`, `internal`, `pii`, `secret`) of run payloads, audited disclosure by level, `payload:reveal-pii` | Specified; not built (decided in ADR-0033; four product questions open in `specs/016-payload-classification/research.md`) |
+| 16 | 016 Payload Classification | per-field classification (`public`, `internal`, `pii`, `secret`) of run payloads, audited disclosure by level, `payload:reveal-pii` | Specified; not built (decided in ADR-0033; the four product questions were answered on 2026-10-17, see `docs/owner-decisions.md`); also restricts event values (US08) |
 
 **Realistic milestones:** M0=contracts and journal spike; M1=durable vertical slice; M2=sagas/events; M3=scripts and first SDK; M4=Studio; M5=enterprise hardening; M6=multi-SDK/HA. Avoid estimates without team composition and benchmark.
 

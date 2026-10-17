@@ -1,7 +1,8 @@
 # Spec Kit consistency analysis
 
-Date: 2026-10-16. Two reviews of this set: a consistency review of the documents against each other,
-then a validation of them against ADR-0033, ADR-0028, ADR-0031 and the code of this branch. This is a
+Date: 2026-10-16, revised 2026-10-17 after the owner's answers. Three reviews of this set: a consistency review of the documents against each other,
+then a validation of them against ADR-0033, ADR-0028, ADR-0031 and the code of this branch, then a
+review of what the owner's answers of 2026-10-17 changed. This is a
 design review. No runtime behaviour was built or run, and nothing here is evidence that a requirement
 holds in an implementation.
 
@@ -9,17 +10,18 @@ holds in an implementation.
 
 | Measure | Result |
 |---|---|
-| User stories | 7 (4 at P1, 2 at P2, 1 at P3) |
-| Functional requirements | 25 |
+| User stories | 8 (5 at P1, 2 at P2, 1 at P3) |
+| Functional requirements | 29 |
 | Non-functional requirements | 6 |
-| Success criteria | 9 |
-| Requirement/criterion coverage by tasks | 40/40 (every FR, NFR and SC appears in the `Refs` of at least one task) |
-| Tasks | 56 (T016-001 to T016-056), 0 ticked |
+| Success criteria | 10 |
+| Requirement/criterion coverage by tasks | 45/45 (every FR, NFR and SC appears in the `Refs` of at least one task) |
+| Tasks | 65 (T016-001 to T016-065), 1 ticked (T016-002, the recording of the owner's answers) |
 | Tasks without file paths or `Refs` | 0 |
-| Decisions / gaps | D261-D290 (30) / G272-G290 (19) |
-| Product questions for the owner | 4 (P1-P4) |
+| Decisions / gaps | D261-D295 (35) / G272-G293 (22) |
+| Product questions for the owner | 4 asked (P1-P4), 4 answered on 2026-10-17; none open |
 | Unresolved clarification markers | 0 |
-| Findings of the validation against ADRs and code | 15, all corrected in the documents or recorded as gaps; 3 leave explicit owner decisions |
+| Findings of the validation against ADRs and code | 15, all corrected in the documents or recorded as gaps; 3 of them were put to the owner and are now decided |
+| Findings of the review of the owner's answers | 9, all corrected in the documents |
 
 ## First review: consistency among the documents
 
@@ -35,7 +37,7 @@ quickstart, tasks, checklist, roadmap and traceability. It found and fixed:
 | 4 | The audit table for grants gave a vague resource detail. | `ResourceType::PayloadRevealGrant` with id `namespace-id/subject`, the form `Worker` already uses (contracts section 3, data-model section 1). |
 | 5 | The requirement to report effective levels in `validate` named no field. | `Validation.classification` (bounded to 500 entries) added to the contract and to T016-008, T016-021, T016-022. |
 | 6 | FR-016-016 (surfaces that stay unchanged) had no task. | T016-049 asserts the listed surfaces answer byte-identically to their pre-feature golden responses. |
-| 7 | Task ids cited in plan, contracts and research did not match the final numbering. | All references were renumbered and checked by script (no id above T016-056, no dangling D or G reference). |
+| 7 | Task ids cited in plan, contracts and research did not match the final numbering. | All references were renumbered and checked by script (no id above T016-065, no dangling D or G reference). |
 | 8 | The audience-matrix link in the spec pointed at a paragraph, not a heading. | The matrix has a heading (`#### Audience matrix`). |
 | 9 | The data-model described projection after the transaction, while the audit has to precede the bytes and describe the answer. | Projection is computed inside the read transaction through a callback; the lifecycle table has separate project, audit and commit steps (data-model section 4). |
 | 10 | The quickstart used a `Namespace` header that run operations do not take, a doubled `/v1` prefix and a link-check script that does not exist. | It uses run paths with no namespace header, `$SAGAT_SERVER` (which already ends in `/v1`) and the check recorded below. |
@@ -44,7 +46,7 @@ quickstart, tasks, checklist, roadmap and traceability. It found and fixed:
 
 | # | Finding | Evidence | Correction |
 |---|---|---|---|
-| 11 | ADR-0033 says every surface keeps ADR-0028's structure-only behaviour until this feature, and that event data is a payload treated as confidential. `getInboxEvent` returns `data` and `listConnectorDeadLetters` returns `body` and `headers` to any `event:read` holder, viewers included. | `specs/001-platform-foundation/contracts/openapi.yaml` (`getInboxEvent`, `listConnectorDeadLetters`); `crates/api-http/src/dto_events.rs` (`EventBody.data`, `DeadLetterBody.body`); `crates/application/src/connectors.rs` (`EventRead`). | Not hidden and not changed: recorded as G272 and put to the owner as P2 with three options; FR-016-016 and the spec context say so; traceability lists it as a known exception. |
+| 11 | ADR-0033 says every surface keeps ADR-0028's structure-only behaviour until this feature, and that event data is a payload treated as confidential. `getInboxEvent` returns `data` and `listConnectorDeadLetters` returns `body` and `headers` to any `event:read` holder, viewers included. | `specs/001-platform-foundation/contracts/openapi.yaml` (`getInboxEvent`, `listConnectorDeadLetters`); `crates/api-http/src/dto_events.rs` (`EventBody.data`, `DeadLetterBody.body`); `crates/application/src/connectors.rs` (`EventRead`). | Not hidden: recorded as G272 and put to the owner as P2 with three options. The owner decided on 2026-10-17 to restrict the values now (D291; US08, FR-016-026 to FR-016-029, tasks T016-057 to T016-065); see the third review. |
 | 12 | The brief and the ADR assume schemas exist for activity outputs, event data and declared state. Only the workflow `inputSchema` and `outputSchema` exist, and the IR checks them only as `type: object`. Activity, script, wait and child nodes have no output schema, events have none, and state and operation schemas belong to feature 014 (not on this branch). | `workflow.schema.json`; `crates/infra-ir/src/convert.rs` header (extra node fields are allowed and ignored). | Carriers are a closed list; node-level `outputSchema` is added as additive IR (D262); event schemas are a gap (G282); state and operation schemas are rejected as carriers (D263, G285). |
 | 13 | `Permission::ALL` is the Admin role. Adding the new permission to `ALL` would silently grant `payload:reveal-pii` to every admin, contradicting "granted explicitly". | `crates/domain/src/identity.rs` (`Role::permissions`, `Admin => &Permission::ALL`). | Admin becomes `ALL` minus the reveal permission through an explicit constant with a test against `ALL` (D276, T016-010, T016-012). |
 | 14 | Memberships can only be created by `provision-tenant` and `seed-dev` (one administrator). There is no REST resource or CLI command to add a member. A per-membership flag (option B) needs a new management surface exactly like a grant list; the test suites insert members through `tests/support`. | `apps/control-plane/src/main.rs`; `docs/runbooks/control-plane.md` section 8; no membership path in `openapi.yaml`. | P1 prices both options with that cost; G290 records the missing creation path; the quickstart states how members are made. |
@@ -60,21 +62,42 @@ quickstart, tasks, checklist, roadmap and traceability. It found and fixed:
 | 24 | Roles: the code has six, the OpenAPI `AuthContext.role` enum lists four, and feature 009 G39 says "five". | `identity.rs`, `openapi.yaml`, 009 research. | The set says six (the code); the drift is recorded as G288 and left to a documentation pass. |
 | 25 | `runs.result_digest` is not on this branch (it is on `bugfix/run-result`). | git branch contents. | `source: "result"` is its own task gated on that merge (T016-031, D288). |
 
+## Third review: the owner's answers of 2026-10-17
+
+P1 (per-namespace list), P3 (restrictive readings) and P4 (audited self-grant) confirmed what the set
+already implemented, so they only moved from "to confirm" to decided, with D-ids and a date. P2 changed
+the scope: the event values are restricted now. The review followed that change through the code and the
+documents.
+
+| # | Finding | Evidence | Correction |
+|---|---|---|---|
+| 26 | Three operations return event values: `getInboxEvent`, `getConnectorDeadLetter` and `listConnectorDeadLetters`. Redrive and discard return an `AcceptedBody` and `204`, no value. | `crates/api-http/src/routes/events.rs` (`get_event`), `routes/connectors.rs`, `dto_events.rs` (`EventBody`, `DeadLetterBody`, `AcceptedBody`). | US08, FR-016-026 to FR-016-029 and contracts section 2.4 cover exactly those three. |
+| 27 | `InboxEvent.data` and `DeadLetter.headers`/`body` are in `required`, and the 004 REST conformance suite validates responses against the OpenAPI schema, so the schema change and the 004 scenarios have to change together. | `openapi.yaml` (`InboxEvent`, `DeadLetter`); `tests/contract/events-webhooks-messaging/rest/conformance.rs` (inbox and dead-letter scenarios). | T016-058 updates the scenarios, T016-060 the schema; the fields leave `required` and three disclosure fields join it. |
+| 28 | A dead-letter list page can hold 200 letters of 64 KiB, so a reveal on the list would be a 12.8 MiB response with one audit record for 200 letters. | `crates/application/src/connectors.rs` (`dead_letters` clamps to 200), `MAX_DEAD_BODY`. | The list never reveals; the single resource reveals one letter with one audit record (D293). This goes beyond the owner's words and is reported for confirmation. |
+| 29 | The application services are called directly by `tests/integration/events-webhooks-messaging/connectors.rs` (`dead_letters(&w.admin, ...)` at several places), so the signature change breaks them. | that file. | T016-064 updates the callers. |
+| 30 | The break reaches API clients only: no Studio screen reads event data or dead-letter bodies, the CLI has no event command, and the SDK clients only publish events. | greps over `frontend/apps/studio/src`, `apps/cli/src`, `sdks/*`. | G292 and T016-064 record and re-check it; the compatibility impact is documented (FR-016-028). |
+| 31 | `viewer` holds `event:read` but not `payload:read-internal`, so a viewer cannot reveal event data even with a grant, which is consistent with D274 and with "the same reveal grant", but is a visible consequence for existing viewer integrations. | `crates/domain/src/identity.rs`. | Stated in D294, US08 scenario 3 and the audience table of contracts 2.4. |
+| 32 | The events runbook says `GET events` gives "last error (never the payload)" and that a `DEAD` event "keeps its payload for inspection", and the API reference describes the old shape. | `docs/runbooks/events.md`, `docs/reference/api.md`. | T016-055 and T016-065 update them. |
+| 33 | The pending wording ("pending owner decision", "recommended", "awaits the owner") survived in spec, plan, contracts, checklist and quickstart. | grep over the set. | Replaced by the decisions and dates; a script check finds none left. |
+| 34 | T016-002 (record the owner's answers) is now done, so "no task is ticked" was no longer true in tasks, traceability and this file. | `tasks.md`. | T016-002 is ticked with its evidence; every count that said 0 ticked now says 1. |
+
 ## Consistency with the decision records
 
 - **ADR-0033**: levels, order, unmarked is `pii`, no loosening, the audience table, pinning, audited
   `pii` reveal, structure-only for non-validating values, no values in telemetry and retention out of
   scope are all carried. The three readings the set adds (undeclared floor, `pii` also needing
-  `payload:read-internal`, an explicit `reveal` request) are decisions D265, D274 and D273; the ones that
-  refine the text are listed for confirmation (P3).
+  `payload:read-internal`, an explicit `reveal` request) are decisions D265, D274 and D273; the owner
+  confirmed the restrictive readings on 2026-10-17 (P3). Its statement that every surface is structure-only
+  until this feature was inexact for events; an addendum to the ADR records the correction and the interim
+  restriction (D291).
 - **ADR-0028**: the structural endpoint, its permission, bounds and audit are unchanged; the new
   operation reuses its selector shape, transaction pattern, external-content rule and non-substitution
   rule, and returns its structure only to holders of `run:payload:inspect`.
 - **ADR-0031**: unchanged; no declared operation result is filtered or reclassified.
 - **ADR-0027**: admission charged once; the two new text columns are classified in
   `storage-classification.json`; the grant table is bounded by a per-namespace cap.
-- **Constitution I-VIII**: checked in `plan.md`; the exception for the event inbox is stated under VII
-  instead of being left out.
+- **Constitution I-VIII**: checked in `plan.md`; principle VII now records that the event reads change and
+  the event pipeline does not.
 
 ## Evidence and limits
 
@@ -84,8 +107,8 @@ Checks run on this set (not on any implementation), from the repository root of 
 |---|---|---|
 | Spec Kit prerequisites | `SPECIFY_FEATURE_DIRECTORY=specs/016-payload-classification SPECIFY_FEATURE_NO_PERSIST=1 .specify/scripts/bash/check-prerequisites.sh --json --require-spec --require-tasks --include-tasks` | listed research, data-model, contracts, quickstart and tasks |
 | Whitespace | `git add -A && git diff --cached --check` | no whitespace errors reported (exit 0), run on the staged set |
-| Relative links | a script that resolves every relative Markdown link target of the new and edited files, outside code fences, and checks the heading anchors they name | 39 relative links and anchors checked, 0 broken |
-| Identifier and coverage scripts | extraction of D, G, T, FR, NFR and SC ids and their references | no dangling id; coverage 40/40 |
+| Relative links | a script that resolves every relative Markdown link target of the new and edited files, outside code fences, and checks the heading anchors they name | 41 relative links and anchors checked (the new set, the roadmap, traceability, owner decisions and ADR-0033), 0 broken |
+| Identifier and coverage scripts | extraction of D, G, T, FR, NFR and SC ids and their references | no dangling id; coverage 45/45 |
 
 None of these proves that a design decision is right. The decisions that could be wrong in ways only
 building will show are the walker's soundness (D266-D268), the cost of validating per response (D280,

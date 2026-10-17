@@ -5,17 +5,17 @@
 
 ## Content quality
 
-- [x] User value and delivery boundary are explicit: what is built, what stays as ADR-0028 and ADR-0031 decided, and the one existing surface (the event inbox) that is not brought under classification.
+- [x] User value and delivery boundary are explicit: what is built, what stays as ADR-0028 and ADR-0031 decided, and the one existing surface that changes (the event inbox and dead letters: values restricted now, classification later), with the compatibility impact stated.
 - [x] Mandatory user stories, requirements, entities, success criteria, assumptions and out-of-scope are complete.
 - [x] The specification describes observable behaviour; storage, adapters and source structure live in plan, data-model and contracts.
 - [x] Existing behaviour is distinguished from new behaviour with evidence from the code (research baseline), not from memory.
 
 ## Requirement completeness
 
-- [x] No unresolved clarification markers. The open product questions are listed with options and a recommendation (`research.md`, P1-P4), and none is hidden as an assumption.
-- [x] All 25 functional and 6 non-functional requirements are testable and have task traceability.
-- [x] Nine success criteria are measurable and name the suite that proves them.
-- [x] Seven independently testable stories include the happy path, the refusal and the failure case.
+- [x] No unresolved clarification markers. The four product questions were answered by the owner on 2026-10-17 and are recorded with their options and D-ids (`research.md`, "Product decisions answered 2026-10-17"); what remains undecided is listed at the end of `research.md`.
+- [x] All 29 functional and 6 non-functional requirements are testable and have task traceability.
+- [x] Ten success criteria are measurable and name the suite that proves them.
+- [x] Eight independently testable stories include the happy path, the refusal and the failure case.
 - [x] Edge cases cover: size and complexity bounds, branch composition, undeclared data, empty values, Unicode and bidirectional text, concurrent reveals, grant and membership changes during a request, reruns, old documents read by old engines.
 - [x] Dependencies are named: features 001, 002, 006, 007, 008, 009, 011, 012; ADR-0014, 0023, 0027, 0028, 0033; the unmerged G21 change and feature 014 are recorded as branch dependencies without links to files absent from this branch.
 - [x] Checked against the code (2026-10-16): carriers that exist, carriers that do not, the permission catalog and `Permission::ALL` equal to Admin, one role per membership, no membership management surface, `getInboxEvent` and dead letters returning values, `payloadRef` as a plain digest, the SDK builders' `outputSchema` coverage, the closed `Error.code`, `DefinitionProblem` codes.
@@ -33,9 +33,10 @@
 
 ## Open implementation gates
 
-- [ ] The owner answers P1 (grant mechanism), P2 (event inbox), P3 (two readings of ADR-0033) and P4 (self-grant); T016-002.
+- [x] The owner answers P1 (grant mechanism), P2 (event inbox), P3 (two readings of ADR-0033) and P4 (self-grant); T016-002. _Answered 2026-10-17; recorded in `research.md`, `docs/owner-decisions.md` and the ADR-0033 addendum._
 - [ ] Add the schema and OpenAPI changes and prove them in CI (T016-005 to T016-008).
 - [ ] Implement and prove the domain, the publication check, pinning, disclosure, reveal and grants (Phases 2 to 5).
+- [ ] Restrict and prove the event values (US08, T016-057 to T016-065), with the documented break.
 - [ ] Prove the canary suite across every boundary, the fault suite, tenant isolation, compatibility and the five-SDK golden (T016-042, T016-049 to T016-052).
 - [ ] Measure the bounds on a stated environment (T016-053) and write the runbook (T016-055).
 - [ ] Merge the G21 run-result change and then deliver `source: "result"` (T016-031).

@@ -2,8 +2,9 @@
 
 **Date**: 2026-10-16. The direction is decided by ADR-0033 (owner decision of 2026-10-16). This file
 records what the repository was found to contain, the design decisions D261 onward that fill the points
-ADR-0033 leaves to the specification, the gaps G272 onward, and the product questions that remain with
-the owner. Nothing here is implemented. No new ADR is proposed (see D290).
+ADR-0033 leaves to the specification, the gaps G272 onward, and the owner's answers of 2026-10-17 to the
+four product questions P1 to P4 (D275, D291 to D295, D265). Nothing here is implemented. No new ADR is
+proposed (see D290).
 
 ## Baseline verified in this repository
 
@@ -19,7 +20,7 @@ the owner. Nothing here is implemented. No new ADR is proposed (see D290).
 | `crates/application/src/api_admission.rs`: `ApiOperation::PayloadInspect => [RunRead, RunPayloadInspect]` | The admission class for the new operation (`PayloadDisclose => [RunRead]`). |
 | `crates/domain/src/audit.rs`: `PayloadInspected`/`PayloadInspectionDenied`, `collapses_repeats`, `repeat_window` 300 s | The audit pattern to reuse; pii reveals deliberately do not collapse (D277). |
 | `docs/runbooks/control-plane.md` section 8 and `apps/control-plane`: memberships are created by `provision-tenant` and `seed-dev` only; there is no membership REST or CLI | A per-membership flag needs a new management surface exactly as a grant list does (P1). |
-| `openapi.yaml` `getInboxEvent` returns `data`; `listConnectorDeadLetters` returns `body` and `headers`; both need only `event:read` (viewer holds it); `dto_events.rs` `EventBody`, `DeadLetterBody` | **Existing value disclosure** that contradicts the premise of ADR-0033 (G272, P2). |
+| `openapi.yaml` `getInboxEvent` returns `data`; `listConnectorDeadLetters` returns `body` and `headers`; both need only `event:read` (viewer holds it); `dto_events.rs` `EventBody`, `DeadLetterBody` | **Existing value disclosure** that contradicts the premise of ADR-0033 (G272); restricted by D291. |
 | `openapi.yaml` `JournalEvent.payloadRef`: "SHA-256 of the output payload" visible to `run:read` | A plain digest of a guessable payload confirms a guess, whatever its level (G275). |
 | `openapi.yaml` `Error.code` is a closed set of ten; refinements are `details.reason`; `DefinitionProblem.code` is the refinement for `validate`; `crates/api-http/src/error.rs` `definition_details` | The reasons and codes of D272/D273 follow these mechanisms. |
 | `sdks/*`: all five builders take `inputSchema` as a free-form map; Go and Python have `outputSchema`, TypeScript, Java and C# do not; none has a node-level `outputSchema`; no SDK client method for `payload-inspections` | SDK work is the missing setters plus one shared golden; helpers are unnecessary (D284). |
@@ -74,7 +75,7 @@ the `validate` report and the `CLASSIFICATION_INHERITED_OPEN` warning (US07), no
 **Alternative**: annotation applies to the node only and every unannotated node is `pii` (safer by
 default, but contradicts point 1 and forces an annotation on every leaf).
 
-### D265 — A value no schema declares is at least `pii` (pending confirmation, P3)
+### D265 — A value no schema declares is at least `pii` (decided by the owner, 2026-10-17, P3)
 
 **Decision**: an undeclared property, an item no `prefixItems`/`items` governs, and anything under an
 unsupported keyword has effective level `max(inherited, pii)`. **Rationale**: "nothing is disclosed by
@@ -83,7 +84,9 @@ additional properties must not publish it. **Deviation**: a literal reading of p
 everything under it") would make the extra property `public`. The stricter rule changes no declared
 case and is invisible to a closed schema (`additionalProperties: false`), which the examples use. An
 author who wants an open map public annotates `additionalProperties` with `public`. **Alternative**:
-literal inheritance (simpler to explain, leaks undeclared data).
+literal inheritance (simpler to explain, leaks undeclared data). The owner confirmed the restrictive
+reading on 2026-10-17, together with its companion: a carrier with no annotation is `pii` throughout
+(a reveal holder sees it) and a payload with no carrier at all is structure only for everyone (D269).
 
 ### D266 — The strictest annotation among all governing subschemas wins; no branch is chosen by the data
 
@@ -175,15 +178,16 @@ looser one; granting to a subject whose role lacks it is refused (`ROLE_CANNOT_R
 demotion makes the grant inert. **Alternative**: let a grant alone suffice (a `viewer` could then see
 `pii` and not `internal`, which breaks the nesting argument of FR-016-009).
 
-### D275 — The grant is a per-namespace list; recommended, pending the owner (P1)
+### D275 — The grant is a per-namespace list (decided by the owner, 2026-10-17, P1)
 
-**Decision (recommended)**: `payload_reveal_grants(tenant, namespace, subject)`, managed through
+**Decision**: `payload_reveal_grants(tenant, namespace, subject)`, managed through
 `membership:manage`, REST and CLI. **Rationale**: it follows G39's own answer to "no custom roles"
 (resource-level control where the resource is: worker bindings, a secret's access list, the pools of
 owner decision 9), limits the reach to a namespace (and so to an environment: dev, staging, prod),
 leaves `Principal` and the six roles untouched, is revoked by deleting the membership
 (cascade), and each change is audited. The cost is one table, three endpoints and a CLI command.
-**Alternatives** are in P1.
+**Alternatives** rejected by the owner: a tenant-wide flag on the membership, adding the permission to
+`admin`, a seventh role (see P1 below).
 
 ### D276 — Admin does not hold `payload:reveal-pii`; `Permission::ALL` stops defining Admin
 
@@ -292,16 +296,74 @@ table). A document published with annotations to an engine that lacks this featu
 ### D290 — No ADR-0034
 
 **Decision**: ADR-0033 is the decision and this set fills the points it assigns to the specification
-(annotation name, grant mechanism, schema carriers). If the owner picks a grant mechanism in P1, the
-choice is recorded as an addendum to ADR-0033's Consequences. A new ADR would be needed only if the
-owner chose to change the audience table of ADR-0033 or to bring the event inbox under classification
-by a mechanism other than a schema carrier (P2).
+(annotation name, grant mechanism, schema carriers). The owner's answers of 2026-10-17 are recorded as an
+addendum to ADR-0033's Consequences (the grant mechanism and the interim restriction of event values).
+A new ADR would be needed only if the owner chose to change the audience table of ADR-0033 or to bring
+events under field classification by a mechanism other than a schema carrier.
+
+### D291 — Event values are restricted now, before event schemas exist (owner decision P2, 2026-10-17)
+
+**Decision**: in this increment `getInboxEvent` `data` and connector dead-letter `body` and `headers` stop
+being returned to plain `event:read` holders. They require the reveal grant (`payload:reveal-pii` in the
+namespace, with `payload:read-internal` and `event:read`); everyone else receives size and structure.
+Field-by-field classification of events stays for when event type schemas exist (G282); until then the
+data of an event is `pii` as a whole. **Rationale**: the inbox was the one surface that returned values to
+every viewer, which is the situation ADR-0033 set out to end; waiting for a schema registry would leave
+that open for as long as the registry takes. **Alternatives** rejected by the owner: leave it and record
+the exception; restrict it to a plain permission with no classification; classify through a consuming
+`waitEvent` or trigger. **Consequence**: a breaking change for every reader of those fields (FR-016-028,
+G292).
+
+### D292 — Shape of the event answer: conditional `data`, structure for everyone else, explicit `reveal=pii`
+
+**Decision**: `getInboxEvent` keeps its metadata and gains `dataDisclosure` (`revealed` or
+`structure-only`), `dataSizeBytes` and, when structure-only, `dataStructure` (the ADR-0028
+`PayloadStructure`, same bounds, no key and no scalar). `data` is present only when revealed, so it leaves
+`required`. The reveal is a deliberate act, as for runs (D273): the query flag `reveal=pii` on the GET,
+audited, `Cache-Control: private, no-store`. The structure goes to every `event:read` holder, because the
+owner asked that everyone else gets structure only and because viewers saw the whole value before. This
+differs from run payloads, where structure needs `run:payload:inspect` (D278); the difference is recorded
+as G293. **Alternatives**: `data: null` with a flag (keeps the field in `required` but a client that
+reads `data.amount` fails either way); a new sub-resource for the data (leaves the old GET with a smaller
+shape and an extra call; kept as a later option); structure behind a new permission (a second break for
+no gain).
+
+### D293 — Dead letters: the single resource reveals, the list never does
+
+**Decision**: `getConnectorDeadLetter` with `reveal=pii` (and the grant) returns `body` and `headers`; the
+single resource without it, and every item of `listConnectorDeadLetters`, return `bodyDisclosure:
+"structure-only"`, `bodySizeBytes`, `bodyStructure` (the structure of a bounded JSON body, otherwise
+`{"kind": "opaque"}`) and `headerCount` (no header name, no value). The list ignores `reveal`.
+**Rationale**: a page of 200 letters of up to 64 KiB would be a 12.8 MiB audited response, and one audit
+record per page would not say which letters were read; the single resource gives one record per letter
+(`dead-letter:<id>`). A dead letter exists because the message was not an event, so its body is often not
+JSON, which is why `opaque` exists. **Alternative**: reveal on the list with a smaller page (more code,
+less precise audit). This choice goes beyond the owner's words and is reported for confirmation.
+
+### D294 — The event restriction reuses the grant, the permissions, the reason and the audit action
+
+**Decision**: no new table, permission, `Error.code` or `details.reason`: the check is `event:read`
+plus `payload:read-internal` plus the grant of the event's own namespace (the connector's for a dead
+letter), a refusal is `403 PII_REVEAL_NOT_GRANTED`, the audit action is `payload.pii_revealed` with
+`ResourceType::Event` (id `source/event id`) or `ResourceType::Connector`, never collapsed, written in the
+transaction that reads the payload. The structure uses the existing `PayloadProjector` port and
+`JsonPayloadProjector`. A `viewer` therefore cannot reveal event data even with a grant (the grant is
+refused for that role, D274). **Rationale**: one reveal concept across runs and events; the grants, the
+CLI and the audit trail do not learn a second one.
+
+### D295 — An administrator may grant the reveal permission to themselves, audited (owner decision P4, 2026-10-17)
+
+**Decision**: the grant operation does not exclude the caller as the subject; the record is the same
+`payload.reveal_granted` with the actor and the subject visible. **Rationale**: a tenant with one
+administrator would otherwise be unable to reveal anything (members other than the bootstrap
+administrator cannot even be created, G290), and G49 already treats a tenant administrator as trusted.
+**Alternative** rejected: four-eyes (a second person must grant), with a lockout risk for small tenants.
 
 ## Gaps
 
 | # | Gap | Treatment | Status |
 |---|---|---|---|
-| G272 | **The event inbox and dead letters disclose values today.** `getInboxEvent` returns `data` and `listConnectorDeadLetters` returns `body` and `headers` to any `event:read` holder, viewers included. ADR-0033's context and consequences assume every payload is structure-only until this feature. | Not changed by this increment: there is no event schema to carry an annotation and classifying them would break current readers (Studio Integrations, the event e2e suites). Put to the owner as P2. Until decided, an unmarked event payload is **not** `pii` in practice. | Open; owner decision P2 |
+| G272 | **The event inbox and dead letters disclosed values before this feature.** `getInboxEvent` returned `data` and `listConnectorDeadLetters` returned `body` and `headers` to any `event:read` holder, viewers included, against ADR-0033's premise. | Restricted in this increment by D291 to D294 (US08): values need the reveal grant, everyone else gets structure. Field classification of events remains open (G282). | Resolved by restriction (owner decision P2, 2026-10-17); classification open
 | G273 | An inline run input is not validated against `inputSchema` at start (only a claim-check descriptor is). | Disclosure validates at read (D269); non-conforming inputs show as structure only. Start-time validation is a separate behaviour change. | Open |
 | G274 | Until an author adds an `outputSchema` to a node, its output cannot be disclosed. | Adoption: `validate` reports activities without one as informational in the Studio panel; no default schema. | Accepted |
 | G275 | `JournalEvent.payloadRef` is a plain SHA-256 of the payload, readable by any `run:read` holder; a guessable payload (even a `secret` one) can be confirmed by hashing a guess. | Not changed: the digest is the payload's content identity (ADR-0002, ADR-0023). Options if the owner wants it closed: expose an HMAC under a per-tenant key (breaks equality across tenants, which is fine, and any client comparing digests), or hide the field for viewers. | Open |
@@ -311,7 +373,7 @@ by a mechanism other than a schema carrier (P2).
 | G279 | A `secret` field is stored in `payloads` like any value; no encryption at rest of payload content. | Documented (D287); disk and backup encryption are deployment concerns of feature 010. | Accepted |
 | G280 | No Studio screen for reveal grants. | REST and CLI only (D285). | Open |
 | G281 | No SDK REST-client method for the disclosure or the grants. | Out of scope; the five builders get the schema setters only (D284). | Open |
-| G282 | No event type schema registry, so no carrier for inbox data (the follow-up of G272). | Candidate design: a namespace-level `event-types` resource with a schema, pinned by digest on each event. Not designed here. | Open |
+| G282 | No event type schema registry, so no carrier for inbox data (the next step after G272, which the restriction of D291 stands in for). | Candidate design: a namespace-level `event-types` resource with a schema, pinned by digest on each event. Not designed here. | Open |
 | G283 | Retention and deletion per customer or regulator. | Out of scope (ADR-0033 point 6); the default tier's retention applies. | Out of scope |
 | G284 | Erasure of personal data on request (a deletion path that keeps the journal's integrity). | Not designed; the append-only journal and content addressing make it a feature of its own. | Open |
 | G285 | A generic reader of declared state (feature 014) would need its carrier classified; the 014 state schema rejects annotations now (D263). | Revisit if 014 adds a generic reader. | Open |
@@ -320,45 +382,30 @@ by a mechanism other than a schema carrier (P2).
 | G288 | `AuthContext.role` in OpenAPI lists four roles while the code has six (`worker`, `runner`); feature 009 research G39 says "five". Pre-existing drift. | Not corrected here beyond the permissions text; noted so a later documentation pass fixes it. | Open |
 | G289 | `Run.correlationId`, `startedBy` and `Cause.code` are metadata fields a caller or worker can fill; they are not payload values and are not classified. | Unchanged; callers are told not to put personal data there (runbook). | Accepted |
 | G290 | There is no supported way to add a member other than the bootstrap administrator: `provision-tenant` and `seed-dev` create one, the REST API has no membership resource and the control-plane CLI has no add-member command (feature 013 says "an administrator adds members" without a mechanism). | Not built here. Grants (P1 option A) and the role matrix presuppose members; tests insert them through `tests/support`. A membership management surface is a separate decision (013 or a 009 follow-up). | Open |
+| G291 | Event data has no classification carrier, so a reveal of an event returns all of it, including content that is `secret` in the sender's eyes; a dead-letter body is revealed as text. | Accepted until event type schemas exist (G282); the runbook says so. | Accepted |
+| G292 | The restriction of event values breaks every client that read `data`, `body` or `headers` as a plain `event:read` holder (Studio does not: no screen reads them; SDKs have no event-read method; the e2e and contract suites that read them are updated in T016-064). There is no transitional switch. | Release notes, API reference, runbook and OpenAPI descriptions (FR-016-028); clients take the grant and send `reveal=pii`. | Accepted by the owner (P2) |
+| G293 | The structure of event data goes to every `event:read` holder, unlike run payloads, where structure needs `run:payload:inspect` (D278). | Owner wording ("everyone else gets structure only"); a viewer saw the full value before, so the structure is a reduction. Revisit if events get a structure permission. | Accepted |
 
-## Product decisions to confirm
+## Product decisions answered 2026-10-17
 
-The recommended option is implemented in this set. The owner can overrule any of them before the tasks
-that depend on it start.
+The owner answered the four questions on 2026-10-17 (recorded in `docs/owner-decisions.md`, section
+2026-10-17). The options that were weighed are kept so that the reasons stay readable.
 
-**P1 — How is `payload:reveal-pii` granted while the built-in roles stay six?** (blocks T016-032..037)
-
-| Option | What it is | For | Against |
+| # | Question | Answer | D-id |
 |---|---|---|---|
-| A (recommended) | A per-namespace grant list managed through `membership:manage` (D275) | Matches G39's resource-level pattern; limits the reach to a namespace and its environment; no change to `Principal` or the roles; revoked with the membership | One table, three endpoints, one CLI command; `AuthContext` cannot list it |
-| B | A flag on the membership row (`memberships.reveal_pii`), tenant-wide | One column; `Principal` can carry it; `AuthContext` can list it | Reach is the whole tenant, production and development alike; needs a membership management surface that does not exist today (provision and seed only) |
-| C | Hold it by role: add it to `admin` (and nobody else) | No new mechanism | Not "granted explicitly" (ADR-0033); every admin sees all personal data; no least privilege |
-| D | A seventh built-in role (`privacy-reader`) | Simple matrix | A subject has one role, so such a person cannot also be an operator; breaks "six roles" and G39's answer |
+| P1 | How is `payload:reveal-pii` granted while the built-in roles stay six? | A **per-namespace grant list** managed by administrators (worker-binding and secret-access-list precedent); grants and revocations are audited. Rejected: a tenant-wide flag on the membership (reach is the whole tenant, and it needs a membership management surface that does not exist), adding it to `admin` (not explicit), a seventh role (breaks one role per membership). | D275 |
+| P2 | What happens to the event inbox `data` and the connector dead-letter `body` that disclosed values to every `event:read` holder? | **Restrict them now**: they need the same reveal grant; everyone else gets structure only; field classification of events waits for event type schemas. Rejected: leave them and record the exception; restrict by a plain permission with no classification; classify through a consuming `waitEvent` or trigger. This changed the scope (US08, FR-016-026 to FR-016-029, SC-016-010, T016-057 to T016-065). | D291 to D294 |
+| P3 | Two readings of ADR-0033: (a) an undeclared field under a `public` parent; (b) a schema with no annotation, and a payload with no schema. | The **restrictive** reading: (a) it is at least `pii`; (b) a schema with no annotation is `pii` throughout (a reveal holder sees it), a payload with no schema at all is structure only for everyone. | D265, D269 |
+| P4 | May an administrator grant `payload:reveal-pii` to themselves? | **Yes**, audited. Rejected: four-eyes. | D295 |
 
-**P2 — What happens to the event inbox `data` and the connector dead-letter `body`, which disclose
-values to every `event:read` holder today (G272)?**
-
-| Option | What it is | For | Against |
-|---|---|---|---|
-| 1 (recommended for this increment) | Leave them as they are, record the exception in ADR-0033's follow-up and the runbook, and design event type schemas as the next increment (G282) | No breaking change; ADR-0033's carrier model needs a schema that does not exist for events | The stated policy ("unmarked is `pii`") is not true for events until the follow-up ships |
-| 2 | Restrict `data` and `body` now to a permission (for example `payload:read-internal`) with no classification | Closes the widest exposure at once | Breaks viewers and any tool that reads events; it is not the classification policy, only a stopgap |
-| 3 | Classify now through a carrier on the consuming `waitEvent`/trigger | Policy-consistent | The inbox record belongs to no workflow; wrong place; large design |
-
-**P3 — Two readings of ADR-0033 that this set fixes (D265 and the validity gate).** Confirm or correct:
-(a) a value no schema declares is at least `pii`, even under a `public` parent (the literal text would
-make it `public`); (b) a payload with a carrier that has no annotation at all is `pii` throughout and a
-reveal holder sees it, while a payload with **no carrier** (an activity output without `outputSchema`)
-is structure only for everyone. Recommendation: both as written.
-
-**P4 — May an administrator grant `payload:reveal-pii` to themselves?** Options: allow it, audited
-(recommended; a one-administrator tenant would otherwise be unable to reveal anything and the operator
-`system:operator` CLI is not a tenant tool); forbid it (four-eyes, with a lockout risk for small
-tenants).
+One detail goes beyond the owner's words and is reported for confirmation: a dead letter is revealed on
+the single resource only, never on the list (D293).
 
 ## What is not decided
 
-Everything under P1 to P4 is a recommendation, not a decision. Not decided and not designed: the event
-inbox (G272, G282), erasure and retention per regulator (G283, G284), taint tracking (G276), a Studio
-grants screen (G280), SDK client methods (G281), whether `payloadRef` should stop being a plain digest
-(G275), and the production values of the bounds (G287). The design values of D280 are not capacity
-claims.
+Not decided and not designed: field classification of events and the event type schema registry that
+would carry it (G282), whether a dead letter should also be revealable on the list (D293, reported for
+confirmation), erasure and retention per regulator (G283, G284), taint tracking (G276), a Studio grants
+screen (G280), SDK client methods (G281), whether `payloadRef` should stop being a plain digest (G275), a
+membership management surface (G290) and the production values of the bounds (G287). The design values of
+D280 are not capacity claims.

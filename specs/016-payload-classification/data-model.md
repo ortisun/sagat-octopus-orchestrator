@@ -167,8 +167,36 @@ tenant-visible audit. Metrics never carry tenant or run identifiers; spans may c
 | FR-016-005 | `crates/infra-postgres/migrations/*_payload_classification.up.sql`, `crates/infra-postgres/src/definitions.rs` (publish insert) |
 | FR-016-006..009, 013..015 | `crates/application/src/payload_disclosure.rs`, `crates/infra-postgres/src/payload_disclosure.rs`, `crates/api-http/src/routes/payload_disclosure.rs` |
 | FR-016-010..012 | `crates/domain/src/{classification.rs,identity.rs,audit.rs}`, `crates/application/src/{reveal_grants.rs,api_admission.rs}`, `crates/infra-postgres/src/reveal_grants.rs`, `crates/api-http/src/routes/reveal_grants.rs` |
-| FR-016-017 | every file above; the canary suites of `tasks.md` Phase 5 |
+| FR-016-017 | every file above; the canary suites of `tasks.md` Phase 9 |
 | FR-016-018 | `frontend/apps/studio/src/features/runs/PayloadDisclosure.tsx` |
 | FR-016-019 | `apps/cli/src/{workflow.rs,args.rs,reveal.rs}` |
 | FR-016-020 | `sdks/{typescript,go,python,dotnet,java}/` workflow builders |
 | FR-016-025 | `crates/infra-ir/src/diff.rs` |
+| FR-016-026..029 | `crates/application/src/{events.rs,connectors.rs}`, `crates/infra-postgres/src/{events.rs,connectors.rs}`, `crates/api-http/src/{routes/events.rs,routes/connectors.rs,dto_events.rs}` |
+
+## 8. Event inbox and dead letters (US08)
+
+No new table, permission or reason (D294): the check reuses `payload_reveal_grants`, `event:read`,
+`payload:read-internal` and `PII_REVEAL_NOT_GRANTED`. The event's `data` is `pii` as a whole (no carrier),
+so there is no walk and no validity gate: the decision is the pure `visibility(Pii, audience)` of section 1.
+
+| Step | Where | Notes |
+|---|---|---|
+| 1. authorize | `crates/application/src/events.rs` (`event`), `crates/application/src/connectors.rs` (`dead_letter`, `dead_letters`) | `event:read` as today; if `reveal=pii` is present also `payload:read-internal`, otherwise `403` with `PII_REVEAL_NOT_GRANTED`; the list ignores `reveal` |
+| 2. resolve | stores | the event by `(tenant, namespace, source, event id)`, the connector and letter by tenant and connector; a foreign or missing one is the opaque `404` |
+| 3. read, project, audit, commit | `crates/infra-postgres/src/events.rs` (`event`), `crates/infra-postgres/src/connectors.rs` (`dead_letter`, `dead_letters`) | without reveal, the existing pool read followed by projection with `JsonPayloadProjector` (structure, size, `headerCount`), no audit. With reveal, one `begin_safely` transaction: read the grant row of the event's (connector's) namespace, read the payload, insert `payload.pii_revealed`, commit, then return the values; a missing grant rolls back to `403` and a best-effort `payload.reveal_denied` outside the transaction |
+| 4. respond | `crates/api-http/src/routes/events.rs` (`get_event`), `crates/api-http/src/routes/connectors.rs` (`get_dead_letter`, `list_dead_letters`), `crates/api-http/src/dto_events.rs` (`EventBody`, `DeadLetterBody`) | `Cache-Control: private, no-store`; `data`, `body`, `headers` are `Option` and skipped when absent |
+
+The store trait methods gain an audience argument (`EventView::Structure | EventView::Reveal`), so an
+adapter cannot return values without being asked to; the type of a structure answer has no field that
+could carry a value (as `PayloadStructure` has none). `Debug` of the stored payload and of a dead-letter
+body prints sizes only.
+
+Failure and race behaviour: a crash before commit of a reveal leaves no audit row and returns no value; a
+crash after commit and before the response leaves one audit row and no delivered value (a retry audits again);
+a grant revoked or a membership removed between two requests refuses the next one; the event can expire
+between requests, which is the ordinary `404`.
+
+Tenant boundary: every query keeps the authenticated `tenant_id` and the namespace; the grant is read
+for the event's namespace (the connector's for a letter), so a grant in namespace A never reveals a value
+of namespace B. Metrics carry only `surface` and `outcome` (contracts section 4).
