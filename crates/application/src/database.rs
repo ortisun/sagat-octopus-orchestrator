@@ -171,3 +171,15 @@ pub trait DatabaseCredentialsCodec: Send + Sync {
         content: &[u8],
     ) -> Result<bool, InvalidDatabaseCredential>;
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("invalid or oversized managed database result")]
+pub struct InvalidDatabaseResult;
+/// Validates retained managed output before it reaches the journal or blob store.
+pub trait DatabaseResultValidator: Send + Sync {
+    fn validate(
+        &self,
+        content: &[u8],
+        limits: sagat_domain::database::DatabaseLimits,
+    ) -> Result<(), InvalidDatabaseResult>;
+}

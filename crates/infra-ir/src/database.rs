@@ -19,7 +19,7 @@ fn field<'a>(node: &'a Map<String, Value>, name: &str) -> Result<&'a str, Databa
     node.get(name).and_then(Value::as_str).ok_or_else(invalid)
 }
 
-fn value_type(kind: &str) -> Result<DatabaseType, DatabaseError> {
+pub(crate) fn value_type(kind: &str) -> Result<DatabaseType, DatabaseError> {
     Ok(match kind {
         "null" => DatabaseType::Null,
         "boolean" => DatabaseType::Boolean,

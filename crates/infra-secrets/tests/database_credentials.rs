@@ -33,3 +33,27 @@ fn credentials_are_strict_and_sensitive_parts_are_scanned() {
         assert!(codec.decode(&value(invalid)).is_err());
     }
 }
+
+#[test]
+fn output_scan_covers_decoded_json_and_binary_even_with_duplicate_keys() {
+    use base64::Engine as _;
+    let codec = JsonDatabaseCredentials;
+    let credential =
+        SecretValue::new(br#"{"username":"fixture_user","password":"secret"}"#.to_vec()).unwrap();
+    for output in [
+        br#"{"value":"\u0073\u0065\u0063\u0072\u0065\u0074"}"#.to_vec(),
+        br#"{"value":"\u0073\u0065\u0063\u0072\u0065\u0074","value":"safe"}"#.to_vec(),
+        serde_json::to_vec(&serde_json::json!({"type":"binary","value":base64::engine::general_purpose::STANDARD.encode(b"prefix-secret-suffix")})).unwrap(),
+        br#"{"\u0073\u0065\u0063\u0072\u0065\u0074":1}"#.to_vec(),
+    ] { assert!(codec.contains_credential(&credential,&output).unwrap()); }
+    assert!(
+        codec
+            .contains_credential(&credential, b"[malformed")
+            .is_err()
+    );
+    assert!(
+        codec
+            .contains_credential(&credential, &vec![b' '; 4 * 1024 * 1024 + 1])
+            .is_err()
+    );
+}

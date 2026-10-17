@@ -86,11 +86,24 @@ connection message stream without formatting notices, and Sagat's log layer drop
 and parser targets even with TRACE enabled, including records bridged from `log`. OTel exports only Sagat
 spans; the adapter span skips all inputs. Public error categories never include server diagnostics.
 
-Credential-bearing results still require the retained-pin output guard before storage/disclosure
-(T017-017). The existing managed completion/blob gates remain closed at this checkpoint. The new
-credential codec's raw/JSON-escaped fragment check alone is not a complete result validator or an
-encoded-data exfiltration guarantee; canonical result validation and binary/JSON scanning are
-required before those gates are opened.
+The canonical output schema is [database-result.schema.json](database-result.schema.json). The server-side validator also checks UTF-8 byte limits, row/column alignment, column/cell type consistency, lossless value syntax and u64 affected-row bounds.
+
+Inline completion requires the configured result validator and credential codec. It snapshots the
+immutable credential of the exact attempt/generation and its frozen limits, closes the transaction,
+reads OpenBao, and then repeats the current machine/session/binding/lease/cancellation fences before
+persisting anything. Provider failure refuses new completion. An already committed identical report
+replays its durable receipt without another provider read. Rotation and secret deletion cannot replace
+the credential used for this scan.
+
+The codec scans raw bytes and every decoded JSON string/key, including duplicates, plus decoded
+base64 binary content. Input bytes and recursion are bounded; substring search is linear. This covers
+the canonical encodings; it is not an exfiltration guarantee against arbitrary SQL transformations.
+A detected credential is never stored as output. Query attempts fail with `SECRET_IN_OUTPUT`;
+execute attempts wait on the operator with run status `MANUAL_REVIEW` and `OUTCOME_UNKNOWN`.
+Failure to retain a completed write due to quota likewise requires review, with no automatic retry.
+
+Managed blob uploads/commits, result disclosure and production runner wiring remain closed/pending
+at this inline-result checkpoint (T017-017). No complete result-delivery guarantee is claimed yet.
 
 ## Evidence and sources
 

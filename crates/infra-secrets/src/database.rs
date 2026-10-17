@@ -48,21 +48,94 @@ impl DatabaseCredentialsCodec for JsonDatabaseCredentials {
         value: &SecretValue,
         content: &[u8],
     ) -> Result<bool, InvalidDatabaseCredential> {
-        let parsed = self.decode(value)?;
-        for secret in [value, &parsed.username, &parsed.password] {
-            if content.windows(secret.len()).any(|w| w == secret.expose()) {
-                return Ok(true);
-            }
-            let text =
-                std::str::from_utf8(secret.expose()).map_err(|_| InvalidDatabaseCredential)?;
-            let escaped =
-                Zeroizing::new(serde_json::to_vec(text).map_err(|_| InvalidDatabaseCredential)?);
-            // Match the escaped string content, including inside nested JSON, without quotes.
-            let fragment = &escaped[1..escaped.len() - 1];
-            if content.windows(fragment.len()).any(|w| w == fragment) {
-                return Ok(true);
-            }
+        use serde::de::DeserializeSeed as _;
+        if content.len() > sagat_domain::database::DatabaseLimits::MAX.max_result_bytes as usize {
+            return Err(InvalidDatabaseCredential);
         }
-        Ok(false)
+        let parsed = self.decode(value)?;
+        let needles = [value, &parsed.username, &parsed.password]
+            .map(|s| memchr::memmem::Finder::new(s.expose()));
+        if needles.iter().any(|needle| needle.find(content).is_some()) {
+            return Ok(true);
+        }
+        let found = std::cell::Cell::new(false);
+        let scan = ContentScan {
+            needles: &needles,
+            found: &found,
+        };
+        let mut json = serde_json::Deserializer::from_slice(content);
+        scan.deserialize(&mut json)
+            .map_err(|_| InvalidDatabaseCredential)?;
+        json.end().map_err(|_| InvalidDatabaseCredential)?;
+        Ok(found.get())
+    }
+}
+
+/// Walk every JSON string, including duplicate map keys/values, without first constructing a map
+/// that would discard duplicates. Check both decoded Unicode/escapes and base64 binary content.
+/// This recognizes the canonical result encodings; it cannot prevent arbitrary transformations
+/// performed by authorized SQL or a compromised executor.
+#[derive(Clone, Copy)]
+struct ContentScan<'a, 'secret> {
+    needles: &'a [memchr::memmem::Finder<'secret>],
+    found: &'a std::cell::Cell<bool>,
+}
+impl ContentScan<'_, '_> {
+    fn check(&self, bytes: &[u8]) {
+        if self
+            .needles
+            .iter()
+            .any(|needle| needle.find(bytes).is_some())
+        {
+            self.found.set(true);
+        }
+    }
+}
+impl<'de> serde::de::DeserializeSeed<'de> for ContentScan<'_, '_> {
+    type Value = ();
+    fn deserialize<D: serde::Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
+        deserializer.deserialize_any(self)
+    }
+}
+impl<'de> serde::de::Visitor<'de> for ContentScan<'_, '_> {
+    type Value = ();
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("bounded database result JSON")
+    }
+    fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<(), E> {
+        use base64::Engine as _;
+        self.check(value.as_bytes());
+        if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(value) {
+            self.check(&Zeroizing::new(decoded));
+        }
+        Ok(())
+    }
+    fn visit_string<E: serde::de::Error>(self, value: String) -> Result<(), E> {
+        self.visit_str(&Zeroizing::new(value))
+    }
+    fn visit_bool<E: serde::de::Error>(self, _: bool) -> Result<(), E> {
+        Ok(())
+    }
+    fn visit_i64<E: serde::de::Error>(self, _: i64) -> Result<(), E> {
+        Ok(())
+    }
+    fn visit_u64<E: serde::de::Error>(self, _: u64) -> Result<(), E> {
+        Ok(())
+    }
+    fn visit_f64<E: serde::de::Error>(self, _: f64) -> Result<(), E> {
+        Ok(())
+    }
+    fn visit_unit<E: serde::de::Error>(self) -> Result<(), E> {
+        Ok(())
+    }
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut sequence: A) -> Result<(), A::Error> {
+        while sequence.next_element_seed(self)?.is_some() {}
+        Ok(())
+    }
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
+        while map.next_key_seed(self)?.is_some() {
+            map.next_value_seed(self)?;
+        }
+        Ok(())
     }
 }

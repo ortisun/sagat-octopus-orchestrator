@@ -178,6 +178,19 @@ impl PgRunTx {
         Ok(())
     }
 
+    pub(super) async fn database_output_limits(
+        &mut self,
+        node: &NodeId,
+    ) -> Result<sagat_domain::database::DatabaseLimits, StoreError> {
+        let connection = self.database_connection(node).await?;
+        let operation = self
+            .def
+            .node(node)
+            .and_then(Node::database_operation)
+            .ok_or(StoreError::DatabaseUnavailable)?;
+        Ok(operation.limits.intersect(connection.config.limits()))
+    }
+
     pub(super) async fn database_pinned_secret(
         &mut self,
         node: &NodeId,

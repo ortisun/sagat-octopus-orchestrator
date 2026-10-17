@@ -529,6 +529,16 @@ pub trait RunTx: Send {
         async { Err(StoreError::DatabaseUnavailable) }
     }
 
+    /// Frozen connection/operation ceilings for retained output. Pause/revocation blocks new
+    /// capability delivery, but cannot discard evidence of an already delivered attempt.
+    fn database_result_limits(
+        &mut self,
+        _node: &NodeId,
+    ) -> impl Future<Output = Result<sagat_domain::database::DatabaseLimits, StoreError>> + Send
+    {
+        async { Err(StoreError::DatabaseUnavailable) }
+    }
+
     /// Credential evidence survives logical rotation/deletion until attempt/result retention ends.
     fn database_credential(
         &mut self,

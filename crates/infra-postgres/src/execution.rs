@@ -1248,6 +1248,12 @@ impl RunTx for PgRunTx {
     ) -> Result<(), StoreError> {
         self.database_pin(node, secret).await
     }
+    async fn database_result_limits(
+        &mut self,
+        node: &NodeId,
+    ) -> Result<sagat_domain::database::DatabaseLimits, StoreError> {
+        self.database_output_limits(node).await
+    }
     async fn database_credential(
         &mut self,
         node: &NodeId,

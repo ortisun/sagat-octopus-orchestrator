@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 mod admission;
 mod executor;
+mod output;
 #[path = "../../support/mod.rs"]
 mod support;
 
@@ -212,6 +213,7 @@ async fn durable_provider_intents_reconcile_without_plaintext_or_duplicate_rotat
     admission::run(&w, &service).await;
     executor::run(provider.clone()).await;
     executor::grpc(provider.clone()).await;
+    output::run(provider.clone()).await;
 
     // An ACL/membership change during provider I/O must discard the value already read.
     let gated = Arc::new(ReadBarrier {

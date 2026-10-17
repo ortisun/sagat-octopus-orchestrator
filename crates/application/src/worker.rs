@@ -398,6 +398,8 @@ pub struct WorkerService<S, C, E, R> {
     settings: WorkerSettings,
     /// Opens secrets for workers; `None` when the instance has no key ring (secrets are off).
     vault: Option<crate::secrets::SecretReader>,
+    database_credentials: Option<Arc<dyn crate::database::DatabaseCredentialsCodec>>,
+    database_results: Option<Arc<dyn crate::database::DatabaseResultValidator>>,
 }
 
 impl<S, C, E, R> std::fmt::Debug for WorkerService<S, C, E, R> {
@@ -427,7 +429,21 @@ where
             entropy,
             settings,
             vault: None,
+            database_credentials: None,
+            database_results: None,
         }
+    }
+
+    /// Both codecs are required before managed results can enter retention.
+    #[must_use]
+    pub fn with_database_content(
+        mut self,
+        credentials: Arc<dyn crate::database::DatabaseCredentialsCodec>,
+        results: Arc<dyn crate::database::DatabaseResultValidator>,
+    ) -> Self {
+        self.database_credentials = Some(credentials);
+        self.database_results = Some(results);
+        self
     }
 
     pub fn with_secret_provider(
@@ -1405,12 +1421,32 @@ where
         }
         self.verify(&mut tx, task).await?;
         self.ensure_bound(principal, &mut tx, task).await?;
-        // T017-017 enables completion only after the pinned credential's fields and all result
-        // transports have a fail-closed scanner. A capability alone must not open result storage.
+        let mut database_secret_in_output = None;
         if Self::managed_database(&mut tx, task) {
-            return Err(AppError::NotAllowed(
-                "managed database results require content scanning",
-            ));
+            // Blob uploads/commit remain closed until the bounded pre-storage path is wired.
+            if blob.is_some() {
+                return Err(AppError::NotAllowed(
+                    "managed database blobs require content scanning",
+                ));
+            }
+            let before = self
+                .database_output_snapshot(principal, &mut tx, task)
+                .await?;
+            tx.commit().await?;
+            let contains = self
+                .scan_database_output(&before.0, before.1, output)
+                .await?;
+            tx = self.open(principal, task, Lock::Wait).await?;
+            if let Some(ack) = self.replayed(&mut tx, task, &idempotency).await? {
+                return Ok(ack);
+            }
+            let after = self
+                .database_output_snapshot(principal, &mut tx, task)
+                .await?;
+            if before != after {
+                return Err(AppError::StaleAttempt);
+            }
+            database_secret_in_output = contains.then_some(before.0.meta.name);
         }
         if blob.is_some() {
             if task.node.is_reconciliation() || task.node.is_compensation() {
@@ -1433,19 +1469,29 @@ where
         let mut effects = Effects::by(Actor::Worker(principal.subject().as_str().to_owned()), None);
         // A secret the step was given must not come back in its output, where it would be stored in
         // the journal and handed to every later step: the step fails for good instead.
-        if let Some(name) = self.secret_in_output(&mut tx, task, output).await? {
+        let leaked_secret = if database_secret_in_output.is_some() {
+            database_secret_in_output
+        } else {
+            self.secret_in_output(&mut tx, task, output).await?
+        };
+        if let Some(name) = leaked_secret {
             // A detection, counted when found: should the commit below fail the retry finds it again.
             metrics::counter!("secret_output_detected_total").increment(1);
             effects.audit = Some(self.leak_audit(principal, &tx, task, &name, "output"));
             let node = task.node.clone();
             let fence = task.fence;
             let fallback_audit = effects.audit.clone();
+            let code = if Self::database_write(&mut tx, task) {
+                FailureCode::outcome_unknown()
+            } else {
+                FailureCode::secret_in_output()
+            };
             let completed = self
                 .engine
                 .run(&mut tx, effects, move |def, state, now| {
                     let failure = execution::Failure {
                         fence,
-                        code: FailureCode::secret_in_output(),
+                        code,
                         retryable: false,
                         jitter_sample: 0.0,
                     };
@@ -1505,12 +1551,17 @@ where
         if retained + output.len() > MAX_RUN_OUTPUT_BYTES {
             let node = task.node.clone();
             let fence = task.fence;
+            let code = if Self::database_write(&mut tx, task) {
+                FailureCode::outcome_unknown()
+            } else {
+                FailureCode::run_data_limit()
+            };
             let completed = self
                 .engine
                 .run(&mut tx, effects, move |def, state, now| {
                     let failure = execution::Failure {
                         fence,
-                        code: FailureCode::run_data_limit(),
+                        code,
                         retryable: false,
                         jitter_sample: 0.0,
                     };
@@ -1593,10 +1644,27 @@ where
         let fence = task.fence;
         let mut effects = Effects::by(Actor::Worker(principal.subject().as_str().to_owned()), None);
         effects.audit = audit;
+        let managed_write = Self::database_write(&mut tx, task);
         self.engine
             .run(&mut tx, effects, move |def, state, now| {
-                let progress =
-                    execution::fail_step_for_storage_quota(def, state, &node, fence, now)?;
+                let progress = if managed_write {
+                    // A stop request would discard an operator wait during settlement. Preserve
+                    // the ambiguous write for review; it has no automatic retry/onError route.
+                    execution::fail_step(
+                        def,
+                        state,
+                        &node,
+                        execution::Failure {
+                            fence,
+                            code: FailureCode::outcome_unknown(),
+                            retryable: false,
+                            jitter_sample: 0.0,
+                        },
+                        now,
+                    )?
+                } else {
+                    execution::fail_step_for_storage_quota(def, state, &node, fence, now)?
+                };
                 Ok(((), progress))
             })
             .await
@@ -1896,6 +1964,14 @@ where
             .0
             .node(task.node)
             .is_some_and(|n| n.database_operation().is_some())
+    }
+
+    fn database_write<Tx: RunTx>(tx: &mut Tx, task: &TaskRef<'_>) -> bool {
+        tx.parts()
+            .0
+            .node(task.node)
+            .and_then(sagat_domain::workflow::Node::database_operation)
+            .is_some_and(|op| op.kind == sagat_domain::database::OperationKind::Execute)
     }
 
     /// The secrets the step declares, from its definition.

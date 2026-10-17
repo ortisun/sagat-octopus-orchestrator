@@ -1,5 +1,14 @@
 # Verification — feature 017
 
+## Inline managed result checkpoint (2026-10-17)
+
+- `cargo test -p sagat-infra-ir --test database_result -p sagat-infra-secrets --test database_credentials`: 2 schema/type tests and 2 credential-codec/scanner tests passed. Encoded-content checks failed before adding decoded Unicode/base64 and duplicate-key scanning.
+- `cargo test -p sagat-tests --test integration_database_connections`: 2 combined real PostgreSQL/OpenBao fixtures passed, including missing-pin refusal, provider outage, clean completion, exact receipt replay during outage, old credential detection after rotation, binary encoding, query rejection, write review, cancellation while provider I/O is held and full-storage write review/replay. Rejected credential bytes are absent from persisted payloads; projections match journal replay.
+- The initial write assertion incorrectly expected a `NEEDS_REVIEW` step status; the existing contract is step `WAITING` on the operator, run `MANUAL_REVIEW`, journal `step.needs_review`. The corrected assertion verifies those states. The storage test then exposed that generic quota stop settlement cancels an operator wait; the managed-write fallback now records `OUTCOME_UNKNOWN` without that stop request, and the real test passed.
+- Final `cargo clippy -p sagat-application -p sagat-infra-ir -p sagat-infra-secrets -p sagat-infra-postgres --lib -- -D warnings`, formatting and architecture (23 crates) passed. The four focused validator/scanner tests passed again. Broader engine/gRPC/security regressions are running at this checkpoint. Independent read-only review found no inline scanner/fencing issue; its initial quota review missed the settlement problem caught by the real test.
+
+This checkpoint does not enable production execution. Blob scanning/commit, authorized result disclosure, isolated runner, SDK/Studio execution and deployment gates remain pending.
+
 ## Provider foundation (2026-10-17)
 
 - RED: `cargo test -p sagat-infra-secrets --test openbao --no-default-features` failed because the provider port/adapter did not exist.

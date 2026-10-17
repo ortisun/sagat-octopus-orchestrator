@@ -141,6 +141,64 @@ where
         Ok(input)
     }
 
+    #[tracing::instrument(name = "database.output.scan", skip_all)]
+    pub(super) async fn scan_database_output(
+        &self,
+        secret: &crate::secrets::StoredSecret,
+        limits: sagat_domain::database::DatabaseLimits,
+        output: &[u8],
+    ) -> Result<bool, AppError> {
+        let started = std::time::Instant::now();
+        let result = async {
+            let validator = self.database_results.as_ref().ok_or(AppError::NotAllowed(
+                "managed database results require content scanning",
+            ))?;
+            validator.validate(output, limits).map_err(|_| {
+                AppError::NotAllowed("invalid or oversized managed database result")
+            })?;
+            let reader = self.vault.as_ref().ok_or(AppError::Unavailable)?;
+            let codec = self
+                .database_credentials
+                .as_ref()
+                .ok_or(AppError::Unavailable)?;
+            let value = reader.resolve(secret).await?;
+            codec
+                .contains_credential(&value, output)
+                .map_err(|_| AppError::NotAllowed("invalid managed database content"))
+        }
+        .await;
+        let outcome = match &result {
+            Ok(true) => "detected",
+            Ok(false) => "clean",
+            Err(_) => "refused",
+        };
+        metrics::counter!("database_output_scans_total","outcome"=>outcome).increment(1);
+        metrics::histogram!("database_output_scan_seconds","outcome"=>outcome)
+            .record(started.elapsed().as_secs_f64());
+        result
+    }
+
+    pub(super) async fn database_output_snapshot<Tx: RunTx>(
+        &self,
+        principal: &Principal,
+        tx: &mut Tx,
+        task: &TaskRef<'_>,
+    ) -> Result<
+        (
+            crate::secrets::StoredSecret,
+            sagat_domain::database::DatabaseLimits,
+        ),
+        AppError,
+    > {
+        self.database_fence(principal, tx, task).await?;
+        let secret = tx
+            .database_credential(task.node)
+            .await?
+            .ok_or(AppError::Unavailable)?;
+        let limits = tx.database_result_limits(task.node).await?;
+        Ok((secret, limits))
+    }
+
     async fn database_fence<Tx: RunTx>(
         &self,
         principal: &Principal,

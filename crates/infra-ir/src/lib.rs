@@ -11,6 +11,8 @@ mod canonical;
 mod convert;
 pub mod cron;
 mod database;
+mod database_result;
+pub use database_result::JsonDatabaseResultValidator;
 mod diff;
 mod evaluator;
 mod schema;
