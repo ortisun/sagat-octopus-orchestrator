@@ -1,8 +1,9 @@
 # ADR-0033: Payload values are classified per field, and an unmarked field is personal data
 
-**Status:** Accepted direction (owner decision, 2026-10-16); **not implemented**. It needs its own
-feature specification, plan and tests before any value is disclosed. Until then ADR-0028 applies
-unchanged: the platform shows the structure of a payload, never its values.
+**Status:** Accepted direction (owner decision, 2026-10-16); implementation in progress in feature
+016. Production composition and focused tests exist on the integration branch; the complete canary,
+compatibility, browser and release gates remain pending. See
+[the integration evidence](../../tasks/project-completion/integration-notes.md).
 
 **Refines:** ADR-0028 (authorized structural payload inspection). It does not change ADR-0031,
 which already discloses the declared result of a Query or Update, nor the secret model of feature
@@ -71,4 +72,5 @@ owner answered the four product questions on 2026-10-17; none changes the decisi
   event type schemas; until then the data of an event is `pii` as a whole. This is a breaking change for
   readers of those fields and is documented as such.
 
-Still not implemented: this addendum records decisions, not behaviour.
+At adoption, this addendum recorded decisions only. Current implementation evidence is linked in
+the status above; historical owner decisions do not substitute for executable proof.

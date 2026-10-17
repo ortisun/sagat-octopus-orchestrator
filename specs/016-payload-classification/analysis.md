@@ -114,3 +114,12 @@ Checks run on this set (not on any implementation), from the repository root of 
 None of these proves that a design decision is right. The decisions that could be wrong in ways only
 building will show are the walker's soundness (D266-D268), the cost of validating per response (D280,
 D281) and the usability of the inheritance rule (D264). Each has a task that tests or measures it.
+
+
+## Implementation checkpoint — 2026-10-17
+
+The design reviews above are historical. Implementation is now in progress, with exact focused
+results and outstanding gates in `tasks/project-completion/integration-notes.md`. Current combined
+classification proof: 15 contract, 21 real PostgreSQL/HTTP, 2 deferred-audit failure tests and one
+actual Chromium disclosure journey. Full canary, process-crash, upgrade, runtime conformance and
+workspace release acceptance remain open. Canonical task checkboxes name only complete evidence.

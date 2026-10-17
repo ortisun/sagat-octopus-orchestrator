@@ -11,6 +11,24 @@ For the people who connect the platform to the outside world: providers that pos
 - **A message is acknowledged to its broker only after the event is in the inbox.** A crash in between means the broker delivers it again, and the inbox recognises it.
 - The platform does **not** promise exactly-once *delivery* to or from anything outside it.
 
+## Reading retained values: breaking response change in feature 016
+
+Inbox event details return `dataDisclosure`, size and structure by default; `data` is absent.
+Dead-letter details return `bodyDisclosure`, size, header count and structure; `body` and `headers`
+are absent. Dead-letter lists never include bodies or header values, even with a reveal query.
+An opaque answer is expected for non-JSON or truncated retained bytes.
+
+To reveal detail values, send `reveal=pii` and hold `event:read`, current
+`payload:read-internal` and an explicit payload reveal grant in the resource's namespace.
+Administrators also need the grant. Each successful reveal commits one `payload.pii_revealed`
+audit record before returning values. Failure of that audit returns no value. An absent or revoked
+grant returns `403 PII_REVEAL_NOT_GRANTED`. Responses are `private, no-store`.
+
+Clients that assumed `data`, `body` or `headers` were always present must handle the structural
+answer. All event data is PII as a whole until event type schemas exist; workflow field annotations
+do not classify the inbox. Redrive, discard, ingestion and acknowledgements are unchanged.
+See [payload classification](payload-classification.md) for grant management and incident steps.
+
 ## 1. Receiving events from a provider (signed webhook)
 
 ### 1.1 Set up
@@ -158,7 +176,7 @@ The current namespace egress policy is checked for every attempt. NATS and Kafka
 | Question | Where |
 |---|---|
 | Are events piling up undispatched? | gauge `inbox_pending_events`; histogram `event_dispatch_lag_seconds` (admission to dispatch). A tenant at the backlog limit (10 000) gets `429` on ingress. |
-| Is an event stuck? | `GET …/events/{source}/{eventId}`: `status`, `attempts`, `lastError`. An event that fails to dispatch is retried with backoff (a second, doubling, up to ten minutes) and set aside as `DEAD` after 12 attempts; an event that is only waiting for room (a quota of the tenant, a database that cannot be reached) is retried about every half minute without using its attempts, for a day, and then set aside. Each consumer of an event (a trigger, a waiting step) is tried even when another failed, and a retry repeats only what was not done. The error never contains the payload. A `DEAD` event keeps its payload for inspection until its window ends. |
+| Is an event stuck? | `GET …/events/{source}/{eventId}`: `status`, `attempts`, `lastError`. An event that fails to dispatch is retried with backoff (a second, doubling, up to ten minutes) and set aside as `DEAD` after 12 attempts; an event that is only waiting for room (a quota of the tenant, a database that cannot be reached) is retried about every half minute without using its attempts, for a day, and then set aside. Each consumer of an event (a trigger, a waiting step) is tried even when another failed, and a retry repeats only what was not done. The error never contains the payload. A `DEAD` event keeps its payload under the audited reveal policy above until its window ends. |
 | Are webhooks being refused? | `webhook_rejected_total{reason}` (`bad_signature`, `stale_timestamp`, `malformed`, `unknown_endpoint`, `no_signing_secret`, `paused`, `too_large`, `attempts`, `rate`) and the `event.rejected` audit records. A rise in `no_signing_secret` means an endpoint's secret was deleted or no key of the ring opens it: it is logged at error level. |
 | Do waits wake? | `event_wakeups_total{outcome=woken\|lost_race\|refused}`, `trigger_events_total{outcome}`, `runs_started_total{source="trigger"}`. |
 | Are cron ticks late? | `cron_fire_lag_seconds`, `cron_fires_total{outcome}`. |

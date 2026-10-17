@@ -1,9 +1,19 @@
 # Validation guide: per-field payload classification
 
-Nothing in this feature is built. This guide separates what can be run today (checks on the
-specification itself) from the validation of each story, which becomes runnable as the tasks of
-`tasks.md` close. A story is validated only by its named suite passing on a real stack; reading this
-guide is not evidence.
+Implementation is in progress. The focused commands below have actual evidence on the integration
+branch; the manual stack walkthrough and complete release gates remain open. A story is validated
+only by its full named suite passing against the required infrastructure.
+
+## Integration checkpoint — 2026-10-17
+
+- `cargo test -p sagat-tests --test contract_payload_classification --test integration_payload_classification --test fault_payload_classification`: 15 contract, 21 real PostgreSQL/HTTP and 2 deferred-audit fault tests passed (`/tmp/sagat-completion-classification-combined-gates-3.log`).
+- `SAGAT_STUDIO_NO_SANDBOX=1 SAGAT_STUDIO_REBUILD=0 SAGAT_STUDIO_GREP='viewer, developer, operator and revealer' cargo test -p sagat-tests --test e2e_workflow_studio -- --ignored journeys --nocapture`: one real Chromium disclosure journey passed (2.5 s browser, 7.66 s harness; `/tmp/sagat-completion-disclosure-browser.log`). The unrelated sandbox journey was deliberately excluded and is not proven by this command.
+- Python SDK: 261 tests, mypy's 38 files and Ruff passed; this is not all-five runtime conformance.
+
+The commands used the shared target path recorded in the integration notes, three build jobs,
+`CARGO_INCREMENTAL=0` and `RUST_MIN_STACK=16777216`. The Studio build was produced by
+`npm run build --workspace @sagat/studio` before the browser run. Do not interpret this checkpoint
+as proof that every story command or upgrade/crash scenario below has been executed.
 
 ## Runnable today: the specification
 

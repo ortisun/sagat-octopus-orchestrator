@@ -145,3 +145,47 @@ acceptance. The production Studio build passed 16.60 s before that run.
 The cache benchmark report distinguishes D281's 16 MiB serialized schema weight from measured
 compiled retention (~414.24MiB requested live heap, not RSS). A reviewed concurrent-miss accounting
 fix and bounded compile admission are in progress. No actual 16 MiB heap guarantee is inferred.
+
+
+### Registered package, UI and projection gates
+
+- `cargo test -p sagat-domain -p sagat-application -p sagat-infra-schema -p sagat-infra-ir -p sagat-cli`
+  passed: 992 tests, 86 targets (including zero-test doctests), no failures or ignored tests.
+  Log: `/tmp/sagat-completion-classification-package-gates.log`. This includes 5 domain classification,
+  30 identity, 6 audit, 2 annotation-inertness, 20 projector, 4 cache admission/accounting,
+  14 publication classification, 14 semantic diff, 3 production publication and 2 carrier compilation
+  tests. It is a package gate, not the full workspace gate.
+- The latest combined PostgreSQL run passed 25 integration and 4 fault tests
+  (`/tmp/sagat-completion-pinning-races-gates-2.log`). It includes both approved/promotion pinning
+  paths and API/telemetry canaries. The races reconstruct services; they do not prove process crashes.
+- Studio: 85 files / 1,149 tests passed after updating the stale digest-only journal copy assertion;
+  full ESLint and production build passed. Logs: `/tmp/sagat-completion-studio-tests-full-2.log`,
+  `/tmp/sagat-completion-studio-lint-full.log`, `/tmp/sagat-completion-studio-build.log`.
+- Generated API/CLI references passed all 8 `contract_developer_experience` tests with
+  `SAGAT_DOCS_BLESS=1` (`/tmp/sagat-completion-reference-gates.log`). The generator now retains
+  approved operation descriptions for extensions, including the three event-read breaks.
+- `SAGAT_PERF_REPORT=tests/performance/reports/payload-classification.md cargo test -p sagat-tests
+  --test perf_payload_classification -- --ignored --nocapture` passed 1/1, 720 measured projections,
+  zero failures (`/tmp/sagat-completion-classification-performance-registered.log`). The checked-in
+  report records actual percentiles, encoded sizes and heap snapshots. The 16 MiB cache policy is
+  serialized schema weight; measured retained compiled heap was 414.24 MiB, not RSS.
+
+### Actual child result carrier correction
+
+`cargo test -p sagat-tests --test integration_payload_classification step_outputs::child
+-- --test-threads=1` failed on the actual G21 `child.finished` result: the retained payload was
+ineligible despite a parent child-node schema (`/tmp/sagat-completion-child-carrier-red-2.log`).
+The resolver now accepts that event only for the exact pinned parent `child` node and persisted
+scope. No journal event is duplicated and no database carrier becomes eligible.
+
+`cargo test -p sagat-tests --test integration_payload_classification step_outputs::
+-- --test-threads=1` then passed all 6 tests in 27.15 s
+(`/tmp/sagat-completion-step-outputs-green.log`), including actual activity, wait, reconciliation,
+built Docker script, own-pinned child input/result, parent completion, rerun/retry attempts,
+no-schema/forged blob JSON and catalog-backed external output. Carrier unit tests passed 3/3
+(`/tmp/sagat-completion-child-carrier-unit.log`).
+
+Commands above used the coordinated warmed target, `CARGO_INCREMENTAL=0`, `CARGO_BUILD_JOBS=3`
+and `RUST_MIN_STACK=16777216`. Reused worktrees can leave incompatible local-crate metadata in
+that target; refreshing the current workspace source mtimes forces its actual interfaces to
+recompile. Earlier stale-metadata compilation failures are not counted as passing tests.

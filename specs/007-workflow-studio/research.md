@@ -289,3 +289,14 @@ automated CI evidence for this branch is recorded separately.
 G167 resolved by T007-056 (2026-10-12): the authorized Studio confirmation uses the existing
 signal endpoint; eight component tests and a real browser/API/engine waiting-run journey pass.
 The earlier entry describes the restyle's scope, not the current action set.
+
+
+## Feature 016 integration checkpoint — 2026-10-17
+
+G144 now has an explicit classified disclosure view alongside structural inspection. The real
+Chromium journey passed for viewer, developer, operator and revealer, including keyboard reveal,
+forbidden canary absence and no persisted PII. This focused journey excludes the unrelated script
+sandbox journey and is not human screen-reader acceptance or the full Studio release gate.
+
+Focused commands and remaining gates are in
+`tasks/project-completion/integration-notes.md`; final release acceptance remains pending.

@@ -207,3 +207,41 @@ Made from `specs/001-platform-foundation/contracts/openapi.yaml` (version 0.1.0)
 | `listWorkflowVersions` | `GET /workflows/{workflowId}/versions` | List the published versions of a workflow | 200 |  | 002 |
 | `getWorkflowVersion` | `GET /workflows/{workflowId}/versions/{versionNumber}` | Get a published version with the document it froze | 200 |  | 002 |
 | `getCompensationPlans` | `GET /workflows/{workflowId}/versions/{versionNumber}/compensation-plans` | Get the compensation plans a version was published with | 200 |  | 003 |
+
+## Extended operation contracts
+
+These descriptions come from the canonical contract. They include response compatibility changes.
+
+### `getConnectorDeadLetter` (feature 016)
+
+Needs `event:read`. This is a breaking feature-016 response change: by default `body` and
+`headers` are absent and the response carries structure, byte size and header count only.
+`reveal=pii` returns the retained body (cut at 64 KiB) and headers only to a caller that also
+holds `payload:read-internal` and a reveal grant in this namespace; otherwise the explicit
+reveal is 403 `PII_REVEAL_NOT_GRANTED`.
+
+
+### `getInboxEvent` (feature 016)
+
+Needs `event:read`. This is a breaking feature-016 response change: by default `data` is
+absent and `dataStructure` describes only types and counts. `reveal=pii` returns `data` only
+to a caller that also holds `payload:read-internal` and a reveal grant in this namespace;
+otherwise that explicit reveal is 403 `PII_REVEAL_NOT_GRANTED`. `status` is `PENDING` while
+the dispatcher has not finished with it, `DISPATCHED` when it has, and `DEAD` after repeated
+dispatch failure (`lastError` names only the failure class).
+
+
+### `listConnectorDeadLetters` (feature 016)
+
+Needs `event:read`. This list never returns a body or headers and has no reveal parameter;
+every item contains only bounded structure and sizes. This is a breaking feature-016 response
+change for clients that previously read those fields. At most 1000 are kept per connector,
+the first ones: once full, a message that cannot become an event is acknowledged and counted
+but not retained.
+
+
+### `operateRun` (feature 003)
+
+CANCEL, PAUSE and RESUME apply to the whole run. RETRY_STEP and RETRY_COMPENSATION ask for another attempt of a step that waits for a decision (needs `run:operate`, and `saga:override` for a step whose outcome may have happened, such as a lost lease or a lookup that could not say; the old attempts stay in the journal; refused with 409 on a step of a saga that stopped going forward). SKIP_COMPENSATION gives up on a compensation, so the saga ends PARTIAL, and RESOLVE_STEP declares that a step happened or did not (both need `saga:override`, which only administrators have). All four need `stepId`, a justification in `reason`, and are audited with it. A step that does not wait for a decision, or one that another operator already decided, is refused with 409.
+
+Feature 008 adds: RETRY_STEP also asks for the attempt of a step that is only waiting out the delay of a retry, now and not when the delay ends (needs `run:operate`; the scheduler's own retry and the operator's cannot both start an attempt: the first to commit wins and the second is refused with 409). MARK_MANUAL_REVIEW holds a step that has not started (ready, or waiting out a retry delay) for a person to decide (needs `run:operate` and `stepId`; the run becomes MANUAL_REVIEW when no other step is still running, nothing more happens to the step until someone retries it or settles it, and what is known about its last attempt (a lost lease, a timeout) is kept, so a saga that is stopped later still undoes it; refused with 409 for a step in flight, one that already waits for a person or one that is done, and for a lookup, which is held by holding the step it is for). RERUN_AS_NEW starts a new run of the same version with the same input and correlation id from a run that ended (needs `run:operate` and `run:start`, takes no `stepId`; refused with 409 for a run that has not ended; the answer names the run in `newRunId`, which says where it came from in `rerunOf`). All of them need a justification in `reason` and are audited with it; the old attempts and the old run stay as they were.

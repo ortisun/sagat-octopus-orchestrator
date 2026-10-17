@@ -45,3 +45,8 @@
 - **Control plane:** APIs, definition, management, authoring.
 - **Execution plane:** scheduler, journal, workers, Saga engine.
 - **Observability plane:** projections, logs, traces, metrics and UI.
+
+- **Payload classification:** the author-declared `public`, `internal`, `pii` or `secret` level on a supported payload schema. Descendants inherit the strictest level; an undeclared property is at least PII. This is a disclosure policy, not secret storage.
+- **Disclosure carrier:** the pinned workflow input/result schema or eligible node output schema which governs one retained payload. Native managed database outputs are outside this closed carrier set.
+- **Payload reveal grant:** an audited, namespace-scoped grant allowing a current internal-read role to request PII explicitly. No built-in role, including admin, receives it automatically.
+- **Classified disclosure:** the explicit, bounded, non-cacheable read of permitted values. A successful PII reveal commits its audit before values are returned; structural inspection remains a separate operation.

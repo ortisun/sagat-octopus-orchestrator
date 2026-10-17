@@ -19,6 +19,7 @@ pub fn api_reference(openapi: &Value, source: &str) -> String {
     let mut by_tag: BTreeMap<String, Vec<(String, usize, String)>> = BTreeMap::new();
     // The operations that take no token: a `security: []` of their own.
     let mut open: Vec<String> = Vec::new();
+    let mut extensions: Vec<(String, String, String)> = Vec::new();
     let methods = ["get", "post", "put", "patch", "delete"];
     let mut count = 0usize;
     for (path, item) in openapi["paths"].as_object().into_iter().flatten() {
@@ -51,6 +52,16 @@ pub fn api_reference(openapi: &Value, source: &str) -> String {
                             .as_str()
                             .is_some_and(|n| n.eq_ignore_ascii_case("idempotency-key"))
                 });
+            if let (Some(feature), Some(description)) = (
+                operation["x-extended"].as_str(),
+                operation["description"].as_str(),
+            ) {
+                extensions.push((
+                    operation["operationId"].as_str().unwrap_or("?").to_owned(),
+                    feature.to_owned(),
+                    description.to_owned(),
+                ));
+            }
             let feature = operation["x-implemented"].as_str().unwrap_or("001");
             let mut row = String::new();
             let _ = write!(
@@ -99,6 +110,20 @@ pub fn api_reference(openapi: &Value, source: &str) -> String {
             let _ = writeln!(out, "{row}");
         }
         out.push('\n');
+    }
+    if !extensions.is_empty() {
+        extensions.sort();
+        let _ = writeln!(out, "## Extended operation contracts\n");
+        let _ = writeln!(
+            out,
+            "These descriptions come from the canonical contract. They include response compatibility changes.\n"
+        );
+        for (operation, feature, description) in extensions {
+            let _ = writeln!(
+                out,
+                "### `{operation}` (feature {feature})\n\n{description}\n"
+            );
+        }
     }
     out.trim_end().to_owned() + "\n"
 }
