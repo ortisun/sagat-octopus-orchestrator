@@ -726,6 +726,70 @@ async fn a_cancellation_reaches_the_worker_through_the_heartbeat() {
     assert!(beat.cancel_requested, "the worker must be told to stop");
 }
 
+/// G141 (owner decision 2026-10-16): a heartbeat that was already on its way when the same lease
+/// reported is answered without an error, with no lease deadline (`0`) and no cancellation, so the
+/// worker stops beating and the call is not counted as a failure. Only the lease that reported gets
+/// this answer: a lost lease and a forged token are still stale attempts.
+#[tokio::test]
+async fn a_heartbeat_after_its_own_report_is_answered_without_an_error() {
+    let p = platform().await;
+    let wf = p.publish("single", &single_ir("single", None)).await;
+    p.start(&wf, &json!({})).await;
+    let mut w = p.worker("wendy").await;
+    w.register(&["act.a"]).await;
+    let lease = w.one_task().await;
+    w.complete(&lease, &json!({})).await.expect("complete");
+
+    let beat = w
+        .client
+        .heartbeat(w.req(w.heartbeat_message(&lease)))
+        .await
+        .expect("a late beat of the reporting lease is not an error")
+        .into_inner();
+    assert_eq!(
+        beat.lease_expires_at_epoch_ms, 0,
+        "no deadline: the attempt is over"
+    );
+    assert!(!beat.cancel_requested);
+
+    let mut forged = w.heartbeat_message(&lease);
+    forged.lease_token = "forged-lease-token".into();
+    let refused = w.client.heartbeat(w.req(forged)).await.expect_err("forged");
+    assert_eq!(machine_code(&refused), "STALE_ATTEMPT");
+}
+
+#[tokio::test]
+async fn a_heartbeat_of_a_lost_lease_stays_a_stale_attempt_after_another_worker_reports() {
+    let p = platform().await;
+    let retry = json!({"maxAttempts": 2, "strategy": "fixed", "initialDelayMs": 1, "maxDelayMs": 1, "jitter": false});
+    let wf = p
+        .publish("retrying", &single_ir("retrying", Some(retry)))
+        .await;
+    let run = p.start(&wf, &json!({})).await;
+    let mut lost = p.worker("wendy").await;
+    lost.register(&["act.a"]).await;
+    let first = lost.one_task().await;
+    p.expire_lease(&run, "a").await;
+    p.tick().await;
+    p.elapse_retry_delay(&run, "a").await;
+    p.tick().await;
+    let mut rescuer = p.worker("rhea").await;
+    rescuer.register(&["act.a"]).await;
+    let second = rescuer.one_task().await;
+    assert!(second.generation > first.generation);
+    rescuer
+        .complete(&second, &json!({}))
+        .await
+        .expect("rescuer completes");
+
+    let refused = lost
+        .client
+        .heartbeat(lost.req(lost.heartbeat_message(&first)))
+        .await
+        .expect_err("the lost lease never reported");
+    assert_eq!(machine_code(&refused), "STALE_ATTEMPT");
+}
+
 #[tokio::test]
 async fn max_inflight_bounds_what_one_session_can_hold() {
     let p = platform().await;
