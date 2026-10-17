@@ -22,7 +22,7 @@ use tonic::transport::Channel;
 use uuid::Uuid;
 
 use super::api::{Options, TestApi, json_of};
-use super::scope_flow::{Sched, publish, worker_request};
+use super::scope_flow::{Sched, publish};
 
 /// The initiator of every run (an admin).
 pub const INITIATOR: &str = "alice";
@@ -238,10 +238,36 @@ impl ApprovalFlow {
     }
 
     pub async fn try_start(&self, workflow: &str, input: Value) -> (StatusCode, Value) {
-        let started = self
+        self.try_start_traced(workflow, input, None).await
+    }
+
+    /// Starts a run under the W3C trace context `traceparent`, if one is given.
+    pub async fn start_traced(&self, workflow: &str, input: Value, traceparent: &str) -> RunId {
+        let (status, body) = self
+            .try_start_traced(workflow, input, Some(traceparent))
+            .await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+        body["runId"]
+            .as_str()
+            .expect("run id")
+            .parse()
+            .expect("run id")
+    }
+
+    async fn try_start_traced(
+        &self,
+        workflow: &str,
+        input: Value,
+        traceparent: Option<&str>,
+    ) -> (StatusCode, Value) {
+        let mut request = self
             .api
             .as_user(Method::POST, "/runs", INITIATOR, "acme")
-            .header("x-octopus-namespace", "payments")
+            .header("x-octopus-namespace", "payments");
+        if let Some(traceparent) = traceparent {
+            request = request.header("traceparent", traceparent);
+        }
+        let started = request
             .header("idempotency-key", Uuid::now_v7().to_string())
             .json(&json!({"workflowId": workflow, "input": input}))
             .send()
@@ -477,6 +503,37 @@ impl ApprovalFlow {
             .fetch_one(&self.api.db.pool)
             .await
             .expect("run status")
+    }
+
+    /// What the telemetry projector derives from the run's committed journal now.
+    pub async fn derived(&self, run: RunId) -> sagat_application::telemetry::Derived {
+        use sagat_application::telemetry::{TelemetryStore, derive};
+        let pending = self
+            .api
+            .executions
+            .pending_runs(1000)
+            .await
+            .expect("pending telemetry")
+            .into_iter()
+            .find(|pending| pending.run_id == run)
+            .expect("run pending telemetry");
+        let projected = self
+            .api
+            .executions
+            .load_for_projection(&pending)
+            .await
+            .expect("load telemetry projection")
+            .expect("traceable run");
+        derive(&projected.facts, &projected.entries, projected.applied_seq)
+    }
+
+    /// The trace id the run was started under.
+    pub async fn trace_of(&self, run: RunId) -> String {
+        sqlx::query_scalar("SELECT trace_id FROM runs WHERE id = $1")
+            .bind(run.as_uuid())
+            .fetch_one(&self.api.db.pool)
+            .await
+            .expect("trace id")
     }
 
     /// The status of a root step of the run, if it exists.

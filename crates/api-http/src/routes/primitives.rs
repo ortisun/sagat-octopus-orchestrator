@@ -23,6 +23,7 @@ use sagat_domain::execution::{
     ApprovalDecisionCommand, ApprovalError, ApprovalReceiptId, ApprovalRequestId, RunId,
 };
 use sagat_domain::workflow::Digest;
+use sagat_telemetry::{WorkflowPrimitiveKind, WorkflowPrimitiveMetric};
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 use tower_http::limit::RequestBodyLimitLayer;
@@ -237,7 +238,6 @@ pub async fn list_approvals<B: ApprovalApi>(
     } else {
         None
     };
-    metrics::counter!("workflow_approval_http_reads_total", "outcome" => "listed").increment(1);
     tracing::info!(item_count = found.len(), "workflow approvals listed");
     let mut headers = HeaderMap::new();
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
@@ -250,7 +250,31 @@ pub async fn list_approvals<B: ApprovalApi>(
     ))
 }
 
+/// Decides an approval. A refusal that has a closed rejection code counts once in the declared
+/// `workflow_primitive_rejections_total{kind="approval",code}`; the committed outcomes are counted from
+/// the journal by the telemetry projector (`workflow_primitive_transitions_total`,
+/// `workflow_approval_wait_seconds`), so this route keeps no series of its own.
 pub async fn decide_approval<B: ApprovalApi>(
+    caller: Caller,
+    state: State<B>,
+    approval_id: Path<String>,
+    body: ApiJson<DecideApprovalBody>,
+) -> Result<(HeaderMap, Json<ApprovalDecisionReceiptBody>), ApiError> {
+    let result = decide_approval_inner(caller, state, approval_id, body).await;
+    if let Err(error) = &result
+        && let Some(code) = error.primitive_rejection()
+    {
+        metrics::counter!(
+            WorkflowPrimitiveMetric::Rejections.as_str(),
+            "kind" => WorkflowPrimitiveKind::Approval.as_str(),
+            "code" => code.as_str(),
+        )
+        .increment(1);
+    }
+    result
+}
+
+async fn decide_approval_inner<B: ApprovalApi>(
     caller: Caller,
     State(state): State<B>,
     Path(approval_id): Path<String>,
@@ -308,7 +332,6 @@ pub async fn decide_approval<B: ApprovalApi>(
     } else {
         "committed"
     };
-    metrics::counter!("workflow_approval_http_decisions_total", "outcome" => outcome).increment(1);
     tracing::info!(outcome, "workflow approval decision accepted");
 
     let mut headers = HeaderMap::new();
