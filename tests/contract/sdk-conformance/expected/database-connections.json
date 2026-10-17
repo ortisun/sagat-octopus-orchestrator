@@ -265,7 +265,7 @@
           "id": "refused",
           "kind": "FORWARD",
           "status": "FAILED",
-          "type": "activity",
+          "type": "database",
           "waitingOn": null
         }
       ],
@@ -294,7 +294,7 @@
           "id": "write",
           "kind": "FORWARD",
           "status": "SUCCEEDED",
-          "type": "activity",
+          "type": "database",
           "waitingOn": null
         }
       ],
@@ -323,7 +323,7 @@
           "id": "dependent",
           "kind": "FORWARD",
           "status": "SUCCEEDED",
-          "type": "activity",
+          "type": "database",
           "waitingOn": null
         },
         {
@@ -334,7 +334,7 @@
           "id": "query",
           "kind": "FORWARD",
           "status": "SUCCEEDED",
-          "type": "activity",
+          "type": "database",
           "waitingOn": null
         }
       ],

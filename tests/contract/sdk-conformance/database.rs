@@ -192,6 +192,28 @@ impl Fixture {
         if calls.len() != 2 {
             return Err("managed SQL must never be dispatched to an ordinary SDK worker".into());
         }
+        let runs = out["serverState"]
+            .as_array()
+            .ok_or("missing database graph")?;
+        let mut managed = 0;
+        for run in runs {
+            for node in run["nodes"].as_array().ok_or("missing graph nodes")? {
+                let expected = match node["id"].as_str() {
+                    Some("query" | "dependent" | "write" | "refused") => {
+                        managed += 1;
+                        "database"
+                    }
+                    Some("consume") => "activity",
+                    _ => return Err("unexpected database graph node".into()),
+                };
+                if node["type"] != expected {
+                    return Err("database graph lost its authored node type".into());
+                }
+            }
+        }
+        if managed != 4 {
+            return Err("database graph is missing a managed operation".into());
+        }
         let typed = calls
             .iter()
             .find(|call| call["steps"].get("query").is_some())
