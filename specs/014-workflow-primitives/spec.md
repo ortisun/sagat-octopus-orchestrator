@@ -26,6 +26,12 @@ activity may declare `compensateWith`, `reconcileWith`, `irreversible` and `high
 cancelled scope then compensates its completed iterations (FR-014-005, FR-014-006). Admission remains
 disabled until an administrator sets the tenant-wide iteration-concurrency quota. A restricted
 public loop with an activity/return body has focused PostgreSQL restart and rollback evidence.
+Scoped scheduler expiry/retry, worker discovery/claim and heartbeat now use exact-path transactions.
+Inline report and capability conversion, broader body planning and the large resource gates remain
+separate work; these focused bounded paths do not establish the production ceilings. A new child is
+admitted under its parent's shard lease only inside its uncommitted zero-event creation transaction;
+a reopened child requires its own shard lease for subsequent scheduler mutations.
+
 Other collection and loop graphs and nested scopes remain closed for general publication. The
 remaining acceptance and release evidence is tracked
 in [the validation report](./validation-report.md).

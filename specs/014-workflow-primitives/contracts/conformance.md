@@ -126,6 +126,21 @@ quota/refusal/unreadable-definition counters. Tests revoke unrelated history SEL
 lease failure and use actual binding-lock waits to check current role/session revocation and lock
 order. These checks alone do not close the full compatibility or large resource acceptance tasks.
 
+### Parent authority during child creation
+
+Normal full and bounded scheduler mutations require the lease of their own run's shard. Starting
+a child is an action admitted by its parent's shard owner. The new child's creation transaction
+therefore uses an explicit parent-shard fence, deriving the parent from immutable admission
+metadata. It is available only before the new child's first event in its uncommitted creation
+transaction. Reopened children, ordinary Root transactions and already-mutated transactions cannot
+use it. Owner, generation, shard identity and expiry are still checked under the shared shard row
+lock, with database time sampled after lock contention. Losing that fence rolls back child creation.
+
+The continuation child-start test checks creation and rejection after reopening; the ordinary-run
+negative test retains a successful own-shard check. The two-replica child/parent suite verifies that
+parent ownership chooses the creator even when child shard ownership differs. These controls do
+not authorize subsequent child mutations using a parent's lease.
+
 The automatic scoped lease-expiry and retry passes now use this port: load one exact path outside
 the write lock, compare the run revision under lock, hold the current shard fence and recheck live
 expiry clocks before persisting the addressed command. A revision race is skipped for later

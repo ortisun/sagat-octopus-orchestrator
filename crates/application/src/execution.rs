@@ -964,6 +964,17 @@ pub trait RunTx: Send {
         lease: crate::shards::Lease,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 
+    /// A new child is admitted by the owner of its immutable parent's shard. This exceptional
+    /// fence is valid only in the uncommitted creation transaction, before its first event.
+    /// Existing children and ordinary run mutations must use their own `holds_shard` fence.
+    fn holds_parent_shard(
+        &mut self,
+        _owner: &str,
+        _lease: crate::shards::Lease,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
+        async { Ok(false) }
+    }
+
     /// Whether the worker identity `subject` is being drained in this run's namespace. It takes
     /// the drain's lock in shared mode, held to the end of the transaction, and a drain takes it
     /// exclusively: a drain does not return while a transaction that found the worker serving is

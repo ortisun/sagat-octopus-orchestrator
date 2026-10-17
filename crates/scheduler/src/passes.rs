@@ -477,6 +477,18 @@ impl View {
             Hold::Lost => Ok(false),
         }
     }
+
+    async fn holds_child_start<Tx: RunTx>(
+        &self,
+        tx: &mut Tx,
+        hold: &Hold,
+    ) -> Result<bool, StoreError> {
+        match hold {
+            Hold::Nothing => Ok(true),
+            Hold::Lease(lease) => tx.holds_parent_shard(&self.owner, *lease).await,
+            Hold::Lost => Ok(false),
+        }
+    }
 }
 
 /// The scheduler over a store, an evaluator and a source of jitter.
@@ -4697,7 +4709,7 @@ where
             Ok(Applied::Done(mut tx)) => {
                 // The fence, before anything is committed: a replica that lost the parent's shard
                 // while it was reading must not leave a child run behind (dropping rolls it back).
-                if !view.holds(&mut tx, &hold).await? {
+                if !view.holds_child_start(&mut tx, &hold).await? {
                     return Ok((Outcome::Fenced, false));
                 }
                 let effects = Effects::by(Actor::System("scheduler"), parent.info.trace_id.clone());

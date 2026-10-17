@@ -189,7 +189,11 @@ fence ordering. Handoff inserts a successor rather than locking two existing run
 transitions meet through a durable child-instance link: each locks only its own chain/run then the
 link, which holds cancellation/final-outcome/settlement state. The child's handoff checks its link
 latch under lock; final notification is applied once under the parent's shard fence. Keep legacy
-parent-first writers separate until explicitly migrated. Both paths use IR v1; select the protocol
+parent-first writers separate until explicitly migrated. Starting a child uses an explicit parent-shard
+creation fence before the child's first event. The adapter derives that parent from immutable
+admission metadata and refuses that fence on reopened or already-mutated transactions; normal
+full/bounded mutations continue to require their own run's shard. Owner/generation/expiry remain
+locked and checked at current database time. Both paths use IR v1; select the protocol
 from immutable definition capabilities and explicit stored chain/identity data. `data-model.md`
 and ADR-0030 specify the order, with the compatibility refinement in ADR-0032.
 

@@ -1611,3 +1611,20 @@ diagnostic remains **328/15/1 ignored**: it also exposed a distinct child-start 
 and connection exhaustion from parallel default-thread harnesses. An isolated child-start failure
 confirms that defect independently of the exhausted profile. Final protocol/provider/SDK repeats,
 child-admission correction, report/capability conversion and large resource gates remain open.
+
+
+### Combined integration: child creation under parent shard authority
+
+An explicit creation-only parent fence restores parent-owned child admission while keeping normal
+run-shard checks strict. The adapter rejects reopened/ordinary/already-mutated transactions and
+samples expiry after the shard lock. The old isolated child-start baseline failed **0/1**; the
+complete pre-report-regression workflow suite now passed **344/344, 1 ignored**, 272.41 s, including
+all eight child-chain failures and the six completed-loop compensation failures. Three real two-
+replica ownership tests passed **3/3**, 17.38 s. Application/PostgreSQL/scheduler strict all-target
+Clippy passed; no new privilege, schema, wire or external-effect guarantee was added.
+
+The claim server also passed complete gRPC **70/70**, OpenBao **3/3**, and the three all-five SDK
+identity/collection-compensation/loop-compensation repeats recorded in the integration notes.
+These are focused current checkpoints. Five newly added report/history/current-receipt regressions
+subsequently failed **0/5** and are outside the 344-pass checkpoint. Inline report/capability
+conversion, wider graphs/nesting and full release/resource acceptance remain open.

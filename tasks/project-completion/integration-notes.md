@@ -1218,3 +1218,41 @@ Strict whole-workspace/all-target Clippy subsequently passed, 1 min 43 s
 failures are retained in `...-check{,-2}.log`. Protocol/provider and all-five current claim repeats
 are still pending at this commit; this focused checkpoint does not relabel the 328/15 diagnostic
 or close the child-admission defect or the open feature tasks.
+
+### Completed claim repeats and explicit parent-shard child admission
+
+The claim server's complete runtime-role gRPC repeat passed **70/70**, 72.63 s, followed in the
+same command by PostgreSQL/OpenBao **3/3**, 37.34 s
+(`/tmp/sagat-completion-bounded-worker-claim-grpc-provider-regression-2.log`, four harness threads).
+Three current shared scenarios each passed in all five SDKs without altered expected files:
+`scoped-identity` 50.79 s, `collection-compensation` 63.52 s, `loop-compensation` 51.14 s.
+Per-scenario logs and exit/time manifest:
+`/tmp/sagat-completion-bounded-worker-claim-sdk-results.json`. These use the unchanged reviewed
+language artifacts with the newly compiled claim server, and are not the full 55-scenario gate.
+
+The strict ordinary run-shard guard remains unchanged. A separate `holds_parent_shard` port now
+checks the parent recorded in a new child's immutable admission metadata, using the same locked
+owner/generation/current-expiry helper. It refuses ordinary/reopened transactions and any child
+creation transaction after its first event; no arbitrary parent is supplied by the caller. Only
+scheduler child creation calls it, before start events. Losing the parent fence rolls back child
+creation. The existing child-start assertion additionally proves the parent fence cannot be reused
+after reopening its committed child; a new ordinary-run negative test retains a valid own-shard
+positive assertion. This restores the documented parent-owned admission without relaxing normal
+full/bounded fences, schema, privileges or external-effect rules.
+
+The complete workflow suite compiled before the five new report regression tests passed
+**344/344, 1 ignored**, 272.41 s
+(`/tmp/sagat-completion-child-admission-workflow-regression.log`, four harness threads). It includes
+all eight formerly failing child-chain cases, all six NULL-loop-fence cases and the formerly timed-
+out capacity API fixture. The three two-replica parent/child ownership regressions passed **3/3**,
+17.38 s (`...-two-replica-regression.log`, one harness thread). Strict application/PostgreSQL/
+scheduler all-target Clippy passed, 1 min 07 s (`...-clippy.log`); its package selection compiled
+its own dependency feature combination and is not another whole-workspace Clippy claim.
+
+The subsequent five report regressions failed **0/5**, 8.93 s
+(`/tmp/sagat-completion-bounded-worker-report-red-2.log`): scoped completion/failure still opened
+full history; ordinary Root receipt replay returned an acknowledgement after current role/binding
+withdrawal or an incorrect echoed step id. The first invocation had an invalid test-fixture helper
+and failed compilation (`...-report-red.log`). These new failures are not included in the preceding
+344-pass checkpoint and remain the next implementation slice. Full release/resource gates and all
+open feature tasks remain unchecked.

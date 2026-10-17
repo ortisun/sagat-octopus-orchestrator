@@ -12,11 +12,14 @@ use sagat_application::chain_progress::{
     ChainHandoffCommand, ChainProgressError, ChainProgressStore, ContinuationSelection,
 };
 use sagat_application::entropy::SystemEntropy;
-use sagat_application::execution::Engine;
+use sagat_application::execution::{Engine, RunTx};
 use sagat_application::primitives::SchedulerAuthority;
+use sagat_application::runs::{Lock, RunStore};
+use sagat_application::shards::Lease;
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::execution::{ChainError, ChainScope, QuiescenceBlocker, RunId, RunStatus};
 use sagat_domain::identity::Subject;
+use sagat_domain::sharding::Shard;
 use sagat_domain::workflow::NodeId;
 use sagat_infra_ir::JsonEvaluator;
 use sagat_scheduler::{
@@ -785,6 +788,32 @@ async fn a_continuation_workflow_starts_as_a_child_with_a_durable_link() {
     assert_eq!(
         family.world.step_status(family.parent, "kid").await,
         Some(StepStatus::Waiting)
+    );
+    let parent_shard = Shard::of(family.parent.as_uuid());
+    let (owner, generation): (String, i64) =
+        sqlx::query_as("SELECT owner,generation FROM scheduler_shards WHERE shard=$1")
+            .bind(i16::from(parent_shard.index()))
+            .fetch_one(&family.world.db.pool)
+            .await
+            .expect("current parent lease");
+    let mut reopened = family
+        .world
+        .store
+        .begin(family.world.admin.tenant_id(), family.chain, Lock::Wait)
+        .await
+        .expect("reopen committed child")
+        .expect("child exists");
+    assert!(
+        !reopened
+            .holds_parent_shard(
+                &owner,
+                Lease {
+                    shard: parent_shard,
+                    generation: u64::try_from(generation).expect("generation"),
+                }
+            )
+            .await
+            .expect("child admission capability is unavailable after commit")
     );
 }
 

@@ -3400,6 +3400,26 @@ impl RunTx for PgRunTx {
         Ok(true)
     }
 
+    async fn holds_parent_shard(
+        &mut self,
+        owner: &str,
+        lease: sagat_application::shards::Lease,
+    ) -> Result<bool, StoreError> {
+        // Only create() constructs this uncommitted zero-event transaction. Reopening a child
+        // clears initialize_chain; its parent's authority cannot authorize later child changes.
+        if !self.initialize_chain || self.persisted != 0 || self.state.version() != 0 {
+            return Ok(false);
+        }
+        let Some(parent) = &self.info.parent else {
+            return Ok(false);
+        };
+        let Some(now) = locked_scheduler_time(&mut self.tx, parent.run, owner, lease).await? else {
+            return Ok(false);
+        };
+        self.now = now;
+        Ok(true)
+    }
+
     async fn worker_drained(&mut self, subject: &str) -> Result<bool, StoreError> {
         sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))")
             .bind(crate::operations::drain_lock_key(

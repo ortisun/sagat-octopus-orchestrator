@@ -17,6 +17,39 @@ fn first_path() -> InstancePath {
 }
 
 #[tokio::test]
+async fn an_existing_run_cannot_use_child_admission_authority() {
+    let fixture = fixture("ordinary-run-not-child-admission").await;
+    let shard = Shard::of(fixture.run.as_uuid());
+    let (owner, generation): (String, i64) =
+        sqlx::query_as("SELECT owner,generation FROM scheduler_shards WHERE shard=$1")
+            .bind(i16::from(shard.index()))
+            .fetch_one(&fixture.world.db.pool)
+            .await
+            .expect("current run lease");
+    let lease = Lease {
+        shard,
+        generation: u64::try_from(generation).expect("generation"),
+    };
+    let mut tx = fixture
+        .store
+        .begin(fixture.world.admin.tenant_id(), fixture.run, Lock::Wait)
+        .await
+        .expect("ordinary transaction")
+        .expect("run");
+    assert!(
+        !tx.holds_parent_shard(&owner, lease)
+            .await
+            .expect("not a new child")
+    );
+    assert!(
+        tx.holds_shard(&owner, lease)
+            .await
+            .expect("normal own-shard authority remains valid")
+    );
+    tx.commit().await.expect("finish authority read");
+}
+
+#[tokio::test]
 async fn a_bounded_binding_read_holds_current_authority_until_commit() {
     let fixture = fixture("bounded-binding-fence").await;
     let snapshot = fixture
