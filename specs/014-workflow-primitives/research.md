@@ -1231,7 +1231,12 @@ Evidence is in `tests/integration/workflow-primitives/chain_wait.rs`, the `wait`
 - **G504 — Pre-existing, seen while running the SDK suites.** `mypy` reports five errors in
   `sdks/python/conformance/runner.py` (the `listChainRuns` code) and `ruff format --check` lists seven files, both
   on the base commit too. The .NET test `Protocol14StreamsTwoFramesDispatchesBeforeEofAndCancelsTheIdleReceiveOnStop`
-  failed once in a full run on a loaded machine and passes alone (a timing assertion).
+  failed once in a full run on a loaded machine and passes alone (a timing assertion). `sagat-cli`'s
+  `diagnostics::every_code_the_platform_returns_has_help_...` fails on the base commit too: nine domain codes
+  (`BODY_DEPTH_EXCEEDED`, `DUPLICATE_BODY`, `INVALID_CONTINUATION_POLICY`, `INVALID_SCOPE`, `INVALID_SWITCH`,
+  `INVALID_WORKFLOW_LIMIT`, `RECURSIVE_BODY`, `UNKNOWN_BODY`, `UNREACHABLE_BODY`) have no help text in the CLI catalog.
+  Two `fault_workflow_primitives` loop tests (`loops::a_cancel_that_...`) failed once at a load average above 20
+  and passed in two repeats and in the full rerun (82 of 82).
 - **G505 — An approval entrypoint (O441) is still closed.** The wait entry shows the pattern (open the step and
   its durable row in the hand-off transaction); an approval additionally needs its request row and
   `approval.opened` journaled the same way. Not started.
