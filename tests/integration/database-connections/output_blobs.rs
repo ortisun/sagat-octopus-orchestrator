@@ -54,9 +54,11 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
         down: AtomicBool::new(false),
         delay_ms: AtomicU64::new(0),
     });
+    let backend = Arc::new(super::results::ReadFaults::new());
     let p = platform_with(Options {
         secret_provider: Some(faults.clone()),
         blobs: Some(BlobLimits::default()),
+        blob_backend: Some(backend.clone()),
         blob_transfer: sagat_api_grpc::BlobTransfer {
             timeout: Duration::from_secs(1),
             ..Default::default()
@@ -151,6 +153,7 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
             .unwrap()
             .already_applied
     );
+    super::results::check(&p, &ns, &run, &clean, &backend).await;
     faults.down.store(false, Ordering::SeqCst);
     // Application callers get the same receipt even with no provider or codecs configured.
     let reports = sagat_application::worker::WorkerService::new(

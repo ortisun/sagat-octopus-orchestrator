@@ -147,6 +147,32 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
         .await
         .unwrap();
     assert_eq!(ack.step_status.as_str(), "SUCCEEDED");
+    // Inline results use the same dedicated disclosure contract without any blob service/provider.
+    {
+        use sagat_application::database_results::{
+            DatabaseResultRequest, DatabaseResultService, DatabaseResultUseCase,
+        };
+        let results = DatabaseResultService::new(
+            w.store.clone(),
+            SystemClock,
+            JsonDatabaseResultValidator,
+            None,
+        );
+        let prepared = results
+            .prepare(DatabaseResultRequest {
+                principal: w.admin.clone(),
+                namespace: ns,
+                run: clean_run,
+                node: sagat_domain::workflow::NodeId::parse("database").unwrap(),
+                trace_id: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            results.read(prepared).await.unwrap().as_slice(),
+            clean.as_slice()
+        );
+    }
     w.workers = w
         .workers
         .with_secret_provider(Arc::new(Down(provider.clone())));

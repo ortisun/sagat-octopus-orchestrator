@@ -9,6 +9,7 @@ pub mod bindings;
 pub mod clock;
 pub mod connectors;
 pub mod database;
+pub mod database_results;
 pub mod definitions;
 pub mod diff;
 pub mod dispatch;

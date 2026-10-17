@@ -238,6 +238,7 @@ pub struct Options {
     /// Storage shared with another process when a test starts an execution engine separately.
     /// Blob-enabled tests use the in-process memory backend unless they opt in here.
     pub blob_store: Option<BlobStoreConfig>,
+    pub blob_backend: Option<Arc<dyn BlobBackend>>,
     pub blob_transfer: BlobTransfer,
     pub grpc: GrpcConfig,
     /// The most any script may be given.
@@ -270,6 +271,7 @@ impl Default for Options {
             worker: WorkerSettings::default(),
             blobs: None,
             blob_store: None,
+            blob_backend: None,
             blob_transfer: BlobTransfer::default(),
             grpc: GrpcConfig::default(),
             script_ceiling: sagat_domain::scripts::Policy::default(),
@@ -404,6 +406,9 @@ pub async fn start_with(options: Options) -> TestApi {
         );
     }
     let blob_backend = options.blobs.as_ref().map(|_| {
+        if let Some(backend) = &options.blob_backend {
+            return backend.clone();
+        }
         let store = options
             .blob_store
             .as_ref()
@@ -443,6 +448,14 @@ pub async fn start_with(options: Options) -> TestApi {
         executions.clone(),
         SystemClock,
         JsonIrCodec,
+    ))
+    .with_database_results(Arc::new(
+        sagat_application::database_results::DatabaseResultService::new(
+            executions.clone(),
+            SystemClock,
+            sagat_infra_ir::JsonDatabaseResultValidator,
+            blobs.clone(),
+        ),
     ))
     .with_payload_inspections(Arc::new(PayloadInspectionService::new(
         executions.clone(),

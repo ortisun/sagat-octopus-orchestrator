@@ -379,6 +379,35 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/namespaces/{namespaceId}/runs/{runId}/database-results/{nodeId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read one retained database step result after authorization and audit
+         * @description Requires `run:read` and `database:result:read` (Admin by default). The namespace,
+         *     run and node must identify a succeeded managed database step. Ordinary run inspection
+         *     remains structural. No digest, blob ID, query override or bulk selector is accepted.
+         *     Returns the validated complete typed result, limited to 4 MiB and 10000 rows.
+         *     Current membership is checked before object I/O and again in the audit transaction.
+         *     The audit commits before response bytes; failed audit, lost/corrupt content and
+         *     revoked access disclose no result. Reads work independently of OpenBao availability.
+         *     Namespace admission is charged once after scope/permission checks. The read and
+         *     response delivery deadline is the minimum of 30s, configured transfer duration and
+         *     the bearer lifetime. Responses have Cache-Control: private, no-store and nosniff.
+         */
+        get: operations["readDatabaseResult"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/runs/{runId}/payload-inspections": {
         parameters: {
             query?: never;
@@ -2830,6 +2859,61 @@ export interface components {
              */
             requiredProvider?: "openbao";
         };
+        /** Bounded managed database result */
+        DatabaseResult: {
+            columns: {
+                name: string;
+                /** @enum {unknown} */
+                type: "null" | "boolean" | "integer" | "decimal" | "float" | "text" | "timestamp" | "date" | "binary" | "json";
+            }[];
+            rows: components["schemas"]["DatabaseResultCell"][][];
+            affectedRows: string;
+            /** @constant */
+            truncated: false;
+        };
+        DatabaseResultCell: {
+            /** @constant */
+            type: "null";
+            value: null;
+        } | {
+            /** @constant */
+            type: "boolean";
+            value: boolean;
+        } | {
+            /** @constant */
+            type: "integer";
+            value: string;
+        } | {
+            /** @constant */
+            type: "decimal";
+            value: string;
+        } | {
+            /** @constant */
+            type: "float";
+            value: number;
+        } | {
+            /** @constant */
+            type: "text";
+            value: string;
+        } | {
+            /** @constant */
+            type: "timestamp";
+            /** Format: date-time */
+            value: string;
+        } | {
+            /** @constant */
+            type: "date";
+            /** Format: date */
+            value: string;
+        } | {
+            /** @constant */
+            type: "binary";
+            value: string;
+        } | {
+            /** @constant */
+            type: "json";
+            value: unknown;
+        };
         /** @description Positive finite limits. Effective execution uses the minimum of operation, connection, namespace and deployment limits. Zero never means unlimited. */
         DatabaseLimits: {
             /** @default 16384 */
@@ -5050,6 +5134,40 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Run"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    readDatabaseResult: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                runId: components["parameters"]["RunId"];
+                nodeId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One complete audited database result */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    "Cache-Control"?: "private, no-store";
+                    "X-Content-Type-Options"?: "nosniff";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DatabaseResult"];
                 };
             };
             401: components["responses"]["Unauthorized"];

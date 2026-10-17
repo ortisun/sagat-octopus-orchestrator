@@ -26,7 +26,7 @@ Status: Implementing after user approval on 2026-10-16. Check a task only after 
 - [ ] T017-014 Implement PostgreSQL adapter, destination pinning/TLS, restricted transactions, typed/bounded results and fixed probe. FR-017-011..014,016,021. Adapter implemented and tested with PostgreSQL/TLS, malicious frame, CIDR/port policy and log canaries; retained fixed-probe wiring still awaits T017-016.
 - [ ] T017-015 Wire isolated runner process to existing transport, cancellation, heartbeat and safe failure reporting. FR-017-012,018,020.
 - [ ] T017-016 Add retained ad hoc/probe definitions and idempotent durable admission; failure/race tests. FR-017-014,015,018.
-- [ ] T017-017 Add audited bounded result disclosure and unknown-write handling; secret canary tests. FR-017-016..020.
+- [x] T017-017 Add audited bounded result disclosure and unknown-write handling; secret canary tests. FR-017-016..020. Evidence: retained-credential inline/blob guards, quota-to-manual-review, real PostgreSQL/OpenBao result reads/revocation/audit/corruption/timeout, native slow-reader deadline and schema parity. Production managed execution remains dependent on T017-015.
 
 ## D. SDK and Studio
 

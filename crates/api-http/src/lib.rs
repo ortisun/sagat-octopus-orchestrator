@@ -699,6 +699,20 @@ where
         Router::new()
     };
 
+    let database_results = if state.database_results().is_some() {
+        Router::new()
+            .route(
+                "/namespaces/{namespace_id}/runs/{run_id}/database-results/{node_id}",
+                get(routes::database_results::read::<B<S, C, P, X, E>>),
+            )
+            .layer(RequestBodyLimitLayer::new(0))
+            .route_layer(shed())
+            .route_layer(from_fn(routes::database_results::no_store))
+            .with_state(state.clone())
+    } else {
+        Router::new()
+    };
+
     let payload_inspections = if state.payload_inspections().is_some() {
         Router::new()
             .route(
@@ -870,6 +884,7 @@ where
         .route("/ready", get(health::ready::<S, C>))
         .merge(identity_routes)
         .merge(payload_inspections)
+        .merge(database_results)
         .merge(exec_routes)
         .merge(extra_routes)
         .route_layer(from_fn(context::record_route))

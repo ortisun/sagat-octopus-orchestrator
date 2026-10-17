@@ -110,3 +110,36 @@ The separate browser harness sets `STUDIO_DATABASE_CONNECTIONS=1`; the existing 
 - `cargo test -p sagat-telemetry --test logs`: all 11 passed after the final parser filter, including JSON and text-format suppression. `cargo clippy -p sagat-infra-database -p sagat-infra-secrets -p sagat-telemetry -p sagat-application --all-targets -- -D warnings`: passed. The expanded all-target gate caught an older OpenBao fake-server read-count warning; that test now verifies nonempty request input. Architecture check passes with 23 crates; formatting and diff checks pass.
 - Independent read-only review found missing destination-port enforcement. Fixed with bounded deployment/namespace destination scopes (CIDRs and ports); disallowed ports fail before DNS. Tests cover both namespace and operator restrictions. The review found no other high-confidence required driver issue; root review additionally caught the SQL-parser logging issue above.
 - Fresh sessions close after each attempt; there is no idle session/credential cache. This implements the finite connection/idle bounds without promising warm-pool reuse. The adapter is not wired into control-plane/scheduler processes. The isolated runner, retained fixed probe, result validation/scanning/disclosure, SDK/UI execution and deployment evidence remain pending. Managed result storage gates are still closed. The new credential codec is a shared strict decoder with initial raw/JSON-escaped detection; encoded/binary scanning is not claimed complete yet.
+
+### T017-017 result disclosure — verified checkpoint
+
+Added the dedicated namespace/run/node endpoint, current-role recheck after bounded
+object I/O, committed provenance, EOF/digest/type validation and synchronous audit
+before returning bytes. Production control-plane and test composition roots provide
+the result reader; no target SQL driver enters the control plane. OpenAPI and the
+Studio generated client include the route and typed result. This is not completion
+of SDK/UI execution or the managed runner.
+
+Initial endpoint test failed with 404 as expected, then passed with a 350KB committed
+blob while OpenBao was deliberately unavailable. Extended tests passed after correcting fixture mistakes (journal column/event name,
+Vec access and role-update helper), without changing production semantics. Successful read audits
+are per disclosure; denials persist synchronously and deduplicate.
+
+The independent review identified an unbounded response-delivery lifetime despite a
+bounded read. The fix adds a native connection abort handle and retains a deadline
+guard with the Bytes owner and transfer permit. Real TCP test, 4MiB response, 1KiB
+receive buffer, periodic progress, 500ms absolute budget versus 10s stall timeout:
+`cargo test -p sagat-api-http --lib absolute_deadline --locked` — 1 passed. Permit
+recovered before 900ms while the client still held the socket. Reviewer found no
+remaining Required/Critical issues on the focused second pass; reviewer ran no tests.
+
+Final evidence for this checkpoint:
+
+- `cargo test -p sagat-tests --test integration_database_connections --locked`: 3 passed (two combined real-service fixtures plus the OpenAPI/retained-schema parity test). Subscenarios include inline/blob success, unavailable OpenBao, four denied roles, foreign tenant and second namespace, missing/ordinary node, unchanged structural inspection, synchronous audit failure, current-role revocation while object I/O is blocked, corruption and read timeout.
+- `cargo clippy -p sagat-application -p sagat-api-http -p sagat-infra-postgres -p sagat-control-plane --all-targets --locked -- -D warnings`: passed.
+- REST contract regression: 9 passed; platform fault regression: 38 passed; security/multitenancy regression: 95 passed.
+- `cargo test -p sagat-api-http --lib --locked`: 7 passed, including native TLS/keep-alive and absolute delivery deadline.
+- Feature integration target clippy (`-p sagat-tests --test integration_database_connections -- -D warnings`): passed.
+- Studio `check:api` and `typecheck`: passed. Architecture check: 23 crates passed. Formatting and diff whitespace: passed.
+
+The full feature is still incomplete. T017-015/016 runner/ad hoc/probe, all-five SDK execution, Studio execution/results, deployment, cleanup/restore and final fault/performance gates remain pending.

@@ -3,6 +3,7 @@ mod admission;
 mod executor;
 mod output;
 mod output_blobs;
+mod results;
 #[path = "../../support/mod.rs"]
 mod support;
 

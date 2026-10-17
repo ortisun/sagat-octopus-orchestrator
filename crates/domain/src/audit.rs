@@ -44,6 +44,7 @@ pub enum AuditAction {
     SecretProvisioningStarted,
     DatabaseConnectionChanged,
     DatabaseDenied,
+    DatabaseResultRead,
     SecretDeleted,
     /// Someone was allowed to reference a secret from workflows, or no longer is.
     SecretAccessGranted,
@@ -222,6 +223,7 @@ impl AuditAction {
             Self::SecretStored => "secret.stored",
             Self::SecretProvisioningStarted => "secret.provisioning_started",
             Self::DatabaseConnectionChanged => "database.connection_changed",
+            Self::DatabaseResultRead => "database.result_read",
             Self::DatabaseDenied => "database.denied",
             Self::SecretDeleted => "secret.deleted",
             Self::SecretAccessGranted => "secret.access_granted",

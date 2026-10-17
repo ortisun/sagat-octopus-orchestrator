@@ -48,3 +48,16 @@ measurements remain release evidence in T017-025.
 ## Review and verification gates
 
 This proposal accepts no runtime guarantee. Implementation details and finite ceilings are recorded in the [plan](../../specs/017-database-connections/plan.md); pin provider/driver versions; specify token bootstrap, migration, private-network enforcement and default resource limits. Measure the dedicated executor's operational cost and resolution/pooling latency. Prove with real PostgreSQL/OpenBao: cross-tenant denial, provider/engine/target commit faults, DNS/TLS/route refusal, ambiguous writes, stale leases, cancellation races, failed compensation, restart, secret canaries, quota exhaustion and backup/restore. All five SDKs must execute the shared fixtures, and real-browser E2E must cover registration through ad hoc outcome.
+
+
+### Result disclosure implementation
+
+The accepted bounded view is `GET /namespaces/{namespaceId}/runs/{runId}/database-results/{nodeId}`.
+It requires `run:read` plus `database:result:read`, reads only committed managed-step output,
+validates complete content/digests under a 4MiB ceiling, and rechecks current membership and
+output identity in the per-read audit transaction. Object I/O occurs outside that transaction.
+The response is private/no-store. A native transport deadline and a permit retained through
+Hyper's response buffers bound slow consumers as well as backend I/O. See the
+[managed executor contract](../../specs/017-database-connections/contracts/managed-executor.md#audited-result-disclosure)
+for the precise authorization and delivery boundary and
+[verification](../../specs/017-database-connections/verification.md) for executed tests.

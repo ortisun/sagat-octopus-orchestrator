@@ -512,6 +512,44 @@ paths:
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/runs/{runId}/database-results/{nodeId}:
+    get:
+      operationId: readDatabaseResult
+      summary: Read one retained database step result after authorization and audit
+      tags: [Connections]
+      x-implemented: '017'
+      description: |
+        Requires `run:read` and `database:result:read` (Admin by default). The namespace,
+        run and node must identify a succeeded managed database step. Ordinary run inspection
+        remains structural. No digest, blob ID, query override or bulk selector is accepted.
+        Returns the validated complete typed result, limited to 4 MiB and 10000 rows.
+        Current membership is checked before object I/O and again in the audit transaction.
+        The audit commits before response bytes; failed audit, lost/corrupt content and
+        revoked access disclose no result. Reads work independently of OpenBao availability.
+        Namespace admission is charged once after scope/permission checks. The read and
+        response delivery deadline is the minimum of 30s, configured transfer duration and
+        the bearer lifetime. Responses have Cache-Control: private, no-store and nosniff.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/RunId'}
+        - {name: nodeId, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 64}}
+      responses:
+        '200':
+          description: One complete audited database result
+          headers:
+            X-Trace-Id: {$ref: '#/components/headers/TraceId'}
+            X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}
+            Cache-Control: {schema: {type: string, const: 'private, no-store'}}
+            X-Content-Type-Options: {schema: {type: string, const: nosniff}}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DatabaseResult'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
   /runs/{runId}/payload-inspections:
     post:
       operationId: inspectRunPayload
@@ -3771,6 +3809,238 @@ components:
         requestId: {type: string, format: uuid, description: 'Required with OpenBao. Stable identity for retries of this exact write.'}
         expectedVersion: {type: integer, minimum: 0, maximum: 2147483646, description: 'Required with OpenBao. Zero creates; otherwise matches the current logical version.'}
         requiredProvider: {type: string, enum: [openbao], description: 'Refuse with 503 when this authority is not configured. Database connection forms must send this field.'}
+    DatabaseResult:
+      {
+        "title": "Bounded managed database result",
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "columns",
+          "rows",
+          "affectedRows",
+          "truncated"
+        ],
+        "properties": {
+          "columns": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "name",
+                "type"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "maxLength": 63
+                },
+                "type": {
+                  "enum": [
+                    "null",
+                    "boolean",
+                    "integer",
+                    "decimal",
+                    "float",
+                    "text",
+                    "timestamp",
+                    "date",
+                    "binary",
+                    "json"
+                  ]
+                }
+              }
+            }
+          },
+          "rows": {
+            "type": "array",
+            "maxItems": 10000,
+            "items": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/DatabaseResultCell"
+              }
+            }
+          },
+          "affectedRows": {
+            "type": "string",
+            "pattern": "^(0|[1-9][0-9]{0,19})$"
+          },
+          "truncated": {
+            "const": false
+          }
+        }
+      }
+    DatabaseResultCell:
+      {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "type",
+              "value"
+            ],
+            "properties": {
+              "type": {
+                "const": "null"
+              },
+              "value": {
+                "type": "null"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "type",
+              "value"
+            ],
+            "properties": {
+              "type": {
+                "const": "boolean"
+              },
+              "value": {
+                "type": "boolean"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "type",
+              "value"
+            ],
+            "properties": {
+              "type": {
+                "const": "integer"
+              },
+              "value": {
+                "type": "string",
+                "pattern": "^-?[0-9]+$",
+                "maxLength": 40
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "type",
+              "value"
+            ],
+            "properties": {
+              "type": {
+                "const": "decimal"
+              },
+              "value": {
+                "type": "string",
+                "pattern": "^-?[0-9]+(?:\\.[0-9]+)?$",
+                "maxLength": 16384
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "type",
+              "value"
+            ],
+            "properties": {
+              "type": {
+                "const": "float"
+              },
+              "value": {
+                "type": "number"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "type",
+              "value"
+            ],
+            "properties": {
+              "type": {
+                "const": "text"
+              },
+              "value": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "type",
+              "value"
+            ],
+            "properties": {
+              "type": {
+                "const": "timestamp"
+              },
+              "value": {
+                "type": "string",
+                "format": "date-time"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "type",
+              "value"
+            ],
+            "properties": {
+              "type": {
+                "const": "date"
+              },
+              "value": {
+                "type": "string",
+                "format": "date"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "type",
+              "value"
+            ],
+            "properties": {
+              "type": {
+                "const": "binary"
+              },
+              "value": {
+                "type": "string",
+                "contentEncoding": "base64"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "type",
+              "value"
+            ],
+            "properties": {
+              "type": {
+                "const": "json"
+              },
+              "value": {}
+            }
+          }
+        ]
+      }
     DatabaseLimits:
       type: object
       additionalProperties: false

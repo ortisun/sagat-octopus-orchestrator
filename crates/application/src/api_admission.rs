@@ -37,6 +37,7 @@ pub enum ApiOperation {
     RunStart,
     RunRead,
     PayloadInspect,
+    DatabaseResultRead,
     RunOperate,
     RunRerun,
     RunSignal,
@@ -79,6 +80,7 @@ impl ApiOperation {
             Self::RunStart => &[RunStart],
             Self::RunRead => &[RunRead],
             Self::PayloadInspect => &[RunRead, RunPayloadInspect],
+            Self::DatabaseResultRead => &[RunRead, Permission::DatabaseResultRead],
             Self::RunOperate => &[RunOperate],
             Self::RunRerun => &[RunOperate, RunStart],
             Self::RunSignal => &[RunSignal],
@@ -230,7 +232,8 @@ where
 
     /// Consumes one token for a namespace already authorized and canonically resolved by another
     /// application use case. This narrow entry point exists for payload inspection, whose prepare
-    /// phase must resolve the run without reading its payload before admission.
+    /// phase resolves the run before admission. Database result disclosure uses the same entry
+    /// point after validating the retained scope; external content is read only after admission.
     pub async fn admit_resolved_namespace(
         &self,
         tenant: TenantId,

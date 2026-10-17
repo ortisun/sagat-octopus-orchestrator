@@ -639,12 +639,19 @@ pub async fn serve_with_admin(
             Arc::new(sagat_infra_schema::Schemas),
         );
     }
+    let database_results = sagat_application::database_results::DatabaseResultService::new(
+        executions.clone(),
+        SystemClock,
+        sagat_infra_ir::JsonDatabaseResultValidator,
+        runs.input_blobs().cloned(),
+    );
     let exec = ExecState::new(
         state,
         sagat_application::api_admission::ApiAdmissionService::new(executions.clone(), SystemClock),
         DefinitionService::new(executions.clone(), SystemClock, JsonIrCodec),
         runs,
     )
+    .with_database_results(Arc::new(database_results))
     .with_stream_limits(serve.streams)
     .with_blob_transfer(serve.blob_transfer)
     .with_payload_inspections(Arc::new(

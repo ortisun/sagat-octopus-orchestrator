@@ -49,3 +49,32 @@ isolated runner remain pending. Managed failures currently accept only fixed `WO
 closed safe failure vocabulary and integration evidence before enabling SQL execution.
 
 PostgreSQL adapter details and current runtime gates: [target adapter](postgres-executor.md).
+
+## Audited result disclosure
+
+`GET /namespaces/{namespaceId}/runs/{runId}/database-results/{nodeId}` requires both
+`run:read` and `database:result:read` (Admin by default). It selects only a succeeded
+managed database step in that exact tenant/namespace/run, with a retained output and
+an admitted connection binding. Ordinary activities and missing/foreign outputs are
+opaque 404s, including an ordinary activity whose JSON happens to resemble a database
+result. The caller cannot select a digest, object key, arbitrary JSON path or bulk export.
+
+The store selects committed provenance in a short transaction. Inline content is
+hashed; external content must match the committed attempt's catalog descriptor and
+is completely read through verified EOF, bounded by 4 MiB. Both forms pass the typed
+result validator. No OpenBao request is necessary for content already scanned at
+completion. A second short transaction rechecks current membership, scope and output
+digest, then appends `database.result_read` before disclosure. Every successful read
+has its own audit; repeat denials use the existing bounded deduplication policy.
+An audit failure returns no result bytes. The authorization decision linearizes at
+that final transaction; revocation cannot retract bytes already delivered.
+
+HTTP responses are JSON with `Cache-Control: private, no-store` and `nosniff`.
+Reads share finite blob-transfer capacity. A permit remains owned by the response
+bytes through Hyper's buffers. An absolute deadline (minimum of 30s, configured
+transfer duration and token lifetime) covers preparation, object read, audit and
+response delivery. A native-server connection abort handle enforces it independently
+of body polling, including a client that keeps making slow progress. Normal buffer
+release cancels the timer. Missing native server integration fails closed. A delivery
+cutoff can occur after the audit has committed; an audit records authorized disclosure,
+not proof that a client received every byte. Generic payload inspection stays structural.
