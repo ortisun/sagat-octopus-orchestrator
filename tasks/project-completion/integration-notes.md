@@ -734,3 +734,31 @@ the combined profile: an offered protocol 1.999 negotiates the current 1.6 ceili
 cross-tenant disclosure POST needs its valid JSON body before testing opaque resource resolution.
 Their actual PostgreSQL rerun is recorded when complete. The broad checkpoint is retained as
 failed evidence and is not described as a final current-tree pass.
+
+
+### Regression repair after the fresh workspace checkpoint
+
+The complete gRPC/security fixture rerun passed **70 + 17 = 87 tests**, no ignored, with two test
+threads and fresh databases on the owned PostgreSQL (92.90 s and 21.35 s;
+`/tmp/sagat-completion-integration-fixtures-green-2.log`). Both the negotiated response and persisted
+minor now assert 1.6. The earlier first rerun missed the persisted minor assertion and failed;
+it also observed an HTTP/2 BrokenPipe in the cumulative byte-credit case. That case passed isolated
+(7.54 s, `/tmp/sagat-completion-stream-credit-isolated.log`) and in the complete 70-case retry.
+These failures remain retained; no retry is relabeled as an initial success.
+
+The missing pinned .NET images were built from `runners/dotnet/Dockerfile.{builder,runtime}`
+(`/tmp/sagat-completion-dotnet-{builder,runtime}-image.log`). Replaying the actual failed C# E2E
+binary case passed **1/1**, 9.97 s (`/tmp/sagat-completion-dotnet-images-e2e.log`). This establishes
+the image prerequisite and that scenario, not a final repeat of the entire workspace.
+
+The five-SDK retry reached 29 scenarios then aborted at database-connections because the harness
+looked only in this checkout's `target/debug`, ignoring the coordinated target where the runner
+had been built (`/tmp/sagat-completion-current-sdk-conformance-2.log`, 663.39 s). Before that abort,
+all five languages independently reported the same missing `step.routed` compensation events.
+A new domain test genuinely failed on that omission
+(`/tmp/sagat-completion-compensation-routing-red.log`). Global pause/stop fencing now suppresses
+forward routing/release while retaining empty routing of completed derived work. The bounded and
+full planners share this behavior. **39/39** focused planning/compensation tests passed
+(`/tmp/sagat-completion-compensation-routing-green.log`); the reviewed SDK golden is unchanged.
+The runner harnesses now locate a sibling binary of the actual test executable, retaining the
+explicit override. SDK runtime repeats are recorded separately when complete.

@@ -37,7 +37,7 @@ fn body_of(operation: &str) -> Option<Value> {
         "validateWorkflowDraft" => json!({"ir": flow("attacker-flow")}),
         "startRun" => json!({"workflowId": "{workflowId}", "input": {}}),
         "operateRun" => json!({"action": "CANCEL", "reason": "cross-tenant battery probe"}),
-        "inspectRunPayload" => json!({"source": "input"}),
+        "inspectRunPayload" | "discloseRunPayload" => json!({"source": "input"}),
         "signalRun" => json!({"paid": true}),
         // Feature 014: a chain is addressed by its id; the head the attacker claims to have seen
         // is made up, so the only thing that can refuse the call is that the chain is not theirs.
