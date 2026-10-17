@@ -1,0 +1,105 @@
+{
+  "name": "loop-builders",
+  "buildOnly": true,
+  "description": "Builder-only parity for additive v1 while and repeatUntil nodes. The harness does not publish or execute these workflows until server runtime support is enabled.",
+  "workflows": {
+    "pre-and-post-test": {
+      "name": "loop-pre-post",
+      "bodies": {
+        "iteration": {
+          "program": [
+            { "op": "step", "id": "increment", "activity": "counter.increment" },
+            { "op": "return", "id": "return-value", "result": "steps.increment.output" }
+          ]
+        }
+      },
+      "program": [
+        {
+          "op": "while",
+          "id": "pre",
+          "condition": "carry < 3",
+          "body": "iteration",
+          "initial": "input.start",
+          "carry": "bodyResult",
+          "maxIterations": 3,
+          "timeoutMs": 60000,
+          "delayMs": 250,
+          "onError": "failed"
+        },
+        {
+          "op": "repeatUntil",
+          "id": "post",
+          "condition": "carry >= 5",
+          "body": "iteration",
+          "initial": "steps.pre.output",
+          "carry": "bodyResult",
+          "maxIterations": 10000,
+          "timeoutMs": 31622400000
+        },
+        { "op": "end", "id": "done" },
+        { "op": "end", "id": "failed" }
+      ]
+    }
+  },
+  "invalidWorkflows": {
+    "missing-condition": {
+      "contains": "condition",
+      "workflow": {
+        "name": "loop-no-condition",
+        "program": [
+          { "op": "while", "id": "loop", "condition": "", "body": "iteration", "initial": "0", "carry": "bodyResult", "maxIterations": 2, "timeoutMs": 1000 }
+        ]
+      }
+    },
+    "max-iterations": {
+      "contains": "maxIterations",
+      "workflow": {
+        "name": "loop-max-iterations",
+        "program": [
+          { "op": "while", "id": "loop", "condition": "true", "body": "iteration", "initial": "0", "carry": "bodyResult", "maxIterations": 0, "timeoutMs": 1000 }
+        ]
+      }
+    },
+    "timeout": {
+      "contains": "timeoutMs",
+      "workflow": {
+        "name": "loop-timeout",
+        "program": [
+          { "op": "repeatUntil", "id": "loop", "condition": "true", "body": "iteration", "initial": "0", "carry": "bodyResult", "maxIterations": 1, "timeoutMs": 0 }
+        ]
+      }
+    },
+    "delay": {
+      "contains": "delayMs",
+      "workflow": {
+        "name": "loop-delay",
+        "program": [
+          { "op": "repeatUntil", "id": "loop", "condition": "true", "body": "iteration", "initial": "0", "carry": "bodyResult", "maxIterations": 1, "timeoutMs": 1000, "delayMs": 0 }
+        ]
+      }
+    },
+    "unknown-body": {
+      "contains": "not a body",
+      "workflow": {
+        "name": "loop-unknown-body",
+        "program": [
+          { "op": "while", "id": "loop", "condition": "true", "body": "missing", "initial": "0", "carry": "bodyResult", "maxIterations": 1, "timeoutMs": 1000 },
+          { "op": "end", "id": "done" }
+        ]
+      }
+    },
+    "terminal-loop": {
+      "contains": "next node",
+      "workflow": {
+        "name": "loop-terminal",
+        "bodies": {
+          "iteration": { "program": [{ "op": "return", "id": "returned", "result": "carry" }] }
+        },
+        "program": [
+          { "op": "while", "id": "loop", "condition": "true", "body": "iteration", "initial": "0", "carry": "bodyResult", "maxIterations": 1, "timeoutMs": 1000 }
+        ]
+      }
+    }
+  },
+  "steps": []
+}

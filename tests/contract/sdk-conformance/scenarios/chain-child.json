@@ -1,0 +1,42 @@
+{
+  "name": "chain-child",
+  "description": "WP-11: a continuation chain runs as the child of another run. The parent keeps waiting while the chain continues and is told once, by the chain's final outcome; the worker log shows every segment of the child before the parent's own next step.",
+  "workflows": {
+    "kid": {
+      "name": "chain-kid-runtime",
+      "chainPolicy": { "maxSegments": 4, "timeoutMs": 86400000 },
+      "program": [
+        { "op": "step", "id": "work", "activity": "chain.kid" },
+        { "op": "condition", "id": "again", "expression": "input.continue", "ifTrue": "rollover", "ifFalse": "done" },
+        { "op": "continueAsNew", "id": "rollover", "input": "input.next" },
+        { "op": "end", "id": "done" }
+      ]
+    },
+    "mother": {
+      "name": "chain-mother-runtime",
+      "program": [
+        { "op": "invokeChild", "id": "kid", "workflow": "chain-kid-runtime", "options": { "input": "input.kid" } },
+        { "op": "step", "id": "after", "activity": "chain.after" }
+      ]
+    }
+  },
+  "workers": {
+    "current": {
+      "workerName": "chain-child-worker",
+      "protocolVersion": "1.5",
+      "transport": "poll",
+      "maxInflight": 1,
+      "autostart": false,
+      "activities": {
+        "chain.kid": { "behavior": { "sleepMs": 50, "returns": { "ok": true } } },
+        "chain.after": { "behavior": { "returns": { "done": true } } }
+      }
+    }
+  },
+  "steps": [
+    { "id": "start", "op": "start", "workflow": "mother", "input": { "kid": { "stage": 1, "continue": true, "next": { "stage": 2, "continue": true, "next": { "stage": 3, "continue": false } } } } },
+    { "id": "start-worker", "op": "startWorker", "worker": "current" },
+    { "id": "mother-done", "op": "waitForCompletion", "run": "start", "timeoutMs": 60000 },
+    { "id": "stop-worker", "op": "stopWorker", "worker": "current" }
+  ]
+}

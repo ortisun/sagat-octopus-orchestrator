@@ -10,7 +10,8 @@ use reqwest::{Client, Method, RequestBuilder, Response};
 use sagat_api_grpc::{BlobTransfer, GrpcConfig, WorkerGrpc, serve as serve_grpc, worker_service};
 use sagat_api_http::{
     AppState, AuthConfig, ExecState, GovState, HttpJwksFetcher, HttpLimits, RateLimitConfig,
-    ServerConfig, TokenVerifier, auth::install_crypto_provider, router_with_governance,
+    ServerConfig, TokenVerifier, auth::install_crypto_provider,
+    router_with_governance_and_approvals,
 };
 use sagat_application::bindings::BindingService;
 use sagat_application::blobs::{BlobBackend, BlobLimits, BlobService};
@@ -36,9 +37,14 @@ use sagat_domain::identity::{
     Membership, Namespace, NamespaceId, Slug, Subject, Tenant, TenantId, Workspace, WorkspaceId,
 };
 use sagat_infra_blobstore::{BlobStoreConfig, PartSize, build_backend};
-use sagat_infra_ir::{JsonEvaluator, JsonIrCodec, JsonPayloadProjector};
+use sagat_infra_ir::{
+    JsonDeclaredOperationEvaluator, JsonEvaluator, JsonIrCodec, JsonPayloadProjector,
+};
 use sagat_infra_postgres::PgBlobCatalog;
-use sagat_infra_postgres::{PgIdentityStore, PgPool, PgRunStore, PoolConfig, connect};
+use sagat_infra_postgres::{
+    PgApprovalProgressStore, PgDeclaredOperationStore, PgIdentityStore, PgPool, PgRunStore,
+    PoolConfig, connect,
+};
 use serde_json::{Value, json};
 
 use super::oidc::{AUDIENCE, ISSUER, TestIdp};
@@ -52,6 +58,7 @@ pub struct TestApi {
     pub store: PgIdentityStore,
     /// Provisioning handle that always runs as the database owner (the API may not be allowed to).
     pub owner_store: PgIdentityStore,
+    pub execution_store: PgRunStore,
     /// The pool the API itself uses (`db.pool` is the tests' own administrative handle).
     pub api_pool: PgPool,
     /// The run store the API (and the gRPC worker service) use.
@@ -262,7 +269,8 @@ impl Default for Options {
             // Generous: the suites also run on loaded machines, and the tests about timeouts set their own.
             statement_timeout: Duration::from_secs(10),
             server: ServerConfig::default(),
-            runtime_role: false,
+            // `SAGAT_TEST_AS_RUNTIME_ROLE=1` connects the API of every test as the runtime role.
+            runtime_role: super::as_runtime_role(),
             rate_limit: RateLimitConfig::default(),
             subject_rate_limit: RateLimitConfig {
                 per_second: 1000.0,
@@ -326,7 +334,7 @@ pub async fn start_with(options: Options) -> TestApi {
         options.limits.max_in_flight_per_tenant,
     ));
     let cache = DefinitionCache::new(Arc::new(JsonIrCodec), 64);
-    let executions = PgRunStore::new(api_pool.clone(), cache.clone());
+    let executions = PgRunStore::new(api_pool.clone(), cache.clone()).with_scoped_worker_protocol();
     let key_k1 = sagat_infra_secrets::generate_key().expect("a key");
     let keys =
         sagat_infra_secrets::SecretsConfig::parse(&format!("k1:{key_k1}")).expect("a key ring");
@@ -467,7 +475,17 @@ pub async fn start_with(options: Options) -> TestApi {
         )
         .await;
     });
-    let mut app = router_with_governance(exec, governance, options.limits);
+    let mut app = router_with_governance_and_approvals(
+        exec,
+        governance,
+        sagat_application::api_admission::ApiAdmissionService::new(executions.clone(), SystemClock),
+        PgApprovalProgressStore::new(api_pool.clone()),
+        sagat_application::api_admission::ApiAdmissionService::new(executions.clone(), SystemClock),
+        PgDeclaredOperationStore::new(api_pool.clone()),
+        JsonDeclaredOperationEvaluator,
+        SystemClock,
+        options.limits,
+    );
     if let Some(studio) = options.studio {
         app = app.merge(sagat_api_http::studio::studio_router(studio).expect("a Studio build"));
     }
@@ -506,6 +524,7 @@ pub async fn start_with(options: Options) -> TestApi {
         db,
         store,
         owner_store,
+        execution_store: executions.clone(),
         api_pool,
         executions,
         grpc_url: format!("http://{grpc_addr}"),

@@ -70,7 +70,8 @@ async fn when_three_workers_in_ten_die_their_work_is_taken_back_and_nothing_is_l
     // Their leases run out and the replicas take the attempts back.
     for i in &dead {
         for task in &held[*i] {
-            w.age_lease(task.run_id, task.node.as_str()).await;
+            w.age_lease(task.run_id, task.instance.node().as_str())
+                .await;
         }
     }
     let mut expired = 0;
@@ -84,7 +85,8 @@ async fn when_three_workers_in_ten_die_their_work_is_taken_back_and_nothing_is_l
     );
     for i in &dead {
         for task in &held[*i] {
-            w.age_retry(task.run_id, task.node.as_str()).await;
+            w.age_retry(task.run_id, task.instance.node().as_str())
+                .await;
         }
     }
     for scheduler in &schedulers {

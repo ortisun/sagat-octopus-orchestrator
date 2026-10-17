@@ -25,7 +25,7 @@ async fn a_two_step_workflow_runs_to_success_and_the_journal_tells_the_story() {
 
     let session = w.session(&["act.a", "act.b"]).await;
     let a = w.one_task(&session).await;
-    assert_eq!(a.node.as_str(), "a");
+    assert_eq!(a.instance.node().as_str(), "a");
     assert_eq!((a.fence.attempt, a.fence.generation), (1, 1));
     assert_eq!(a.activity.as_str(), "act.a");
     assert_eq!(a.idempotency_key, format!("{run}:a"));
@@ -49,7 +49,7 @@ async fn a_two_step_workflow_runs_to_success_and_the_journal_tells_the_story() {
 
     // The output of a is part of what b receives.
     let b = w.one_task(&session).await;
-    assert_eq!(b.node.as_str(), "b");
+    assert_eq!(b.instance.node().as_str(), "b");
     let input: serde_json::Value = serde_json::from_slice(&b.input).expect("json input");
     assert_eq!(input["steps"]["a"]["output"], json!({"approved": true}));
 

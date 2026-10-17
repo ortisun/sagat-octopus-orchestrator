@@ -12,10 +12,11 @@ use std::time::Duration;
 use sagat_application::error::StoreError;
 use sagat_application::telemetry::{
     Backlog, CONTEXT_EVENTS, JournalEntry, Pending, RunFacts, RunTelemetry, TelemetryStore,
-    ToProject,
+    ToProject, UnsupportedEntry,
 };
-use sagat_domain::execution::RunId;
+use sagat_domain::execution::{ExecutionInstanceId, InstancePath, RunId};
 use sagat_domain::identity::{NamespaceId, TenantId};
+use sagat_domain::workflow::NodeId;
 use sagat_telemetry::{SpanId, TraceId};
 use sqlx::Row;
 use sqlx::postgres::PgRow;
@@ -171,25 +172,30 @@ impl TelemetryStore for PgRunStore {
         let parent_span = col::<Option<String>>(&row, "trace_parent_span")?
             .as_deref()
             .and_then(SpanId::parse);
-        let steps: HashMap<String, Uuid> =
-            sqlx::query("SELECT node, step_id FROM steps WHERE tenant_id = $1 AND run_id = $2")
-                .bind(tenant)
-                .bind(run)
-                .fetch_all(self.pool())
-                .await
-                .map_err(store_error)?
-                .iter()
-                .map(|r| Ok((col::<String>(r, "node")?, col::<Uuid>(r, "step_id")?)))
-                .collect::<Result<_, StoreError>>()?;
+        let steps: HashMap<ExecutionInstanceId, Uuid> = sqlx::query(
+            "SELECT node, step_id, instance_path_nodes, instance_path_indices \
+             FROM steps WHERE tenant_id = $1 AND run_id = $2",
+        )
+        .bind(tenant)
+        .bind(run)
+        .fetch_all(self.pool())
+        .await
+        .map_err(store_error)?
+        .iter()
+        .map(|r| {
+            let node = NodeId::parse_stored(&col::<String>(r, "node")?)
+                .map_err(|_| corrupt("step node"))?;
+            Ok((
+                ExecutionInstanceId::in_path(instance_path(r)?, node),
+                col::<Uuid>(r, "step_id")?,
+            ))
+        })
+        .collect::<Result<_, StoreError>>()?;
 
         let applied = i64::try_from(pending.applied_seq).map_err(|_| corrupt("sequence"))?;
-        let new = journal_rows(self, tenant, run, "seq > $3", applied, Some(BATCH_ENTRIES)).await?;
-        let mut head = pending.applied_seq;
-        let mut entries = Vec::with_capacity(new.len());
-        for entry in new {
-            head = head.max(entry.seq);
-            entries.push(entry);
-        }
+        let (entries, unsupported, last_seen) =
+            journal_rows(self, tenant, run, "seq > $3", applied, Some(BATCH_ENTRIES)).await?;
+        let head = last_seen.unwrap_or(pending.applied_seq);
         let finishes = entries.iter().any(|e| {
             matches!(
                 e.event,
@@ -199,7 +205,9 @@ impl TelemetryStore for PgRunStore {
         // What the new entries need from the part already projected: the leases they close and,
         // when the run is over, the whole journal for the run's own span.
         let context = if finishes {
-            journal_rows(self, tenant, run, "seq <= $3", applied, None).await?
+            journal_rows(self, tenant, run, "seq <= $3", applied, None)
+                .await?
+                .0
         } else {
             let types: Vec<String> = CONTEXT_EVENTS.iter().map(|t| (*t).to_owned()).collect();
             sqlx::query(JOURNAL_CONTEXT)
@@ -238,6 +246,7 @@ impl TelemetryStore for PgRunStore {
         Ok(Some(ToProject {
             facts,
             entries: all,
+            unsupported,
             head_seq: head,
             applied_seq: pending.applied_seq,
         }))
@@ -316,7 +325,8 @@ impl TelemetryStore for PgRunStore {
     }
 }
 
-const JOURNAL_CONTEXT: &str = "SELECT seq, event_type, node, detail, actor, occurred_at FROM run_events \
+const JOURNAL_CONTEXT: &str = "SELECT seq, event_type, node, detail, actor, occurred_at, \
+     instance_path_nodes, instance_path_indices FROM run_events \
      WHERE tenant_id = $1 AND run_id = $2 AND seq <= $3 AND event_type = ANY($4) ORDER BY seq";
 
 async fn journal_rows(
@@ -326,22 +336,34 @@ async fn journal_rows(
     condition: &str,
     applied: i64,
     limit: Option<i64>,
-) -> Result<Vec<JournalEntry>, StoreError> {
+) -> Result<(Vec<JournalEntry>, Vec<UnsupportedEntry>, Option<u64>), StoreError> {
     let sql = format!(
-        "SELECT seq, event_type, node, detail, actor, occurred_at FROM run_events \
+        "SELECT seq, event_type, node, detail, actor, occurred_at, \
+         instance_path_nodes, instance_path_indices FROM run_events \
          WHERE tenant_id = $1 AND run_id = $2 AND {condition} ORDER BY seq LIMIT $4"
     );
-    sqlx::query(sqlx::AssertSqlSafe(sql))
+    let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
         .bind(tenant)
         .bind(run)
         .bind(applied)
         .bind(limit.unwrap_or(i64::MAX))
         .fetch_all(store.pool())
         .await
-        .map_err(store_error)?
-        .iter()
-        .filter_map(|r| entry_from_row(r).transpose())
-        .collect()
+        .map_err(store_error)?;
+    let last_seen = rows.last().map(|row| seq(col(row, "seq")?)).transpose()?;
+    let mut entries = Vec::with_capacity(rows.len());
+    let mut unsupported = Vec::new();
+    for row in &rows {
+        match entry_from_row(row)? {
+            Some(entry) => entries.push(entry),
+            None => unsupported.push(UnsupportedEntry {
+                seq: seq(col(row, "seq")?)?,
+                instance_path: instance_path(row)?,
+                occurred_at: col(row, "occurred_at")?,
+            }),
+        }
+    }
+    Ok((entries, unsupported, last_seen))
 }
 
 /// One journal row as an entry; `None` for an event this version does not know (a journal written
@@ -359,7 +381,27 @@ fn entry_from_row(row: &PgRow) -> Result<Option<JournalEntry>, StoreError> {
     Ok(Some(JournalEntry {
         seq: seq(col(row, "seq")?)?,
         event,
+        instance_path: instance_path(row)?,
         actor: col(row, "actor")?,
         occurred_at,
     }))
+}
+
+fn instance_path(row: &PgRow) -> Result<InstancePath, StoreError> {
+    let nodes: Option<Vec<String>> = col(row, "instance_path_nodes")?;
+    let indices: Option<Vec<i32>> = col(row, "instance_path_indices")?;
+    let (nodes, indices) = match (nodes, indices) {
+        (None, None) => return Ok(InstancePath::root()),
+        (Some(nodes), Some(indices)) if nodes.len() == indices.len() => (nodes, indices),
+        _ => return Err(corrupt("journal instance path")),
+    };
+    let mut path = InstancePath::root();
+    for (node, index) in nodes.into_iter().zip(indices) {
+        let node = NodeId::parse_stored(&node).map_err(|_| corrupt("scope node"))?;
+        let index = u32::try_from(index).map_err(|_| corrupt("scope index"))?;
+        path = path
+            .child(node, index)
+            .map_err(|_| corrupt("journal instance path"))?;
+    }
+    Ok(path)
 }

@@ -117,3 +117,16 @@ Check `docs/architecture/overview.md`, `docs/architecture/execution-semantics.md
 ## Traceability
 
 Requirements `FR-011-###` and criteria `SC-011-###` must be mapped to tasks and tests in `tasks.md` before each implementation starts.
+
+
+## Approved workflow-primitives dependency (2026-10-14)
+
+[ADR-0030](../../docs/adr/ADR-0030-structured-instances-and-continuation-chains.md) and
+[ADR-0031](../../docs/adr/ADR-0031-declared-operation-result-disclosure.md) accept the feature-014
+architecture and separate declared-result disclosure policy.
+[ADR-0032](../../docs/adr/ADR-0032-additive-workflow-ir.md) keeps the workflow IR at v1 and
+supersedes the earlier separate-revision allocation. Published definitions using new capabilities and operation disclosure policies are immutable and each run pins its immutable workflow version and capability requirements. Continuation keeps the same version; rollback disables new starts but retains compatible readers/workers for live runs using those capabilities. Existing root-workflow and publication approval semantics remain unchanged.
+
+This approves the described dependency for implementation, not a runtime guarantee. Canonical
+contracts, migration/replay, tenant/fault tests and applicable five-SDK evidence remain the
+feature-014 release gates; existing feature behavior stays supported.

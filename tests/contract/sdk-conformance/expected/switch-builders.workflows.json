@@ -1,0 +1,86 @@
+{
+  "canonical": {
+    "ordered": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"route\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"switch-flow\"},\"nodes\":[{\"cases\":[{\"id\":\"nonnegative\",\"target\":\"positive\",\"when\":\"input.amount >= 0\"},{\"id\":\"one\",\"target\":\"also-positive\",\"when\":\"input.amount == 1\"}],\"default\":\"fallback\",\"id\":\"route\",\"type\":\"switch\"},{\"activity\":\"amount.positive\",\"id\":\"positive\",\"next\":\"positive-end\",\"type\":\"activity\"},{\"id\":\"positive-end\",\"type\":\"end\"},{\"activity\":\"amount.also-positive\",\"id\":\"also-positive\",\"next\":\"also-positive-end\",\"type\":\"activity\"},{\"id\":\"also-positive-end\",\"type\":\"end\"},{\"activity\":\"amount.fallback\",\"id\":\"fallback\",\"next\":\"fallback-end\",\"type\":\"activity\"},{\"id\":\"fallback-end\",\"type\":\"end\"}]}"
+  },
+  "errors": {
+    "dangling-case-target": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "dangling-default": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "duplicate-case-id": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "empty-cases": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    }
+  },
+  "workflows": {
+    "ordered": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "route",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "switch-flow"
+      },
+      "nodes": [
+        {
+          "cases": [
+            {
+              "id": "nonnegative",
+              "target": "positive",
+              "when": "input.amount >= 0"
+            },
+            {
+              "id": "one",
+              "target": "also-positive",
+              "when": "input.amount == 1"
+            }
+          ],
+          "default": "fallback",
+          "id": "route",
+          "type": "switch"
+        },
+        {
+          "activity": "amount.positive",
+          "id": "positive",
+          "next": "positive-end",
+          "type": "activity"
+        },
+        {
+          "id": "positive-end",
+          "type": "end"
+        },
+        {
+          "activity": "amount.also-positive",
+          "id": "also-positive",
+          "next": "also-positive-end",
+          "type": "activity"
+        },
+        {
+          "id": "also-positive-end",
+          "type": "end"
+        },
+        {
+          "activity": "amount.fallback",
+          "id": "fallback",
+          "next": "fallback-end",
+          "type": "activity"
+        },
+        {
+          "id": "fallback-end",
+          "type": "end"
+        }
+      ]
+    }
+  }
+}

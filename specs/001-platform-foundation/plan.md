@@ -104,3 +104,19 @@ uses a handler that never completes and verifies the client socket actually clos
 T001-041 aligns release metadata and generated lockfiles, records the owner-requested numbering
 reset in release notes, preserves wire protocol 1.4, replaces the old v0.4.0 tag only after validation, and validates package
 metadata, generated API types and Helm rendering before main/develop integration.
+
+
+## Approved workflow-primitives dependency (2026-10-14)
+
+[ADR-0030](../../docs/adr/ADR-0030-structured-instances-and-continuation-chains.md) and
+[ADR-0031](../../docs/adr/ADR-0031-declared-operation-result-disclosure.md) accept the feature-014
+architecture and separate declared-result disclosure policy.
+[ADR-0032](../../docs/adr/ADR-0032-additive-workflow-ir.md) keeps the workflow IR at v1 and
+supersedes the earlier separate-revision allocation. The canonical workflow schema gains additive bounded declarations and node kinds; worker 1.5 scoped
+identity, primitive HTTP operations and new error reasons preserve accepted root forms/runs,
+existing worker minors, Error.code and run-status enums. Publication checks enabled capabilities,
+not merely schema acceptance.
+
+This approves the described dependency for implementation, not a runtime guarantee. Canonical
+contracts, migration/replay, tenant/fault tests and applicable five-SDK evidence remain the
+feature-014 release gates; existing feature behavior stays supported.

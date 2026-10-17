@@ -12,7 +12,9 @@
 
 use std::time::Duration;
 
-use sagat_application::telemetry::{Observation, Pending, TelemetryStore, ToProject, derive};
+use sagat_application::telemetry::{
+    Observation, Pending, TelemetryStore, ToProject, derive, derive_unsupported,
+};
 use sagat_telemetry::{ExportError, OtlpClient, SpanData, keeps};
 
 /// Tunable limits of the projector.
@@ -190,6 +192,7 @@ impl<S: TelemetryStore> TelemetryProjector<S> {
         let Some(ToProject {
             facts,
             entries,
+            unsupported,
             head_seq,
             applied_seq,
         }) = self.store.load_for_projection(note).await?
@@ -197,6 +200,10 @@ impl<S: TelemetryStore> TelemetryProjector<S> {
             return Ok(None);
         };
         let mut derived = derive(&facts, &entries, applied_seq);
+        // Entries of a kind this version does not know are shown, not dropped and not fatal.
+        let skipped = derive_unsupported(&facts, &unsupported, applied_seq);
+        derived.spans.extend(skipped.spans);
+        derived.observations.extend(skipped.observations);
         // A trace the sampler does not keep is not exported, and its progress moves all the same.
         if !keeps(facts.trace_id, self.settings.sample_ratio) {
             derived.spans.clear();
@@ -348,6 +355,54 @@ fn record(observations: &[Observation]) {
                 metrics::counter!("runs_terminal_total", "status" => *status).increment(1);
                 metrics::histogram!("run_duration_seconds", "status" => *status).record(*seconds);
             }
+            Observation::PrimitiveTransition { kind, outcome } => {
+                metrics::counter!(
+                    "workflow_primitive_transitions_total",
+                    "kind" => kind.as_str(),
+                    "outcome" => outcome.as_str(),
+                )
+                .increment(1);
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use sagat_application::telemetry::Observation;
+    use sagat_telemetry::{Metrics, WorkflowPrimitiveKind, WorkflowPrimitiveOutcome};
+
+    use super::record;
+
+    #[test]
+    fn primitive_transition_metric_has_only_closed_kind_and_outcome_labels() {
+        let (metrics, recorder) = Metrics::detached(Duration::from_secs(60));
+        metrics::with_local_recorder(&recorder, || {
+            record(&[
+                Observation::PrimitiveTransition {
+                    kind: WorkflowPrimitiveKind::Switch,
+                    outcome: WorkflowPrimitiveOutcome::Case,
+                },
+                Observation::PrimitiveTransition {
+                    kind: WorkflowPrimitiveKind::Switch,
+                    outcome: WorkflowPrimitiveOutcome::Default,
+                },
+            ]);
+        });
+
+        let page = metrics.render();
+        assert!(
+            page.contains(
+                "workflow_primitive_transitions_total{kind=\"switch\",outcome=\"case\"} 1"
+            )
+        );
+        assert!(page.contains(
+            "workflow_primitive_transitions_total{kind=\"switch\",outcome=\"default\"} 1"
+        ));
+        assert!(!page.contains("node="));
+        assert!(!page.contains("case_id="));
+        assert!(!page.contains("tenant="));
     }
 }

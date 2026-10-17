@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from sagat_octopus_orchestrator import RetryOptions, SagatError, flow, workflow
+from sagat_octopus_orchestrator import RetryOptions, SagatError, SwitchCase, body, flow, workflow
 
 
 def nodes_of(document: dict[str, Any]) -> list[dict[str, Any]]:
@@ -161,6 +161,121 @@ def test_wait_for_an_event_invoke_a_child_decide_and_end() -> None:
     assert nodes[5] == {"id": "done", "type": "end", "outputExpr": "steps.ship.output"}
 
 
+def test_a_switch_keeps_case_order_copies_its_cases_and_has_no_implicit_next() -> None:
+    cases = [
+        SwitchCase(id="nonnegative", when="input.amount >= 0", target="positive"),
+        SwitchCase(id="one", when="input.amount == 1", target="also-positive"),
+    ]
+    builder = (
+        workflow("switch-flow")
+        .switch("route", cases, "fallback")
+        .step("positive", "amount.positive")
+        .step("also-positive", "amount.also-positive")
+        .step("fallback", "amount.fallback")
+    )
+    cases[0] = SwitchCase(id="tampered", when="false", target="tampered")
+
+    node = nodes_of(builder.build())[0]
+    assert node == {
+        "id": "route",
+        "type": "switch",
+        "cases": [
+            {"id": "nonnegative", "when": "input.amount >= 0", "target": "positive"},
+            {"id": "one", "when": "input.amount == 1", "target": "also-positive"},
+        ],
+        "default": "fallback",
+    }
+    assert "next" not in node
+    workflow("local-case-ids").switch("first", [SwitchCase(id="same", when="true", target="done")], "done").switch(
+        "second", [SwitchCase(id="same", when="false", target="done")], "done"
+    ).end("done").build()
+
+
+def test_collections_use_named_bodies_and_map_writes_the_same_for_each_node() -> None:
+    line = body().step("price", "line.price").return_value("return", "steps.price.output")
+    tax = body().step("price", "tax.price").return_value("return", "steps.price.output")
+    document = (
+        workflow("collection-flow")
+        .body("line", line)
+        .body("tax", tax)
+        .for_each(
+            "notify-lines", "input.lines", "line", "bodyResult", max_items=17, max_concurrency=3
+        )
+        .map("prices", "input.lines", "tax", "bodyResult.amount", max_items=17, max_concurrency=2)
+        .end("done", output_expr="steps.prices.output")
+        .build()
+    )
+    assert document["nodes"] == [
+        {"id": "notify-lines", "type": "forEach", "items": "input.lines", "body": "line", "result": "bodyResult", "maxItems": 17, "maxConcurrency": 3, "next": "prices"},
+        {"id": "prices", "type": "forEach", "items": "input.lines", "body": "tax", "result": "bodyResult.amount", "maxItems": 17, "maxConcurrency": 2, "next": "done"},
+        {"id": "done", "type": "end", "outputExpr": "steps.prices.output"},
+    ]
+    assert document["bodies"] == {
+        "line": {
+            "entrypoint": "price",
+            "nodes": [
+                {"id": "price", "type": "activity", "activity": "line.price", "next": "return"},
+                {"id": "return", "type": "return", "result": "steps.price.output"},
+            ],
+        },
+        "tax": {
+            "entrypoint": "price",
+            "nodes": [
+                {"id": "price", "type": "activity", "activity": "tax.price", "next": "return"},
+                {"id": "return", "type": "return", "result": "steps.price.output"},
+            ],
+        },
+    }
+
+
+def test_named_bodies_cannot_reference_themselves() -> None:
+    recursive = body().for_each(
+        "nested", "input.items", "line", "bodyResult", max_items=2, max_concurrency=1
+    ).return_value("return", "steps.nested.output")
+    with pytest.raises(SagatError, match="body reference cycle"):
+        workflow("recursive-body").body("line", recursive).for_each(
+            "lines", "input.items", "line", "bodyResult", max_items=2, max_concurrency=1
+        ).end("done").build()
+
+
+def test_while_and_repeat_until_write_bounded_pre_test_and_post_test_loop_nodes() -> None:
+    iteration = body().step("increment", "counter.increment").return_value("return", "steps.increment.output")
+    document = (
+        workflow("loop-flow")
+        .body("iteration", iteration)
+        .while_loop(
+            "pre",
+            "carry < 3",
+            "iteration",
+            "input.start",
+            "bodyResult",
+            max_iterations=3,
+            timeout_ms=60_000,
+            delay_ms=250,
+            on_error="failed",
+        )
+        .repeat_until(
+            "post",
+            "carry >= 5",
+            "iteration",
+            "steps.pre.output",
+            "bodyResult",
+            max_iterations=5,
+            timeout_ms=120_000,
+        )
+        .end("done")
+        .end("failed")
+        .build()
+    )
+
+    assert document["nodes"] == [
+        {"id": "pre", "type": "while", "condition": "carry < 3", "body": "iteration", "initial": "input.start", "carry": "bodyResult", "maxIterations": 3, "timeoutMs": 60_000, "delayMs": 250, "onError": "failed", "next": "post"},
+        {"id": "post", "type": "repeatUntil", "condition": "carry >= 5", "body": "iteration", "initial": "steps.pre.output", "carry": "bodyResult", "maxIterations": 5, "timeoutMs": 120_000, "next": "done"},
+        {"id": "done", "type": "end"},
+        {"id": "failed", "type": "end"},
+    ]
+
+
 def test_triggers_labels_and_schemas_go_where_the_document_keeps_them() -> None:
     doc = (
         workflow("with-meta")
@@ -207,6 +322,55 @@ def test_what_the_server_would_refuse_and_the_builder_can_see_is_refused_here() 
     refused(lambda: workflow("bad-timer").sleep("t", 0), "duration")
     refused(lambda: workflow("bad-timer").sleep("t", 1.5), "duration")  # type: ignore[arg-type]
     refused(lambda: workflow("dangling").condition("c", "true", "nowhere", "a").step("a", "x").build(), "not a node")
+    refused(lambda: workflow("no-switch-cases").switch("s", [], "a"), "between 1 and 32 cases")
+    refused(
+        lambda: workflow("too-many-cases").switch(
+            "s", [SwitchCase(id=f"case-{i}", when="true", target="a") for i in range(33)], "a"
+        ),
+        "between 1 and 32 cases",
+    )
+    refused(
+        lambda: workflow("duplicate-cases").switch(
+            "s",
+            [SwitchCase(id="same", when="true", target="a"), SwitchCase(id="same", when="false", target="b")],
+            "a",
+        ),
+        "case id",
+    )
+    refused(
+        lambda: workflow("empty-case-id").switch("s", [SwitchCase(id="", when="true", target="a")], "a"),
+        "without an id",
+    )
+    refused(
+        lambda: workflow("empty-case-when").switch("s", [SwitchCase(id="one", when="", target="a")], "a"),
+        "when expression",
+    )
+    refused(
+        lambda: workflow("empty-case-target").switch("s", [SwitchCase(id="one", when="true", target="")], "a"),
+        "needs a target",
+    )
+    refused(
+        lambda: workflow("empty-switch-default").switch("s", [SwitchCase(id="one", when="true", target="a")], ""),
+        "default target",
+    )
+    refused(
+        lambda: (
+            workflow("dangling-switch-case")
+            .switch("s", [SwitchCase(id="one", when="true", target="nowhere")], "a")
+            .step("a", "x")
+            .build()
+        ),
+        "not a node",
+    )
+    refused(
+        lambda: (
+            workflow("dangling-switch-default")
+            .switch("s", [SwitchCase(id="one", when="true", target="a")], "nowhere")
+            .step("a", "x")
+            .build()
+        ),
+        "not a node",
+    )
     refused(
         lambda: (
             workflow("dangling-timeout")

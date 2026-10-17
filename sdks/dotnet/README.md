@@ -114,6 +114,10 @@ Without the generic host: `new WorkerHost(options)`, then `RegisterActivity` / `
   ends a task). The host is restartable (`StopAsync` then `StartAsync` on the same object); `StopAsync` also ends a pause the poll loop is parked in.
 - A session the server drops (`UNAUTHENTICATED` to a poll) is registered again at once; if the next poll is refused too, the registrations back off (SPEC
   section 5) until a poll succeeds. The same task leased again while it runs is another task in flight (`StopAsync` waits for and cancels both).
+- At protocol 1.5, `ActivityExecutionContext.Instance` is a typed copy of the lease identity with its ordered scope path and definition node. It is
+  `null` at protocol 1.4 or older; reports continue to use the original lease identity.
+- For a collection body, `ActivityExecutionContext.Item` is the captured JSON item and `Index` is its stable input index. Both are
+  `null` for root and non-collection work; the handler input remains the run input.
 
 ## Build a workflow
 
@@ -263,7 +267,8 @@ duration that is not a whole number of milliseconds (`TimeSpan.FromTicks(15_000)
 SemVer. Before 1.0 a minor version may change the .NET API; the **wire** contract does not move with it: REST is additive within
 `/v1` and the worker protocol is additive within `1.x` (the host negotiates; a newer SDK against an older server runs at the
 server's version, an older SDK ignores fields it does not know). After 1.0 a breaking change of the API is a major version.
-`SdkInfo.Version` is the version, `SdkInfo.ProtocolVersion` (`1.4`) the newest worker protocol minor the SDK speaks.
+`SdkInfo.Version` is the version, `SdkInfo.ProtocolVersion` (`1.5`) the newest worker protocol minor the SDK speaks.
+When the server negotiates `1.4` or older, lease-bound requests omit scoped identity.
 
 ## Runtime version matrix
 

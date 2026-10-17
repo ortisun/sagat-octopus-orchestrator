@@ -1,0 +1,59 @@
+{
+  "canonical": {
+    "limit": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"bodies\":{\"iteration\":{\"entrypoint\":\"reserve\",\"nodes\":[{\"activity\":\"loopc.reserve\",\"compensateWith\":\"loopc.release\",\"id\":\"reserve\",\"next\":\"charge\",\"type\":\"activity\"},{\"activity\":\"loopc.charge\",\"compensateWith\":\"loopc.refund\",\"id\":\"charge\",\"next\":\"returned\",\"type\":\"activity\"},{\"id\":\"returned\",\"result\":\"steps.charge.output\",\"type\":\"return\"}]}},\"entrypoint\":\"loop\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"loop-compensation-limit\"},\"nodes\":[{\"body\":\"iteration\",\"carry\":\"carry + 1\",\"condition\":\"carry < 100\",\"id\":\"loop\",\"initial\":\"0\",\"maxIterations\":3,\"next\":\"done\",\"timeoutMs\":60000,\"type\":\"while\"},{\"id\":\"done\",\"outputExpr\":\"steps.loop.output\",\"type\":\"end\"}]}"
+  },
+  "workflows": {
+    "limit": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "bodies": {
+        "iteration": {
+          "entrypoint": "reserve",
+          "nodes": [
+            {
+              "activity": "loopc.reserve",
+              "compensateWith": "loopc.release",
+              "id": "reserve",
+              "next": "charge",
+              "type": "activity"
+            },
+            {
+              "activity": "loopc.charge",
+              "compensateWith": "loopc.refund",
+              "id": "charge",
+              "next": "returned",
+              "type": "activity"
+            },
+            {
+              "id": "returned",
+              "result": "steps.charge.output",
+              "type": "return"
+            }
+          ]
+        }
+      },
+      "entrypoint": "loop",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "loop-compensation-limit"
+      },
+      "nodes": [
+        {
+          "body": "iteration",
+          "carry": "carry + 1",
+          "condition": "carry < 100",
+          "id": "loop",
+          "initial": "0",
+          "maxIterations": 3,
+          "next": "done",
+          "timeoutMs": 60000,
+          "type": "while"
+        },
+        {
+          "id": "done",
+          "outputExpr": "steps.loop.output",
+          "type": "end"
+        }
+      ]
+    }
+  }
+}

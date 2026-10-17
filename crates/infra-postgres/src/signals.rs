@@ -57,7 +57,10 @@ pub(crate) fn of_event(event: &RunEvent) -> Vec<Signal> {
         RunEvent::SagaCompleted { .. } => signals.push(Signal::SagaTransition("completed")),
         RunEvent::SagaAborting { .. } => signals.push(Signal::SagaTransition("aborting")),
         RunEvent::CompensationPlanned { .. } => signals.push(Signal::SagaTransition("planned")),
-        RunEvent::SagaCompensated { outcome, .. } => {
+        RunEvent::ScopeCompensationPlanned { .. } => {
+            signals.push(Signal::SagaTransition("planned"))
+        }
+        RunEvent::SagaCompensated { outcome, .. } | RunEvent::ScopeCompensated { outcome, .. } => {
             signals.push(Signal::SagaOutcome(match outcome {
                 SagaOutcome::Compensated => "compensated",
                 SagaOutcome::Partial => "partial",

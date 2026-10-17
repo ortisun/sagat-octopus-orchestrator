@@ -20,7 +20,9 @@ use sagat_application::error::AppError;
 use sagat_application::identity::{Page, PageRequest};
 use sagat_application::runs::{GraphChanges, ReviewAction, RunFilter, RunOperation, StartRun};
 use sagat_domain::definition::{WorkflowId, WorkflowVersionId};
-use sagat_domain::execution::{FailureCode, ReviewOutcome, RunId, RunStatus, StepStatus};
+use sagat_domain::execution::{
+    ExecutionInstanceId, FailureCode, InstancePath, ReviewOutcome, RunId, RunStatus, StepStatus,
+};
 use sagat_domain::identity::Permission;
 use sagat_domain::workflow::NodeId;
 use serde::Deserialize;
@@ -888,9 +890,9 @@ pub async fn operate_run<B: Exec>(
     if matches!(review, Some(ReviewAction::Retry))
         && review_node
             .as_ref()
-            .is_some_and(|node| !node.is_compensation())
+            .is_some_and(|instance| !instance.node().is_compensation())
     {
-        let node = review_node.as_ref().ok_or_else(ApiError::not_found)?;
+        let instance = review_node.as_ref().ok_or_else(ApiError::not_found)?;
         let graph = state
             .runs()
             .graph(&caller.session.principal, run_id, &caller.ctx)
@@ -898,7 +900,7 @@ pub async fn operate_run<B: Exec>(
         let step = graph
             .steps
             .iter()
-            .find(|step| &step.node == node)
+            .find(|step| &step.instance == instance)
             .ok_or_else(ApiError::not_found)?;
         let unknown_outcome = step.status == StepStatus::Waiting
             && step
@@ -941,7 +943,7 @@ pub async fn operate_run<B: Exec>(
         "RERUN_AS_NEW" => return rerun_run(&caller, &state, &headers, &id, &body).await,
         _ => return Err(ApiError::validation("unknown operation")),
     };
-    if body.step_id.is_some() {
+    if body.step_id.is_some() || body.instance_path.is_some() {
         return Err(ApiError::validation(
             "CANCEL, PAUSE and RESUME apply to the whole run",
         ));
@@ -973,13 +975,21 @@ pub async fn operate_run<B: Exec>(
 fn validate_review_request(
     body: &OperationBody,
     action: &ReviewAction,
-) -> Result<NodeId, ApiError> {
+) -> Result<ExecutionInstanceId, ApiError> {
     let step = body
         .step_id
         .as_deref()
         .ok_or_else(|| ApiError::validation("stepId is required for this operation"))?;
     let node = NodeId::parse_stored(step)
         .map_err(|_| ApiError::validation("stepId is not a step of a run"))?;
+    let mut path = InstancePath::root();
+    for segment in body.instance_path.iter().flatten() {
+        let scope = NodeId::parse(&segment.scope_node_id)
+            .map_err(|_| ApiError::validation("instancePath is not a path of a run"))?;
+        path = path
+            .child(scope, segment.iteration_index)
+            .map_err(|_| ApiError::validation("instancePath is not a path of a run"))?;
+    }
     if body.action == "RETRY_COMPENSATION" && !node.is_compensation() {
         return Err(ApiError::validation(
             "RETRY_COMPENSATION needs the id of a compensation (ending in ~c)",
@@ -991,7 +1001,7 @@ fn validate_review_request(
         ));
     }
     let _ = action;
-    Ok(node)
+    Ok(ExecutionInstanceId::in_path(path, node))
 }
 
 /// `RERUN_AS_NEW`: a run of the same version with the same input, from a run that ended.
@@ -1002,7 +1012,11 @@ async fn rerun_run<B: Exec>(
     id: &str,
     body: &OperationBody,
 ) -> Result<(StatusCode, Json<OperationResultBody>), ApiError> {
-    if body.step_id.is_some() || body.outcome.is_some() || body.error_code.is_some() {
+    if body.step_id.is_some()
+        || body.instance_path.is_some()
+        || body.outcome.is_some()
+        || body.error_code.is_some()
+    {
         return Err(ApiError::validation(
             "RERUN_AS_NEW applies to the whole run and takes only a reason",
         ));
@@ -1073,15 +1087,15 @@ async fn review_step<B: Exec>(
     headers: &HeaderMap,
     run_id: RunId,
     body: &OperationBody,
-    node: &NodeId,
+    instance: &ExecutionInstanceId,
     action: &ReviewAction,
 ) -> Result<(StatusCode, Json<OperationResultBody>), ApiError> {
     let run = state
         .runs()
-        .review(
+        .review_instance(
             &caller.session.principal,
             run_id,
-            node,
+            instance,
             action,
             &body.reason,
             body.expected_run_version,

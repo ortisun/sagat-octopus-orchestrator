@@ -1,0 +1,1119 @@
+{
+  "name": "state-operation-builders",
+  "description": "Builder-only parity for additive v1 typed state and finite declared Query/Update definitions. No operation client call is enabled.",
+  "buildOnly": true,
+  "workflows": {
+    "decimal-and-utc": {
+      "name": "declared-account-state",
+      "state": {
+        "schema": {
+          "type": "object",
+          "properties": {
+            "balance": {
+              "type": "number",
+              "minimum": 0
+            },
+            "status": {
+              "type": "string",
+              "maxLength": 16
+            },
+            "updatedAt": {
+              "type": "string",
+              "maxLength": 32
+            }
+          },
+          "required": [
+            "balance",
+            "status",
+            "updatedAt"
+          ],
+          "additionalProperties": false
+        },
+        "initial": "input.initialState",
+        "queries": {
+          "account.balance": {
+            "argsSchema": {
+              "type": "object",
+              "properties": {
+                "taxRate": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "taxRate"
+              ],
+              "additionalProperties": false
+            },
+            "resultSchema": {
+              "type": "number",
+              "minimum": 0
+            },
+            "expression": "state.balance * 1.075 + args.taxRate",
+            "disclosure": "declared-business-result-v1"
+          },
+          "account.cutoff": {
+            "argsSchema": { "type": "object", "additionalProperties": false },
+            "resultSchema": { "type": "string", "maxLength": 24 },
+            "expression": "'2026-10-15T18:00:00.000Z'",
+            "disclosure": "declared-business-result-v1"
+          },
+          "account.updated-at": {
+            "argsSchema": {
+              "type": "object",
+              "additionalProperties": false
+            },
+            "resultSchema": {
+              "type": "string",
+              "maxLength": 32
+            },
+            "expression": "state.updatedAt",
+            "disclosure": "declared-business-result-v1"
+          }
+        },
+        "updates": {
+          "account.replace": {
+            "argsSchema": {
+              "type": "object",
+              "properties": {
+                "nextState": {
+                  "type": "object",
+                  "properties": {
+                    "balance": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "status": {
+                      "type": "string",
+                      "maxLength": 16
+                    },
+                    "updatedAt": {
+                      "type": "string",
+                      "maxLength": 32
+                    }
+                  },
+                  "required": [
+                    "balance",
+                    "status",
+                    "updatedAt"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "nextState"
+              ],
+              "additionalProperties": false
+            },
+            "validate": "args.nextState.balance >= 0",
+            "state": "args.nextState",
+            "result": "newState",
+            "resultSchema": {
+              "type": "object",
+              "properties": {
+                "balance": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "status": {
+                  "type": "string",
+                  "maxLength": 16
+                },
+                "updatedAt": {
+                  "type": "string",
+                  "maxLength": 32
+                }
+              },
+              "required": [
+                "balance",
+                "status",
+                "updatedAt"
+              ],
+              "additionalProperties": false
+            },
+            "disclosure": "declared-business-result-v1"
+          }
+        }
+      },
+      "program": [
+        {
+          "op": "end",
+          "id": "waiting"
+        }
+      ]
+    }
+  },
+  "invalidWorkflows": {
+    "missing-query-disclosure": {
+      "contains": "disclosure",
+      "workflow": {
+        "name": "state-missing-query-disclosure",
+        "state": {
+          "schema": {
+            "type": "integer"
+          },
+          "initial": "0",
+          "queries": {
+            "current": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "resultSchema": {
+                "type": "integer"
+              },
+              "expression": "state"
+            }
+          }
+        },
+        "program": [
+          {
+            "op": "end",
+            "id": "done"
+          }
+        ]
+      }
+    },
+    "wrong-update-disclosure": {
+      "contains": "disclosure",
+      "workflow": {
+        "name": "state-wrong-update-disclosure",
+        "state": {
+          "schema": {
+            "type": "integer"
+          },
+          "initial": "0",
+          "updates": {
+            "replace": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "state": "args.value",
+              "result": "newState",
+              "resultSchema": {
+                "type": "integer"
+              },
+              "disclosure": "implicit"
+            }
+          }
+        },
+        "program": [
+          {
+            "op": "end",
+            "id": "done"
+          }
+        ]
+      }
+    },
+    "open-state-schema": {
+      "contains": "additionalProperties",
+      "workflow": {
+        "name": "state-open-schema",
+        "state": {
+          "schema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": true
+          },
+          "initial": "input.state"
+        },
+        "program": [
+          {
+            "op": "end",
+            "id": "done"
+          }
+        ]
+      }
+    },
+    "unbounded-result-string": {
+      "contains": "maxLength",
+      "workflow": {
+        "name": "state-unbounded-string",
+        "state": {
+          "schema": {
+            "type": "integer"
+          },
+          "initial": "0",
+          "queries": {
+            "label": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "resultSchema": {
+                "type": "string"
+              },
+              "expression": "'label'",
+              "disclosure": "declared-business-result-v1"
+            }
+          }
+        },
+        "program": [
+          {
+            "op": "end",
+            "id": "done"
+          }
+        ]
+      }
+    },
+    "unbounded-result-array": {
+      "contains": "maxItems",
+      "workflow": {
+        "name": "state-unbounded-array",
+        "state": {
+          "schema": {
+            "type": "integer"
+          },
+          "initial": "0",
+          "queries": {
+            "items": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "resultSchema": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                },
+                "maxItems": 10001
+              },
+              "expression": "completedResults.items",
+              "disclosure": "declared-business-result-v1"
+            }
+          }
+        },
+        "program": [
+          {
+            "op": "end",
+            "id": "done"
+          }
+        ]
+      }
+    },
+    "empty-initial-expression": {
+      "contains": "initial",
+      "workflow": {
+        "name": "state-empty-initial",
+        "state": {
+          "schema": {
+            "type": "integer"
+          },
+          "initial": ""
+        },
+        "program": [
+          {
+            "op": "end",
+            "id": "done"
+          }
+        ]
+      }
+    },
+    "invalid-operation-name": {
+      "contains": "name",
+      "workflow": {
+        "name": "state-invalid-operation-name",
+        "state": {
+          "schema": {
+            "type": "integer"
+          },
+          "initial": "0",
+          "queries": {
+            "bad operation": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "resultSchema": {
+                "type": "integer"
+              },
+              "expression": "state",
+              "disclosure": "declared-business-result-v1"
+            }
+          }
+        },
+        "program": [
+          {
+            "op": "end",
+            "id": "done"
+          }
+        ]
+      }
+    },
+    "non-object-args-schema": {
+      "contains": "argsSchema",
+      "workflow": {
+        "name": "state-non-object-args",
+        "state": {
+          "schema": {
+            "type": "integer"
+          },
+          "initial": "0",
+          "queries": {
+            "current": {
+              "argsSchema": [],
+              "resultSchema": {
+                "type": "integer"
+              },
+              "expression": "state",
+              "disclosure": "declared-business-result-v1"
+            }
+          }
+        },
+        "program": [
+          {
+            "op": "end",
+            "id": "done"
+          }
+        ]
+      }
+    },
+    "too-many-queries": {
+      "contains": "32 queries",
+      "workflow": {
+        "name": "state-too-many-queries",
+        "state": {
+          "schema": {
+            "type": "integer"
+          },
+          "initial": "0",
+          "queries": {
+            "query-01": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "resultSchema": {
+                "type": "integer"
+              },
+              "expression": "state",
+              "disclosure": "declared-business-result-v1"
+            },
+            "query-02": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "resultSchema": {
+                "type": "integer"
+              },
+              "expression": "state",
+              "disclosure": "declared-business-result-v1"
+            },
+            "query-03": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "resultSchema": {
+                "type": "integer"
+              },
+              "expression": "state",
+              "disclosure": "declared-business-result-v1"
+            },
+            "query-04": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "resultSchema": {
+                "type": "integer"
+              },
+              "expression": "state",
+              "disclosure": "declared-business-result-v1"
+            },
+            "query-05": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "resultSchema": {
+                "type": "integer"
+              },
+              "expression": "state",
+              "disclosure": "declared-business-result-v1"
+            },
+            "query-06": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "resultSchema": {
+                "type": "integer"
+              },
+              "expression": "state",
+              "disclosure": "declared-business-result-v1"
+            },
+            "query-07": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "resultSchema": {
+                "type": "integer"
+              },
+              "expression": "state",
+              "disclosure": "declared-business-result-v1"
+            },
+            "query-08": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "resultSchema": {
+                "type": "integer"
+              },
+              "expression": "state",
+              "disclosure": "declared-business-result-v1"
+            },
+            "query-09": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "resultSchema": {
+                "type": "integer"
+              },
+              "expression": "state",
+              "disclosure": "declared-business-result-v1"
+            },
+            "query-10": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "resultSchema": {
+                "type": "integer"
+              },
+              "expression": "state",
+              "disclosure": "declared-business-result-v1"
+            },
+            "query-11": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "resultSchema": {
+                "type": "integer"
+              },
+              "expression": "state",
+              "disclosure": "declared-business-result-v1"
+            },
+            "query-12": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "resultSchema": {
+                "type": "integer"
+              },
+              "expression": "state",
+              "disclosure": "declared-business-result-v1"
+            },
+            "query-13": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "resultSchema": {
+                "type": "integer"
+              },
+              "expression": "state",
+              "disclosure": "declared-business-result-v1"
+            },
+            "query-14": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "resultSchema": {
+                "type": "integer"
+              },
+              "expression": "state",
+              "disclosure": "declared-business-result-v1"
+            },
+            "query-15": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "resultSchema": {
+                "type": "integer"
+              },
+              "expression": "state",
+              "disclosure": "declared-business-result-v1"
+            },
+            "query-16": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "resultSchema": {
+                "type": "integer"
+              },
+              "expression": "state",
+              "disclosure": "declared-business-result-v1"
+            },
+            "query-17": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "resultSchema": {
+                "type": "integer"
+              },
+              "expression": "state",
+              "disclosure": "declared-business-result-v1"
+            },
+            "query-18": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "resultSchema": {
+                "type": "integer"
+              },
+              "expression": "state",
+              "disclosure": "declared-business-result-v1"
+            },
+            "query-19": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "resultSchema": {
+                "type": "integer"
+              },
+              "expression": "state",
+              "disclosure": "declared-business-result-v1"
+            },
+            "query-20": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "resultSchema": {
+                "type": "integer"
+              },
+              "expression": "state",
+              "disclosure": "declared-business-result-v1"
+            },
+            "query-21": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "resultSchema": {
+                "type": "integer"
+              },
+              "expression": "state",
+              "disclosure": "declared-business-result-v1"
+            },
+            "query-22": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "resultSchema": {
+                "type": "integer"
+              },
+              "expression": "state",
+              "disclosure": "declared-business-result-v1"
+            },
+            "query-23": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "resultSchema": {
+                "type": "integer"
+              },
+              "expression": "state",
+              "disclosure": "declared-business-result-v1"
+            },
+            "query-24": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "resultSchema": {
+                "type": "integer"
+              },
+              "expression": "state",
+              "disclosure": "declared-business-result-v1"
+            },
+            "query-25": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "resultSchema": {
+                "type": "integer"
+              },
+              "expression": "state",
+              "disclosure": "declared-business-result-v1"
+            },
+            "query-26": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "resultSchema": {
+                "type": "integer"
+              },
+              "expression": "state",
+              "disclosure": "declared-business-result-v1"
+            },
+            "query-27": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "resultSchema": {
+                "type": "integer"
+              },
+              "expression": "state",
+              "disclosure": "declared-business-result-v1"
+            },
+            "query-28": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "resultSchema": {
+                "type": "integer"
+              },
+              "expression": "state",
+              "disclosure": "declared-business-result-v1"
+            },
+            "query-29": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "resultSchema": {
+                "type": "integer"
+              },
+              "expression": "state",
+              "disclosure": "declared-business-result-v1"
+            },
+            "query-30": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "resultSchema": {
+                "type": "integer"
+              },
+              "expression": "state",
+              "disclosure": "declared-business-result-v1"
+            },
+            "query-31": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "resultSchema": {
+                "type": "integer"
+              },
+              "expression": "state",
+              "disclosure": "declared-business-result-v1"
+            },
+            "query-32": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "resultSchema": {
+                "type": "integer"
+              },
+              "expression": "state",
+              "disclosure": "declared-business-result-v1"
+            },
+            "query-33": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "resultSchema": {
+                "type": "integer"
+              },
+              "expression": "state",
+              "disclosure": "declared-business-result-v1"
+            }
+          }
+        },
+        "program": [
+          {
+            "op": "end",
+            "id": "done"
+          }
+        ]
+      }
+    },
+    "too-many-updates": {
+      "contains": "32 updates",
+      "workflow": {
+        "name": "state-too-many-updates",
+        "state": {
+          "schema": {
+            "type": "integer"
+          },
+          "initial": "0",
+          "updates": {
+            "update-01": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "state": "state",
+              "result": "newState",
+              "resultSchema": {
+                "type": "integer"
+              },
+              "disclosure": "declared-business-result-v1"
+            },
+            "update-02": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "state": "state",
+              "result": "newState",
+              "resultSchema": {
+                "type": "integer"
+              },
+              "disclosure": "declared-business-result-v1"
+            },
+            "update-03": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "state": "state",
+              "result": "newState",
+              "resultSchema": {
+                "type": "integer"
+              },
+              "disclosure": "declared-business-result-v1"
+            },
+            "update-04": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "state": "state",
+              "result": "newState",
+              "resultSchema": {
+                "type": "integer"
+              },
+              "disclosure": "declared-business-result-v1"
+            },
+            "update-05": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "state": "state",
+              "result": "newState",
+              "resultSchema": {
+                "type": "integer"
+              },
+              "disclosure": "declared-business-result-v1"
+            },
+            "update-06": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "state": "state",
+              "result": "newState",
+              "resultSchema": {
+                "type": "integer"
+              },
+              "disclosure": "declared-business-result-v1"
+            },
+            "update-07": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "state": "state",
+              "result": "newState",
+              "resultSchema": {
+                "type": "integer"
+              },
+              "disclosure": "declared-business-result-v1"
+            },
+            "update-08": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "state": "state",
+              "result": "newState",
+              "resultSchema": {
+                "type": "integer"
+              },
+              "disclosure": "declared-business-result-v1"
+            },
+            "update-09": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "state": "state",
+              "result": "newState",
+              "resultSchema": {
+                "type": "integer"
+              },
+              "disclosure": "declared-business-result-v1"
+            },
+            "update-10": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "state": "state",
+              "result": "newState",
+              "resultSchema": {
+                "type": "integer"
+              },
+              "disclosure": "declared-business-result-v1"
+            },
+            "update-11": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "state": "state",
+              "result": "newState",
+              "resultSchema": {
+                "type": "integer"
+              },
+              "disclosure": "declared-business-result-v1"
+            },
+            "update-12": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "state": "state",
+              "result": "newState",
+              "resultSchema": {
+                "type": "integer"
+              },
+              "disclosure": "declared-business-result-v1"
+            },
+            "update-13": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "state": "state",
+              "result": "newState",
+              "resultSchema": {
+                "type": "integer"
+              },
+              "disclosure": "declared-business-result-v1"
+            },
+            "update-14": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "state": "state",
+              "result": "newState",
+              "resultSchema": {
+                "type": "integer"
+              },
+              "disclosure": "declared-business-result-v1"
+            },
+            "update-15": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "state": "state",
+              "result": "newState",
+              "resultSchema": {
+                "type": "integer"
+              },
+              "disclosure": "declared-business-result-v1"
+            },
+            "update-16": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "state": "state",
+              "result": "newState",
+              "resultSchema": {
+                "type": "integer"
+              },
+              "disclosure": "declared-business-result-v1"
+            },
+            "update-17": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "state": "state",
+              "result": "newState",
+              "resultSchema": {
+                "type": "integer"
+              },
+              "disclosure": "declared-business-result-v1"
+            },
+            "update-18": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "state": "state",
+              "result": "newState",
+              "resultSchema": {
+                "type": "integer"
+              },
+              "disclosure": "declared-business-result-v1"
+            },
+            "update-19": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "state": "state",
+              "result": "newState",
+              "resultSchema": {
+                "type": "integer"
+              },
+              "disclosure": "declared-business-result-v1"
+            },
+            "update-20": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "state": "state",
+              "result": "newState",
+              "resultSchema": {
+                "type": "integer"
+              },
+              "disclosure": "declared-business-result-v1"
+            },
+            "update-21": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "state": "state",
+              "result": "newState",
+              "resultSchema": {
+                "type": "integer"
+              },
+              "disclosure": "declared-business-result-v1"
+            },
+            "update-22": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "state": "state",
+              "result": "newState",
+              "resultSchema": {
+                "type": "integer"
+              },
+              "disclosure": "declared-business-result-v1"
+            },
+            "update-23": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "state": "state",
+              "result": "newState",
+              "resultSchema": {
+                "type": "integer"
+              },
+              "disclosure": "declared-business-result-v1"
+            },
+            "update-24": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "state": "state",
+              "result": "newState",
+              "resultSchema": {
+                "type": "integer"
+              },
+              "disclosure": "declared-business-result-v1"
+            },
+            "update-25": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "state": "state",
+              "result": "newState",
+              "resultSchema": {
+                "type": "integer"
+              },
+              "disclosure": "declared-business-result-v1"
+            },
+            "update-26": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "state": "state",
+              "result": "newState",
+              "resultSchema": {
+                "type": "integer"
+              },
+              "disclosure": "declared-business-result-v1"
+            },
+            "update-27": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "state": "state",
+              "result": "newState",
+              "resultSchema": {
+                "type": "integer"
+              },
+              "disclosure": "declared-business-result-v1"
+            },
+            "update-28": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "state": "state",
+              "result": "newState",
+              "resultSchema": {
+                "type": "integer"
+              },
+              "disclosure": "declared-business-result-v1"
+            },
+            "update-29": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "state": "state",
+              "result": "newState",
+              "resultSchema": {
+                "type": "integer"
+              },
+              "disclosure": "declared-business-result-v1"
+            },
+            "update-30": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "state": "state",
+              "result": "newState",
+              "resultSchema": {
+                "type": "integer"
+              },
+              "disclosure": "declared-business-result-v1"
+            },
+            "update-31": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "state": "state",
+              "result": "newState",
+              "resultSchema": {
+                "type": "integer"
+              },
+              "disclosure": "declared-business-result-v1"
+            },
+            "update-32": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "state": "state",
+              "result": "newState",
+              "resultSchema": {
+                "type": "integer"
+              },
+              "disclosure": "declared-business-result-v1"
+            },
+            "update-33": {
+              "argsSchema": {
+                "type": "object"
+              },
+              "state": "state",
+              "result": "newState",
+              "resultSchema": {
+                "type": "integer"
+              },
+              "disclosure": "declared-business-result-v1"
+            }
+          }
+        },
+        "program": [
+          {
+            "op": "end",
+            "id": "done"
+          }
+        ]
+      }
+    },
+    "expression-over-byte-limit": {
+      "contains": "1024 UTF-8 bytes",
+      "workflow": {
+        "name": "state-long-expression",
+        "state": {
+          "schema": {
+            "type": "integer"
+          },
+          "initial": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        },
+        "program": [
+          {
+            "op": "end",
+            "id": "done"
+          }
+        ]
+      }
+    }
+  },
+  "steps": []
+}

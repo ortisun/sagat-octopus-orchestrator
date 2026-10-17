@@ -1,0 +1,8 @@
+DROP TRIGGER operation_update_receipts_quota_flush ON operation_update_receipts;
+DROP TRIGGER operation_update_receipts_quota_delta ON operation_update_receipts;
+DROP TRIGGER declared_operation_definitions_quota_flush ON declared_operation_definitions;
+DROP TRIGGER declared_operation_definitions_quota_delta ON declared_operation_definitions;
+
+DROP TABLE operation_update_receipts;
+DROP TABLE workflow_operation_states;
+DROP TABLE declared_operation_definitions;

@@ -117,3 +117,16 @@ Check `docs/architecture/overview.md`, `docs/architecture/execution-semantics.md
 ## Traceability
 
 Requirements `FR-003-###` and criteria `SC-003-###` must be mapped to tasks and tests in `tasks.md` before the start of each implementation.
+
+
+## Approved workflow-primitives dependency (2026-10-14)
+
+[ADR-0030](../../docs/adr/ADR-0030-structured-instances-and-continuation-chains.md) and
+[ADR-0031](../../docs/adr/ADR-0031-declared-operation-result-disclosure.md) accept the feature-014
+architecture and separate declared-result disclosure policy.
+[ADR-0032](../../docs/adr/ADR-0032-additive-workflow-ir.md) keeps the workflow IR at v1 and
+supersedes the earlier separate-revision allocation. Scoped derived compensation/reconciliation keeps existing lease/fence/retry/manual-review machinery. Compensation remains reverse topological within an iteration, independent across collection iterations and reverse iteration order for sequential loops; admission reserves derived identities so forward exhaustion cannot prevent drain.
+
+This approves the described dependency for implementation, not a runtime guarantee. Canonical
+contracts, migration/replay, tenant/fault tests and applicable five-SDK evidence remain the
+feature-014 release gates; existing feature behavior stays supported.

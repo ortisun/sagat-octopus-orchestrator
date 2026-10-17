@@ -108,6 +108,7 @@
   "workers": {
     "w1": {
       "workerName": "saga-worker",
+      "protocolVersion": "1.4",
       "maxInflight": 4,
       "heartbeatIntervalMs": 200,
       "activities": {

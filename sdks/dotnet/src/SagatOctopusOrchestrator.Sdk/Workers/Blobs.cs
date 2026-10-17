@@ -34,6 +34,7 @@ internal static partial class Blobs
     internal static async Task<BlobDescriptor> WriteAsync(
         WorkerRpc rpc,
         TaskLease lease,
+        bool includeInstance,
         Stream source,
         BlobWriteOptions options,
         CancellationToken cancellationToken)
@@ -55,6 +56,10 @@ internal static partial class Blobs
             ExpectedSize = options.ExpectedSize,
             ExpectedSha256 = options.ExpectedSha256,
         };
+        if (includeInstance && lease.Instance is not null)
+        {
+            header.Instance = lease.Instance;
+        }
         var (response, size, sha256) = await rpc.WriteBlobAsync(header, source, lease.Traceparent, cancellationToken).ConfigureAwait(false);
         var descriptor = new BlobDescriptor(response.BlobId, response.Size, response.Sha256, response.ContentType);
         Validate(descriptor);
@@ -69,6 +74,7 @@ internal static partial class Blobs
     internal static async IAsyncEnumerable<ReadOnlyMemory<byte>> ReadAsync(
         WorkerRpc rpc,
         TaskLease lease,
+        bool includeInstance,
         BlobDescriptor descriptor,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
@@ -86,6 +92,10 @@ internal static partial class Blobs
             LeaseToken = lease.LeaseToken,
             BlobId = descriptor.Id,
         };
+        if (includeInstance && lease.Instance is not null)
+        {
+            request.Instance = lease.Instance;
+        }
         await foreach (var part in rpc.ReadBlobAsync(request, lease.Traceparent, cancellationToken).ConfigureAwait(false))
         {
             if (part.PartCase == ReadBlobResponse.PartOneofCase.Header)

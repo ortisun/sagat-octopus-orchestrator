@@ -1,0 +1,182 @@
+{
+  "name": "collection-ordering",
+  "description": "A map over 17 items with concurrency 3 completes its first window in reverse: iteration 2 first, then the other fourteen one at a time, then 1 and 0. The aggregate keeps input order, equal values stay at separate indices, never a fourth iteration is active and an empty list succeeds with an empty aggregate.",
+  "server": {
+    "iterationConcurrency": 8
+  },
+  "scopeEvidence": "summary",
+  "workflows": {
+    "ordered": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "name": "collection-ordering-runtime",
+      "bodies": {
+        "unit": {
+          "program": [
+            {
+              "op": "step",
+              "id": "work",
+              "activity": "ordered.work"
+            },
+            {
+              "op": "return",
+              "id": "returned",
+              "result": "steps.work.output"
+            }
+          ]
+        }
+      },
+      "program": [
+        {
+          "op": "map",
+          "id": "lines",
+          "items": "input.items",
+          "body": "unit",
+          "result": "item.label",
+          "maxItems": 17,
+          "maxConcurrency": 3
+        },
+        {
+          "op": "end",
+          "id": "done",
+          "options": {
+            "outputExpr": "steps.lines.output"
+          }
+        }
+      ]
+    }
+  },
+  "workers": {
+    "current": {
+      "workerName": "collection-ordering",
+      "protocolVersion": "1.5",
+      "transport": "poll",
+      "maxInflight": 8,
+      "autostart": false,
+      "activities": {
+        "ordered.work": {
+          "behavior": {
+            "holdUntilLogged": [
+              16,
+              15,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "returns": true
+          }
+        }
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "start-worker",
+      "op": "startWorker",
+      "worker": "current"
+    },
+    {
+      "id": "ordered-run",
+      "op": "start",
+      "workflow": "ordered",
+      "input": {
+        "items": [
+          {
+            "label": "a"
+          },
+          {
+            "label": "b"
+          },
+          {
+            "label": "c"
+          },
+          {
+            "label": "d"
+          },
+          {
+            "label": "a"
+          },
+          {
+            "label": "e"
+          },
+          {
+            "label": "b"
+          },
+          {
+            "label": "f"
+          },
+          {
+            "label": "a"
+          },
+          {
+            "label": "g"
+          },
+          {
+            "label": "c"
+          },
+          {
+            "label": "h"
+          },
+          {
+            "label": "b"
+          },
+          {
+            "label": "i"
+          },
+          {
+            "label": "a"
+          },
+          {
+            "label": "j"
+          },
+          {
+            "label": "c"
+          }
+        ]
+      }
+    },
+    {
+      "id": "ordered-done",
+      "op": "waitForCompletion",
+      "run": "ordered-run",
+      "timeoutMs": 120000
+    },
+    {
+      "id": "seventeen-attempts",
+      "op": "awaitWorkerLog",
+      "worker": "current",
+      "count": 17,
+      "timeoutMs": 30000
+    },
+    {
+      "id": "empty-run",
+      "op": "start",
+      "workflow": "ordered",
+      "input": {
+        "items": []
+      }
+    },
+    {
+      "id": "empty-done",
+      "op": "waitForCompletion",
+      "run": "empty-run",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "stop-worker",
+      "op": "stopWorker",
+      "worker": "current"
+    }
+  ]
+}

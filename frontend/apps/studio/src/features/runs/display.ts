@@ -10,6 +10,8 @@ export interface KindView {
   variant: 'forward' | 'undo' | 'lookup';
   /** The step an undo or a lookup is about. */
   forward?: string;
+  /** The runtime knows this type, but this Studio build cannot render its semantics. */
+  unsupported?: true;
 }
 
 const MAX_ID = 80;
@@ -22,7 +24,10 @@ export function kindView(node: RuntimeNode): KindView {
     const forward = clip(node.forward ?? node.id.replace(/~[cr]$/, ''), MAX_ID);
     return undo ? { label: `Undo of ${forward}`, variant: 'undo', forward } : { label: `Lookup for ${forward}`, variant: 'lookup', forward };
   }
-  return { label: kindOf(node.type)?.label ?? clip(node.type, 40), variant: 'forward' };
+  const known = kindOf(node.type);
+  return known
+    ? { label: known.label, variant: 'forward' }
+    : { label: `Unsupported node (${clip(node.type, 40)})`, variant: 'forward', unsupported: true };
 }
 
 const WAITING: Record<string, string> = {
@@ -33,6 +38,9 @@ const WAITING: Record<string, string> = {
   child: 'Waiting for the child run',
   saga: 'Waiting for the saga',
   reconciliation: 'Waiting for the lookup of whether it happened',
+  loop: 'Waiting for the loop iterations',
+  collection: 'Waiting for the collection items',
+  approval: 'Waiting for an approval decision',
 };
 
 export function waitingWords(node: RuntimeNode): string | undefined {
@@ -69,9 +77,14 @@ const EDGE_WORDS: Record<RuntimeEdge['kind'], string> = {
   error: 'On error',
   true: 'If true',
   false: 'If false',
+  case: 'Case',
+  default: 'Default',
   branch: 'Branch',
   timeout: 'On timeout',
   begin: 'First step',
+  approve: 'If approved',
+  reject: 'If rejected',
+  expire: 'If expired',
   compensation: 'Undo after',
   reconcile: 'Lookup',
 };

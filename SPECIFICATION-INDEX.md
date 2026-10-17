@@ -13,7 +13,7 @@ The requirement-level authority is `docs/traceability.md`. Material gaps include
 - **Critical semantics:** `docs/architecture/execution-semantics.md`, `worker-runtime-protocol.md`, `sagas.md`, `storage-and-events.md`.
 - **Visual and SDK experience:** `docs/architecture/studio-ux.md`, `workflow-ir-and-sdk-modes.md`, `sdk-contract.md`.
 - **Security and operations:** `docs/architecture/security-and-sandbox.md`, `observability-slo.md`, `capacity-and-topology.md`.
-- **Per-feature plan:** `specs/{001..012}-{slug}/spec.md`, `plan.md`, `tasks.md`, `research.md`, `data-model.md`, `quickstart.md`, `checklists/requirements.md`.
+- **Per-feature plan:** `specs/{001..012,014}-{slug}/spec.md`, `plan.md`, `tasks.md`, `research.md`, `data-model.md`, `quickstart.md`, `checklists/requirements.md`.
 - **Contracts:** `specs/001-platform-foundation/contracts/`.
 - **Tasks:** `specs/*/tasks.md` have IDs, paths and tests to direct agents.
 - **Example:** `examples/payment-saga.workflow.json`, `examples/sdk-parity.md`.

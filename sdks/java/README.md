@@ -119,6 +119,12 @@ expiry minus the clock of the host when the task is taken), between 0.5 s and 10
 host whose clock is not synchronized sets `WorkerConfig.Builder.heartbeatInterval(Duration)`. `ctx.secrets()`
 resolves the step's secrets once per attempt, on first use, and overwrites them when the handler returns.
 
+When worker protocol 1.5 is accepted, `ctx.instance()` returns a typed copy of the lease identity with
+its ordered scope path and definition node. It returns `null` at protocol 1.4 or older; reports continue
+to use the original lease identity.
+For a collection body, `ctx.item()` is the captured JSON item and `ctx.index()` is its stable input
+index. Both return `null` for root and non-collection work; the handler input remains the run input.
+
 Platform guarantees stay at-least-once for external effects: the SDK gives you the idempotency key and the
 reconciliation hook, it cannot make a provider exactly-once.
 
@@ -275,7 +281,7 @@ properties). A build from an empty local repository (511 files) was run with the
 
 **SemVer.** `0.x` is pre-release: a minor may change the public API and says so in the changelog. From `1.0` the
 public API follows SemVer. The SDK's version is independent of the platform's. The **worker protocol** has its own
-version, negotiated at registration: this SDK offers `1.4`; a server that speaks an older minor serves it at that
+version, negotiated at registration: this SDK offers `1.5`; a server that speaks an older minor serves it at that
 minor, a server of another major refuses with `UNSUPPORTED_PROTOCOL` (ADR-0015). Package metadata: group
 `dev.sagatoctopusorchestrator`, artifact `sagat-octopus-orchestrator-sdk`, version `0.1.0`, license `MIT` (the
 JAR includes the license text under `META-INF/LICENSE`),

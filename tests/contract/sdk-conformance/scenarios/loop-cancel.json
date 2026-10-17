@@ -1,0 +1,181 @@
+{
+  "name": "loop-cancel",
+  "description": "WP-05: cancelling a run whose loop is active. A body attempt that is running is told to stop through its cancellation signal (the engine drains the active iteration under its own fence), the loop ends CANCELLED and so does the run. A loop that is waiting on its durable delay holds no worker: cancelling it cancels the timer and the run ends CANCELLED without another iteration. A cancel before the loop is entered ends the run without a scope.",
+  "server": {
+    "iterationConcurrency": 2
+  },
+  "scopeEvidence": "ordered",
+  "workflows": {
+    "active": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "name": "loop-cancel-active",
+      "bodies": {
+        "iteration": {
+          "program": [
+            {
+              "op": "step",
+              "id": "work",
+              "activity": "loopx.hang"
+            },
+            {
+              "op": "return",
+              "id": "returned",
+              "result": "steps.work.output"
+            }
+          ]
+        }
+      },
+      "program": [
+        {
+          "op": "while",
+          "id": "loop",
+          "condition": "carry < 3",
+          "body": "iteration",
+          "initial": "0",
+          "carry": "carry + 1",
+          "maxIterations": 3,
+          "timeoutMs": 600000
+        },
+        {
+          "op": "end",
+          "id": "done"
+        }
+      ]
+    },
+    "delayed": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "name": "loop-cancel-delayed",
+      "bodies": {
+        "iteration": {
+          "program": [
+            {
+              "op": "step",
+              "id": "work",
+              "activity": "loopx.quick"
+            },
+            {
+              "op": "return",
+              "id": "returned",
+              "result": "steps.work.output"
+            }
+          ]
+        }
+      },
+      "program": [
+        {
+          "op": "while",
+          "id": "loop",
+          "condition": "carry < 3",
+          "body": "iteration",
+          "initial": "0",
+          "carry": "carry + 1",
+          "maxIterations": 3,
+          "timeoutMs": 3600000,
+          "delayMs": 600000
+        },
+        {
+          "op": "end",
+          "id": "done"
+        }
+      ]
+    }
+  },
+  "workers": {
+    "w1": {
+      "workerName": "loop-cancel",
+      "protocolVersion": "1.5",
+      "transport": "poll",
+      "maxInflight": 1,
+      "heartbeatIntervalMs": 100,
+      "autostart": false,
+      "activities": {
+        "loopx.hang": {
+          "behavior": {
+            "hang": true,
+            "onCancel": {
+              "raises": true
+            }
+          }
+        },
+        "loopx.quick": {
+          "behavior": {
+            "returns": 1
+          }
+        }
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "start-worker",
+      "op": "startWorker",
+      "worker": "w1"
+    },
+    {
+      "id": "active",
+      "op": "start",
+      "workflow": "active",
+      "input": {}
+    },
+    {
+      "id": "active-running",
+      "op": "awaitJournal",
+      "run": "active",
+      "eventType": "step.started",
+      "stepId": "work",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "active-cancel",
+      "op": "cancel",
+      "run": "active",
+      "reason": "stop the loop while an iteration runs"
+    },
+    {
+      "id": "active-done",
+      "op": "waitForCompletion",
+      "run": "active",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "active-journal",
+      "op": "events",
+      "run": "active"
+    },
+    {
+      "id": "delayed",
+      "op": "start",
+      "workflow": "delayed",
+      "input": {}
+    },
+    {
+      "id": "delayed-waiting",
+      "op": "awaitJournal",
+      "run": "delayed",
+      "eventType": "loop.iteration_checkpointed",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "stop-worker",
+      "op": "stopWorker",
+      "worker": "w1"
+    },
+    {
+      "id": "delayed-cancel",
+      "op": "cancel",
+      "run": "delayed",
+      "reason": "stop the loop while it waits on its delay"
+    },
+    {
+      "id": "delayed-done",
+      "op": "waitForCompletion",
+      "run": "delayed",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "delayed-journal",
+      "op": "events",
+      "run": "delayed"
+    }
+  ]
+}

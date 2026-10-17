@@ -1,0 +1,518 @@
+{
+  "name": "approval-state",
+  "description": "An approval and declared run state in one workflow (D295). While the request is open the state is read and updated (exact replay, stale revision as CONFLICT); the decision, a rejection, the expiry and a cancel each end the run with the state exactly as the last Update left it, readable but no longer mutable, and the request settled once.",
+  "workflows": {
+    "review": {
+      "name": "approval-state-runtime",
+      "state": {
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "amount": {
+              "type": "string",
+              "maxLength": 64
+            }
+          },
+          "required": [
+            "amount"
+          ]
+        },
+        "initial": "input.account",
+        "queries": {
+          "amount.read": {
+            "argsSchema": {
+              "type": "object",
+              "additionalProperties": false
+            },
+            "resultSchema": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "expression": "state.amount",
+            "disclosure": "declared-business-result-v1"
+          }
+        },
+        "updates": {
+          "amount.replace": {
+            "argsSchema": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "nextState": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "amount": {
+                      "type": "string",
+                      "maxLength": 64
+                    }
+                  },
+                  "required": [
+                    "amount"
+                  ]
+                }
+              },
+              "required": [
+                "nextState"
+              ]
+            },
+            "validate": "true",
+            "state": "args.nextState",
+            "result": "newState.amount",
+            "resultSchema": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "disclosure": "declared-business-result-v1"
+          }
+        }
+      },
+      "program": [
+        {
+          "op": "approval",
+          "id": "review",
+          "policy": {
+            "roles": [
+              "admin"
+            ],
+            "excludeInitiator": false
+          },
+          "timeoutMs": 86400000,
+          "onApprove": "approved",
+          "onReject": "rejected",
+          "onExpire": "expired"
+        },
+        {
+          "op": "end",
+          "id": "approved",
+          "options": {
+            "outputExpr": "'approved'"
+          }
+        },
+        {
+          "op": "end",
+          "id": "rejected",
+          "options": {
+            "outputExpr": "'rejected'"
+          }
+        },
+        {
+          "op": "end",
+          "id": "expired",
+          "options": {
+            "outputExpr": "'expired'"
+          }
+        }
+      ]
+    },
+    "short": {
+      "name": "approval-state-short",
+      "state": {
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "amount": {
+              "type": "string",
+              "maxLength": 64
+            }
+          },
+          "required": [
+            "amount"
+          ]
+        },
+        "initial": "input.account",
+        "queries": {
+          "amount.read": {
+            "argsSchema": {
+              "type": "object",
+              "additionalProperties": false
+            },
+            "resultSchema": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "expression": "state.amount",
+            "disclosure": "declared-business-result-v1"
+          }
+        },
+        "updates": {
+          "amount.replace": {
+            "argsSchema": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "nextState": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "amount": {
+                      "type": "string",
+                      "maxLength": 64
+                    }
+                  },
+                  "required": [
+                    "amount"
+                  ]
+                }
+              },
+              "required": [
+                "nextState"
+              ]
+            },
+            "validate": "true",
+            "state": "args.nextState",
+            "result": "newState.amount",
+            "resultSchema": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "disclosure": "declared-business-result-v1"
+          }
+        }
+      },
+      "program": [
+        {
+          "op": "approval",
+          "id": "review",
+          "policy": {
+            "roles": [
+              "admin"
+            ],
+            "excludeInitiator": false
+          },
+          "timeoutMs": 6000,
+          "onApprove": "approved",
+          "onReject": "rejected",
+          "onExpire": "expired"
+        },
+        {
+          "op": "end",
+          "id": "approved",
+          "options": {
+            "outputExpr": "'approved'"
+          }
+        },
+        {
+          "op": "end",
+          "id": "rejected",
+          "options": {
+            "outputExpr": "'rejected'"
+          }
+        },
+        {
+          "op": "end",
+          "id": "expired",
+          "options": {
+            "outputExpr": "'expired'"
+          }
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "id": "decided-run",
+      "op": "start",
+      "workflow": "review",
+      "input": {
+        "account": {
+          "amount": "19.99"
+        }
+      },
+      "idempotencyKey": "state-decided-{{unique}}"
+    },
+    {
+      "id": "decided-opened",
+      "op": "listApprovals",
+      "run": "decided-run",
+      "limit": 1,
+      "waitForItem": true
+    },
+    {
+      "id": "decided-before",
+      "op": "query",
+      "run": "decided-run",
+      "name": "amount.read",
+      "args": {}
+    },
+    {
+      "id": "decided-update",
+      "op": "update",
+      "run": "decided-run",
+      "name": "amount.replace",
+      "updateKey": "during-approval-{{unique}}",
+      "args": {
+        "nextState": {
+          "amount": "24.99"
+        }
+      },
+      "expectedStateRevision": 0
+    },
+    {
+      "id": "decided-replay",
+      "op": "update",
+      "run": "decided-run",
+      "name": "amount.replace",
+      "updateKey": "during-approval-{{unique}}",
+      "args": {
+        "nextState": {
+          "amount": "24.99"
+        }
+      },
+      "expectedStateRevision": 0
+    },
+    {
+      "id": "decided-stale",
+      "op": "update",
+      "run": "decided-run",
+      "name": "amount.replace",
+      "updateKey": "stale-{{unique}}",
+      "args": {
+        "nextState": {
+          "amount": "99.99"
+        }
+      },
+      "expectedStateRevision": 0
+    },
+    {
+      "id": "decided-during",
+      "op": "query",
+      "run": "decided-run",
+      "name": "amount.read",
+      "args": {}
+    },
+    {
+      "id": "decided-still-open",
+      "op": "listApprovals",
+      "run": "decided-run",
+      "limit": 1
+    },
+    {
+      "id": "decided",
+      "op": "decideApproval",
+      "approval": "decided-opened",
+      "decisionKey": "state-approve-{{unique}}",
+      "decision": "APPROVE",
+      "reasonCode": "POLICY_OK"
+    },
+    {
+      "id": "decided-done",
+      "op": "waitForCompletion",
+      "run": "decided-run",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "decided-after",
+      "op": "query",
+      "run": "decided-run",
+      "name": "amount.read",
+      "args": {}
+    },
+    {
+      "id": "decided-late-update",
+      "op": "update",
+      "run": "decided-run",
+      "name": "amount.replace",
+      "updateKey": "after-the-end-{{unique}}",
+      "args": {
+        "nextState": {
+          "amount": "1.00"
+        }
+      }
+    },
+    {
+      "id": "decided-settled",
+      "op": "listApprovals",
+      "run": "decided-run",
+      "limit": 1
+    },
+    {
+      "id": "rejected-run",
+      "op": "start",
+      "workflow": "review",
+      "input": {
+        "account": {
+          "amount": "5.00"
+        }
+      },
+      "idempotencyKey": "state-rejected-{{unique}}"
+    },
+    {
+      "id": "rejected-opened",
+      "op": "listApprovals",
+      "run": "rejected-run",
+      "limit": 1,
+      "waitForItem": true
+    },
+    {
+      "id": "rejected-update",
+      "op": "update",
+      "run": "rejected-run",
+      "name": "amount.replace",
+      "updateKey": "before-rejection-{{unique}}",
+      "args": {
+        "nextState": {
+          "amount": "6.00"
+        }
+      },
+      "expectedStateRevision": 0
+    },
+    {
+      "id": "rejected",
+      "op": "decideApproval",
+      "approval": "rejected-opened",
+      "decisionKey": "state-reject-{{unique}}",
+      "decision": "REJECT",
+      "reasonCode": "POLICY_BLOCKED"
+    },
+    {
+      "id": "rejected-done",
+      "op": "waitForCompletion",
+      "run": "rejected-run",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "rejected-after",
+      "op": "query",
+      "run": "rejected-run",
+      "name": "amount.read",
+      "args": {}
+    },
+    {
+      "id": "expired-run",
+      "op": "start",
+      "workflow": "short",
+      "input": {
+        "account": {
+          "amount": "7.00"
+        }
+      },
+      "idempotencyKey": "state-expired-{{unique}}"
+    },
+    {
+      "id": "expired-opened",
+      "op": "listApprovals",
+      "run": "expired-run",
+      "limit": 1,
+      "waitForItem": true
+    },
+    {
+      "id": "expired-update",
+      "op": "update",
+      "run": "expired-run",
+      "name": "amount.replace",
+      "updateKey": "before-expiry-{{unique}}",
+      "args": {
+        "nextState": {
+          "amount": "8.00"
+        }
+      },
+      "expectedStateRevision": 0
+    },
+    {
+      "id": "expired-done",
+      "op": "waitForCompletion",
+      "run": "expired-run",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "expired-after",
+      "op": "query",
+      "run": "expired-run",
+      "name": "amount.read",
+      "args": {}
+    },
+    {
+      "id": "expired-settled",
+      "op": "listApprovals",
+      "run": "expired-run",
+      "limit": 1
+    },
+    {
+      "id": "expired-late-decision",
+      "op": "decideApproval",
+      "approval": "expired-opened",
+      "decisionKey": "state-late-{{unique}}",
+      "decision": "APPROVE",
+      "reasonCode": "TOO_LATE"
+    },
+    {
+      "id": "cancelled-run",
+      "op": "start",
+      "workflow": "review",
+      "input": {
+        "account": {
+          "amount": "9.00"
+        }
+      },
+      "idempotencyKey": "state-cancelled-{{unique}}"
+    },
+    {
+      "id": "cancelled-opened",
+      "op": "listApprovals",
+      "run": "cancelled-run",
+      "limit": 1,
+      "waitForItem": true
+    },
+    {
+      "id": "cancelled-update",
+      "op": "update",
+      "run": "cancelled-run",
+      "name": "amount.replace",
+      "updateKey": "before-cancel-{{unique}}",
+      "args": {
+        "nextState": {
+          "amount": "10.00"
+        }
+      },
+      "expectedStateRevision": 0
+    },
+    {
+      "id": "cancelled",
+      "op": "cancel",
+      "run": "cancelled-run",
+      "reason": "operator stopped the request"
+    },
+    {
+      "id": "cancelled-done",
+      "op": "waitForCompletion",
+      "run": "cancelled-run",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "cancelled-after",
+      "op": "query",
+      "run": "cancelled-run",
+      "name": "amount.read",
+      "args": {}
+    },
+    {
+      "id": "cancelled-settled",
+      "op": "listApprovals",
+      "run": "cancelled-run",
+      "limit": 1
+    },
+    {
+      "id": "cancelled-late-decision",
+      "op": "decideApproval",
+      "approval": "cancelled-opened",
+      "decisionKey": "state-after-cancel-{{unique}}",
+      "decision": "APPROVE",
+      "reasonCode": "TOO_LATE"
+    },
+    {
+      "id": "cancelled-late-update",
+      "op": "update",
+      "run": "cancelled-run",
+      "name": "amount.replace",
+      "updateKey": "after-cancel-{{unique}}",
+      "args": {
+        "nextState": {
+          "amount": "11.00"
+        }
+      }
+    }
+  ]
+}

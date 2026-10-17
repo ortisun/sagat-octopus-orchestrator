@@ -1,0 +1,26 @@
+{
+  "name": "chain-root-wait",
+  "status": "pending transactional successor planning for a waitEvent entrypoint",
+  "description": "A root waitEvent can start publicly, but continuation publication remains closed because successor creation currently plans an activity entrypoint.",
+  "workflows": {
+    "chain": {
+      "name": "chain-command-runtime",
+      "chainPolicy": { "maxSegments": 3, "timeoutMs": 86400000 },
+      "program": [
+        { "op": "waitForEvent", "id": "release", "options": { "eventType": "chain.release", "correlationExpr": "input.key", "timeoutMs": 600000 } },
+        { "op": "continueAsNew", "id": "next", "input": "input" }
+      ]
+    }
+  },
+  "steps": [
+    { "id": "start", "op": "start", "workflow": "chain", "input": { "key": "order-{{unique}}" } },
+    { "id": "inspect", "op": "inspectChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}" },
+    { "id": "foreign", "op": "inspectChain", "token": "other", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}" },
+    { "id": "signal", "op": "signalChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "expectedRunId": "{{currentRunId:inspect}}", "name": "chain.release", "payload": { "released": true }, "idempotencyKey": "chain-signal-{{unique}}" },
+    { "id": "signal-replay", "op": "signalChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "expectedRunId": "{{currentRunId:inspect}}", "name": "chain.release", "payload": { "released": true }, "idempotencyKey": "chain-signal-{{unique}}" },
+    { "id": "stale-cancel", "op": "cancelChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "expectedRunId": "{{currentRunId:inspect}}", "reason": "stale caller", "idempotencyKey": "chain-stale-{{unique}}" },
+    { "id": "inspect-head", "op": "inspectChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "waitForHeadChange": "{{currentRunId:inspect}}" },
+    { "id": "cancel", "op": "cancelChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "expectedRunId": "{{currentRunId:inspect-head}}", "reason": "operator requested cancellation", "idempotencyKey": "chain-cancel-{{unique}}" },
+    { "id": "cancel-replay", "op": "cancelChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "expectedRunId": "{{currentRunId:inspect-head}}", "reason": "operator requested cancellation", "idempotencyKey": "chain-cancel-{{unique}}" }
+  ]
+}

@@ -24,10 +24,13 @@ mod context;
 mod core;
 pub mod denial;
 mod dto;
+mod dto_chains;
+mod dto_declared_operations;
 mod dto_events;
 mod dto_exec;
 mod dto_gov;
 mod dto_ops;
+mod dto_primitives;
 mod dto_scripts;
 mod dto_versioning;
 pub mod error;
@@ -50,6 +53,8 @@ pub use governance::{GovState, Governance};
 pub use limits::{
     DEFAULT_MAX_TRACKED_KEYS, MAX_RETRY_AFTER, RateLimitConfig, RateLimitConfigError, RateLimiter,
 };
+pub use routes::declared_operations::DeclaredOperationApiState;
+pub use routes::primitives::ApprovalApiState;
 pub use server::{HttpTlsConfig, ServerConfig, serve, serve_tls};
 
 /// Shared handler state. Cloning is cheap (a few `Arc`s).
@@ -241,7 +246,7 @@ where
     C: Clock + 'static,
     ExecState<S, C, P, X, E>: Exec,
 {
-    compose(state, limits, |_, _| Router::new())
+    compose(state, limits, |_, _, _| Router::new())
 }
 
 /// Builds the API router with the governance routes (quotas) next to the definition, run and
@@ -270,8 +275,86 @@ where
         + 'static,
     ExecState<S, C, P, X, E>: Exec,
 {
-    compose(state, limits, move |slots, limits| {
+    compose(state, limits, move |slots, limits, _| {
         governance_routes(governance, slots, limits)
+    })
+}
+
+/// Builds the complete control-plane router, including durable workflow approval decisions.
+#[allow(clippy::too_many_arguments)]
+pub fn router_with_governance_and_approvals<S, C, P, X, E, G, A, O, V>(
+    state: ExecState<S, C, P, X, E>,
+    governance: GovState<S, C, G>,
+    approval_admission: sagat_application::api_admission::ApiAdmissionService<P, C>,
+    approvals: A,
+    operation_admission: sagat_application::api_admission::ApiAdmissionService<P, C>,
+    operations: O,
+    operation_evaluator: V,
+    approval_clock: C,
+    limits: HttpLimits,
+) -> Router
+where
+    S: IdentityStore + 'static,
+    C: Clock + Clone + 'static,
+    P: sagat_application::api_admission::ApiAdmissionStore
+        + sagat_application::chain_progress::ChainCommandStore
+        + 'static,
+    <P as sagat_application::runs::RunStore>::Tx: sagat_application::chain_progress::ChainRunTx,
+    A: sagat_application::approval_progress::ApprovalProgressStore + 'static,
+    O: sagat_application::declared_operations::DeclaredOperationStore + 'static,
+    V: sagat_application::declared_operations::DeclaredOperationEvaluator + 'static,
+    G: sagat_application::quotas::QuotaStore
+        + sagat_application::api_admission::ApiAdmissionStore
+        + sagat_application::bindings::BindingStore
+        + sagat_application::secrets::SecretStore
+        + sagat_application::egress::EgressStore
+        + sagat_application::events::EventStore
+        + sagat_application::outbound::OutboundStore
+        + sagat_application::connectors::ConnectorStore
+        + sagat_application::scripts::ScriptStore
+        + sagat_application::scripts::RunnerStore
+        + sagat_application::operations::AlertReader
+        + sagat_application::operations::WorkerAdmin
+        + sagat_application::operations::AuditStore
+        + 'static,
+    ExecState<S, C, P, X, E>: Exec,
+    <ExecState<S, C, P, X, E> as Exec>::Store: sagat_application::chain_progress::ChainCommandStore,
+    <<ExecState<S, C, P, X, E> as Exec>::Store as sagat_application::runs::RunStore>::Tx:
+        sagat_application::chain_progress::ChainRunTx,
+{
+    let chain_state = state.clone();
+    compose(state, limits, move |slots, limits, core| {
+        let approval_state = ApprovalApiState::new(
+            core.clone(),
+            approval_admission,
+            approvals,
+            approval_clock.clone(),
+        );
+        let operation_state = DeclaredOperationApiState::new(
+            core,
+            operation_admission,
+            operations,
+            operation_evaluator,
+            approval_clock,
+        );
+        governance_routes(governance, slots, limits)
+            .merge(
+                routes::primitives::routes(approval_state, limits.max_body_bytes).route_layer(
+                    axum::middleware::from_fn_with_state(Arc::clone(slots), limits::shed_excess),
+                ),
+            )
+            .merge(
+                routes::declared_operations::routes(operation_state, limits.max_body_bytes)
+                    .route_layer(axum::middleware::from_fn_with_state(
+                        Arc::clone(slots),
+                        limits::shed_excess,
+                    )),
+            )
+            .merge(
+                routes::chains::routes(chain_state, limits.max_body_bytes).route_layer(
+                    axum::middleware::from_fn_with_state(Arc::clone(slots), limits::shed_excess),
+                ),
+            )
     })
 }
 
@@ -633,7 +716,11 @@ where
 fn compose<S, C, P, X, E>(
     mut state: ExecState<S, C, P, X, E>,
     limits: HttpLimits,
-    extra: impl FnOnce(&Arc<tokio::sync::Semaphore>, &HttpLimits) -> Router<AppState<S, C>>,
+    extra: impl FnOnce(
+        &Arc<tokio::sync::Semaphore>,
+        &HttpLimits,
+        AppState<S, C>,
+    ) -> Router<AppState<S, C>>,
 ) -> Router
 where
     S: IdentityStore + 'static,
@@ -840,7 +927,7 @@ where
         .route_layer(shed())
         .with_state(state);
 
-    let extra_routes = extra(&slots, &limits);
+    let extra_routes = extra(&slots, &limits, core.clone());
     let v1 = Router::new()
         .route("/health", get(health::health))
         .route("/ready", get(health::ready::<S, C>))

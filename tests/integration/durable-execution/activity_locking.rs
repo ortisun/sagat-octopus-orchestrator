@@ -92,7 +92,7 @@ async fn opposite_node_activity_orders_do_not_abort_a_concurrent_claim() {
     let unique: std::collections::BTreeSet<_> = a
         .iter()
         .chain(&b)
-        .map(|t| (t.run_id, t.node.clone()))
+        .map(|t| (t.run_id, t.instance.clone()))
         .collect();
     assert_eq!(unique.len(), 4);
 }

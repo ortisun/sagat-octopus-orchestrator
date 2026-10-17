@@ -11,7 +11,77 @@ use std::fmt;
 
 use uuid::Uuid;
 
+use crate::metrics::{
+    WorkflowPrimitiveKind, WorkflowPrimitiveOutcome, WorkflowPrimitiveRejectionCode,
+};
+use crate::otlp::AttrValue;
 use crate::trace::{TraceId, decode_hex};
+
+/// Span names emitted for workflow primitive operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkflowPrimitiveSpan {
+    ScopeAdmit,
+    IterationCommit,
+    ApprovalDecide,
+    Query,
+    Update,
+    Continue,
+    SwitchEvaluate,
+    /// A journal entry this version of the projector cannot interpret (a newer writer).
+    Unsupported,
+}
+
+impl WorkflowPrimitiveSpan {
+    pub const ALL: [Self; 8] = [
+        Self::ScopeAdmit,
+        Self::IterationCommit,
+        Self::ApprovalDecide,
+        Self::Query,
+        Self::Update,
+        Self::Continue,
+        Self::SwitchEvaluate,
+        Self::Unsupported,
+    ];
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ScopeAdmit => "workflow.scope.admit",
+            Self::IterationCommit => "workflow.iteration.commit",
+            Self::ApprovalDecide => "workflow.approval.decide",
+            Self::Query => "workflow.query",
+            Self::Update => "workflow.update",
+            Self::Continue => "workflow.continue",
+            Self::SwitchEvaluate => "workflow.switch.evaluate",
+            Self::Unsupported => "workflow.unsupported",
+        }
+    }
+}
+
+/// Primitive span attributes whose values cannot contain user-controlled text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkflowPrimitiveSpanField {
+    Kind(WorkflowPrimitiveKind),
+    Outcome(WorkflowPrimitiveOutcome),
+    Rejection(WorkflowPrimitiveRejectionCode),
+    ScopeDepth(u8),
+    IterationIndex(u32),
+    SegmentIndex(u32),
+}
+
+impl WorkflowPrimitiveSpanField {
+    #[must_use]
+    pub fn attribute(self) -> (&'static str, AttrValue) {
+        match self {
+            Self::Kind(kind) => ("sagat.primitive.kind", kind.as_str().into()),
+            Self::Outcome(outcome) => ("sagat.outcome", outcome.as_str().into()),
+            Self::Rejection(code) => ("sagat.rejection.code", code.as_str().into()),
+            Self::ScopeDepth(depth) => ("sagat.scope.depth", u32::from(depth).into()),
+            Self::IterationIndex(index) => ("sagat.iteration.index", index.into()),
+            Self::SegmentIndex(index) => ("sagat.continuation.segment_index", index.into()),
+        }
+    }
+}
 
 /// Mixed into the id of a run's span so that it never equals that of an attempt of a step whose id
 /// shares its low bytes.

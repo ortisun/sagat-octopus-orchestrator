@@ -1,0 +1,224 @@
+{
+  "canonical": {
+    "failed": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"bodies\":{\"unit\":{\"entrypoint\":\"reserve\",\"nodes\":[{\"activity\":\"coll.reserve\",\"compensateWith\":\"coll.release\",\"id\":\"reserve\",\"next\":\"charge\",\"type\":\"activity\"},{\"activity\":\"coll.charge\",\"compensateWith\":\"coll.refund\",\"id\":\"charge\",\"next\":\"ship\",\"type\":\"activity\"},{\"activity\":\"coll.ship\",\"id\":\"ship\",\"next\":\"returned\",\"type\":\"activity\"},{\"id\":\"returned\",\"result\":\"steps.ship.output\",\"type\":\"return\"}]}},\"entrypoint\":\"lines\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"collection-compensation-failed\"},\"nodes\":[{\"body\":\"unit\",\"id\":\"lines\",\"items\":\"input.items\",\"maxConcurrency\":1,\"maxItems\":4,\"next\":\"done\",\"result\":\"item.label\",\"type\":\"forEach\"},{\"id\":\"done\",\"outputExpr\":\"steps.lines.output\",\"type\":\"end\"}]}",
+    "partial": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"bodies\":{\"unit\":{\"entrypoint\":\"reserve\",\"nodes\":[{\"activity\":\"coll.reserve\",\"compensateWith\":\"coll.release\",\"id\":\"reserve\",\"next\":\"notify\",\"type\":\"activity\"},{\"activity\":\"coll.notify\",\"id\":\"notify\",\"irreversible\":true,\"next\":\"ship\",\"type\":\"activity\"},{\"activity\":\"coll.ship\",\"id\":\"ship\",\"next\":\"returned\",\"type\":\"activity\"},{\"id\":\"returned\",\"result\":\"steps.ship.output\",\"type\":\"return\"}]}},\"entrypoint\":\"lines\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"collection-compensation-partial\"},\"nodes\":[{\"body\":\"unit\",\"id\":\"lines\",\"items\":\"input.items\",\"maxConcurrency\":1,\"maxItems\":4,\"next\":\"done\",\"result\":\"item.label\",\"type\":\"forEach\"},{\"id\":\"done\",\"outputExpr\":\"steps.lines.output\",\"type\":\"end\"}]}",
+    "reconciled": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"bodies\":{\"unit\":{\"entrypoint\":\"pay\",\"nodes\":[{\"activity\":\"coll.pay\",\"id\":\"pay\",\"next\":\"returned\",\"reconcileWith\":\"coll.lookup\",\"retry\":{\"maxAttempts\":1},\"type\":\"activity\"},{\"id\":\"returned\",\"result\":\"steps.pay.output\",\"type\":\"return\"}]}},\"entrypoint\":\"lines\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"collection-reconciliation\"},\"nodes\":[{\"body\":\"unit\",\"id\":\"lines\",\"items\":\"input.items\",\"maxConcurrency\":1,\"maxItems\":4,\"next\":\"done\",\"result\":\"item.label\",\"type\":\"forEach\"},{\"id\":\"done\",\"outputExpr\":\"steps.lines.output\",\"type\":\"end\"}]}",
+    "stuck": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"bodies\":{\"unit\":{\"entrypoint\":\"reserve\",\"nodes\":[{\"activity\":\"coll.reserve\",\"compensateWith\":\"coll.release-broken\",\"compensationRetry\":{\"maxAttempts\":1},\"id\":\"reserve\",\"next\":\"ship\",\"type\":\"activity\"},{\"activity\":\"coll.ship\",\"id\":\"ship\",\"next\":\"returned\",\"type\":\"activity\"},{\"id\":\"returned\",\"result\":\"steps.ship.output\",\"type\":\"return\"}]}},\"entrypoint\":\"lines\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"collection-compensation-stuck\"},\"nodes\":[{\"body\":\"unit\",\"id\":\"lines\",\"items\":\"input.items\",\"maxConcurrency\":1,\"maxItems\":4,\"next\":\"done\",\"result\":\"item.label\",\"type\":\"forEach\"},{\"id\":\"done\",\"outputExpr\":\"steps.lines.output\",\"type\":\"end\"}]}"
+  },
+  "workflows": {
+    "failed": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "bodies": {
+        "unit": {
+          "entrypoint": "reserve",
+          "nodes": [
+            {
+              "activity": "coll.reserve",
+              "compensateWith": "coll.release",
+              "id": "reserve",
+              "next": "charge",
+              "type": "activity"
+            },
+            {
+              "activity": "coll.charge",
+              "compensateWith": "coll.refund",
+              "id": "charge",
+              "next": "ship",
+              "type": "activity"
+            },
+            {
+              "activity": "coll.ship",
+              "id": "ship",
+              "next": "returned",
+              "type": "activity"
+            },
+            {
+              "id": "returned",
+              "result": "steps.ship.output",
+              "type": "return"
+            }
+          ]
+        }
+      },
+      "entrypoint": "lines",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "collection-compensation-failed"
+      },
+      "nodes": [
+        {
+          "body": "unit",
+          "id": "lines",
+          "items": "input.items",
+          "maxConcurrency": 1,
+          "maxItems": 4,
+          "next": "done",
+          "result": "item.label",
+          "type": "forEach"
+        },
+        {
+          "id": "done",
+          "outputExpr": "steps.lines.output",
+          "type": "end"
+        }
+      ]
+    },
+    "partial": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "bodies": {
+        "unit": {
+          "entrypoint": "reserve",
+          "nodes": [
+            {
+              "activity": "coll.reserve",
+              "compensateWith": "coll.release",
+              "id": "reserve",
+              "next": "notify",
+              "type": "activity"
+            },
+            {
+              "activity": "coll.notify",
+              "id": "notify",
+              "irreversible": true,
+              "next": "ship",
+              "type": "activity"
+            },
+            {
+              "activity": "coll.ship",
+              "id": "ship",
+              "next": "returned",
+              "type": "activity"
+            },
+            {
+              "id": "returned",
+              "result": "steps.ship.output",
+              "type": "return"
+            }
+          ]
+        }
+      },
+      "entrypoint": "lines",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "collection-compensation-partial"
+      },
+      "nodes": [
+        {
+          "body": "unit",
+          "id": "lines",
+          "items": "input.items",
+          "maxConcurrency": 1,
+          "maxItems": 4,
+          "next": "done",
+          "result": "item.label",
+          "type": "forEach"
+        },
+        {
+          "id": "done",
+          "outputExpr": "steps.lines.output",
+          "type": "end"
+        }
+      ]
+    },
+    "reconciled": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "bodies": {
+        "unit": {
+          "entrypoint": "pay",
+          "nodes": [
+            {
+              "activity": "coll.pay",
+              "id": "pay",
+              "next": "returned",
+              "reconcileWith": "coll.lookup",
+              "retry": {
+                "maxAttempts": 1
+              },
+              "type": "activity"
+            },
+            {
+              "id": "returned",
+              "result": "steps.pay.output",
+              "type": "return"
+            }
+          ]
+        }
+      },
+      "entrypoint": "lines",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "collection-reconciliation"
+      },
+      "nodes": [
+        {
+          "body": "unit",
+          "id": "lines",
+          "items": "input.items",
+          "maxConcurrency": 1,
+          "maxItems": 4,
+          "next": "done",
+          "result": "item.label",
+          "type": "forEach"
+        },
+        {
+          "id": "done",
+          "outputExpr": "steps.lines.output",
+          "type": "end"
+        }
+      ]
+    },
+    "stuck": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "bodies": {
+        "unit": {
+          "entrypoint": "reserve",
+          "nodes": [
+            {
+              "activity": "coll.reserve",
+              "compensateWith": "coll.release-broken",
+              "compensationRetry": {
+                "maxAttempts": 1
+              },
+              "id": "reserve",
+              "next": "ship",
+              "type": "activity"
+            },
+            {
+              "activity": "coll.ship",
+              "id": "ship",
+              "next": "returned",
+              "type": "activity"
+            },
+            {
+              "id": "returned",
+              "result": "steps.ship.output",
+              "type": "return"
+            }
+          ]
+        }
+      },
+      "entrypoint": "lines",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "collection-compensation-stuck"
+      },
+      "nodes": [
+        {
+          "body": "unit",
+          "id": "lines",
+          "items": "input.items",
+          "maxConcurrency": 1,
+          "maxItems": 4,
+          "next": "done",
+          "result": "item.label",
+          "type": "forEach"
+        },
+        {
+          "id": "done",
+          "outputExpr": "steps.lines.output",
+          "type": "end"
+        }
+      ]
+    }
+  }
+}

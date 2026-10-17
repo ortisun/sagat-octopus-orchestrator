@@ -45,6 +45,9 @@ function cardIdentity(id: string): { text: string; full?: string } {
 
 function cardKind(node: RuntimeNode, kind: KindView): { text: string; full?: string } {
   if (kind.variant === 'forward') {
+    if (kind.unsupported && node.type.length > 40) {
+      return { text: 'Unsupported node — select for details', full: `Unsupported node (${node.type})` };
+    }
     return node.type.length > 40 && kind.label.endsWith('…') ? { text: 'Type details available', full: node.type } : { text: kind.label };
   }
   const suffix = kind.variant === 'undo' ? /~c$/ : /~r$/;

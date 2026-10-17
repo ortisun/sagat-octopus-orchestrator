@@ -91,6 +91,18 @@ export interface ActivityLogger {
   error(message: string, fields?: Record<string, unknown>): void;
 }
 
+/** One repeated scope that addresses a runtime activation of a definition node. */
+export interface ExecutionScope {
+  readonly scopeNodeId: string;
+  readonly iterationIndex: number;
+}
+
+/** The run-local identity supplied for a task by worker protocol 1.5. */
+export interface ExecutionInstanceIdentity {
+  readonly instancePath: readonly ExecutionScope[];
+  readonly definitionNodeId: string;
+}
+
 /** What an activity knows about the attempt it is running (SPEC §6.3). */
 export interface ActivityContext {
   readonly activityName: string;
@@ -102,6 +114,12 @@ export interface ActivityContext {
   readonly stepId: string;
   readonly attempt: number;
   readonly generation: number;
+  /** Present only when protocol 1.5 was negotiated and the lease supplied an identity. */
+  readonly instance?: ExecutionInstanceIdentity;
+  /** The immutable captured collection item for this scoped task. Absent for root and non-collection work. */
+  readonly item?: unknown;
+  /** The captured collection index for this scoped task. Absent for root and non-collection work. */
+  readonly index?: number;
   /** Stable across the attempts of the step: send it to the provider of an external effect. */
   readonly idempotencyKey: string;
   readonly traceparent: string;

@@ -93,6 +93,18 @@ async fn activity_policy_change(
     activity_policy_lock(conn, tenant, namespace, true).await
 }
 
+async fn iteration_policy_change(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+) -> Result<(), StoreError> {
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(format!("primitive-policy:{tenant}"))
+        .execute(conn)
+        .await
+        .map_err(store_error)?;
+    Ok(())
+}
+
 /// Takes shared policy fences followed by the activity lock for the rest of the transaction.
 /// Callers acquiring several activities must visit them in activity-name order.
 async fn lock_activity(
@@ -437,18 +449,35 @@ async fn effective(
     resource: QuotaResource,
 ) -> Result<u64, StoreError> {
     // The settings and the ceiling in one round trip: the ceiling bounds whatever the settings say.
-    let rows: Vec<(Option<uuid::Uuid>, i64, bool)> = sqlx::query_as(
-        "SELECT namespace_id, max_value, false FROM quota_limits \
-         WHERE tenant_id = $1 AND resource = $2 AND (namespace_id IS NULL OR namespace_id = $3) \
-         UNION ALL \
-         SELECT NULL, max_value, true FROM quota_ceilings WHERE tenant_id = $1 AND resource = $2",
-    )
-    .bind(tenant.as_uuid())
-    .bind(resource.as_str())
-    .bind(namespace.map(NamespaceId::as_uuid))
-    .fetch_all(pool)
-    .await
-    .map_err(store_error)?;
+    let rows: Vec<(Option<uuid::Uuid>, i64, bool)> =
+        if resource == QuotaResource::IterationConcurrency {
+            sqlx::query_as(
+                "SELECT NULL::uuid, max_active_iterations::bigint, false \
+                   FROM tenant_collection_policies WHERE tenant_id = $1 \
+                 UNION ALL \
+                 SELECT NULL::uuid, max_value, true FROM quota_ceilings \
+                  WHERE tenant_id = $1 AND resource = 'iteration_concurrency'",
+            )
+            .bind(tenant.as_uuid())
+            .fetch_all(pool)
+            .await
+            .map_err(store_error)?
+        } else {
+            sqlx::query_as(
+                "SELECT namespace_id, max_value, false FROM quota_limits \
+                 WHERE tenant_id = $1 AND resource = $2 \
+                   AND (namespace_id IS NULL OR namespace_id = $3) \
+                 UNION ALL \
+                 SELECT NULL, max_value, true FROM quota_ceilings \
+                  WHERE tenant_id = $1 AND resource = $2",
+            )
+            .bind(tenant.as_uuid())
+            .bind(resource.as_str())
+            .bind(namespace.map(NamespaceId::as_uuid))
+            .fetch_all(pool)
+            .await
+            .map_err(store_error)?
+        };
     let value = |scoped: bool| {
         rows.iter()
             .find(|(ns, _, ceiling)| !ceiling && ns.is_some() == scoped)
@@ -683,6 +712,8 @@ impl QuotaStore for PgRunStore {
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         if resource == QuotaResource::ActivityConcurrency {
             activity_policy_change(&mut tx, tenant, None).await?;
+        } else if resource == QuotaResource::IterationConcurrency {
+            iteration_policy_change(&mut tx, tenant).await?;
         } else if resource.kind() != QuotaKind::Count {
             content_usage::policy_change(&mut tx, tenant, None, resource).await?;
         }
@@ -726,7 +757,11 @@ impl QuotaStore for PgRunStore {
     ) -> Result<Vec<StoredLimit>, StoreError> {
         let rows: Vec<(String, i64)> = sqlx::query_as(
             "SELECT resource, max_value FROM quota_limits \
-             WHERE tenant_id = $1 AND namespace_id IS NOT DISTINCT FROM $2 ORDER BY resource",
+             WHERE tenant_id = $1 AND namespace_id IS NOT DISTINCT FROM $2 \
+             UNION ALL \
+             SELECT 'iteration_concurrency', max_active_iterations::bigint \
+               FROM tenant_collection_policies WHERE tenant_id = $1 AND $2::uuid IS NULL \
+             ORDER BY resource",
         )
         .bind(tenant.as_uuid())
         .bind(namespace.map(NamespaceId::as_uuid))
@@ -746,6 +781,43 @@ impl QuotaStore for PgRunStore {
         audit: &AuditRecord,
     ) -> Result<(), StoreError> {
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        if resource == QuotaResource::IterationConcurrency {
+            if namespace.is_some() {
+                return Err(StoreError::Internal {
+                    detail: "iteration capacity is tenant-scoped".into(),
+                });
+            }
+            iteration_policy_change(&mut tx, tenant).await?;
+            match value {
+                Some(value) => {
+                    let value = i32::try_from(value).map_err(|_| StoreError::Internal {
+                        detail: "iteration capacity does not fit".into(),
+                    })?;
+                    sqlx::query(
+                        "INSERT INTO tenant_collection_policies \
+                         (tenant_id, max_active_iterations, updated_by) VALUES ($1, $2, $3) \
+                         ON CONFLICT (tenant_id) DO UPDATE SET \
+                           max_active_iterations = EXCLUDED.max_active_iterations, \
+                           updated_by = EXCLUDED.updated_by, updated_at = clock_timestamp()",
+                    )
+                    .bind(tenant.as_uuid())
+                    .bind(value)
+                    .bind(changed_by)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(store_error)?;
+                }
+                None => {
+                    sqlx::query("DELETE FROM tenant_collection_policies WHERE tenant_id = $1")
+                        .bind(tenant.as_uuid())
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(store_error)?;
+                }
+            }
+            insert_audit(&mut tx, audit).await?;
+            return tx.commit().await.map_err(store_error);
+        }
         if resource == QuotaResource::ActivityConcurrency {
             activity_policy_change(&mut tx, tenant, namespace).await?;
         } else if resource.kind() != QuotaKind::Count {
@@ -856,6 +928,14 @@ impl QuotaStore for PgRunStore {
                 .fetch_one(&self.pool)
                 .await
             }
+            QuotaResource::IterationConcurrency => sqlx::query_scalar(
+                "SELECT coalesce(active_iterations, 0)::bigint \
+                     FROM tenant_iteration_usage WHERE tenant_id = $1",
+            )
+            .bind(tenant.as_uuid())
+            .fetch_optional(&self.pool)
+            .await
+            .map(|value| value.unwrap_or(0)),
             QuotaResource::Secrets => {
                 sqlx::query_scalar(
                     "SELECT count(*) FROM secrets WHERE tenant_id = $1 AND namespace_id = $2",

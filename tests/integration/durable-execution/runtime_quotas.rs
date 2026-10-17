@@ -364,7 +364,7 @@ async fn run_output_limit_rejection_uses_the_success_quota_fallback_when_routing
     )
     .bind(w.admin.tenant_id().as_uuid())
     .bind(run.as_uuid())
-    .bind(crossing.node.as_str())
+    .bind(crossing.instance.node().as_str())
     .fetch_one(&w.db.pool)
     .await
     .expect("storage failure code");
@@ -576,7 +576,7 @@ async fn lease_pins_script_obligations_and_zero_withholds_only_new_forward_work(
     )
     .bind(w.admin.tenant_id().as_uuid())
     .bind(run.as_uuid())
-    .bind(compensation.node.as_str())
+    .bind(compensation.instance.node().as_str())
     .fetch_one(&w.db.pool)
     .await
     .expect("compensation lease detail");
@@ -645,7 +645,7 @@ async fn reconciliation_script_retention_inherits_after_the_policy_closes() {
     )
     .bind(w.admin.tenant_id().as_uuid())
     .bind(run.as_uuid())
-    .bind(lookup.node.as_str())
+    .bind(lookup.instance.node().as_str())
     .fetch_one(&w.db.pool)
     .await
     .expect("reconciliation lease detail");

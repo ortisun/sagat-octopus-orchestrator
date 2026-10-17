@@ -39,6 +39,8 @@ async fn control(State(platform): State<Arc<Platform>>, Json(body): Json<Value>)
                 .await
         }
         "elapseTimer" => platform.elapse_timer(&field("run"), &field("node")).await,
+        // `node` names the subject whose membership the tenant takes away.
+        "revokeMembership" => revoke_membership(&platform, &field("node")).await,
         other => return Json(json!({"ok": false, "error": format!("unknown action {other}")})),
     }
     Json(json!({"ok": true}))
@@ -63,4 +65,17 @@ async fn expire_until_reclaimed(platform: &Platform, run: &str, node: &str) {
             return;
         }
     }
+}
+
+/// Removes the tenant's membership of `subject`: the identity provider still vouches for the token, but the
+/// platform no longer grants the subject a role, as when an administrator revokes it.
+async fn revoke_membership(platform: &Platform, subject: &str) {
+    let removed = sqlx::query("DELETE FROM memberships WHERE tenant_id = $1 AND subject = $2")
+        .bind(platform.tenant.as_uuid())
+        .bind(subject)
+        .execute(&platform.api.db.pool)
+        .await
+        .expect("revoke the membership")
+        .rows_affected();
+    assert_eq!(removed, 1, "{subject} was not a member of the tenant");
 }

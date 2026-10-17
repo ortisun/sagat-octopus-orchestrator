@@ -1,6 +1,7 @@
 //! Typed errors of the execution model. None of them carries payload data.
 
-use super::state::{RunStatus, StepStatus};
+use super::instance::ExecutionInstanceId;
+use super::state::{CollectionPhase, LoopPhase, RunStatus, StepStatus};
 use crate::workflow::NodeId;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -10,6 +11,8 @@ pub enum ExecutionError {
     RunFinished(RunStatus),
     #[error("the run has no step '{0}'")]
     UnknownStep(NodeId),
+    #[error("the run has no execution instance '{0:?}'")]
+    UnknownInstance(ExecutionInstanceId),
     /// The step is not in a status from which this event is legal.
     #[error("step '{node}' is {status}, which does not allow '{event}'")]
     IllegalTransition {
@@ -17,9 +20,17 @@ pub enum ExecutionError {
         status: StepStatus,
         event: &'static str,
     },
+    #[error("execution instance '{instance:?}' is {status}, which does not allow '{event}'")]
+    IllegalInstanceTransition {
+        instance: ExecutionInstanceId,
+        status: StepStatus,
+        event: &'static str,
+    },
     /// The attempt or generation is not the one that holds the lease: the caller is stale.
     #[error("step '{node}': the attempt/generation is stale")]
     StaleAttempt { node: NodeId },
+    #[error("execution instance '{instance:?}': the attempt/generation is stale")]
+    StaleInstanceAttempt { instance: ExecutionInstanceId },
     #[error("step '{0}' has already been scheduled")]
     AlreadyScheduled(NodeId),
     /// A timer, wait deadline or retry delay has not elapsed yet.
@@ -44,4 +55,89 @@ pub enum ExecutionError {
     /// A rule the reducer proves was broken; indicates a bug, never bad input.
     #[error("internal invariant violated: {0}")]
     Invariant(&'static str),
+    /// A structured node has a valid definition but its execution capability is not enabled.
+    #[error("structured node '{0}' is not executable by this runtime")]
+    UnsupportedStructuredNode(NodeId),
+    /// A scoped transition is valid journal vocabulary but its reducer path is not enabled yet.
+    #[error("scoped event '{0}' is not executable by this runtime")]
+    UnsupportedScopedEvent(&'static str),
+    #[error("the run has no collection scope '{0:?}'")]
+    UnknownCollection(ExecutionInstanceId),
+    #[error("collection scope '{0:?}' has already entered")]
+    CollectionAlreadyEntered(ExecutionInstanceId),
+    #[error("collection scope '{collection:?}' has no admitted iteration {index}")]
+    UnknownCollectionIteration {
+        collection: ExecutionInstanceId,
+        index: u32,
+    },
+    #[error("collection scope '{collection:?}' already admitted iteration {index}")]
+    DuplicateCollectionAdmission {
+        collection: ExecutionInstanceId,
+        index: u32,
+    },
+    #[error("collection scope '{collection:?}' expected admission {expected}, got {actual}")]
+    UnexpectedCollectionAdmission {
+        collection: ExecutionInstanceId,
+        expected: u32,
+        actual: u32,
+    },
+    #[error("collection scope '{collection:?}' reached concurrency {limit}")]
+    CollectionConcurrencyExceeded {
+        collection: ExecutionInstanceId,
+        limit: u16,
+    },
+    #[error("collection scope '{collection:?}' is {phase:?} and does not admit work")]
+    CollectionNotOpen {
+        collection: ExecutionInstanceId,
+        phase: CollectionPhase,
+    },
+    #[error("collection scope '{collection:?}' received an invalid instance '{instance:?}'")]
+    InvalidCollectionInstance {
+        collection: ExecutionInstanceId,
+        instance: ExecutionInstanceId,
+    },
+    #[error("collection scope '{collection:?}' has invalid limits or cardinality")]
+    InvalidCollectionLimits { collection: ExecutionInstanceId },
+    #[error("collection scope '{collection:?}' cannot apply '{event}' in its current progress")]
+    IllegalCollectionTransition {
+        collection: ExecutionInstanceId,
+        event: &'static str,
+    },
+    #[error("the run has no loop scope '{0:?}'")]
+    UnknownLoop(ExecutionInstanceId),
+    #[error("loop scope '{0:?}' has already entered")]
+    LoopAlreadyEntered(ExecutionInstanceId),
+    #[error("loop scope '{0:?}' has invalid bounds or pre/post-test entry data")]
+    InvalidLoopEntry(ExecutionInstanceId),
+    #[error("loop scope '{loop_instance:?}' received an invalid instance '{instance:?}'")]
+    InvalidLoopInstance {
+        loop_instance: ExecutionInstanceId,
+        instance: ExecutionInstanceId,
+    },
+    #[error("loop scope '{loop_instance:?}' expected iteration {expected}, got {actual}")]
+    UnexpectedLoopIteration {
+        loop_instance: ExecutionInstanceId,
+        expected: u32,
+        actual: u32,
+    },
+    #[error("loop scope '{loop_instance:?}' has no active iteration {index}")]
+    UnknownLoopIteration {
+        loop_instance: ExecutionInstanceId,
+        index: u32,
+    },
+    #[error("loop scope '{loop_instance:?}' is {phase:?} and cannot admit an iteration")]
+    LoopNotReady {
+        loop_instance: ExecutionInstanceId,
+        phase: LoopPhase,
+    },
+    #[error("loop scope '{loop_instance:?}' has an invalid continuation after iteration {index}")]
+    InvalidLoopContinuation {
+        loop_instance: ExecutionInstanceId,
+        index: u32,
+    },
+    #[error("loop scope '{loop_instance:?}' cannot apply '{event}' in its current progress")]
+    IllegalLoopTransition {
+        loop_instance: ExecutionInstanceId,
+        event: &'static str,
+    },
 }

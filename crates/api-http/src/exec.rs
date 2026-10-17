@@ -25,7 +25,7 @@ pub trait Exec: Core + Admission {
     type Store: DefinitionStore + RunStore + PublishingStore + Clone + 'static;
     type Clock: Clock + Clone + 'static;
     type Codec: IrCodec + Clone + 'static;
-    type Eval: ExpressionEvaluator + 'static;
+    type Eval: ExpressionEvaluator + Clone + 'static;
 
     fn definitions(&self) -> &DefinitionService<Self::Store, Self::Clock, Self::Codec>;
     fn runs(&self) -> &RunService<Self::Store, Self::Clock, Self::Eval>;
@@ -185,7 +185,7 @@ where
     C: Clone,
     P: DefinitionStore + RunStore + PublishingStore + ApiAdmissionStore + Clone + 'static,
     X: IrCodec + Clone + 'static,
-    E: ExpressionEvaluator + 'static,
+    E: ExpressionEvaluator + Clone + 'static,
 {
     type Store = P;
     type Clock = C;

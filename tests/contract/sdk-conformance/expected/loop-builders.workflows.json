@@ -1,0 +1,36 @@
+{
+  "canonical": {
+    "pre-and-post-test": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"bodies\":{\"iteration\":{\"entrypoint\":\"increment\",\"nodes\":[{\"activity\":\"counter.increment\",\"id\":\"increment\",\"next\":\"return-value\",\"type\":\"activity\"},{\"id\":\"return-value\",\"result\":\"steps.increment.output\",\"type\":\"return\"}]}},\"entrypoint\":\"pre\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"loop-pre-post\"},\"nodes\":[{\"body\":\"iteration\",\"carry\":\"bodyResult\",\"condition\":\"carry < 3\",\"delayMs\":250,\"id\":\"pre\",\"initial\":\"input.start\",\"maxIterations\":3,\"next\":\"post\",\"onError\":\"failed\",\"timeoutMs\":60000,\"type\":\"while\"},{\"body\":\"iteration\",\"carry\":\"bodyResult\",\"condition\":\"carry >= 5\",\"id\":\"post\",\"initial\":\"steps.pre.output\",\"maxIterations\":10000,\"next\":\"done\",\"timeoutMs\":31622400000,\"type\":\"repeatUntil\"},{\"id\":\"done\",\"type\":\"end\"},{\"id\":\"failed\",\"type\":\"end\"}]}"
+  },
+  "errors": {
+    "delay": { "code": "VALIDATION_FAILED", "mentions": true, "raised": true },
+    "max-iterations": { "code": "VALIDATION_FAILED", "mentions": true, "raised": true },
+    "missing-condition": { "code": "VALIDATION_FAILED", "mentions": true, "raised": true },
+    "terminal-loop": { "code": "VALIDATION_FAILED", "mentions": true, "raised": true },
+    "timeout": { "code": "VALIDATION_FAILED", "mentions": true, "raised": true },
+    "unknown-body": { "code": "VALIDATION_FAILED", "mentions": true, "raised": true }
+  },
+  "workflows": {
+    "pre-and-post-test": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "bodies": {
+        "iteration": {
+          "entrypoint": "increment",
+          "nodes": [
+            { "activity": "counter.increment", "id": "increment", "next": "return-value", "type": "activity" },
+            { "id": "return-value", "result": "steps.increment.output", "type": "return" }
+          ]
+        }
+      },
+      "entrypoint": "pre",
+      "kind": "Workflow",
+      "metadata": { "name": "loop-pre-post" },
+      "nodes": [
+        { "body": "iteration", "carry": "bodyResult", "condition": "carry < 3", "delayMs": 250, "id": "pre", "initial": "input.start", "maxIterations": 3, "next": "post", "onError": "failed", "timeoutMs": 60000, "type": "while" },
+        { "body": "iteration", "carry": "bodyResult", "condition": "carry >= 5", "id": "post", "initial": "steps.pre.output", "maxIterations": 10000, "next": "done", "timeoutMs": 31622400000, "type": "repeatUntil" },
+        { "id": "done", "type": "end" },
+        { "id": "failed", "type": "end" }
+      ]
+    }
+  }
+}

@@ -10,6 +10,7 @@ import {
   type ActivityContext,
   type ActivityHandler,
   type BlobDescriptor,
+  type ExecutionInstanceIdentity,
   type RegisterOptions,
   type Secrets,
   type TaskKind,
@@ -77,6 +78,31 @@ const CODE = /^[A-Z0-9_]{1,64}$/;
 function minorOf(version: string): number {
   const match = /^1(?:\.(\d+))?$/.exec(version);
   return match ? Number(match[1] ?? 0) : 0;
+}
+
+/**
+ * What identifies a task while it runs. The legacy task id is `run/node/generation`, so two iterations of one scope
+ * that are leased together share it: the instance identity (protocol 1.5) is what tells them apart.
+ */
+function inflightKey(lease: TaskLease): string {
+  const path = lease.instance?.instance_path ?? [];
+  return path.reduce((key, segment) => `${key}/${segment.scope_node_id}[${segment.iteration_index}]`, lease.task_id);
+}
+
+function instanceOf(lease: TaskLease, minor: number): TaskLease['instance'] {
+  return minor >= 5 ? lease.instance : undefined;
+}
+
+function activityInstanceOf(lease: TaskLease, minor: number): ExecutionInstanceIdentity | undefined {
+  const instance = instanceOf(lease, minor);
+  if (!instance) return undefined;
+  return Object.freeze({
+    instancePath: Object.freeze(instance.instance_path.map((segment) => Object.freeze({
+      scopeNodeId: segment.scope_node_id,
+      iterationIndex: segment.iteration_index,
+    }))),
+    definitionNodeId: instance.definition_node_id,
+  });
 }
 
 /** The worker host of the SDK (SPEC §6). */
@@ -416,6 +442,7 @@ export class WorkerHost {
   // ------------------------------------------------------------------------------------------- tasks
 
   private dispatch(lease: TaskLease): void {
+    const key = inflightKey(lease);
     const abort = new AbortController();
     const done = this.execute(lease, abort)
       .catch((error: unknown) => {
@@ -423,11 +450,11 @@ export class WorkerHost {
         this.log.error('a task failed unexpectedly', { task: lease.task_id, error: error instanceof Error ? error.name : 'unknown' });
       })
       .finally(() => {
-      this.inflight.delete(lease.task_id);
+      this.inflight.delete(key);
       // A task finished: there is room, so the pause after an empty poll ends (SPEC §6.2).
       this.wake?.();
     });
-    this.inflight.set(lease.task_id, { abort, done });
+    this.inflight.set(key, { abort, done });
     this.#emit({ type: 'task.taken', taskId: lease.task_id, activity: lease.activity_name, attempt: lease.attempt, traceparent: lease.traceparent });
   }
 
@@ -450,11 +477,11 @@ export class WorkerHost {
     const kind: TaskKind = minor >= 2 && (lease.task_kind === 'COMPENSATION' || lease.task_kind === 'RECONCILIATION') ? lease.task_kind : 'FORWARD';
 
     if (!registered) {
-      await this.fail(lease, 'NO_HANDLER', 'no handler is registered for the activity', false, started);
+      await this.fail(lease, minor, 'NO_HANDLER', 'no handler is registered for the activity', false, started);
       return;
     }
 
-    let document: { node?: string; input?: unknown; steps?: Record<string, { output?: unknown }> };
+    let document: { node?: string; input?: unknown; item?: unknown; index?: unknown; steps?: Record<string, { output?: unknown }> };
     let stepsUnsafe = false;
     try {
       const parsed = lease.input_json === '' ? { value: {}, stepsUnsafe: false } : parseStepDocument(lease.input_json);
@@ -462,18 +489,30 @@ export class WorkerHost {
       document = parsed.value !== null && typeof parsed.value === 'object' ? (parsed.value as typeof document) : {};
     } catch (error) {
       // Not JSON, or an integer beyond 2^53 - 1 that a JavaScript number would round (SPEC §8).
-      await this.fail(lease, 'INPUT_INVALID', error instanceof SagatError ? error.message : 'the step document is not JSON', false, started);
+      await this.fail(lease, minor, 'INPUT_INVALID', error instanceof SagatError ? error.message : 'the step document is not JSON', false, started);
       return;
     }
     let input: unknown = document.input;
     try {
       if (registered.parse) input = registered.parse(document.input);
     } catch {
-      await this.fail(lease, 'INPUT_INVALID', 'the input does not have the type of the handler', false, started);
+      await this.fail(lease, minor, 'INPUT_INVALID', 'the input does not have the type of the handler', false, started);
       return;
     }
     const steps: Record<string, unknown> = {};
     for (const [node, value] of Object.entries(document.steps ?? {})) steps[node] = value?.output;
+    let collection: { item: unknown; index: number } | undefined;
+    const scoped = minor >= 5 && (lease.instance?.instance_path.length ?? 0) > 0;
+    const hasItem = Object.prototype.hasOwnProperty.call(document, 'item');
+    const hasIndex = Object.prototype.hasOwnProperty.call(document, 'index');
+    if (scoped && (hasItem || hasIndex)) {
+      if (!hasItem || !hasIndex || typeof document.index !== 'number' || !Number.isSafeInteger(document.index)
+        || document.index < 0 || document.index > 0xffff_ffff) {
+        await this.fail(lease, minor, 'INPUT_INVALID', 'the collection item context is malformed', false, started);
+        return;
+      }
+      collection = { item: document.item, index: document.index };
+    }
 
     // The heartbeat starts before the handler and runs until the report is made (`execute` stops it).
     const stopBeat = this.beat(lease, minor, abort, state).stop;
@@ -495,6 +534,8 @@ export class WorkerHost {
       stepId: lease.step_id,
       attempt: lease.attempt,
       generation: lease.generation,
+      instance: activityInstanceOf(lease, minor),
+      ...(collection ?? {}),
       idempotencyKey: lease.idempotency_key,
       traceparent: lease.traceparent,
       taskKind: kind,
@@ -568,7 +609,7 @@ export class WorkerHost {
       return;
     }
     if (failure) {
-      await this.fail(lease, failure.code, failure.message, failure.retryable, started);
+      await this.fail(lease, minor, failure.code, failure.message, failure.retryable, started);
       return;
     }
 
@@ -576,7 +617,7 @@ export class WorkerHost {
       const verdict = result as Partial<Verdict> | undefined;
       const effect = verdict?.effect;
       if (effect !== 'applied' && effect !== 'not_applied' && effect !== 'unknown') {
-        await this.fail(lease, 'RECONCILIATION_ANSWER_INVALID', 'a reconciler answers applied, notApplied or unknown', false, started);
+        await this.fail(lease, minor, 'RECONCILIATION_ANSWER_INVALID', 'a reconciler answers applied, notApplied or unknown', false, started);
         return;
       }
       result = effect === 'applied' && (verdict as { output?: unknown }).output !== undefined
@@ -589,25 +630,25 @@ export class WorkerHost {
         this.validateBlobDescriptor(result.descriptor);
         this.ensureBlobAttempt(minor, { finished: false });
       } catch {
-        await this.fail(lease, minor < 3 ? 'UNSUPPORTED_PROTOCOL' : 'OUTPUT_INVALID',
+        await this.fail(lease, minor, minor < 3 ? 'UNSUPPORTED_PROTOCOL' : 'OUTPUT_INVALID',
           minor < 3 ? 'blob output requires worker protocol 1.3' : 'the blob output descriptor is malformed', false, started);
         return;
       }
-      await this.complete(lease, '', started, result.descriptor);
+      await this.complete(lease, minor, '', started, result.descriptor);
       return;
     }
     let output: string;
     try {
       output = result === undefined ? '' : encodeJson(result);
     } catch (error) {
-      await this.fail(lease, 'OUTPUT_INVALID', error instanceof SagatError ? error.message : 'the output is not JSON', false, started);
+      await this.fail(lease, minor, 'OUTPUT_INVALID', error instanceof SagatError ? error.message : 'the output is not JSON', false, started);
       return;
     }
     if (Buffer.byteLength(output) > MAX_OUTPUT_BYTES) {
-      await this.fail(lease, 'PAYLOAD_TOO_LARGE', 'the output is over 256 KiB', false, started);
+      await this.fail(lease, minor, 'PAYLOAD_TOO_LARGE', 'the output is over 256 KiB', false, started);
       return;
     }
-    await this.complete(lease, output, started);
+    await this.complete(lease, minor, output, started);
   }
 
   private ensureBlobAttempt(minor: number, holder: { finished?: boolean }): void {
@@ -645,6 +686,7 @@ export class WorkerHost {
         task_id: lease.task_id, run_id: lease.run_id, step_id: lease.step_id, attempt: lease.attempt,
         generation: lease.generation, lease_token: lease.lease_token, content_type: options?.contentType ?? 'application/octet-stream',
         expected_size: options?.expectedSize ?? 0, expected_sha256: options?.expectedSha256 ?? '',
+        instance: instanceOf(lease, minor),
       } };
       for await (const value of source) {
         if (!(value instanceof Uint8Array)) throw new SagatError({ code: 'VALIDATION_FAILED', message: 'a blob source yields Uint8Array chunks' });
@@ -683,6 +725,7 @@ export class WorkerHost {
     for await (const part of this.#channel().readBlob({
       task_id: lease.task_id, run_id: lease.run_id, step_id: lease.step_id, attempt: lease.attempt,
       generation: lease.generation, lease_token: lease.lease_token, blob_id: descriptor.id,
+      instance: instanceOf(lease, minor),
     }, lease.traceparent || undefined, signal)) {
       this.ensureBlobAttempt(minor, holder);
       if (part.header) {
@@ -734,6 +777,7 @@ export class WorkerHost {
             run_id: minor >= 1 ? lease.run_id : '',
             step_id: minor >= 1 ? lease.step_id : '',
             attempt: minor >= 1 ? lease.attempt : 0,
+            instance: instanceOf(lease, minor),
           },
           lease.traceparent || undefined,
         );
@@ -782,7 +826,7 @@ export class WorkerHost {
     }
   }
 
-  private async complete(lease: TaskLease, output: string, started: number, blob?: BlobDescriptor): Promise<void> {
+  private async complete(lease: TaskLease, minor: number, output: string, started: number, blob?: BlobDescriptor): Promise<void> {
     try {
       const answer = await this.withRetries(() =>
         this.#channel().completeStep(
@@ -798,6 +842,7 @@ export class WorkerHost {
             output_blob_ref: blob?.id ?? '',
             output_sha256: blob?.sha256 ?? '',
             traceparent: lease.traceparent,
+            instance: instanceOf(lease, minor),
           },
           lease.traceparent || undefined,
         ),
@@ -813,7 +858,7 @@ export class WorkerHost {
     }
   }
 
-  private async fail(lease: TaskLease, code: string, message: string, retryable: boolean, started: number): Promise<void> {
+  private async fail(lease: TaskLease, minor: number, code: string, message: string, retryable: boolean, started: number): Promise<void> {
     const safeCode = CODE.test(code) ? code : 'WORKER_ERROR';
     try {
       const answer = await this.withRetries(() =>
@@ -830,6 +875,7 @@ export class WorkerHost {
             safe_message: safeMessage(message),
             retryable,
             traceparent: lease.traceparent,
+            instance: instanceOf(lease, minor),
           },
           lease.traceparent || undefined,
         ),
@@ -860,6 +906,7 @@ export class WorkerHost {
         generation: lease.generation,
         lease_token: lease.lease_token,
         traceparent: lease.traceparent,
+        instance: instanceOf(lease, minor),
       },
       lease.traceparent || undefined,
     );

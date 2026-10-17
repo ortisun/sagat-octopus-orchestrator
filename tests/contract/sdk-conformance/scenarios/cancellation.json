@@ -36,6 +36,7 @@
   "workers": {
     "w1": {
       "workerName": "cancel-worker",
+      "protocolVersion": "1.4",
       "maxInflight": 4,
       "heartbeatIntervalMs": 100,
       "activities": {

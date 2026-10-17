@@ -108,3 +108,16 @@ Signed webhooks, duplicates, retries, out-of-order and event/timeout race in int
 ## Webhook identity profile completion
 
 ADR-0026 adds deployment-approved OIDC verifiers and native mutual TLS client identity. Endpoint profiles are persisted and audited, and use the existing admission path. No endpoint-controlled discovery or forwarded certificate trust is introduced.
+
+
+## Approved workflow-primitives dependency (2026-10-14)
+
+[ADR-0030](../../docs/adr/ADR-0030-structured-instances-and-continuation-chains.md) and
+[ADR-0031](../../docs/adr/ADR-0031-declared-operation-result-disclosure.md) accept the feature-014
+architecture and separate declared-result disclosure policy.
+[ADR-0032](../../docs/adr/ADR-0032-additive-workflow-ir.md) keeps the workflow IR at v1 and
+supersedes the earlier separate-revision allocation. Inbox consumers, subscriptions, timers and outbox references may carry full scoped instance identity. Signals remain accepted only by a waiting step and consumed in the same transaction, with no buffering or implicit forwarding across continuation.
+
+This approves the described dependency for implementation, not a runtime guarantee. Canonical
+contracts, migration/replay, tenant/fault tests and applicable five-SDK evidence remain the
+feature-014 release gates; existing feature behavior stays supported.

@@ -1,0 +1,112 @@
+{
+  "name": "loop-error-activity",
+  "description": "WP-05: a loop's onError edge leads to an activity. The body activity fails for good, the engine drains the active iteration, the loop ends FAILED with the body's code and the run continues at the recovery activity, which a worker completes as an ordinary root task. The success edge is not taken.",
+  "server": {
+    "iterationConcurrency": 2
+  },
+  "scopeEvidence": "ordered",
+  "workflows": {
+    "recover": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "name": "loop-error-activity",
+      "bodies": {
+        "iteration": {
+          "program": [
+            {
+              "op": "step",
+              "id": "work",
+              "activity": "looperr.work"
+            },
+            {
+              "op": "return",
+              "id": "returned",
+              "result": "steps.work.output"
+            }
+          ]
+        }
+      },
+      "program": [
+        {
+          "op": "while",
+          "id": "loop",
+          "condition": "carry < 3",
+          "body": "iteration",
+          "initial": "0",
+          "carry": "carry + 1",
+          "maxIterations": 3,
+          "timeoutMs": 60000,
+          "onError": "recover"
+        },
+        {
+          "op": "end",
+          "id": "done"
+        },
+        {
+          "op": "step",
+          "id": "recover",
+          "activity": "looperr.recover"
+        },
+        {
+          "op": "end",
+          "id": "recovered"
+        }
+      ]
+    }
+  },
+  "workers": {
+    "w1": {
+      "workerName": "loop-error-activity",
+      "protocolVersion": "1.5",
+      "transport": "poll",
+      "maxInflight": 1,
+      "autostart": false,
+      "activities": {
+        "looperr.work": {
+          "behavior": {
+            "fails": {
+              "code": "NO_STOCK",
+              "message": "nothing to process",
+              "retryable": false
+            }
+          }
+        },
+        "looperr.recover": {
+          "behavior": {
+            "returns": {
+              "recovered": true
+            }
+          }
+        }
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "start-worker",
+      "op": "startWorker",
+      "worker": "w1"
+    },
+    {
+      "id": "run",
+      "op": "start",
+      "workflow": "recover",
+      "input": {}
+    },
+    {
+      "id": "done",
+      "op": "waitForCompletion",
+      "run": "run",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "journal",
+      "op": "events",
+      "run": "run"
+    },
+    {
+      "id": "stop-worker",
+      "op": "stopWorker",
+      "worker": "w1"
+    }
+  ]
+}

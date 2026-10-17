@@ -104,6 +104,23 @@ pub enum IrError {
         kind: String,
         reason: &'static str,
     },
+    /// A combination the accepted design allows but whose prerequisite is not built yet (decision
+    /// D295: an approval inside a collection or loop body waits for scoped compensation). Unlike
+    /// [`Self::Unsupported`] it names what has to exist first, so a client can tell a closed door
+    /// from a missing feature.
+    #[error("node '{node}' is a '{kind}', which waits for {dependency}: {reason}")]
+    Pending {
+        node: String,
+        kind: String,
+        /// The closed name of the missing prerequisite (`SCOPED_COMPENSATION`).
+        dependency: &'static str,
+        reason: &'static str,
+    },
+    #[error("declaration '{field}' is not supported yet: {reason}")]
+    UnsupportedDeclaration {
+        field: &'static str,
+        reason: &'static str,
+    },
     #[error("{0}")]
     Invalid(WorkflowError),
     #[error("node '{node}', field '{field}': {message}")]
@@ -202,8 +219,11 @@ pub fn problems_of(error: &IrError) -> Vec<Problem> {
                 Problem::error("SCHEMA", issue.message.clone()).at_path(issue.path.clone())
             })
             .collect(),
-        IrError::Unsupported { node, .. } => {
+        IrError::Unsupported { node, .. } | IrError::Pending { node, .. } => {
             vec![Problem::error("UNSUPPORTED_NODE", error.to_string()).at_node(node.clone())]
+        }
+        IrError::UnsupportedDeclaration { field, .. } => {
+            vec![Problem::error("UNSUPPORTED_NODE", error.to_string()).at_path(format!("/{field}"))]
         }
         // The message names the field: a `path` is a pointer into the document, and the codec knows the
         // node by its id, not where it stands in the list.
@@ -256,6 +276,15 @@ fn graph_rule(error: &WorkflowError) -> (&'static str, Option<String>) {
         E::InvalidTrigger(_) => ("INVALID_TRIGGER", None),
         E::TooManyTriggers(_) => ("TOO_MANY_TRIGGERS", None),
         E::DuplicateTrigger => ("DUPLICATE_TRIGGER", None),
+        E::InvalidScope { node, .. } => ("INVALID_SCOPE", Some(node.to_string())),
+        E::DuplicateBody(body) => ("DUPLICATE_BODY", Some(body.to_string())),
+        E::UnknownBody { node, .. } => ("UNKNOWN_BODY", Some(node.to_string())),
+        E::UnreachableBody(body) => ("UNREACHABLE_BODY", Some(body.to_string())),
+        E::RecursiveBody(body) => ("RECURSIVE_BODY", Some(body.to_string())),
+        E::BodyDepthExceeded(_) => ("BODY_DEPTH_EXCEEDED", None),
+        E::InvalidWorkflowLimit(_) => ("INVALID_WORKFLOW_LIMIT", None),
+        E::InvalidContinuationPolicy(_) => ("INVALID_CONTINUATION_POLICY", None),
+        E::InvalidSwitch { node, .. } => ("INVALID_SWITCH", Some(node.to_string())),
     }
 }
 
@@ -304,6 +333,34 @@ pub trait IrCodec: Send + Sync {
     /// # Errors
     /// An [`IrError`] describing why the document cannot be published.
     fn parse(&self, document: &[u8]) -> Result<ParsedDefinition, IrError>;
+
+    /// Returns immutable declared-state metadata when the document contains that capability.
+    /// Codecs that do not implement declared state remain closed and return no publication.
+    ///
+    /// # Errors
+    /// An [`IrError`] describing an invalid declaration.
+    fn declared_state_publication(
+        &self,
+        _document: &[u8],
+    ) -> Result<Option<crate::declared_operations::PublishedDeclaredState>, IrError> {
+        Ok(None)
+    }
+
+    /// Evaluates a schema-checked initial state from the exact input of a new run.
+    /// Codecs that do not implement declared state return no state.
+    ///
+    /// # Errors
+    /// A value-free evaluator error; raw workflow input is never included in the error.
+    fn initial_declared_state(
+        &self,
+        _document: &[u8],
+        _input: &[u8],
+    ) -> Result<
+        Option<crate::declared_operations::EvaluatedOperationWrite>,
+        crate::operation_evaluation::OperationEvaluationError,
+    > {
+        Ok(None)
+    }
 
     /// What differs between two documents, compared as written (so a draft that does not
     /// validate can be compared with the version it came from).
@@ -467,6 +524,7 @@ pub trait DefinitionStore: QuotaLookup + SecretAccessLookup + ScriptLookup + Sen
         version_id: WorkflowVersionId,
         digest: Digest,
         document: &[u8],
+        declared_state: Option<&crate::declared_operations::PublishedDeclaredState>,
         release_notes: Option<&str>,
         plans: &[SagaPlan],
         triggers: &[TriggerRegistration],
@@ -807,6 +865,10 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
         principal.authorize(Permission::DefinitionPublish)?;
         check_release_notes(release_notes)?;
         let (_, parsed) = self.prepare(principal, id, draft_revision, ctx).await?;
+        let declared_state = self
+            .codec
+            .declared_state_publication(&parsed.canonical)
+            .map_err(|error| AppError::InvalidDefinition(Box::new(error)))?;
         context.scripts = parsed.definition.script_digests().into_iter().collect();
         if context.reason.is_none() {
             context.reason = release_notes.map(str::to_owned);
@@ -836,6 +898,7 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
                 version_id,
                 parsed.digest,
                 &parsed.canonical,
+                declared_state.as_ref(),
                 release_notes,
                 &compensation_plans(&parsed.definition),
                 &triggers_of(id, &parsed.definition),

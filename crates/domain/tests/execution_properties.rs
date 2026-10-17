@@ -332,6 +332,16 @@ fn perform(h: &mut Harness, action: &Action) -> Result<(), ExecutionError> {
                         _ => Err(()),
                     },
                 },
+                Evaluation::Switch { node, cases } => Resolution::Switch {
+                    node,
+                    selection: match mode {
+                        0 => Ok(sagat_domain::execution::SwitchSelection::Case(
+                            cases.first().expect("switch has a case").id().clone(),
+                        )),
+                        1 => Ok(sagat_domain::execution::SwitchSelection::Default),
+                        _ => Err(()),
+                    },
+                },
                 Evaluation::Correlation { node, .. } => Resolution::Correlation {
                     node,
                     key: match mode {

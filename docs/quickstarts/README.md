@@ -125,6 +125,11 @@ Before running one, let your identity serve the activities (the example's README
 sagat worker bind --workflow hello-world/workflow.json
 ```
 
+For more than a greeting, the [order-processing examples](../../examples/order-processing/README.md)
+cover conditional routing, parallel fulfillment and durable reminders in all five languages,
+including business rejection and a permanent activity failure. See the
+[example matrix](../../examples/sdk-parity.md) for language links and the common validation command.
+
 ## 7. Rehearse a failure
 
 [saga.md](saga.md) is a payment saga: reserve a limit, charge a card, tell the customer. Make the card be declined

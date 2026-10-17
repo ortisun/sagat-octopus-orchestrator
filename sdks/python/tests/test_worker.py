@@ -22,6 +22,7 @@ from sagat_octopus_orchestrator import (
     WorkerHost,
     run_blocking,
 )
+from sagat_octopus_orchestrator._proto import worker_pb2 as pb
 from sagat_octopus_orchestrator.worker._grpc import error_of_status
 
 from .fakes import FakeWorkerService, Scripted, lease, until
@@ -49,6 +50,7 @@ def test_a_blob_integrity_failure_is_a_protocol_error_without_server_text() -> N
     assert (mapped.code, mapped.reason) == ("PROTOCOL", "BLOB_CORRUPT")
     assert "payload must not escape" not in mapped.message
 
+
 MakeHost = Callable[..., WorkerHost]
 TRACE = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
 
@@ -71,9 +73,57 @@ async def test_a_worker_registers_its_activities_and_the_newest_protocol_it_spea
     assert list(request.capabilities.languages) == ["python"]
     assert list(request.capabilities.activities) == ["a.undo", "b.second", "c.lookup"]
     assert list(request.capabilities.pools) == []
-    assert (request.capabilities.max_inflight, request.capabilities.protocol_version) == (7, "1.4")
+    assert (request.capabilities.max_inflight, request.capabilities.protocol_version) == (7, "1.5")
     assert register.metadata["authorization"] == "Bearer tok"
     assert host.protocol_version == "1.2"
+
+
+async def test_protocol_1_5_echoes_scoped_identity_and_protocol_1_4_omits_it(
+    fake: FakeWorkerService, make_host: MakeHost
+) -> None:
+    scoped = pb.ExecutionInstanceIdentity(
+        instance_path=[pb.ScopePathSegment(scope_node_id="lines", iteration_index=7)],
+        definition_node_id="charge",
+    )
+    fake.accepted_version = "1.5"
+    fake.leases = [lease(instance=scoped, input_json='{"input":{"order":7},"item":{"sku":"one"},"index":7,"steps":{}}')]
+    current = make_host()
+    current_context: list[ActivityContext] = []
+
+    def current_charge(_input: Any, context: ActivityContext) -> dict[str, bool]:
+        current_context.append(context)
+        return {"ok": True}
+
+    current.register_activity("charge", current_charge, blocking=False)
+    await current.start()
+    await until(lambda: len(fake.of("CompleteStep")) == 1, "the scoped completion")
+    assert fake.of("CompleteStep")[0].request.instance == scoped
+    assert current_context[0].instance is not None
+    assert current_context[0].instance.definition_node_id == "charge"
+    assert [(scope.scope_node_id, scope.iteration_index) for scope in current_context[0].instance.instance_path] == [
+        ("lines", 7)
+    ]
+    assert current_context[0].item == {"sku": "one"}
+    assert current_context[0].index == 7
+    await current.stop()
+
+    fake.calls.clear()
+    fake.accepted_version = "1.4"
+    fake.leases = [lease(instance=scoped, input_json='{"input":{"order":7},"item":{"sku":"one"},"index":7,"steps":{}}')]
+    legacy = make_host(protocol_version="1.4")
+    legacy_context: list[ActivityContext] = []
+
+    def legacy_charge(_input: Any, context: ActivityContext) -> dict[str, bool]:
+        legacy_context.append(context)
+        return {"ok": True}
+
+    legacy.register_activity("charge", legacy_charge, blocking=False)
+    await legacy.start()
+    await until(lambda: len(fake.of("CompleteStep")) == 1, "the legacy completion")
+    assert not fake.of("CompleteStep")[0].request.HasField("instance")
+    assert legacy_context[0].instance is None
+    assert legacy_context[0].item is None
+    assert legacy_context[0].index is None
 
 
 async def test_a_task_is_run_with_its_context_and_completed_once_with_a_key_that_is_the_same_on_every_retry(
@@ -576,10 +626,12 @@ async def test_a_stream_that_exceeds_capacity_runs_bounded_work_and_is_cancelled
 ) -> None:
     fake.accepted_version = "1.4"
     fake.hold_stream = True
-    fake.stream_batches = [[
-        lease(task_id="run-1/charge/1"),
-        lease(task_id="run-2/charge/1", run_id="run-2"),
-    ]]
+    fake.stream_batches = [
+        [
+            lease(task_id="run-1/charge/1"),
+            lease(task_id="run-2/charge/1", run_id="run-2"),
+        ]
+    ]
     handled = 0
 
     async def charge(_input: Any, ctx: ActivityContext) -> None:

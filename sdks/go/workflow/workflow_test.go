@@ -149,6 +149,115 @@ func TestWaitForAnEventInvokeAChildDecideAndEnd(t *testing.T) {
 	}
 }
 
+func TestASwitchKeepsCaseOrderCopiesItsCasesAndHasNoImplicitNext(t *testing.T) {
+	cases := []workflow.SwitchCase{
+		{ID: "nonnegative", When: "input.amount >= 0", Target: "positive"},
+		{ID: "one", When: "input.amount == 1", Target: "also-positive"},
+	}
+	b := workflow.New("switch-flow").
+		Switch("route", cases, "fallback").
+		Step("positive", "amount.positive").
+		Step("also-positive", "amount.also-positive").
+		Step("fallback", "amount.fallback")
+	cases[0].Target = "tampered"
+	d, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := doc{
+		"id": "route", "type": "switch",
+		"cases": []any{
+			doc{"id": "nonnegative", "when": "input.amount >= 0", "target": "positive"},
+			doc{"id": "one", "when": "input.amount == 1", "target": "also-positive"},
+		},
+		"default": "fallback",
+	}
+	same(t, nodes(t, d)[0], want)
+	if _, has := nodes(t, d)[0].(doc)["next"]; has {
+		t.Error("a switch names its targets and has no next")
+	}
+	if _, err := workflow.New("local-case-ids").
+		Switch("first", []workflow.SwitchCase{{ID: "same", When: "true", Target: "done"}}, "done").
+		Switch("second", []workflow.SwitchCase{{ID: "same", When: "false", Target: "done"}}, "done").
+		End("done").Build(); err != nil {
+		t.Errorf("case ids are local to their switch: %v", err)
+	}
+}
+
+func TestCollectionsUseNamedBodiesAndMapWritesTheSameForEachNode(t *testing.T) {
+	line := workflow.Flow().Step("price", "line.price").Return("return", "steps.price.output")
+	tax := workflow.Flow().Step("price", "tax.price").Return("return", "steps.price.output")
+	doc, err := workflow.New("collection-flow").
+		Body("line", line).
+		Body("tax", tax).
+		ForEach("notify-lines", "input.lines", "line", "bodyResult", 17, 3).
+		Map("prices", "input.lines", "tax", "bodyResult.amount", 17, 2).
+		End("done", workflow.OutputExpr("steps.prices.output")).
+		Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []any{
+		map[string]any{"id": "notify-lines", "type": "forEach", "items": "input.lines", "body": "line", "result": "bodyResult", "maxItems": 17, "maxConcurrency": 3, "next": "prices"},
+		map[string]any{"id": "prices", "type": "forEach", "items": "input.lines", "body": "tax", "result": "bodyResult.amount", "maxItems": 17, "maxConcurrency": 2, "next": "done"},
+		map[string]any{"id": "done", "type": "end", "outputExpr": "steps.prices.output"},
+	}
+	if !reflect.DeepEqual(want, doc["nodes"]) {
+		t.Fatalf("nodes differ:\nwant %#v\ngot  %#v", want, doc["nodes"])
+	}
+	bodies := doc["bodies"].(map[string]any)
+	wantBody := map[string]any{"entrypoint": "price", "nodes": []any{
+		map[string]any{"id": "price", "type": "activity", "activity": "line.price", "next": "return"},
+		map[string]any{"id": "return", "type": "return", "result": "steps.price.output"},
+	}}
+	if !reflect.DeepEqual(wantBody, bodies["line"]) {
+		t.Fatalf("body differs:\nwant %#v\ngot  %#v", wantBody, bodies["line"])
+	}
+	wantTax := map[string]any{"entrypoint": "price", "nodes": []any{
+		map[string]any{"id": "price", "type": "activity", "activity": "tax.price", "next": "return"},
+		map[string]any{"id": "return", "type": "return", "result": "steps.price.output"},
+	}}
+	if !reflect.DeepEqual(wantTax, bodies["tax"]) {
+		t.Fatalf("body differs:\nwant %#v\ngot  %#v", wantTax, bodies["tax"])
+	}
+}
+
+func TestNamedBodiesCannotReferenceThemselves(t *testing.T) {
+	recursive := workflow.Flow().ForEach("nested", "input.items", "line", "bodyResult", 2, 1).
+		Return("return", "steps.nested.output")
+	_, err := workflow.New("recursive-body").
+		Body("line", recursive).
+		ForEach("lines", "input.items", "line", "bodyResult", 2, 1).
+		End("done").Build()
+	if err == nil || !strings.Contains(err.Error(), "body reference cycle") {
+		t.Fatalf("recursive body error = %v", err)
+	}
+}
+
+func TestWhileAndRepeatUntilWriteBoundedPreTestAndPostTestLoopNodes(t *testing.T) {
+	iteration := workflow.Flow().Step("increment", "counter.increment").Return("return", "steps.increment.output")
+	document, err := workflow.New("loop-flow").
+		Body("iteration", iteration).
+		While("pre", "carry < 3", "iteration", "input.start", "bodyResult", 3, time.Minute,
+			workflow.LoopDelay(250*time.Millisecond), workflow.LoopOnError("failed")).
+		RepeatUntil("post", "carry >= 5", "iteration", "steps.pre.output", "bodyResult", 5, 2*time.Minute).
+		End("done").
+		End("failed").
+		Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []any{
+		map[string]any{"id": "pre", "type": "while", "condition": "carry < 3", "body": "iteration", "initial": "input.start", "carry": "bodyResult", "maxIterations": 3, "timeoutMs": int64(60_000), "delayMs": int64(250), "onError": "failed", "next": "post"},
+		map[string]any{"id": "post", "type": "repeatUntil", "condition": "carry >= 5", "body": "iteration", "initial": "steps.pre.output", "carry": "bodyResult", "maxIterations": 5, "timeoutMs": int64(120_000), "next": "done"},
+		map[string]any{"id": "done", "type": "end"},
+		map[string]any{"id": "failed", "type": "end"},
+	}
+	if !reflect.DeepEqual(want, document["nodes"]) {
+		t.Fatalf("nodes differ:\nwant %#v\ngot  %#v", want, document["nodes"])
+	}
+}
+
 func TestTriggersLabelsAndSchemasGoWhereTheDocumentKeepsThem(t *testing.T) {
 	d, err := workflow.New("with-meta").
 		Label("team", "payments").
@@ -206,6 +315,37 @@ func TestWhatTheServerWouldRefuseAndTheBuilderCanSeeIsRefusedHere(t *testing.T) 
 		{"condition without an expression", func() (doc, error) { return workflow.New("no-expr").Condition("c", "", "a", "b").Build() }, "expression"},
 		{"dangling condition", func() (doc, error) {
 			return workflow.New("dangling").Condition("c", "true", "nowhere", "a").Step("a", "x").Build()
+		}, "not a node"},
+		{"switch without cases", func() (doc, error) {
+			return workflow.New("no-switch-cases").Switch("s", nil, "a").Build()
+		}, "between 1 and 32 cases"},
+		{"switch with too many cases", func() (doc, error) {
+			items := make([]workflow.SwitchCase, 33)
+			for i := range items {
+				items[i] = workflow.SwitchCase{ID: fmt.Sprintf("case-%d", i), When: "true", Target: "a"}
+			}
+			return workflow.New("too-many-cases").Switch("s", items, "a").Build()
+		}, "between 1 and 32 cases"},
+		{"duplicate switch case ids", func() (doc, error) {
+			return workflow.New("duplicate-cases").Switch("s", []workflow.SwitchCase{{ID: "same", When: "true", Target: "a"}, {ID: "same", When: "false", Target: "b"}}, "a").Build()
+		}, "case id"},
+		{"switch case without an id", func() (doc, error) {
+			return workflow.New("empty-case-id").Switch("s", []workflow.SwitchCase{{When: "true", Target: "a"}}, "a").Build()
+		}, "without an id"},
+		{"switch case without an expression", func() (doc, error) {
+			return workflow.New("empty-case-when").Switch("s", []workflow.SwitchCase{{ID: "one", Target: "a"}}, "a").Build()
+		}, "when expression"},
+		{"switch case without a target", func() (doc, error) {
+			return workflow.New("empty-case-target").Switch("s", []workflow.SwitchCase{{ID: "one", When: "true"}}, "a").Build()
+		}, "needs a target"},
+		{"switch without a default", func() (doc, error) {
+			return workflow.New("empty-switch-default").Switch("s", []workflow.SwitchCase{{ID: "one", When: "true", Target: "a"}}, "").Build()
+		}, "default target"},
+		{"dangling switch case", func() (doc, error) {
+			return workflow.New("dangling-switch-case").Switch("s", []workflow.SwitchCase{{ID: "one", When: "true", Target: "nowhere"}}, "a").Step("a", "x").Build()
+		}, "not a node"},
+		{"dangling switch default", func() (doc, error) {
+			return workflow.New("dangling-switch-default").Switch("s", []workflow.SwitchCase{{ID: "one", When: "true", Target: "a"}}, "nowhere").Step("a", "x").Build()
 		}, "not a node"},
 		{"dangling timeout", func() (doc, error) {
 			return workflow.New("dangling-timeout").WaitForEvent("w", "e", "x", time.Millisecond, workflow.OnTimeout("nowhere")).Build()

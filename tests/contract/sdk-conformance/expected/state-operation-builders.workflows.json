@@ -1,0 +1,213 @@
+{
+  "canonical": {
+    "decimal-and-utc": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"waiting\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"declared-account-state\"},\"nodes\":[{\"id\":\"waiting\",\"type\":\"end\"}],\"state\":{\"initial\":\"input.initialState\",\"queries\":{\"account.balance\":{\"argsSchema\":{\"additionalProperties\":false,\"properties\":{\"taxRate\":{\"type\":\"number\"}},\"required\":[\"taxRate\"],\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"expression\":\"state.balance * 1.075 + args.taxRate\",\"resultSchema\":{\"minimum\":0,\"type\":\"number\"}},\"account.cutoff\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"expression\":\"'2026-10-15T18:00:00.000Z'\",\"resultSchema\":{\"maxLength\":24,\"type\":\"string\"}},\"account.updated-at\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"expression\":\"state.updatedAt\",\"resultSchema\":{\"maxLength\":32,\"type\":\"string\"}}},\"schema\":{\"additionalProperties\":false,\"properties\":{\"balance\":{\"minimum\":0,\"type\":\"number\"},\"status\":{\"maxLength\":16,\"type\":\"string\"},\"updatedAt\":{\"maxLength\":32,\"type\":\"string\"}},\"required\":[\"balance\",\"status\",\"updatedAt\"],\"type\":\"object\"},\"updates\":{\"account.replace\":{\"argsSchema\":{\"additionalProperties\":false,\"properties\":{\"nextState\":{\"additionalProperties\":false,\"properties\":{\"balance\":{\"minimum\":0,\"type\":\"number\"},\"status\":{\"maxLength\":16,\"type\":\"string\"},\"updatedAt\":{\"maxLength\":32,\"type\":\"string\"}},\"required\":[\"balance\",\"status\",\"updatedAt\"],\"type\":\"object\"}},\"required\":[\"nextState\"],\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"result\":\"newState\",\"resultSchema\":{\"additionalProperties\":false,\"properties\":{\"balance\":{\"minimum\":0,\"type\":\"number\"},\"status\":{\"maxLength\":16,\"type\":\"string\"},\"updatedAt\":{\"maxLength\":32,\"type\":\"string\"}},\"required\":[\"balance\",\"status\",\"updatedAt\"],\"type\":\"object\"},\"state\":\"args.nextState\",\"validate\":\"args.nextState.balance >= 0\"}}}}"
+  },
+  "errors": {
+    "missing-query-disclosure": {
+      "raised": true,
+      "code": "VALIDATION_FAILED",
+      "mentions": true
+    },
+    "wrong-update-disclosure": {
+      "raised": true,
+      "code": "VALIDATION_FAILED",
+      "mentions": true
+    },
+    "open-state-schema": {
+      "raised": true,
+      "code": "VALIDATION_FAILED",
+      "mentions": true
+    },
+    "unbounded-result-string": {
+      "raised": true,
+      "code": "VALIDATION_FAILED",
+      "mentions": true
+    },
+    "unbounded-result-array": {
+      "raised": true,
+      "code": "VALIDATION_FAILED",
+      "mentions": true
+    },
+    "empty-initial-expression": {
+      "raised": true,
+      "code": "VALIDATION_FAILED",
+      "mentions": true
+    },
+    "invalid-operation-name": {
+      "raised": true,
+      "code": "VALIDATION_FAILED",
+      "mentions": true
+    },
+    "non-object-args-schema": {
+      "raised": true,
+      "code": "VALIDATION_FAILED",
+      "mentions": true
+    },
+    "too-many-queries": {
+      "raised": true,
+      "code": "VALIDATION_FAILED",
+      "mentions": true
+    },
+    "too-many-updates": {
+      "raised": true,
+      "code": "VALIDATION_FAILED",
+      "mentions": true
+    },
+    "expression-over-byte-limit": {
+      "raised": true,
+      "code": "VALIDATION_FAILED",
+      "mentions": true
+    }
+  },
+  "workflows": {
+    "decimal-and-utc": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "declared-account-state"
+      },
+      "entrypoint": "waiting",
+      "nodes": [
+        {
+          "id": "waiting",
+          "type": "end"
+        }
+      ],
+      "state": {
+        "schema": {
+          "type": "object",
+          "properties": {
+            "balance": {
+              "type": "number",
+              "minimum": 0
+            },
+            "status": {
+              "type": "string",
+              "maxLength": 16
+            },
+            "updatedAt": {
+              "type": "string",
+              "maxLength": 32
+            }
+          },
+          "required": [
+            "balance",
+            "status",
+            "updatedAt"
+          ],
+          "additionalProperties": false
+        },
+        "initial": "input.initialState",
+        "queries": {
+          "account.balance": {
+            "argsSchema": {
+              "type": "object",
+              "properties": {
+                "taxRate": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "taxRate"
+              ],
+              "additionalProperties": false
+            },
+            "resultSchema": {
+              "type": "number",
+              "minimum": 0
+            },
+            "expression": "state.balance * 1.075 + args.taxRate",
+            "disclosure": "declared-business-result-v1"
+          },
+          "account.cutoff": {
+            "argsSchema": {
+              "type": "object",
+              "additionalProperties": false
+            },
+            "resultSchema": {
+              "type": "string",
+              "maxLength": 24
+            },
+            "expression": "'2026-10-15T18:00:00.000Z'",
+            "disclosure": "declared-business-result-v1"
+          },
+          "account.updated-at": {
+            "argsSchema": {
+              "type": "object",
+              "additionalProperties": false
+            },
+            "resultSchema": {
+              "type": "string",
+              "maxLength": 32
+            },
+            "expression": "state.updatedAt",
+            "disclosure": "declared-business-result-v1"
+          }
+        },
+        "updates": {
+          "account.replace": {
+            "argsSchema": {
+              "type": "object",
+              "properties": {
+                "nextState": {
+                  "type": "object",
+                  "properties": {
+                    "balance": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "status": {
+                      "type": "string",
+                      "maxLength": 16
+                    },
+                    "updatedAt": {
+                      "type": "string",
+                      "maxLength": 32
+                    }
+                  },
+                  "required": [
+                    "balance",
+                    "status",
+                    "updatedAt"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "nextState"
+              ],
+              "additionalProperties": false
+            },
+            "validate": "args.nextState.balance >= 0",
+            "state": "args.nextState",
+            "result": "newState",
+            "resultSchema": {
+              "type": "object",
+              "properties": {
+                "balance": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "status": {
+                  "type": "string",
+                  "maxLength": 16
+                },
+                "updatedAt": {
+                  "type": "string",
+                  "maxLength": 32
+                }
+              },
+              "required": [
+                "balance",
+                "status",
+                "updatedAt"
+              ],
+              "additionalProperties": false
+            },
+            "disclosure": "declared-business-result-v1"
+          }
+        }
+      }
+    }
+  }
+}

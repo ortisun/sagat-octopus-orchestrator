@@ -1,0 +1,60 @@
+{
+  "apiVersion": "sagat-octopus-orchestrator.io/v1",
+  "kind": "Workflow",
+  "metadata": {
+    "name": "order-fulfillment",
+    "description": "Executable fulfillment example using the current workflow IR; provider effects are simulated."
+  },
+  "entrypoint": "fan",
+  "triggers": [
+    {
+      "kind": "manual"
+    }
+  ],
+  "inputSchema": {
+    "type": "object",
+    "required": [
+      "orderId",
+      "amount",
+      "failNotify"
+    ],
+    "properties": {
+      "orderId": {
+        "type": "string"
+      },
+      "amount": {
+        "type": "integer"
+      },
+      "failNotify": {
+        "type": "boolean"
+      }
+    }
+  },
+  "nodes": [
+    {
+      "id": "fan",
+      "type": "parallel",
+      "branches": [
+        "reserve",
+        "quote"
+      ],
+      "join": "all",
+      "next": "notify"
+    },
+    {
+      "id": "reserve",
+      "type": "activity",
+      "activity": "order.reserve"
+    },
+    {
+      "id": "quote",
+      "type": "activity",
+      "activity": "order.quote"
+    },
+    {
+      "id": "notify",
+      "type": "activity",
+      "activity": "order.notify"
+    }
+  ]
+}

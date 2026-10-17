@@ -45,6 +45,26 @@ func (l *workerLog) measurements() object {
 	return object{"peakInflight": l.peakInflight, "deliveries": append([]any{}, l.deliveries...)}
 }
 
+// holdUntilLogged makes a scoped instance wait until the worker has logged as many finished attempts as the
+// scenario names for its iteration index, which orders completions by what happened rather than by how long
+// anything took. It reports false when the attempt was cancelled while waiting.
+func (l *workerLog) holdUntilLogged(ctx context.Context, behavior object) bool {
+	holds, ok := behavior["holdUntilLogged"].([]any)
+	if !ok {
+		return true
+	}
+	position := 0
+	if task := worker.TaskFrom(ctx); task.Index != nil {
+		position = int(*task.Index)
+	}
+	for asInt(holds[position]) > len(l.snapshot()) {
+		if waitOrCancelled(ctx, 10*time.Millisecond) {
+			return false
+		}
+	}
+	return true
+}
+
 func (l *workerLog) add(entry object) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -250,12 +270,23 @@ func logEntry(ctx context.Context, name, kind string, input json.RawMessage, out
 	if parts := strings.Split(task.Traceparent, "-"); len(parts) > 1 {
 		traceID = parts[1]
 	}
-	return object{
+	entry := object{
 		"activity": name, "kind": kind, "node": task.Node, "attempt": task.Attempt, "input": input,
 		"taskKind": string(task.Kind), "targetNode": task.TargetNode, "targetIdempotencyKey": task.TargetIdempotencyKey,
 		"idempotencyKey": task.IdempotencyKey, "traceparentPresent": task.Traceparent != "", "traceId": traceID,
 		"steps": task.Steps, "deadlineAhead": task.Deadline().After(time.Now()), "abortedReason": aborted, "outcome": outcome,
 	}
+	if task.Instance != nil {
+		path := make([]any, 0, len(task.Instance.InstancePath))
+		for _, segment := range task.Instance.InstancePath {
+			path = append(path, object{"scopeNodeId": segment.ScopeNodeID, "iterationIndex": segment.IterationIndex})
+		}
+		entry["instance"] = object{"instancePath": path, "definitionNodeId": task.Instance.DefinitionNodeID}
+	}
+	if task.Index != nil {
+		entry["scopeInput"] = object{"item": task.Item, "index": *task.Index}
+	}
+	return entry
 }
 
 func hostOf(def object, config object, p *plan, log *workerLog) (*worker.Host, error) {
@@ -311,6 +342,10 @@ func hostOf(def object, config object, p *plan, log *workerLog) (*worker.Host, e
 				defer leave()
 				outcome := "returned"
 				defer func() { log.add(logEntry(ctx, name, kind, input, outcome)) }()
+				if !log.holdUntilLogged(ctx, behavior) {
+					outcome = "cancelled"
+					return nil, nil
+				}
 				result, _, err := behave(ctx, behavior, input, &outcome)
 				return result, err
 			}

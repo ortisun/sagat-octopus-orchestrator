@@ -1,0 +1,63 @@
+{
+  "canonical": {
+    "chain": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"chainPolicy\":{\"maxSegments\":3,\"timeoutMs\":86400000},\"entrypoint\":\"hold\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"chain-query-runtime\"},\"nodes\":[{\"activity\":\"operations.unserved\",\"id\":\"hold\",\"next\":\"rollover\",\"type\":\"activity\"},{\"id\":\"rollover\",\"input\":\"input\",\"state\":\"state\",\"type\":\"continueAsNew\"}],\"state\":{\"initial\":\"input.account\",\"queries\":{\"amount.read\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"expression\":\"state.amount\",\"resultSchema\":{\"maxLength\":64,\"type\":\"string\"}}},\"schema\":{\"additionalProperties\":false,\"properties\":{\"amount\":{\"maxLength\":64,\"type\":\"string\"}},\"required\":[\"amount\"],\"type\":\"object\"}}}"
+  },
+  "workflows": {
+    "chain": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "chainPolicy": {
+        "maxSegments": 3,
+        "timeoutMs": 86400000
+      },
+      "entrypoint": "hold",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "chain-query-runtime"
+      },
+      "nodes": [
+        {
+          "activity": "operations.unserved",
+          "id": "hold",
+          "next": "rollover",
+          "type": "activity"
+        },
+        {
+          "id": "rollover",
+          "input": "input",
+          "state": "state",
+          "type": "continueAsNew"
+        }
+      ],
+      "state": {
+        "initial": "input.account",
+        "queries": {
+          "amount.read": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "expression": "state.amount",
+            "resultSchema": {
+              "maxLength": 64,
+              "type": "string"
+            }
+          }
+        },
+        "schema": {
+          "additionalProperties": false,
+          "properties": {
+            "amount": {
+              "maxLength": 64,
+              "type": "string"
+            }
+          },
+          "required": [
+            "amount"
+          ],
+          "type": "object"
+        }
+      }
+    }
+  }
+}

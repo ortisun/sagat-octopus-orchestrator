@@ -1,0 +1,232 @@
+{
+  "canonical": {
+    "delay": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"bodies\":{\"iteration\":{\"entrypoint\":\"work\",\"nodes\":[{\"activity\":\"loop.delay\",\"id\":\"work\",\"next\":\"returned\",\"type\":\"activity\"},{\"id\":\"returned\",\"result\":\"steps.work.output\",\"type\":\"return\"}]}},\"entrypoint\":\"loop\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"loop-durable-delay\"},\"nodes\":[{\"body\":\"iteration\",\"carry\":\"carry + 1\",\"condition\":\"carry < 2\",\"delayMs\":4000,\"id\":\"loop\",\"initial\":\"0\",\"maxIterations\":3,\"next\":\"done\",\"timeoutMs\":60000,\"type\":\"while\"},{\"id\":\"done\",\"outputExpr\":\"steps.loop.output\",\"type\":\"end\"}]}",
+    "false-while": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"bodies\":{\"iteration\":{\"entrypoint\":\"work\",\"nodes\":[{\"activity\":\"loop.never\",\"id\":\"work\",\"next\":\"returned\",\"type\":\"activity\"},{\"id\":\"returned\",\"result\":\"steps.work.output\",\"type\":\"return\"}]}},\"entrypoint\":\"loop\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"loop-false-while\"},\"nodes\":[{\"body\":\"iteration\",\"carry\":\"bodyResult\",\"condition\":\"carry > 0\",\"id\":\"loop\",\"initial\":\"0\",\"maxIterations\":3,\"next\":\"done\",\"timeoutMs\":60000,\"type\":\"while\"},{\"id\":\"done\",\"outputExpr\":\"steps.loop.output\",\"type\":\"end\"}]}",
+    "limit": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"bodies\":{\"iteration\":{\"entrypoint\":\"work\",\"nodes\":[{\"activity\":\"loop.limit\",\"id\":\"work\",\"next\":\"returned\",\"type\":\"activity\"},{\"id\":\"returned\",\"result\":\"steps.work.output\",\"type\":\"return\"}]}},\"entrypoint\":\"loop\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"loop-iteration-limit\"},\"nodes\":[{\"body\":\"iteration\",\"carry\":\"carry + 1\",\"condition\":\"carry < 100\",\"id\":\"loop\",\"initial\":\"0\",\"maxIterations\":1,\"next\":\"done\",\"timeoutMs\":60000,\"type\":\"while\"},{\"id\":\"done\",\"outputExpr\":\"steps.loop.output\",\"type\":\"end\"}]}",
+    "post-test": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"bodies\":{\"iteration\":{\"entrypoint\":\"work\",\"nodes\":[{\"activity\":\"loop.once\",\"id\":\"work\",\"next\":\"returned\",\"type\":\"activity\"},{\"id\":\"returned\",\"result\":\"steps.work.output\",\"type\":\"return\"}]}},\"entrypoint\":\"loop\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"loop-post-test\"},\"nodes\":[{\"body\":\"iteration\",\"carry\":\"bodyResult\",\"condition\":\"carry >= 0\",\"id\":\"loop\",\"initial\":\"0\",\"maxIterations\":3,\"next\":\"done\",\"timeoutMs\":60000,\"type\":\"repeatUntil\"},{\"id\":\"done\",\"outputExpr\":\"steps.loop.output\",\"type\":\"end\"}]}",
+    "three": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"bodies\":{\"iteration\":{\"entrypoint\":\"work\",\"nodes\":[{\"activity\":\"loop.three\",\"id\":\"work\",\"next\":\"returned\",\"type\":\"activity\"},{\"id\":\"returned\",\"result\":\"steps.work.output\",\"type\":\"return\"}]}},\"entrypoint\":\"loop\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"loop-three-iterations\"},\"nodes\":[{\"body\":\"iteration\",\"carry\":\"carry + 1\",\"condition\":\"carry < 3\",\"id\":\"loop\",\"initial\":\"0\",\"maxIterations\":5,\"next\":\"done\",\"timeoutMs\":60000,\"type\":\"while\"},{\"id\":\"done\",\"outputExpr\":\"steps.loop.output\",\"type\":\"end\"}]}"
+  },
+  "workflows": {
+    "delay": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "bodies": {
+        "iteration": {
+          "entrypoint": "work",
+          "nodes": [
+            {
+              "activity": "loop.delay",
+              "id": "work",
+              "next": "returned",
+              "type": "activity"
+            },
+            {
+              "id": "returned",
+              "result": "steps.work.output",
+              "type": "return"
+            }
+          ]
+        }
+      },
+      "entrypoint": "loop",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "loop-durable-delay"
+      },
+      "nodes": [
+        {
+          "body": "iteration",
+          "carry": "carry + 1",
+          "condition": "carry < 2",
+          "delayMs": 4000,
+          "id": "loop",
+          "initial": "0",
+          "maxIterations": 3,
+          "next": "done",
+          "timeoutMs": 60000,
+          "type": "while"
+        },
+        {
+          "id": "done",
+          "outputExpr": "steps.loop.output",
+          "type": "end"
+        }
+      ]
+    },
+    "false-while": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "bodies": {
+        "iteration": {
+          "entrypoint": "work",
+          "nodes": [
+            {
+              "activity": "loop.never",
+              "id": "work",
+              "next": "returned",
+              "type": "activity"
+            },
+            {
+              "id": "returned",
+              "result": "steps.work.output",
+              "type": "return"
+            }
+          ]
+        }
+      },
+      "entrypoint": "loop",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "loop-false-while"
+      },
+      "nodes": [
+        {
+          "body": "iteration",
+          "carry": "bodyResult",
+          "condition": "carry > 0",
+          "id": "loop",
+          "initial": "0",
+          "maxIterations": 3,
+          "next": "done",
+          "timeoutMs": 60000,
+          "type": "while"
+        },
+        {
+          "id": "done",
+          "outputExpr": "steps.loop.output",
+          "type": "end"
+        }
+      ]
+    },
+    "limit": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "bodies": {
+        "iteration": {
+          "entrypoint": "work",
+          "nodes": [
+            {
+              "activity": "loop.limit",
+              "id": "work",
+              "next": "returned",
+              "type": "activity"
+            },
+            {
+              "id": "returned",
+              "result": "steps.work.output",
+              "type": "return"
+            }
+          ]
+        }
+      },
+      "entrypoint": "loop",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "loop-iteration-limit"
+      },
+      "nodes": [
+        {
+          "body": "iteration",
+          "carry": "carry + 1",
+          "condition": "carry < 100",
+          "id": "loop",
+          "initial": "0",
+          "maxIterations": 1,
+          "next": "done",
+          "timeoutMs": 60000,
+          "type": "while"
+        },
+        {
+          "id": "done",
+          "outputExpr": "steps.loop.output",
+          "type": "end"
+        }
+      ]
+    },
+    "post-test": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "bodies": {
+        "iteration": {
+          "entrypoint": "work",
+          "nodes": [
+            {
+              "activity": "loop.once",
+              "id": "work",
+              "next": "returned",
+              "type": "activity"
+            },
+            {
+              "id": "returned",
+              "result": "steps.work.output",
+              "type": "return"
+            }
+          ]
+        }
+      },
+      "entrypoint": "loop",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "loop-post-test"
+      },
+      "nodes": [
+        {
+          "body": "iteration",
+          "carry": "bodyResult",
+          "condition": "carry >= 0",
+          "id": "loop",
+          "initial": "0",
+          "maxIterations": 3,
+          "next": "done",
+          "timeoutMs": 60000,
+          "type": "repeatUntil"
+        },
+        {
+          "id": "done",
+          "outputExpr": "steps.loop.output",
+          "type": "end"
+        }
+      ]
+    },
+    "three": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "bodies": {
+        "iteration": {
+          "entrypoint": "work",
+          "nodes": [
+            {
+              "activity": "loop.three",
+              "id": "work",
+              "next": "returned",
+              "type": "activity"
+            },
+            {
+              "id": "returned",
+              "result": "steps.work.output",
+              "type": "return"
+            }
+          ]
+        }
+      },
+      "entrypoint": "loop",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "loop-three-iterations"
+      },
+      "nodes": [
+        {
+          "body": "iteration",
+          "carry": "carry + 1",
+          "condition": "carry < 3",
+          "id": "loop",
+          "initial": "0",
+          "maxIterations": 5,
+          "next": "done",
+          "timeoutMs": 60000,
+          "type": "while"
+        },
+        {
+          "id": "done",
+          "outputExpr": "steps.loop.output",
+          "type": "end"
+        }
+      ]
+    }
+  }
+}

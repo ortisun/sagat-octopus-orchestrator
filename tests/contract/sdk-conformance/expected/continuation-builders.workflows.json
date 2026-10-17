@@ -1,0 +1,56 @@
+{
+  "canonical": {
+    "input-and-state-maximum": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"chainPolicy\":{\"maxSegments\":10000,\"timeoutMs\":31622400000},\"entrypoint\":\"rollover\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"continuation-input-state\"},\"nodes\":[{\"id\":\"rollover\",\"input\":\"result.nextInput\",\"state\":\"state\",\"type\":\"continueAsNew\"}],\"state\":{\"initial\":\"input.state\",\"schema\":{\"additionalProperties\":false,\"properties\":{\"cursor\":{\"type\":\"integer\"}},\"required\":[\"cursor\"],\"type\":\"object\"}}}",
+    "input-only": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"chainPolicy\":{\"maxSegments\":3,\"timeoutMs\":86400000},\"entrypoint\":\"rollover\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"continuation-input-only\"},\"nodes\":[{\"id\":\"rollover\",\"input\":\"input.next\",\"type\":\"continueAsNew\"}]}"
+  },
+  "errors": {
+    "empty-state": { "code": "VALIDATION_FAILED", "mentions": true, "raised": true },
+    "inside-body": { "code": "VALIDATION_FAILED", "mentions": true, "raised": true },
+    "missing-input": { "code": "VALIDATION_FAILED", "mentions": true, "raised": true },
+    "missing-policy": { "code": "VALIDATION_FAILED", "mentions": true, "raised": true },
+    "timeout-over-ceiling": { "code": "VALIDATION_FAILED", "mentions": true, "raised": true },
+    "too-many-segments": { "code": "VALIDATION_FAILED", "mentions": true, "raised": true },
+    "zero-segments": { "code": "VALIDATION_FAILED", "mentions": true, "raised": true },
+    "zero-timeout": { "code": "VALIDATION_FAILED", "mentions": true, "raised": true }
+  },
+  "workflows": {
+    "input-and-state-maximum": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "chainPolicy": { "maxSegments": 10000, "timeoutMs": 31622400000 },
+      "entrypoint": "rollover",
+      "kind": "Workflow",
+      "metadata": { "name": "continuation-input-state" },
+      "nodes": [
+        {
+          "id": "rollover",
+          "input": "result.nextInput",
+          "state": "state",
+          "type": "continueAsNew"
+        }
+      ],
+      "state": {
+        "schema": {
+          "type": "object",
+          "properties": { "cursor": { "type": "integer" } },
+          "required": ["cursor"],
+          "additionalProperties": false
+        },
+        "initial": "input.state"
+      }
+    },
+    "input-only": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "chainPolicy": { "maxSegments": 3, "timeoutMs": 86400000 },
+      "entrypoint": "rollover",
+      "kind": "Workflow",
+      "metadata": { "name": "continuation-input-only" },
+      "nodes": [
+        {
+          "id": "rollover",
+          "input": "input.next",
+          "type": "continueAsNew"
+        }
+      ]
+    }
+  }
+}

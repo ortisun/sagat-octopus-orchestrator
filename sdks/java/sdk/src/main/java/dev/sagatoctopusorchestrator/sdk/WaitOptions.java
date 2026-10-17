@@ -2,7 +2,7 @@ package dev.sagatoctopusorchestrator.sdk;
 
 import java.time.Duration;
 
-/** Options of {@link SagatClient#waitForCompletion}. */
+/** Options of run and chain completion waits. */
 public final class WaitOptions {
     private Duration timeout = Duration.ofSeconds(60);
     private Duration pollInterval = Duration.ofMillis(500);

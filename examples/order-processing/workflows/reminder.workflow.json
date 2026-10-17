@@ -1,0 +1,46 @@
+{
+  "apiVersion": "sagat-octopus-orchestrator.io/v1",
+  "kind": "Workflow",
+  "metadata": {
+    "name": "order-reminder",
+    "description": "Executable reminder example using the current workflow IR; provider effects are simulated."
+  },
+  "entrypoint": "reminder-delay",
+  "triggers": [
+    {
+      "kind": "manual"
+    }
+  ],
+  "inputSchema": {
+    "type": "object",
+    "required": [
+      "orderId",
+      "amount",
+      "failNotify"
+    ],
+    "properties": {
+      "orderId": {
+        "type": "string"
+      },
+      "amount": {
+        "type": "integer"
+      },
+      "failNotify": {
+        "type": "boolean"
+      }
+    }
+  },
+  "nodes": [
+    {
+      "id": "reminder-delay",
+      "type": "timer",
+      "durationMs": 100,
+      "next": "notify"
+    },
+    {
+      "id": "notify",
+      "type": "activity",
+      "activity": "order.notify"
+    }
+  ]
+}

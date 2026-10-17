@@ -244,7 +244,7 @@ async fn a_non_retryable_failure_takes_the_error_route_and_the_run_still_succeed
     assert_eq!(w.step_status(run, "a").await, Some(StepStatus::Failed));
     assert_eq!(w.step_status(run, "b").await, None);
     let cleanup = w.one_task(&session).await;
-    assert_eq!(cleanup.node.as_str(), "cleanup");
+    assert_eq!(cleanup.instance.node().as_str(), "cleanup");
     w.complete(&session, &cleanup, &json!({}))
         .await
         .expect("cleanup");
@@ -304,7 +304,7 @@ async fn a_one_hour_timer_holds_no_worker_and_resumes_when_due() {
     assert_eq!(w.scheduler.tick().await.timers_fired, 1);
     assert_eq!(w.run_status(run).await, RunStatus::Running);
     let task = w.one_task(&session).await;
-    assert_eq!(task.node.as_str(), "after");
+    assert_eq!(task.instance.node().as_str(), "after");
     w.complete(&session, &task, &json!({}))
         .await
         .expect("after");
@@ -396,7 +396,10 @@ async fn an_event_wait_that_times_out_takes_the_timeout_route() {
     w.age_due(run, "w").await;
     assert_eq!(w.scheduler.tick().await.waits_timed_out, 1);
     let session = w.session(&["act.notify", "act.review"]).await;
-    assert_eq!(w.one_task(&session).await.node.as_str(), "review");
+    assert_eq!(
+        w.one_task(&session).await.instance.node().as_str(),
+        "review"
+    );
     w.assert_consistent(run).await;
 }
 
@@ -505,5 +508,5 @@ async fn a_ready_step_whose_notification_was_lost_gets_a_new_one() {
     assert_eq!(w.outbox("task.ready").await, 2);
     // Claiming never depended on the notification.
     let session = w.session(&["act.a", "act.b"]).await;
-    assert_eq!(w.one_task(&session).await.node.as_str(), "a");
+    assert_eq!(w.one_task(&session).await.instance.node().as_str(), "a");
 }

@@ -1,0 +1,95 @@
+{
+  "name": "state-operations",
+  "description": "The five SDKs query one committed state snapshot and apply a durable state update with exact replay, optimistic revision conflict, validator rejection, authentication and tenant isolation.",
+  "workflows": {
+    "account": {
+      "name": "declared-account-operations",
+      "state": {
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "balance": { "type": "integer", "minimum": 0 },
+            "amount": { "type": "string", "maxLength": 64 },
+            "occurredAt": { "type": "string", "maxLength": 64 }
+          },
+          "required": ["balance", "amount", "occurredAt"]
+        },
+        "initial": "input.account",
+        "queries": {
+          "balance.read": {
+            "argsSchema": { "type": "integer" },
+            "resultSchema": { "type": "integer" },
+            "expression": "state.balance + args",
+            "disclosure": "declared-business-result-v1"
+          },
+          "amount.read": {
+            "argsSchema": { "type": "object", "additionalProperties": false },
+            "resultSchema": { "type": "string", "maxLength": 64 },
+            "expression": "state.amount",
+            "disclosure": "declared-business-result-v1"
+          },
+          "occurred-at.read": {
+            "argsSchema": { "type": "object", "additionalProperties": false },
+            "resultSchema": { "type": "string", "maxLength": 64 },
+            "expression": "state.occurredAt",
+            "disclosure": "declared-business-result-v1"
+          }
+        },
+        "updates": {
+          "balance.replace": {
+            "argsSchema": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "allowed": { "type": "boolean" },
+                "nextState": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "balance": { "type": "integer", "minimum": 0 },
+                    "amount": { "type": "string", "maxLength": 64 },
+                    "occurredAt": { "type": "string", "maxLength": 64 }
+                  },
+                  "required": ["balance", "amount", "occurredAt"]
+                }
+              },
+              "required": ["allowed", "nextState"]
+            },
+            "validate": "args.allowed",
+            "state": "args.nextState",
+            "result": "newState.balance",
+            "resultSchema": { "type": "integer", "minimum": 0 },
+            "disclosure": "declared-business-result-v1"
+          }
+        }
+      },
+      "program": [
+        { "op": "step", "id": "hold", "activity": "operations.unserved" }
+      ]
+    }
+  },
+  "faults": [
+    { "channel": "http", "match": "POST /runs/", "action": "dropResponse", "after": 3, "times": 1 }
+  ],
+  "steps": [
+    { "id": "start", "op": "start", "workflow": "account", "input": { "account": { "balance": 10, "amount": "19.99", "occurredAt": "2026-10-15T15:34:56.789Z" } }, "idempotencyKey": "operations-start-{{unique}}" },
+    { "id": "initial", "op": "query", "run": "start", "name": "balance.read", "args": 2 },
+    { "id": "decimal", "op": "query", "run": "start", "name": "amount.read", "args": {} },
+    { "id": "utc", "op": "query", "run": "start", "name": "occurred-at.read", "args": {} },
+    { "id": "apply", "op": "update", "run": "start", "name": "balance.replace", "updateKey": "replace-{{unique}}", "expectedStateRevision": 0, "args": { "allowed": true, "nextState": { "balance": 20, "amount": "20.01", "occurredAt": "2026-10-15T16:00:00.000Z" } } },
+    { "id": "replay", "op": "update", "run": "start", "name": "balance.replace", "updateKey": "replace-{{unique}}", "expectedStateRevision": 0, "args": { "allowed": true, "nextState": { "balance": 20, "amount": "20.01", "occurredAt": "2026-10-15T16:00:00.000Z" } } },
+    { "id": "after", "op": "query", "run": "start", "name": "balance.read", "args": 2 },
+    { "id": "stale", "op": "update", "run": "start", "name": "balance.replace", "updateKey": "stale-{{unique}}", "expectedStateRevision": 0, "args": { "allowed": true, "nextState": { "balance": 30, "amount": "30.00", "occurredAt": "2026-10-15T17:00:00.000Z" } } },
+    { "id": "rejected", "op": "update", "run": "start", "name": "balance.replace", "updateKey": "rejected-{{unique}}", "expectedStateRevision": 1, "args": { "allowed": false, "nextState": { "balance": 30, "amount": "30.00", "occurredAt": "2026-10-15T17:00:00.000Z" } } },
+    { "id": "rejected-replay", "op": "update", "run": "start", "name": "balance.replace", "updateKey": "rejected-{{unique}}", "expectedStateRevision": 1, "args": { "allowed": false, "nextState": { "balance": 30, "amount": "30.00", "occurredAt": "2026-10-15T17:00:00.000Z" } } },
+    { "id": "unauthenticated", "op": "query", "token": "bad", "run": "start", "name": "balance.read", "args": 0 },
+    { "id": "other-tenant", "op": "query", "token": "other", "run": "start", "name": "balance.read", "args": 0 },
+    { "id": "changed-body", "op": "update", "run": "start", "name": "balance.replace", "updateKey": "replace-{{unique}}", "expectedStateRevision": 0, "args": { "allowed": true, "nextState": { "balance": 21, "amount": "21.00", "occurredAt": "2026-10-15T16:00:00.000Z" } } },
+    { "id": "bad-args", "op": "update", "run": "start", "name": "balance.replace", "updateKey": "bad-args-{{unique}}", "args": { "allowed": "yes", "nextState": { "balance": 22, "amount": "22.00", "occurredAt": "2026-10-15T16:00:00.000Z" } } },
+    { "id": "stop", "op": "cancel", "run": "start", "reason": "state-operations scenario" },
+    { "id": "stopped", "op": "waitForCompletion", "run": "start", "timeoutMs": 20000 },
+    { "id": "after-stop-update", "op": "update", "run": "start", "name": "balance.replace", "updateKey": "after-stop-{{unique}}", "args": { "allowed": true, "nextState": { "balance": 23, "amount": "23.00", "occurredAt": "2026-10-15T16:00:00.000Z" } } },
+    { "id": "after-stop-query", "op": "query", "run": "start", "name": "balance.read", "args": 2 }
+  ]
+}

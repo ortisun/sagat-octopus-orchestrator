@@ -39,6 +39,8 @@ pub enum QuotaResource {
     WorkerSessions,
     /// Tasks of one activity that may hold an unexpired worker lease in one namespace.
     ActivityConcurrency,
+    /// Collection and loop iterations that may be active across the tenant.
+    IterationConcurrency,
     /// Secrets in one namespace.
     Secrets,
     /// Webhook endpoints in one namespace (feature 004).
@@ -97,12 +99,13 @@ pub enum QuotaUnit {
 }
 
 impl QuotaResource {
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 19] = [
         Self::ActiveRuns,
         Self::TenantActiveRuns,
         Self::Workflows,
         Self::WorkerSessions,
         Self::ActivityConcurrency,
+        Self::IterationConcurrency,
         Self::Secrets,
         Self::EventEndpoints,
         Self::WebhookSubscriptions,
@@ -126,6 +129,7 @@ impl QuotaResource {
             Self::Workflows => "workflows",
             Self::WorkerSessions => "worker_sessions",
             Self::ActivityConcurrency => "activity_concurrency",
+            Self::IterationConcurrency => "iteration_concurrency",
             Self::Secrets => "secrets",
             Self::EventEndpoints => "event_endpoints",
             Self::WebhookSubscriptions => "webhook_subscriptions",
@@ -161,6 +165,7 @@ impl QuotaResource {
             | Self::ScriptRetentionDays => QuotaScope::Namespace,
             Self::TenantActiveRuns
             | Self::WorkerSessions
+            | Self::IterationConcurrency
             | Self::TenantContentBytes
             | Self::TenantLogBytes => QuotaScope::Tenant,
         }
@@ -216,6 +221,8 @@ impl QuotaResource {
             Self::WorkerSessions => 1_000,
             // No activity is throttled until a tenant administrator sets a default or override.
             Self::ActivityConcurrency => MAX_LIMIT,
+            // Structured iteration remains disabled until a tenant administrator selects capacity.
+            Self::IterationConcurrency => 0,
             Self::Secrets => 500,
             Self::EventEndpoints => 100,
             Self::WebhookSubscriptions => 50,
@@ -241,6 +248,7 @@ impl QuotaResource {
             Self::Workflows => "workflows in the namespace",
             Self::WorkerSessions => "worker sessions of the tenant",
             Self::ActivityConcurrency => "concurrent tasks of the activity",
+            Self::IterationConcurrency => "active structured iterations of the tenant",
             Self::Secrets => "secrets in the namespace",
             Self::EventEndpoints => "webhook endpoints in the namespace",
             Self::WebhookSubscriptions => "outbound webhook subscriptions in the namespace",
@@ -254,6 +262,15 @@ impl QuotaResource {
             Self::EventsPerSecond => "events per second in the namespace",
             Self::EventRetentionSeconds => "event retention in the namespace",
             Self::ScriptRetentionDays => "script retention in the namespace",
+        }
+    }
+
+    /// The platform ceiling used when an operator has not granted a resource-specific ceiling.
+    #[must_use]
+    pub const fn default_ceiling(self) -> u64 {
+        match self {
+            Self::IterationConcurrency => 1_024,
+            _ => self.default_limit(),
         }
     }
 }
@@ -285,7 +302,7 @@ impl FromStr for QuotaResource {
 #[must_use]
 pub fn ceiling(resource: QuotaResource, granted: Option<u64>) -> u64 {
     granted
-        .unwrap_or_else(|| resource.default_limit())
+        .unwrap_or_else(|| resource.default_ceiling())
         .min(resource.maximum())
 }
 
@@ -341,7 +358,9 @@ pub fn validate(
     if value > resource.maximum() {
         return Err(QuotaError::TooLarge);
     }
-    if resource == QuotaResource::EventRetentionSeconds && (1..60).contains(&value) {
+    if (resource == QuotaResource::EventRetentionSeconds && (1..60).contains(&value))
+        || (resource == QuotaResource::IterationConcurrency && value == 0)
+    {
         return Err(QuotaError::OutsideRange);
     }
     if namespace_level && resource.scope() == QuotaScope::Tenant {
@@ -385,7 +404,14 @@ pub fn resolve(
     match (namespace_setting, tenant_setting) {
         (Some(value), _) => (value.min(ceiling), QuotaSource::Namespace),
         (None, Some(value)) => (value.min(ceiling), QuotaSource::Tenant),
-        (None, None) => (ceiling, QuotaSource::Default),
+        (None, None) => {
+            let value = if resource == QuotaResource::IterationConcurrency {
+                resource.default_limit().min(ceiling)
+            } else {
+                ceiling
+            };
+            (value, QuotaSource::Default)
+        }
     }
 }
 
@@ -437,6 +463,22 @@ mod tests {
     }
 
     #[test]
+    fn iteration_capacity_stays_closed_until_the_tenant_sets_it() {
+        let r = QuotaResource::IterationConcurrency;
+        assert_eq!(ceiling(r, None), 1_024);
+        assert_eq!(ceiling(r, Some(2_048)), 2_048);
+        assert_eq!(resolve(r, None, None, 1_024), (0, QuotaSource::Default));
+        assert_eq!(resolve(r, None, Some(12), 1_024), (12, QuotaSource::Tenant));
+        assert_eq!(resolve(r, None, Some(12), 5), (5, QuotaSource::Tenant));
+
+        let legacy = QuotaResource::ActiveRuns;
+        assert_eq!(
+            resolve(legacy, None, None, legacy.default_limit() + 1),
+            (legacy.default_limit() + 1, QuotaSource::Default)
+        );
+    }
+
+    #[test]
     fn a_tenant_wide_resource_ignores_a_namespace_setting() {
         let r = QuotaResource::WorkerSessions;
         assert_eq!(
@@ -449,7 +491,7 @@ mod tests {
     #[test]
     fn the_ceiling_is_what_an_operator_granted_or_the_default() {
         for resource in QuotaResource::ALL {
-            assert_eq!(ceiling(resource, None), resource.default_limit());
+            assert_eq!(ceiling(resource, None), resource.default_ceiling());
             assert_eq!(ceiling(resource, Some(3)), 3);
             assert_eq!(ceiling(resource, Some(0)), 0, "zero is a ceiling");
             assert_eq!(
@@ -489,6 +531,14 @@ mod tests {
             validate(QuotaResource::WorkerSessions, false, 10, CEILING),
             Ok(10)
         );
+        assert_eq!(
+            validate(QuotaResource::IterationConcurrency, false, 0, CEILING),
+            Err(QuotaError::OutsideRange)
+        );
+        assert_eq!(
+            validate(QuotaResource::IterationConcurrency, false, 1, CEILING),
+            Ok(1)
+        );
         assert_eq!(validate_ceiling(QuotaResource::Workflows, big), Ok(big));
         assert_eq!(
             validate_ceiling(QuotaResource::Workflows, big + 1),
@@ -509,13 +559,19 @@ mod tests {
     fn every_default_is_inside_the_range_a_limit_may_take() {
         for resource in QuotaResource::ALL {
             assert!(resource.default_limit() <= resource.maximum(), "{resource}");
-            assert!(resource.default_limit() > 0, "{resource}");
+            if resource == QuotaResource::IterationConcurrency {
+                assert_eq!(resource.default_limit(), 0);
+                assert_eq!(resource.default_ceiling(), 1_024);
+            } else {
+                assert!(resource.default_limit() > 0, "{resource}");
+                assert_eq!(resource.default_ceiling(), resource.default_limit());
+            }
         }
     }
 
     #[test]
     fn durable_resources_have_explicit_scope_kind_unit_range_and_usage_semantics() {
-        assert_eq!(QuotaResource::ALL.len(), 18);
+        assert_eq!(QuotaResource::ALL.len(), 19);
         for (resource, scope, kind, unit, maximum, default, has_usage) in [
             (
                 QuotaResource::TenantContentBytes,

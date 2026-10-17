@@ -1,0 +1,497 @@
+{
+  "faultsApplied": [],
+  "observations": [
+    {
+      "id": "start-worker",
+      "ok": true,
+      "op": "startWorker",
+      "result": {
+        "protocolVersion": "1.5"
+      }
+    },
+    {
+      "id": "active",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "active-running",
+      "ok": true,
+      "op": "awaitJournal"
+    },
+    {
+      "id": "active-cancel",
+      "ok": true,
+      "op": "cancel",
+      "result": {
+        "accepted": true,
+        "runStatus": "CANCELLING"
+      }
+    },
+    {
+      "id": "active-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "CANCELLED",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "active-journal",
+      "ok": true,
+      "op": "events",
+      "result": {
+        "events": [
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.started"
+          },
+          {
+            "attempt": null,
+            "stepId": "loop",
+            "type": "loop.entered"
+          },
+          {
+            "attempt": null,
+            "stepId": "loop",
+            "type": "loop.iteration_admitted"
+          },
+          {
+            "attempt": null,
+            "stepId": "work",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "work",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "work",
+            "type": "step.started"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.stop_requested"
+          },
+          {
+            "attempt": null,
+            "stepId": "loop",
+            "type": "loop.drain_started"
+          },
+          {
+            "attempt": null,
+            "stepId": "work",
+            "type": "step.cancel_requested"
+          },
+          {
+            "attempt": null,
+            "stepId": "work",
+            "type": "step.cancelled"
+          },
+          {
+            "attempt": null,
+            "stepId": "loop",
+            "type": "loop.iteration_drained"
+          },
+          {
+            "attempt": null,
+            "stepId": "loop",
+            "type": "loop.finished"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.finished"
+          }
+        ]
+      }
+    },
+    {
+      "id": "delayed",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:4>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:2>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:5>",
+        "workflowId": "<uuid:6>"
+      }
+    },
+    {
+      "id": "delayed-waiting",
+      "ok": true,
+      "op": "awaitJournal"
+    },
+    {
+      "id": "stop-worker",
+      "ok": true,
+      "op": "stopWorker"
+    },
+    {
+      "id": "delayed-cancel",
+      "ok": true,
+      "op": "cancel",
+      "result": {
+        "accepted": true,
+        "runStatus": "CANCELLING"
+      }
+    },
+    {
+      "id": "delayed-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:4>",
+        "startedBy": "alice",
+        "status": "CANCELLED",
+        "traceId": "<trace:2>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:5>",
+        "workflowId": "<uuid:6>"
+      }
+    },
+    {
+      "id": "delayed-journal",
+      "ok": true,
+      "op": "events",
+      "result": {
+        "events": [
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.started"
+          },
+          {
+            "attempt": null,
+            "stepId": "loop",
+            "type": "loop.entered"
+          },
+          {
+            "attempt": null,
+            "stepId": "loop",
+            "type": "loop.iteration_admitted"
+          },
+          {
+            "attempt": null,
+            "stepId": "work",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "work",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "work",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "work",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "loop",
+            "type": "loop.iteration_returned"
+          },
+          {
+            "attempt": null,
+            "stepId": "loop",
+            "type": "loop.iteration_checkpointed"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.stop_requested"
+          },
+          {
+            "attempt": null,
+            "stepId": "loop",
+            "type": "loop.drain_started"
+          },
+          {
+            "attempt": null,
+            "stepId": "loop",
+            "type": "loop.finished"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.finished"
+          }
+        ]
+      }
+    }
+  ],
+  "scopeEvidence": [
+    {
+      "events": [
+        {
+          "event": "loop.entered",
+          "initialCarry": 0,
+          "initial_condition": true,
+          "kind": "while",
+          "max_iterations": 3
+        },
+        {
+          "event": "loop.iteration_admitted",
+          "index": 0
+        },
+        {
+          "event": "loop.iteration_returned",
+          "index": 0
+        },
+        {
+          "carry": 1,
+          "condition": true,
+          "continuation": "delay",
+          "event": "loop.iteration_checkpointed",
+          "index": 0,
+          "result": 1
+        },
+        {
+          "event": "loop.drain_started"
+        },
+        {
+          "event": "loop.finished",
+          "outcome": "cancelled"
+        }
+      ],
+      "peakActive": 1,
+      "runId": "<uuid:4>"
+    },
+    {
+      "events": [
+        {
+          "event": "loop.entered",
+          "initialCarry": 0,
+          "initial_condition": true,
+          "kind": "while",
+          "max_iterations": 3
+        },
+        {
+          "event": "loop.iteration_admitted",
+          "index": 0
+        },
+        {
+          "event": "loop.drain_started"
+        },
+        {
+          "event": "loop.iteration_drained",
+          "index": 0
+        },
+        {
+          "event": "loop.finished",
+          "outcome": "cancelled"
+        }
+      ],
+      "peakActive": 1,
+      "runId": "<uuid:1>"
+    }
+  ],
+  "serverState": [
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "done",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "loop",
+          "kind": "FORWARD",
+          "status": "CANCELLED",
+          "type": "while",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "loop[0]/returned",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "return",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "loop[0]/work",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:4>",
+      "status": "CANCELLED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "done",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "loop",
+          "kind": "FORWARD",
+          "status": "CANCELLED",
+          "type": "while",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "loop[0]/work",
+          "kind": "FORWARD",
+          "status": "CANCELLED",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:1>",
+      "status": "CANCELLED"
+    }
+  ],
+  "workerLog": {
+    "w1": [
+      {
+        "abortedReason": "run-cancelled",
+        "activity": "loopx.hang",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:1>:<uuid:7>",
+        "input": {},
+        "instance": {
+          "definitionNodeId": "work",
+          "instancePath": [
+            {
+              "iterationIndex": 0,
+              "scopeNodeId": "loop"
+            }
+          ]
+        },
+        "kind": "activity",
+        "node": "work",
+        "outcome": "cancelled",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:1>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "loopx.quick",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:4>:<uuid:8>",
+        "input": {},
+        "instance": {
+          "definitionNodeId": "work",
+          "instancePath": [
+            {
+              "iterationIndex": 0,
+              "scopeNodeId": "loop"
+            }
+          ]
+        },
+        "kind": "activity",
+        "node": "work",
+        "outcome": "returned",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:2>",
+        "traceparentPresent": true
+      }
+    ]
+  }
+}

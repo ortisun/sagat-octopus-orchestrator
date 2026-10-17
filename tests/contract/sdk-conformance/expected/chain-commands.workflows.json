@@ -1,0 +1,40 @@
+{
+  "canonical": {
+    "chain": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"chainPolicy\":{\"maxSegments\":3,\"timeoutMs\":86400000},\"entrypoint\":\"prepare\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"chain-command-runtime\"},\"nodes\":[{\"activity\":\"chain.prepare\",\"id\":\"prepare\",\"next\":\"release\",\"type\":\"activity\"},{\"correlationExpr\":\"input.key\",\"eventType\":\"chain.release\",\"id\":\"release\",\"next\":\"next\",\"timeoutMs\":600000,\"type\":\"waitEvent\"},{\"id\":\"next\",\"input\":\"input\",\"type\":\"continueAsNew\"}]}"
+  },
+  "workflows": {
+    "chain": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "chainPolicy": {
+        "maxSegments": 3,
+        "timeoutMs": 86400000
+      },
+      "entrypoint": "prepare",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "chain-command-runtime"
+      },
+      "nodes": [
+        {
+          "activity": "chain.prepare",
+          "id": "prepare",
+          "next": "release",
+          "type": "activity"
+        },
+        {
+          "correlationExpr": "input.key",
+          "eventType": "chain.release",
+          "id": "release",
+          "next": "next",
+          "timeoutMs": 600000,
+          "type": "waitEvent"
+        },
+        {
+          "id": "next",
+          "input": "input",
+          "type": "continueAsNew"
+        }
+      ]
+    }
+  }
+}

@@ -88,3 +88,11 @@ tests/performance/developer-experience/  the machine's part of the first day
 ## Delivery Gate
 
 A new team member executes their first runs in TS and C# following only the documentation; CLI tests cover invalid workflows.
+
+## Example catalog extension (014)
+
+`examples/order-processing/workflows/` supplies the canonical v1 IR for the five executable
+SDK examples in sibling language directories. `tests/e2e/developer-experience/order_processing.rs`
+uses the existing real-platform fixture to check the same success, business rejection and
+permanent failure cases. No new engine semantics, SDK methods or migrations are required.
+The detailed delivery tasks and fresh evidence belong to feature 014.

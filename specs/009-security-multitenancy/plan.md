@@ -103,3 +103,16 @@ authoritative event rate/retention admission, every content/log persistence and 
 canonical namespace API admission. Each slice retains pending status until its real multi-replica,
 rollback, tenant-boundary and terminal-state tests pass. A partial inbox/script counter cannot be
 advertised as complete retained-content accounting.
+
+
+## Approved workflow-primitives dependency (2026-10-14)
+
+[ADR-0030](../../docs/adr/ADR-0030-structured-instances-and-continuation-chains.md) and
+[ADR-0031](../../docs/adr/ADR-0031-declared-operation-result-disclosure.md) accept the feature-014
+architecture and separate declared-result disclosure policy.
+[ADR-0032](../../docs/adr/ADR-0032-additive-workflow-ir.md) keeps the workflow IR at v1 and
+supersedes the earlier separate-revision allocation. Add the accepted built-in approval/read/decision and run/query/update grants, current authorization on receipt replay, tenant-scoped instance/chain references and atomic quotas/audit. ADR-0031 permits only explicitly declared bounded business results; ordinary structural inspection retains ADR-0028 and no custom/per-operation roles are invented.
+
+This approves the described dependency for implementation, not a runtime guarantee. Canonical
+contracts, migration/replay, tenant/fault tests and applicable five-SDK evidence remain the
+feature-014 release gates; existing feature behavior stays supported.

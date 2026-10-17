@@ -105,3 +105,16 @@ T010-040 orders ready activity candidates before transactional admission. Postgr
 tenant/namespace policy fences then exact activity locks; defaults and ceilings exclusively fence
 their changed level before writing/auditing. Gated real-DB tests reproduce opposite-node-order
 deadlocks and prove that a limit update cannot acknowledge while an older admission is unfinished.
+
+
+## Approved workflow-primitives dependency (2026-10-14)
+
+[ADR-0030](../../docs/adr/ADR-0030-structured-instances-and-continuation-chains.md) and
+[ADR-0031](../../docs/adr/ADR-0031-declared-operation-result-disclosure.md) accept the feature-014
+architecture and separate declared-result disclosure policy.
+[ADR-0032](../../docs/adr/ADR-0032-additive-workflow-ir.md) keeps the workflow IR at v1 and
+supersedes the earlier separate-revision allocation. New scheduler transitions use existing run-shard ownership/fencing and fair bounded admission. Parent child-chain completion is applied under the parent shard fence. Nested low-capacity admission, cross-run quotas and materialization/storage costs require real tests and measurement before release.
+
+This approves the described dependency for implementation, not a runtime guarantee. Canonical
+contracts, migration/replay, tenant/fault tests and applicable five-SDK evidence remain the
+feature-014 release gates; existing feature behavior stays supported.

@@ -19,6 +19,22 @@ T = TypeVar("T")
 
 
 @dataclass(frozen=True)
+class ExecutionScope:
+    """One repeated scope that addresses a runtime activation of a definition node."""
+
+    scope_node_id: str
+    iteration_index: int
+
+
+@dataclass(frozen=True)
+class ExecutionInstanceIdentity:
+    """The run-local identity supplied for a task by worker protocol 1.5."""
+
+    instance_path: tuple[ExecutionScope, ...]
+    definition_node_id: str
+
+
+@dataclass(frozen=True)
 class BlobDescriptor:
     """Verified identity of an immutable protocol 1.3 blob."""
 
@@ -235,6 +251,9 @@ class ActivityContext:
         secrets: Callable[[], Awaitable[Secrets]],
         write_blob: Callable[[AsyncIterable[bytes] | Iterable[bytes], str, int, str], Awaitable[BlobDescriptor]],
         read_blob: Callable[[BlobDescriptor], AsyncIterator[bytes]],
+        instance: ExecutionInstanceIdentity | None = None,
+        item: Any = None,
+        index: int | None = None,
     ) -> None:
         self.activity_name = activity_name
         self.task_id = task_id
@@ -245,6 +264,12 @@ class ActivityContext:
         """The platform's id of the step (``step_id`` of the lease), which the reports carry."""
         self.attempt = attempt
         self.generation = generation
+        self.instance = instance
+        """Present only when protocol 1.5 was negotiated and the lease supplied an identity."""
+        self.item = item
+        """The captured collection item for this scoped task; use ``index`` to distinguish a JSON null item."""
+        self.index = index
+        """The captured collection index; ``None`` for root and non-collection work."""
         self.idempotency_key = idempotency_key
         """Stable across the attempts of the step: send it to the provider of an external effect."""
         self.traceparent = traceparent

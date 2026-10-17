@@ -32,9 +32,12 @@ public final class WorkflowBuilder {
     private final Flow body = new Flow();
     private final Map<String, String> labels = new LinkedHashMap<>();
     private final List<Trigger> triggers = new ArrayList<>();
+    private final Map<String, Flow> bodies = new LinkedHashMap<>();
     private String description;
     private JsonNode inputSchema;
     private JsonNode outputSchema;
+    private ObjectNode state;
+    private ChainPolicy chainPolicy;
 
     private WorkflowBuilder(String name) {
         if (name == null || !NAME.matcher(name).matches()) {
@@ -71,6 +74,40 @@ public final class WorkflowBuilder {
 
     public WorkflowBuilder outputSchema(Object schema) {
         this.outputSchema = objectOrThrow(schema, "outputSchema");
+        return this;
+    }
+
+    /** Declares bounded business state without enabling operation transport or runtime execution. */
+    public WorkflowBuilder state(StateDefinition definition) {
+        this.state = StateDefinitionValidator.build(definition);
+        return this;
+    }
+
+    /** Sets the finite lifetime shared by every run in a continuation chain. */
+    public WorkflowBuilder chainPolicy(ChainPolicy policy) {
+        if (policy == null || policy.maxSegments() < 1 || policy.maxSegments() > 10_000) {
+            throw SagatException.invalid("chainPolicy maxSegments must be between 1 and 10000");
+        }
+        if (policy.timeout() == null || policy.timeout().isNegative() || policy.timeout().isZero()
+                || policy.timeout().getNano() % 1_000_000 != 0
+                || policy.timeout().compareTo(Duration.ofMillis(31_622_400_000L)) > 0) {
+            throw SagatException.invalid("chainPolicy timeoutMs must be between 1 and 31622400000");
+        }
+        this.chainPolicy = policy;
+        return this;
+    }
+
+    /** Registers a closed body by name. The body is read when {@link #build()} runs. */
+    public WorkflowBuilder body(String name, Flow definition) {
+        if (name == null || name.isEmpty()) {
+            throw SagatException.invalid("a body needs a name");
+        }
+        if (definition == null) {
+            throw SagatException.invalid("body \"" + name + "\" is empty");
+        }
+        if (bodies.putIfAbsent(name, definition) != null) {
+            throw SagatException.invalid("the body \"" + name + "\" is defined twice");
+        }
         return this;
     }
 
@@ -130,6 +167,46 @@ public final class WorkflowBuilder {
         return this;
     }
 
+    public WorkflowBuilder switchCase(String id, List<SwitchCase> cases, String defaultTarget) {
+        body.switchCase(id, cases, defaultTarget);
+        return this;
+    }
+
+    public WorkflowBuilder forEach(String id, String items, String bodyName, String result, CollectionOptions options) {
+        body.forEach(id, items, bodyName, result, options);
+        return this;
+    }
+
+    public WorkflowBuilder map(String id, String items, String bodyName, String result, CollectionOptions options) {
+        body.map(id, items, bodyName, result, options);
+        return this;
+    }
+
+    public WorkflowBuilder whileLoop(String id, String condition, String bodyName, String initial, String carry, LoopOptions options) {
+        body.whileLoop(id, condition, bodyName, initial, carry, options);
+        return this;
+    }
+
+    public WorkflowBuilder repeatUntil(String id, String condition, String bodyName, String initial, String carry, LoopOptions options) {
+        body.repeatUntil(id, condition, bodyName, initial, carry, options);
+        return this;
+    }
+
+    public WorkflowBuilder approval(String id, ApprovalOptions options) {
+        body.approval(id, options);
+        return this;
+    }
+
+    public WorkflowBuilder continueAsNew(String id, String input) {
+        body.continueAsNew(id, input);
+        return this;
+    }
+
+    public WorkflowBuilder continueAsNew(String id, String input, String state) {
+        body.continueAsNew(id, input, state);
+        return this;
+    }
+
     public WorkflowBuilder parallel(String id, Flow.Join join, List<Flow> branches) {
         body.parallel(id, join, branches);
         return this;
@@ -161,23 +238,35 @@ public final class WorkflowBuilder {
             throw SagatException.invalid("a workflow needs at least one node");
         }
         List<ObjectNode> nodes = body.flatten();
-        Set<String> ids = new HashSet<>();
-        for (ObjectNode node : nodes) {
-            String id = node.path("id").textValue();
-            if (!ids.add(id)) {
-                throw SagatException.invalid("the node id \"" + id + "\" is used twice");
-            }
+        if (body.hasNestedKind("continueAsNew")) {
+            throw SagatException.invalid("continueAsNew is valid only in the top-level workflow");
         }
-        for (ObjectNode node : nodes) {
-            String id = node.path("id").textValue();
-            for (String field : new String[] {"next", "onError", "onTimeout", "ifTrue", "ifFalse", "begin"}) {
-                reference(ids, id, field, node.get(field));
-            }
-            JsonNode branches = node.get("branches");
-            if (branches != null && branches.isArray()) {
-                branches.forEach(branch -> reference(ids, id, "branches", branch));
-            }
+        if (body.hasOwnKind("continueAsNew") && chainPolicy == null) {
+            throw SagatException.invalid("a workflow with continueAsNew needs chainPolicy");
         }
+        if (nodes.stream().anyMatch(node -> "return".equals(node.path("type").textValue()))) {
+            throw SagatException.invalid("return is only valid in a named body");
+        }
+        Map<String, List<ObjectNode>> bodyNodes = new LinkedHashMap<>();
+        for (Map.Entry<String, Flow> entry : bodies.entrySet()) {
+            List<ObjectNode> nested = entry.getValue().flatten();
+            if (nested.isEmpty()) {
+                throw SagatException.invalid("body \"" + entry.getKey() + "\" is empty");
+            }
+            if (nested.stream().anyMatch(node -> "end".equals(node.path("type").textValue()))) {
+                throw SagatException.invalid("body \"" + entry.getKey() + "\" cannot hold an end node");
+            }
+            if (nested.stream().anyMatch(node -> "continueAsNew".equals(node.path("type").textValue()))) {
+                throw SagatException.invalid("continueAsNew is valid only in the top-level workflow");
+            }
+            if (nested.stream().filter(node -> "return".equals(node.path("type").textValue())).count() != 1) {
+                throw SagatException.invalid("body \"" + entry.getKey() + "\" needs exactly one return node");
+            }
+            bodyNodes.put(entry.getKey(), nested);
+        }
+        validateBodyReferences(bodyNodes);
+        validateScope(nodes);
+        bodyNodes.values().forEach(this::validateScope);
         ObjectNode metadata = F.objectNode();
         metadata.put("name", name);
         if (description != null) {
@@ -204,7 +293,91 @@ public final class WorkflowBuilder {
         if (outputSchema != null) {
             document.set("outputSchema", outputSchema.deepCopy());
         }
+        if (state != null) {
+            document.set("state", state.deepCopy());
+        }
+        if (chainPolicy != null) {
+            ObjectNode policy = document.putObject("chainPolicy");
+            policy.put("maxSegments", chainPolicy.maxSegments());
+            policy.put("timeoutMs", chainPolicy.timeout().toMillis());
+        }
+        if (!bodyNodes.isEmpty()) {
+            ObjectNode bodyObject = document.putObject("bodies");
+            bodyNodes.forEach((bodyName, nested) -> {
+                ObjectNode bodyDocument = bodyObject.putObject(bodyName);
+                bodyDocument.put("entrypoint", nested.get(0).path("id").textValue());
+                ArrayNode nestedArray = bodyDocument.putArray("nodes");
+                nested.forEach(nestedArray::add);
+            });
+        }
         return document;
+    }
+
+    private static void validateBodyReferences(Map<String, List<ObjectNode>> bodyNodes) {
+        Set<String> visiting = new HashSet<>();
+        Set<String> visited = new HashSet<>();
+        for (String bodyName : bodyNodes.keySet()) {
+            visitBody(bodyName, bodyNodes, visiting, visited);
+        }
+    }
+
+    private static void visitBody(
+            String bodyName,
+            Map<String, List<ObjectNode>> bodyNodes,
+            Set<String> visiting,
+            Set<String> visited) {
+        if (!visiting.add(bodyName)) {
+            throw SagatException.invalid("body reference cycle is not allowed");
+        }
+        if (visited.contains(bodyName)) {
+            visiting.remove(bodyName);
+            return;
+        }
+        for (ObjectNode node : bodyNodes.get(bodyName)) {
+            String kind = node.path("type").textValue();
+            String target = node.path("body").textValue();
+            if (("forEach".equals(kind) || "while".equals(kind) || "repeatUntil".equals(kind))
+                    && bodyNodes.containsKey(target)) {
+                visitBody(target, bodyNodes, visiting, visited);
+            }
+        }
+        visiting.remove(bodyName);
+        visited.add(bodyName);
+    }
+
+    private void validateScope(List<ObjectNode> nodes) {
+        Set<String> localIds = new HashSet<>();
+        for (ObjectNode node : nodes) {
+            String id = node.path("id").textValue();
+            if (!localIds.add(id)) {
+                throw SagatException.invalid("the node id \"" + id + "\" is used twice");
+            }
+        }
+        for (ObjectNode node : nodes) {
+            String id = node.path("id").textValue();
+            for (String field : new String[] {"next", "onError", "onTimeout", "ifTrue", "ifFalse", "begin", "onApprove", "onReject", "onExpire"}) {
+                reference(localIds, id, field, node.get(field));
+            }
+            JsonNode branches = node.get("branches");
+            if (branches != null && branches.isArray()) {
+                branches.forEach(branch -> reference(localIds, id, "branches", branch));
+            }
+            JsonNode cases = node.get("cases");
+            if (cases != null && cases.isArray()) {
+                cases.forEach(item -> reference(localIds, id, "cases", item.get("target")));
+            }
+            reference(localIds, id, "default", node.get("default"));
+            String kind = node.path("type").textValue();
+            if ("forEach".equals(kind) || "while".equals(kind) || "repeatUntil".equals(kind)) {
+                String bodyName = node.path("body").textValue();
+                if (!bodies.containsKey(bodyName)) {
+                    throw SagatException.invalid(kind + " " + id + " points at \"" + bodyName + "\", which is not a body");
+                }
+                if (!node.has("next")) {
+                    throw SagatException.invalid(kind + " " + id + " needs a next node");
+                }
+            }
+        }
     }
 
     private static void reference(Set<String> ids, String from, String field, JsonNode target) {

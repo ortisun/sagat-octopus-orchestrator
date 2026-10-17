@@ -77,7 +77,7 @@ async fn a_run_cannot_retain_more_output_than_its_budget_and_the_step_fails_for_
     // The next one would push what the run retains over the budget: it is accepted as a *failure*
     // of the step, with a code of its own and no retry (a retry would only exceed it again).
     let task = w.one_task(&session).await;
-    let node = task.node.as_str().to_owned();
+    let node = task.instance.node().as_str().to_owned();
     w.complete(&session, &task, &output)
         .await
         .expect("the report itself is accepted");
@@ -301,7 +301,7 @@ async fn large_sibling_tasks_are_budgeted_before_their_leases_commit() {
         "waiting for response space spends no attempt"
     );
     assert_eq!(last.fence.generation, 1);
-    assert!(first.iter().all(|task| task.node != last.node));
+    assert!(first.iter().all(|task| task.instance != last.instance));
     for task in first.iter().chain(std::iter::once(&last)) {
         w.complete(&session, task, &json!({}))
             .await

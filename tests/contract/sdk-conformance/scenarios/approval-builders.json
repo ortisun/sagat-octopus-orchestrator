@@ -1,0 +1,130 @@
+{
+  "name": "approval-builders",
+  "buildOnly": true,
+  "description": "Builder-only parity for additive v1 native approval nodes. The harness does not publish or execute these workflows until server runtime support is enabled.",
+  "workflows": {
+    "role-and-subject": {
+      "name": "approval-role-subject",
+      "program": [
+        {
+          "op": "approval",
+          "id": "review",
+          "policy": {
+            "subjects": ["reviewer@example.com"],
+            "roles": ["operator"],
+            "excludeInitiator": false
+          },
+          "timeoutMs": 86400000,
+          "onApprove": "approved",
+          "onReject": "rejected",
+          "onExpire": "expired"
+        },
+        { "op": "end", "id": "approved", "options": { "outputExpr": "'approved'" } },
+        { "op": "end", "id": "rejected", "options": { "outputExpr": "'rejected'" } },
+        { "op": "end", "id": "expired", "options": { "outputExpr": "'expired'" } }
+      ]
+    },
+    "default-exclusion": {
+      "name": "approval-default-exclusion",
+      "program": [
+        {
+          "op": "approval",
+          "id": "review",
+          "policy": { "roles": ["admin", "developer"] },
+          "timeoutMs": 31622400000,
+          "onApprove": "approved",
+          "onReject": "rejected",
+          "onExpire": "expired"
+        },
+        { "op": "end", "id": "approved" },
+        { "op": "end", "id": "rejected" },
+        { "op": "end", "id": "expired" }
+      ]
+    }
+  },
+  "invalidWorkflows": {
+    "empty-policy": {
+      "contains": "between 1 and 32",
+      "workflow": {
+        "name": "approval-empty-policy",
+        "program": [
+          { "op": "approval", "id": "review", "policy": {}, "timeoutMs": 1000, "onApprove": "approved", "onReject": "rejected", "onExpire": "expired" }
+        ]
+      }
+    },
+    "unsupported-role": {
+      "contains": "role",
+      "workflow": {
+        "name": "approval-unsupported-role",
+        "program": [
+          { "op": "approval", "id": "review", "policy": { "roles": ["viewer"] }, "timeoutMs": 1000, "onApprove": "approved", "onReject": "rejected", "onExpire": "expired" }
+        ]
+      }
+    },
+    "duplicate-subject": {
+      "contains": "subject",
+      "workflow": {
+        "name": "approval-duplicate-subject",
+        "program": [
+          { "op": "approval", "id": "review", "policy": { "subjects": ["reviewer@example.com", "reviewer@example.com"] }, "timeoutMs": 1000, "onApprove": "approved", "onReject": "rejected", "onExpire": "expired" }
+        ]
+      }
+    },
+    "too-many-principals": {
+      "contains": "between 1 and 32",
+      "workflow": {
+        "name": "approval-too-many",
+        "program": [
+          {
+            "op": "approval",
+            "id": "review",
+            "policy": {
+              "subjects": [
+                "subject-01", "subject-02", "subject-03", "subject-04", "subject-05", "subject-06",
+                "subject-07", "subject-08", "subject-09", "subject-10", "subject-11", "subject-12",
+                "subject-13", "subject-14", "subject-15", "subject-16", "subject-17", "subject-18",
+                "subject-19", "subject-20", "subject-21", "subject-22", "subject-23", "subject-24",
+                "subject-25", "subject-26", "subject-27", "subject-28", "subject-29", "subject-30"
+              ],
+              "roles": ["admin", "developer", "operator"]
+            },
+            "timeoutMs": 1000,
+            "onApprove": "approved",
+            "onReject": "rejected",
+            "onExpire": "expired"
+          }
+        ]
+      }
+    },
+    "timeout": {
+      "contains": "timeoutMs",
+      "workflow": {
+        "name": "approval-timeout",
+        "program": [
+          { "op": "approval", "id": "review", "policy": { "roles": ["operator"] }, "timeoutMs": 0, "onApprove": "approved", "onReject": "rejected", "onExpire": "expired" }
+        ]
+      }
+    },
+    "missing-route": {
+      "contains": "onReject",
+      "workflow": {
+        "name": "approval-missing-route",
+        "program": [
+          { "op": "approval", "id": "review", "policy": { "roles": ["operator"] }, "timeoutMs": 1000, "onApprove": "approved", "onReject": "", "onExpire": "expired" }
+        ]
+      }
+    },
+    "dangling-route": {
+      "contains": "not a node",
+      "workflow": {
+        "name": "approval-dangling-route",
+        "program": [
+          { "op": "approval", "id": "review", "policy": { "roles": ["operator"] }, "timeoutMs": 1000, "onApprove": "missing", "onReject": "rejected", "onExpire": "expired" },
+          { "op": "end", "id": "rejected" },
+          { "op": "end", "id": "expired" }
+        ]
+      }
+    }
+  },
+  "steps": []
+}

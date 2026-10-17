@@ -124,6 +124,12 @@ How an activity ends: a returned value is the step's output (JSON; `None` is `nu
 `.outcome_unknown(message)` fail it on purpose. Any other exception is reported as `ACTIVITY_ERROR` with only
 its type name as the message, never its text, which may hold the data it was handed.
 
+When worker protocol 1.5 is accepted, `ctx.instance` is an immutable typed copy of the lease identity.
+Its `instance_path` holds ordered `ExecutionScope` values and `definition_node_id` names the activated
+node. It is `None` at protocol 1.4 or older; reports continue to use the original lease identity.
+For a collection body, `ctx.item` is the captured JSON item and `ctx.index` is its stable input index;
+the index is `None` for root and non-collection work. The handler's ordinary input remains the run input.
+
 ### Cancellation
 
 Cancellation is **cooperative**: the host sets the activity's token and does nothing else. It never interrupts a
@@ -241,7 +247,8 @@ SemVer. Before 1.0 a minor version may change the Python API; the **wire** contr
 REST API is additive within `/v1` and the worker protocol additive within `1.x`. A newer SDK against an older
 server runs the worker at the server's protocol version (negotiated at registration); an older SDK against a newer
 server ignores the fields it does not know.
-This SDK offers worker protocol `1.4`; the package version remains independent.
+This SDK offers worker protocol `1.5`; the package version remains independent. A server that
+negotiates `1.4` or older continues to receive root-compatible requests without scoped identity.
 
 ## Runtime matrix: declared and tested
 

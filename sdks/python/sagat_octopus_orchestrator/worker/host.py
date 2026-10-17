@@ -43,6 +43,8 @@ from .activity import (
     BlobOutput,
     CancellationToken,
     CancelReason,
+    ExecutionInstanceIdentity,
+    ExecutionScope,
     Secrets,
     TaskKind,
     Verdict,
@@ -146,6 +148,7 @@ class _Task:
     """One lease being worked on."""
 
     lease: pb.TaskLease = field(repr=False)
+    protocol_minor: int = 0
     token: CancellationToken = field(default_factory=CancellationToken)
     deadline_ms: int = 0
     lost: bool = False
@@ -178,6 +181,24 @@ class _TaskLog(_AdapterBase):
 def _minor_of(version: str) -> int:
     match = _VERSION.fullmatch(version)
     return int(match[1] or 0) if match else 0
+
+
+def _scoped_instance(lease: pb.TaskLease, minor: int) -> dict[str, pb.ExecutionInstanceIdentity]:
+    if minor >= 5 and lease.HasField("instance"):
+        return {"instance": lease.instance}
+    return {}
+
+
+def _activity_instance(lease: pb.TaskLease, minor: int) -> ExecutionInstanceIdentity | None:
+    if minor < 5 or not lease.HasField("instance"):
+        return None
+    return ExecutionInstanceIdentity(
+        instance_path=tuple(
+            ExecutionScope(scope_node_id=segment.scope_node_id, iteration_index=segment.iteration_index)
+            for segment in lease.instance.instance_path
+        ),
+        definition_node_id=lease.instance.definition_node_id,
+    )
 
 
 def _is_async_callable(handler: Callable[..., Any]) -> bool:
@@ -444,9 +465,7 @@ class WorkerHost:
                     continue
                 asked = min(free, MAX_POLL)
                 streaming = self._config.transport == "stream" or (
-                    self._config.transport == "auto"
-                    and _minor_of(self._accepted) >= 4
-                    and not self._stream_unavailable
+                    self._config.transport == "auto" and _minor_of(self._accepted) >= 4 and not self._stream_unavailable
                 )
                 if streaming and self._config.transport == "stream" and _minor_of(self._accepted) < 4:
                     raise SagatError("UNSUPPORTED_PROTOCOL", "task streaming requires worker protocol 1.4")
@@ -580,7 +599,13 @@ class WorkerHost:
     # ---------------------------------------------------------------------------------------------------- tasks
 
     def _dispatch(self, lease: pb.TaskLease) -> None:
-        task = _Task(lease, deadline_ms=lease.expires_at_epoch_ms, rpc=self._rpc, lease_token=Secret(lease.lease_token))
+        task = _Task(
+            lease,
+            protocol_minor=_minor_of(self._accepted),
+            deadline_ms=lease.expires_at_epoch_ms,
+            rpc=self._rpc,
+            lease_token=Secret(lease.lease_token),
+        )
         lease.lease_token = ""  # the task keeps it behind a Secret: a dump of the task or of its lease shows nothing
         self._inflight.add(task)
         runner = asyncio.create_task(self._execute(task), name=f"sagat-task-{lease.task_id}")
@@ -613,7 +638,7 @@ class WorkerHost:
         lease = task.lease
         started = time.monotonic()
         registered = self._handlers.get(lease.activity_name)
-        minor = _minor_of(self._accepted)
+        minor = task.protocol_minor
         # task_kind and the target fields came with 1.2: against an older server every task is a forward task and
         # they are not read at all (SPEC 6.1).
         kind: TaskKind = _TASK_KINDS.get(lease.task_kind, "FORWARD") if minor >= 2 else "FORWARD"
@@ -645,6 +670,26 @@ class WorkerHost:
             if isinstance(value, dict) and "output" in value:
                 steps[node] = value["output"]
 
+        collection_item: Any = None
+        collection_index: int | None = None
+        scoped = minor >= 5 and lease.HasField("instance") and len(lease.instance.instance_path) > 0
+        has_item = "item" in document
+        has_index = "index" in document
+        if scoped and (has_item or has_index):
+            raw_index = document.get("index")
+            if (
+                not has_item
+                or not has_index
+                or isinstance(raw_index, bool)
+                or not isinstance(raw_index, int)
+                or raw_index < 0
+                or raw_index > 0xFFFFFFFF
+            ):
+                await self._fail(task, "INPUT_INVALID", "the collection item context is malformed", False, started)
+                return
+            collection_item = document["item"]
+            collection_index = raw_index
+
         node_id = document.get("node")
         context = ActivityContext(
             activity_name=lease.activity_name,
@@ -654,6 +699,9 @@ class WorkerHost:
             step_id=lease.step_id,
             attempt=lease.attempt,
             generation=lease.generation,
+            instance=_activity_instance(lease, minor),
+            item=collection_item,
+            index=collection_index,
             idempotency_key=lease.idempotency_key,
             traceparent=lease.traceparent,
             task_kind=kind,
@@ -716,7 +764,7 @@ class WorkerHost:
     ) -> None:
         """Turns what the handler did into the one report of the attempt (``sdks/SPEC.md`` section 6.5)."""
         lease = task.lease
-        minor = _minor_of(self._accepted)
+        minor = task.protocol_minor
         error: BaseException | None = None
         cancelled = handler_task.cancelled()
         if not cancelled:
@@ -827,11 +875,20 @@ class WorkerHost:
 
         async def pieces() -> AsyncIterator[pb.WriteBlobRequest]:
             nonlocal size
-            yield pb.WriteBlobRequest(header=pb.WriteBlobHeader(
-                task_id=lease.task_id, run_id=lease.run_id, step_id=lease.step_id,
-                attempt=lease.attempt, generation=lease.generation, lease_token=task.lease_token.reveal(),
-                content_type=content_type, expected_size=expected_size, expected_sha256=expected_sha256,
-            ))
+            yield pb.WriteBlobRequest(
+                header=pb.WriteBlobHeader(
+                    task_id=lease.task_id,
+                    run_id=lease.run_id,
+                    step_id=lease.step_id,
+                    attempt=lease.attempt,
+                    generation=lease.generation,
+                    lease_token=task.lease_token.reveal(),
+                    content_type=content_type,
+                    expected_size=expected_size,
+                    expected_sha256=expected_sha256,
+                    **_scoped_instance(lease, minor),
+                )
+            )
             if hasattr(source, "__aiter__"):
                 iterator: Any = source.__aiter__()
                 async for value in iterator:
@@ -870,8 +927,14 @@ class WorkerHost:
         assert rpc is not None
         lease = task.lease
         request = pb.ReadBlobRequest(
-            task_id=lease.task_id, run_id=lease.run_id, step_id=lease.step_id, attempt=lease.attempt,
-            generation=lease.generation, lease_token=task.lease_token.reveal(), blob_id=descriptor.id,
+            task_id=lease.task_id,
+            run_id=lease.run_id,
+            step_id=lease.step_id,
+            attempt=lease.attempt,
+            generation=lease.generation,
+            lease_token=task.lease_token.reveal(),
+            blob_id=descriptor.id,
+            **_scoped_instance(lease, minor),
         )
         digest = hashlib.sha256()
         size = 0
@@ -880,8 +943,11 @@ class WorkerHost:
             kind = part.WhichOneof("part")
             if kind == "header":
                 header = part.header
-                if header_seen or size or (header.blob_id, header.size, header.sha256, header.content_type) != (
-                    descriptor.id, descriptor.size, descriptor.sha256, descriptor.content_type
+                if (
+                    header_seen
+                    or size
+                    or (header.blob_id, header.size, header.sha256, header.content_type)
+                    != (descriptor.id, descriptor.size, descriptor.sha256, descriptor.content_type)
                 ):
                     raise SagatError("PROTOCOL", "the blob stream header does not match its descriptor")
                 header_seen = True
@@ -921,6 +987,7 @@ class WorkerHost:
                         run_id=lease.run_id if minor >= 1 else "",
                         step_id=lease.step_id if minor >= 1 else "",
                         attempt=lease.attempt if minor >= 1 else 0,
+                        **_scoped_instance(lease, minor),
                     ),
                     lease.traceparent or None,
                 )
@@ -984,6 +1051,7 @@ class WorkerHost:
             traceparent=lease.traceparent,
             output_blob_ref=blob.id if blob else "",
             output_sha256=blob.sha256 if blob else "",
+            **_scoped_instance(lease, task.protocol_minor),
         )
         try:
             answer = await self._with_retries(lambda: rpc.complete_step(request, lease.traceparent or None))
@@ -1017,6 +1085,7 @@ class WorkerHost:
             safe_message=safe_message,
             retryable=retryable,
             traceparent=lease.traceparent,
+            **_scoped_instance(lease, task.protocol_minor),
         )
         try:
             answer = await self._with_retries(lambda: rpc.fail_step(request, lease.traceparent or None))
@@ -1074,6 +1143,7 @@ class WorkerHost:
                 generation=lease.generation,
                 lease_token=task.lease_token.reveal(),
                 traceparent=lease.traceparent,
+                **_scoped_instance(lease, minor),
             ),
             lease.traceparent or None,
         )

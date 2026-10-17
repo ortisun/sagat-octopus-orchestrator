@@ -102,6 +102,7 @@ fn heartbeat_of_1_0(worker: &Worker, lease: &TaskLease) -> HeartbeatRequest {
     beat.run_id.clear();
     beat.step_id.clear();
     beat.attempt = 0;
+    beat.instance = None;
     beat
 }
 

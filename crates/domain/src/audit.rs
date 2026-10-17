@@ -27,9 +27,29 @@ pub enum AuditAction {
     /// An immutable version was published (or an identical one was found to exist).
     WorkflowPublished,
     RunStarted,
+    /// A quiescent run segment closed and atomically handed off to its successor.
+    RunContinued,
+    /// A scheduler committed the terminal outcome of a run and its execution chain.
+    RunFinished,
+    /// Retained workflow content exceeded the tenant storage ceiling and forced the run to stop.
+    RunStorageQuotaExceeded,
     RunCancelRequested,
     RunPaused,
     RunResumed,
+    /// An authorized caller evaluated a declared Query. Arguments and results are never recorded.
+    RunQueried,
+    /// A declared Update committed an applied or rejected receipt.
+    RunUpdated,
+    /// A workflow entered a durable human-approval wait.
+    ApprovalOpened,
+    /// An eligible person committed the winning approval decision.
+    ApprovalDecided,
+    /// The approval timer committed before a human decision.
+    ApprovalExpired,
+    /// The enclosing run cancelled a still-pending approval.
+    ApprovalCancelled,
+    /// A caller was not currently authorized or eligible to decide an approval.
+    ApprovalDenied,
     /// An operator inspected a payload's uniformly redacted structure.
     PayloadInspected,
     /// An authenticated caller without the dedicated permission tried to inspect a payload.
@@ -179,6 +199,8 @@ impl AuditAction {
                 | Self::PublicationDenied
                 | Self::PayloadInspected
                 | Self::PayloadInspectionDenied
+                | Self::RunQueried
+                | Self::ApprovalDenied
         )
     }
 
@@ -192,7 +214,9 @@ impl AuditAction {
             Self::AuditRead
             | Self::PublicationDenied
             | Self::PayloadInspected
-            | Self::PayloadInspectionDenied => Some(std::time::Duration::from_secs(300)),
+            | Self::PayloadInspectionDenied
+            | Self::RunQueried => Some(std::time::Duration::from_secs(300)),
+            Self::ApprovalDenied => Some(std::time::Duration::from_secs(300)),
             _ => None,
         }
     }
@@ -219,9 +243,19 @@ impl AuditAction {
             Self::WorkflowDraftUpdated => "workflow.draft_updated",
             Self::WorkflowPublished => "workflow.published",
             Self::RunStarted => "run.started",
+            Self::RunContinued => "run.continued",
+            Self::RunFinished => "run.finished",
+            Self::RunStorageQuotaExceeded => "run.storage_quota_exceeded",
             Self::RunCancelRequested => "run.cancel_requested",
             Self::RunPaused => "run.paused",
             Self::RunResumed => "run.resumed",
+            Self::RunQueried => "run.queried",
+            Self::RunUpdated => "run.updated",
+            Self::ApprovalOpened => "approval.opened",
+            Self::ApprovalDecided => "approval.decided",
+            Self::ApprovalExpired => "approval.expired",
+            Self::ApprovalCancelled => "approval.cancelled",
+            Self::ApprovalDenied => "approval.denied",
             Self::PayloadInspected => "payload.inspected",
             Self::PayloadInspectionDenied => "payload.inspection_denied",
             Self::RunSignalled => "run.signalled",
@@ -325,6 +359,8 @@ pub enum ResourceType {
     ScriptVersion,
     /// A request to publish a workflow into a namespace that asks for approvals.
     PublicationRequest,
+    /// A durable human decision request owned by one workflow step instance.
+    ApprovalRequest,
     /// A call of the API, as `METHOD /route/{template}` or `grpc Service/Method`: a fixed set of the
     /// server's own names, never something the caller wrote.
     Endpoint,
@@ -355,6 +391,7 @@ impl ResourceType {
             Self::Script => "script",
             Self::ScriptVersion => "script_version",
             Self::PublicationRequest => "publication_request",
+            Self::ApprovalRequest => "approval_request",
             Self::Endpoint => "endpoint",
         }
     }

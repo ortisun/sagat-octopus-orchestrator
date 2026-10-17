@@ -1,0 +1,36 @@
+{
+  "name": "chain-final-success",
+  "description": "A continued predecessor and its successor complete through the public scheduler; all SDKs wait for the chain's final outcome.",
+  "workflows": {
+    "chain": {
+      "name": "chain-final-success-runtime",
+      "chainPolicy": { "maxSegments": 3, "timeoutMs": 86400000 },
+      "program": [
+        { "op": "step", "id": "work", "activity": "chain.work" },
+        { "op": "condition", "id": "again", "expression": "input.continue", "ifTrue": "rollover", "ifFalse": "done" },
+        { "op": "continueAsNew", "id": "rollover", "input": "input.next" },
+        { "op": "end", "id": "done" }
+      ]
+    }
+  },
+  "workers": {
+    "current": {
+      "workerName": "chain-final-worker",
+      "protocolVersion": "1.5",
+      "transport": "poll",
+      "maxInflight": 1,
+      "autostart": false,
+      "activities": {
+        "chain.work": { "behavior": { "sleepMs": 50, "returns": { "ok": true } } }
+      }
+    }
+  },
+  "steps": [
+    { "id": "start", "op": "start", "workflow": "chain", "input": { "continue": true, "next": { "continue": false } } },
+    { "id": "initial", "op": "inspectChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}" },
+    { "id": "start-worker", "op": "startWorker", "worker": "current" },
+    { "id": "chain-done", "op": "waitForChainCompletion", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "timeoutMs": 30000 },
+    { "id": "segment-done", "op": "waitForCompletion", "run": "start", "timeoutMs": 10000 },
+    { "id": "stop-worker", "op": "stopWorker", "worker": "current" }
+  ]
+}

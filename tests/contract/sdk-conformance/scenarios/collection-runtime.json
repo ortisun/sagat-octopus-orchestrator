@@ -1,0 +1,52 @@
+{
+  "name": "collection-runtime",
+  "description": "The public map builder runs two ordered items with scoped worker identities.",
+  "server": {
+    "iterationConcurrency": 2
+  },
+  "workflows": {
+    "map": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "name": "collection-map-runtime",
+      "bodies": {
+        "tax": {
+          "program": [
+            { "op": "step", "id": "price", "activity": "tax.price" },
+            { "op": "return", "id": "returned", "result": "steps.price.output" }
+          ]
+        }
+      },
+      "program": [
+        {
+          "op": "map",
+          "id": "taxes",
+          "items": "input.lines",
+          "body": "tax",
+          "result": "bodyResult.amount",
+          "maxItems": 2,
+          "maxConcurrency": 1
+        },
+        { "op": "end", "id": "done", "options": { "outputExpr": "steps.taxes.output" } }
+      ]
+    }
+  },
+  "workers": {
+    "current": {
+      "workerName": "collection-current",
+      "protocolVersion": "1.5",
+      "transport": "poll",
+      "maxInflight": 2,
+      "autostart": false,
+      "activities": {
+        "tax.price": { "behavior": { "returns": { "amount": 1 } } }
+      }
+    }
+  },
+  "steps": [
+    { "id": "start-worker", "op": "startWorker", "worker": "current" },
+    { "id": "run", "op": "start", "workflow": "map", "input": { "lines": [{ "sku": "a" }, { "sku": "b" }] } },
+    { "id": "done", "op": "waitForCompletion", "run": "run", "timeoutMs": 60000 },
+    { "id": "two-items", "op": "awaitWorkerLog", "worker": "current", "count": 2, "timeoutMs": 30000 },
+    { "id": "stop-worker", "op": "stopWorker", "worker": "current" }
+  ]
+}

@@ -50,11 +50,19 @@
       }
     },
     {
+      "id": "offer-1.5",
+      "ok": true,
+      "op": "probeWorker",
+      "result": {
+        "accepted": "1.5"
+      }
+    },
+    {
       "id": "offer-1.9",
       "ok": true,
       "op": "probeWorker",
       "result": {
-        "accepted": "1.4"
+        "accepted": "1.5"
       }
     },
     {
@@ -160,7 +168,7 @@
       "op": "stopWorker"
     },
     {
-      "id": "start-new",
+      "id": "start-current",
       "ok": true,
       "op": "startWorker",
       "result": {
@@ -168,7 +176,7 @@
       }
     },
     {
-      "id": "run-new",
+      "id": "run-current",
       "ok": true,
       "op": "start",
       "result": {
@@ -190,7 +198,7 @@
       }
     },
     {
-      "id": "done-new",
+      "id": "done-current",
       "ok": true,
       "op": "waitForCompletion",
       "result": {
@@ -210,9 +218,84 @@
         "versionId": "<uuid:2>",
         "workflowId": "<uuid:3>"
       }
+    },
+    {
+      "id": "stop-current",
+      "ok": true,
+      "op": "stopWorker"
+    },
+    {
+      "id": "start-new",
+      "ok": true,
+      "op": "startWorker",
+      "result": {
+        "protocolVersion": "1.5"
+      }
+    },
+    {
+      "id": "run-new",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:5>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:3>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "done-new",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:5>",
+        "startedBy": "alice",
+        "status": "SUCCEEDED",
+        "traceId": "<trace:3>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
     }
   ],
   "serverState": [
+    {
+      "nodes": [
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "slow",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:5>",
+      "status": "SUCCEEDED"
+    },
     {
       "nodes": [
         {
@@ -251,7 +334,7 @@
     }
   ],
   "workerLog": {
-    "new": [
+    "current": [
       {
         "abortedReason": null,
         "activity": "protocol.slow",
@@ -259,7 +342,7 @@
         "deadlineAhead": true,
         "idempotencyKey": "<uuid:4>:slow",
         "input": {
-          "for": "new"
+          "for": "current"
         },
         "kind": "activity",
         "node": "slow",
@@ -269,6 +352,31 @@
         "targetNode": "",
         "taskKind": "FORWARD",
         "traceId": "<trace:2>",
+        "traceparentPresent": true
+      }
+    ],
+    "new": [
+      {
+        "abortedReason": null,
+        "activity": "protocol.slow",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:5>:slow",
+        "input": {
+          "for": "new"
+        },
+        "instance": {
+          "definitionNodeId": "slow",
+          "instancePath": []
+        },
+        "kind": "activity",
+        "node": "slow",
+        "outcome": "returned",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:3>",
         "traceparentPresent": true
       }
     ],

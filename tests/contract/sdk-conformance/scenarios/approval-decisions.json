@@ -1,0 +1,41 @@
+{
+  "name": "approval-decisions",
+  "description": "The five SDKs discover native approvals through the public run page, preserve authorization and tenant opacity, and record durable approve/reject decisions with exact replay.",
+  "workflows": {
+    "review": {
+      "name": "approval-decision-runtime",
+      "program": [
+        {
+          "op": "approval",
+          "id": "review",
+          "policy": { "roles": ["admin"], "excludeInitiator": false },
+          "timeoutMs": 86400000,
+          "onApprove": "approved",
+          "onReject": "rejected",
+          "onExpire": "expired"
+        },
+        { "op": "end", "id": "approved", "options": { "outputExpr": "'approved'" } },
+        { "op": "end", "id": "rejected", "options": { "outputExpr": "'rejected'" } },
+        { "op": "end", "id": "expired", "options": { "outputExpr": "'expired'" } }
+      ]
+    }
+  },
+  "steps": [
+    { "id": "approve-run", "op": "start", "workflow": "review", "input": {}, "idempotencyKey": "approval-approve-{{unique}}" },
+    { "id": "unauthenticated-list", "op": "listApprovals", "token": "bad", "run": "approve-run", "limit": 1 },
+    { "id": "other-tenant-list", "op": "listApprovals", "token": "other", "run": "approve-run", "limit": 1 },
+    { "id": "approve-opened", "op": "listApprovals", "run": "approve-run", "limit": 1, "waitForItem": true },
+    { "id": "unauthenticated-decision", "op": "decideApproval", "token": "bad", "approval": "approve-opened", "decisionKey": "decision-approve-{{unique}}", "decision": "APPROVE", "reasonCode": "POLICY_OK" },
+    { "id": "other-tenant-decision", "op": "decideApproval", "token": "other", "approval": "approve-opened", "decisionKey": "decision-approve-{{unique}}", "decision": "APPROVE", "reasonCode": "POLICY_OK" },
+    { "id": "approve", "op": "decideApproval", "approval": "approve-opened", "decisionKey": "decision-approve-{{unique}}", "decision": "APPROVE", "reasonCode": "POLICY_OK" },
+    { "id": "approve-replay", "op": "decideApproval", "approval": "approve-opened", "decisionKey": "decision-approve-{{unique}}", "decision": "APPROVE", "reasonCode": "POLICY_OK" },
+    { "id": "key-conflict", "op": "decideApproval", "approval": "approve-opened", "decisionKey": "decision-approve-{{unique}}", "decision": "REJECT", "reasonCode": "POLICY_CHANGED" },
+    { "id": "approve-settled", "op": "listApprovals", "run": "approve-run", "limit": 1 },
+    { "id": "approve-done", "op": "waitForCompletion", "run": "approve-run", "timeoutMs": 60000 },
+    { "id": "reject-run", "op": "start", "workflow": "review", "input": {}, "idempotencyKey": "approval-reject-{{unique}}" },
+    { "id": "reject-opened", "op": "listApprovals", "run": "reject-run", "limit": 1, "waitForItem": true },
+    { "id": "reject", "op": "decideApproval", "approval": "reject-opened", "decisionKey": "decision-reject-{{unique}}", "decision": "REJECT", "reasonCode": "POLICY_BLOCKED" },
+    { "id": "reject-settled", "op": "listApprovals", "run": "reject-run", "limit": 1 },
+    { "id": "reject-done", "op": "waitForCompletion", "run": "reject-run", "timeoutMs": 60000 }
+  ]
+}

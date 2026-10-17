@@ -29,6 +29,12 @@ public static class CancellationReasons
     public const string Shutdown = "shutdown";
 }
 
+/// <summary>One repeated scope that addresses a runtime activation of a definition node.</summary>
+public sealed record ExecutionScope(string ScopeNodeId, uint IterationIndex);
+
+/// <summary>The run-local identity supplied for a task by worker protocol 1.5.</summary>
+public sealed record ExecutionInstanceIdentity(IReadOnlyList<ExecutionScope> InstancePath, string DefinitionNodeId);
+
 /// <summary>What an activity knows about the attempt it is running (SPEC section 6.3).</summary>
 public sealed class ActivityExecutionContext
 {
@@ -46,6 +52,9 @@ public sealed class ActivityExecutionContext
         string stepId,
         int attempt,
         long generation,
+        ExecutionInstanceIdentity? instance,
+        JsonElement? item,
+        uint? index,
         string idempotencyKey,
         string traceparent,
         TaskKind taskKind,
@@ -68,6 +77,9 @@ public sealed class ActivityExecutionContext
         StepId = stepId;
         Attempt = attempt;
         Generation = generation;
+        Instance = instance;
+        Item = item;
+        Index = index;
         IdempotencyKey = idempotencyKey;
         Traceparent = traceparent;
         TaskKind = taskKind;
@@ -97,6 +109,15 @@ public sealed class ActivityExecutionContext
 
     /// <summary>The generation of the lease; it grows each time the step is leased again.</summary>
     public long Generation { get; }
+
+    /// <summary>Present only when protocol 1.5 was negotiated and the lease supplied an identity.</summary>
+    public ExecutionInstanceIdentity? Instance { get; }
+
+    /// <summary>The immutable captured collection item for this scoped task; null for root and non-collection work.</summary>
+    public JsonElement? Item { get; }
+
+    /// <summary>The captured collection index; null for root and non-collection work.</summary>
+    public uint? Index { get; }
 
     /// <summary>Stable across the attempts of the step: send it to the provider of an external effect.</summary>
     public string IdempotencyKey { get; }

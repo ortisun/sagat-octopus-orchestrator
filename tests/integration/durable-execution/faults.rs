@@ -117,10 +117,10 @@ async fn a_transaction_that_never_commits_leaves_no_trace() {
         .expect("begin")
         .expect("exists");
     let engine = sagat_application::execution::Engine::new(sagat_infra_ir::JsonEvaluator);
-    let node = task.node.clone();
+    let node = task.instance.node().clone();
     let fence = task.fence;
     let mut effects = Effects::by(Actor::Worker("doomed".into()), None);
-    effects.outputs = vec![(task.node.clone(), b"{}".to_vec())];
+    effects.outputs = vec![(task.instance.node().clone(), b"{}".to_vec())];
     engine
         .run(&mut tx, effects, move |def, state, now| {
             Ok(((), execution::complete_step(def, state, &node, fence, now)?))
@@ -156,7 +156,7 @@ async fn a_connection_killed_in_the_middle_of_a_command_rolls_everything_back() 
         .expect("begin")
         .expect("exists");
     let engine = sagat_application::execution::Engine::new(sagat_infra_ir::JsonEvaluator);
-    let (node, fence) = (task.node.clone(), task.fence);
+    let (node, fence) = (task.instance.node().clone(), task.fence);
     engine
         .run(
             &mut tx,

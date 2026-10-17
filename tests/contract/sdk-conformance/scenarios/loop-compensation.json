@@ -1,0 +1,126 @@
+{
+  "name": "loop-compensation",
+  "description": "WP-05: a loop that stops with completed iterations (here the iteration limit) undoes them last first. Three iterations each reserve and charge; the loop ends FAILED at its limit and the compensations run iteration 2, then 1, then 0, and inside each iteration the refund before the release. The next iteration's compensation never starts before the previous one is done, the journal records the plan and its outcome, and every COMPENSATION task names the iteration it belongs to.",
+  "server": {
+    "iterationConcurrency": 2
+  },
+  "scopeEvidence": "ordered",
+  "workflows": {
+    "limit": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "name": "loop-compensation-limit",
+      "bodies": {
+        "iteration": {
+          "program": [
+            {
+              "op": "step",
+              "id": "reserve",
+              "activity": "loopc.reserve",
+              "options": {
+                "compensateWith": "loopc.release"
+              }
+            },
+            {
+              "op": "step",
+              "id": "charge",
+              "activity": "loopc.charge",
+              "options": {
+                "compensateWith": "loopc.refund"
+              }
+            },
+            {
+              "op": "return",
+              "id": "returned",
+              "result": "steps.charge.output"
+            }
+          ]
+        }
+      },
+      "program": [
+        {
+          "op": "while",
+          "id": "loop",
+          "condition": "carry < 100",
+          "body": "iteration",
+          "initial": "0",
+          "carry": "carry + 1",
+          "maxIterations": 3,
+          "timeoutMs": 60000
+        },
+        {
+          "op": "end",
+          "id": "done",
+          "options": {
+            "outputExpr": "steps.loop.output"
+          }
+        }
+      ]
+    }
+  },
+  "workers": {
+    "w1": {
+      "workerName": "loop-compensation",
+      "protocolVersion": "1.5",
+      "transport": "poll",
+      "maxInflight": 1,
+      "autostart": false,
+      "activities": {
+        "loopc.reserve": {
+          "behavior": {
+            "returns": 1
+          }
+        },
+        "loopc.release": {
+          "as": "compensation",
+          "behavior": {
+            "returns": {
+              "released": true
+            }
+          }
+        },
+        "loopc.charge": {
+          "behavior": {
+            "returns": 1
+          }
+        },
+        "loopc.refund": {
+          "as": "compensation",
+          "behavior": {
+            "returns": {
+              "refunded": true
+            }
+          }
+        }
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "start-worker",
+      "op": "startWorker",
+      "worker": "w1"
+    },
+    {
+      "id": "limit",
+      "op": "start",
+      "workflow": "limit",
+      "input": {}
+    },
+    {
+      "id": "limit-done",
+      "op": "waitForCompletion",
+      "run": "limit",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "limit-journal",
+      "op": "events",
+      "run": "limit"
+    },
+    {
+      "id": "stop-worker",
+      "op": "stopWorker",
+      "worker": "w1"
+    }
+  ]
+}

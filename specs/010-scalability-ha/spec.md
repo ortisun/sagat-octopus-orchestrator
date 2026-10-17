@@ -133,3 +133,16 @@ tenant and namespace fences; edits exclusively fence the level they change. A ru
 activities visits them in activity-name order (then node id), independent of workflow node order.
 A completed limit change governs subsequent admissions; transactions already admitted may finish
 before the change commits. Existing leases are not revoked by a lower limit (T010-040).
+
+
+## Approved workflow-primitives dependency (2026-10-14)
+
+[ADR-0030](../../docs/adr/ADR-0030-structured-instances-and-continuation-chains.md) and
+[ADR-0031](../../docs/adr/ADR-0031-declared-operation-result-disclosure.md) accept the feature-014
+architecture and separate declared-result disclosure policy.
+[ADR-0032](../../docs/adr/ADR-0032-additive-workflow-ir.md) keeps the workflow IR at v1 and
+supersedes the earlier separate-revision allocation. New scheduler transitions use existing run-shard ownership/fencing and fair bounded admission. Parent child-chain completion is applied under the parent shard fence. Nested low-capacity admission, cross-run quotas and materialization/storage costs require real tests and measurement before release.
+
+This approves the described dependency for implementation, not a runtime guarantee. Canonical
+contracts, migration/replay, tenant/fault tests and applicable five-SDK evidence remain the
+feature-014 release gates; existing feature behavior stays supported.

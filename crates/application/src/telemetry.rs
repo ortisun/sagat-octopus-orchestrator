@@ -12,10 +12,14 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::time::Duration;
 
-use sagat_domain::execution::{RunEvent, RunId, RunStatus};
+use sagat_domain::execution::{
+    ApprovalDecision, CollectionOutcome, ExecutionInstanceId, InstancePath, LoopOutcome, RunEvent,
+    RunId, RunStatus,
+};
 use sagat_domain::identity::{NamespaceId, TenantId};
 use sagat_telemetry::{
-    AttrValue, SpanData, SpanEvent, SpanId, SpanKind, SpanStatus, TraceId, attempt_span_id,
+    AttrValue, SpanData, SpanEvent, SpanId, SpanKind, SpanLink, SpanStatus, TraceId,
+    WorkflowPrimitiveKind, WorkflowPrimitiveOutcome, WorkflowPrimitiveSpan, attempt_span_id,
     event_span_id, run_span_id,
 };
 use time::OffsetDateTime;
@@ -28,8 +32,19 @@ use crate::error::StoreError;
 pub struct JournalEntry {
     pub seq: u64,
     pub event: RunEvent,
+    /// The structured scope that addresses step events; empty for root and run-level events.
+    pub instance_path: InstancePath,
     /// Who or what caused it: `system:scheduler`, a worker's subject, a person's subject.
     pub actor: String,
+    pub occurred_at: OffsetDateTime,
+}
+
+/// A journal entry whose type this version cannot interpret (a newer writer). Only where it sits
+/// in the journal is kept: the type and the payload are never copied into a span or a label.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnsupportedEntry {
+    pub seq: u64,
+    pub instance_path: InstancePath,
     pub occurred_at: OffsetDateTime,
 }
 
@@ -47,8 +62,8 @@ pub struct RunFacts {
     /// The run that started this one, when it is a child: its span is the parent.
     pub parent_run: Option<RunId>,
     pub created_at: OffsetDateTime,
-    /// The identity of each step (by node), which an attempt's span id is computed from.
-    pub steps: HashMap<String, Uuid>,
+    /// The durable identity of each logical step, which an attempt's span id is computed from.
+    pub steps: HashMap<ExecutionInstanceId, Uuid>,
 }
 
 /// How an attempt ended.
@@ -95,6 +110,7 @@ impl AttemptOutcome {
 /// One attempt of one step, as the journal tells it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Attempt {
+    pub instance: ExecutionInstanceId,
     pub node: String,
     pub attempt: u32,
     pub generation: u64,
@@ -123,6 +139,11 @@ pub enum Observation {
     },
     /// A run reached a terminal status.
     RunFinished { status: &'static str, seconds: f64 },
+    /// A durable workflow primitive transition. Both fields are closed metric-label enums.
+    PrimitiveTransition {
+        kind: WorkflowPrimitiveKind,
+        outcome: WorkflowPrimitiveOutcome,
+    },
 }
 
 /// What [`derive`] made of the entries beyond the ones already projected.
@@ -147,18 +168,18 @@ fn seconds_between(from: OffsetDateTime, to: OffsetDateTime) -> f64 {
 #[must_use]
 pub fn attempts(facts: &RunFacts, entries: &[JournalEntry]) -> Vec<Attempt> {
     let mut done: Vec<Attempt> = Vec::new();
-    let mut open: HashMap<String, Attempt> = HashMap::new();
-    let mut ready: HashMap<String, OffsetDateTime> = HashMap::new();
-    let mut close = |open: &mut HashMap<String, Attempt>,
-                     node: &str,
+    let mut open: HashMap<ExecutionInstanceId, Attempt> = HashMap::new();
+    let mut ready: HashMap<ExecutionInstanceId, OffsetDateTime> = HashMap::new();
+    let mut close = |open: &mut HashMap<ExecutionInstanceId, Attempt>,
+                     instance: &ExecutionInstanceId,
                      attempt: u32,
                      seq: u64,
                      at: OffsetDateTime,
                      outcome: AttemptOutcome,
                      code: Option<String>,
                      not_before: Option<OffsetDateTime>| {
-        if open.get(node).is_some_and(|a| a.attempt == attempt)
-            && let Some(mut a) = open.remove(node)
+        if open.get(instance).is_some_and(|a| a.attempt == attempt)
+            && let Some(mut a) = open.remove(instance)
         {
             a.ended_at = Some(at);
             a.ended_seq = Some(seq);
@@ -172,22 +193,31 @@ pub fn attempts(facts: &RunFacts, entries: &[JournalEntry]) -> Vec<Attempt> {
         let at = entry.occurred_at;
         match &entry.event {
             RunEvent::StepReleased { node } | RunEvent::StepRetryDue { node } => {
-                ready.insert(node.as_str().to_owned(), at);
+                ready.insert(
+                    ExecutionInstanceId::in_path(entry.instance_path.clone(), node.clone()),
+                    at,
+                );
             }
             RunEvent::StepLeased {
                 node,
                 attempt,
                 generation,
             } => {
-                let name = node.as_str().to_owned();
-                let step = facts.steps.get(&name).copied().unwrap_or_else(Uuid::nil);
+                let instance =
+                    ExecutionInstanceId::in_path(entry.instance_path.clone(), node.clone());
+                let step = facts
+                    .steps
+                    .get(&instance)
+                    .copied()
+                    .unwrap_or_else(Uuid::nil);
                 open.insert(
-                    name.clone(),
+                    instance.clone(),
                     Attempt {
-                        node: name.clone(),
+                        instance: instance.clone(),
+                        node: node.as_str().to_owned(),
                         attempt: *attempt,
                         generation: *generation,
-                        ready_at: ready.remove(&name),
+                        ready_at: ready.remove(&instance),
                         leased_at: at,
                         ended_at: None,
                         ended_seq: None,
@@ -198,76 +228,98 @@ pub fn attempts(facts: &RunFacts, entries: &[JournalEntry]) -> Vec<Attempt> {
                     },
                 );
             }
-            RunEvent::StepCompleted { node, attempt, .. } => close(
-                &mut open,
-                node.as_str(),
-                *attempt,
-                entry.seq,
-                at,
-                AttemptOutcome::Succeeded,
-                None,
-                None,
-            ),
+            RunEvent::StepCompleted { node, attempt, .. } => {
+                let instance =
+                    ExecutionInstanceId::in_path(entry.instance_path.clone(), node.clone());
+                close(
+                    &mut open,
+                    &instance,
+                    *attempt,
+                    entry.seq,
+                    at,
+                    AttemptOutcome::Succeeded,
+                    None,
+                    None,
+                );
+            }
             RunEvent::StepRetryScheduled {
                 node,
                 attempt,
                 code,
                 not_before,
                 ..
-            } => close(
-                &mut open,
-                node.as_str(),
-                *attempt,
-                entry.seq,
-                at,
-                AttemptOutcome::Retry,
-                Some(code.as_str().to_owned()),
-                Some(*not_before),
-            ),
+            } => {
+                let instance =
+                    ExecutionInstanceId::in_path(entry.instance_path.clone(), node.clone());
+                close(
+                    &mut open,
+                    &instance,
+                    *attempt,
+                    entry.seq,
+                    at,
+                    AttemptOutcome::Retry,
+                    Some(code.as_str().to_owned()),
+                    Some(*not_before),
+                );
+            }
             RunEvent::StepFailed {
                 node,
                 code,
                 fence: Some(fence),
-            } => close(
-                &mut open,
-                node.as_str(),
-                fence.attempt,
-                entry.seq,
-                at,
-                AttemptOutcome::Failed,
-                Some(code.as_str().to_owned()),
-                None,
-            ),
+            } => {
+                let instance =
+                    ExecutionInstanceId::in_path(entry.instance_path.clone(), node.clone());
+                close(
+                    &mut open,
+                    &instance,
+                    fence.attempt,
+                    entry.seq,
+                    at,
+                    AttemptOutcome::Failed,
+                    Some(code.as_str().to_owned()),
+                    None,
+                );
+            }
             RunEvent::StepNeedsReview {
                 node,
                 code,
                 fence: Some(fence),
-            } => close(
-                &mut open,
-                node.as_str(),
-                fence.attempt,
-                entry.seq,
-                at,
-                AttemptOutcome::Review,
-                Some(code.as_str().to_owned()),
-                None,
-            ),
-            RunEvent::ReconciliationRequested { node, fence, cause } => close(
-                &mut open,
-                node.as_str(),
-                fence.attempt,
-                entry.seq,
-                at,
-                AttemptOutcome::UnknownOutcome,
-                Some(cause.as_str().to_owned()),
-                None,
-            ),
+            } => {
+                let instance =
+                    ExecutionInstanceId::in_path(entry.instance_path.clone(), node.clone());
+                close(
+                    &mut open,
+                    &instance,
+                    fence.attempt,
+                    entry.seq,
+                    at,
+                    AttemptOutcome::Review,
+                    Some(code.as_str().to_owned()),
+                    None,
+                );
+            }
+            RunEvent::ReconciliationRequested { node, fence, cause } => {
+                let instance =
+                    ExecutionInstanceId::in_path(entry.instance_path.clone(), node.clone());
+                close(
+                    &mut open,
+                    &instance,
+                    fence.attempt,
+                    entry.seq,
+                    at,
+                    AttemptOutcome::UnknownOutcome,
+                    Some(cause.as_str().to_owned()),
+                    None,
+                );
+            }
             RunEvent::StepCancelled { node } => {
-                let attempt = open.get(node.as_str()).map(|a| a.attempt);
+                let instance =
+                    ExecutionInstanceId::in_path(entry.instance_path.clone(), node.clone());
+                let attempt = open.get(&instance).map(|a| a.attempt);
                 if let Some(attempt) = attempt {
                     close(
                         &mut open,
-                        node.as_str(),
+                        &instance,
                         attempt,
                         entry.seq,
                         at,
@@ -281,7 +333,13 @@ pub fn attempts(facts: &RunFacts, entries: &[JournalEntry]) -> Vec<Attempt> {
         }
     }
     done.extend(open.into_values());
-    done.sort_by_key(|a| (a.leased_at, a.attempt));
+    done.sort_by(|left, right| {
+        (left.leased_at, left.attempt, &left.instance).cmp(&(
+            right.leased_at,
+            right.attempt,
+            &right.instance,
+        ))
+    });
     done
 }
 
@@ -331,7 +389,7 @@ pub async fn all_attempts<S: TelemetryStore>(
 /// The event types [`derive`] needs from the part of the journal that was projected already: the
 /// ones that close an attempt leased in an earlier batch, and the starts of the timers and waits
 /// that end in this one.
-pub const CONTEXT_EVENTS: [&str; 11] = [
+pub const CONTEXT_EVENTS: [&str; 12] = [
     "step.released",
     "step.retry_due",
     "step.leased",
@@ -343,6 +401,7 @@ pub const CONTEXT_EVENTS: [&str; 11] = [
     "step.cancelled",
     "timer.started",
     "wait.started",
+    "approval.opened",
 ];
 
 /// Whether `actor` is the platform itself or one of its workers, as opposed to a person: the only
@@ -380,6 +439,78 @@ fn base_attributes(facts: &RunFacts) -> Vec<(String, AttrValue)> {
     ]
 }
 
+fn path_attribute(path: &InstancePath) -> Option<String> {
+    (!path.is_root()).then(|| {
+        path.segments()
+            .iter()
+            .map(|segment| format!("{}[{}]", segment.scope_node(), segment.iteration_index()))
+            .collect::<Vec<_>>()
+            .join("/")
+    })
+}
+
+fn primitive_span_status(outcome: WorkflowPrimitiveOutcome) -> SpanStatus {
+    match outcome {
+        WorkflowPrimitiveOutcome::Failed => SpanStatus::Error("PRIMITIVE_FAILED".to_owned()),
+        WorkflowPrimitiveOutcome::Cancelled => SpanStatus::Error("PRIMITIVE_CANCELLED".to_owned()),
+        _ => SpanStatus::Ok,
+    }
+}
+
+/// The explicit representation of journal entries the projector cannot interpret: one instantaneous
+/// `workflow.unsupported` span and one bounded `unsupported` transition each. The projection moves
+/// past them instead of failing, and nothing the unknown entry carries reaches a label or an
+/// attribute.
+#[must_use]
+pub fn derive_unsupported(
+    facts: &RunFacts,
+    unsupported: &[UnsupportedEntry],
+    applied_seq: u64,
+) -> Derived {
+    let run_uuid = facts.run_id.as_uuid();
+    let run_span = run_span_id(run_uuid);
+    let mut out = Derived::default();
+    for entry in unsupported.iter().filter(|entry| entry.seq > applied_seq) {
+        let mut attributes = base_attributes(facts);
+        if let Some(path) = path_attribute(&entry.instance_path) {
+            attributes.push(("sagat.instance.path".to_owned(), AttrValue::from(path)));
+        }
+        attributes.push((
+            "sagat.scope.depth".to_owned(),
+            AttrValue::from(
+                u32::try_from(entry.instance_path.segments().len()).unwrap_or(u32::MAX),
+            ),
+        ));
+        attributes.push((
+            "sagat.primitive.kind".to_owned(),
+            AttrValue::from(WorkflowPrimitiveKind::Unsupported.as_str()),
+        ));
+        attributes.push((
+            "sagat.outcome".to_owned(),
+            AttrValue::from(WorkflowPrimitiveOutcome::Unsupported.as_str()),
+        ));
+        let at = nanos(entry.occurred_at);
+        out.spans.push(SpanData {
+            trace_id: facts.trace_id,
+            span_id: event_span_id(run_uuid, entry.seq),
+            parent: Some(run_span),
+            name: WorkflowPrimitiveSpan::Unsupported.as_str().to_owned(),
+            kind: SpanKind::Internal,
+            start_unix_nano: at,
+            end_unix_nano: at,
+            attributes,
+            events: Vec::new(),
+            links: Vec::new(),
+            status: SpanStatus::Unset,
+        });
+        out.observations.push(Observation::PrimitiveTransition {
+            kind: WorkflowPrimitiveKind::Unsupported,
+            outcome: WorkflowPrimitiveOutcome::Unsupported,
+        });
+    }
+    out
+}
+
 /// The spans and measurements of the entries after `applied_seq`. Entries at or before it are only
 /// context: they are never turned into a span again.
 #[must_use]
@@ -403,6 +534,15 @@ pub fn derive(facts: &RunFacts, entries: &[JournalEntry], applied_seq: u64) -> D
         attributes.push((
             "sagat.node".to_owned(),
             AttrValue::from(attempt.node.as_str()),
+        ));
+        if let Some(path) = path_attribute(attempt.instance.path()) {
+            attributes.push(("sagat.instance.path".to_owned(), AttrValue::from(path)));
+        }
+        attributes.push((
+            "sagat.scope.depth".to_owned(),
+            AttrValue::from(
+                u32::try_from(attempt.instance.path().segments().len()).unwrap_or(u32::MAX),
+            ),
         ));
         attributes.push(("sagat.attempt".to_owned(), AttrValue::from(attempt.attempt)));
         attributes.push((
@@ -462,66 +602,509 @@ pub fn derive(facts: &RunFacts, entries: &[JournalEntry], applied_seq: u64) -> D
         });
     }
 
-    // Timers and waits: where the time of a run goes when no worker holds it.
-    let mut timers: HashMap<String, (u64, OffsetDateTime)> = HashMap::new();
-    let mut waits: HashMap<String, (u64, OffsetDateTime)> = HashMap::new();
+    // Primitive decisions are instantaneous spans derived from their durable journal entry. Their
+    // ids survive projector retries, while definition identifiers stay out of metric labels.
     for entry in entries {
-        let at = entry.occurred_at;
-        let mut finished =
-            |kind: &str, started: Option<(u64, OffsetDateTime)>, node: &str, outcome: &str| {
-                if let Some((started_seq, started_at)) = started
-                    && entry.seq > applied_seq
-                {
-                    let mut attributes = base_attributes(facts);
-                    attributes.push(("sagat.node".to_owned(), AttrValue::from(node)));
-                    attributes.push(("sagat.outcome".to_owned(), AttrValue::from(outcome)));
-                    out.spans.push(SpanData {
-                        trace_id: facts.trace_id,
-                        span_id: event_span_id(run_uuid, started_seq),
-                        parent: Some(run_span),
-                        name: kind.to_owned(),
-                        kind: SpanKind::Internal,
-                        start_unix_nano: nanos(started_at),
-                        end_unix_nano: nanos(at),
-                        attributes,
-                        events: Vec::new(),
-                        links: Vec::new(),
-                        status: if outcome == "timed_out" {
-                            SpanStatus::Error("WAIT_TIMED_OUT".to_owned())
-                        } else {
-                            SpanStatus::Unset
-                        },
+        if entry.seq <= applied_seq {
+            continue;
+        }
+        let RunEvent::SwitchEvaluated { node, selection } = &entry.event else {
+            continue;
+        };
+        let (outcome, selected_case) = match selection {
+            sagat_domain::execution::SwitchSelection::Case(selected) => {
+                (WorkflowPrimitiveOutcome::Case, Some(selected))
+            }
+            sagat_domain::execution::SwitchSelection::Default => {
+                (WorkflowPrimitiveOutcome::Default, None)
+            }
+        };
+        let mut attributes = base_attributes(facts);
+        attributes.push(("sagat.node".to_owned(), AttrValue::from(node.as_str())));
+        if let Some(path) = path_attribute(&entry.instance_path) {
+            attributes.push(("sagat.instance.path".to_owned(), AttrValue::from(path)));
+        }
+        attributes.push((
+            "sagat.scope.depth".to_owned(),
+            AttrValue::from(
+                u32::try_from(entry.instance_path.segments().len()).unwrap_or(u32::MAX),
+            ),
+        ));
+        attributes.push((
+            "sagat.primitive.kind".to_owned(),
+            AttrValue::from(WorkflowPrimitiveKind::Switch.as_str()),
+        ));
+        attributes.push((
+            "sagat.outcome".to_owned(),
+            AttrValue::from(outcome.as_str()),
+        ));
+        if let Some(selected) = selected_case {
+            attributes.push((
+                "sagat.switch.case".to_owned(),
+                AttrValue::from(selected.as_str()),
+            ));
+        }
+        let at = nanos(entry.occurred_at);
+        out.spans.push(SpanData {
+            trace_id: facts.trace_id,
+            span_id: event_span_id(run_uuid, entry.seq),
+            parent: Some(run_span),
+            name: "workflow.switch.evaluate".to_owned(),
+            kind: SpanKind::Internal,
+            start_unix_nano: at,
+            end_unix_nano: at,
+            attributes,
+            events: Vec::new(),
+            links: Vec::new(),
+            status: SpanStatus::Ok,
+        });
+        out.observations.push(Observation::PrimitiveTransition {
+            kind: WorkflowPrimitiveKind::Switch,
+            outcome,
+        });
+    }
+
+    let mut approval_opened = HashMap::new();
+    for entry in entries {
+        match &entry.event {
+            RunEvent::ExecutionChainStarted { .. } if entry.seq > applied_seq => {
+                out.observations.push(Observation::PrimitiveTransition {
+                    kind: WorkflowPrimitiveKind::Continuation,
+                    outcome: WorkflowPrimitiveOutcome::Entered,
+                });
+            }
+            RunEvent::ApprovalOpened {
+                node, request_id, ..
+            } => {
+                approval_opened.insert(*request_id, (entry.seq, entry.occurred_at, node));
+                if entry.seq > applied_seq {
+                    out.observations.push(Observation::PrimitiveTransition {
+                        kind: WorkflowPrimitiveKind::Approval,
+                        outcome: WorkflowPrimitiveOutcome::Entered,
                     });
                 }
+            }
+            RunEvent::ApprovalDecided {
+                node,
+                request_id,
+                decision,
+                ..
+            } if entry.seq > applied_seq => {
+                let outcome = match decision {
+                    ApprovalDecision::Approve => WorkflowPrimitiveOutcome::Approved,
+                    ApprovalDecision::Reject => WorkflowPrimitiveOutcome::Rejected,
+                };
+                let (_, opened_at, opened_node) = approval_opened.remove(request_id).unwrap_or((
+                    entry.seq,
+                    entry.occurred_at,
+                    node,
+                ));
+                let mut attributes = base_attributes(facts);
+                attributes.push((
+                    "sagat.primitive.kind".to_owned(),
+                    AttrValue::from(WorkflowPrimitiveKind::Approval.as_str()),
+                ));
+                attributes.push((
+                    "sagat.outcome".to_owned(),
+                    AttrValue::from(outcome.as_str()),
+                ));
+                attributes.push((
+                    "sagat.node".to_owned(),
+                    AttrValue::from(opened_node.as_str()),
+                ));
+                let ended_at = nanos(entry.occurred_at);
+                out.spans.push(SpanData {
+                    trace_id: facts.trace_id,
+                    span_id: event_span_id(run_uuid, entry.seq),
+                    parent: Some(run_span),
+                    name: WorkflowPrimitiveSpan::ApprovalDecide.as_str().to_owned(),
+                    kind: SpanKind::Internal,
+                    start_unix_nano: nanos(opened_at),
+                    end_unix_nano: ended_at,
+                    attributes,
+                    events: Vec::new(),
+                    links: Vec::new(),
+                    status: SpanStatus::Ok,
+                });
+                out.observations.push(Observation::PrimitiveTransition {
+                    kind: WorkflowPrimitiveKind::Approval,
+                    outcome,
+                });
+            }
+            RunEvent::ApprovalExpired {
+                node, request_id, ..
+            } if entry.seq > applied_seq => {
+                let outcome = WorkflowPrimitiveOutcome::Expired;
+                let (_, opened_at, opened_node) = approval_opened.remove(request_id).unwrap_or((
+                    entry.seq,
+                    entry.occurred_at,
+                    node,
+                ));
+                let mut attributes = base_attributes(facts);
+                attributes.push((
+                    "sagat.primitive.kind".to_owned(),
+                    AttrValue::from(WorkflowPrimitiveKind::Approval.as_str()),
+                ));
+                attributes.push((
+                    "sagat.outcome".to_owned(),
+                    AttrValue::from(outcome.as_str()),
+                ));
+                attributes.push((
+                    "sagat.node".to_owned(),
+                    AttrValue::from(opened_node.as_str()),
+                ));
+                let ended_at = nanos(entry.occurred_at);
+                out.spans.push(SpanData {
+                    trace_id: facts.trace_id,
+                    span_id: event_span_id(run_uuid, entry.seq),
+                    parent: Some(run_span),
+                    name: WorkflowPrimitiveSpan::ApprovalDecide.as_str().to_owned(),
+                    kind: SpanKind::Internal,
+                    start_unix_nano: nanos(opened_at),
+                    end_unix_nano: ended_at,
+                    attributes,
+                    events: Vec::new(),
+                    links: Vec::new(),
+                    status: SpanStatus::Ok,
+                });
+                out.observations.push(Observation::PrimitiveTransition {
+                    kind: WorkflowPrimitiveKind::Approval,
+                    outcome,
+                });
+            }
+            _ => {}
+        }
+    }
+
+    for entry in entries {
+        if entry.seq <= applied_seq {
+            continue;
+        }
+        let (kind, outcome, span, node, index, segment, instance, linked_run, observe) =
+            match &entry.event {
+                RunEvent::CollectionEntered { node, .. } => (
+                    WorkflowPrimitiveKind::Collection,
+                    WorkflowPrimitiveOutcome::Entered,
+                    WorkflowPrimitiveSpan::ScopeAdmit,
+                    Some(node),
+                    None,
+                    None,
+                    None,
+                    None,
+                    true,
+                ),
+                RunEvent::CollectionIterationAdmitted {
+                    node, index, entry, ..
+                } => (
+                    WorkflowPrimitiveKind::Collection,
+                    WorkflowPrimitiveOutcome::Admitted,
+                    WorkflowPrimitiveSpan::ScopeAdmit,
+                    Some(node),
+                    Some(*index),
+                    None,
+                    Some(entry),
+                    None,
+                    true,
+                ),
+                RunEvent::CollectionIterationCheckpointed {
+                    node,
+                    index,
+                    return_instance,
+                    ..
+                } => (
+                    WorkflowPrimitiveKind::Collection,
+                    WorkflowPrimitiveOutcome::Committed,
+                    WorkflowPrimitiveSpan::IterationCommit,
+                    Some(node),
+                    Some(*index),
+                    None,
+                    Some(return_instance),
+                    None,
+                    true,
+                ),
+                RunEvent::CollectionDrainStarted { node, .. } => (
+                    WorkflowPrimitiveKind::Collection,
+                    WorkflowPrimitiveOutcome::Draining,
+                    WorkflowPrimitiveSpan::IterationCommit,
+                    Some(node),
+                    None,
+                    None,
+                    None,
+                    None,
+                    true,
+                ),
+                RunEvent::CollectionFinished { node, outcome, .. } => (
+                    WorkflowPrimitiveKind::Collection,
+                    match outcome {
+                        CollectionOutcome::Succeeded => WorkflowPrimitiveOutcome::Succeeded,
+                        CollectionOutcome::Failed(_) => WorkflowPrimitiveOutcome::Failed,
+                        CollectionOutcome::Cancelled => WorkflowPrimitiveOutcome::Cancelled,
+                    },
+                    WorkflowPrimitiveSpan::IterationCommit,
+                    Some(node),
+                    None,
+                    None,
+                    None,
+                    None,
+                    true,
+                ),
+                RunEvent::LoopEntered { node, .. } => (
+                    WorkflowPrimitiveKind::Loop,
+                    WorkflowPrimitiveOutcome::Entered,
+                    WorkflowPrimitiveSpan::ScopeAdmit,
+                    Some(node),
+                    None,
+                    None,
+                    None,
+                    None,
+                    true,
+                ),
+                RunEvent::LoopIterationAdmitted {
+                    node, index, entry, ..
+                } => (
+                    WorkflowPrimitiveKind::Loop,
+                    WorkflowPrimitiveOutcome::Admitted,
+                    WorkflowPrimitiveSpan::ScopeAdmit,
+                    Some(node),
+                    Some(*index),
+                    None,
+                    Some(entry),
+                    None,
+                    true,
+                ),
+                RunEvent::LoopIterationCheckpointed {
+                    node,
+                    index,
+                    return_instance,
+                    continuation,
+                    ..
+                } => (
+                    WorkflowPrimitiveKind::Loop,
+                    match continuation {
+                        sagat_domain::execution::LoopContinuation::Complete => {
+                            WorkflowPrimitiveOutcome::Succeeded
+                        }
+                        sagat_domain::execution::LoopContinuation::IterationLimit
+                        | sagat_domain::execution::LoopContinuation::InstanceLimit => {
+                            WorkflowPrimitiveOutcome::Failed
+                        }
+                        sagat_domain::execution::LoopContinuation::Continue
+                        | sagat_domain::execution::LoopContinuation::DelayUntil(_) => {
+                            WorkflowPrimitiveOutcome::Committed
+                        }
+                    },
+                    WorkflowPrimitiveSpan::IterationCommit,
+                    Some(node),
+                    Some(*index),
+                    None,
+                    Some(return_instance),
+                    None,
+                    true,
+                ),
+                RunEvent::LoopDrainStarted { node, .. } => (
+                    WorkflowPrimitiveKind::Loop,
+                    WorkflowPrimitiveOutcome::Draining,
+                    WorkflowPrimitiveSpan::IterationCommit,
+                    Some(node),
+                    None,
+                    None,
+                    None,
+                    None,
+                    true,
+                ),
+                RunEvent::LoopFinished { node, outcome } => (
+                    WorkflowPrimitiveKind::Loop,
+                    match outcome {
+                        LoopOutcome::Failed(_) => WorkflowPrimitiveOutcome::Failed,
+                        LoopOutcome::Cancelled => WorkflowPrimitiveOutcome::Cancelled,
+                    },
+                    WorkflowPrimitiveSpan::IterationCommit,
+                    Some(node),
+                    None,
+                    None,
+                    None,
+                    None,
+                    true,
+                ),
+                RunEvent::ContinuationSelected {
+                    node, successor, ..
+                } => (
+                    WorkflowPrimitiveKind::Continuation,
+                    WorkflowPrimitiveOutcome::Continued,
+                    WorkflowPrimitiveSpan::Continue,
+                    Some(node),
+                    None,
+                    None,
+                    None,
+                    Some(*successor),
+                    true,
+                ),
+                RunEvent::RunContinued { successor, .. } => (
+                    WorkflowPrimitiveKind::Continuation,
+                    WorkflowPrimitiveOutcome::Continued,
+                    WorkflowPrimitiveSpan::Continue,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(*successor),
+                    true,
+                ),
+                RunEvent::ExecutionChainSuccessorLinked {
+                    predecessor,
+                    segment_index,
+                    ..
+                } => (
+                    WorkflowPrimitiveKind::Continuation,
+                    WorkflowPrimitiveOutcome::Continued,
+                    WorkflowPrimitiveSpan::Continue,
+                    None,
+                    None,
+                    Some(u32::from(*segment_index)),
+                    None,
+                    Some(*predecessor),
+                    false,
+                ),
+                _ => continue,
             };
+        let mut attributes = base_attributes(facts);
+        attributes.push((
+            "sagat.primitive.kind".to_owned(),
+            AttrValue::from(kind.as_str()),
+        ));
+        attributes.push((
+            "sagat.outcome".to_owned(),
+            AttrValue::from(outcome.as_str()),
+        ));
+        if let Some(node) = node {
+            attributes.push(("sagat.node".to_owned(), AttrValue::from(node.as_str())));
+        }
+        if let Some(index) = index {
+            attributes.push(("sagat.iteration.index".to_owned(), AttrValue::from(index)));
+        }
+        if let Some(segment) = segment {
+            attributes.push((
+                "sagat.continuation.segment_index".to_owned(),
+                AttrValue::from(segment),
+            ));
+        }
+        let path = instance
+            .map(ExecutionInstanceId::path)
+            .unwrap_or(&entry.instance_path);
+        if let Some(path) = path_attribute(path) {
+            attributes.push(("sagat.instance.path".to_owned(), AttrValue::from(path)));
+        }
+        attributes.push((
+            "sagat.scope.depth".to_owned(),
+            AttrValue::from(u32::try_from(path.segments().len()).unwrap_or(u32::MAX)),
+        ));
+        let at = nanos(entry.occurred_at);
+        out.spans.push(SpanData {
+            trace_id: facts.trace_id,
+            span_id: event_span_id(run_uuid, entry.seq),
+            parent: Some(run_span),
+            name: span.as_str().to_owned(),
+            kind: SpanKind::Internal,
+            start_unix_nano: at,
+            end_unix_nano: at,
+            attributes,
+            events: Vec::new(),
+            links: linked_run
+                .map(|run| SpanLink {
+                    trace_id: facts.trace_id,
+                    span_id: run_span_id(run.as_uuid()),
+                })
+                .into_iter()
+                .collect(),
+            status: primitive_span_status(outcome),
+        });
+        if observe {
+            out.observations
+                .push(Observation::PrimitiveTransition { kind, outcome });
+        }
+    }
+
+    // Timers and waits: where the time of a run goes when no worker holds it.
+    let mut timers: HashMap<ExecutionInstanceId, (u64, OffsetDateTime)> = HashMap::new();
+    let mut waits: HashMap<ExecutionInstanceId, (u64, OffsetDateTime)> = HashMap::new();
+    for entry in entries {
+        let at = entry.occurred_at;
+        let mut finished = |kind: &str,
+                            started: Option<(u64, OffsetDateTime)>,
+                            instance: &ExecutionInstanceId,
+                            outcome: &str| {
+            if let Some((started_seq, started_at)) = started
+                && entry.seq > applied_seq
+            {
+                let mut attributes = base_attributes(facts);
+                attributes.push((
+                    "sagat.node".to_owned(),
+                    AttrValue::from(instance.node().as_str()),
+                ));
+                if let Some(path) = path_attribute(instance.path()) {
+                    attributes.push(("sagat.instance.path".to_owned(), AttrValue::from(path)));
+                }
+                attributes.push((
+                    "sagat.scope.depth".to_owned(),
+                    AttrValue::from(
+                        u32::try_from(instance.path().segments().len()).unwrap_or(u32::MAX),
+                    ),
+                ));
+                attributes.push(("sagat.outcome".to_owned(), AttrValue::from(outcome)));
+                out.spans.push(SpanData {
+                    trace_id: facts.trace_id,
+                    span_id: event_span_id(run_uuid, started_seq),
+                    parent: Some(run_span),
+                    name: kind.to_owned(),
+                    kind: SpanKind::Internal,
+                    start_unix_nano: nanos(started_at),
+                    end_unix_nano: nanos(at),
+                    attributes,
+                    events: Vec::new(),
+                    links: Vec::new(),
+                    status: if outcome == "timed_out" {
+                        SpanStatus::Error("WAIT_TIMED_OUT".to_owned())
+                    } else {
+                        SpanStatus::Unset
+                    },
+                });
+            }
+        };
         match &entry.event {
             RunEvent::TimerStarted { node, .. } => {
-                timers.insert(node.as_str().to_owned(), (entry.seq, at));
-            }
-            RunEvent::TimerFired { node } => {
-                finished(
-                    "timer",
-                    timers.remove(node.as_str()),
-                    node.as_str(),
-                    "fired",
+                timers.insert(
+                    ExecutionInstanceId::in_path(entry.instance_path.clone(), node.clone()),
+                    (entry.seq, at),
                 );
             }
+            RunEvent::TimerFired { node } => {
+                let instance =
+                    ExecutionInstanceId::in_path(entry.instance_path.clone(), node.clone());
+                finished("timer", timers.remove(&instance), &instance, "fired");
+            }
             RunEvent::WaitStarted { node, .. } => {
-                waits.insert(node.as_str().to_owned(), (entry.seq, at));
+                waits.insert(
+                    ExecutionInstanceId::in_path(entry.instance_path.clone(), node.clone()),
+                    (entry.seq, at),
+                );
             }
             RunEvent::WaitSatisfied { node } => {
+                let instance =
+                    ExecutionInstanceId::in_path(entry.instance_path.clone(), node.clone());
                 finished(
                     "wait.event",
-                    waits.remove(node.as_str()),
-                    node.as_str(),
+                    waits.remove(&instance),
+                    &instance,
                     "satisfied",
                 );
             }
             RunEvent::WaitTimedOut { node, .. } => {
+                let instance =
+                    ExecutionInstanceId::in_path(entry.instance_path.clone(), node.clone());
                 finished(
                     "wait.event",
-                    waits.remove(node.as_str()),
-                    node.as_str(),
+                    waits.remove(&instance),
+                    &instance,
                     "timed_out",
                 );
             }
@@ -557,6 +1140,8 @@ pub fn derive(facts: &RunFacts, entries: &[JournalEntry], applied_seq: u64) -> D
                         | RunEvent::SagaAborting { .. }
                         | RunEvent::CompensationPlanned { .. }
                         | RunEvent::SagaCompensated { .. }
+                        | RunEvent::ScopeCompensationPlanned { .. }
+                        | RunEvent::ScopeCompensated { .. }
                         | RunEvent::ReconciliationRequested { .. }
                         | RunEvent::ReconciliationConcluded { .. }
                 );
@@ -638,6 +1223,8 @@ pub struct Backlog {
 pub struct ToProject {
     pub facts: RunFacts,
     pub entries: Vec<JournalEntry>,
+    /// The new entries the store could not decode, in journal order.
+    pub unsupported: Vec<UnsupportedEntry>,
     pub head_seq: u64,
     pub applied_seq: u64,
 }
@@ -751,4 +1338,172 @@ pub trait TelemetryStore: Send + Sync {
 
     /// How far behind the projection is.
     fn backlog(&self) -> impl Future<Output = Result<Backlog, StoreError>> + Send;
+}
+
+#[cfg(test)]
+mod primitive_tests {
+    use super::*;
+    use sagat_domain::execution::{ExecutionInstanceId, SwitchSelection};
+    use sagat_domain::workflow::{Digest, NodeId};
+    use sagat_telemetry::{WorkflowPrimitiveKind, WorkflowPrimitiveOutcome};
+
+    fn node(value: &str) -> NodeId {
+        NodeId::parse(value).expect("valid node id")
+    }
+
+    fn facts() -> RunFacts {
+        RunFacts {
+            tenant_id: TenantId::new(Uuid::new_v4()),
+            namespace_id: NamespaceId::new(Uuid::new_v4()),
+            run_id: RunId::generate(),
+            workflow: "routing".to_owned(),
+            version: 1,
+            trace_id: TraceId::generate(),
+            parent_span: None,
+            parent_run: None,
+            created_at: OffsetDateTime::from_unix_timestamp(1_800_000_000).expect("time"),
+            steps: HashMap::new(),
+        }
+    }
+
+    fn attribute<'a>(span: &'a SpanData, key: &str) -> Option<&'a AttrValue> {
+        span.attributes
+            .iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value)
+    }
+
+    #[test]
+    fn switch_case_is_a_stable_span_and_bounded_observation() {
+        let facts = facts();
+        let entry = JournalEntry {
+            seq: 7,
+            event: RunEvent::SwitchEvaluated {
+                node: node("route"),
+                selection: SwitchSelection::Case(node("priority")),
+            },
+            instance_path: InstancePath::root(),
+            actor: "Bearer secret-marker".to_owned(),
+            occurred_at: facts.created_at + time::Duration::milliseconds(2),
+        };
+
+        let first = derive(&facts, std::slice::from_ref(&entry), 0);
+        let replay = derive(&facts, &[entry], 0);
+
+        assert_eq!(first, replay);
+        assert_eq!(first.spans.len(), 1);
+        let span = &first.spans[0];
+        assert_eq!(span.name, "workflow.switch.evaluate");
+        assert_eq!(span.span_id, event_span_id(facts.run_id.as_uuid(), 7));
+        assert_eq!(span.parent, Some(run_span_id(facts.run_id.as_uuid())));
+        assert_eq!(
+            attribute(span, "sagat.node"),
+            Some(&AttrValue::from("route"))
+        );
+        assert_eq!(
+            attribute(span, "sagat.primitive.kind"),
+            Some(&AttrValue::from("switch"))
+        );
+        assert_eq!(
+            attribute(span, "sagat.outcome"),
+            Some(&AttrValue::from("case"))
+        );
+        assert_eq!(
+            attribute(span, "sagat.switch.case"),
+            Some(&AttrValue::from("priority"))
+        );
+        assert_eq!(
+            first.observations,
+            [Observation::PrimitiveTransition {
+                kind: WorkflowPrimitiveKind::Switch,
+                outcome: WorkflowPrimitiveOutcome::Case,
+            }]
+        );
+        assert!(!format!("{span:?}").contains("secret-marker"));
+    }
+
+    #[test]
+    fn switch_default_has_no_case_identifier_and_is_not_reprojected() {
+        let facts = facts();
+        let entry = JournalEntry {
+            seq: 3,
+            event: RunEvent::SwitchEvaluated {
+                node: node("route"),
+                selection: SwitchSelection::Default,
+            },
+            instance_path: InstancePath::root(),
+            actor: "system:engine".to_owned(),
+            occurred_at: facts.created_at,
+        };
+
+        let derived = derive(&facts, std::slice::from_ref(&entry), 0);
+        assert_eq!(derived.spans.len(), 1);
+        assert_eq!(attribute(&derived.spans[0], "sagat.switch.case"), None);
+        assert_eq!(
+            derived.observations,
+            [Observation::PrimitiveTransition {
+                kind: WorkflowPrimitiveKind::Switch,
+                outcome: WorkflowPrimitiveOutcome::Default,
+            }]
+        );
+        assert_eq!(derive(&facts, &[entry], 3), Derived::default());
+    }
+
+    #[test]
+    fn collection_admission_and_continuation_have_stable_redacted_spans() {
+        let facts = facts();
+        let entries = [
+            JournalEntry {
+                seq: 2,
+                event: RunEvent::CollectionIterationAdmitted {
+                    node: node("items"),
+                    index: 1,
+                    entry: ExecutionInstanceId::root(node("work")),
+                    item_digest: Digest::new([1; 32]),
+                },
+                instance_path: InstancePath::root(),
+                actor: "Bearer secret-marker".to_owned(),
+                occurred_at: facts.created_at,
+            },
+            JournalEntry {
+                seq: 3,
+                event: RunEvent::RunContinued {
+                    successor: RunId::generate(),
+                    input_digest: Digest::new([2; 32]),
+                    state_digest: None,
+                },
+                instance_path: InstancePath::root(),
+                actor: "Bearer secret-marker".to_owned(),
+                occurred_at: facts.created_at,
+            },
+        ];
+        let first = derive(&facts, &entries, 0);
+        assert_eq!(first, derive(&facts, &entries, 0));
+        assert_eq!(first.spans.len(), 2);
+        assert_eq!(first.spans[0].name, "workflow.scope.admit");
+        assert_eq!(first.spans[1].name, "workflow.continue");
+        assert_eq!(
+            first.spans[0].span_id,
+            event_span_id(facts.run_id.as_uuid(), 2)
+        );
+        assert_eq!(
+            first.spans[1].span_id,
+            event_span_id(facts.run_id.as_uuid(), 3)
+        );
+        assert_eq!(
+            first.observations,
+            [
+                Observation::PrimitiveTransition {
+                    kind: WorkflowPrimitiveKind::Collection,
+                    outcome: WorkflowPrimitiveOutcome::Admitted,
+                },
+                Observation::PrimitiveTransition {
+                    kind: WorkflowPrimitiveKind::Continuation,
+                    outcome: WorkflowPrimitiveOutcome::Continued,
+                },
+            ]
+        );
+        assert!(!format!("{first:?}").contains("secret-marker"));
+        assert_eq!(derive(&facts, &entries, 3), Derived::default());
+    }
 }

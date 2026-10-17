@@ -263,6 +263,7 @@ impl Dev<'_> {
                         safe_message: message.chars().take(500).collect(),
                         retryable: *retryable,
                         traceparent: task.traceparent.clone(),
+                        instance: task.instance.clone(),
                     },
                 )?;
                 (
@@ -293,6 +294,7 @@ impl Dev<'_> {
                         output_blob_ref: String::new(),
                         output_sha256: String::new(),
                         traceparent: task.traceparent.clone(),
+                        instance: task.instance.clone(),
                     },
                 )?;
                 let effect = (kind == Kind::Reconciliation)
