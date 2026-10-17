@@ -2040,6 +2040,46 @@ async fn a_scoped_lease_observes_cancellation_and_acknowledges_it_before_restart
         .await
         .expect("leased member observes cancellation");
     assert!(beat.cancel_requested);
+    assert!(matches!(
+        fixture
+            .workers
+            .resolve_secrets(&fixture.session.principal, &task_ref(&task), None)
+            .await,
+        Err(AppError::StaleAttempt)
+    ));
+    // Ordinary blob outputs with declared secrets remain closed before any upload capability.
+    assert!(matches!(
+        fixture
+            .workers
+            .check_blob_upload(&fixture.session.principal, &task_ref(&task))
+            .await,
+        Err(AppError::NotAllowed(_))
+    ));
+    assert!(matches!(
+        fixture
+            .workers
+            .complete(
+                &fixture.session.principal,
+                &task_ref(&task),
+                b"{}",
+                "cancelled-scoped-completion",
+            )
+            .await,
+        Err(AppError::StaleAttempt)
+    ));
+    assert!(matches!(
+        fixture
+            .workers
+            .fail(
+                &fixture.session.principal,
+                &task_ref(&task),
+                "SAFE_ERROR",
+                false,
+                "cancelled-scoped-arbitrary-failure",
+            )
+            .await,
+        Err(AppError::StaleAttempt)
+    ));
     fixture
         .workers
         .fail(

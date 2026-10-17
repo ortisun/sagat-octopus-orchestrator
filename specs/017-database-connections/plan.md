@@ -173,6 +173,12 @@ resolution failure, including mixed local/remote migration grace, so provider ou
 reactivate local authority. Exercise heartbeat/cancellation during blocked reads, snapshot rotation,
 durable receipt replay during provider outages and secret-bearing saga recovery.
 
+An explicit nonretryable `CANCELLED` failure may acknowledge the current cancelled ordinary-worker
+lease after internal secret-output scanning. It still requires current worker/binding authority,
+the matching unexpired lease and unchanged secret versions before and after provider I/O. This
+acknowledgement grants no new secret, blob or database capability. Complete and arbitrary failure
+reports retain the live cancellation fence, including cancellation during a blocked provider read.
+
 ## Deployment and recovery profiles (T017-023/024)
 
 - Add the managed runner as its own Docker build target: nonroot, read-only root filesystem,

@@ -1725,7 +1725,14 @@ where
         // worker that reports its own secret as the reason it failed fails for good instead.
         let mut retryable = retryable;
         let leaked = match self
-            .checked_secret_report(principal, task, tx, &idempotency, error_code.as_bytes())
+            .checked_secret_report(
+                principal,
+                task,
+                tx,
+                &idempotency,
+                error_code.as_bytes(),
+                error_code == "CANCELLED" && !retryable,
+            )
             .await?
         {
             SecretReport::Ready(current, leaked) => {
@@ -2077,6 +2084,30 @@ where
         tx: &mut Tx,
         task: &TaskRef<'_>,
     ) -> Result<(), AppError> {
+        self.attempt_authority_fence(principal, tx, task, false)
+            .await
+    }
+
+    /// Only an explicit cancellation acknowledgement may settle a cancelled lease. Other reports
+    /// retain the live-capability fence, including a cancellation during provider I/O.
+    async fn report_authority_fence<Tx: RunTx>(
+        &self,
+        principal: &Principal,
+        tx: &mut Tx,
+        task: &TaskRef<'_>,
+        cancellation_acknowledgement: bool,
+    ) -> Result<(), AppError> {
+        self.attempt_authority_fence(principal, tx, task, cancellation_acknowledgement)
+            .await
+    }
+
+    async fn attempt_authority_fence<Tx: RunTx>(
+        &self,
+        principal: &Principal,
+        tx: &mut Tx,
+        task: &TaskRef<'_>,
+        allow_cancellation_report: bool,
+    ) -> Result<(), AppError> {
         self.verify(tx, task).await?;
         // Binding authority precedes session/catalog/membership locks, matching revocation.
         self.ensure_bound(principal, tx, task).await?;
@@ -2093,8 +2124,9 @@ where
         let valid_step = tx.parts().1.instance(task.instance).is_some_and(|s| {
             (legacy_attempt || s.attempt() == task.fence.attempt)
                 && s.generation() == task.fence.generation
-                && !s.cancel_requested()
-        }) && (tx.parts().1.stop_reason().is_none()
+                && (allow_cancellation_report || !s.cancel_requested())
+        }) && (allow_cancellation_report
+            || tx.parts().1.stop_reason().is_none()
             || task.instance.node().is_derived())
             && !tx.parts().1.is_finished();
         if !valid_step

@@ -947,3 +947,29 @@ transaction; the assertion still requires the session lease index. Both failed b
 The complete binding repeat passed **16/16**, 81.59 s, as the runtime role
 (`/tmp/sagat-completion-current-binding-regression.log`). The independently running broad
 workspace/security checkpoints retain their original failures; they are not rewritten as passed.
+
+### Cancellation acknowledgement with declared secrets
+
+The current scoped-worker regression reproduced a real refusal of the worker's explicit
+nonretryable `CANCELLED` acknowledgement: internal report scanning incorrectly required a live
+external capability after cancellation. The isolated baseline failed with `StaleAttempt`
+(`/tmp/sagat-completion-bounded-maintenance-cancel-isolated.log`); the first scoped scanner
+repeat was **15 passed/1 failed**, with that same pre-existing report problem.
+
+Only that closed acknowledgement now permits cancellation through the internal scan's fence.
+Current membership/binding, exact attempt/generation/token, unexpired lease, secret-version
+snapshot and durable receipt replay remain checked. Complete and generic failure reports keep
+the live capability fence; no new secret/blob/database access is issued. The strengthened scoped
+case verifies each refusal and the acknowledged cancellation's journal/projection/restart outcome.
+Its initial extra blob assertion incorrectly expected `StaleAttempt`: ordinary secret-bearing
+blob uploads already return the stricter existing `NotAllowed` refusal. The failed 51/1 checkpoint
+is retained (`/tmp/sagat-completion-scoped-cancellation-and-iteration-ceiling-regression-2.log`).
+
+The corrected combined scoped-worker/loop repeat passed **52/52**, 178.30 s, as `sagat_app`
+(`/tmp/sagat-completion-scoped-cancellation-and-iteration-ceiling-regression-3.log`). The complete
+real PostgreSQL/OpenBao lifecycle/contract target passed **3/3**, 155.07 s
+(`/tmp/sagat-completion-cancellation-ack-provider-regression.log`), including ordinary
+resolve/complete/fail cancellation barriers during provider I/O, rotation, outage receipt replay,
+derived recovery and managed-output cancellation. Whole-workspace/all-target strict Clippy passed
+2 min 44 s (`/tmp/sagat-completion-cancellation-ceiling-workspace-clippy.log`). These combined-tree
+checks also include the bounded scanner and ceiling repair recorded in the following checkpoints.
