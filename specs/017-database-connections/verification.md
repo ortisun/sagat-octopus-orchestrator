@@ -30,3 +30,16 @@ Runtime services now support async local/provider resolution. Deployment wiring 
 - `cargo clippy -p sagat-api-http -p sagat-control-plane -p sagat-execution-engine -p sagat-infra-secrets --lib --locked -- -D warnings`: passed.
 
 Control plane and engine now accept explicit OpenBao settings; provider-only deployments need no legacy keyring. Existing integration credential creation sends the recoverable write contract. The connection catalog, database execution, standalone secret UI, deployment profiles/cleanup and SDK support remain incomplete. No browser verification has been performed for this slice yet.
+
+## Connection domain and catalog checkpoint (2026-10-17)
+
+- RED: the domain test could not import the missing database module. GREEN: `cargo test -p sagat-domain --test database_connections --test identity --locked`: 3 new boundary/limit/redaction tests and 27 identity/role tests passed.
+- `cargo test -p sagat-tests --test integration_database_connections --locked`: real PostgreSQL/OpenBao catalog scenarios passed: receipt replay, changed-content refusal, foreign tenant refusal, competing revisions with one winner, immutable prior settings with current paused status, immutable-row trigger, byte accounting and tombstone/no resurrection. Managed HTTP create/replay responses validate against canonical OpenAPI; embedded password fields are rejected.
+- `cargo test -p sagat-tests --test integration_security_multitenancy --test integration_database_connections --test contract_rest_security_multitenancy --locked`: 95 security, 1 combined feature scenario and 17 REST security tests passed. This regression initially could not compile an existing local-key assertion after keyId became optional; the assertion now explicitly requires the local key. The exhaustive storage-classification/ALWAYS-trigger check passed with the new tables.
+- `cargo check -p sagat-api-http -p sagat-control-plane --locked`, generated API client and Studio typecheck passed. Initial compile checks caught a missing tracing attributes feature and SQLx 0.9's prohibition of dynamic SQL strings; queries now use literal concatenation and bound parameters.
+
+This checkpoint provides a metadata catalog. It does not execute database steps, populate run bindings, test connections, disclose results or add the connection UI. Those tasks remain open. Configurable catalog ceilings/retention and additional audit-failure/authorization races still need coverage before release.
+
+The follow-up `requiredProvider: openbao` guard passed with 2 feature tests: an instance with only the local keyring returns 503 and creates no secret. Catalog/API/application/PostgreSQL clippy passed with `-D warnings`. The first follow-up stale-principal test incorrectly expected metadata reads to fail after demotion to viewer; the approved role matrix permits those reads. The corrected test expects metadata access and rejects catalog writes using the stale administrator principal.
+
+Final checkpoint rerun: both feature tests passed, including current-role metadata/write separation. Generated Studio client/typecheck, architecture (22 crates), formatting and diff checks passed.

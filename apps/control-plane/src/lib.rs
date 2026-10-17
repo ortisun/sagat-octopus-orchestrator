@@ -575,6 +575,10 @@ pub async fn serve_with_admin(
                 Arc::new(JsonEvaluator),
             ));
     }
+    governance = governance.with_connections(sagat_application::database::ConnectionService::new(
+        executions.clone(),
+        SystemClock,
+    ));
     if let (Some(settings), Some(provider)) = (&serve.openbao, provider) {
         let key = settings.intent_key().await.map_err(|_| {
             RunError::Refused("OpenBao management requires a 32-byte SAGAT_OPENBAO_INTENT_KEY_FILE")

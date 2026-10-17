@@ -169,6 +169,7 @@ pub struct SecretAccessBody {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct SetSecretBody {
+    pub required_provider: Option<RequiredSecretProvider>,
     pub value: String,
     pub request_id: Option<String>,
     pub expected_version: Option<u32>,
@@ -179,6 +180,12 @@ pub struct SetSecretBody {
 pub struct MigrateSecretBody {
     pub request_id: String,
     pub expected_version: u32,
+}
+
+#[derive(serde::Deserialize)]
+pub enum RequiredSecretProvider {
+    #[serde(rename = "openbao")]
+    OpenBao,
 }
 
 impl std::fmt::Debug for SetSecretBody {

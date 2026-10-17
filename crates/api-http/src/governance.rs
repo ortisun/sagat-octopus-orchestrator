@@ -7,6 +7,7 @@ use sagat_application::api_admission::{ApiAdmissionService, ApiAdmissionStore};
 use sagat_application::bindings::{BindingService, BindingStore};
 use sagat_application::clock::Clock;
 use sagat_application::connectors::{ConnectorService, ConnectorStore};
+use sagat_application::database::{ConnectionService, ConnectionStore};
 use sagat_application::egress::{EgressService, EgressStore};
 use sagat_application::events::{EventService, EventStore};
 use sagat_application::identity::IdentityStore;
@@ -29,6 +30,7 @@ pub trait Governance: Core + Admission {
         + BindingStore
         + SecretStore
         + ManagedSecretStore
+        + ConnectionStore
         + EgressStore
         + EventStore
         + OutboundStore
@@ -47,6 +49,7 @@ pub trait Governance: Core + Admission {
     /// `None` when no secret authority is configured.
     fn secrets(&self) -> Option<&SecretService<Self::Store, Self::Clock>>;
     fn managed_secrets(&self) -> Option<&ManagedSecretService<Self::Store, Self::Clock>>;
+    fn connections(&self) -> Option<&ConnectionService<Self::Store, Self::Clock>>;
     /// `None` when no reader is configured to verify webhook secrets.
     fn events(&self) -> Option<&EventService<Self::Store, Self::Clock>>;
     /// `None` when the instance has no key ring (deliveries are signed): the subscription routes are
@@ -74,6 +77,7 @@ pub struct GovState<S, C, G> {
     egress: Arc<EgressService<G, C>>,
     secrets: Option<Arc<SecretService<G, C>>>,
     managed_secrets: Option<Arc<ManagedSecretService<G, C>>>,
+    connections: Option<Arc<ConnectionService<G, C>>>,
     events: Option<Arc<EventService<G, C>>>,
     outbound: Option<Arc<OutboundService<G, C>>>,
     connectors: Option<Arc<ConnectorService<G, C>>>,
@@ -99,6 +103,7 @@ impl<S, C, G> GovState<S, C, G> {
             egress: Arc::new(egress),
             secrets: None,
             managed_secrets: None,
+            connections: None,
             events: None,
             outbound: None,
             connectors: None,
@@ -119,6 +124,11 @@ impl<S, C, G> GovState<S, C, G> {
     #[must_use]
     pub fn with_secrets(mut self, secrets: SecretService<G, C>) -> Self {
         self.secrets = Some(Arc::new(secrets));
+        self
+    }
+
+    pub fn with_connections(mut self, service: ConnectionService<G, C>) -> Self {
+        self.connections = Some(Arc::new(service));
         self
     }
 
@@ -172,6 +182,7 @@ impl<S, C, G> Clone for GovState<S, C, G> {
             egress: Arc::clone(&self.egress),
             secrets: self.secrets.clone(),
             managed_secrets: self.managed_secrets.clone(),
+            connections: self.connections.clone(),
             events: self.events.clone(),
             outbound: self.outbound.clone(),
             connectors: self.connectors.clone(),
@@ -236,6 +247,7 @@ where
         + BindingStore
         + SecretStore
         + ManagedSecretStore
+        + ConnectionStore
         + EgressStore
         + EventStore
         + OutboundStore
@@ -264,6 +276,10 @@ where
 
     fn secrets(&self) -> Option<&SecretService<G, C>> {
         self.secrets.as_deref()
+    }
+
+    fn connections(&self) -> Option<&ConnectionService<G, C>> {
+        self.connections.as_deref()
     }
 
     fn managed_secrets(&self) -> Option<&ManagedSecretService<G, C>> {

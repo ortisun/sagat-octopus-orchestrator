@@ -172,16 +172,18 @@ const ALL_ROLES: [Role; 6] = [
 /// The authoritative matrix, written out by hand (not derived from `Role::permissions`).
 fn expected(role: Role) -> Vec<Permission> {
     use Permission::{
-        DefinitionPublish, DefinitionRead, DefinitionWrite, EventManage, EventPublish, EventRead,
-        NamespaceRead, OpsRead, PublicationApprove, QuotaRead, RunOperate, RunPayloadInspect,
-        RunRead, RunSignal, RunStart, ScriptBuild, ScriptExecute, ScriptPublish, ScriptRead,
-        ScriptWrite, SecretRead, SecretUse, VersionActivate, WorkerExecute, WorkerManage,
-        WorkspaceRead,
+        DatabaseAdHoc, DatabaseUse, DefinitionPublish, DefinitionRead, DefinitionWrite,
+        EventManage, EventPublish, EventRead, NamespaceRead, OpsRead, PublicationApprove,
+        QuotaRead, RunOperate, RunPayloadInspect, RunRead, RunSignal, RunStart, ScriptBuild,
+        ScriptExecute, ScriptPublish, ScriptRead, ScriptWrite, SecretRead, SecretUse,
+        VersionActivate, WorkerExecute, WorkerManage, WorkspaceRead,
     };
     match role {
         Role::Admin => Permission::ALL.to_vec(),
         Role::Developer => {
             vec![
+                DatabaseUse,
+                DatabaseAdHoc,
                 WorkspaceRead,
                 NamespaceRead,
                 DefinitionRead,

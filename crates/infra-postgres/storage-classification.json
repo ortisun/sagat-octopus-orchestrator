@@ -464,6 +464,96 @@
       ]
     },
     {
+      "table": "database_connection_revisions",
+      "column": "actor",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Identity subject, CHECK limits to 255 characters and excludes control characters."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/database.rs"
+      ]
+    },
+    {
+      "table": "database_connection_revisions",
+      "column": "config",
+      "sql_type": "jsonb",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "canonical_json_utf8",
+        "expression": null,
+        "evidence": "Immutable nonsecret settings, bounded to 128 KiB by CHECK; charged by the ALWAYS quota triggers."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/database.rs"
+      ]
+    },
+    {
+      "table": "database_connection_revisions",
+      "column": "status",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only ACTIVE, PAUSED or DELETED."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/database.rs"
+      ]
+    },
+    {
+      "table": "database_connections",
+      "column": "name",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": null,
+        "evidence": "Connection logical name is retained namespace content; charged by the ALWAYS quota triggers."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/database.rs"
+      ]
+    },
+    {
+      "table": "database_connections",
+      "column": "status",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only ACTIVE, PAUSED or DELETED."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/database.rs"
+      ]
+    },
+    {
       "table": "egress_policies",
       "column": "ports",
       "sql_type": "_int4",
@@ -1683,6 +1773,24 @@
       },
       "owner_paths": [
         "crates/infra-postgres/src/quotas.rs"
+      ]
+    },
+    {
+      "table": "run_database_connections",
+      "column": "node_id",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Workflow node identifier, CHECK bounds UTF-8 length to 64 bytes; one binding per retained run/node."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/database.rs"
       ]
     },
     {

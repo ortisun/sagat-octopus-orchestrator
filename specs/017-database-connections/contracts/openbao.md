@@ -31,7 +31,7 @@ provider address. It is for local tests, not a container-network production shor
 gRPC secret transport still require the existing protected-transport configuration.
 
 With managed storage enabled, PUT secret requires `{value, requestId, expectedVersion}`;
-`expectedVersion=0` creates and a positive version rotates. Same actor/key/content recovers the
+`expectedVersion=0` creates and a positive version rotates. Database forms must also send `requiredProvider: openbao`; an instance without that provider returns 503 before writing any local value. Same actor/key/content recovers the
 original receipt. POST `secret-operations/{requestId}/reconcile` needs no secret body; absent
 provider evidence requires secure resubmission. POST `secrets/{name}/migrate` takes
 `{requestId, expectedVersion}` and requires the old key ring. Management responses return

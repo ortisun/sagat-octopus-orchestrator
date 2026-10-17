@@ -42,6 +42,7 @@ pub enum AuditAction {
     /// A secret was created, or a new version of it was stored (rotation). Never carries a value.
     SecretStored,
     SecretProvisioningStarted,
+    DatabaseConnectionChanged,
     SecretDeleted,
     /// Someone was allowed to reference a secret from workflows, or no longer is.
     SecretAccessGranted,
@@ -217,6 +218,7 @@ impl AuditAction {
             Self::CrossTenantAccessDenied => "access.denied.cross_tenant",
             Self::SecretStored => "secret.stored",
             Self::SecretProvisioningStarted => "secret.provisioning_started",
+            Self::DatabaseConnectionChanged => "database.connection_changed",
             Self::SecretDeleted => "secret.deleted",
             Self::SecretAccessGranted => "secret.access_granted",
             Self::SecretAccessRevoked => "secret.access_revoked",
@@ -296,6 +298,7 @@ pub enum ResourceType {
     WorkflowVersion,
     Run,
     Secret,
+    DatabaseConnection,
     Quota,
     EgressPolicy,
     WorkerBinding,
@@ -327,6 +330,7 @@ impl ResourceType {
             Self::WorkflowVersion => "workflow_version",
             Self::Run => "run",
             Self::Secret => "secret",
+            Self::DatabaseConnection => "database_connection",
             Self::Quota => "quota",
             Self::EgressPolicy => "egress_policy",
             Self::WorkerBinding => "worker_binding",

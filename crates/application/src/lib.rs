@@ -8,6 +8,7 @@ pub mod authz;
 pub mod bindings;
 pub mod clock;
 pub mod connectors;
+pub mod database;
 pub mod definitions;
 pub mod diff;
 pub mod dispatch;

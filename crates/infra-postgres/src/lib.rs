@@ -11,6 +11,7 @@ mod bindings;
 mod breaker;
 mod connectors;
 mod content_usage;
+mod database;
 mod definitions;
 mod dispatch;
 mod egress;

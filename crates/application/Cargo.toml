@@ -23,7 +23,7 @@ sagat-telemetry.workspace = true
 sha2 = "0.11"
 thiserror.workspace = true
 time = { workspace = true, features = ["formatting", "parsing"] }
-tracing.workspace = true
+tracing = { workspace = true, features = ["attributes"] }
 uuid.workspace = true
 
 [dev-dependencies]

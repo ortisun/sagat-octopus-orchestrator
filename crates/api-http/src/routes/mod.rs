@@ -1,6 +1,7 @@
 //! HTTP routes.
 
 pub mod connectors;
+pub mod database;
 pub mod events;
 pub mod execution;
 pub mod governance;

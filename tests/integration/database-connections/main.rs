@@ -206,6 +206,7 @@ async fn durable_provider_intents_reconcile_without_plaintext_or_duplicate_rotat
         .bind(w.admin.tenant_id().as_uuid()).bind(ns.as_uuid()).fetch_one(&w.db.pool).await.unwrap();
     assert_eq!(authority, "openbao");
     managed_http_facade(provider.clone()).await;
+    connection_catalog(&w).await;
 
     // An ACL/membership change during provider I/O must discard the value already read.
     let gated = Arc::new(ReadBarrier {
@@ -232,6 +233,30 @@ async fn durable_provider_intents_reconcile_without_plaintext_or_duplicate_rotat
     assert!(matches!(result, Err(AppError::SecretUnavailable { .. })));
     // Stale in-memory admin principals cannot replay a management receipt either.
     assert!(service.put(&w.admin, ns, write(), &ctx()).await.is_err());
+    let catalog = sagat_application::database::ConnectionService::new(w.store.clone(), SystemClock);
+    // The current viewer may still inspect metadata, but cannot use the stale admin object to write.
+    assert!(catalog.list(&w.admin, ns, &ctx()).await.is_ok());
+    let stale_write = sagat_application::database::ConnectionWrite {
+        name: sagat_domain::identity::Slug::parse("stale-access").unwrap(),
+        expected_revision: 0,
+        request_id: Uuid::new_v4(),
+        status: sagat_domain::database::ConnectionStatus::Paused,
+        config: sagat_domain::database::ConnectionConfig::postgres(
+            "db.example.com",
+            5432,
+            "orders",
+            sagat_domain::database::TlsPolicy::VerifyFull { ca_pem: None },
+            sagat_domain::secrets::SecretName::parse("db-credentials").unwrap(),
+            sagat_domain::database::DatabaseLimits::default(),
+        )
+        .unwrap(),
+    };
+    assert!(
+        catalog
+            .put(&w.admin, ns, stale_write, &ctx())
+            .await
+            .is_err()
+    );
 }
 
 struct ReadBarrier {
@@ -303,6 +328,44 @@ async fn managed_http_facade(provider: Arc<dyn SecretProvider>) {
         )
         .await;
     assert_eq!(response.status(), 200);
+    let connection_path = format!("/namespaces/{namespace}/connections/orders-db");
+    let connection_body = serde_json::json!({"requestId":Uuid::new_v4().to_string(),"expectedRevision":0,"status":"PAUSED","config":{
+        "driver":"postgresql","host":"db.example.com","port":5432,"database":"orders","tls":{"mode":"verify-full"},"secretName":"postgres-password"
+    }});
+    let contract = support::contract::OpenApi::load();
+    for _ in 0..2 {
+        let response = api
+            .as_user(reqwest::Method::PUT, &connection_path, "owner", "bao-http")
+            .json(&connection_body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let metadata: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(metadata["revision"], 1);
+        assert_eq!(metadata["config"]["limits"]["maxRows"], 1000);
+        assert!(!metadata.to_string().contains("canary"));
+        contract
+            .validate_body(
+                "PUT",
+                "/namespaces/{namespaceId}/connections/{connectionName}",
+                200,
+                &metadata,
+            )
+            .unwrap()
+            .unwrap();
+    }
+    let mut bad = connection_body.clone();
+    bad["config"]["password"] = serde_json::json!("must-not-accept");
+    assert_eq!(
+        api.as_user(reqwest::Method::PUT, &connection_path, "owner", "bao-http")
+            .json(&bad)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        422
+    );
     let changed = serde_json::json!({"value":"changed-http-canary", "requestId":key.to_string(), "expectedVersion":0});
     let response = api
         .as_user(reqwest::Method::PUT, &path, "owner", "bao-http")
@@ -318,4 +381,146 @@ async fn managed_http_facade(provider: Arc<dyn SecretProvider>) {
         .await
         .unwrap();
     assert_eq!(response.status(), 422);
+}
+
+async fn connection_catalog(w: &support::engine::World) {
+    use sagat_application::database::{ConnectionService, ConnectionWrite};
+    use sagat_domain::{
+        database::{ConnectionConfig, ConnectionStatus, DatabaseLimits, TlsPolicy},
+        identity::Slug,
+        secrets::SecretName,
+    };
+    let catalog = ConnectionService::new(w.store.clone(), SystemClock);
+    let ns = w.namespace.id();
+    let name = Slug::parse("orders-db").unwrap();
+    let config = ConnectionConfig::postgres(
+        "db.example.com",
+        5432,
+        "orders",
+        TlsPolicy::VerifyFull { ca_pem: None },
+        SecretName::parse("db-credentials").unwrap(),
+        DatabaseLimits::default(),
+    )
+    .unwrap();
+    let write = ConnectionWrite {
+        name: name.clone(),
+        expected_revision: 0,
+        request_id: Uuid::new_v4(),
+        config: config.clone(),
+        status: ConnectionStatus::Active,
+    };
+    let before: i64 =
+        sqlx::query_scalar("SELECT content_bytes FROM tenant_retained_usage WHERE tenant_id=$1")
+            .bind(w.admin.tenant_id().as_uuid())
+            .fetch_one(&w.db.pool)
+            .await
+            .unwrap();
+    let first = catalog
+        .put(&w.admin, ns, write.clone(), &ctx())
+        .await
+        .unwrap();
+    assert_eq!(first.revision, 1);
+    assert_eq!(
+        catalog
+            .put(&w.admin, ns, write.clone(), &ctx())
+            .await
+            .unwrap(),
+        first
+    );
+    let after: i64 =
+        sqlx::query_scalar("SELECT content_bytes FROM tenant_retained_usage WHERE tenant_id=$1")
+            .bind(w.admin.tenant_id().as_uuid())
+            .fetch_one(&w.db.pool)
+            .await
+            .unwrap();
+    assert!(after > before);
+    assert!(matches!(
+        catalog.put(&w.other_admin, ns, write.clone(), &ctx()).await,
+        Err(AppError::NotFound)
+    ));
+    let changed = ConnectionWrite {
+        status: ConnectionStatus::Paused,
+        ..write.clone()
+    };
+    assert!(matches!(
+        catalog.put(&w.admin, ns, changed.clone(), &ctx()).await,
+        Err(AppError::IdempotencyKeyReused)
+    ));
+    let second = ConnectionWrite {
+        expected_revision: 1,
+        request_id: Uuid::new_v4(),
+        ..changed
+    };
+    let competing = ConnectionWrite {
+        request_id: Uuid::new_v4(),
+        ..second.clone()
+    };
+    let request_context = ctx();
+    let (left, right) = tokio::join!(
+        catalog.put(&w.admin, ns, second, &request_context),
+        catalog.put(&w.admin, ns, competing, &request_context)
+    );
+    assert_ne!(left.is_ok(), right.is_ok());
+    let historical = catalog
+        .get(&w.admin, ns, &name, Some(1), &ctx())
+        .await
+        .unwrap();
+    assert_eq!(historical.config, config);
+    assert_eq!(historical.status, ConnectionStatus::Paused);
+    assert_eq!(historical.revision, 1);
+    assert!(
+        sqlx::query("UPDATE database_connection_revisions SET config='{}' WHERE connection_id=$1")
+            .bind(first.id.as_uuid())
+            .execute(&w.db.pool)
+            .await
+            .is_err()
+    );
+    assert_eq!(catalog.list(&w.admin, ns, &ctx()).await.unwrap().len(), 1);
+    let deleted = catalog
+        .put(
+            &w.admin,
+            ns,
+            ConnectionWrite {
+                expected_revision: 2,
+                request_id: Uuid::new_v4(),
+                status: ConnectionStatus::Deleted,
+                ..write.clone()
+            },
+            &ctx(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(deleted.status, ConnectionStatus::Deleted);
+    assert!(matches!(
+        catalog.put(&w.admin, ns, write, &ctx()).await,
+        Err(AppError::NotFound)
+    ));
+    assert!(catalog.list(&w.admin, ns, &ctx()).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn requiring_openbao_never_silently_creates_a_local_secret() {
+    let api = support::api::start().await;
+    api.tenant("local-only", "owner").await;
+    let ws = api
+        .create_workspace("owner", "local-only", "workspace")
+        .await;
+    let ns = api
+        .create_namespace("owner", "local-only", &ws, "database", "dev")
+        .await;
+    let response=api.as_user(reqwest::Method::PUT,&format!("/namespaces/{ns}/secrets/database-key"),"owner","local-only")
+        .json(&serde_json::json!({"value":"no-fallback-canary","requiredProvider":"openbao","expectedVersion":0,"requestId":Uuid::new_v4().to_string()})).send().await.unwrap();
+    assert_eq!(response.status(), 503);
+    let response = api
+        .as_user(
+            reqwest::Method::GET,
+            &format!("/namespaces/{ns}/secrets"),
+            "owner",
+            "local-only",
+        )
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert!(body["items"].as_array().unwrap().is_empty());
 }

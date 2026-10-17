@@ -287,6 +287,9 @@ pub async fn put_secret<B: Governance>(
 ) -> Result<Json<SecretBody>, ApiError> {
     let namespace =
         admitted_namespace(&state, &caller, &namespace, ApiOperation::SecretManage).await?;
+    if body.required_provider.is_some() && state.managed_secrets().is_none() {
+        return Err(sagat_application::error::AppError::Unavailable.into());
+    }
     let view = if let Some(managed) = state.managed_secrets() {
         let request_id = body
             .request_id

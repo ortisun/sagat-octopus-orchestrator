@@ -387,6 +387,10 @@ pub async fn start_with(options: Options) -> TestApi {
             options.script_ceiling,
         ),
     );
+    governance = governance.with_connections(sagat_application::database::ConnectionService::new(
+        executions.clone(),
+        SystemClock,
+    ));
     if let Some(provider) = &options.secret_provider {
         governance = governance.with_managed_secrets(
             sagat_application::managed_secrets::ManagedSecretService::new(

@@ -339,11 +339,16 @@ pub enum Permission {
     /// Point new runs of a workflow at another version that was published already: a rollback, or
     /// the way forward again (`FR-011-002`). Not publishing: nothing new is made.
     VersionActivate,
+    DatabaseManage,
+    DatabaseUse,
+    DatabaseAdHoc,
+    DatabaseWrite,
+    DatabaseResultRead,
 }
 
 impl Permission {
     /// Every permission, used to grant the admin role and to test the full matrix.
-    pub const ALL: [Self; 36] = [
+    pub const ALL: [Self; 41] = [
         Self::WorkspaceRead,
         Self::WorkspaceCreate,
         Self::NamespaceRead,
@@ -380,6 +385,11 @@ impl Permission {
         Self::PublicationApprove,
         Self::PublicationManage,
         Self::VersionActivate,
+        Self::DatabaseManage,
+        Self::DatabaseUse,
+        Self::DatabaseAdHoc,
+        Self::DatabaseWrite,
+        Self::DatabaseResultRead,
     ];
 
     #[must_use]
@@ -421,6 +431,11 @@ impl Permission {
             Self::PublicationApprove => "publication:approve",
             Self::PublicationManage => "publication:manage",
             Self::VersionActivate => "version:activate",
+            Self::DatabaseManage => "database:manage",
+            Self::DatabaseUse => "database:use",
+            Self::DatabaseAdHoc => "database:adhoc",
+            Self::DatabaseWrite => "database:write",
+            Self::DatabaseResultRead => "database:result:read",
         }
     }
 }
@@ -463,15 +478,17 @@ impl Role {
     #[must_use]
     pub const fn permissions(self) -> &'static [Permission] {
         use Permission::{
-            DefinitionPublish, DefinitionRead, DefinitionWrite, EventManage, EventPublish,
-            EventRead, NamespaceRead, OpsRead, PublicationApprove, QuotaRead, RunOperate,
-            RunPayloadInspect, RunRead, RunSignal, RunStart, ScriptBuild, ScriptExecute,
-            ScriptPublish, ScriptRead, ScriptWrite, SecretRead, SecretUse, VersionActivate,
-            WorkerExecute, WorkerManage, WorkspaceRead,
+            DatabaseAdHoc, DatabaseUse, DefinitionPublish, DefinitionRead, DefinitionWrite,
+            EventManage, EventPublish, EventRead, NamespaceRead, OpsRead, PublicationApprove,
+            QuotaRead, RunOperate, RunPayloadInspect, RunRead, RunSignal, RunStart, ScriptBuild,
+            ScriptExecute, ScriptPublish, ScriptRead, ScriptWrite, SecretRead, SecretUse,
+            VersionActivate, WorkerExecute, WorkerManage, WorkspaceRead,
         };
         match self {
             Self::Admin => &Permission::ALL,
             Self::Developer => &[
+                DatabaseUse,
+                DatabaseAdHoc,
                 WorkspaceRead,
                 NamespaceRead,
                 DefinitionRead,

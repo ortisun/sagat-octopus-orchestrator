@@ -967,6 +967,98 @@ paths:
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/connections:
+    get:
+      operationId: listDatabaseConnections
+      summary: List current connection metadata in the namespace
+      tags: [Governance]
+      x-implemented: '017'
+      description: Requires namespace:read. Values and provider routing are never returned. Deleted connections are omitted. Saving does not prove connectivity.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+      responses:
+        '200': {description: 'Connection metadata', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/DatabaseConnectionList'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/connections/{connectionName}:
+    get:
+      operationId: getDatabaseConnection
+      summary: Read connection settings at a revision
+      tags: [Governance]
+      x-implemented: '017'
+      description: Requires namespace:read. The status always reflects current authority, including when selecting an older immutable revision.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {name: connectionName, in: path, required: true, schema: {type: string, minLength: 3, maxLength: 63, pattern: '^[a-z][a-z0-9-]{1,61}[a-z0-9]$'}}
+        - {name: revision, in: query, schema: {type: integer, minimum: 1, maximum: 2147483646}}
+      responses:
+        '200': {description: 'Connection metadata', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/DatabaseConnection'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    put:
+      operationId: putDatabaseConnection
+      summary: Create or revise a PostgreSQL connection
+      tags: [Governance]
+      x-implemented: '017'
+      description: Requires current database:manage and a namespace OpenBao secret. expectedRevision zero creates. Retries retain requestId; changed content conflicts. Every update or pause creates an immutable revision. Current settings and audit commit together. A legacy secret requires explicit migration. Saving performs no SQL or probe.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {name: connectionName, in: path, required: true, schema: {type: string, minLength: 3, maxLength: 63, pattern: '^[a-z][a-z0-9-]{1,61}[a-z0-9]$'}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PutDatabaseConnectionRequest'}
+      responses:
+        '200': {description: 'Connection metadata', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/DatabaseConnection'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    delete:
+      operationId: deleteDatabaseConnection
+      summary: Tombstone a connection and retain its revisions
+      tags: [Governance]
+      x-implemented: '017'
+      description: Requires current database:manage and optimistic revision. Subsequent execution must reject the tombstone. Retained revisions remain for run history. Repetition after deletion returns not found.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {name: connectionName, in: path, required: true, schema: {type: string, minLength: 3, maxLength: 63, pattern: '^[a-z][a-z0-9-]{1,61}[a-z0-9]$'}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DeleteDatabaseConnectionRequest'}
+      responses:
+        '200': {description: 'Connection metadata', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/DatabaseConnection'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
   /namespaces/{namespaceId}/secrets:
     get:
       operationId: listSecrets
@@ -3678,6 +3770,82 @@ components:
         value: {type: string, minLength: 1, maxLength: 16384, writeOnly: true, description: 'The secret, UTF-8 text of 1 to 16384 bytes. Never returned.'}
         requestId: {type: string, format: uuid, description: 'Required with OpenBao. Stable identity for retries of this exact write.'}
         expectedVersion: {type: integer, minimum: 0, maximum: 2147483646, description: 'Required with OpenBao. Zero creates; otherwise matches the current logical version.'}
+        requiredProvider: {type: string, enum: [openbao], description: 'Refuse with 503 when this authority is not configured. Database connection forms must send this field.'}
+    DatabaseLimits:
+      type: object
+      additionalProperties: false
+      description: Positive finite limits. Effective execution uses the minimum of operation, connection, namespace and deployment limits. Zero never means unlimited.
+      properties:
+        maxStatementBytes: {type: integer, minimum: 1, maximum: 65536, default: 16384}
+        maxParameters: {type: integer, minimum: 1, maximum: 256, default: 64}
+        maxParameterBytes: {type: integer, minimum: 1, maximum: 262144, default: 65536}
+        maxRows: {type: integer, minimum: 1, maximum: 10000, default: 1000}
+        maxResultBytes: {type: integer, minimum: 1, maximum: 4194304, default: 1048576}
+        timeoutMs: {type: integer, minimum: 1, maximum: 30000, default: 10000}
+        connectTimeoutMs: {type: integer, minimum: 1, maximum: 10000, default: 5000}
+        poolSize: {type: integer, minimum: 1, maximum: 16, default: 4}
+        idleTimeoutMs: {type: integer, minimum: 1, maximum: 60000, default: 30000}
+    DatabaseTls:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [mode]
+          properties:
+            mode: {type: string, const: verify-full}
+            caPem: {type: string, maxLength: 65536, description: 'Optional public CA certificates, never a private key'}
+        - type: object
+          additionalProperties: false
+          required: [mode]
+          properties:
+            mode: {type: string, const: development-plaintext}
+          description: Requires a development namespace and an explicitly permissive development runner deployment.
+    PostgresConnectionConfig:
+      type: object
+      additionalProperties: false
+      required: [driver, host, port, database, tls, secretName]
+      properties:
+        driver: {type: string, const: postgresql}
+        host: {type: string, minLength: 1, maxLength: 253, description: 'Bare DNS hostname or IP, never a URL or credentials'}
+        port: {type: integer, minimum: 1, maximum: 65535}
+        database: {type: string, minLength: 1, maxLength: 63}
+        tls: {$ref: '#/components/schemas/DatabaseTls'}
+        secretName: {type: string, pattern: '^[a-z][a-z0-9_.-]{0,63}$'}
+        limits: {$ref: '#/components/schemas/DatabaseLimits'}
+    DatabaseConnection:
+      type: object
+      additionalProperties: false
+      required: [id, namespaceId, name, revision, status, config, createdAt, updatedAt]
+      properties:
+        id: {type: string, format: uuid}
+        namespaceId: {type: string, format: uuid}
+        name: {type: string}
+        revision: {type: integer, minimum: 1}
+        status: {type: string, enum: [ACTIVE, PAUSED, DELETED]}
+        config: {$ref: '#/components/schemas/PostgresConnectionConfig'}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+    DatabaseConnectionList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: {type: array, maxItems: 1000, items: {$ref: '#/components/schemas/DatabaseConnection'}}
+    PutDatabaseConnectionRequest:
+      type: object
+      additionalProperties: false
+      required: [requestId, expectedRevision, config, status]
+      properties:
+        requestId: {type: string, format: uuid}
+        expectedRevision: {type: integer, minimum: 0, maximum: 2147483646}
+        config: {$ref: '#/components/schemas/PostgresConnectionConfig'}
+        status: {type: string, enum: [ACTIVE, PAUSED]}
+    DeleteDatabaseConnectionRequest:
+      type: object
+      additionalProperties: false
+      required: [requestId, expectedRevision]
+      properties:
+        requestId: {type: string, format: uuid}
+        expectedRevision: {type: integer, minimum: 1, maximum: 2147483646}
     MigrateSecretRequest:
       type: object
       additionalProperties: false

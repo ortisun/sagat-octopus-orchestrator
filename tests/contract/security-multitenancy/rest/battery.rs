@@ -41,6 +41,12 @@ fn body_of(operation: &str) -> Option<Value> {
         "signalRun" => json!({"paid": true}),
         "setTenantQuota" | "setNamespaceQuota" | "setActivityQuota" => json!({"limit": 1}),
         "bindWorker" => json!({"activities": ["*"]}),
+        "putDatabaseConnection" => {
+            json!({"requestId":Uuid::now_v7().to_string(),"expectedRevision":0,"status":"PAUSED","config":{"driver":"postgresql","host":"db.example.com","port":5432,"database":"orders","tls":{"mode":"verify-full"},"secretName":"stripe-key"}})
+        }
+        "deleteDatabaseConnection" => {
+            json!({"requestId":Uuid::now_v7().to_string(),"expectedRevision":1})
+        }
         "putSecret" => json!({"value": "attacker-supplied-value-0001"}),
         "migrateSecretToOpenBao" => {
             json!({"requestId": Uuid::now_v7().to_string(), "expectedVersion": 1})
@@ -418,6 +424,7 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
             ("activity", "payment.capture".to_owned()),
             ("subject", "worker-7".to_owned()),
             ("secretName", "stripe-key".to_owned()),
+            ("connectionName", "orders-db".to_owned()),
         ]),
     };
     let before = snapshot(&api, &victim).await;

@@ -751,6 +751,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/namespaces/{namespaceId}/connections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List current connection metadata in the namespace
+         * @description Requires namespace:read. Values and provider routing are never returned. Deleted connections are omitted. Saving does not prove connectivity.
+         */
+        get: operations["listDatabaseConnections"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/connections/{connectionName}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read connection settings at a revision
+         * @description Requires namespace:read. The status always reflects current authority, including when selecting an older immutable revision.
+         */
+        get: operations["getDatabaseConnection"];
+        /**
+         * Create or revise a PostgreSQL connection
+         * @description Requires current database:manage and a namespace OpenBao secret. expectedRevision zero creates. Retries retain requestId; changed content conflicts. Every update or pause creates an immutable revision. Current settings and audit commit together. A legacy secret requires explicit migration. Saving performs no SQL or probe.
+         */
+        put: operations["putDatabaseConnection"];
+        post?: never;
+        /**
+         * Tombstone a connection and retain its revisions
+         * @description Requires current database:manage and optimistic revision. Subsequent execution must reject the tombstone. Retained revisions remain for run history. Repetition after deletion returns not found.
+         */
+        delete: operations["deleteDatabaseConnection"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/namespaces/{namespaceId}/secrets": {
         parameters: {
             query?: never;
@@ -2776,6 +2824,83 @@ export interface components {
             requestId?: string;
             /** @description Required with OpenBao. Zero creates; otherwise matches the current logical version. */
             expectedVersion?: number;
+            /**
+             * @description Refuse with 503 when this authority is not configured. Database connection forms must send this field.
+             * @enum {string}
+             */
+            requiredProvider?: "openbao";
+        };
+        /** @description Positive finite limits. Effective execution uses the minimum of operation, connection, namespace and deployment limits. Zero never means unlimited. */
+        DatabaseLimits: {
+            /** @default 16384 */
+            maxStatementBytes: number;
+            /** @default 64 */
+            maxParameters: number;
+            /** @default 65536 */
+            maxParameterBytes: number;
+            /** @default 1000 */
+            maxRows: number;
+            /** @default 1048576 */
+            maxResultBytes: number;
+            /** @default 10000 */
+            timeoutMs: number;
+            /** @default 5000 */
+            connectTimeoutMs: number;
+            /** @default 4 */
+            poolSize: number;
+            /** @default 30000 */
+            idleTimeoutMs: number;
+        };
+        DatabaseTls: {
+            /** @constant */
+            mode: "verify-full";
+            /** @description Optional public CA certificates, never a private key */
+            caPem?: string;
+        } | {
+            /** @constant */
+            mode: "development-plaintext";
+        };
+        PostgresConnectionConfig: {
+            /** @constant */
+            driver: "postgresql";
+            /** @description Bare DNS hostname or IP, never a URL or credentials */
+            host: string;
+            port: number;
+            database: string;
+            tls: components["schemas"]["DatabaseTls"];
+            secretName: string;
+            limits?: components["schemas"]["DatabaseLimits"];
+        };
+        DatabaseConnection: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            namespaceId: string;
+            name: string;
+            revision: number;
+            /** @enum {string} */
+            status: "ACTIVE" | "PAUSED" | "DELETED";
+            config: components["schemas"]["PostgresConnectionConfig"];
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        DatabaseConnectionList: {
+            items: components["schemas"]["DatabaseConnection"][];
+        };
+        PutDatabaseConnectionRequest: {
+            /** Format: uuid */
+            requestId: string;
+            expectedRevision: number;
+            config: components["schemas"]["PostgresConnectionConfig"];
+            /** @enum {string} */
+            status: "ACTIVE" | "PAUSED";
+        };
+        DeleteDatabaseConnectionRequest: {
+            /** Format: uuid */
+            requestId: string;
+            expectedRevision: number;
         };
         MigrateSecretRequest: {
             /** Format: uuid */
@@ -5629,6 +5754,151 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    listDatabaseConnections: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Connection metadata */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DatabaseConnectionList"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    getDatabaseConnection: {
+        parameters: {
+            query?: {
+                revision?: number;
+            };
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                connectionName: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Connection metadata */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DatabaseConnection"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    putDatabaseConnection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                connectionName: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PutDatabaseConnectionRequest"];
+            };
+        };
+        responses: {
+            /** @description Connection metadata */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DatabaseConnection"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    deleteDatabaseConnection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                connectionName: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeleteDatabaseConnectionRequest"];
+            };
+        };
+        responses: {
+            /** @description Connection metadata */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DatabaseConnection"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
             429: components["responses"]["TooManyRequests"];
             503: components["responses"]["Unavailable"];
             default: components["responses"]["InternalError"];

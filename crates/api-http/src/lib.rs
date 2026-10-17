@@ -23,6 +23,7 @@ mod concurrency;
 mod context;
 mod core;
 mod dto;
+mod dto_database;
 mod dto_events;
 mod dto_exec;
 mod dto_gov;
@@ -258,6 +259,7 @@ where
         + sagat_application::bindings::BindingStore
         + sagat_application::secrets::SecretStore
         + sagat_application::managed_secrets::ManagedSecretStore
+        + sagat_application::database::ConnectionStore
         + sagat_application::egress::EgressStore
         + sagat_application::events::EventStore
         + sagat_application::outbound::OutboundStore
@@ -289,6 +291,7 @@ where
         + sagat_application::bindings::BindingStore
         + sagat_application::secrets::SecretStore
         + sagat_application::managed_secrets::ManagedSecretStore
+        + sagat_application::database::ConnectionStore
         + sagat_application::egress::EgressStore
         + sagat_application::events::EventStore
         + sagat_application::outbound::OutboundStore
@@ -367,6 +370,19 @@ where
                 .delete(gov::reset_egress_policy::<B<S, C, G>>),
         );
     // Without a key ring there is nothing to seal with: the secret routes do not exist.
+    if state.connections().is_some() {
+        router = router
+            .route(
+                "/namespaces/{namespace_id}/connections",
+                get(routes::database::list::<B<S, C, G>>),
+            )
+            .route(
+                "/namespaces/{namespace_id}/connections/{name}",
+                get(routes::database::get::<B<S, C, G>>)
+                    .put(routes::database::put::<B<S, C, G>>)
+                    .delete(routes::database::delete::<B<S, C, G>>),
+            );
+    }
     if serves_secrets {
         router = router
             .route(

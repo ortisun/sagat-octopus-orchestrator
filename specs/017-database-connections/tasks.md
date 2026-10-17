@@ -13,7 +13,7 @@ Status: Implementing after user approval on 2026-10-16. Check a task only after 
 
 ## B. Reusable connection catalog
 
-- [ ] T017-007 Domain connection/operation/limits and validation tests. FR-017-001..003,010,011,021.
+- [x] T017-007 Domain connection/operation/limits and validation tests. FR-017-001..003,010,011,021.
 - [ ] T017-008 Persist immutable revisions, tombstones, current state and run bindings, with tenant/retention constraints. FR-017-001..003,019.
 - [ ] T017-009 Add catalog authorization/service, safe audits and current secret checks; real store tests. FR-017-001..004,019,020.
 - [ ] T017-010 Extend canonical OpenAPI/error/capability contracts and management routes; request limits/idempotency/current-role tests. FR-017-001..010,019,021.
