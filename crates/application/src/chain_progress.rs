@@ -674,6 +674,30 @@ pub struct ChainInspection {
     pub segments: Vec<ChainSegmentView>,
 }
 
+/// Most segments one page of a chain's runs may carry (the list convention of the API).
+pub const MAX_CHAIN_RUN_PAGE: u32 = 200;
+
+/// One segment of a chain as a list item: lineage and lifecycle, never a payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChainRunItem {
+    pub index: u16,
+    pub run_id: RunId,
+    pub status: RunStatus,
+    pub completion_kind: Option<execution::SegmentCompletionKind>,
+    pub predecessor: Option<RunId>,
+    pub successor: Option<RunId>,
+    pub created_at: OffsetDateTime,
+    pub finished_at: Option<OffsetDateTime>,
+}
+
+/// One page of a chain's runs in segment order. `next_after` is the last index on a full page that
+/// has more behind it; the API turns it into an opaque cursor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChainRunPage {
+    pub items: Vec<ChainRunItem>,
+    pub next_after: Option<u16>,
+}
+
 /// A run transaction opened only after its chain row was serialized.
 pub trait ChainRunTx: RunTx {
     fn locked_chain(&self) -> Result<&LockedChainHead, StoreError>;
@@ -701,6 +725,16 @@ where
         tenant_id: TenantId,
         chain_id: RunId,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    /// The segments after index `after` (all of them from the first when `None`), at most `limit`,
+    /// in segment order, or `None` when the chain does not exist in this tenant and namespace.
+    fn list_chain_runs(
+        &self,
+        scope: ChainScope,
+        chain_id: RunId,
+        after: Option<u16>,
+        limit: u32,
+    ) -> impl Future<Output = Result<Option<ChainRunPage>, StoreError>> + Send;
 }
 
 /// Canonical private command path for the current head of an execution chain.
@@ -738,6 +772,31 @@ where
         let scope = ChainScope::new(principal.tenant_id(), namespace_id);
         match self.store.inspect_chain(scope, chain_id).await? {
             Some(inspection) => Ok(inspection),
+            None => Err(self.missing_async(principal, chain_id, ctx).await),
+        }
+    }
+
+    /// One bounded page of the chain's runs in segment order. Authorization, tenant opacity and the
+    /// denial audit are those of [`Self::inspect`]; the segment index is a stable cursor because a
+    /// segment is only ever appended.
+    pub async fn list_runs(
+        &self,
+        principal: &Principal,
+        namespace_id: NamespaceId,
+        chain_id: RunId,
+        after: Option<u16>,
+        limit: u32,
+        ctx: &RequestContext,
+    ) -> Result<ChainRunPage, AppError> {
+        principal.authorize(Permission::RunRead)?;
+        let scope = ChainScope::new(principal.tenant_id(), namespace_id);
+        let limit = limit.clamp(1, MAX_CHAIN_RUN_PAGE);
+        match self
+            .store
+            .list_chain_runs(scope, chain_id, after, limit)
+            .await?
+        {
+            Some(page) => Ok(page),
             None => Err(self.missing_async(principal, chain_id, ctx).await),
         }
     }

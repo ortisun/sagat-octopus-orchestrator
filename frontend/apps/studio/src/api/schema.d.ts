@@ -645,6 +645,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/namespaces/{namespaceId}/chains/{chainId}/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the runs of an execution chain in segment order
+         * @description Needs `run:read`. One bounded page of the chain's segments, ordered by segment index, with
+         *     each run's status and whether the segment was `CONTINUED` into a successor or ended the
+         *     chain (`FINAL`). The cursor is opaque and stable: a segment is only ever appended, so a
+         *     page never repeats or skips one when the chain grows between reads. Pages carry lineage and
+         *     lifecycle only, never an input, output or state. The tenant is taken from authentication and a
+         *     chain in another tenant is indistinguishable from a missing chain. The response is never cached.
+         */
+        get: operations["listExecutionChainRuns"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/namespaces/{namespaceId}/chains/{chainId}/queries/{operationName}": {
         parameters: {
             query?: never;
@@ -2578,6 +2603,19 @@ export interface components {
                 /** @enum {string} */
                 cancelPolicy: "PROPAGATE" | "REQUEST_CANCEL" | "DETACH";
             } | null;
+            /** @description Present only when the run is a segment of a continuation chain. A segment with status `SUCCEEDED` and `completionKind` `CONTINUED` ended into its successor: it is not the process outcome, which is the chain's `finalOutcome`. */
+            chain?: {
+                /** Format: uuid */
+                chainId: string;
+                segmentIndex: number;
+                /**
+                 * @description Null while the segment is open.
+                 * @enum {string|null}
+                 */
+                completionKind: "CONTINUED" | "FINAL" | null;
+                /** Format: uuid */
+                successorRunId: string | null;
+            };
         };
         RunPage: {
             items: components["schemas"]["Run"][];
@@ -3187,6 +3225,30 @@ export interface components {
             predecessorRunId: string | null;
             /** Format: uuid */
             successorRunId: string | null;
+        };
+        ChainRun: {
+            index: number;
+            /** Format: uuid */
+            runId: string;
+            /** @enum {string} */
+            status: "RUNNING" | "WAITING" | "PAUSED" | "CANCELLING" | "COMPENSATING" | "MANUAL_REVIEW" | "SUCCEEDED" | "FAILED" | "CANCELLED" | "TIMED_OUT" | "COMPENSATED" | "PARTIAL" | "COMPENSATION_FAILED";
+            /**
+             * @description `CONTINUED`: this segment ended into its successor, so its `SUCCEEDED` status is not the process outcome. `FINAL`: it ended the chain. Absent (null) while the segment is open.
+             * @enum {string|null}
+             */
+            completionKind: "CONTINUED" | "FINAL" | null;
+            /** Format: uuid */
+            predecessorRunId: string | null;
+            /** Format: uuid */
+            successorRunId: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            finishedAt: string | null;
+        };
+        ChainRunPage: {
+            items: components["schemas"]["ChainRun"][];
+            nextCursor: string | null;
         };
         ChainInspection: {
             /** Format: uuid */
@@ -5686,6 +5748,44 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ChainInspection"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    listExecutionChainRuns: {
+        parameters: {
+            query?: {
+                /** @description Opaque cursor returned as `nextCursor` by the previous page. */
+                cursor?: components["parameters"]["Cursor"];
+                /** @description Page size; values outside 1..200 are clamped. */
+                limit?: components["parameters"]["Limit"];
+            };
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                chainId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A bounded page of segments */
+            200: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChainRunPage"];
                 };
             };
             400: components["responses"]["BadRequest"];

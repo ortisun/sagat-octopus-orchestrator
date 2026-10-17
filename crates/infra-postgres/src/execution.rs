@@ -21,7 +21,7 @@ use sagat_application::definitions::{
 use sagat_application::error::StoreError;
 use sagat_application::execution::{
     BreakerPolicy, DefinitionCache, Effects, LeaseDeadlines, ParentLink, RunData, RunInfo,
-    RunRecord, RunTx, ScopeInput, compensation_id, instance_step_id,
+    RunRecord, RunSegment, RunTx, ScopeInput, compensation_id, instance_step_id,
 };
 use sagat_application::runs::{
     ApprovalView, ChainView, GraphSnapshot, JournalEntry, Lock, NewRun, RunFilter, RunStore,
@@ -681,13 +681,19 @@ impl RunStore for PgRunStore {
             "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, status, run_version, \
                     stop_reason, paused, correlation_id, started_by, trace_id, deadline_at, \
                     created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, \
-                    cancel_policy, depth, trace_parent_span, rerun_of \
-             FROM runs \
-             WHERE tenant_id = $1 AND namespace_id = $2 \
-               AND ($3::uuid IS NULL OR id < $3) \
-               AND ($4::uuid IS NULL OR workflow_id = $4) \
-               AND ($5::text IS NULL OR status = $5) \
-             ORDER BY id DESC LIMIT $6",
+                    cancel_policy, depth, trace_parent_span, rerun_of, \
+                    seg_chain_id, seg_index, seg_completion, seg_successor \
+             FROM runs LEFT JOIN LATERAL ( \
+               SELECT chain_id AS seg_chain_id, segment_index AS seg_index, \
+                      completion_kind AS seg_completion, successor_run_id AS seg_successor \
+               FROM chain_segments \
+               WHERE chain_segments.tenant_id = runs.tenant_id \
+                 AND chain_segments.run_id = runs.id) segment ON true \
+             WHERE runs.tenant_id = $1 AND runs.namespace_id = $2 \
+               AND ($3::uuid IS NULL OR runs.id < $3) \
+               AND ($4::uuid IS NULL OR runs.workflow_id = $4) \
+               AND ($5::text IS NULL OR runs.status = $5) \
+             ORDER BY runs.id DESC LIMIT $6",
         )
         .bind(tenant.as_uuid())
         .bind(namespace.as_uuid())
@@ -1099,11 +1105,20 @@ async fn claim_reservation(
     }
 }
 
+// `get` and `list` also read the run's chain segment as four extra columns (`run_record` reads them
+// when present): one lateral index probe (`chain_segments_run_unique`) that yields nothing for a run
+// outside any chain.
 const RUN_SELECT: &str = "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, status, \
      run_version, stop_reason, paused, correlation_id, started_by, trace_id, deadline_at, \
      created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, cancel_policy, depth, \
-     trace_parent_span, rerun_of \
-     FROM runs WHERE tenant_id = $1 AND id = $2";
+     trace_parent_span, rerun_of, seg_chain_id, seg_index, seg_completion, seg_successor \
+     FROM runs LEFT JOIN LATERAL ( \
+       SELECT chain_id AS seg_chain_id, segment_index AS seg_index, \
+              completion_kind AS seg_completion, successor_run_id AS seg_successor \
+       FROM chain_segments \
+       WHERE chain_segments.tenant_id = runs.tenant_id AND chain_segments.run_id = runs.id) segment \
+     ON true \
+     WHERE runs.tenant_id = $1 AND runs.id = $2";
 
 const RUN_FOR_UPDATE: &str = "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, \
      status, run_version, stop_reason, stop_code, paused, input_digest, correlation_id, started_by, \
@@ -1167,7 +1182,31 @@ fn run_record(row: &PgRow) -> Result<RunRecord, StoreError> {
         paused: col(row, "paused")?,
         updated_at: col(row, "updated_at")?,
         finished_at: col(row, "finished_at")?,
+        chain: run_segment(row)?,
     })
+}
+
+/// The segment columns of `get` and `list`; a row from a command transaction has none.
+fn run_segment(row: &PgRow) -> Result<Option<RunSegment>, StoreError> {
+    let Ok(chain) = sqlx::Row::try_get::<Option<Uuid>, _>(row, "seg_chain_id") else {
+        return Ok(None);
+    };
+    let Some(chain) = chain else {
+        return Ok(None);
+    };
+    let index: i32 = col(row, "seg_index")?;
+    let completion: Option<String> = col(row, "seg_completion")?;
+    Ok(Some(RunSegment {
+        chain_id: RunId::new(chain),
+        index: u16::try_from(index).map_err(|_| corrupt("chain segment index"))?,
+        completion_kind: match completion.as_deref() {
+            None => None,
+            Some("CONTINUED") => Some(sagat_domain::execution::SegmentCompletionKind::Continued),
+            Some("FINAL") => Some(sagat_domain::execution::SegmentCompletionKind::Final),
+            Some(_) => return Err(corrupt("chain completion kind")),
+        },
+        successor: col::<Option<Uuid>>(row, "seg_successor")?.map(RunId::new),
+    }))
 }
 
 fn instance_path(

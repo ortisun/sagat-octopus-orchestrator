@@ -306,6 +306,19 @@ pub struct RunBody {
     pub rerun_of: Option<String>,
     /// How deeply nested the run is: 0 when started through the API.
     pub depth: u8,
+    /// The run's segment in its continuation chain; absent for a run outside any chain. A segment
+    /// that is `SUCCEEDED` with `completionKind` `CONTINUED` is not the process outcome.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chain: Option<RunChainBody>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunChainBody {
+    pub chain_id: String,
+    pub segment_index: u16,
+    pub completion_kind: Option<&'static str>,
+    pub successor_run_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -339,6 +352,15 @@ impl From<&RunRecord> for RunBody {
             }),
             rerun_of: r.info.rerun_of.map(|r| r.to_string()),
             depth: r.info.depth,
+            chain: r.chain.map(|segment| RunChainBody {
+                chain_id: segment.chain_id.to_string(),
+                segment_index: segment.index,
+                completion_kind: segment.completion_kind.map(|kind| match kind {
+                    sagat_domain::execution::SegmentCompletionKind::Continued => "CONTINUED",
+                    sagat_domain::execution::SegmentCompletionKind::Final => "FINAL",
+                }),
+                successor_run_id: segment.successor.map(|run| run.to_string()),
+            }),
         }
     }
 }
@@ -977,6 +999,7 @@ mod switch_graph_tests {
                 paused: false,
                 updated_at: now,
                 finished_at: None,
+                chain: None,
             },
             definition: std::sync::Arc::new(definition),
             steps: vec![

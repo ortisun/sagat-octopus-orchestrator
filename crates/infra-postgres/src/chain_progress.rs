@@ -6,7 +6,8 @@
 use sagat_application::chain_progress::{
     ChainCommandStore, ChainFinalizationCommand, ChainFinalizationWrite, ChainHandoffCommand,
     ChainHandoffWrite, ChainInitialization, ChainInspection, ChainParent, ChainProgressError,
-    ChainProgressStore, ChainSegmentView, EvaluatedChainHandoffCommand, LockedChainHead,
+    ChainProgressStore, ChainRunItem, ChainRunPage, ChainSegmentView, EvaluatedChainHandoffCommand,
+    LockedChainHead,
 };
 use sagat_application::error::StoreError;
 use sagat_application::execution::{DefinitionCache, instance_step_id};
@@ -2278,6 +2279,88 @@ impl ChainCommandStore for PgRunStore {
         };
         tx.rollback().await.map_err(store_error)?;
         Ok(Some(inspection))
+    }
+
+    async fn list_chain_runs(
+        &self,
+        scope: ChainScope,
+        chain_id: RunId,
+        after: Option<u16>,
+        limit: u32,
+    ) -> Result<Option<ChainRunPage>, StoreError> {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM execution_chains \
+             WHERE tenant_id=$1 AND namespace_id=$2 AND chain_id=$3)",
+        )
+        .bind(scope.tenant_id().as_uuid())
+        .bind(scope.namespace_id().as_uuid())
+        .bind(chain_id.as_uuid())
+        .fetch_one(self.pool())
+        .await
+        .map_err(store_error)?;
+        if !exists {
+            return Ok(None);
+        }
+        // One more than the page: its presence says that another page exists.
+        let rows = sqlx::query(
+            "SELECT segment.segment_index,segment.run_id,segment.predecessor_run_id, \
+                    segment.successor_run_id,segment.completion_kind,run.status, \
+                    run.created_at,run.finished_at \
+             FROM chain_segments segment \
+             JOIN runs run ON run.tenant_id=segment.tenant_id AND run.id=segment.run_id \
+             WHERE segment.tenant_id=$1 AND segment.namespace_id=$2 AND segment.chain_id=$3 \
+               AND ($4::int IS NULL OR segment.segment_index > $4) \
+             ORDER BY segment.segment_index LIMIT $5",
+        )
+        .bind(scope.tenant_id().as_uuid())
+        .bind(scope.namespace_id().as_uuid())
+        .bind(chain_id.as_uuid())
+        .bind(after.map(i32::from))
+        .bind(i64::from(limit) + 1)
+        .fetch_all(self.pool())
+        .await
+        .map_err(store_error)?;
+        let invalid = |what: &str| StoreError::Internal {
+            detail: format!("stored chain segment {what} is invalid"),
+        };
+        let mut items = rows
+            .iter()
+            .map(|row| {
+                Ok(ChainRunItem {
+                    index: u16::try_from(row.get::<i32, _>("segment_index"))
+                        .map_err(|_| invalid("index"))?,
+                    run_id: RunId::new(row.get("run_id")),
+                    status: row
+                        .get::<String, _>("status")
+                        .parse()
+                        .map_err(|_| invalid("run status"))?,
+                    completion_kind: match row
+                        .get::<Option<String>, _>("completion_kind")
+                        .as_deref()
+                    {
+                        None => None,
+                        Some("CONTINUED") => Some(SegmentCompletionKind::Continued),
+                        Some("FINAL") => Some(SegmentCompletionKind::Final),
+                        Some(_) => return Err(invalid("completion kind")),
+                    },
+                    predecessor: row
+                        .get::<Option<uuid::Uuid>, _>("predecessor_run_id")
+                        .map(RunId::new),
+                    successor: row
+                        .get::<Option<uuid::Uuid>, _>("successor_run_id")
+                        .map(RunId::new),
+                    created_at: row.get("created_at"),
+                    finished_at: row.get("finished_at"),
+                })
+            })
+            .collect::<Result<Vec<_>, StoreError>>()?;
+        let next_after = if items.len() > limit as usize {
+            items.truncate(limit as usize);
+            items.last().map(|item| item.index)
+        } else {
+            None
+        };
+        Ok(Some(ChainRunPage { items, next_after }))
     }
 
     async fn chain_exists_outside(
