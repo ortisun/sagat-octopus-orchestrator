@@ -38,6 +38,10 @@ The npm consumer imports `SDK_VERSION` and builds a workflow document. The Pytho
 
 The `sdk packages` GitHub Actions workflow runs the same command for SDK changes, manual dispatches and `sdk-v*` tags. It uploads one short-lived workflow artifact. The workflow has read-only repository permissions and needs no publishing credentials.
 
+## Releases go to GitHub Releases
+
+On 2026-10-16 the owner chose GitHub Releases as the only channel: the `release` workflow attaches these packages, `SHA256SUMS` and provenance attestations to the release `v<version>` ([release.md](release.md)). The registry steps below are kept for a later decision and are not run.
+
 ## Registry publication remains a release-owner action
 
 Before external publication, the release owner must review the checksums and release notes, then configure the registry-specific identity and provenance:
