@@ -268,6 +268,13 @@ where
 pub const RUNTIME_ROLE: &str = "sagat_app";
 pub const RUNTIME_ROLE_PASSWORD: &str = "runtime-role-test-password";
 
+/// Whether the suites were asked to run the services under test as the runtime role
+/// (`SAGAT_TEST_AS_RUNTIME_ROLE=1`): a sweep for privilege gaps the owner-connected suites cannot
+/// see (G294). The fixtures are still seeded by the owner.
+pub fn as_runtime_role() -> bool {
+    std::env::var_os("SAGAT_TEST_AS_RUNTIME_ROLE").is_some()
+}
+
 /// Creates the runtime role once per cluster. It must exist before migrations run so they can grant
 /// to it, exactly as an operator would provision it.
 async fn ensure_runtime_role(admin_url: &str) {
@@ -284,6 +291,23 @@ async fn ensure_runtime_role(admin_url: &str) {
 }
 
 impl TestDb {
+    /// A pool connected as the least-privilege runtime role (`sagat_app`), the role the control
+    /// plane and the engine are required to run as. Seed with `pool` (the owner), run the code under
+    /// test on this one: the owner can do anything, so a statement the runtime role may not run
+    /// passes every test that connects as the owner (G294).
+    pub async fn runtime_pool(&self) -> PgPool {
+        self.runtime_pool_with(2).await
+    }
+
+    /// [`Self::runtime_pool`] with room for `max_connections`.
+    pub async fn runtime_pool_with(&self, max_connections: u32) -> PgPool {
+        PgPoolOptions::new()
+            .max_connections(max_connections)
+            .connect(&self.url_for(RUNTIME_ROLE, RUNTIME_ROLE_PASSWORD))
+            .await
+            .expect("connect as the runtime role")
+    }
+
     /// The connection URL of this database for another user.
     pub fn url_for(&self, user: &str, password: &str) -> String {
         let (_, rest) = self.url.split_once('@').expect("credentials in url");

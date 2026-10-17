@@ -265,7 +265,8 @@ impl Default for Options {
             // Generous: the suites also run on loaded machines, and the tests about timeouts set their own.
             statement_timeout: Duration::from_secs(10),
             server: ServerConfig::default(),
-            runtime_role: false,
+            // `SAGAT_TEST_AS_RUNTIME_ROLE=1` connects the API of every test as the runtime role.
+            runtime_role: super::as_runtime_role(),
             rate_limit: RateLimitConfig::default(),
             subject_rate_limit: RateLimitConfig {
                 per_second: 1000.0,
