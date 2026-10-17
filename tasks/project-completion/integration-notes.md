@@ -211,3 +211,29 @@ harness attempt used an incorrect readiness path and is a failed prerequisite, n
 The corrected case uses `/v1/ready` and initializes the HTTP client's pinned crypto provider.
 
 T016-050 remains open for concurrent publication/make-active evidence and its final combined gate.
+
+
+### Registered core gate and completed walker coverage
+
+`cargo test --locked -p sagat-tests --test integration_payload_classification
+--test fault_payload_classification --test contract_payload_classification
+--test e2e_payload_classification -- --test-threads=1` passed all 56 executed tests:
+15 contract, 4 e2e (including actual CLI subprocess), 4 transaction fault and 33 PostgreSQL/HTTP
+integration tests. Log: `/tmp/sagat-completion-classification-registered-core.log`. Two separately
+gated process/compatibility cases were intentionally ignored by this default command; process death
+already passed explicitly, and prior-release compatibility remains pending. Integration runtime was
+303.94 s on the loaded shared machine; this is correctness evidence, not a latency measurement.
+
+The canary now seeds 22 distinct key/value classes, including dynamic maps under all four declared
+levels. Undeclared keys under public/internal maps still require PII reveal. Both run and event
+journeys capture actual logs, OTLP spans, Prometheus labels and audit records. The helper checks raw
+bytes and base64-encoded JSON fields (at most two nested encodings); its own two detector tests prove
+an encoded letter body cannot be mistaken for absence. It is not a general decoder for arbitrary
+encodings. Full unchanged-surface golden replay and the broader browser matrix remain T016-049 gaps.
+
+`cargo test --locked -p sagat-infra-schema --test classification_properties` passed 3/3 in 0.08 s
+(`/tmp/sagat-completion-walker-properties.log`): all sound corpus shapes with runtime effective levels,
+the exact 1000-admitted/1001-refused expansion boundary, and generated nested ancestor policies.
+The existing locked proptest dependency is reused only as a schema-package dev dependency; no
+production dependency or schema acceptance policy changed. The previous 20 classifier tests remain
+covered by the package gate.

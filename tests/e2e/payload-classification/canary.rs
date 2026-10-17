@@ -5,7 +5,7 @@ use std::time::Duration;
 use futures_util::StreamExt;
 use reqwest::{Method, StatusCode};
 use sagat_domain::identity::{Membership, NamespaceId, Role, TenantId};
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::canary_support::{
@@ -55,34 +55,8 @@ pub(crate) async fn fixture(label: &str) -> Fixture {
     let canaries = Canaries::unique(label);
     let name = format!("classification-e2e-{}", Uuid::now_v7());
     let mut ir = document(&name, "done", vec![end_node("done")]);
-    ir["inputSchema"] = json!({
-        "type":"object", "additionalProperties":true,
-        "x-sagat-classification":"public",
-        "properties":{
-            "publicField":{"type":"string"},
-            "internalField":{"type":"string","x-sagat-classification":"internal"},
-            "piiField":{"type":"string","x-sagat-classification":"pii"},
-            "secretField":{"type":"string","x-sagat-classification":"secret"}
-        }
-    });
-    let mut input = Map::new();
-    input.insert(
-        "publicField".to_owned(),
-        json!(canaries.public_value.value()),
-    );
-    input.insert(
-        "internalField".to_owned(),
-        json!(canaries.internal_value.value()),
-    );
-    input.insert("piiField".to_owned(), json!(canaries.pii_value.value()));
-    input.insert(
-        "secretField".to_owned(),
-        json!(canaries.secret_value.value()),
-    );
-    input.insert(
-        canaries.undeclared_key.value().to_owned(),
-        json!(canaries.undeclared_value.value()),
-    );
+    ir["inputSchema"] = canaries.classified_schema();
+    let input = canaries.classified_input();
     let created = api
         .as_user(Method::POST, "/workflows", ADMIN, TENANT)
         .header("x-octopus-namespace", NAMESPACE)
@@ -112,7 +86,7 @@ pub(crate) async fn fixture(label: &str) -> Fixture {
         .as_user(Method::POST, "/runs", ADMIN, TENANT)
         .header("x-octopus-namespace", NAMESPACE)
         .header("idempotency-key", Uuid::now_v7().to_string())
-        .json(&json!({"workflowId":workflow,"input":Value::Object(input)}))
+        .json(&json!({"workflowId":workflow,"input":input}))
         .send()
         .await
         .expect("start e2e canary run");
@@ -209,7 +183,7 @@ async fn six_roles_with_and_without_grant_keep_every_public_surface_value_free()
         assert_absent(
             "e2e disclosure secret",
             &disclosure,
-            &[&fixture.canaries.secret_value],
+            &[&fixture.canaries.secret_value, &fixture.canaries.secret_key],
         );
         if !case.may_read_runs() || (case.reveal && !case.may_reveal()) {
             assert_eq!(status, StatusCode::FORBIDDEN);
@@ -236,6 +210,9 @@ async fn six_roles_with_and_without_grant_keep_every_public_surface_value_free()
                 );
             }
             for pii in [
+                &fixture.canaries.public_key,
+                &fixture.canaries.internal_key,
+                &fixture.canaries.pii_key,
                 &fixture.canaries.pii_value,
                 &fixture.canaries.undeclared_key,
                 &fixture.canaries.undeclared_value,

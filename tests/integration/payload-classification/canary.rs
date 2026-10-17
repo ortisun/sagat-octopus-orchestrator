@@ -8,7 +8,7 @@ use reqwest::{Method, StatusCode};
 use sagat_domain::connectors::ConnectorId;
 use sagat_domain::identity::{Membership, NamespaceId, Role, TenantId};
 use sagat_telemetry::Metrics;
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 #[path = "../../support/canary.rs"]
@@ -163,43 +163,6 @@ fn namespace_id(value: &str) -> NamespaceId {
     value.parse().expect("namespace id")
 }
 
-fn classified_schema(canaries: &Canaries) -> Value {
-    json!({
-        "type":"object",
-        "additionalProperties":true,
-        "x-sagat-classification":"public",
-        "properties":{
-            "publicField":{"type":"string"},
-            "internalField":{"type":"string","x-sagat-classification":"internal"},
-            "piiField":{"type":"string","x-sagat-classification":"pii"},
-            "secretField":{"type":"string","x-sagat-classification":"secret"}
-        },
-        "$comment": canaries.secret_key.value()
-    })
-}
-
-fn classified_input(canaries: &Canaries) -> Value {
-    let mut input = Map::new();
-    input.insert(
-        "publicField".to_owned(),
-        json!(canaries.public_value.value()),
-    );
-    input.insert(
-        "internalField".to_owned(),
-        json!(canaries.internal_value.value()),
-    );
-    input.insert("piiField".to_owned(), json!(canaries.pii_value.value()));
-    input.insert(
-        "secretField".to_owned(),
-        json!(canaries.secret_value.value()),
-    );
-    input.insert(
-        canaries.undeclared_key.value().to_owned(),
-        json!(canaries.undeclared_value.value()),
-    );
-    Value::Object(input)
-}
-
 fn assert_json_error(surface: &str, text: &str, canaries: &Canaries) {
     let body: Value = serde_json::from_str(text).expect("closed JSON error");
     assert_error(surface, &body, canaries);
@@ -236,8 +199,8 @@ async fn forbidden_payloads_stay_out_of_public_surfaces_errors_audit_and_telemet
     let run = fixture
         .run(
             "classified-canary",
-            classified_schema(canaries),
-            classified_input(canaries),
+            canaries.classified_schema(),
+            canaries.classified_input(),
         )
         .await;
 
@@ -247,6 +210,13 @@ async fn forbidden_payloads_stay_out_of_public_surfaces_errors_audit_and_telemet
     assert_present("classified reveal", &revealed, &canaries.public_value);
     assert_present("classified reveal", &revealed, &canaries.internal_value);
     assert_present("classified reveal", &revealed, &canaries.pii_value);
+    for key in [
+        &canaries.public_key,
+        &canaries.internal_key,
+        &canaries.pii_key,
+    ] {
+        assert_present("classified reveal keys", &revealed, key);
+    }
     assert_absent("classified reveal", &revealed, &canaries.always_forbidden());
 
     let invalid = fixture
@@ -257,25 +227,33 @@ async fn forbidden_payloads_stay_out_of_public_surfaces_errors_audit_and_telemet
                 "x-sagat-classification":"public",
                 "properties":{"declared":{"type":"number"}}
             }),
-            json!({"declared":canaries.invalid_value.value()}),
+            json!({"declared":canaries.invalid_value.value(), (canaries.invalid_key.value()):true}),
         )
         .await;
     for subject in ["developer-canary", "operator-canary"] {
         let (status, body) = disclose(&fixture, &invalid, subject, false).await;
         assert_eq!(status, StatusCode::OK);
-        assert_absent("invalid disclosure", body, &[&canaries.invalid_value]);
+        assert_absent(
+            "invalid disclosure",
+            body,
+            &[&canaries.invalid_value, &canaries.invalid_key],
+        );
     }
 
     let unmarked = fixture
         .run(
             "unmarked-canary",
             json!({"type":"object","properties":{"value":{"type":"string"}}}),
-            json!({"value":canaries.unmarked_value.value()}),
+            json!({"value":canaries.unmarked_value.value(), (canaries.unmarked_key.value()):true}),
         )
         .await;
     let (status, hidden) = disclose(&fixture, &unmarked, "developer-canary", false).await;
     assert_eq!(status, StatusCode::OK);
-    assert_absent("unmarked default", hidden, &[&canaries.unmarked_value]);
+    assert_absent(
+        "unmarked default",
+        hidden,
+        &[&canaries.unmarked_value, &canaries.unmarked_key],
+    );
     fixture.set_grant("developer-canary", true).await;
     let (status, unmarked_reveal) = disclose(&fixture, &unmarked, "developer-canary", true).await;
     assert_eq!(status, StatusCode::OK);
@@ -292,7 +270,7 @@ async fn forbidden_payloads_stay_out_of_public_surfaces_errors_audit_and_telemet
                 "type":"object", "x-sagat-classification":"public",
                 "properties":{"value":{"type":"string"}}
             }),
-            json!({"value":canaries.legacy_value.value()}),
+            json!({"value":canaries.legacy_value.value(), (canaries.legacy_key.value()):true}),
         )
         .await;
     sqlx::query("ALTER TABLE workflow_versions DISABLE TRIGGER workflow_versions_immutable")
@@ -317,7 +295,7 @@ async fn forbidden_payloads_stay_out_of_public_surfaces_errors_audit_and_telemet
     assert_absent(
         "legacy disclosure",
         legacy_answer,
-        &[&canaries.legacy_value],
+        &[&canaries.legacy_value, &canaries.legacy_key],
     );
 
     for (surface, method, path, body) in [
@@ -483,6 +461,9 @@ async fn seed_event_resources(fixture: &Fixture) -> EventResources {
 
 #[tokio::test]
 async fn event_and_dead_letter_values_follow_all_role_grant_and_reveal_cases() {
+    let collector = Collector::start().await;
+    let (_telemetry_guard, sink, logs) = collector.install_with_logs(1.0);
+    let metrics = Metrics::global();
     let fixture = Fixture::new("events").await;
     let resources = seed_event_resources(&fixture).await;
     let mut cells = 0;
@@ -579,4 +560,22 @@ async fn event_and_dead_letter_values_follow_all_role_grant_and_reveal_cases() {
         reveals, 6,
         "three roles reveal one event and one letter each"
     );
+    sink.shutdown(Duration::from_secs(5)).await;
+    assert!(
+        !collector.spans().is_empty(),
+        "actual event HTTP spans must be captured"
+    );
+    assert_absent(
+        "event OTLP spans",
+        format!("{:#?}", collector.spans()),
+        &fixture.canaries.all(),
+    );
+    assert_absent(
+        "event structured logs",
+        logs.text(),
+        &fixture.canaries.all(),
+    );
+    let metric_page = metrics.render();
+    assert!(metric_page.contains("event_value_reads_total"));
+    assert_absent("event metric labels", metric_page, &fixture.canaries.all());
 }
