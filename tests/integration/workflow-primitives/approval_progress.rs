@@ -851,3 +851,45 @@ async fn a_decision_cut_off_at_any_await_commits_whole_or_not_at_all() {
     .expect("receipts");
     assert_eq!(receipts, 1);
 }
+
+/// The engine serves requests as the least-privilege runtime role, which can read `memberships`
+/// but not lock a row of it: re-checking the decider's role must work for that role. The other
+/// approval tests connect as the database owner, which hid a `permission denied for table
+/// memberships` on every decision (G294).
+#[tokio::test]
+async fn a_decision_is_committed_by_the_least_privilege_runtime_role() {
+    let fixture = fixture("approval-runtime-role").await;
+    let runtime = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&fixture.world.db.url_for(
+            crate::support::RUNTIME_ROLE,
+            crate::support::RUNTIME_ROLE_PASSWORD,
+        ))
+        .await
+        .expect("connect as the runtime role");
+    let store = PgApprovalProgressStore::new(runtime);
+    let at = fixture.opened_at + Duration::from_secs(1);
+    let committed = store
+        .decide(&decision(
+            &fixture,
+            &fixture.actor,
+            "runtime-role",
+            at,
+            Uuid::now_v7(),
+        ))
+        .await
+        .expect("the runtime role commits a decision");
+    assert!(!committed.replayed());
+    let replayed = store
+        .decide(&decision(
+            &fixture,
+            &fixture.actor,
+            "runtime-role",
+            at,
+            Uuid::now_v7(),
+        ))
+        .await
+        .expect("and replays it");
+    assert!(replayed.replayed());
+    assert_eq!(replayed.receipt().id(), committed.receipt().id());
+}

@@ -227,14 +227,16 @@ async fn authorize(
     if !namespace_exists {
         return Err(DeclaredOperationStoreError::NotFound);
     }
-    let role: Option<String> = sqlx::query_scalar(
-        "SELECT role FROM memberships WHERE tenant_id = $1 AND subject = $2 FOR KEY SHARE",
-    )
-    .bind(tenant_id.as_uuid())
-    .bind(actor.as_str())
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(store_error)?;
+    // A plain read, like every request's authentication: the runtime role may read `memberships`
+    // but not lock a row of it (a row lock needs UPDATE), so the role seen is the one committed when
+    // this statement runs (G294).
+    let role: Option<String> =
+        sqlx::query_scalar("SELECT role FROM memberships WHERE tenant_id = $1 AND subject = $2")
+            .bind(tenant_id.as_uuid())
+            .bind(actor.as_str())
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(store_error)?;
     let Some(role) = role else {
         return Err(DeclaredOperationStoreError::Forbidden);
     };

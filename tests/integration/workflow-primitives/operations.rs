@@ -1742,3 +1742,34 @@ async fn activity_completion_serializes_after_the_snapshot_used_by_an_update() {
         .expect("query completed result");
     assert_eq!(evaluated.result().content(), b"7");
 }
+
+/// The control plane serves requests as the least-privilege runtime role (G294): the permission
+/// re-check of a declared Query must work for a role that can read `memberships` but not lock a
+/// row of it. The other tests here connect as the database owner and could not see the failure.
+#[tokio::test]
+async fn a_declared_query_is_served_by_the_least_privilege_runtime_role() {
+    let w = world().await;
+    let (workflow, version) = w.publish(chain("operation-runtime-role")).await;
+    let run = w.start(workflow, &serde_json::json!({})).await;
+    let state = seed_state(&w, version, run, "balance.read", "QUERY").await;
+    let runtime = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&w.db.url_for(
+            crate::support::RUNTIME_ROLE,
+            crate::support::RUNTIME_ROLE_PASSWORD,
+        ))
+        .await
+        .expect("connect as the runtime role");
+    let store = PgDeclaredOperationStore::new(runtime);
+    let query = DeclaredQuery::new(
+        scope(&w, run),
+        run,
+        ActivityName::parse("balance.read").expect("operation"),
+        w.admin.subject().clone(),
+    );
+    let snapshot = store
+        .query_snapshot(&query, &audit(&w, run, AuditAction::RunQueried))
+        .await
+        .expect("the runtime role serves the query");
+    assert_eq!(snapshot.state(), &state);
+}
