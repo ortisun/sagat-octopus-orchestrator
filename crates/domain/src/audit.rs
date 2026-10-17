@@ -54,6 +54,15 @@ pub enum AuditAction {
     PayloadInspected,
     /// An authenticated caller without the dedicated permission tried to inspect a payload.
     PayloadInspectionDenied,
+    /// A disclosure returned at least one `internal` value. Carries no payload data or digest.
+    PayloadDisclosed,
+    /// An explicit reveal returned at least one `pii` value. Every reveal keeps its own record.
+    PayloadPiiRevealed,
+    /// An explicit reveal was refused because its namespace grant was absent.
+    PayloadRevealDenied,
+    /// An administrator granted or revoked a subject's namespace-scoped PII reveal right.
+    PayloadRevealGranted,
+    PayloadRevealRevoked,
     /// A signal was delivered to a waiting run.
     RunSignalled,
     /// The caller asked for a resource that exists only in another tenant. The record carries the
@@ -199,6 +208,8 @@ impl AuditAction {
                 | Self::PublicationDenied
                 | Self::PayloadInspected
                 | Self::PayloadInspectionDenied
+                | Self::PayloadDisclosed
+                | Self::PayloadRevealDenied
                 | Self::RunQueried
                 | Self::ApprovalDenied
         )
@@ -215,6 +226,8 @@ impl AuditAction {
             | Self::PublicationDenied
             | Self::PayloadInspected
             | Self::PayloadInspectionDenied
+            | Self::PayloadDisclosed
+            | Self::PayloadRevealDenied
             | Self::RunQueried => Some(std::time::Duration::from_secs(300)),
             Self::ApprovalDenied => Some(std::time::Duration::from_secs(300)),
             _ => None,
@@ -258,6 +271,11 @@ impl AuditAction {
             Self::ApprovalDenied => "approval.denied",
             Self::PayloadInspected => "payload.inspected",
             Self::PayloadInspectionDenied => "payload.inspection_denied",
+            Self::PayloadDisclosed => "payload.disclosed",
+            Self::PayloadPiiRevealed => "payload.pii_revealed",
+            Self::PayloadRevealDenied => "payload.reveal_denied",
+            Self::PayloadRevealGranted => "payload.reveal_granted",
+            Self::PayloadRevealRevoked => "payload.reveal_revoked",
             Self::RunSignalled => "run.signalled",
             Self::CrossTenantAccessDenied => "access.denied.cross_tenant",
             Self::PermissionDenied => "access.denied.permission",
@@ -361,6 +379,8 @@ pub enum ResourceType {
     PublicationRequest,
     /// A durable human decision request owned by one workflow step instance.
     ApprovalRequest,
+    /// A namespace-scoped PII reveal grant, identified as `namespace-id/subject`.
+    PayloadRevealGrant,
     /// A call of the API, as `METHOD /route/{template}` or `grpc Service/Method`: a fixed set of the
     /// server's own names, never something the caller wrote.
     Endpoint,
@@ -392,6 +412,7 @@ impl ResourceType {
             Self::ScriptVersion => "script_version",
             Self::PublicationRequest => "publication_request",
             Self::ApprovalRequest => "approval_request",
+            Self::PayloadRevealGrant => "payload_reveal_grant",
             Self::Endpoint => "endpoint",
         }
     }

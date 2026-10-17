@@ -173,13 +173,13 @@ const ALL_ROLES: [Role; 6] = [
 fn expected(role: Role) -> Vec<Permission> {
     use Permission::{
         ApprovalDecide, ApprovalRead, DefinitionPublish, DefinitionRead, DefinitionWrite,
-        EventManage, EventPublish, EventRead, NamespaceRead, OpsRead, PublicationApprove,
-        QuotaRead, RunOperate, RunPayloadInspect, RunQuery, RunRead, RunSignal, RunStart,
-        RunUpdate, ScriptBuild, ScriptExecute, ScriptPublish, ScriptRead, ScriptWrite, SecretRead,
-        SecretUse, VersionActivate, WorkerExecute, WorkerManage, WorkspaceRead,
+        EventManage, EventPublish, EventRead, NamespaceRead, OpsRead, PayloadReadInternal,
+        PublicationApprove, QuotaRead, RunOperate, RunPayloadInspect, RunQuery, RunRead, RunSignal,
+        RunStart, RunUpdate, ScriptBuild, ScriptExecute, ScriptPublish, ScriptRead, ScriptWrite,
+        SecretRead, SecretUse, VersionActivate, WorkerExecute, WorkerManage, WorkspaceRead,
     };
     match role {
-        Role::Admin => Permission::ALL.to_vec(),
+        Role::Admin => Role::ADMIN_PERMISSIONS.to_vec(),
         Role::Developer => {
             vec![
                 WorkspaceRead,
@@ -191,6 +191,7 @@ fn expected(role: Role) -> Vec<Permission> {
                 RunRead,
                 RunQuery,
                 RunUpdate,
+                PayloadReadInternal,
                 ApprovalRead,
                 ApprovalDecide,
                 SecretRead,
@@ -214,6 +215,7 @@ fn expected(role: Role) -> Vec<Permission> {
             RunRead,
             RunQuery,
             RunUpdate,
+            PayloadReadInternal,
             ApprovalRead,
             ApprovalDecide,
             RunPayloadInspect,
@@ -242,6 +244,39 @@ fn expected(role: Role) -> Vec<Permission> {
         Role::Worker => vec![WorkerExecute],
         Role::Runner => vec![WorkerExecute, ScriptBuild, ScriptExecute],
     }
+}
+
+#[test]
+fn payload_permissions_are_fail_closed_for_builtin_roles() {
+    assert_eq!(Permission::ALL.len(), 42);
+    assert_eq!(
+        Permission::PayloadReadInternal.as_str(),
+        "payload:read-internal"
+    );
+    assert_eq!(Permission::PayloadRevealPii.as_str(), "payload:reveal-pii");
+
+    for role in ALL_ROLES {
+        assert_eq!(
+            role.grants(Permission::PayloadReadInternal),
+            matches!(role, Role::Admin | Role::Developer | Role::Operator),
+            "{role} internal payload access"
+        );
+        assert!(
+            !role.grants(Permission::PayloadRevealPii),
+            "{role} must receive PII access only through an explicit namespace grant"
+        );
+    }
+}
+
+#[test]
+fn admin_permissions_decide_every_catalog_entry_except_pii_reveal() {
+    let expected: Vec<_> = Permission::ALL
+        .into_iter()
+        .filter(|permission| *permission != Permission::PayloadRevealPii)
+        .collect();
+
+    assert_eq!(Role::ADMIN_PERMISSIONS, expected.as_slice());
+    assert_eq!(Role::Admin.permissions(), Role::ADMIN_PERMISSIONS);
 }
 
 #[test]

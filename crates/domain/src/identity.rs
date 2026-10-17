@@ -292,6 +292,10 @@ pub enum Permission {
     ApprovalDecide,
     /// Inspect only the redacted structure of a run input or retained journal payload.
     RunPayloadInspect,
+    /// Read payload values classified as `internal`.
+    PayloadReadInternal,
+    /// Reveal payload values classified as `pii`; granted per subject and namespace, never by role.
+    PayloadRevealPii,
     /// Cancel, pause or resume a run.
     RunOperate,
     /// Deliver a signal to a run.
@@ -351,7 +355,7 @@ pub enum Permission {
 
 impl Permission {
     /// Every permission, used to grant the admin role and to test the full matrix.
-    pub const ALL: [Self; 40] = [
+    pub const ALL: [Self; 42] = [
         Self::WorkspaceRead,
         Self::WorkspaceCreate,
         Self::NamespaceRead,
@@ -368,6 +372,8 @@ impl Permission {
         Self::ApprovalRead,
         Self::ApprovalDecide,
         Self::RunPayloadInspect,
+        Self::PayloadReadInternal,
+        Self::PayloadRevealPii,
         Self::RunOperate,
         Self::RunSignal,
         Self::WorkerExecute,
@@ -413,6 +419,8 @@ impl Permission {
             Self::ApprovalRead => "approval:read",
             Self::ApprovalDecide => "approval:decide",
             Self::RunPayloadInspect => "run:payload:inspect",
+            Self::PayloadReadInternal => "payload:read-internal",
+            Self::PayloadRevealPii => "payload:reveal-pii",
             Self::RunOperate => "run:operate",
             Self::RunSignal => "run:signal",
             Self::WorkerExecute => "worker:execute",
@@ -463,6 +471,51 @@ pub enum Role {
 }
 
 impl Role {
+    /// Every decided catalog permission except PII reveal, which always needs a namespace grant.
+    pub const ADMIN_PERMISSIONS: &'static [Permission] = &[
+        Permission::WorkspaceRead,
+        Permission::WorkspaceCreate,
+        Permission::NamespaceRead,
+        Permission::NamespaceCreate,
+        Permission::MembershipManage,
+        Permission::DefinitionRead,
+        Permission::DefinitionWrite,
+        Permission::DefinitionPublish,
+        Permission::AuditRead,
+        Permission::RunStart,
+        Permission::RunRead,
+        Permission::RunQuery,
+        Permission::RunUpdate,
+        Permission::ApprovalRead,
+        Permission::ApprovalDecide,
+        Permission::RunPayloadInspect,
+        Permission::PayloadReadInternal,
+        Permission::RunOperate,
+        Permission::RunSignal,
+        Permission::WorkerExecute,
+        Permission::QuotaRead,
+        Permission::QuotaManage,
+        Permission::SecretRead,
+        Permission::SecretManage,
+        Permission::SecretUse,
+        Permission::EgressManage,
+        Permission::WorkerBind,
+        Permission::SagaOverride,
+        Permission::EventPublish,
+        Permission::EventRead,
+        Permission::EventManage,
+        Permission::ScriptRead,
+        Permission::ScriptWrite,
+        Permission::ScriptPublish,
+        Permission::ScriptBuild,
+        Permission::ScriptExecute,
+        Permission::OpsRead,
+        Permission::WorkerManage,
+        Permission::PublicationApprove,
+        Permission::PublicationManage,
+        Permission::VersionActivate,
+    ];
+
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -480,13 +533,14 @@ impl Role {
     pub const fn permissions(self) -> &'static [Permission] {
         use Permission::{
             ApprovalDecide, ApprovalRead, DefinitionPublish, DefinitionRead, DefinitionWrite,
-            EventManage, EventPublish, EventRead, NamespaceRead, OpsRead, PublicationApprove,
-            QuotaRead, RunOperate, RunPayloadInspect, RunQuery, RunRead, RunSignal, RunStart,
-            RunUpdate, ScriptBuild, ScriptExecute, ScriptPublish, ScriptRead, ScriptWrite,
-            SecretRead, SecretUse, VersionActivate, WorkerExecute, WorkerManage, WorkspaceRead,
+            EventManage, EventPublish, EventRead, NamespaceRead, OpsRead, PayloadReadInternal,
+            PublicationApprove, QuotaRead, RunOperate, RunPayloadInspect, RunQuery, RunRead,
+            RunSignal, RunStart, RunUpdate, ScriptBuild, ScriptExecute, ScriptPublish, ScriptRead,
+            ScriptWrite, SecretRead, SecretUse, VersionActivate, WorkerExecute, WorkerManage,
+            WorkspaceRead,
         };
         match self {
-            Self::Admin => &Permission::ALL,
+            Self::Admin => Self::ADMIN_PERMISSIONS,
             Self::Developer => &[
                 WorkspaceRead,
                 NamespaceRead,
@@ -497,6 +551,7 @@ impl Role {
                 RunRead,
                 RunQuery,
                 RunUpdate,
+                PayloadReadInternal,
                 ApprovalRead,
                 ApprovalDecide,
                 SecretRead,
@@ -519,6 +574,7 @@ impl Role {
                 RunRead,
                 RunQuery,
                 RunUpdate,
+                PayloadReadInternal,
                 ApprovalRead,
                 ApprovalDecide,
                 RunPayloadInspect,
