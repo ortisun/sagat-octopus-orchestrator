@@ -84,6 +84,26 @@ and the failed PostgreSQL infrastructure run are recorded in
 `tasks/project-completion/integration-notes.md`. These prerequisites alone do not establish that
 all production consumers use bounded restoration or satisfy the large-workload resource gate.
 
+### Current exact-path heartbeat
+
+Scoped heartbeat opens its current path after acquiring the run lock, reads on that same database
+connection, and samples mutation time after restoration. It does not acquire a second pool
+connection or repeatedly prepare stale revisions while holding the lock. Prepared scheduler
+transitions retain the separate snapshot/revision comparison contract. Both readers share the
+complete bounded-path restoration implementation; an unadmitted path remains a stale attempt.
+
+The live heartbeat atomically records the first started event and renews the exact lease. A repeat
+cannot duplicate that event. Late heartbeat for the same reported lease returns no new expiry,
+including after its collection/run closes, but still requires current binding and worker membership.
+Root heartbeat also rechecks current membership after lock contention. The scoped trace is
+`worker.scoped.heartbeat` with tenant/run identity and no token/input; late acknowledgements retain
+`worker_heartbeats_after_report_total`. No wire or SDK representation changes.
+
+`bounded_worker.rs` tests revoked whole-history SELECT, forged identity/generation, tenant opacity,
+late authority loss, terminal acknowledgement, current role after a real lock wait, and twelve
+concurrent renewals using two runtime-role connections. Claims, completion/failure, capability
+disclosure and large workload acceptance remain separate open gates.
+
 The automatic scoped lease-expiry and retry passes now use this port: load one exact path outside
 the write lock, compare the run revision under lock, hold the current shard fence and recheck live
 expiry clocks before persisting the addressed command. A revision race is skipped for later

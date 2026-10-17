@@ -10,6 +10,7 @@
 
 mod database;
 mod output;
+mod scoped;
 mod secrets;
 pub use output::BlobOutput;
 use secrets::SecretReport;
@@ -34,8 +35,8 @@ use crate::entropy::{Entropy, Token};
 use crate::error::{AppError, StoreError};
 use crate::execution::{
     Actor, Effects, Engine, EngineError, ExpressionEvaluator, LeaseGrant, LeaseRenewal,
-    MAX_PAYLOAD_BYTES, MAX_RUN_OUTPUT_BYTES, PoolCheck, ReportedLease, RunTx,
-    instance_compensation_key, instance_reconciliation_key, instance_step_id,
+    MAX_PAYLOAD_BYTES, MAX_RUN_OUTPUT_BYTES, PathExecutionStore, PathExecutionTx, PoolCheck,
+    ReportedLease, RunTx, instance_compensation_key, instance_reconciliation_key, instance_step_id,
 };
 use crate::quotas::QuotaLookup;
 use crate::runs::{Lock, RunStore, execution_error};
@@ -1362,14 +1363,18 @@ where
         &self,
         principal: &Principal,
         task: &TaskRef<'_>,
-    ) -> Result<HeartbeatAck, AppError> {
+    ) -> Result<HeartbeatAck, AppError>
+    where
+        S: PathExecutionStore,
+    {
         principal.authorize(Permission::WorkerExecute)?;
+        if !task.instance.path().is_root() {
+            return self.heartbeat_path(principal, task).await;
+        }
         let mut tx = self.open(principal, task, Lock::Wait).await?;
         if let Err(stale) = self.verify(&mut tx, task).await {
-            // A beat already on its way when this same lease reported (G141): not an error, and
-            // nothing to renew. Any other lease, lost or forged, stays a stale attempt.
+            // A beat already in flight when the same lease reported has nothing to renew.
             if matches!(stale, AppError::StaleAttempt) && self.reported_by(&mut tx, task).await? {
-                // The same binding rule as a live beat: a worker no longer bound is refused.
                 self.ensure_bound(principal, &mut tx, task).await?;
                 metrics::counter!("worker_heartbeats_after_report_total").increment(1);
                 return Ok(HeartbeatAck {
@@ -1385,47 +1390,32 @@ where
             instance: task.instance.clone(),
             ttl: self.settings.lease_ttl,
         });
-        let instance = task.instance.clone();
+        let node = task.instance.node().clone();
         let fence = task.fence;
-        let cancel_requested = if instance.path().is_root() {
-            let node = instance.node().clone();
-            self.engine
-                .run(&mut tx, effects, move |_, state, _| {
-                    let fence = if fence.attempt == 0 {
-                        Fence {
-                            attempt: state
-                                .step(&node)
-                                .map_or(0, sagat_domain::execution::StepState::attempt),
-                            ..fence
-                        }
-                    } else {
-                        fence
-                    };
-                    let beat = execution::heartbeat(state, &node, fence)?;
-                    Ok((
-                        beat.cancel_requested,
-                        Progress {
-                            events: beat.event.into_iter().collect(),
-                            pending: None,
-                        },
-                    ))
-                })
-                .await
-                .map_err(engine_error)?
-        } else {
-            self.engine
-                .run_addressed(&mut tx, Vec::new(), effects, move |_, state, _| {
-                    let beat = execution::heartbeat_instance(state, &instance, fence)?;
-                    Ok((
-                        beat.cancel_requested,
-                        sagat_domain::execution::AddressedProgress {
-                            events: beat.event.into_iter().collect(),
-                        },
-                    ))
-                })
-                .await
-                .map_err(engine_error)?
-        };
+        let cancel_requested = self
+            .engine
+            .run(&mut tx, effects, move |_, state, _| {
+                let fence = if fence.attempt == 0 {
+                    Fence {
+                        attempt: state
+                            .step(&node)
+                            .map_or(0, sagat_domain::execution::StepState::attempt),
+                        ..fence
+                    }
+                } else {
+                    fence
+                };
+                let beat = execution::heartbeat(state, &node, fence)?;
+                Ok((
+                    beat.cancel_requested,
+                    Progress {
+                        events: beat.event.into_iter().collect(),
+                        pending: None,
+                    },
+                ))
+            })
+            .await
+            .map_err(engine_error)?;
         let lease_expires_at = tx
             .lease_expiry_instance(task.instance)
             .await?
@@ -1889,6 +1879,10 @@ where
         {
             return Ok(tx);
         }
+        Err(self.missing_task_error(principal, task).await)
+    }
+
+    async fn missing_task_error(&self, principal: &Principal, task: &TaskRef<'_>) -> AppError {
         // A run of another tenant is indistinguishable from a missing one: a stale attempt. It is
         // audited all the same, like every other path that reaches for a foreign run.
         if let Ok(true) = self
@@ -1909,7 +1903,7 @@ where
                 tracing::error!(%error, action = %record.action(), "failed to record audit entry");
             }
         }
-        Err(AppError::StaleAttempt)
+        AppError::StaleAttempt
     }
 
     /// The answer stored for a repeated report, if there is one.
@@ -2027,7 +2021,17 @@ where
         {
             return Err(AppError::NotBound);
         }
-        self.ensure_activity_bound(principal, tx, task).await
+        self.ensure_activity_bound(principal, tx, task).await?;
+        if !managed
+            && !tx
+                .current_worker_authorized(principal.subject().as_str())
+                .await?
+        {
+            return Err(AppError::Forbidden {
+                permission: Permission::WorkerExecute,
+            });
+        }
+        Ok(())
     }
 
     async fn ensure_activity_bound<Tx: RunTx>(
@@ -2111,15 +2115,6 @@ where
         self.verify(tx, task).await?;
         // Binding authority precedes session/catalog/membership locks, matching revocation.
         self.ensure_bound(principal, tx, task).await?;
-        if !Self::managed_database(tx, task)
-            && !tx
-                .current_worker_authorized(principal.subject().as_str())
-                .await?
-        {
-            return Err(AppError::Forbidden {
-                permission: Permission::WorkerExecute,
-            });
-        }
         let legacy_attempt = task.fence.attempt == 0 && !Self::managed_database(tx, task);
         let valid_step = tx.parts().1.instance(task.instance).is_some_and(|s| {
             (legacy_attempt || s.attempt() == task.fence.attempt)

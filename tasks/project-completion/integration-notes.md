@@ -1100,3 +1100,47 @@ the switch is enabled. Its scoped operations plus the three barriers passed **19
 the waiting connection's actual `usename='sagat_app'`. The database-wide privilege audit passed
 **1/1**, 4.71 s (`/tmp/sagat-completion-authority-lock-runtime-privilege-audit.log`), without an added
 exception or grant. Worker claim/report conversion and large workload acceptance remain open.
+
+### Current exact-path heartbeat and ordinary worker authority
+
+Scoped heartbeat now locks the run and restores its current bounded path on the same database
+connection. The repeatable-read prepared reader and revision-checked scheduler transaction remain
+separate; both readers share the complete bounded restoration implementation. This avoids holding
+one pool connection while requesting another and avoids heartbeat revision retry storms. Missing
+unadmitted paths remain opaque stale attempts. Live renewal and the first started event commit
+atomically; a late acknowledgement after the same lease reports, even after run closure, renews
+nothing and still requires current binding/membership. Root heartbeat now rechecks persisted
+ordinary-worker membership after the run lock; the managed executor keeps its separate authority.
+No wire, SDK source, schema, privilege or expected conformance output changed.
+
+Four real tests failed before conversion: revoked-history scoped heartbeat, terminal late heartbeat,
+current Root membership after contention, and twelve concurrent heartbeats on two runtime-role
+connections (`/tmp/sagat-completion-bounded-worker-heartbeat-pool-red.log`, **0/4**). The correctly
+configured terminal baseline also failed independently. Earlier fixture-placement and error-mapper
+mistakes are retained in their named red/green logs; they are not product evidence. The corrected
+focused suite passed **4/4**, 16.72 s
+(`/tmp/sagat-completion-bounded-worker-heartbeat-green-3.log`). Shared-reader intermediate regression
+passed **38/38**; current bounded worker/fence/byte/chain/scoped/loop gate passed **85/85**, 155.21 s
+(`/tmp/sagat-completion-bounded-heartbeat-workflow-regression.log`). Current PostgreSQL/OpenBao
+aggregate passed **3/3**, 95.75 s (`...-provider-regression.log`); strict whole-workspace/all-target
+Clippy passed, 3 min 40 s (`...-workspace-clippy.log`). The new scoped trace contains tenant/run
+identity, no input/token, and preserves the existing late-heartbeat counter.
+
+The current server's `scoped-identity` and `lease-lost` scenarios each passed in all five SDKs
+(**1/1** aggregate, 43.43 s and 16.97 s; `/tmp/sagat-completion-bounded-heartbeat-sdk-*.log`).
+These focused repeats are not the full 55-scenario gate. A first secrets invocation omitted
+`--ignored` and selected zero executed cases; it is not passing evidence.
+
+The current gRPC suite twice finished **69/70**, with different stream timing failures. The first
+byte-credit test stopped consuming while making thirty large REST admissions inside a five-second
+stream window, then saw a transport BrokenPipe. That case passed alone both as owner (**1/1**,
+11.05 s) and runtime role (**1/1**, 6.66 s). The second suite approved that case but failed the
+watchdog survivor test's expected task after sleeping 4.1 s and then admitting a large run near the
+same five-second deadline. These observations do not establish a production regression or an
+approved complete gRPC gate; deterministic fixture synchronization and another complete repeat
+remain required. Claim/report conversion, wider body graphs and large capacity gates stay open.
+
+The correctly selected current `secrets` all-five repeat subsequently passed **1/1**, 33.48 s
+(`/tmp/sagat-completion-bounded-heartbeat-sdk-secrets-2.log`). Current SQL privilege audit passed
+**1/1**, 4.67 s: 1,034 statements in 52 files, 653 distinct needs, 620 real runtime-role probes,
+no additional exception (`/tmp/sagat-completion-bounded-heartbeat-runtime-privilege-audit.log`).

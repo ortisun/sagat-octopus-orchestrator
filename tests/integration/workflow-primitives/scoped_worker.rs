@@ -42,7 +42,7 @@ pub(super) type ScopedWorkers =
     WorkerService<PgRunStore, SystemClock, JsonEvaluator, SystemEntropy>;
 
 #[derive(Debug)]
-struct StructuredJsonIrCodec;
+pub(super) struct StructuredJsonIrCodec;
 
 impl IrCodec for StructuredJsonIrCodec {
     fn check_draft(&self, document: &[u8]) -> Result<(), IrError> {

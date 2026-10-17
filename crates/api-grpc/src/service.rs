@@ -17,7 +17,7 @@ use sagat_application::clock::Clock;
 use sagat_application::definitions::DefinitionStore;
 use sagat_application::entropy::Entropy;
 use sagat_application::error::{AccessDenial, AppError};
-use sagat_application::execution::{ExpressionEvaluator, MAX_PAYLOAD_BYTES};
+use sagat_application::execution::{ExpressionEvaluator, MAX_PAYLOAD_BYTES, PathExecutionStore};
 use sagat_application::identity::RequestContext;
 use sagat_application::runs::RunStore;
 use sagat_application::worker::{
@@ -388,7 +388,7 @@ where
 impl<St, S, C, E, R> pb::worker_service_server::WorkerService for WorkerGrpc<St, S, C, E, R>
 where
     St: Core,
-    S: RunStore + WorkerStore + DefinitionStore + 'static,
+    S: RunStore + WorkerStore + DefinitionStore + PathExecutionStore + 'static,
     C: Clock + 'static,
     E: ExpressionEvaluator + 'static,
     R: Entropy + 'static,

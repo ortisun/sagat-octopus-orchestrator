@@ -621,8 +621,9 @@ pub struct PathExecutionSnapshot {
     pub data: RunData,
 }
 
-/// Bounded scoped execution store. Writes start from an evaluated snapshot and recheck its revision
-/// under the run lock; they never reopen the full [`RunTx`] restoration path.
+/// Bounded scoped execution store. Prepared writes recheck their snapshot revision under the run
+/// lock; metadata commands can instead read the current exact path in that transaction. Neither
+/// path reopens the full [`RunTx`] history.
 pub trait PathExecutionStore: Send + Sync {
     type Tx: PathExecutionTx;
 
@@ -632,6 +633,17 @@ pub trait PathExecutionStore: Send + Sync {
         run: RunId,
         path: InstancePath,
     ) -> impl Future<Output = Result<Option<PathExecutionSnapshot>, StoreError>> + Send;
+
+    /// Locks the run and reads its current bounded path on that same connection. This is for
+    /// commands such as heartbeat that need no external I/O or expensive preparation; it avoids
+    /// global revision retry storms and never waits for a second pool connection under the lock.
+    fn begin_current_path(
+        &self,
+        tenant: TenantId,
+        run: RunId,
+        path: InstancePath,
+        lock: crate::runs::Lock,
+    ) -> impl Future<Output = Result<Option<Self::Tx>, StoreError>> + Send;
 
     /// Opens a short mutation transaction for an already evaluated snapshot. The adapter locks the
     /// run and compares its revision before returning, so a caller never applies a decision made

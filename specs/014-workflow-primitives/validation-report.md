@@ -1571,3 +1571,17 @@ The moderate performance target passed **4/5 ignored**, which does not execute t
 10k/100k capacity workloads. The open tasks stay unchecked: broad graphs/nesting, descendants under
 low capacity, the wider compatibility matrix and the named large resource workloads are not
 established by these focused repairs.
+
+
+### Combined integration: scoped heartbeat
+
+The exact-path heartbeat contract and deterministic barriers are recorded in
+`contracts/conformance.md` and `tasks/project-completion/integration-notes.md`. Four current tests
+passed after genuine failing baselines: no full-history read, current role after contention,
+terminal late acknowledgement and twelve renewals on two runtime connections. The wider selected
+workflow gate passed **85/85**, OpenBao aggregate **3/3**, all-target strict Clippy passed, and
+`scoped-identity`/`lease-lost` each passed across all five SDKs without changed expected files.
+Two whole gRPC repeats each passed **69/70** with different near-deadline stream fixture failures;
+the byte-credit case passed separately with runtime privileges. Those failures remain under
+investigation, so this checkpoint does not approve the complete gRPC or release gate. Claims,
+completion/failure and the large resource workloads remain open.
