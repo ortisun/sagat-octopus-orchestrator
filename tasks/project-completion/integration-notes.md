@@ -635,3 +635,57 @@ checks are executing separately; their result will be recorded when complete, no
 The clean detached release source `run.1mfG99/source-retry` was removed after verifying its
 immutable release HEAD and empty status. Its read-only directories required finishing Git's
 otherwise successful unregister/removal; the actual binaries/manifests/responses remain intact.
+
+
+The instance-count transition checks completed after the counter commit: **2/2**, no ignored,
+434.37 s (`/tmp/sagat-completion-charge-flat-cost.log`). Collections at 160/320/640 items:
+median 44/44/44 rows and 247/241/266 buffers. Loops: 67/67/67 rows and 370/389/391 buffers.
+The environment, exact command, phase exclusions and unproven larger workloads are recorded in
+`tests/performance/reports/workflow-primitives.md`. These checks measure scheduler checkpoints,
+not the still-unbounded worker/root finalizer, and do not close T014-042.
+
+
+### Shared bounded effects, commands and global status
+
+New differential coverage first failed on `UnsupportedScopedEvent("reconciliation.requested")`
+(`/tmp/sagat-completion-bounded-effects-red.log`). Extracted the existing full-run effect/review
+reducer into a shared implementation over addressed instance access. The first differential retry
+then exposed a real status mismatch: the bounded path retained RUNNING after the full oracle
+entered MANUAL_REVIEW. The new checked RunWorkSummary folds local facts with a bounded summary
+of other paths, using the same status precedence as full replay. Snapshot reads are repeatable-read;
+the existing mutation CAS still rejects outside progress. The additive 20261208000000 indexes
+cover live/review/root compensation probes without changing prior migrations.
+
+Scoped failure, lookup, retry and operator decisions now share one command policy across both
+representations. An initial API fixture could not compile before fail_path_instance existed
+(`/tmp/sagat-completion-bounded-failure-command-red.log`); this was an API red, not a runtime failure.
+The compensation decision baseline passed before any extra planner change, so no speculative
+planner fix was added (`/tmp/sagat-completion-bounded-compensation-decisions-baseline.log`).
+
+Actual verification:
+
+- Complete domain target after reducer/status extraction: **504 passed**, 37 test targets,
+  zero failed/ignored (`/tmp/sagat-completion-domain-effects-regression.log`). Later new command
+  cases are covered separately by the next focused result; no final whole-workspace claim here.
+- Final focused differentials: **11 bounded-path + 27 scoped-compensation = 38 passed**,
+  zero ignored (`/tmp/sagat-completion-bounded-command-differentials.log`). Cases include
+  known failure, retry, cancellation acknowledgment, unknown effect, lookup verdicts, review
+  decisions, stale fences, other-path review/live status and failed-compensation decisions.
+- Real PostgreSQL/runtime role: **7/7**, 10.30 s
+  (`/tmp/sagat-completion-bounded-effects-pg-commands.log`). The new case runs both UNKNOWN and
+  APPLIED lookup verdicts through the new commands and exact-path writer, with real ordinary
+  forward/lookup claims, reservation/hints, reported token, retained lookup/forward outputs,
+  reloaded global status and full journal/projection verification.
+- Focused strict Clippy passed, 40.15 s (`/tmp/sagat-completion-bounded-effects-clippy.log`);
+  architecture passed, 24 crates. A final expanded static/workspace run follows this checkpoint.
+
+The worker service is deliberately still on the complete RunTx consumer. These port/command
+checks do not prove that the not-yet-wired provider, blob, control, full drain and root finalizer
+paths are bounded. They do not close the canonical remaining feature-014 acceptance tasks.
+
+
+Final strict Clippy of the complete workspace/all targets passed in 1m57s
+(`/tmp/sagat-completion-bounded-effects-workspace-clippy.log`); formatting and the 24-crate
+architecture check passed. These are the static gates for this checkpoint. The next full
+workspace execution will use a fresh task-owned target directory with debug symbols disabled,
+keeping assertions and the test profile enabled, to limit additional disk usage.

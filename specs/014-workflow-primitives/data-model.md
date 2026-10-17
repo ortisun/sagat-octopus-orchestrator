@@ -328,3 +328,30 @@ updates with an unchanged contribution add nothing. The scheduler frontier reads
 keyed row instead of counting all historical step entries. The migration pauses writers during
 the initial backfill; no online migration or bounded total runtime is implied. Other remaining
 bounded worker/control/finalization requirements remain tracked in tasks.md.
+
+
+## Bounded effect commands and global work facts (integration checkpoint)
+
+`PathExecutionState` and `RunState` share effect/review transition validation and mutation, plus
+one scoped command policy for failed attempts, lookup verdicts, retries and operator decisions.
+The complete run remains the replay oracle. A path never borrows another iteration's step or
+compensation authority. Unknown outcomes request the declared lookup or wait for a person under
+the existing policy; exhausting compensation retries never means success.
+
+`RunWorkSummary` retains four existential facts: active work (including pending), live work,
+waiting work and operator review. Its checked constructor rejects contradictory facts. A path
+snapshot contains the facts for **other paths**, plus the run-wide compensation flag; local work
+is folded into them after each event. Both representations use the same global status precedence.
+Resolving one local review therefore cannot hide an unresolved review elsewhere, and unrelated
+live work still keeps the run runnable. These facts do not decide global terminal finalization.
+
+PostgreSQL reads them in the same read-only repeatable-read snapshot as local/ancestor state,
+using tenant/run predicates and partial indexes over open/live/review work. Migration
+`20261208000000` adds the missing live/review/root-saga indexes; existing open/waiting/scoped-saga
+indexes are reused. The mutation transaction rechecks the run version under its run lock, so
+outside progress invalidates an older decision. The path writer persists derived lookup creation,
+reservation consumption, hints/outbox, review status and outputs atomically with their journal.
+
+This checkpoint does not switch WorkerService to bounded execution. Provider/scanner/blob paths,
+all scoped control nodes, global/ancestor drain and root finalization still need their complete
+consumer integration and required larger workload/fault evidence before that switch.

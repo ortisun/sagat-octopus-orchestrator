@@ -40,7 +40,7 @@ use sagat_domain::execution::{
     ContinuationTransfer, CorrelationKey, ExecutionInstanceId, FailureCode, GlobalExecutionFence,
     InstancePath, LoopContinuation, LoopDrainReason, LoopIterationRestore, LoopKind, LoopPhase,
     PathCollectionState, PathExecutionState, PathLoopState, PathScopeSagaState, RunChainState,
-    RunEvent, RunId, RunState, RunStatus, SagaPhase, SagaState, ScopeSagaState,
+    RunEvent, RunId, RunState, RunStatus, RunWorkSummary, SagaPhase, SagaState, ScopeSagaState,
     SegmentCompletionKind, SegmentIndex, StepState, StepStatus, StopReason, SwitchSelection,
     WaitingOn,
 };
@@ -983,6 +983,42 @@ impl PathExecutionStore for PgRunStore {
                 return Err(corrupt("bounded loop definition"));
             }
         }
+        // Existential facts about work outside this exact path. Partial indexes contain only
+        // open/live/review work, so completed sibling histories are never part of these probes.
+        // The read shares this repeatable-read snapshot; begin_path later rechecks the run version.
+        let (outside_nodes, outside_indices) = stored_path_parts(&path);
+        let outside = sqlx::query(
+            "SELECT \
+             EXISTS(SELECT 1 FROM steps WHERE tenant_id=$1 AND run_id=$2 \
+               AND status IN ('PENDING','READY','LEASED','RUNNING','RETRY_WAIT') \
+               AND NOT(instance_path_nodes=$3 AND instance_path_indices=$4)) AS active, \
+             EXISTS(SELECT 1 FROM steps WHERE tenant_id=$1 AND run_id=$2 \
+               AND status IN ('READY','LEASED','RUNNING','RETRY_WAIT') \
+               AND NOT(instance_path_nodes=$3 AND instance_path_indices=$4)) AS live, \
+             EXISTS(SELECT 1 FROM steps WHERE tenant_id=$1 AND run_id=$2 AND status='WAITING' \
+               AND NOT(instance_path_nodes=$3 AND instance_path_indices=$4)) AS waiting, \
+             EXISTS(SELECT 1 FROM steps WHERE tenant_id=$1 AND run_id=$2 \
+               AND status='WAITING' AND waiting_kind='OPERATOR' \
+               AND NOT(instance_path_nodes=$3 AND instance_path_indices=$4)) AS reviewing, \
+             (EXISTS(SELECT 1 FROM run_sagas WHERE tenant_id=$1 AND run_id=$2 \
+               AND phase IN ('ABORTING','COMPENSATING')) OR \
+              EXISTS(SELECT 1 FROM scope_sagas WHERE tenant_id=$1 AND run_id=$2 \
+               AND phase='COMPENSATING')) AS compensating",
+        )
+        .bind(tenant.as_uuid())
+        .bind(run.as_uuid())
+        .bind(outside_nodes)
+        .bind(outside_indices)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        let outside_work = RunWorkSummary::restore(
+            col(&outside, "active")?,
+            col(&outside, "live")?,
+            col(&outside, "waiting")?,
+            col(&outside, "reviewing")?,
+        )
+        .map_err(|_| corrupt("bounded global work summary"))?;
         let state = PathExecutionState::restore(
             GlobalExecutionFence::restore(
                 run,
@@ -990,6 +1026,8 @@ impl PathExecutionStore for PgRunStore {
                 record.stop_reason.map(|reason| (reason, stop_code)),
                 record.paused,
                 record.version,
+                outside_work,
+                col(&outside, "compensating")?,
             ),
             path,
             ancestors,

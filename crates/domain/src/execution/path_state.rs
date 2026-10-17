@@ -385,6 +385,8 @@ pub struct GlobalExecutionFence {
     stop: Option<(StopReason, Option<FailureCode>)>,
     paused: bool,
     version: u64,
+    outside_work: super::state::RunWorkSummary,
+    compensating: bool,
 }
 
 impl GlobalExecutionFence {
@@ -395,6 +397,8 @@ impl GlobalExecutionFence {
         stop: Option<(StopReason, Option<FailureCode>)>,
         paused: bool,
         version: u64,
+        outside_work: super::state::RunWorkSummary,
+        compensating: bool,
     ) -> Self {
         Self {
             run_id,
@@ -402,6 +406,8 @@ impl GlobalExecutionFence {
             stop,
             paused,
             version,
+            outside_work,
+            compensating,
         }
     }
 
@@ -691,6 +697,13 @@ impl PathExecutionState {
                     .map(|reason| (reason, state.stop_code().cloned())),
                 state.is_paused(),
                 state.version(),
+                super::state::RunWorkSummary::from_steps(
+                    state
+                        .instances()
+                        .filter(|(instance, _)| instance.path() != &path)
+                        .map(|(_, step)| step),
+                ),
+                state.compensation_in_progress(),
             ),
             path,
             ancestors,
@@ -856,8 +869,27 @@ impl PathExecutionState {
                     .ok_or_else(|| ExecutionError::UnknownInstance(instance.clone()))?
                     .apply_instance_lifecycle(&instance, event)?;
             }
+            event @ (RunEvent::ReconciliationRequested { .. }
+            | RunEvent::ReconciliationConcluded { .. }
+            | RunEvent::StepNeedsReview { .. }
+            | RunEvent::StepRetryRequested { .. }
+            | RunEvent::StepSkipped { .. }
+            | RunEvent::StepResolved { .. }) => {
+                super::state::effects::apply_effect_event(self, &instance, event)?;
+            }
             _ => return Err(ExecutionError::UnsupportedScopedEvent(name)),
         }
+        self.global.status = self
+            .global
+            .outside_work
+            .union(super::state::RunWorkSummary::from_steps(
+                self.steps.values(),
+            ))
+            .status(
+                self.global.compensating,
+                self.global.stop.is_some(),
+                self.global.paused,
+            );
         self.global.version = next_version;
         Ok(())
     }
@@ -869,5 +901,31 @@ impl PathExecutionState {
                 .ancestors
                 .iter()
                 .all(AncestorExecutionFence::allows_forward_progress)
+    }
+}
+
+impl super::state::effects::InstanceSteps for PathExecutionState {
+    fn get_effect_step(&self, instance: &ExecutionInstanceId) -> Option<&StepState> {
+        (instance.path() == &self.path)
+            .then(|| self.steps.get(instance.node()))
+            .flatten()
+    }
+    fn get_effect_step_mut(&mut self, instance: &ExecutionInstanceId) -> Option<&mut StepState> {
+        if instance.path() != &self.path {
+            return None;
+        }
+        self.steps.get_mut(instance.node())
+    }
+    fn reconciliation_step_mut(
+        &mut self,
+        instance: &ExecutionInstanceId,
+    ) -> Result<&mut StepState, ExecutionError> {
+        if instance.path() != &self.path {
+            return Err(ExecutionError::UnknownInstance(instance.clone()));
+        }
+        Ok(self
+            .steps
+            .entry(instance.node().clone())
+            .or_insert_with(StepState::pending))
     }
 }

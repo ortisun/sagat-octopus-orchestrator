@@ -18,6 +18,10 @@ fn id(value: &str) -> NodeId {
 }
 
 fn definition() -> WorkflowDefinition {
+    definition_with_policy(RetryPolicy::no_retry(), false, false)
+}
+
+fn definition_with_policy(retry: RetryPolicy, high_risk: bool, lookup: bool) -> WorkflowDefinition {
     let body = BodyDefinition::new(
         id("body"),
         id("work"),
@@ -26,13 +30,18 @@ fn definition() -> WorkflowDefinition {
                 id("work"),
                 NodeKind::Activity {
                     activity: ActivityName::parse("act.work").expect("activity"),
-                    retry: RetryPolicy::no_retry(),
+                    retry,
                     compensate_with: None,
-                    reconcile_with: None,
+                    reconcile_with: lookup
+                        .then(|| ActivityName::parse("lookup.work").expect("lookup")),
                     idempotency_template: None,
                     secrets: Vec::new(),
                 },
             )
+            .with_effect(sagat_domain::saga::EffectPolicy {
+                high_risk,
+                ..sagat_domain::saga::EffectPolicy::NONE
+            })
             .with_next(id("return")),
             Node::new(
                 id("return"),
@@ -289,4 +298,387 @@ fn bounded_worker_lifecycle_matches_the_full_run_oracle() {
         Some(StepStatus::Pending)
     );
     assert_eq!(local.global().version(), full.version());
+}
+
+#[test]
+fn bounded_reconciliation_and_review_reduce_like_the_full_run() {
+    use sagat_domain::execution::{FailureCode, ReconcileResult, ReviewOutcome};
+    use sagat_domain::saga::ReconcileVerdict;
+    use time::OffsetDateTime;
+
+    for decision in 0..6 {
+        let mut full = state(3);
+        let work = member(1, "work");
+        let lookup = work.node().reconciliation();
+        let release = AddressedRunEvent::in_path(
+            path(1),
+            RunEvent::StepReleased {
+                node: work.node().clone(),
+            },
+        )
+        .expect("release address");
+        full.apply_addressed(&release).expect("release");
+        let (fence, _) = lease_instance(&mut full, &work).expect("lease forward");
+        let mut bounded = PathExecutionState::from_run(&full, path(1)).expect("bounded state");
+        let (verdict, result) = match decision {
+            0 => (ReconcileVerdict::Applied, ReconcileResult::Succeeded),
+            1 => (
+                ReconcileVerdict::NotApplied,
+                ReconcileResult::RetryAt(OffsetDateTime::UNIX_EPOCH),
+            ),
+            2 => (
+                ReconcileVerdict::NotApplied,
+                ReconcileResult::Failed(FailureCode::reconciled_not_applied()),
+            ),
+            _ => (
+                ReconcileVerdict::Unknown,
+                ReconcileResult::Review(FailureCode::reconciliation_unknown()),
+            ),
+        };
+        let mut events = vec![
+            RunEvent::ReconciliationRequested {
+                node: work.node().clone(),
+                fence,
+                cause: FailureCode::outcome_unknown(),
+            },
+            RunEvent::StepReleased {
+                node: lookup.clone(),
+            },
+            RunEvent::StepLeased {
+                node: lookup.clone(),
+                attempt: 1,
+                generation: 1,
+            },
+            RunEvent::StepCompleted {
+                node: lookup,
+                attempt: 1,
+                generation: 1,
+            },
+            RunEvent::ReconciliationConcluded {
+                node: work.node().clone(),
+                verdict,
+                result,
+            },
+        ];
+        let outcome = match decision {
+            3 => Some(ReviewOutcome::Succeeded),
+            4 => Some(ReviewOutcome::Failed(
+                FailureCode::parse("DECLINED").expect("code"),
+            )),
+            _ => None,
+        };
+        if let Some(outcome) = outcome {
+            events.push(RunEvent::StepResolved {
+                node: work.node().clone(),
+                outcome,
+            });
+        }
+        if decision == 1 || decision == 5 {
+            events.push(RunEvent::StepRetryRequested {
+                node: work.node().clone(),
+            });
+        }
+        for event in events {
+            let addressed = AddressedRunEvent::in_path(path(1), event).expect("effect address");
+            full.apply_addressed(&addressed).expect("full reducer");
+            bounded
+                .apply_addressed(&addressed)
+                .expect("bounded effect reducer");
+            assert_eq!(
+                bounded,
+                PathExecutionState::from_run(&full, path(1)).expect("oracle"),
+                "decision {decision}"
+            );
+        }
+    }
+}
+
+#[test]
+fn bounded_effect_events_preserve_stale_fences_and_rejected_state() {
+    use sagat_domain::execution::{ExecutionError, FailureCode};
+    let mut full = state(2);
+    let work = member(0, "work");
+    full.apply_addressed(
+        &AddressedRunEvent::in_path(
+            path(0),
+            RunEvent::StepReleased {
+                node: work.node().clone(),
+            },
+        )
+        .expect("address"),
+    )
+    .expect("release");
+    let (fence, _) = lease_instance(&mut full, &work).expect("lease");
+    let mut bounded = PathExecutionState::from_run(&full, path(0)).expect("bounded");
+    for review in [false, true] {
+        let stale = Fence {
+            generation: fence.generation + 1,
+            ..fence
+        };
+        let event = if review {
+            RunEvent::StepNeedsReview {
+                node: work.node().clone(),
+                code: FailureCode::outcome_unknown(),
+                fence: Some(stale),
+            }
+        } else {
+            RunEvent::ReconciliationRequested {
+                node: work.node().clone(),
+                fence: stale,
+                cause: FailureCode::outcome_unknown(),
+            }
+        };
+        let addressed = AddressedRunEvent::in_path(path(0), event).expect("address");
+        let before = bounded.clone();
+        assert_eq!(
+            bounded.apply_addressed(&addressed),
+            Err(ExecutionError::StaleInstanceAttempt {
+                instance: work.clone()
+            })
+        );
+        assert_eq!(bounded, before);
+        assert!(
+            full.instance(&ExecutionInstanceId::in_path(
+                path(0),
+                work.node().reconciliation()
+            ))
+            .is_none()
+        );
+    }
+}
+
+#[test]
+fn bounded_status_keeps_reviews_and_live_work_in_other_paths() {
+    use sagat_domain::execution::{FailureCode, RunStatus};
+    for sibling_live in [false, true] {
+        let mut full = state(3);
+        for index in 0..2 {
+            let work = member(index, "work");
+            full.apply_addressed(
+                &AddressedRunEvent::in_path(
+                    path(index),
+                    RunEvent::StepReleased {
+                        node: work.node().clone(),
+                    },
+                )
+                .expect("release address"),
+            )
+            .expect("release");
+            lease_instance(&mut full, &work).expect("lease");
+        }
+        if sibling_live {
+            full.apply_addressed(
+                &AddressedRunEvent::in_path(path(2), RunEvent::StepReleased { node: id("work") })
+                    .expect("address"),
+            )
+            .expect("live sibling");
+        }
+        full.apply_addressed(
+            &AddressedRunEvent::in_path(
+                path(0),
+                RunEvent::StepNeedsReview {
+                    node: id("work"),
+                    code: FailureCode::outcome_unknown(),
+                    fence: Some(Fence {
+                        attempt: 1,
+                        generation: 1,
+                    }),
+                },
+            )
+            .expect("review address"),
+        )
+        .expect("other path review");
+        let mut bounded = PathExecutionState::from_run(&full, path(1)).expect("bounded snapshot");
+        let completion = AddressedRunEvent::in_path(
+            path(1),
+            RunEvent::StepCompleted {
+                node: id("work"),
+                attempt: 1,
+                generation: 1,
+            },
+        )
+        .expect("completion address");
+        full.apply_addressed(&completion).expect("full completion");
+        bounded
+            .apply_addressed(&completion)
+            .expect("bounded completion");
+        assert_eq!(
+            bounded,
+            PathExecutionState::from_run(&full, path(1)).expect("full oracle")
+        );
+        assert_eq!(
+            bounded.global().status(),
+            if sibling_live {
+                RunStatus::Running
+            } else {
+                RunStatus::ManualReview
+            }
+        );
+    }
+}
+
+#[test]
+fn global_work_summary_rejects_contradictory_facts() {
+    use sagat_domain::execution::RunWorkSummary;
+    assert!(RunWorkSummary::restore(false, true, false, false).is_err());
+    assert!(RunWorkSummary::restore(false, false, false, true).is_err());
+    assert!(RunWorkSummary::restore(true, true, true, true).is_ok());
+}
+
+#[test]
+fn bounded_failed_attempt_commands_match_full_replay_for_retry_cancel_and_unknown_effects() {
+    use sagat_domain::execution::{Failure, FailureCode, fail_instance, fail_path_instance};
+    use time::OffsetDateTime;
+    for case in 0..6 {
+        let def = definition_with_policy(RetryPolicy::DEFAULT, case == 4, case == 3);
+        let mut full = state(3);
+        let work = member(1, "work");
+        full.apply_addressed(
+            &AddressedRunEvent::in_path(path(1), RunEvent::StepReleased { node: id("work") })
+                .expect("address"),
+        )
+        .expect("release");
+        let (fence, _) = lease_instance(&mut full, &work).expect("lease");
+        if case == 2 {
+            full.apply_addressed(
+                &AddressedRunEvent::in_path(
+                    path(1),
+                    RunEvent::StepCancelRequested { node: id("work") },
+                )
+                .expect("address"),
+            )
+            .expect("request cancellation");
+        }
+        let mut bounded = PathExecutionState::from_run(&full, path(1)).expect("bounded");
+        let failure = Failure {
+            fence,
+            code: if case >= 3 {
+                FailureCode::outcome_unknown()
+            } else {
+                FailureCode::parse("DECLINED").expect("code")
+            },
+            retryable: case != 0,
+            jitter_sample: 0.0,
+        };
+        let expected = fail_instance(
+            &def,
+            &mut full,
+            &work,
+            failure.clone(),
+            OffsetDateTime::UNIX_EPOCH,
+        )
+        .expect("full failed attempt");
+        let actual = fail_path_instance(
+            &def,
+            &mut bounded,
+            &work,
+            failure,
+            OffsetDateTime::UNIX_EPOCH,
+        )
+        .expect("bounded failed attempt");
+        assert_eq!(actual, expected, "case {case}");
+        assert_eq!(
+            bounded,
+            PathExecutionState::from_run(&full, path(1)).expect("oracle"),
+            "case {case}"
+        );
+    }
+}
+
+#[test]
+fn bounded_lookup_verdict_and_operator_commands_match_full_replay() {
+    use sagat_domain::execution::{
+        Failure, FailureCode, ReviewOutcome, complete_reconciliation_instance,
+        complete_reconciliation_path_instance, fail_instance, fail_path_instance,
+        resolve_review_instance, resolve_review_path_instance, retry_review_instance,
+        retry_review_path_instance,
+    };
+    use sagat_domain::saga::ReconcileVerdict;
+    use time::OffsetDateTime;
+    let now = OffsetDateTime::UNIX_EPOCH;
+    for case in 0..5 {
+        let def = definition_with_policy(RetryPolicy::DEFAULT, true, true);
+        let mut full = state(3);
+        let work = member(1, "work");
+        full.apply_addressed(
+            &AddressedRunEvent::in_path(path(1), RunEvent::StepReleased { node: id("work") })
+                .expect("address"),
+        )
+        .expect("release");
+        let (fence, _) = lease_instance(&mut full, &work).expect("lease");
+        let mut bounded = PathExecutionState::from_run(&full, path(1)).expect("bounded");
+        let failure = Failure {
+            fence,
+            code: FailureCode::outcome_unknown(),
+            retryable: true,
+            jitter_sample: 0.0,
+        };
+        let expected = fail_instance(&def, &mut full, &work, failure.clone(), now)
+            .expect("full unknown effect");
+        let actual = fail_path_instance(&def, &mut bounded, &work, failure, now)
+            .expect("bounded unknown effect");
+        assert_eq!(actual, expected);
+        let lookup = ExecutionInstanceId::in_path(path(1), work.node().reconciliation());
+        let (expected_fence, expected_event) =
+            lease_instance(&mut full, &lookup).expect("full lookup lease");
+        let (actual_fence, actual_event) =
+            lease_path_instance(&mut bounded, &lookup).expect("bounded authorized lookup lease");
+        assert_eq!(
+            (actual_fence, actual_event),
+            (expected_fence, expected_event)
+        );
+        let verdict = match case {
+            0 => ReconcileVerdict::Applied,
+            1 => ReconcileVerdict::NotApplied,
+            _ => ReconcileVerdict::Unknown,
+        };
+        let expected = complete_reconciliation_instance(
+            &def,
+            &mut full,
+            &lookup,
+            expected_fence,
+            verdict,
+            0.0,
+            now,
+        )
+        .expect("full lookup verdict");
+        let actual = complete_reconciliation_path_instance(
+            &def,
+            &mut bounded,
+            &lookup,
+            actual_fence,
+            verdict,
+            0.0,
+            now,
+        )
+        .expect("bounded lookup verdict");
+        assert_eq!(actual, expected, "verdict case {case}");
+        assert_eq!(
+            bounded,
+            PathExecutionState::from_run(&full, path(1)).expect("oracle")
+        );
+        if case >= 2 {
+            let (expected, actual) = if case == 2 {
+                (
+                    retry_review_instance(&def, &mut full, &work, now),
+                    retry_review_path_instance(&def, &mut bounded, &work, now),
+                )
+            } else {
+                let outcome = if case == 3 {
+                    ReviewOutcome::Succeeded
+                } else {
+                    ReviewOutcome::Failed(FailureCode::parse("DECLINED").expect("code"))
+                };
+                (
+                    resolve_review_instance(&def, &mut full, &work, outcome.clone(), now),
+                    resolve_review_path_instance(&def, &mut bounded, &work, outcome, now),
+                )
+            };
+            assert_eq!(actual, expected, "decision case {case}");
+            assert_eq!(
+                bounded,
+                PathExecutionState::from_run(&full, path(1)).expect("decision oracle")
+            );
+        }
+    }
 }

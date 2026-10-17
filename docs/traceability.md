@@ -419,3 +419,16 @@ prerequisite, component and reference gates. Commands/manifests/limits are in
 `tasks/project-completion/integration-notes.md`. Full workspace/advisory/Compose integration
 (T016-054 / T014-043), remaining accepted feature-014 runtime and large-workload evidence remain
 open; this checkpoint is not remote CI or deployment evidence.
+
+
+### Integrated bounded execution evidence (feature 014)
+
+FR-014-005/014/015: shared bounded/full effect and attempt policies are covered by
+`crates/domain/tests/bounded_path_planning.rs` and `scoped_compensation.rs`; the real runtime-role
+path writer is covered by `byte_ceilings::a_bounded_reconciliation_persists_its_companion_and_manual_review_status`.
+Run status preserves other-path review/live facts, outputs and lookup hints are committed with
+the journal, and full replay verifies persisted results. Existing event telemetry vocabulary is
+reused; no payload/secret fields are added to logs or metric labels. Internal work-summary/index
+contracts are in feature 014's data model and migrations 20261207000000/20261208000000.
+Exact commands, initial failures, performance phase exclusions and unproven full worker/control/
+root-finalization criteria remain recorded in `tasks/project-completion/integration-notes.md`.

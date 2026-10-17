@@ -329,6 +329,12 @@ impl PgPathExecutionTx {
                     | RunEvent::StepReleased { .. }
                     | RunEvent::StepCancelRequested { .. }
                     | RunEvent::StepCancelled { .. }
+                    | RunEvent::ReconciliationRequested { .. }
+                    | RunEvent::ReconciliationConcluded { .. }
+                    | RunEvent::StepNeedsReview { .. }
+                    | RunEvent::StepRetryRequested { .. }
+                    | RunEvent::StepSkipped { .. }
+                    | RunEvent::StepResolved { .. }
             )
         }) {
             return Err(StoreError::Internal {
@@ -346,9 +352,12 @@ impl PgPathExecutionTx {
         let completed = events
             .iter()
             .filter_map(|event| {
-                matches!(event.event(), RunEvent::StepCompleted { .. })
-                    .then(|| event.instance())
-                    .flatten()
+                matches!(
+                    event.event(),
+                    RunEvent::StepCompleted { .. } | RunEvent::ReconciliationConcluded { .. }
+                )
+                .then(|| event.instance())
+                .flatten()
             })
             .collect::<BTreeSet<_>>();
         let mut charged = BTreeSet::new();
@@ -429,9 +438,12 @@ impl PgPathExecutionTx {
             .bind(encoded.attempt)
             .bind(&encoded.detail)
             .bind(
-                matches!(event, RunEvent::StepCompleted { .. })
-                    .then(|| output_digest.get(&instance).map(Vec::as_slice))
-                    .flatten(),
+                matches!(
+                    event,
+                    RunEvent::StepCompleted { .. } | RunEvent::ReconciliationConcluded { .. }
+                )
+                .then(|| output_digest.get(&instance).map(Vec::as_slice))
+                .flatten(),
             )
             .bind(effects.actor.label())
             .bind(

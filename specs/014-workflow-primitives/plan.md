@@ -227,3 +227,17 @@ No automated conversion of active old runs or cross-version continuation is in t
 No constitutional exception is proposed. Scoped identities and chain links add necessary independent
 semantics; their alternative would merge iterations or lose history. Architecture is accepted; implementation and measurements
 remain pending and do not permit fake implementations of these guarantees.
+
+
+### Integrated bounded effect checkpoint (2026-10-17)
+
+The bounded exact-path store now shares pure effect/review reducers and scoped command rules
+with full replay. Global work facts from other paths preserve the same run status policy without
+restoring historical steps. The read snapshot and mutation version fence include that outside
+work; partial indexes support the existential queries. Real PostgreSQL coverage uses the runtime
+role and exercises unknown/applied lookup results and retained outputs. Exact commands and
+failures are in `tasks/project-completion/integration-notes.md`.
+
+The production worker still uses the existing full transaction path. Complete blob/provider/
+control/drain/finalization integration and the 10,000/100,000 resource/fault criteria remain
+required; this checkpoint is not a substitute for those accepted tasks.

@@ -77,3 +77,14 @@ accounting separate and replaces the per-transition historical count. The additi
 removes only derived metadata. Existing migration identities and bytes are preserved.
 This is an implementation of the accepted bounded-read design, not evidence that the complete
 worker, nested scope or root-finalization resource criteria have passed.
+
+
+### Bounded effect progress and global work
+
+The combined path projection shares effect/review reducers and scoped attempt command policy
+with full replay. Current global status combines local work with checked existential facts about
+other paths and run-wide compensation, preserving the original status precedence. The facts are
+read in the same repeatable-read snapshot; mutation still checks the global run revision. New
+partial indexes in 20261208000000 support the probes. This changes no SDK/wire semantics and
+adds no external-effect delivery guarantee. Full worker/provider/blob/control/finalizer wiring
+and the accepted large-workload evidence remain release prerequisites.

@@ -26,14 +26,16 @@ pub use approval::{
 pub use command::{
     AddressedProgress, Expiry, Failure, Heartbeat, InstanceHeartbeat, Progress, Resolution,
     advance_scope_compensation, complete_instance, complete_path_instance, complete_reconciliation,
-    complete_reconciliation_instance, complete_step, expire_attempt, expire_instance,
-    fail_instance, fail_report_for_storage_quota, fail_step, fail_step_for_storage_quota,
-    fail_unentered_loop, finish_child, fire_timer, heartbeat, heartbeat_instance,
-    heartbeat_path_instance, lease_instance, lease_path_instance, lease_step, mark_for_review,
-    mark_for_review_instance, pause_run, release_pending, resolve, resolve_review,
-    resolve_review_instance, resume_run, retry_due, retry_due_instance, retry_review,
-    retry_review_instance, satisfy_wait, skip_review, skip_review_instance, start_run,
-    stop_for_storage_quota, stop_run, time_out_wait,
+    complete_reconciliation_instance, complete_reconciliation_path_instance, complete_step,
+    expire_attempt, expire_instance, fail_instance, fail_path_instance,
+    fail_report_for_storage_quota, fail_step, fail_step_for_storage_quota, fail_unentered_loop,
+    finish_child, fire_timer, heartbeat, heartbeat_instance, heartbeat_path_instance,
+    lease_instance, lease_path_instance, lease_step, mark_for_review, mark_for_review_instance,
+    mark_for_review_path_instance, pause_run, release_pending, resolve, resolve_review,
+    resolve_review_instance, resolve_review_path_instance, resume_run, retry_due,
+    retry_due_instance, retry_due_path_instance, retry_review, retry_review_instance,
+    retry_review_path_instance, satisfy_wait, skip_review, skip_review_instance,
+    skip_review_path_instance, start_run, stop_for_storage_quota, stop_run, time_out_wait,
 };
 pub use continuation::{
     CancelResolution, ChainError, ChainFinalOutcome, ChainHandoff, ChainPolicy, ChainScope,
@@ -67,5 +69,6 @@ pub use scoped_sagas::plan_scope_compensation;
 pub use state::{
     CollectionIterationRestore, CollectionPhase, CollectionResult, CollectionState, LoopCheckpoint,
     LoopIterationRestore, LoopPhase, LoopState, RunChainState, RunId, RunState, RunStatus,
-    SagaPhase, SagaState, ScopeSagaState, StepState, StepStatus, WaitingOn, scope_final_status,
+    RunWorkSummary, SagaPhase, SagaState, ScopeSagaState, StepState, StepStatus, WaitingOn,
+    scope_final_status,
 };

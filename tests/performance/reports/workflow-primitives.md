@@ -1278,3 +1278,35 @@ The historical measurements above use the scale branch's 20261122000000 open-ste
 The combined 014/016/017 profile allocates those same new indexes at 20261206000000 because
 20261122000000 already identifies OpenBao there (ADR-0036). Historical source measurements are
 retained as reported; the combined runtime still requires its own large-workload release gate.
+
+## Integrated profile: projected instance count (2026-10-17)
+
+Product source: `5ba1c2bc` (the performance binary was built before the subsequent bounded
+reconciliation work). Actual command:
+
+```sh
+SAGAT_TEST_DATABASE_URL=postgres://postgres:<test-only>@127.0.0.1:<owned-port>/postgres \
+CARGO_TARGET_DIR=/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target \
+CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=3 RUST_MIN_STACK=16777216 \
+cargo test --locked -p sagat-tests --test perf_workflow_primitives \
+  -- flat_across_sizes --nocapture --test-threads=1
+```
+
+Both checks passed, no ignored tests, 434.37 seconds:
+`/tmp/sagat-completion-charge-flat-cost.log`. Apple M3 Max, 16 logical CPUs, 48 GiB host RAM;
+Docker exposed 16 CPUs and 8,318,709,760 bytes RAM. Rust 1.98.0, debug test profile, PostgreSQL
+16-alpine with pg_stat_statements. The host was shared with other workloads and builds.
+
+| Scope population | Collection median rows / buffers | Loop median rows / buffers |
+| --- | --- | --- |
+| 160 | 44 / 247 | 67 / 370 |
+| 320 | 44 / 241 | 67 / 389 |
+| 640 | 44 / 266 | 67 / 391 |
+
+These are the existing tests' late checkpoint-transition samples (between two thirds and 95%
+completion), measured through pg_stat_statements in each workload's database. They cover the
+scheduler checkpoint path after replacing its historical step count with the transactional
+current-instance projection. They exclude final aggregate/finalization transitions and ordinary
+worker polling/reporting, which still use full restoration. They are not a measurement of
+10,000-item collections, 100,000 nested instances, full-run memory bounds or production capacity.
+Those accepted release criteria remain open; no ceiling or latency promise is inferred here.

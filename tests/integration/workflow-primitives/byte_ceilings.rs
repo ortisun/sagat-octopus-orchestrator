@@ -1147,3 +1147,183 @@ async fn an_aggregate_that_cannot_be_computed_fails_the_scope_with_expression_er
     assert_failed_with(&world, run, "EXPRESSION_ERROR").await;
     world.assert_consistent(run).await;
 }
+
+#[tokio::test]
+async fn a_bounded_reconciliation_persists_its_companion_and_manual_review_status() {
+    use sagat_application::worker::Capabilities;
+    use sagat_domain::execution::{FailureCode, RunStatus};
+    use sagat_domain::saga::ReconcileVerdict;
+
+    for verdict in [ReconcileVerdict::Unknown, ReconcileVerdict::Applied] {
+        let world = world().await;
+        allow_iterations(&world, 4).await;
+        let mut doc = collection("bounded-reconciliation", "input.items", 1, 1, "bodyResult");
+        doc["bodies"]["line"]["nodes"][0]["reconcileWith"] = json!("limits.lookup");
+        doc["bodies"]["line"]["nodes"][0]["highRisk"] = json!(true);
+        let run = start_collection(&world, doc, &json!({"items": [1]})).await;
+        let scheduler = scheduler(&world, "bounded-reconciliation").await;
+        let workers = scoped_workers(&world);
+        world.bind_everything(&world.worker).await;
+        let session = workers
+            .register(
+                &world.worker,
+                "payments",
+                "bounded-reconciliation-worker",
+                &Capabilities {
+                    activities: vec!["limits.step".into(), "limits.lookup".into()],
+                    languages: vec!["rust".into()],
+                    pools: Vec::new(),
+                    max_inflight: 1,
+                    protocol_version: "1.5".into(),
+                },
+            )
+            .await
+            .expect("register scoped forward/lookup worker");
+        assert_eq!(scheduler.tick().await.collections_advanced, 1);
+        assert_eq!(scheduler.tick().await.collections_advanced, 1);
+        let task = workers
+            .poll(
+                &world.worker,
+                session.worker_id,
+                session.session_token.expose(),
+                1,
+                None,
+            )
+            .await
+            .expect("claim forward")
+            .pop()
+            .expect("forward task");
+        let path = task.instance.path().clone();
+        let lookup =
+            ExecutionInstanceId::in_path(path.clone(), task.instance.node().reconciliation());
+        let snapshot = world
+            .store
+            .load_path(world.admin.tenant_id(), run, path.clone())
+            .await
+            .expect("bounded snapshot")
+            .expect("run");
+        let mut tx = world
+            .store
+            .begin_path(snapshot, Lock::Wait)
+            .await
+            .expect("bounded tx")
+            .expect("run");
+        assert!(
+            tx.current_worker_authorized(world.worker.subject().as_str())
+                .await
+                .expect("current authority")
+        );
+        assert!(
+            tx.lease_unexpired(&task.instance, &task.lease_token.hash())
+                .await
+                .expect("forward fence")
+        );
+        let definition = tx.snapshot().definition.clone();
+        let now = tx.now();
+        let events = sagat_domain::execution::fail_path_instance(
+            &definition,
+            &mut tx.snapshot().state,
+            &task.instance,
+            sagat_domain::execution::Failure {
+                fence: task.fence,
+                code: FailureCode::outcome_unknown(),
+                retryable: true,
+                jitter_sample: 0.0,
+            },
+            now,
+        )
+        .expect("bounded unknown-outcome command")
+        .events;
+        let mut effects = Effects::by(Actor::Worker(session.worker_id.to_string()), None);
+        effects.reported = Some(ReportedLease {
+            instance: task.instance.clone(),
+            token_hash: task.lease_token.hash(),
+        });
+        tx.persist_addressed(&events, &[], effects)
+            .await
+            .expect("persist request and lookup hint");
+        tx.commit().await.expect("request commit");
+        world.assert_consistent(run).await;
+
+        let reconciliation = workers
+            .poll(
+                &world.worker,
+                session.worker_id,
+                session.session_token.expose(),
+                1,
+                None,
+            )
+            .await
+            .expect("claim lookup")
+            .pop()
+            .expect("lookup task");
+        assert_eq!(reconciliation.instance, lookup);
+        let snapshot = world
+            .store
+            .load_path(world.admin.tenant_id(), run, path.clone())
+            .await
+            .expect("lookup snapshot")
+            .expect("run");
+        let mut tx = world
+            .store
+            .begin_path(snapshot, Lock::Wait)
+            .await
+            .expect("bounded tx")
+            .expect("run");
+        assert!(
+            tx.lease_unexpired(&lookup, &reconciliation.lease_token.hash())
+                .await
+                .expect("lookup fence")
+        );
+        let definition = tx.snapshot().definition.clone();
+        let now = tx.now();
+        let events = sagat_domain::execution::complete_reconciliation_path_instance(
+            &definition,
+            &mut tx.snapshot().state,
+            &lookup,
+            reconciliation.fence,
+            verdict,
+            0.0,
+            now,
+        )
+        .expect("bounded reconciliation command")
+        .events;
+        let expected_status = if verdict == ReconcileVerdict::Unknown {
+            RunStatus::ManualReview
+        } else {
+            RunStatus::Running
+        };
+        assert_eq!(tx.snapshot().state.global().status(), expected_status);
+        let mut effects = Effects::by(Actor::Worker(session.worker_id.to_string()), None);
+        effects.reported = Some(ReportedLease {
+            instance: lookup.clone(),
+            token_hash: reconciliation.lease_token.hash(),
+        });
+        let mut outputs = vec![(lookup.clone(), b"{}".to_vec())];
+        if verdict == ReconcileVerdict::Applied {
+            outputs.push((task.instance.clone(), br#"{"ok":true}"#.to_vec()));
+        }
+        tx.persist_addressed(&events, &outputs, effects)
+            .await
+            .expect("persist verdict");
+        tx.commit().await.expect("verdict commit");
+        assert_eq!(world.run_status(run).await, expected_status);
+        let loaded = world
+            .store
+            .load_path(world.admin.tenant_id(), run, path)
+            .await
+            .expect("reload")
+            .expect("run");
+        assert_eq!(loaded.state.global().status(), expected_status);
+        assert_eq!(loaded.data.output(&lookup), Some(b"{}".as_slice()));
+        if verdict == ReconcileVerdict::Applied {
+            assert_eq!(
+                loaded.data.output(&task.instance),
+                Some(br#"{"ok":true}"#.as_slice())
+            );
+        } else {
+            assert_eq!(loaded.data.output(&task.instance), None);
+        }
+        world.assert_consistent(run).await;
+    }
+}

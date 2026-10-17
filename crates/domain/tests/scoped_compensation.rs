@@ -1422,3 +1422,46 @@ fn a_loop_that_timed_out_compensates_and_ends_timed_out_only_if_everything_was_u
     );
     scope.assert_replays();
 }
+
+#[test]
+fn bounded_operator_decisions_keep_failed_compensation_semantics() {
+    use sagat_domain::execution::{
+        resolve_review_path_instance, retry_review_path_instance, skip_review_path_instance,
+    };
+    for decision in 0..3 {
+        let (mut scope, undo) = one_compensation_that_keeps_failing();
+        let mut bounded = PathExecutionState::from_run(&scope.state, undo.path().clone())
+            .expect("bounded compensation");
+        let (expected, actual) = match decision {
+            0 => (
+                retry_review_instance(&scope.def, &mut scope.state, &undo, T0),
+                retry_review_path_instance(&scope.def, &mut bounded, &undo, T0),
+            ),
+            1 => (
+                skip_review_instance(&scope.def, &mut scope.state, &undo, T0),
+                skip_review_path_instance(&scope.def, &mut bounded, &undo, T0),
+            ),
+            _ => (
+                resolve_review_instance(
+                    &scope.def,
+                    &mut scope.state,
+                    &undo,
+                    ReviewOutcome::Failed(FailureCode::compensation_failed()),
+                    T0,
+                ),
+                resolve_review_path_instance(
+                    &scope.def,
+                    &mut bounded,
+                    &undo,
+                    ReviewOutcome::Failed(FailureCode::compensation_failed()),
+                    T0,
+                ),
+            ),
+        };
+        assert_eq!(actual, expected, "decision {decision}");
+        assert_eq!(
+            bounded,
+            PathExecutionState::from_run(&scope.state, undo.path().clone()).expect("oracle")
+        );
+    }
+}
