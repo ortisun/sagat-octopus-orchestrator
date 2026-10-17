@@ -13,7 +13,7 @@ use sagat_application::payloads::StoredPayloadBytes;
 use sagat_domain::connectors::{ConnectorId, DeadLetter};
 use sagat_domain::events::{EventEnvelope, EventId, EventKey, InboxStatus};
 use sagat_domain::execution::{CorrelationKey, RunId};
-use sagat_domain::identity::{NamespaceId, Role, Slug, TenantId};
+use sagat_domain::identity::{NamespaceId, Permission, Role, Slug, TenantId};
 use sagat_domain::workflow::EventType;
 use serde_json::Value;
 use sqlx::postgres::PgRow;
@@ -138,6 +138,11 @@ impl EventPayloadStore for PgRunStore {
                 EventPayloadFailure::EventReadNotGranted,
             ));
         };
+        if !role.grants(Permission::EventRead) {
+            return Ok(EventPayloadRead::Refused(
+                EventPayloadFailure::EventReadNotGranted,
+            ));
+        }
         let grant = has_effective_payload_reveal_grant(
             &mut tx,
             p.tenant_id(),
@@ -177,7 +182,17 @@ async fn finish<T>(
             EventPayloadRead::Ready(value)
         }
         Err(EventPayloadFailure::PiiRevealNotGranted) => {
-            insert_audit(&mut *tx, &audits.denied).await?;
+            if let Err(error) = insert_audit(&mut *tx, &audits.denied).await {
+                tracing::error!(
+                    error = %error,
+                    action = %audits.denied.action(),
+                    "failed to record event payload reveal denial"
+                );
+                tx.rollback().await.map_err(store_error)?;
+                return Ok(EventPayloadRead::Refused(
+                    EventPayloadFailure::PiiRevealNotGranted,
+                ));
+            }
             EventPayloadRead::Refused(EventPayloadFailure::PiiRevealNotGranted)
         }
         Err(f) => EventPayloadRead::Refused(f),
