@@ -369,3 +369,64 @@ fn failed_carrier_emits_no_partial_locations_and_returns_a_safe_status() {
                 && failure.source_path == "/inputSchema/$ref"
     ));
 }
+
+#[test]
+fn annotations_reached_by_refs_under_unsupported_applicators_are_refused() {
+    for (unsupported, expected_path) in [
+        (json!({"then":{"$ref":"#/$defs/s"}}), "/inputSchema/then"),
+        (
+            json!({"patternProperties":{"^private$":{"$ref":"#/$defs/s"}}}),
+            "/inputSchema/patternProperties",
+        ),
+        (
+            json!({"contains":{"$ref":"#/$defs/s"}}),
+            "/inputSchema/contains",
+        ),
+    ] {
+        let mut schema = json!({
+            "x-sagat-classification":"public",
+            "$defs":{"s":{"type":"string", "x-sagat-classification":"secret"}},
+            "if": true
+        });
+        schema
+            .as_object_mut()
+            .expect("schema object")
+            .extend(unsupported.as_object().expect("applicator object").clone());
+        let result = classification_check::check(&json!({"inputSchema":schema}));
+        assert!(result.findings.iter().any(|finding| {
+            finding.code == Code::UnsupportedKeyword && finding.path.as_str() == expected_path
+        }));
+        assert!(!result.is_publishable());
+    }
+}
+
+#[test]
+fn unsupported_applicator_annotation_reachability_follows_two_local_refs() {
+    let result = classification_check::check(&json!({"inputSchema":{
+        "x-sagat-classification":"public",
+        "then":{"$ref":"#/$defs/first"},
+        "$defs":{
+            "first":{"$ref":"#/$defs/second"},
+            "second":{"x-sagat-classification":"secret"}
+        }
+    }}));
+    assert!(result.findings.iter().any(|finding| {
+        finding.code == Code::UnsupportedKeyword && finding.path.as_str() == "/inputSchema/then"
+    }));
+}
+
+#[test]
+fn supported_all_of_refs_remain_valid_controls() {
+    let result = classification_check::check(&json!({"inputSchema":{
+        "x-sagat-classification":"public",
+        "allOf":[{"$ref":"#/$defs/s"}],
+        "$defs":{"s":{"x-sagat-classification":"secret"}}
+    }}));
+    assert!(result.is_publishable(), "{:?}", result.findings);
+    assert!(
+        !result
+            .findings
+            .iter()
+            .any(|finding| finding.code == Code::UnsupportedKeyword)
+    );
+}
