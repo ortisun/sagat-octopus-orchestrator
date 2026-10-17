@@ -4732,6 +4732,7 @@ dependencies = [
  "base64 0.23.1",
  "flate2",
  "jsonschema",
+ "metrics",
  "sagat-application",
  "sagat-domain",
  "serde",

@@ -124,3 +124,24 @@ The combined Python SDK passed 261 tests in 22.23 s
 renaming the chain page local variable (which had reused the run-page inferred type), sorting the
 public export list, and applying the pinned formatter. This is SDK-local proof, not the all-five
 runtime server conformance gate.
+
+### Combined HTTP, result and browser checkpoint
+
+At `a08bb21b` plus the narrow logical-output ledger fix, the combined target command passed
+15 contract, 2 fault and 21 real PostgreSQL/HTTP integration tests
+(`/tmp/sagat-completion-classification-combined-gates-3.log`). This includes the complete 96-cell
+REST audience matrix, fixed selector/reveal/unknown/malformed errors without reflection, typed
+1KiB refusal, private/no-store success and error responses, opaque tenant resolution with no foreign
+debit, and exact namespace admission. The result regression now passes and confirms two logical
+output references despite shared content, with no extra byte charge on an idempotent report replay.
+
+The actual Chromium disclosure journey passed 1/1 (`/tmp/sagat-completion-disclosure-browser.log`):
+viewer, developer, operator and revealer projections, forbidden canary absence in wire and DOM,
+keyboard confirmation, PII absent from browser stores and cleared on close. Browser time 2.5 s;
+real API/PG harness 7.66 s. The focused command used `SAGAT_STUDIO_NO_SANDBOX=1`, so the unrelated
+script sandbox journey was explicitly excluded; this is not the full Studio gate or human visual
+acceptance. The production Studio build passed 16.60 s before that run.
+
+The cache benchmark report distinguishes D281's 16 MiB serialized schema weight from measured
+compiled retention (~414.24MiB requested live heap, not RSS). A reviewed concurrent-miss accounting
+fix and bounded compile admission are in progress. No actual 16 MiB heap guarantee is inferred.
