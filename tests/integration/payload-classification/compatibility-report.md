@@ -53,33 +53,57 @@ CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=3 \
 scripts/test-payload-classification-compat.sh
 ```
 
-Result: **in progress; not a passing upgrade gate**. The actual annotated `v0.1.0` tag resolves to
-`6ede1c7849c4ac5a209c08da8ad25294fbdd7795`; the original harness incorrectly pinned its parent and
-refused before building. The corrected source produced both released debug binaries (40.46 s),
-the exact locked Studio bundle and the current debug control plane (1m38s). The manifest is retained
-at `/Users/marcelo/Documents/Projects/sagat-octopus-compat016-artifacts/run.1mfG99/artifacts/SHA256SUMS`.
+Result: **the named feature-016 prior-release cases passed**. The annotated `v0.1.0` tag resolves
+to `6ede1c7849c4ac5a209c08da8ad25294fbdd7795`. The full artifact-building process gate passed 1/1
+in 49.88 s (`/tmp/sagat-completion-compat-release-5.log`). Its manifest is retained at
+`/Users/marcelo/Documents/Projects/sagat-octopus-compat016-artifacts/run.PJb73x/artifacts/SHA256SUMS`;
+the current binary is from `2108d08cd117f26847b605c92c8abeb95a3dc5ea`.
 
-Subsequent test prerequisites exposed the new SHA-256 array's lack of `LowerHex`, missing explicit
-HTTP crypto-provider initialization and the event deployment gate's required key ring. The harness
-now uses bytewise hex encoding, initializes the pinned provider and shares a random test-only ring
-between its child processes. Logs are retained outside temporary source worktrees. Reused local
-crate metadata is refreshed before switching the coordinated target back to current source.
+The initial harness incorrectly pinned the tag's parent and refused before building. Other
+prerequisites needed bytewise SHA-256 hex encoding, explicit HTTP crypto-provider initialization
+and the event deployment gate's shared random test key ring. The first populated migration then
+found PostgreSQL 55006 in the new unreleased 20261205000000 discovery migration. A focused test
+reproduced it, then passed after indexes were created before the backfill, retaining the same
+transaction and normal deferred quota triggers. All 60 released migration files remain unchanged.
+Those failed attempts are not counted as passing evidence.
 
-The next executed attempt reached publication, run creation and the current migration sequence,
-then failed at 20261205000000 with PostgreSQL 55006: CREATE INDEX on steps had pending deferred
-quota-trigger events (`/tmp/sagat-completion-compat-release-4.log`). A focused populated-step
-regression reproduced that error, then passed 1/1 after moving index creation before the backfill
-(`/tmp/sagat-completion-discovery-migration-{red,green}.log`). All 60 released migration files remain
-byte-identical. Only the new unreleased discovery migration was reordered, in the same transaction.
+The expanded process case executed the archived release Studio in real Chromium against the
+current binary and passed 1/1 in 17.48 s (`/tmp/sagat-completion-compat-browser-2.log`). It signs in,
+reads the existing run and graph and renders the work row in the node table, with no browser errors
+or retained-payload canaries in the DOM or inspected HTTP responses. The exact archived bundle is
+served; this is browser behavior proof beyond the earlier nonempty-index check. The first driver
+compile required converting its UUID to text and did not execute a browser.
 
-The old/current full-process gate must be repeated with a rebuilt current binary containing that
-new checksum. It has not passed yet. T016-052 remains open for that run and the browser/SDK limits.
+All five released SDK sources were archived with their own canonical contracts from the same
+immutable release. The current conformance harness selected them through `SAGAT_SDK_SOURCE_ROOT`,
+built their own prepare/run scripts, and ran the reviewed current `run-lifecycle` scenario against
+the real current server. It passed one aggregate / five languages in 145.91 s, without blessing
+(`/tmp/sagat-completion-old-sdks.log`). Input provenance: 361 source/contract files in
+`/Users/marcelo/Documents/Projects/sagat-octopus-compat016-artifacts/run.1mfG99/artifacts/sdk-source.sha256`.
+Reproduce from a fresh archive with `scripts/test-released-sdk-compat.sh`; its shell syntax and
+ShellCheck passed. The recorded Cargo invocation used the equivalent archived source directly.
 
 ## Limits
 
-- Reconstructing a current service is not accepted as release-process evidence; this gate launches
-  the actual binaries produced from the immutable release commit.
-- This gate builds the old Studio bundle and reads its index over HTTP from the current server's
-  configured static mount. It does not launch Chromium or exercise the bundle's browser behavior.
-- The five old SDK bundles are not built or executed by this gate. Their compatibility remains
-  separate multi-language protocol conformance evidence.
+- Artifacts are built from the actual tagged source with its lock files; reconstructed current
+  services are not used as a substitute for old binaries.
+- The old execution engine reaches readiness on both schemas and, after upgrade, restores the
+  actual retained run for a deliberately unleased heartbeat. Its typed STALE_ATTEMPT refusal
+  proves that read path without an old-server state write. Old HTTP processes also read the old
+  run and workflow after upgrade. This does not prove that an old server can write arbitrary new scoped
+  workflows; feature 014's broader upgrade and rollback gates remain separate.
+- The old Studio browser case covers sign-in, run/graph and table rendering, not every editor action.
+- Released SDK proof covers the shared root lifecycle scenario in all five languages. It is not the
+  complete current primitive/runtime conformance matrix, which remains T014-041.
+- T016-052's named compatibility cases are complete. Final integrated architecture, security,
+  workspace and quickstart acceptance remain separate open release tasks.
+
+
+The final probe-enhanced process case passed 1/1 in 24.96 s
+(`/tmp/sagat-completion-compat-engine-read-2.log`). It exercises the released engine's actual
+run-restoration path after the upgrade and receives `Aborted` / `x-sagat-error: STALE_ATTEMPT`
+for the unleased heartbeat. The first probe used a definition node as `step_id`, whereas that
+legacy field is an optional UUID; its InvalidArgument result was a harness failure. Omitting
+that optional field uses the documented legacy heartbeat form. An earlier final case also
+explicitly proved the old disclosure endpoint is 404 and old run readers carry no payload values
+(`/tmp/sagat-completion-compat-final.log`, 1/1 in 21.04 s).

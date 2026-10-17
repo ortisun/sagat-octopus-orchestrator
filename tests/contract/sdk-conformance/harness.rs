@@ -44,6 +44,19 @@ fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..")
 }
 
+/// Compatibility gates can run immutable released client sources against the current server.
+/// Scenarios, normalization and reviewed goldens continue to come from this checkout.
+fn sdk_source_root() -> PathBuf {
+    std::env::var_os("SAGAT_SDK_SOURCE_ROOT").map_or_else(
+        || repo().join("sdks"),
+        |root| {
+            let root = PathBuf::from(root);
+            assert!(root.is_absolute(), "SAGAT_SDK_SOURCE_ROOT must be absolute");
+            root
+        },
+    )
+}
+
 fn suite() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("contract")
@@ -66,7 +79,7 @@ fn languages(only: Option<&[&str]>) -> Vec<(&'static str, PathBuf)> {
                 .is_none_or(|list| list.iter().any(|l| l == name))
         })
         .filter(|(name, _)| only.is_none_or(|list| list.contains(name)))
-        .map(|(name, dir)| (*name, repo().join("sdks").join(dir).join("conformance")))
+        .map(|(name, dir)| (*name, sdk_source_root().join(dir).join("conformance")))
         .collect()
 }
 
@@ -1498,8 +1511,7 @@ pub async fn conform(selection: &Selection) -> Suite {
     let mut failures = Vec::new();
     if all_five {
         for (name, dir) in LANGUAGES {
-            let run = repo()
-                .join("sdks")
+            let run = sdk_source_root()
                 .join(dir)
                 .join("conformance")
                 .join("run.sh");

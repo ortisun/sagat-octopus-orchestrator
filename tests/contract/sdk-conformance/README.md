@@ -16,6 +16,13 @@ SAGAT_SDK_REUSE=1 …                                                           
 
 `--ignored` because the suite needs the five toolchains (Node, Python, Go, .NET and a JDK) and Docker, which `cargo test --workspace` cannot assume; the `sdks` job of CI sets them up and runs the suite with `--ignored`. `SAGAT_SDK_REUSE=1` also skips the build of the runners, so run once without it after changing an SDK or a runner.
 
+Prior-release compatibility may set `SAGAT_SDK_SOURCE_ROOT` to an absolute directory containing
+an exact archived release's `sdks/` tree. The clients and their checked-in prepare/run scripts then
+come from that directory; the real server, scenarios, normalization and reviewed goldens remain
+current. Record the source release commit and include its canonical contracts alongside the archived
+SDKs, because their preparation scripts synchronize shared protocol/catalog files. A previous client's
+successful run is separate from current-client conformance; it does not bless new goldens.
+
 ## Protocol compatibility
 
 `protocol-negotiation.json` keeps the production worker ceiling and old-minor path executable in

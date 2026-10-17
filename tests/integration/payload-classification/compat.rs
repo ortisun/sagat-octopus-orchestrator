@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 use reqwest::{Client, Method, StatusCode};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
+use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
 use super::support::fresh_db;
@@ -36,7 +37,9 @@ const BODY_CANARY: &str = "release-body-value-canary";
 async fn bounded_discovery_backfill_reindexes_existing_steps_atomically() {
     let world = super::support::engine::world().await;
     let source = super::support::engine::document(
-        "nonempty-discovery-upgrade", "work", vec![super::support::engine::activity("work")],
+        "nonempty-discovery-upgrade",
+        "work",
+        vec![super::support::engine::activity("work")],
     );
     let (workflow, _) = world.publish(source).await;
     let run = world.start(workflow, &json!({})).await;
@@ -55,11 +58,18 @@ async fn bounded_discovery_backfill_reindexes_existing_steps_atomically() {
         "SELECT node,status,instance_path_nodes,instance_path_indices FROM steps WHERE run_id=$1 ORDER BY node",
     ).bind(run.as_uuid()).fetch_all(&world.db.pool).await.expect("preserved steps");
     assert_eq!(before, after);
-    let kind: String = sqlx::query_scalar("SELECT node_kind FROM steps WHERE run_id=$1 AND node='work'")
-        .bind(run.as_uuid()).fetch_one(&world.db.pool).await.expect("backfilled node kind");
+    let kind: String =
+        sqlx::query_scalar("SELECT node_kind FROM steps WHERE run_id=$1 AND node='work'")
+            .bind(run.as_uuid())
+            .fetch_one(&world.db.pool)
+            .await
+            .expect("backfilled node kind");
     assert_eq!(kind, "activity");
-    let indexed: bool = sqlx::query_scalar("SELECT to_regclass('steps_path_actionable_idx') IS NOT NULL")
-        .fetch_one(&world.db.pool).await.expect("discovery index");
+    let indexed: bool =
+        sqlx::query_scalar("SELECT to_regclass('steps_path_actionable_idx') IS NOT NULL")
+            .fetch_one(&world.db.pool)
+            .await
+            .expect("discovery index");
     assert!(indexed);
 }
 
@@ -281,6 +291,7 @@ async fn prove_engine_starts(
     idp: &TestIdp,
     log_dir: &Path,
     label: &str,
+    probe: Option<(Uuid, &str)>,
 ) {
     let grpc = unused_address();
     let admin = unused_address();
@@ -291,6 +302,48 @@ async fn prove_engine_starts(
         log_dir.join(format!("{label}.log")),
     );
     wait_for_http(&mut process, label, &format!("http://{admin}/readyz")).await;
+    if let Some((run, token)) = probe {
+        // The released heartbeat opens and restores the persisted run before checking its lease.
+        // A deliberately unleased fence proves that read path without an old-server state write.
+        let mut client = sagat_api_grpc::pb::worker_service_client::WorkerServiceClient::connect(
+            format!("http://{grpc}"),
+        )
+        .await
+        .expect("released engine gRPC connection");
+        let mut request = tonic::Request::new(sagat_api_grpc::pb::HeartbeatRequest {
+            task_id: format!("{run}/work/1"),
+            worker_id: String::new(),
+            generation: 1,
+            lease_token: "read-probe-without-a-lease".into(),
+            run_id: run.to_string(),
+            step_id: String::new(),
+            attempt: 1,
+            instance: None,
+        });
+        request.metadata_mut().insert(
+            "authorization",
+            tonic::metadata::MetadataValue::try_from(format!("Bearer {token}"))
+                .expect("test authorization"),
+        );
+        let status = tokio::time::timeout(Duration::from_secs(10), client.heartbeat(request))
+            .await
+            .expect("released engine read timeout")
+            .expect_err("unleased probe must be fenced");
+        assert_eq!(
+            status.code(),
+            tonic::Code::Aborted,
+            "released engine refusal: {}",
+            status.message()
+        );
+        assert_eq!(
+            status
+                .metadata()
+                .get("x-sagat-error")
+                .and_then(|value| value.to_str().ok()),
+            Some("STALE_ATTEMPT")
+        );
+        process.assert_running(label);
+    }
     process.stop();
 }
 
@@ -448,6 +501,7 @@ async fn actual_v0_1_0_processes_survive_the_additive_upgrade() {
         &idp,
         &logs,
         "old-engine-before-upgrade",
+        None,
     )
     .await;
     let (old_server, old_base) = start_control_plane(
@@ -501,6 +555,21 @@ async fn actual_v0_1_0_processes_survive_the_additive_upgrade() {
     assert_status(status, StatusCode::ACCEPTED, &started);
     let old_run =
         Uuid::parse_str(started["runId"].as_str().expect("old run id")).expect("old run UUID");
+    let (status, absent, absent_wire) = api(
+        &client,
+        &old_base,
+        &token,
+        Method::POST,
+        &format!("/runs/{old_run}/payload-disclosures"),
+        None,
+        Some(&json!({"source":"input"})),
+    )
+    .await;
+    assert_status(status, StatusCode::NOT_FOUND, &absent);
+    assert!(
+        !absent_wire.contains(VALUE_CANARY),
+        "an old server must not interpret an annotation as disclosure authority"
+    );
 
     let (old_digest, old_document): (String, Vec<u8>) = sqlx::query_as(
         "SELECT digest,document FROM workflow_versions WHERE tenant_id=$1 AND id=$2",
@@ -632,6 +701,7 @@ async fn actual_v0_1_0_processes_survive_the_additive_upgrade() {
         &idp,
         &logs,
         "old-engine-after-upgrade",
+        Some((old_run, &token)),
     )
     .await;
     let (old_after, old_after_base) = start_control_plane(
@@ -647,7 +717,7 @@ async fn actual_v0_1_0_processes_survive_the_additive_upgrade() {
         format!("/workflows/{workflow_id}"),
         format!("/runs/{old_run}"),
     ] {
-        let (status, body, _) = api(
+        let (status, body, wire) = api(
             &client,
             &old_after_base,
             &token,
@@ -658,6 +728,10 @@ async fn actual_v0_1_0_processes_survive_the_additive_upgrade() {
         )
         .await;
         assert_status(status, StatusCode::OK, &body);
+        assert!(
+            !wire.contains(VALUE_CANARY),
+            "the old payload-free reader must stay value-free"
+        );
     }
     // The released server continues to expose the three old fields after the additive migration.
     // The current response change below is the documented event-read break, not wire compatibility.
@@ -717,6 +791,41 @@ async fn actual_v0_1_0_processes_survive_the_additive_upgrade() {
             .await
             .expect("old Studio index")
             .is_empty()
+    );
+
+    let driver = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../frontend/e2e/scripts/prior-release-studio.mjs");
+    let mut browser = tokio::process::Command::new("node")
+        .arg(driver)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("old Studio Chromium driver");
+    let input = serde_json::to_vec(&json!({
+        "origin":current_origin, "token":token, "runId":old_run.to_string(),
+        "forbidden":[VALUE_CANARY, EVENT_CANARY, HEADER_CANARY, BODY_CANARY]
+    }))
+    .expect("private browser configuration");
+    let mut stdin = browser.stdin.take().expect("browser stdin");
+    stdin
+        .write_all(&input)
+        .await
+        .expect("browser configuration input");
+    drop(stdin);
+    let browser = tokio::time::timeout(Duration::from_secs(90), browser.wait_with_output())
+        .await
+        .expect("browser gate timeout")
+        .expect("browser process output");
+    fs::write(
+        logs.join("old-studio-browser.log"),
+        [&browser.stdout[..], &browser.stderr[..]].concat(),
+    )
+    .expect("retain browser gate log");
+    assert!(
+        browser.status.success(),
+        "old Studio browser gate failed; inspect retained stage log"
     );
 
     let (status, legacy, legacy_wire) = api(

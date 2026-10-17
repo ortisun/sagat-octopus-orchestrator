@@ -7,7 +7,9 @@ These versions describe different boundaries:
 - REST clients call `/v1`; the worker protocol minor does not version those HTTP calls.
 - Workflow documents stay on additive v1. Publication checks whether each capability is enabled.
 - Workers negotiate the highest minor both sides can execute safely. The production PostgreSQL
-  worker adapter accepts `1.5` and retains root-only negotiation through `1.4`.
+  worker adapter uses the enabled capability ceiling: `1.5` for scoped identity and up to `1.6`
+  with managed execution enabled. Ordinary root workers retain the `1.4` ceiling while scoped
+  execution is disabled. Managed tasks separately require DatabaseRunner authority and `1.6`.
 - Protocol `1.5` adds scoped execution identity. Offering `1.5` does not bypass capability-specific
   publication gates or allow scoped work to fall back to an older worker.
 
@@ -256,3 +258,15 @@ fault and runtime-conformance gates pass. Rollback first closes new publication 
 keeps the additive readers, chain/state APIs and compatible worker negotiation path until every run
 that used the capability drains. An infrastructure skip or a build-only golden does not satisfy a
 runtime compatibility gate.
+
+
+## Actual v0.1.0 client compatibility on the combined branch
+
+Released SDK source commit `6ede1c7849c4ac5a209c08da8ad25294fbdd7795` passed the reviewed current
+`run-lifecycle` scenario in TypeScript, Go, Python, C# and Java against the real current platform,
+without blessing: one aggregate / five languages, 145.91 s. These are clients compiled from the
+actual tagged source and its own shared contracts. `scripts/test-released-sdk-compat.sh` archives
+those inputs and selects them through `SAGAT_SDK_SOURCE_ROOT`; current scenarios/goldens and server
+semantics are retained. This focused old-client proof does not close T014-041's complete current
+primitive/runtime matrix. Full source identity, commands, manifests, process upgrade and old Studio
+Chromium evidence are in [the compatibility report](../tests/integration/payload-classification/compatibility-report.md).

@@ -286,3 +286,35 @@ legacy opacity, new rules-1 publication and documented three event-read breaks n
 execution engine reaches readiness before/after the upgrade; this is not proof of all old-server
 writes on new scoped workflows. Old Studio was served over HTTP in that passing case. Actual
 Chromium behavior and released five-client conformance are being added and keep T016-052 open.
+
+
+### Released five-client and Chromium compatibility completion
+
+The five SDK runners built from annotated release v0.1.0 (6ede1c7849c4ac5a209c08da8ad25294fbdd7795)
+passed the reviewed current root `run-lifecycle` scenario against the real current platform: one
+aggregate / all five languages, 145.91 s (`/tmp/sagat-completion-old-sdks.log`). No golden was blessed.
+The harness now accepts only an absolute optional `SAGAT_SDK_SOURCE_ROOT`; scenarios, normalization
+and expected results still come from current source. An archived 361-file SDK/contract input
+manifest records the release bytes. `scripts/test-released-sdk-compat.sh` reproduces that archive
+and invocation; syntax and ShellCheck passed, while the actual measured run used the equivalent
+archive directly.
+
+The expanded actual-process compatibility case passed 1/1 in 17.48 s with real Chromium executing
+the old Studio bundle (`/tmp/sagat-completion-compat-browser-2.log`). It authenticates, reads the run
+and graph and renders its work row in the node table; browser errors and payload canaries are absent.
+The driver receives its token over stdin and reports only closed stages on failure. An initial UUID
+serialization compile error was fixed before that run. T016-052's named cases now have process,
+client and browser evidence. This is not the full feature-014 server writer/rollback or complete
+current SDK scenario matrix. The compatibility report records the exact component limits.
+
+
+### Released engine actual run read
+
+The strengthened compatibility case passed 1/1 in 24.96 s
+(`/tmp/sagat-completion-compat-engine-read-2.log`). After migration it calls the old engine over
+real gRPC with an intentionally unleased heartbeat. That immutable release implementation opens
+and restores the persisted run before validating its lease; the expected Aborted/STALE_ATTEMPT
+answer proves successful restoration without an old-server mutation. The first probe put a node
+name in the optional UUID step_id field and received InvalidArgument; using the supported legacy
+empty step_id form fixed the harness. This strengthens the earlier readiness-only evidence while
+retaining the explicit limit on arbitrary old-server writes into new scoped workflows.
