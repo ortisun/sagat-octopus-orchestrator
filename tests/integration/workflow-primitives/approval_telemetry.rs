@@ -298,3 +298,58 @@ async fn refused_decisions_count_in_the_closed_rejection_series_and_nothing_else
         }
     }
 }
+
+fn wait_samples(page: &str, outcome: &str) -> f64 {
+    let prefix = format!("workflow_approval_wait_seconds_count{{outcome=\"{outcome}\"}} ");
+    page.lines()
+        .find_map(|line| line.strip_prefix(&prefix))
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0.0)
+}
+
+#[tokio::test]
+async fn a_request_settled_by_a_cancel_or_a_stop_records_its_wait_as_cancelled() {
+    let flow = ApprovalFlow::boot(&["segment.work"]).await;
+    let metrics = Metrics::global();
+    let before = wait_samples(&metrics.render(), "cancelled");
+
+    // An operator's cancel of a run.
+    let name = unique("tele-cancel");
+    let workflow = flow
+        .publish(&name, approval_with_state(&name, 600_000))
+        .await
+        .expect("publishes");
+    let run = flow
+        .start(&workflow, json!({"account": {"balance": 1}}))
+        .await;
+    flow.the_approval(run).await;
+    let (status, _) = flow.cancel(run).await;
+    assert!(
+        matches!(status, StatusCode::OK | StatusCode::ACCEPTED),
+        "{status}"
+    );
+    flow.drive().await;
+    assert_eq!(flow.run_status(run).await, "CANCELLED");
+    // The metrics page is the process's: other tests may cancel requests at the same time.
+    assert!(wait_samples(&metrics.render(), "cancelled") >= before + 1.0);
+
+    // The chain's cancel latch settles the open request the same way.
+    let chain_name = unique("tele-chain-cancel");
+    let chain_workflow = flow
+        .publish(&chain_name, approval_chain(&chain_name, 600_000, 3))
+        .await
+        .expect("publishes");
+    let chain = flow
+        .start(
+            &chain_workflow,
+            json!({"segment": 1, "next": {"segment": 2}}),
+        )
+        .await;
+    flow.drive().await;
+    flow.work_on(chain, json!({"done": 1})).await;
+    flow.the_approval(chain).await;
+    flow.cancel_chain(chain, chain).await;
+    flow.drive().await;
+    assert_eq!(flow.run_status(chain).await, "CANCELLED");
+    assert!(wait_samples(&metrics.render(), "cancelled") >= before + 2.0);
+}

@@ -42,6 +42,7 @@ use sagat_domain::identity::{Namespace, NamespaceId, Principal, Slug, TenantId};
 use sagat_domain::saga::{NodeOrigin, SagaOutcome};
 use sagat_domain::secrets::SecretName;
 use sagat_domain::workflow::{ActivityName, Digest, Node, NodeId, NodeKind, WorkflowDefinition};
+use sagat_telemetry::{WorkflowPrimitiveMetric, WorkflowPrimitiveOutcome};
 use sha2::{Digest as _, Sha256};
 use sqlx::postgres::PgRow;
 use sqlx::{PgConnection, PgPool, Postgres, Transaction};
@@ -250,6 +251,7 @@ impl PgRunStore {
             signals: Vec::new(),
             chain_lock,
             initialize_chain: false,
+            cancelled_waits: Vec::new(),
         }))
     }
 
@@ -652,6 +654,7 @@ impl RunStore for PgRunStore {
                     signals: Vec::new(),
                     chain_lock: None,
                     initialize_chain: true,
+                    cancelled_waits: Vec::new(),
                 }));
             }
         }
@@ -2505,6 +2508,9 @@ pub struct PgRunTx {
     signals: Vec<Signal>,
     chain_lock: Option<LockedChainHead>,
     initialize_chain: bool,
+    /// How long each approval request this transaction cancelled had waited, recorded as
+    /// `workflow_approval_wait_seconds{outcome="cancelled"}` when (and only when) it commits.
+    cancelled_waits: Vec<f64>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -3618,6 +3624,13 @@ impl RunTx for PgRunTx {
                 })?;
         }
         self.tx.commit().await.map_err(store_error)?;
+        for waited in self.cancelled_waits {
+            metrics::histogram!(
+                WorkflowPrimitiveMetric::ApprovalWait.as_str(),
+                "outcome" => WorkflowPrimitiveOutcome::Cancelled.as_str()
+            )
+            .record(waited);
+        }
         for signal in self.signals {
             signal.emit();
         }
@@ -3685,7 +3698,8 @@ impl PgRunTx {
             "UPDATE approval_requests \
              SET status='CANCELLED',outcome_sequence=$4,settled_at=$5, \
                  outcome_outbox_id=$6,updated_at=$5 \
-             WHERE tenant_id=$1 AND run_id=$2 AND request_id=$3 AND status='PENDING'",
+             WHERE tenant_id=$1 AND run_id=$2 AND request_id=$3 AND status='PENDING' \
+             RETURNING created_at",
         )
         .bind(self.info.tenant_id.as_uuid())
         .bind(self.info.run_id.as_uuid())
@@ -3693,13 +3707,15 @@ impl PgRunTx {
         .bind(i64::try_from(sequence).map_err(|_| corrupt("approval cancellation sequence"))?)
         .bind(self.now)
         .bind(outbox_id)
-        .execute(&mut *self.tx)
+        .fetch_optional(&mut *self.tx)
         .await
-        .map_err(store_error)?
-        .rows_affected();
-        if updated != 1 {
+        .map_err(store_error)?;
+        let Some(updated) = updated else {
             return Err(corrupt("cancelled approval request"));
-        }
+        };
+        let opened_at: OffsetDateTime = col(&updated, "created_at")?;
+        self.cancelled_waits
+            .push((self.now - opened_at).as_seconds_f64().max(0.0));
         let timer_updated = sqlx::query(
             "UPDATE approval_timers SET state='CANCELLED',updated_at=$3 \
              WHERE tenant_id=$1 AND request_id=$2 AND state='PENDING'",
