@@ -5,13 +5,21 @@
 //! values without turning them into deployment capacity promises.
 //!
 //! ```sh
-//! SAGAT_PERF_REPORT=tests/performance/reports/workflow-primitives.md \
+//! SAGAT_PERF_FRAGMENTS=/path/to/fragments \
 //!   cargo test -p sagat-tests --test perf_workflow_primitives --release -- --ignored --nocapture
 //! ```
+//!
+//! Each workload is its own ignored test and writes one report fragment (see `common::emit`).
 #![allow(clippy::expect_used, clippy::panic, clippy::print_stdout)]
 
 #[path = "../../support/mod.rs"]
 mod support;
+
+mod chains;
+mod collections;
+mod common;
+mod loops;
+mod tenants;
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -93,6 +101,7 @@ struct WaitMeasurements {
     scheduler_failed: u32,
     process_rss_before: u64,
     process_rss_after: u64,
+    resource_points: Vec<(String, common::Resources)>,
 }
 
 #[derive(Debug)]
@@ -283,6 +292,7 @@ async fn measure_waits(world: &World) -> WaitMeasurements {
         .await
         .expect("benchmark tenant active-run limit");
     let process_rss_before = process_rss_bytes();
+    let mut resource_points = vec![("no waits".to_owned(), common::resources(world).await)];
     let approval_relations = [
         "runs",
         "steps",
@@ -310,6 +320,10 @@ async fn measure_waits(world: &World) -> WaitMeasurements {
     let (_approval_runs, approval_start_samples) =
         start_population(world, approval_workflow, "perf-approval", approvals).await;
     let approval_load = approval_started.elapsed();
+    resource_points.push((
+        format!("{approvals} approvals started, none opened yet"),
+        common::resources(world).await,
+    ));
 
     let placement = Placement::new(format!("perf-approval-scheduler-{}", Uuid::now_v7()));
     Keeper::new(
@@ -349,6 +363,10 @@ async fn measure_waits(world: &World) -> WaitMeasurements {
         );
     }
     let approval_open = approval_opened_at.elapsed();
+    resource_points.push((
+        format!("{approvals} approvals pending"),
+        common::resources(world).await,
+    ));
     let approval_after = relation_bytes(world, &approval_relations).await;
 
     let timer_before = relation_bytes(world, &timer_relations).await;
@@ -367,6 +385,10 @@ async fn measure_waits(world: &World) -> WaitMeasurements {
     let (_timer_runs, timer_start_samples) =
         start_population(world, timer_workflow, "perf-timer", timers).await;
     let timer_load = timer_started.elapsed();
+    resource_points.push((
+        format!("{approvals} approvals pending + {timers} timers waiting"),
+        common::resources(world).await,
+    ));
     let timer_after = relation_bytes(world, &timer_relations).await;
 
     sqlx::query("ANALYZE steps, approval_requests, approval_timers")
@@ -384,6 +406,33 @@ async fn measure_waits(world: &World) -> WaitMeasurements {
         assert!(
             !report.did_work() && report.failed == 0,
             "idle wait tick: {report:?}"
+        );
+    }
+    resource_points.push((
+        format!("after {IDLE_TICKS} idle ticks over all waits"),
+        common::resources(world).await,
+    ));
+    let (first, last) = (
+        resource_points[0].1,
+        resource_points[resource_points.len() - 1].1,
+    );
+    // Zero dedicated resources per wait: 11,000 pending waits may not add a thread, a PostgreSQL
+    // connection beyond the pool, or a transaction held open.
+    assert!(
+        last.threads <= first.threads + 4,
+        "threads grew with the waits: {} -> {}",
+        first.threads,
+        last.threads
+    );
+    assert!(
+        last.pg_connections <= 8 + 2,
+        "PostgreSQL connections exceed the pool plus the probe: {}",
+        last.pg_connections
+    );
+    for (label, point) in &resource_points {
+        assert_eq!(
+            point.pg_idle_in_transaction, 0,
+            "a transaction is held open at '{label}'"
         );
     }
 
@@ -477,6 +526,7 @@ async fn measure_waits(world: &World) -> WaitMeasurements {
         scheduler_failed,
         process_rss_before,
         process_rss_after: process_rss_bytes(),
+        resource_points,
     }
 }
 
@@ -785,8 +835,14 @@ async fn measure_slot_contention(world: &World) -> SlotMeasurements {
 }
 
 fn report(waits: WaitMeasurements, slots: SlotMeasurements) -> String {
+    let resource_lines = waits
+        .resource_points
+        .iter()
+        .map(|(label, point)| format!("  - {label}: {point}"))
+        .collect::<Vec<_>>()
+        .join("\n");
     let mut report = format!(
-        "# Workflow primitive capacity measurements\n\nThese are observations from one controlled local run, not production ceilings or latency SLOs. The correctness assertions are the configured tenant slot bound and the absence of worker ownership while approvals and timers wait.\n\n## Environment\n\n{}\n\n## Configuration\n\n- {} approval runs, loaded with {} concurrent callers\n- {} one-hour timer runs, loaded with {} concurrent callers\n- scheduler batch 200, scheduler concurrency 8, {} idle ticks\n- {} collection runs contending for {} tenant slots with {} concurrent callers\n- tenant usage row held for {} ms to make lock contention observable\n\n## Latency observations\n\n| Operation | Samples | p50 | p95 | p99 | max |\n|---|---:|---:|---:|---:|---:|\n",
+        "### Durable waits and the tenant slot lock\n\n{}\n\n#### Configuration\n\n- {} approval runs, loaded with {} concurrent callers\n- {} one-hour timer runs, loaded with {} concurrent callers\n- scheduler batch 200, scheduler concurrency 8, {} idle ticks\n- {} collection runs contending for {} tenant slots with {} concurrent callers\n- tenant usage row held for {} ms to make lock contention observable\n\n#### Latency observations\n\n| Operation | Samples | p50 | p95 | p99 | max |\n|---|---:|---:|---:|---:|---:|\n",
         environment(),
         waits.approvals,
         WAIT_LOAD_CONCURRENCY,
@@ -827,7 +883,7 @@ fn report(waits: WaitMeasurements, slots: SlotMeasurements) -> String {
         slots.rejected_latency,
     ));
     report.push_str(&format!(
-        "\n## Throughput and storage\n\n- Approval run creation: {:.1} s, {:.0} runs/s.\n- Approval opening: {:.1} s, {:.0} approvals/s across {} scheduler ticks.\n- Timer run creation and wait persistence: {:.1} s, {:.0} runs/s.\n- Observed relation growth: {} bytes per suspended approval and {} bytes per suspended timer. This is a delta over shared PostgreSQL relations and includes index allocation noise.\n- Journal row bytes: {:.0} bytes per approval run and {:.0} bytes per timer run, measured with `pg_column_size` and excluding index/toast overhead.\n- Test-process RSS: {} bytes before loading and {} bytes after measurement, a signed change of {} bytes. PostgreSQL container RSS was not isolated in this run.\n\n## Correctness observations\n\n- {}/{} collection admissions committed; {} were rejected with the typed tenant-capacity error. Durable tenant usage and persisted iterations both equal {}.\n- PostgreSQL exposed {} lock waiters while the tenant usage row was deliberately held. Admission latencies therefore include a known {} ms contention interval plus connection-pool and serialization delay.\n- {} approval/timer steps are durably waiting with no lease token, lease expiry or worker identity. Active worker sessions: {}.\n- Scheduler outcomes while opening and observing waits: {} skipped, {} fenced and {} failed. Explicit client transaction retries: 0; every start and admission was submitted once.\n\n## Limits and failures\n\n- The first default-population attempt was rejected after reaching the platform's default 10,000 active-run namespace quota. The benchmark now grants and configures explicit headroom before loading; this preserves production admission behavior while isolating the wait measurement.\n- The collection adapter is still a private runtime boundary. This run measures its real PostgreSQL transaction and persisted tenant policy; it does not claim public collection throughput.\n- Approval and timer runs use the supported publish/start/scheduler paths. Waiting consumes database rows and scheduler index scans; it does not allocate one process, connection, worker session or broker consumer per wait.\n- The shared development host, local container, eight-connection pool and in-process services are not representative of a production cluster. Repeat on target hardware before sizing.\n- The controlled slot test measures one tenant and one database. It proves exact enforcement under cross-run contention; it does not establish a cluster-wide throughput floor.\n- The 10,000-item collection workload at concurrency 1/16/256 was not run because public collection publication remains closed.\n- Nested loops reaching the 100,000-instance ceiling were not run because nested primitive admission remains closed. No memory, latency, journal or retry result is claimed for either missing workload.\n- No timeout, queue-delay or capacity ceiling is inferred beyond the populations and concurrency recorded above.\n\n## Reproduction\n\n```sh\nSAGAT_PERF_REPORT=tests/performance/reports/workflow-primitives.md \\\n  cargo test -p sagat-tests --test perf_workflow_primitives --release -- --ignored --nocapture\n```\n\n`SAGAT_PRIMITIVES_APPROVALS` and `SAGAT_PRIMITIVES_TIMERS` may reduce populations for diagnostics. A reduced run must not replace the default report.\n",
+        "\n#### Throughput and storage\n\n- Approval run creation: {:.1} s, {:.0} runs/s.\n- Approval opening: {:.1} s, {:.0} approvals/s across {} scheduler ticks.\n- Timer run creation and wait persistence: {:.1} s, {:.0} runs/s.\n- Observed relation growth: {} bytes per suspended approval and {} bytes per suspended timer. This is a delta over shared PostgreSQL relations and includes index allocation noise.\n- Journal row bytes: {:.0} bytes per approval run and {:.0} bytes per timer run, measured with `pg_column_size` and excluding index/toast overhead.\n- Test-process RSS: {} bytes before loading and {} bytes after measurement, a signed change of {} bytes. PostgreSQL container RSS was not isolated in this run.\n\n#### Correctness observations\n\n- Resources while the waits are pending (the engine, scheduler and worker service run in this process; PostgreSQL connections are every backend of the benchmark database):\n{resource_lines}\n- {}/{} collection admissions committed; {} were rejected with the typed tenant-capacity error. Durable tenant usage and persisted iterations both equal {}.\n- PostgreSQL exposed {} lock waiters while the tenant usage row was deliberately held. Admission latencies therefore include a known {} ms contention interval plus connection-pool and serialization delay.\n- {} approval/timer steps are durably waiting with no lease token, lease expiry or worker identity. Active worker sessions: {}.\n- Scheduler outcomes while opening and observing waits: {} skipped, {} fenced and {} failed. Explicit client transaction retries: 0; every start and admission was submitted once.\n\n#### Notes\n\n- The first default-population attempt was rejected after reaching the platform's default 10,000 active-run namespace quota. The benchmark now grants and configures explicit headroom before loading; this preserves production admission behavior while isolating the wait measurement.\n- Approval and timer runs use the supported publish/start/scheduler paths. Waiting consumes database rows and scheduler index scans; it does not allocate one process, connection, worker session or broker consumer per wait.\n- The shared development host, local container, eight-connection pool and in-process services are not representative of a production cluster. Repeat on target hardware before sizing.\n- The controlled slot test measures one tenant and one database. It proves exact enforcement under cross-run contention; it does not establish a cluster-wide throughput floor.\n- No timeout, queue-delay or capacity ceiling is inferred beyond the populations and concurrency recorded above.\n",
         waits.approval_load.as_secs_f64(),
         waits.approvals as f64 / waits.approval_load.as_secs_f64(),
         waits.approval_open.as_secs_f64(),
@@ -865,17 +921,5 @@ async fn measure_durable_waits_and_cross_run_tenant_slot_contention() {
     let waits = measure_waits(&world).await;
     let slots = measure_slot_contention(&world).await;
     let report = report(waits, slots);
-    println!("{report}");
-    if let Ok(path) = std::env::var("SAGAT_PERF_REPORT") {
-        let configured = std::path::PathBuf::from(path);
-        let target = if configured.is_absolute() {
-            configured
-        } else {
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .parent()
-                .expect("workspace root")
-                .join(configured)
-        };
-        std::fs::write(target, report).expect("write performance report");
-    }
+    common::emit("waits", &format!("{}\n{}\n", common::machine(), report));
 }
