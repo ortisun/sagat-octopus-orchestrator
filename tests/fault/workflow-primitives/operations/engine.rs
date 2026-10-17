@@ -9,7 +9,8 @@
 use std::future::Future;
 
 use sagat_application::declared_operations::{
-    DeclaredOperationEvaluator, DeclaredOperationStore, DeclaredOperationStoreError, DeclaredUpdate,
+    DeclaredOperationEvaluator, DeclaredOperationStore, DeclaredOperationStoreError, DeclaredQuery,
+    DeclaredUpdate,
 };
 use sagat_application::operation_evaluation::DeclaredOperationArguments;
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
@@ -127,6 +128,14 @@ impl Answer {
     pub(super) fn status(&self) -> UpdateReceiptStatus {
         self.resolution.receipt().status()
     }
+}
+
+/// What a Query answered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Read {
+    pub(super) run_version: u64,
+    pub(super) state_revision: u64,
+    pub(super) result: Value,
 }
 
 /// The operation store of one run, driven the way the HTTP routes drive it.
@@ -268,6 +277,38 @@ impl Ops {
             .await?
             .map(|write| serde_json::from_slice(write.content()).expect("result JSON"));
         Ok(Answer { resolution, result })
+    }
+
+    /// A Query exactly as the HTTP route serves it.
+    pub(super) async fn query(
+        &self,
+        run: RunId,
+        operation: &str,
+        args: &Value,
+    ) -> Result<Read, DeclaredOperationStoreError> {
+        let evaluator = JsonDeclaredOperationEvaluator;
+        let operation = ActivityName::parse(operation).expect("operation");
+        let query = DeclaredQuery::new(
+            self.scope(run),
+            run,
+            operation.clone(),
+            self.actor.subject().clone(),
+        );
+        let snapshot = self
+            .store
+            .query_snapshot(&query, &self.audit(AuditAction::RunQueried, run))
+            .await?;
+        let arguments =
+            DeclaredOperationArguments::parse(&serde_json::to_vec(args).expect("arguments"))
+                .expect("arguments within bounds");
+        let evaluated =
+            DeclaredOperationEvaluator::query(&evaluator, &snapshot, &operation, &arguments)
+                .expect("the declared query evaluates");
+        Ok(Read {
+            run_version: evaluated.response().run_version(),
+            state_revision: evaluated.response().state_revision(),
+            result: serde_json::from_slice(evaluated.result().content()).expect("result JSON"),
+        })
     }
 }
 
