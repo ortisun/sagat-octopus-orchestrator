@@ -347,6 +347,39 @@ async fn reveal_without_an_effective_grant_is_refused_and_audited_without_projec
 }
 
 #[tokio::test]
+async fn a_stored_grant_is_inert_when_the_current_role_cannot_read_internal_values() {
+    let store = FakeStore::new();
+    {
+        let mut state = store.0.lock().expect("state");
+        state.current_role = Role::Viewer;
+        state.reveal_granted = true;
+    }
+    let interpreter = FakeInterpreter::new(DisclosedLevels::PII);
+    let service = PayloadDisclosureService::new(
+        store.clone(),
+        FixedClock,
+        interpreter.clone(),
+        StructureProjector,
+    );
+    let prepared = service
+        .prepare(
+            &principal(store.tenant(), Role::Viewer),
+            store.run(),
+            DisclosureSelector::Input,
+            true,
+            &context(),
+        )
+        .await
+        .expect("prepared");
+
+    assert_eq!(
+        service.disclose(prepared).await,
+        Err(sagat_application::payload_disclosure::PayloadDisclosureError::PiiRevealNotGranted)
+    );
+    assert!(interpreter.state.lock().expect("state").requests.is_empty());
+}
+
+#[tokio::test]
 async fn schema_mismatch_is_structure_only_for_inspector_and_opaque_for_developer() {
     for (role, structure_only) in [(Role::Operator, true), (Role::Developer, false)] {
         let store = FakeStore::new();

@@ -498,11 +498,12 @@ where
         if !current_role.grants(Permission::RunRead) {
             return Err(DisclosureFailure::RunReadNotGranted);
         }
+        let internal = current_role.grants(Permission::PayloadReadInternal);
+        let reveal_granted = reveal_granted && internal;
         if self.prepared.reveal_pii && !reveal_granted {
             return Err(DisclosureFailure::PiiRevealNotGranted);
         }
 
-        let internal = current_role.grants(Permission::PayloadReadInternal);
         let inspect = current_role.grants(Permission::RunPayloadInspect);
         let revealed = self.prepared.reveal_pii && reveal_granted;
         let mut disclosed_levels = DisclosedLevels::PUBLIC;
