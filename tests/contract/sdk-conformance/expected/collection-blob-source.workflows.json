@@ -1,0 +1,94 @@
+{
+  "canonical": {
+    "blobmap": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"bodies\":{\"line\":{\"entrypoint\":\"price\",\"nodes\":[{\"activity\":\"blob.line\",\"id\":\"price\",\"next\":\"returned\",\"type\":\"activity\"},{\"id\":\"returned\",\"result\":\"steps.price.output\",\"type\":\"return\"}]}},\"entrypoint\":\"items\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"collection-blob-source\"},\"nodes\":[{\"body\":\"line\",\"id\":\"items\",\"items\":\"input\",\"maxConcurrency\":1,\"maxItems\":4,\"next\":\"done\",\"result\":\"bodyResult\",\"type\":\"forEach\"},{\"id\":\"done\",\"outputExpr\":\"steps.items.output\",\"type\":\"end\"}]}",
+    "viainput": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"bodies\":{\"line\":{\"entrypoint\":\"price\",\"nodes\":[{\"activity\":\"blob.line\",\"id\":\"price\",\"next\":\"returned\",\"type\":\"activity\"},{\"id\":\"returned\",\"result\":\"steps.price.output\",\"type\":\"return\"}]}},\"entrypoint\":\"items\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"collection-blob-lookalike\"},\"nodes\":[{\"body\":\"line\",\"id\":\"items\",\"items\":\"input.items\",\"maxConcurrency\":1,\"maxItems\":4,\"next\":\"done\",\"result\":\"bodyResult\",\"type\":\"forEach\"},{\"id\":\"done\",\"outputExpr\":\"steps.items.output\",\"type\":\"end\"}]}"
+  },
+  "workflows": {
+    "blobmap": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "bodies": {
+        "line": {
+          "entrypoint": "price",
+          "nodes": [
+            {
+              "activity": "blob.line",
+              "id": "price",
+              "next": "returned",
+              "type": "activity"
+            },
+            {
+              "id": "returned",
+              "result": "steps.price.output",
+              "type": "return"
+            }
+          ]
+        }
+      },
+      "entrypoint": "items",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "collection-blob-source"
+      },
+      "nodes": [
+        {
+          "body": "line",
+          "id": "items",
+          "items": "input",
+          "maxConcurrency": 1,
+          "maxItems": 4,
+          "next": "done",
+          "result": "bodyResult",
+          "type": "forEach"
+        },
+        {
+          "id": "done",
+          "outputExpr": "steps.items.output",
+          "type": "end"
+        }
+      ]
+    },
+    "viainput": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "bodies": {
+        "line": {
+          "entrypoint": "price",
+          "nodes": [
+            {
+              "activity": "blob.line",
+              "id": "price",
+              "next": "returned",
+              "type": "activity"
+            },
+            {
+              "id": "returned",
+              "result": "steps.price.output",
+              "type": "return"
+            }
+          ]
+        }
+      },
+      "entrypoint": "items",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "collection-blob-lookalike"
+      },
+      "nodes": [
+        {
+          "body": "line",
+          "id": "items",
+          "items": "input.items",
+          "maxConcurrency": 1,
+          "maxItems": 4,
+          "next": "done",
+          "result": "bodyResult",
+          "type": "forEach"
+        },
+        {
+          "id": "done",
+          "outputExpr": "steps.items.output",
+          "type": "end"
+        }
+      ]
+    }
+  }
+}

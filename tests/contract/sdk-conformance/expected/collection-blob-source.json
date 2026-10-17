@@ -1,0 +1,722 @@
+{
+  "faultsApplied": [],
+  "observations": [
+    {
+      "id": "start-worker",
+      "ok": true,
+      "op": "startWorker",
+      "result": {
+        "protocolVersion": "1.5"
+      }
+    },
+    {
+      "id": "from-blob",
+      "ok": true,
+      "op": "startWithBlob",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "from-blob-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "SUCCEEDED",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "three-attempts",
+      "ok": true,
+      "op": "awaitWorkerLog"
+    },
+    {
+      "id": "too-many",
+      "ok": true,
+      "op": "startWithBlob",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:4>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:2>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "too-many-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:4>",
+        "startedBy": "alice",
+        "status": "FAILED",
+        "traceId": "<trace:2>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "not-an-array",
+      "ok": true,
+      "op": "startWithBlob",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:5>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:3>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "not-an-array-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:5>",
+        "startedBy": "alice",
+        "status": "FAILED",
+        "traceId": "<trace:3>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "not-json",
+      "ok": true,
+      "op": "startWithBlob",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:6>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:4>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "not-json-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:6>",
+        "startedBy": "alice",
+        "status": "FAILED",
+        "traceId": "<trace:4>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "lookalike",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:7>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:5>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:8>",
+        "workflowId": "<uuid:9>"
+      }
+    },
+    {
+      "id": "lookalike-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:7>",
+        "startedBy": "alice",
+        "status": "FAILED",
+        "traceId": "<trace:5>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:8>",
+        "workflowId": "<uuid:9>"
+      }
+    },
+    {
+      "id": "stop-worker",
+      "ok": true,
+      "op": "stopWorker"
+    }
+  ],
+  "scopeEvidence": [
+    {
+      "events": [],
+      "peakActive": 0,
+      "runId": "<uuid:7>"
+    },
+    {
+      "events": [],
+      "peakActive": 0,
+      "runId": "<uuid:6>"
+    },
+    {
+      "events": [],
+      "peakActive": 0,
+      "runId": "<uuid:5>"
+    },
+    {
+      "events": [],
+      "peakActive": 0,
+      "runId": "<uuid:4>"
+    },
+    {
+      "events": [
+        {
+          "event": "collection.entered",
+          "item_count": 3,
+          "max_concurrency": 1,
+          "max_items": 4
+        },
+        {
+          "event": "collection.iteration_admitted",
+          "index": 0,
+          "item": {
+            "k": "a",
+            "v": 1
+          }
+        },
+        {
+          "event": "collection.iteration_returned",
+          "index": 0
+        },
+        {
+          "event": "collection.iteration_checkpointed",
+          "index": 0,
+          "result": {
+            "priced": true
+          }
+        },
+        {
+          "event": "collection.iteration_admitted",
+          "index": 1,
+          "item": {
+            "k": "b",
+            "v": 2
+          }
+        },
+        {
+          "event": "collection.iteration_returned",
+          "index": 1
+        },
+        {
+          "event": "collection.iteration_checkpointed",
+          "index": 1,
+          "result": {
+            "priced": true
+          }
+        },
+        {
+          "event": "collection.iteration_admitted",
+          "index": 2,
+          "item": {
+            "k": "a",
+            "v": 1
+          }
+        },
+        {
+          "event": "collection.iteration_returned",
+          "index": 2
+        },
+        {
+          "event": "collection.iteration_checkpointed",
+          "index": 2,
+          "result": {
+            "priced": true
+          }
+        },
+        {
+          "event": "collection.finished",
+          "outcome": "succeeded",
+          "result": [
+            {
+              "priced": true
+            },
+            {
+              "priced": true
+            },
+            {
+              "priced": true
+            }
+          ]
+        }
+      ],
+      "peakActive": 1,
+      "runId": "<uuid:1>"
+    }
+  ],
+  "serverState": [
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "done",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "items",
+          "kind": "FORWARD",
+          "status": "CANCELLED",
+          "type": "forEach",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:7>",
+      "status": "FAILED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "done",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "items",
+          "kind": "FORWARD",
+          "status": "CANCELLED",
+          "type": "forEach",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:6>",
+      "status": "FAILED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "done",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "items",
+          "kind": "FORWARD",
+          "status": "CANCELLED",
+          "type": "forEach",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:5>",
+      "status": "FAILED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "done",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "items",
+          "kind": "FORWARD",
+          "status": "CANCELLED",
+          "type": "forEach",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:4>",
+      "status": "FAILED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "done",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "items",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "forEach",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "items[0]/price",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "items[0]/returned",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "return",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "items[1]/price",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "items[1]/returned",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "return",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "items[2]/price",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "items[2]/returned",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "return",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:1>",
+      "status": "SUCCEEDED"
+    }
+  ],
+  "sourceEvidence": [
+    {
+      "collection": null,
+      "runId": "<uuid:7>",
+      "status": "FAILED",
+      "stopCode": "BLOB_UNAVAILABLE"
+    },
+    {
+      "collection": null,
+      "runId": "<uuid:6>",
+      "status": "FAILED",
+      "stopCode": "EXPRESSION_ERROR"
+    },
+    {
+      "collection": null,
+      "runId": "<uuid:5>",
+      "status": "FAILED",
+      "stopCode": "EXPRESSION_ERROR"
+    },
+    {
+      "collection": null,
+      "runId": "<uuid:4>",
+      "status": "FAILED",
+      "stopCode": "ITERATION_LIMIT"
+    },
+    {
+      "collection": {
+        "blobReads": 1,
+        "fromBlob": true,
+        "itemCount": 3
+      },
+      "runId": "<uuid:1>",
+      "status": "SUCCEEDED",
+      "stopCode": null
+    }
+  ],
+  "workerLog": {
+    "current": [
+      {
+        "abortedReason": null,
+        "activity": "blob.line",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:1>:<uuid:10>",
+        "input": {
+          "$blob": {
+            "contentType": "application/octet-stream",
+            "id": "<uuid:11>",
+            "sha256": "9ab1af1aec510e2bf8d436afd4a86df2407deb4a1a50932c210cfd6aa6dd3db2",
+            "size": 64
+          }
+        },
+        "instance": {
+          "definitionNodeId": "price",
+          "instancePath": [
+            {
+              "iterationIndex": 0,
+              "scopeNodeId": "items"
+            }
+          ]
+        },
+        "kind": "activity",
+        "node": "price",
+        "outcome": "returned",
+        "scopeInput": {
+          "index": 0,
+          "item": {
+            "k": "a",
+            "v": 1
+          }
+        },
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:1>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "blob.line",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:1>:<uuid:12>",
+        "input": {
+          "$blob": {
+            "contentType": "application/octet-stream",
+            "id": "<uuid:11>",
+            "sha256": "9ab1af1aec510e2bf8d436afd4a86df2407deb4a1a50932c210cfd6aa6dd3db2",
+            "size": 64
+          }
+        },
+        "instance": {
+          "definitionNodeId": "price",
+          "instancePath": [
+            {
+              "iterationIndex": 1,
+              "scopeNodeId": "items"
+            }
+          ]
+        },
+        "kind": "activity",
+        "node": "price",
+        "outcome": "returned",
+        "scopeInput": {
+          "index": 1,
+          "item": {
+            "k": "b",
+            "v": 2
+          }
+        },
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:1>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "blob.line",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:1>:<uuid:13>",
+        "input": {
+          "$blob": {
+            "contentType": "application/octet-stream",
+            "id": "<uuid:11>",
+            "sha256": "9ab1af1aec510e2bf8d436afd4a86df2407deb4a1a50932c210cfd6aa6dd3db2",
+            "size": 64
+          }
+        },
+        "instance": {
+          "definitionNodeId": "price",
+          "instancePath": [
+            {
+              "iterationIndex": 2,
+              "scopeNodeId": "items"
+            }
+          ]
+        },
+        "kind": "activity",
+        "node": "price",
+        "outcome": "returned",
+        "scopeInput": {
+          "index": 2,
+          "item": {
+            "k": "a",
+            "v": 1
+          }
+        },
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:1>",
+        "traceparentPresent": true
+      }
+    ]
+  }
+}

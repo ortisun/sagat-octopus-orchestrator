@@ -340,7 +340,7 @@ internal sealed class RunMode : IAsyncDisposable
             case "startWithBlob":
                 {
                     var workflowId = (string)config["workflows"]![(string)step["workflow"]!]!["workflowId"]!;
-                    var body = Enumerable.Repeat((byte)'i', (int)step["inputBlobBytes"]!).ToArray();
+                    var body = step["inputBlobText"] is { } text ? System.Text.Encoding.UTF8.GetBytes((string)text!) : Enumerable.Repeat((byte)'i', (int)step["inputBlobBytes"]!).ToArray();
                     await using var source = new MemoryStream(body, writable: false);
                     var descriptor = await client.UploadRunInputAsync(source, new RunInputBlobOptions(
                         ExpectedSize: body.Length,

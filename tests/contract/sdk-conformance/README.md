@@ -122,6 +122,21 @@ case stops its worker after the first body, waits (by the journal, not by sleepi
 `loop.delay_elapsed`, and only then starts a second worker for the next body: the delay was the engine's timer
 and held no worker.
 
+`collection-blob-source.json` is the T014-016 contract for a collection whose items are a blob. Each SDK uploads the
+array through the public run-input route and starts a `map` whose `items` expression is `input`. The platform reads
+the blob once at entry and keeps the array as the membership: three elements, two of them equal, reach indices 0, 1
+and 2 in order (one iteration at a time, `scopeEvidence: "ordered"`), the aggregate is in input order, and the
+engine's read of the blob is audited once (`sourceEvidence`: `fromBlob`, `blobReads`). Four more runs fail before any
+iteration is admitted and with no worker call: an array longer than `maxItems` (`ITERATION_LIMIT`), a JSON object and
+text that is not JSON (`EXPRESSION_ERROR`), and a typed descriptor naming a blob the run does not own, which looks
+exactly like another tenant's blob (`BLOB_UNAVAILABLE`). `sourceEvidence: true` adds, for every run of the scenario,
+its status, its stop code and whether its collection was entered from a blob.
+
+`collection-limits.json` is the item-limit case of WP-12: three items under `maxItems: 3` run to the end, four fail with
+`ITERATION_LIMIT` before any iteration is admitted and with no worker call (`sourceEvidence` shows the stop code). The
+instance budget (`limits.maxInstances`) is not settable through the SDK builders yet (a scenario's `limits` key is
+ignored by every runner), so it is covered only by the Rust suite `limits.rs`.
+
 `collection-compensation.json` is the WP-04 contract for a collection that stops. A `map` with concurrency one
 over bodies of several activities: when `ship` fails for good in the first iteration, the iteration's completed
 `reserve` and `charge` are undone in reverse order (the refund before the release), through `COMPENSATION` tasks
@@ -181,6 +196,8 @@ SAGAT_SDK_SCENARIO=approval-decisions cargo test -p sagat-tests --test sdk_confo
 SAGAT_SDK_SCENARIO=approval-settlement cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=collection-ordering cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=loop-semantics cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=collection-blob-source cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=collection-limits cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=collection-compensation cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=loop-compensation cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=approval-security cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
@@ -360,7 +377,7 @@ stop the scenario.
 | `op` | Fields | Calls | Result |
 |---|---|---|---|
 | `start` | `workflow` (key), `input`, `idempotencyKey?`, `correlationId?`, `traceparent?`, `deadlineInMs?`, `token?` (`bad`\|`other`\|`worker`\|`operator`\|`viewer`\|`runner`\|`revoked`) | `start` | the Run |
-| `startWithBlob` | `workflow` (key), `inputBlobBytes`, `idempotencyKey?`, `correlationId?`, `traceparent?`, `deadlineInMs?` | `uploadRunInput` then `startWithBlob` | the Run; a successful upload response is refused unless the one-pass source reached EOF |
+| `startWithBlob` | `workflow` (key), `inputBlobBytes` (that many `i` bytes) or `inputBlobText` (these exact UTF-8 bytes), `idempotencyKey?`, `correlationId?`, `traceparent?`, `deadlineInMs?` | `uploadRunInput` then `startWithBlob` | the Run; a successful upload response is refused unless the one-pass source reached EOF |
 | `get` | `run`, `token?` | `get` | the Run |
 | `list` | `status?`, `limit?`, `all?` | `list` / `listAll` | `{items: [runId…]}` in the order the server gave (newest first), also across pages |
 | `listApprovals` | `run`, `cursor?`, `limit?`, `waitForItem?`, `traceparent?`, `token?` | `listApprovals` | the typed page in immutable opening order |

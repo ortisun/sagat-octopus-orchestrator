@@ -1,0 +1,193 @@
+{
+  "name": "collection-blob-source",
+  "description": "WP-03/WP-12/WP-14: a map whose items expression is the run input, a blob uploaded through the public run-input route in each of the five SDKs. The platform reads the array once at entry and keeps it as the membership: three elements (two equal) reach their own indices in order, in one iteration at a time, and the engine's read of the blob is audited once. Content that is not an array, text that is not JSON, an array with more elements than maxItems, and a typed descriptor that names a blob this run does not own (an id nothing in the tenant has, as another tenant's blob would look) each fail the run before any iteration is admitted, with a typed code and no worker call.",
+  "server": {
+    "iterationConcurrency": 2
+  },
+  "scopeEvidence": "ordered",
+  "sourceEvidence": true,
+  "workflows": {
+    "blobmap": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "name": "collection-blob-source",
+      "bodies": {
+        "line": {
+          "program": [
+            {
+              "op": "step",
+              "id": "price",
+              "activity": "blob.line"
+            },
+            {
+              "op": "return",
+              "id": "returned",
+              "result": "steps.price.output"
+            }
+          ]
+        }
+      },
+      "program": [
+        {
+          "op": "map",
+          "id": "items",
+          "items": "input",
+          "body": "line",
+          "result": "bodyResult",
+          "maxItems": 4,
+          "maxConcurrency": 1
+        },
+        {
+          "op": "end",
+          "id": "done",
+          "options": {
+            "outputExpr": "steps.items.output"
+          }
+        }
+      ]
+    },
+    "viainput": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "name": "collection-blob-lookalike",
+      "bodies": {
+        "line": {
+          "program": [
+            {
+              "op": "step",
+              "id": "price",
+              "activity": "blob.line"
+            },
+            {
+              "op": "return",
+              "id": "returned",
+              "result": "steps.price.output"
+            }
+          ]
+        }
+      },
+      "program": [
+        {
+          "op": "map",
+          "id": "items",
+          "items": "input.items",
+          "body": "line",
+          "result": "bodyResult",
+          "maxItems": 4,
+          "maxConcurrency": 1
+        },
+        {
+          "op": "end",
+          "id": "done",
+          "options": {
+            "outputExpr": "steps.items.output"
+          }
+        }
+      ]
+    }
+  },
+  "workers": {
+    "current": {
+      "workerName": "collection-blob-source",
+      "protocolVersion": "1.5",
+      "transport": "poll",
+      "maxInflight": 2,
+      "autostart": false,
+      "activities": {
+        "blob.line": {
+          "behavior": {
+            "returns": {
+              "priced": true
+            }
+          }
+        }
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "start-worker",
+      "op": "startWorker",
+      "worker": "current"
+    },
+    {
+      "id": "from-blob",
+      "op": "startWithBlob",
+      "workflow": "blobmap",
+      "inputBlobText": "[ {\"v\": 1, \"k\": \"a\"},\n {\"k\": \"b\", \"v\": 2},\n {\"v\": 1, \"k\": \"a\"} ]"
+    },
+    {
+      "id": "from-blob-done",
+      "op": "waitForCompletion",
+      "run": "from-blob",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "three-attempts",
+      "op": "awaitWorkerLog",
+      "worker": "current",
+      "count": 3,
+      "timeoutMs": 30000
+    },
+    {
+      "id": "too-many",
+      "op": "startWithBlob",
+      "workflow": "blobmap",
+      "inputBlobText": "[1,2,3,4,5]"
+    },
+    {
+      "id": "too-many-done",
+      "op": "waitForCompletion",
+      "run": "too-many",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "not-an-array",
+      "op": "startWithBlob",
+      "workflow": "blobmap",
+      "inputBlobText": "{\"v\": 1}"
+    },
+    {
+      "id": "not-an-array-done",
+      "op": "waitForCompletion",
+      "run": "not-an-array",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "not-json",
+      "op": "startWithBlob",
+      "workflow": "blobmap",
+      "inputBlobText": "these bytes are not JSON"
+    },
+    {
+      "id": "not-json-done",
+      "op": "waitForCompletion",
+      "run": "not-json",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "lookalike",
+      "op": "start",
+      "workflow": "viainput",
+      "input": {
+        "items": {
+          "$blob": {
+            "id": "0190b0de-0000-7000-8000-000000000001",
+            "size": 17,
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "contentType": "application/json"
+          }
+        }
+      }
+    },
+    {
+      "id": "lookalike-done",
+      "op": "waitForCompletion",
+      "run": "lookalike",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "stop-worker",
+      "op": "stopWorker",
+      "worker": "current"
+    }
+  ]
+}
