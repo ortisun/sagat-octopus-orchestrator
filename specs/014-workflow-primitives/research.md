@@ -569,3 +569,147 @@ separate scenario against real PostgreSQL.
 - **G364 — Non-mutable statuses are set with SQL.** The engine's own paths into each status (pause,
   cancel, compensation, manual review, each terminal) are proven by their features' tests. What is proven
   here is that the Update refuses every status and writes nothing, not that the engine reaches it.
+
+## Decisions of the scoped compensation increment
+
+Tasks T014-014 to T014-021 (the compensation and reconciliation clauses). This is the design note that
+precedes the code. It extends the feature 003 saga machinery to the members of a collection or a
+loop; it adds no engine beside it. Where a sentence says "built", the evidence is named in the
+section "As built" at the end; everything else is the design the code is held to. It keeps the IR at
+`v1` (ADR-0032), adds no top-level `Error.code`, and changes no behavior of a body that declares no
+compensation, irreversible or high-risk activity.
+
+The rule it implements is FR-003-002 as refined by ADR-0030 item 7 and FR-014-005: inside one
+iteration, compensation runs in reverse topological order of the body's compensable steps; between the
+iterations of a collection there is no order (they ran concurrently); the completed iterations of a
+loop compensate in reverse iteration order.
+
+- **D380 — A scope whose body can be compensated is its own saga.** A `forEach`, `while` or
+  `repeatUntil` owner whose body has an activity with `compensateWith`, `irreversible` or `highRisk`
+  (a *compensating scope*) acts as the coordinator of its iterations: when the scope stops for a
+  failure of an iteration, a storage-quota stop, an outer cancellation or an expired deadline, the
+  iterations that completed (and the ones whose last attempt had an unknown outcome) are compensated
+  after the existing drain and before the scope finishes. No enclosing `saga` node is required (the
+  public collection and loop subsets have none). The policies are the saga defaults:
+  `onCompensationFailure: manual_review` and `cancelPolicy: compensate_completed` (in-flight attempts
+  are asked to stop by the drain, completed ones are compensated). A scope with none of the three
+  declarations behaves exactly as before: it fails or is cancelled with its code, and there is nothing
+  to compensate. *Why:* ADR-0030 item 7 says a failed compensation or irreversible effect "preserves
+  MANUAL_REVIEW/PARTIAL rather than being overwritten by a simple scope failure", and data-model.md
+  says a parent scope cannot claim drain complete while a child instance has an unresolved
+  compensation; both only make sense if the scope owns the compensation. *Open (O380):* whether the
+  policies should be author-settable on the scope node (the fields exist on `saga` only). They are not
+  added here; adding them is an additive IR change that needs its own decision.
+- **D381 — Completed members are read from the instance state, and the plan is recorded once.** No new
+  list of completed members is kept. The forward instance `(path, node)` is *completed* when its step
+  is `SUCCEEDED`, and *unknown* when it ended `CANCELLED` or `FAILED` with a code that leaves the
+  outcome unknown (`FailureCode::leaves_outcome_unknown`, the same predicate the root saga uses). When
+  the drain has settled every iteration, one journal event, `scope.compensation_planned`, addressed
+  at the owner, records the plan: for each entry the forward instance and the forward instances whose
+  compensations must finish first, plus the instances that cannot be undone. The entries and their
+  `after` links are projected into `scope_saga_entries` so a restart restores them; the replay of the
+  journal must give the same projection (`verify_run`). The event is what `saga_plans` is for roots:
+  the plan a *run* follows is decided from what actually completed, not from the definition.
+- **D382 — Stable compensation identity.** The compensation of the forward instance
+  `(scope path, iteration index, node)` is the instance `(same path, node~c)` and its lookup is
+  `(same path, node~r)`: the derived nodes already exist in the body graph
+  (`derive_companions`) and `ExecutionInstanceId::compensation()` already keeps the path. The step
+  UUID is the existing path-aware `instance_step_id`. The idempotency key of a compensation is
+  `compensation:{id}:{run}` where `id` is a version-8 UUID of SHA-256 over a domain-separated,
+  length-delimited encoding of the workflow version, the path segments and the forward node; for a
+  root instance the existing derivation is unchanged byte for byte. The key of a lookup is
+  `reconciliation:{run}:{step uuid of the forward instance}`. The key the forward instance's own
+  attempts carried travels as `target_idempotency_key`; the target node is the forward node name and
+  its path is the task's own path, so worker protocol 1.5 needs no new field.
+- **D383 — The order, as data.** Within an iteration, `after` is `reverse_dependencies` over the body
+  graph restricted to the entries of that iteration (the function is generalised from the root
+  `WorkflowDefinition` to any graph that can answer `node` and `scope_chain`; the body graph
+  implements it). Across the iterations of a collection there is no link; a release cap of
+  `maxConcurrency` iterations with a compensation in flight bounds the fan-out, as data-model.md says
+  ("may compensate concurrently within the concurrency limit"). Across the iterations of a loop, every
+  entry of iteration `k` waits for the entries that run last in the nearest later iteration that has
+  entries (so the order is last iteration first, and a link set linear in the entries). Completion
+  sequence is evidence, never the order.
+- **D384 — How it composes with each drain.** Nothing in the drains changes until their iterations
+  are settled. *Collection fail-fast / storage-quota / cancel* (`collection.drain_started` with
+  reason `Failed`, `StorageQuotaExceeded`, `Cancelled`): the iterations drain as today, an iteration
+  whose member waits for a lookup or an operator is not drained (the existing `unresolved_derived`
+  rule, extended to `RECONCILIATION` and `OPERATOR` waits), then the scheduler plans. *Loop failure
+  drain* (`loop.drain_started` with `Failed`, `TimedOut`, `Cancelled`): the active iteration drains
+  as today, then the scheduler plans. The scope owner stays `WAITING` on `COLLECTION` or `LOOP`
+  (nothing around it can see it finished) and the run status is derived: `COMPENSATING` while a
+  compensation can run, `MANUAL_REVIEW` when one waits for a person and nothing else can move.
+  *Admission:* each iteration reserves `all_nodes - 1` instances (the return, the compensation and
+  the lookup of every activity) when it is admitted, so exhausted forward budget or a tenant
+  reduction cannot stop the compensation (the reservation is released at drain only for a scope that
+  has no compensation to run). *Outer cancellation / deadline:* the run's first stop wins
+  (`AlreadyStopping` for the second); a stop that lands while the scope compensates changes nothing:
+  compensations are leased while the run is stopping (derived nodes already are) and are never
+  cancelled by the stop.
+- **D385 — The scope never ends in a simpler status than its compensation.** When every compensation
+  is terminal, `scope.compensated` records the outcome from how they ended, as for a saga:
+  `COMPENSATED`; `PARTIAL` (an irreversible effect completed, an unknown outcome had nothing to undo
+  it, or an operator skipped a compensation); `COMPENSATION_FAILED` (a compensation failed or was
+  cancelled for good). The scope then finishes and the run ends with the worse of the stop and the
+  outcome (`RunState::final_status_for`): a failure whose completed iterations were all undone ends
+  `COMPENSATED` (the root rule, `successors_after`); a cancellation ends `CANCELLED` only if
+  everything was undone, otherwise `PARTIAL` or `COMPENSATION_FAILED`. A loop with `onError` takes the
+  edge only after `COMPENSATED` (D66: a failure that was not undone is unhandled), otherwise the run
+  ends with the outcome.
+- **D386 — A compensation that keeps failing waits for a person, and a stop does not give up on that
+  person.** A scoped compensation has the compensation retry budget (five attempts unless
+  `compensationRetry`), the lease, fence, attempt timeout and breaker of every compensation. When the
+  budget is spent the step waits on `OPERATOR` and the run is `MANUAL_REVIEW`; nothing is assumed
+  done. A cancellation or a deadline that arrives while a scoped compensation waits for a person
+  leaves it waiting: the status stays `MANUAL_REVIEW` and a person decides (retry, skip with a
+  justification, resolve). *This is stricter than the root rule of D66,* which gives up on a
+  compensation that waits for a person when the run is cancelled and ends the saga
+  `COMPENSATION_FAILED`; the instruction for this increment is that a stop during the drain must not
+  overwrite `MANUAL_REVIEW` or `PARTIAL`. A *forward* member that waits for a person when the run is
+  cancelled is given up on and compensated defensively, as D66 says. *Open (O381):* whether the root
+  rule should also change to match; recommended, but it is a change to released behavior and is not
+  made here.
+- **D387 — Unknown outcomes are looked up before anything is repeated or compensated.** An attempt of a
+  scoped activity that ends `LEASE_EXPIRED`, `ATTEMPT_TIMEOUT` or `OUTCOME_UNKNOWN` follows
+  `end_attempt` of the root: with `reconcileWith`, `reconciliation.requested` and the lookup
+  `node~r` at the same path; without it, a `highRisk` step waits for a person and an ordinary one is
+  retried. A step whose outcome stayed unknown when the scope compensates is compensated defensively
+  (G53: a compensation tolerates an effect that never happened). Applied, not applied and unknown
+  verdicts conclude the forward step exactly as at the root, and a not-applied verdict never retries a
+  forward step in a scope that is stopping (`may_retry_forward`).
+- **D388 — Public bodies.** The published collection and loop body widens from "one activity then
+  return" to "a chain of one or more activities then return"; each activity may declare
+  `compensateWith`, `reconcileWith`, `compensationRetry`, `compensationTimeoutMs`, `irreversible`
+  and `highRisk`, and may not declare `onError`. Branching (`parallel`, `condition`, `switch`),
+  `saga`, timers, child workflows and nested scopes inside a body stay closed: the scoped planner
+  (`plan_addressed`) routes activities only, and the claim of such a node has no evidence. A chain is
+  exactly what makes "reverse topological within an iteration" observable at runtime (the
+  compensations of the later activities finish first); a diamond cannot be published, so the
+  independence of parallel branches inside one iteration is proven in the domain only (the
+  `reverse_dependencies` property tests) and is not claimed at runtime.
+- **D389 — One reducer, addressed.** The scoped events reuse the events of the root saga where the
+  meaning is the same (`reconciliation.requested`, `reconciliation.concluded`, `step.needs_review`,
+  `step.retry_requested`, `step.skipped`, `step.resolved`), addressed at the instance's path; only
+  the two events that name a scope (`scope.compensation_planned`, `scope.compensated`) are new. The
+  six arms of the root reducer are extracted into one function that takes an `ExecutionInstanceId`,
+  so a root and a scoped step cannot drift apart; root errors keep their variants. The scheduler does
+  not decide compensation by SQL: a pure function of `(definition, state, stop)` returns the next
+  addressed event, as `sagas::advance` does for roots, and the store only persists what the reducer
+  accepted in the same transaction as the lease, the outbox hint and the audit.
+
+Open decisions for the owner (options, recommendation, effect on what is built):
+
+- **O380 — Scope-level policy fields.** *Options:* (a) defaults only, as built; (b) `onCompensationFailure`
+  and `cancelPolicy` on the scope nodes, additive in IR v1; (c) require an enclosing `saga`.
+  *Recommendation:* (a) now, (b) when a user needs `fail` or `abort_no_compensation`; (c) would close the
+  public subsets. *Effect:* none on the code; the policy lookup is one function.
+- **O381 — Give up on a person when a compensation waits and the run is cancelled.** *Options:* (a) hold
+  (built for scopes); (b) give up and end `COMPENSATION_FAILED` (the root rule, D66). *Recommendation:*
+  (a) for both; changing the root is a behavior change that needs its own ADR note.
+- **O382 — Run deadline over an open collection.** `plan()` fails closed with
+  `UnsupportedStructuredNode` when `TIMED_OUT` stops a run whose collection is still `OPEN`
+  (existing, G343 for loops). Supporting it needs a `TimedOut` drain reason in the collection tables.
+  *Recommendation:* add it with its own migration after this increment; not claimed here.
+- **O383 — Branches and nested scopes in bodies.** Closed (D388). Opening them needs the scoped
+  planner to route conditions, switches and parallel joins, and nested low-capacity admission tests
+  (T014-014, T014-021). *Recommendation:* separate increment.
