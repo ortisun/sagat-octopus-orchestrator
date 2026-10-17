@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import { createMemoryRouter, Outlet, RouterProvider } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { routes } from './routes';
@@ -26,7 +26,9 @@ describe('route failure recovery', () => {
     render(<RouterProvider router={router} />);
 
     const heading = await screen.findByRole('heading', { name: 'Unable to open this page' });
-    expect(heading).toHaveFocus();
+    // The page moves focus in an effect after it mounts, so the heading can be found a moment
+    // before it holds focus.
+    await waitFor(() => expect(heading).toHaveFocus());
     expect(screen.getByRole('button', { name: 'Reload Studio' })).toBeVisible();
     expect(screen.getByText(/unsaved changes will be lost/i)).toBeVisible();
     expect(screen.getByText(/sign in again/i)).toBeVisible();
