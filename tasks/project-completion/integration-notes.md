@@ -918,3 +918,32 @@ new case still requires function EXECUTE and nested-relation SELECT/row-lock che
 real-database runtime-privilege module then passed **32/32**, 55.49 s
 (`/tmp/sagat-completion-current-runtime-privilege-audit.log`), with no added exception or grant.
 The model document now describes the implemented prepared-request and authority-lock boundaries.
+
+### Current-authority fixture alignment
+
+Legacy worker fixtures must persist their current tenant membership before expecting a successful
+registration/session. Added explicit worker memberships in the foreign durable-worker/quota cases,
+foreign compensation breaker, operation redaction, secret-pool helpers, binding helpers and direct
+session-store fixture. Deliberately unauthorized cross-tenant calls remain unauthorized; production
+membership/binding checks are unchanged by this fixture commit. The session-quota fixture also
+creates its second identity through the membership service.
+
+Targeted real repeats passed: operation redaction **1/1**, 4.43 s; foreign durable worker **1/1**,
+21.91 s; current tenant isolation **9/9**, 12.23 s; secret pools **17/17**, 91.47 s; foreign breaker
+**1/1**, 19.86 s. Logs are `/tmp/sagat-completion-operation-redaction-green.log`,
+`/tmp/sagat-completion-foreign-worker-membership-green.log`,
+`/tmp/sagat-completion-current-isolation-regression.log`,
+`/tmp/sagat-completion-secret-pool-membership-fixtures-green.log` and
+`/tmp/sagat-completion-breaker-membership-fixture-green.log`. The preceding complete durable repeat
+was **177 passed/1 failed**: it had compiled before the final foreign-session membership repair;
+that remaining case is included in the successful nine-case isolation repeat.
+
+The security sweep exposed two additional binding fixture failures, reproduced separately:
+the direct store fixture had no membership, and the lease-index availability test was selecting
+the newly added `steps_path_live_idx` on its tiny tables. Like its existing temporary removal of
+the open-run index, the latter now removes that competing index only inside a rolled-back test
+transaction; the assertion still requires the session lease index. Both failed baselines remain
+`/tmp/sagat-completion-binding-{session-membership,lease-index}-red.log`.
+The complete binding repeat passed **16/16**, 81.59 s, as the runtime role
+(`/tmp/sagat-completion-current-binding-regression.log`). The independently running broad
+workspace/security checkpoints retain their original failures; they are not rewritten as passed.

@@ -12,7 +12,7 @@ use sagat_application::clock::SystemClock;
 use sagat_application::entropy::SystemEntropy;
 use sagat_application::execution::Engine;
 use sagat_application::worker::{Capabilities, WorkerService, WorkerSettings};
-use sagat_domain::identity::{Principal, Role};
+use sagat_domain::identity::{Membership, Principal, Role};
 use sagat_infra_ir::JsonEvaluator;
 use sagat_telemetry::Metrics;
 use serde_json::{Value, json};
@@ -94,6 +94,19 @@ async fn a_resolved_secret_and_secret_shaped_text_never_leave_the_operation_boun
     let admin = Principal::new(fixture.tenant, subject("alice"), Role::Admin);
     let store = fixture.api.executions.clone();
     let worker = Principal::new(fixture.tenant, subject("worker-1"), Role::Worker);
+    // Production registration rechecks current membership; constructing a trusted principal alone
+    // does not provision a machine identity in the tenant.
+    fixture
+        .api
+        .owner_store
+        .insert_membership(&Membership::restore(
+            fixture.tenant,
+            worker.subject().clone(),
+            Role::Worker,
+            crate::support::now(),
+        ))
+        .await
+        .expect("current worker membership");
     BindingService::new(store.clone(), SystemClock)
         .bind(
             &admin,

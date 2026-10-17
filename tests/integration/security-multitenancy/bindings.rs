@@ -9,8 +9,8 @@ use serde_json::json;
 
 use crate::support::engine::{World, activity, ctx, document, subject_of, task_ref, world};
 
-fn worker(w: &World, name: &str) -> Principal {
-    Principal::new(w.admin.tenant_id(), subject_of(name), Role::Worker)
+async fn worker(w: &World, name: &str) -> Principal {
+    w.member(name, Role::Worker).await
 }
 
 fn caps(activities: &[&str]) -> Capabilities {
@@ -48,7 +48,7 @@ async fn register(
 #[tokio::test]
 async fn a_worker_without_a_binding_is_refused_and_the_attempt_is_audited() {
     let w = world().await;
-    let stranger = worker(&w, "stranger");
+    let stranger = worker(&w, "stranger").await;
     let refused = register(&w, &stranger, "payments", "first", &["act.a"]).await;
     assert_eq!(refused.map(|_| ()), Err(AppError::NotBound));
 
@@ -79,7 +79,7 @@ async fn a_worker_without_a_binding_is_refused_and_the_attempt_is_audited() {
 #[tokio::test]
 async fn a_binding_covers_exactly_the_activities_it_names() {
     let w = world().await;
-    let who = worker(&w, "scoped");
+    let who = worker(&w, "scoped").await;
     bind(&w, "scoped", w.namespace.id(), &["payments.*", "audit.log"]).await;
 
     register(
@@ -112,7 +112,7 @@ async fn a_binding_covers_exactly_the_activities_it_names() {
 async fn a_binding_belongs_to_one_namespace() {
     let w = world().await;
     let billing = w.add_namespace("billing").await;
-    let who = worker(&w, "narrow");
+    let who = worker(&w, "narrow").await;
     bind(&w, "narrow", w.namespace.id(), &["*"]).await;
 
     register(&w, &who, "payments", "here", &["act.a"])
@@ -249,7 +249,7 @@ async fn removing_a_binding_closes_the_session_releases_the_lease_and_stops_the_
         ))
         .await;
     let run = w.start(wf, &json!({})).await;
-    let who = worker(&w, "revoked");
+    let who = worker(&w, "revoked").await;
     bind(&w, "revoked", w.namespace.id(), &["payments.*"]).await;
     let registered = register(&w, &who, "payments", "r1", &["payments.charge"])
         .await
@@ -321,7 +321,7 @@ async fn removing_a_binding_closes_the_session_releases_the_lease_and_stops_the_
 #[tokio::test]
 async fn narrowing_a_binding_closes_only_the_sessions_it_no_longer_covers() {
     let w = world().await;
-    let who = worker(&w, "narrowed");
+    let who = worker(&w, "narrowed").await;
     bind(&w, "narrowed", w.namespace.id(), &["*"]).await;
     let keeps = register(&w, &who, "payments", "keeps", &["payments.charge"])
         .await
@@ -377,7 +377,7 @@ async fn a_binding_that_disappears_stops_a_lease_holder_even_without_a_session_e
     let w = world().await;
     let (wf, _) = w.publish(document("beat", "a", vec![activity("a")])).await;
     w.start(wf, &json!({})).await;
-    let who = worker(&w, "stale-acl");
+    let who = worker(&w, "stale-acl").await;
     bind(&w, "stale-acl", w.namespace.id(), &["*"]).await;
     let registered = register(&w, &who, "payments", "s", &["act.a"])
         .await
@@ -578,6 +578,7 @@ async fn the_store_refuses_a_session_that_the_binding_no_longer_covers() {
     use sagat_application::worker::{NewSession, WorkerStore};
 
     let w = world().await;
+    w.member("racer", Role::Worker).await;
     bind(&w, "racer", w.namespace.id(), &["pay.*"]).await;
     let session = |name: &str, activities: &[&str]| NewSession {
         id: uuid::Uuid::now_v7(),
@@ -638,7 +639,7 @@ async fn registering_while_a_binding_is_narrowed_never_leaves_a_session_it_does_
     let w = world().await;
     for round in 0..12 {
         let name = format!("racer{round}");
-        let who = worker(&w, &name);
+        let who = worker(&w, &name).await;
         bind(&w, &name, w.namespace.id(), &["pay.*", "other.*"]).await;
         let registrations = (0..6).map(|i| {
             let who = &who;
@@ -679,10 +680,14 @@ async fn releasing_the_leases_of_closed_sessions_is_an_index_lookup_and_not_a_sc
         .execute(&mut *tx)
         .await
         .expect("set");
-    // On tables this small the planner would rather walk the partial index of open steps (G461) than
-    // look at the leases; the transaction is rolled back, so the competitor is dropped for the
+    // On tables this small the planner would rather walk either partial index of open steps than
+    // look at the leases; the transaction is rolled back, so those competitors are dropped for the
     // question only: is the lookup by session served by `steps_leased_by_idx`?
     sqlx::query("DROP INDEX steps_run_open_idx")
+        .execute(&mut *tx)
+        .await
+        .expect("withhold the run open-work index");
+    sqlx::query("DROP INDEX steps_path_live_idx")
         .execute(&mut *tx)
         .await
         .expect("leave the lease index as the only candidate");
