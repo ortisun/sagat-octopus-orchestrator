@@ -498,3 +498,20 @@ The separate old-release binary upgrade remains the evidence for natural rules-0
 
 The CLI/browser/event matrices and the frozen prior-server byte comparison remain separate named
 evidence. T016-049 is kept open while completing its last boundary combinations.
+
+
+### CLI audience matrix and T016-049 completion
+
+The complete E2E classification target passed 5/5 in 190.26 s, no ignored tests
+(`/tmp/sagat-completion-e2e-classification-expanded.log`). It includes the four-run six-role HTTP
+matrix, the two canary-detector checks, the existing actual CLI grant/reveal/revoke journey and
+96 actual CLI executions over all role/grant/reveal/payload combinations. The latter inspects
+both stdout and stderr, checks exit statuses and positively witnesses authorized values. After
+adding explicit assertions for every dynamic/undeclared key and value, that 96-process case
+passed again (1/1, 120.86 s, `/tmp/sagat-completion-cli-keys-matrix.log`). Shared fixture helpers
+retain the same real publication and isolated legacy preparation.
+
+Together with the existing actual event/dead-letter audience matrix, captured server telemetry,
+expanded Chromium lifetime/storage/network proof, and all ten byte-identical frozen pre-feature
+HTTP responses, this closes the named T016-049 boundary criteria. It does not close the workspace
+release gate or the manual/CLI quickstart task.

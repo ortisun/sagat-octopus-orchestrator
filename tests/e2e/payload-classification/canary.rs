@@ -161,12 +161,7 @@ impl Fixture {
     }
 }
 
-#[tokio::test]
-async fn six_roles_with_and_without_grant_keep_every_public_surface_value_free() {
-    let collector = Collector::start().await;
-    let (_telemetry_guard, sink, logs) = collector.install_with_logs(1.0);
-    let metrics = Metrics::global();
-    let fixture = fixture("public-surfaces").await;
+pub(crate) async fn configure_matrix_rate(fixture: &Fixture) {
     // This privacy matrix makes hundreds of real requests; retain admission with an explicit
     // supported test policy instead of letting rate limiting mask the authorization assertions.
     sagat_application::quotas::QuotaService::new(
@@ -193,7 +188,9 @@ async fn six_roles_with_and_without_grant_keep_every_public_surface_value_free()
         .await
         .expect("matrix request policy");
     assert_eq!(policy.status(), StatusCode::OK);
-    let run = &fixture.run;
+}
+
+pub(crate) async fn variant_runs(fixture: &Fixture) -> Vec<(&'static str, String)> {
     let invalid = publish_and_start(
         &fixture.api,
         json!({"type":"object","additionalProperties":false,"x-sagat-classification":"public","properties":{"number":{"type":"number"}}}),
@@ -235,6 +232,22 @@ async fn six_roles_with_and_without_grant_keep_every_public_surface_value_free()
         .commit()
         .await
         .expect("atomic legacy fixture");
+    vec![
+        ("invalid", invalid),
+        ("legacy", legacy),
+        ("unmarked", unmarked),
+    ]
+}
+
+#[tokio::test]
+async fn six_roles_with_and_without_grant_keep_every_public_surface_value_free() {
+    let collector = Collector::start().await;
+    let (_telemetry_guard, sink, logs) = collector.install_with_logs(1.0);
+    let metrics = Metrics::global();
+    let fixture = fixture("public-surfaces").await;
+    configure_matrix_rate(&fixture).await;
+    let run = &fixture.run;
+    let variants = variant_runs(&fixture).await;
     let payload_free = [
         format!("/runs/{run}"),
         format!("/runs/{run}/events?limit=200"),
@@ -346,11 +359,7 @@ async fn six_roles_with_and_without_grant_keep_every_public_surface_value_free()
             &fixture.canaries.all(),
         );
 
-        for (kind, other_run) in [
-            ("invalid", &invalid),
-            ("legacy", &legacy),
-            ("unmarked", &unmarked),
-        ] {
+        for (kind, other_run) in &variants {
             let (status, body) = fixture
                 .text(
                     case.subject,
@@ -367,7 +376,7 @@ async fn six_roles_with_and_without_grant_keep_every_public_surface_value_free()
                     StatusCode::OK
                 }
             );
-            if kind == "unmarked" && case.may_reveal() {
+            if *kind == "unmarked" && case.may_reveal() {
                 assert_present(
                     "explicit unmarked reveal",
                     &body,
@@ -443,7 +452,7 @@ async fn six_roles_with_and_without_grant_keep_every_public_surface_value_free()
     for case in audience_cases() {
         fixture.set_grant(case.subject, case.grant).await;
         let subject = case.subject;
-        for run in [run, &invalid, &legacy, &unmarked] {
+        for run in std::iter::once(run).chain(variants.iter().map(|(_, run)| run)) {
             let response = fixture
                 .api
                 .as_user(

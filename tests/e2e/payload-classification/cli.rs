@@ -3,8 +3,10 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use crate::canary::{ADMIN, DEVELOPER, Fixture, NAMESPACE, TENANT, fixture};
-use crate::canary_support::{assert_absent, assert_present};
+use crate::canary::{
+    ADMIN, DEVELOPER, Fixture, NAMESPACE, TENANT, configure_matrix_rate, fixture, variant_runs,
+};
+use crate::canary_support::{assert_absent, assert_present, audience_cases};
 
 fn target_dir() -> PathBuf {
     std::env::current_exe()
@@ -17,7 +19,7 @@ fn target_dir() -> PathBuf {
         .to_owned()
 }
 
-async fn cli(fixture: &Fixture, subject: &str, args: &[&str]) -> Output {
+pub(crate) async fn cli(fixture: &Fixture, subject: &str, args: &[&str]) -> Output {
     let token = fixture.api.idp.token(subject, TENANT).build();
     let server = fixture.api.base.clone();
     let args = args
@@ -50,10 +52,108 @@ async fn cli(fixture: &Fixture, subject: &str, args: &[&str]) -> Output {
     .expect("join sagat process")
 }
 
-fn output_bytes(output: &Output) -> Vec<u8> {
+pub(crate) fn output_bytes(output: &Output) -> Vec<u8> {
     let mut all = output.stdout.clone();
     all.extend_from_slice(&output.stderr);
     all
+}
+
+#[tokio::test]
+async fn every_cli_audience_keeps_invalid_legacy_and_unrequested_data_out_of_both_streams() {
+    let fixture = fixture("cli-matrix").await;
+    configure_matrix_rate(&fixture).await;
+    let mut runs = variant_runs(&fixture).await;
+    runs.push(("classified", fixture.run.clone()));
+    let mut calls = 0;
+    for case in audience_cases() {
+        fixture.set_grant(case.subject, case.grant).await;
+        for (kind, run) in &runs {
+            let mut args = vec!["workflow", "inspect", run.as_str(), "--values"];
+            if case.reveal {
+                args.push("--reveal-pii");
+            }
+            let output = cli(&fixture, case.subject, &args).await;
+            calls += 1;
+            let allowed = case.may_read_runs() && (!case.reveal || case.may_reveal());
+            assert_eq!(output.status.success(), allowed, "CLI audience status");
+            let wire = output_bytes(&output);
+            assert_absent(
+                "CLI forbidden values and keys",
+                &wire,
+                &fixture.canaries.always_forbidden(),
+            );
+            match *kind {
+                "invalid" | "legacy" => {
+                    assert_absent("CLI invalid or legacy", &wire, &fixture.canaries.all())
+                }
+                "unmarked" if allowed && case.may_reveal() => {
+                    assert_present(
+                        "CLI unmarked reveal",
+                        &wire,
+                        &fixture.canaries.unmarked_value,
+                    );
+                    assert_present(
+                        "CLI unmarked key reveal",
+                        &wire,
+                        &fixture.canaries.unmarked_key,
+                    );
+                }
+                "unmarked" => assert_absent("CLI unrequested data", &wire, &fixture.canaries.all()),
+                "classified" if allowed => {
+                    assert_present(
+                        "CLI public projection",
+                        &wire,
+                        &fixture.canaries.public_value,
+                    );
+                    if case.may_read_internal() {
+                        assert_present(
+                            "CLI internal projection",
+                            &wire,
+                            &fixture.canaries.internal_value,
+                        );
+                    } else {
+                        assert_absent(
+                            "CLI hidden internal",
+                            &wire,
+                            &[&fixture.canaries.internal_value],
+                        );
+                    }
+                    if case.may_reveal() {
+                        assert_present(
+                            "CLI personal projection",
+                            &wire,
+                            &fixture.canaries.pii_value,
+                        );
+                        for key in [
+                            &fixture.canaries.public_key,
+                            &fixture.canaries.internal_key,
+                            &fixture.canaries.pii_key,
+                            &fixture.canaries.undeclared_key,
+                            &fixture.canaries.undeclared_value,
+                        ] {
+                            assert_present("CLI explicitly revealed key or value", &wire, key);
+                        }
+                    } else {
+                        assert_absent(
+                            "CLI hidden personal",
+                            &wire,
+                            &[
+                                &fixture.canaries.pii_value,
+                                &fixture.canaries.pii_key,
+                                &fixture.canaries.public_key,
+                                &fixture.canaries.internal_key,
+                                &fixture.canaries.undeclared_key,
+                                &fixture.canaries.undeclared_value,
+                            ],
+                        );
+                    }
+                }
+                "classified" => assert_absent("CLI refused", &wire, &fixture.canaries.all()),
+                _ => panic!("unknown canary fixture class"),
+            }
+        }
+    }
+    assert_eq!(calls, 6 * 2 * 2 * 4);
 }
 
 #[tokio::test]
