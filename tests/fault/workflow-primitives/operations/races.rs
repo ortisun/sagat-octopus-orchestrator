@@ -204,3 +204,33 @@ async fn an_update_and_a_firing_timer_both_commit_in_either_order() {
 async fn an_update_and_a_wait_timeout_both_commit_in_either_order() {
     timer_race(wait_document("operations-wait-race"), "gate", true).await;
 }
+
+/// The same request delivered twice at once (a client that retries before the first answer): the
+/// second waits for the first and replays its receipt, so the state moves once.
+#[tokio::test]
+async fn two_deliveries_of_one_update_key_apply_once_and_replay_once() {
+    let fixture = start(worker_document("operations-duplicate-delivery"), &input(10)).await;
+    let run = fixture.run;
+    let args = replace(41);
+    let (first, second) = race(
+        &fixture.w,
+        run,
+        fixture
+            .ops
+            .update(run, "balance.replace", "duplicate", &args, Some(0)),
+        fixture
+            .ops
+            .update(run, "balance.replace", "duplicate", &args, Some(0)),
+    )
+    .await;
+    let first = first.expect("first delivery");
+    let second = second.expect("second delivery");
+    assert!(!first.resolution.replayed());
+    assert!(second.resolution.replayed());
+    assert_eq!(first.resolution.receipt(), second.resolution.receipt());
+    assert_eq!(
+        (first.result, second.result),
+        (Some(json!(41)), Some(json!(41)))
+    );
+    assert_update_committed_once(&fixture, 1).await;
+}
