@@ -27,6 +27,11 @@ const json = (body: unknown, status = 200, headers: Record<string, string> = {})
   new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...headers } });
 
 describe('ApiClient', () => {
+  it('refuses an unsafe numeric draft before it can be edited and autosaved with rounded values', async () => {
+    const { api } = client(() => new Response('{"ir":{"nodes":[{"parameters":[{"literal":{"type":"json","value":{"id":9007199254740993}}}]}]}}', { headers: { 'content-type': 'application/json' } }));
+    await expect(api.get('/workflows/id', { safeNumbers: true })).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+  });
+
   it('sends the token and the namespace to the page origin, and nothing that would carry state', async () => {
     const { api, seen } = client(() => json({ ok: true }));
     await expect(api.get('/workflows', { query: { limit: 25, cursor: undefined } })).resolves.toEqual({ ok: true });

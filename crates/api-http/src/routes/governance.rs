@@ -288,15 +288,90 @@ pub async fn put_secret<B: Governance>(
 ) -> Result<Json<SecretBody>, ApiError> {
     let namespace =
         admitted_namespace(&state, &caller, &namespace, ApiOperation::SecretManage).await?;
-    let view = secrets(&state)?
-        .put_with_pools(
+    if body.required_provider.is_some() && state.managed_secrets().is_none() {
+        return Err(sagat_application::error::AppError::Unavailable.into());
+    }
+    let view = if let Some(managed) = state.managed_secrets() {
+        let request_id = body
+            .request_id
+            .ok_or(sagat_application::error::AppError::NotAllowed(
+                "requestId is required for managed secrets",
+            ))?;
+        let expected_version =
+            body.expected_version
+                .ok_or(sagat_application::error::AppError::NotAllowed(
+                    "expectedVersion is required for managed secrets",
+                ))?;
+        let value =
+            sagat_domain::secrets::SecretValue::new(body.value.into_bytes()).map_err(|_| {
+                sagat_application::error::AppError::NotAllowed("a secret value is 1 to 16384 bytes")
+            })?;
+        managed
+            .put_with_pools(
+                &caller.session.principal,
+                namespace,
+                sagat_application::managed_secrets::ManagedSecretWrite {
+                    name: &name,
+                    value,
+                    expected_version,
+                    request_id: request_id.parse().map_err(|_| {
+                        sagat_application::error::AppError::NotAllowed("requestId must be a UUID")
+                    })?,
+                },
+                body.pools.as_deref(),
+                &caller.ctx,
+            )
+            .await?
+    } else {
+        secrets(&state)?
+            .put_with_pools(
+                &caller.session.principal,
+                namespace,
+                &name,
+                body.value.into_bytes(),
+                body.pools.as_deref(),
+                &caller.ctx,
+            )
+            .await?
+    };
+    Ok(Json(SecretBody::from(&view)))
+}
+
+pub async fn migrate_secret<B: Governance>(
+    caller: Caller,
+    State(state): State<B>,
+    Path((namespace, name)): Path<(String, String)>,
+    ApiJson(body): ApiJson<crate::dto_gov::MigrateSecretBody>,
+) -> Result<Json<SecretBody>, ApiError> {
+    let namespace =
+        admitted_namespace(&state, &caller, &namespace, ApiOperation::SecretManage).await?;
+    let service = state.managed_secrets().ok_or_else(ApiError::not_found)?;
+    let view = service
+        .migrate(
             &caller.session.principal,
             namespace,
             &name,
-            body.value.into_bytes(),
-            body.pools.as_deref(),
+            body.expected_version,
+            body.request_id.parse().map_err(|_| {
+                sagat_application::error::AppError::NotAllowed("requestId must be a UUID")
+            })?,
             &caller.ctx,
         )
+        .await?;
+    Ok(Json(SecretBody::from(&view)))
+}
+
+pub async fn reconcile_secret<B: Governance>(
+    caller: Caller,
+    State(state): State<B>,
+    Path((namespace, request)): Path<(String, String)>,
+) -> Result<Json<SecretBody>, ApiError> {
+    let namespace =
+        admitted_namespace(&state, &caller, &namespace, ApiOperation::SecretManage).await?;
+    let request = request.parse().map_err(|_| ApiError::not_found())?;
+    let service = state.managed_secrets().ok_or_else(ApiError::not_found)?;
+    let view = service
+        .reconcile_request(&caller.session.principal, namespace, request, &caller.ctx)
         .await?;
     Ok(Json(SecretBody::from(&view)))
 }

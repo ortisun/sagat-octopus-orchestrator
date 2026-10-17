@@ -1,0 +1,255 @@
+{
+  "canonical": {
+    "typed": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"query\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"sdk-database-types\"},\"nodes\":[{\"connectionRef\":{\"name\":\"orders-db\",\"revision\":2},\"id\":\"query\",\"limits\":{\"maxRows\":2,\"timeoutMs\":5000},\"next\":\"dependent\",\"operation\":\"query\",\"parameters\":[{\"literal\":{\"type\":\"null\",\"value\":null}},{\"literal\":{\"type\":\"boolean\",\"value\":true}},{\"literal\":{\"type\":\"integer\",\"value\":\"9223372036854775807\"}},{\"literal\":{\"type\":\"decimal\",\"value\":\"12345678901234567890.123456789\"}},{\"literal\":{\"type\":\"float\",\"value\":1.25}},{\"literal\":{\"type\":\"text\",\"value\":\"café\"}},{\"literal\":{\"type\":\"timestamp\",\"value\":\"2026-10-17T09:30:00-03:00\"}},{\"literal\":{\"type\":\"date\",\"value\":\"2026-10-17\"}},{\"literal\":{\"type\":\"binary\",\"value\":\"AP8=\"}},{\"literal\":{\"type\":\"json\",\"value\":{\"order\":\"9007199254740993\"}}},{\"expression\":\"input.orderId\",\"type\":\"integer\"}],\"statement\":\"SELECT $1::text AS nothing, $2::boolean AS flag, $3::bigint AS integer, $4::numeric AS decimal, $5::float8 AS float, $6::text AS text, $7::timestamptz AS timestamp, $8::date AS date, $9::bytea AS binary, $10::jsonb AS json, $11::bigint AS expression\",\"timeoutMs\":10000,\"type\":\"database\"},{\"connectionRef\":{\"name\":\"orders-db\"},\"id\":\"dependent\",\"next\":\"consume\",\"operation\":\"query\",\"parameters\":[{\"expression\":\"steps.query.output.rows[0][2].value\",\"type\":\"integer\"}],\"statement\":\"SELECT $1::bigint AS copied\",\"type\":\"database\"},{\"activity\":\"database.consume\",\"id\":\"consume\",\"type\":\"activity\"}]}",
+    "unsupported": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"refused\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"sdk-database-refused\"},\"nodes\":[{\"connectionRef\":{\"name\":\"orders-db\"},\"id\":\"refused\",\"operation\":\"execute\",\"parameters\":[],\"statement\":\"DROP TABLE effects\",\"type\":\"database\"}]}",
+    "write": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"write\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"sdk-database-write\"},\"nodes\":[{\"connectionRef\":{\"name\":\"orders-db\"},\"id\":\"write\",\"next\":\"consume\",\"operation\":\"execute\",\"parameters\":[{\"literal\":{\"type\":\"integer\",\"value\":\"7\"}},{\"literal\":{\"type\":\"decimal\",\"value\":\"19.90\"}}],\"statement\":\"INSERT INTO effects(id, amount) VALUES ($1::bigint, $2::numeric) RETURNING id, amount\",\"type\":\"database\"},{\"activity\":\"database.consume\",\"id\":\"consume\",\"type\":\"activity\"}]}"
+  },
+  "errors": {
+    "bad-decimal": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "decimal-newline": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "dsn": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "integer-newline": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "limit": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "limit-fraction": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "limit-overflow": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "name-newline": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "number-integer": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "revision-fraction": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "revision-overflow": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "revision-zero": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "statement-empty": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "timeout-fraction": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    }
+  },
+  "workflows": {
+    "typed": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "query",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "sdk-database-types"
+      },
+      "nodes": [
+        {
+          "connectionRef": {
+            "name": "orders-db",
+            "revision": 2
+          },
+          "id": "query",
+          "limits": {
+            "maxRows": 2,
+            "timeoutMs": 5000
+          },
+          "next": "dependent",
+          "operation": "query",
+          "parameters": [
+            {
+              "literal": {
+                "type": "null",
+                "value": null
+              }
+            },
+            {
+              "literal": {
+                "type": "boolean",
+                "value": true
+              }
+            },
+            {
+              "literal": {
+                "type": "integer",
+                "value": "9223372036854775807"
+              }
+            },
+            {
+              "literal": {
+                "type": "decimal",
+                "value": "12345678901234567890.123456789"
+              }
+            },
+            {
+              "literal": {
+                "type": "float",
+                "value": 1.25
+              }
+            },
+            {
+              "literal": {
+                "type": "text",
+                "value": "café"
+              }
+            },
+            {
+              "literal": {
+                "type": "timestamp",
+                "value": "2026-10-17T09:30:00-03:00"
+              }
+            },
+            {
+              "literal": {
+                "type": "date",
+                "value": "2026-10-17"
+              }
+            },
+            {
+              "literal": {
+                "type": "binary",
+                "value": "AP8="
+              }
+            },
+            {
+              "literal": {
+                "type": "json",
+                "value": {
+                  "order": "9007199254740993"
+                }
+              }
+            },
+            {
+              "expression": "input.orderId",
+              "type": "integer"
+            }
+          ],
+          "statement": "SELECT $1::text AS nothing, $2::boolean AS flag, $3::bigint AS integer, $4::numeric AS decimal, $5::float8 AS float, $6::text AS text, $7::timestamptz AS timestamp, $8::date AS date, $9::bytea AS binary, $10::jsonb AS json, $11::bigint AS expression",
+          "timeoutMs": 10000,
+          "type": "database"
+        },
+        {
+          "connectionRef": {
+            "name": "orders-db"
+          },
+          "id": "dependent",
+          "next": "consume",
+          "operation": "query",
+          "parameters": [
+            {
+              "expression": "steps.query.output.rows[0][2].value",
+              "type": "integer"
+            }
+          ],
+          "statement": "SELECT $1::bigint AS copied",
+          "type": "database"
+        },
+        {
+          "activity": "database.consume",
+          "id": "consume",
+          "type": "activity"
+        }
+      ]
+    },
+    "unsupported": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "refused",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "sdk-database-refused"
+      },
+      "nodes": [
+        {
+          "connectionRef": {
+            "name": "orders-db"
+          },
+          "id": "refused",
+          "operation": "execute",
+          "parameters": [],
+          "statement": "DROP TABLE effects",
+          "type": "database"
+        }
+      ]
+    },
+    "write": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "write",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "sdk-database-write"
+      },
+      "nodes": [
+        {
+          "connectionRef": {
+            "name": "orders-db"
+          },
+          "id": "write",
+          "next": "consume",
+          "operation": "execute",
+          "parameters": [
+            {
+              "literal": {
+                "type": "integer",
+                "value": "7"
+              }
+            },
+            {
+              "literal": {
+                "type": "decimal",
+                "value": "19.90"
+              }
+            }
+          ],
+          "statement": "INSERT INTO effects(id, amount) VALUES ($1::bigint, $2::numeric) RETURNING id, amount",
+          "type": "database"
+        },
+        {
+          "activity": "database.consume",
+          "id": "consume",
+          "type": "activity"
+        }
+      ]
+    }
+  }
+}

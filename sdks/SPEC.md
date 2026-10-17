@@ -111,8 +111,12 @@ All calls are `<apiUrl><path>` with `Authorization: Bearer <token>`, `Accept: ap
 | `publishEvent(event)` | `POST /events` with `{eventId, type, data, subject?, occurredAt?, correlationKey?, dedupeTtlSeconds?}` | `202` `{eventId, source, status: ACCEPTED \| DUPLICATE}` |
 | `waitForCompletion(runId, options)` | polls `get` every `pollInterval` (default 500 ms, ±20 % jitter) until the status is terminal or `timeout` | the final Run |
 
-Also exposed, thin: `operate(runId, action, reason, options)` for `PAUSE`, `RESUME` and the saga
-decisions, `events(runId, cursor)` for the journal. Terminal statuses: `SUCCEEDED`, `FAILED`,
+Also exposed, thin: `operate(runId, action, reason, options)` for `PAUSE`, `RESUME`, `RERUN_AS_NEW` and the saga
+decisions, `events(runId, cursor)` for the journal. `rerunAsNew(runId, reason, options)` is `operate` with
+`RERUN_AS_NEW`: it starts a new run of the same version, with the same input and correlation id, from a run that
+ended (a run that has not ended is `CONFLICT`). The `OperationResult` names it in `newRunId` (absent for every other
+action) and the new run names its origin in `Run.rerunOf` (absent for a run that is not a rerun). A rerun of a
+segment of a continuation chain is an unrelated run with a chain, a deadline and a segment 0 of its own. Terminal statuses: `SUCCEEDED`, `FAILED`,
 `CANCELLED`, `TIMED_OUT`, `COMPENSATED`, `PARTIAL`, `COMPENSATION_FAILED`.
 
 Rules:
@@ -397,6 +401,7 @@ code unit; the rule is the UTF-16 one.)
 workflow(name).description(text).label(key, value)
   .step(id, activity, {retry, timeoutMs, compensateWith, reconcileWith, idempotencyTemplate, secrets,
                        compensationRetry, compensationTimeoutMs, irreversible, highRisk, onError})
+  .database(id, {connectionRef, operation, statement, parameters?, limits?, timeoutMs?, onError?})
   .sleep(id, durationMs)
   .waitForEvent(id, {eventType, correlationExpr, timeoutMs, onTimeout?, lookbackMs?})
   .invokeChild(id, workflow, {version?, input?, cancelPolicy?})
@@ -428,6 +433,34 @@ Linking (the whole algorithm — it is why the output is the same everywhere):
   or an `irreversible` step with `compensateWith` is raised when the node is added (`VALIDATION_FAILED`),
   not when the server refuses the document.
 - Options that are absent are omitted from the document (never `null`).
+
+### 7.1 Managed database operations (feature 017)
+
+All five SDKs emit the same canonical `type: database` node. `connectionRef` is
+`{name, revision?}` within the workflow namespace, never a DSN, password or provider
+path. `operation` is `query` or `execute`. Parameters are either
+`{literal: {type, value}}` or `{type, expression}`. Tags are `null`, `boolean`,
+`integer`, `decimal`, `float`, `text`, `timestamp`, `date`, `binary` and `json`;
+integer/decimal values use exact strings, binary uses base64, timestamp/date use
+RFC3339/ISO text. JSON literals obey the same canonical fidelity rules as other IR.
+
+The builder snapshots a database node's supplied values when it is added, validates
+basic shapes and finite contract ceilings, and raises `VALIDATION_FAILED` with a
+fixed message that contains no SQL or values. It adds neither retry policy nor
+secret references. SQL parsing, permission checks, connection/credential pinning,
+execution and unknown-write handling are server responsibilities. Writes have no
+automatic retry. Ordinary SDK workers continue negotiating 1.4; only the dedicated
+managed executor uses 1.5. The server rejects unsupported IR before execution.
+
+Inline results retain `{columns, rows, affectedRows, truncated}` with ordered tagged cells,
+exact numeric strings and explicit nulls. They use the ordinary retained steps map
+for downstream execution. The expression environment wraps each output, so a
+binding may read `steps.query.output.rows[0][0].value`. Results over 256 KiB use the
+existing `$blob` descriptor and explicit lease-bound blob reading; contexts do not
+auto-expand them, and database expressions cannot read blob contents. Interactive result reading
+requires the dedicated result permission. See
+[the five-language guide](../docs/guides/managed-database-sdk.md) and the shared
+`database-connections` conformance scenario.
 
 ## 8. Serialization
 

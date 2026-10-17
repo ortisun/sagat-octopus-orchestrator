@@ -117,6 +117,13 @@ async fn execute(command: Command, config: &Config) -> Result<(), RunError> {
             tracing::info!(moved, "secret versions re-sealed under the active key");
             Ok(())
         }
+        Command::CleanupSecrets => {
+            let request = sagat_control_plane::cleanup::CleanupConfig::from_lookup(
+                &env_lookup,
+                config.environment,
+            )?;
+            sagat_control_plane::cleanup::run(config, &request).await
+        }
         Command::QuotaCeiling => {
             let request = sagat_control_plane::config::CeilingConfig::from_lookup(&env_lookup)?;
             sagat_control_plane::grant_quota_ceiling(config, &request).await?;

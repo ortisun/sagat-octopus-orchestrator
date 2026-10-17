@@ -178,6 +178,7 @@ async fn publish_declared_internally(
             declared.parsed().digest,
             &declared.parsed().canonical,
             Some(&publication),
+            &declared.parsed().definition,
             None,
             &[],
             &[],
@@ -209,8 +210,10 @@ async fn create_declared_run(
     let created = w
         .store
         .create(NewRun {
+            retained: None,
             limits: RunLimits::UNLIMITED,
             info: RunInfo {
+                origin: None,
                 run_id: run,
                 tenant_id: w.admin.tenant_id(),
                 namespace_id: w.namespace.id(),

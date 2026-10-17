@@ -17,6 +17,6 @@ export function integrationsApi(api: ApiClient, namespace: string) {
       const update = { kind, settings, secretName, defaultEventType, ratePerSecond, status };
       return api.put<Connector>(path`/namespaces/${namespace}/connectors/${id}`, { body: update });
     },
-    credentials: (name: string, value: string) => api.put<Schemas['Secret']>(path`/namespaces/${namespace}/secrets/${name}`, { body: { value } }),
+    credentials: (name: string, value: string, requestId: string) => api.put<Schemas['Secret']>(path`/namespaces/${namespace}/secrets/${name}`, { body: { value, requestId, expectedVersion: 0 } }),
   };
 }

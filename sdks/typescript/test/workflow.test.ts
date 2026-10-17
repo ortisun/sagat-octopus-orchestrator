@@ -2,6 +2,17 @@ import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import { SagatError, body, canonicalJson, flow, workflow } from '../src/index.js';
 
+test('classified result schemas and workflow limits are preserved by their typed carriers', () => {
+  const schema = { type: 'object', 'x-sagat-classification': 'internal', properties: { value: { type: 'string' } } } as const;
+  const doc = workflow('classified-flow').limits({ maxInstances: 23, maxDepth: 4 })
+    .outputSchema(schema).step('a', 'act.a', { outputSchema: schema })
+    .script('s', `sha256:${'0'.repeat(64)}`, { outputSchema: schema })
+    .waitForEvent('w', { eventType: 'done', correlationExpr: 'input.id', timeoutMs: 10, outputSchema: schema })
+    .invokeChild('c', 'child-flow', { outputSchema: schema }).end('done').build();
+  assert.deepEqual(doc['limits'], { maxInstances: 23, maxDepth: 4 });
+  assert.deepEqual((doc['nodes'] as Record<string, unknown>[]).slice(0, 4).map((node) => node['outputSchema']), [schema, schema, schema, schema]);
+});
+
 test('a chain of steps is linked in order and starts at the first', () => {
   const doc = workflow('order-flow')
     .description('charges and ships')

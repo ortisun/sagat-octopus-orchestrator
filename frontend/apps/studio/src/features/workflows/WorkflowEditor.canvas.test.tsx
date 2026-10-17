@@ -134,7 +134,7 @@ describe('adding to the canvas', () => {
   it('has a palette of every kind that adds a node when pressed', async () => {
     const { canvas, user } = await opened();
     const palette = screen.getByRole('region', { name: 'Palette' });
-    expect(within(palette).getAllByRole('button')).toHaveLength(11);
+    expect(within(palette).getAllByRole('button')).toHaveLength(12);
     await user.click(within(palette).getByRole('button', { name: 'Timer' }));
     await waitFor(() => expect(cards(canvas)).toContain('timer_1'));
     expect(screen.getByRole('heading', { level: 2, name: 'Timer: timer_1' })).toBeInTheDocument();

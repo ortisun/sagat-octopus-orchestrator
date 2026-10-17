@@ -30,3 +30,6 @@
 # Isolated .NET runner build output
 /runners/dotnet/**/bin/
 /runners/dotnet/**/obj/
+
+# Private database/OpenBao development fixture
+/.local/

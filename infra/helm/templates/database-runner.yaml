@@ -1,0 +1,175 @@
+{{- if .Values.databaseRunner.enabled }}
+{{- $r := .Values.databaseRunner }}
+{{- $ctx := dict "root" . "component" "database-runner" }}
+{{- if or (not .Values.openbao.enabled) (not .Values.networkPolicy.enabled) }}
+{{- fail "databaseRunner requires openbao.enabled and networkPolicy.enabled" }}
+{{- end }}
+{{- if not (regexMatch "@sha256:[a-f0-9]{64}$" $r.image) }}
+{{- fail "databaseRunner.image must be pinned by sha256 digest" }}
+{{- end }}
+{{- if or (not $r.tokenSecret) (not $r.caSecret) }}
+{{- fail "databaseRunner.tokenSecret and caSecret are required" }}
+{{- end }}
+{{- if or (lt (int $r.replicas) 1) (gt (int $r.replicas) 32) (ne (toString $r.replicas) (toString (int $r.replicas))) }}
+{{- fail "databaseRunner.replicas must be a whole number from 1 to 32" }}
+{{- end }}
+{{- if not (regexMatch "^https://[A-Za-z0-9.-]+(:[0-9]+)?/?$" (default "" $r.config.grpcUrl)) }}
+{{- fail "databaseRunner.config.grpcUrl must be an HTTPS origin" }}
+{{- end }}
+{{- if or $r.config.developmentLoopback (not $r.config.namespaces) (not $r.config.deployment) }}
+{{- fail "databaseRunner requires namespaces and production deployment policy" }}
+{{- end }}
+{{- if not $r.config.deployment.denyCidrs }}
+{{- fail "databaseRunner.config.deployment.denyCidrs must include platform state stores" }}
+{{- end }}
+{{- range $r.config.namespaces }}
+{{- if gt (add (len (include "sagat.fullname" $)) (len "-database-runner-31/") (len .slug)) 120 }}
+{{- fail "databaseRunner pod name plus namespace slug must be at most 120 characters" }}
+{{- end }}
+{{- end }}
+{{- if or (not $r.resources.requests.cpu) (not $r.resources.requests.memory) (not $r.resources.limits.cpu) (not $r.resources.limits.memory) }}
+{{- fail "databaseRunner requires CPU and memory requests and limits" }}
+{{- end }}
+{{- include "sagat.networkPolicy.validateRules" (dict "name" "databaseRunner.targetEgress" "rules" $r.targetEgress "peerKey" "to") }}
+{{- if $r.telemetry.tracesEndpoint }}
+{{- if or (not (regexMatch "^https://[A-Za-z0-9.:-]+/[A-Za-z0-9/_-]*$" $r.telemetry.tracesEndpoint)) (not $r.telemetry.egress) }}
+{{- fail "databaseRunner telemetry requires an HTTPS endpoint and explicit egress" }}
+{{- end }}
+{{- include "sagat.networkPolicy.validateRules" (dict "name" "databaseRunner.telemetry.egress" "rules" $r.telemetry.egress "peerKey" "to") }}
+{{- else if $r.telemetry.egress }}
+{{- fail "databaseRunner.telemetry.egress needs tracesEndpoint" }}
+{{- end }}
+{{- $config := deepCopy $r.config }}
+{{- $_ := set $config "tokenFile" "/run/sagat-identity/token" }}
+{{- $_ := set $config "caFile" "/etc/sagat/engine-ca/ca.crt" }}
+{{- $_ := set $config "name" "database" }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "sagat.fullname" . }}-database-runner
+data:
+  database-runner.json: {{ mustToJson $config | quote }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "sagat.fullname" . }}-database-runner
+  labels:
+    {{- include "sagat.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "sagat.fullname" . }}-database-runner
+  replicas: {{ $r.replicas }}
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      {{- include "sagat.selector" $ctx | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "sagat.selector" $ctx | nindent 8 }}
+      annotations:
+        checksum/runner-config: {{ mustToJson $config | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "sagat.fullname" . }}
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 40
+      securityContext: {runAsNonRoot: true, fsGroup: 10001, seccompProfile: {type: RuntimeDefault}}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: database-runner
+          image: {{ $r.image | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - {name: SAGAT_DATABASE_RUNNER_CONFIG, value: /etc/sagat/runner/database-runner.json}
+            - {name: SAGAT_DATABASE_RUNNER_METRICS_ADDR, value: "0.0.0.0:9092"}
+            - name: SAGAT_DATABASE_RUNNER_NAME
+              valueFrom:
+                fieldRef: {fieldPath: metadata.name}
+            {{- if $r.telemetry.tracesEndpoint }}
+            - {name: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT, value: {{ $r.telemetry.tracesEndpoint | quote }}}
+            - {name: OTEL_EXPORTER_OTLP_TRACES_PROTOCOL, value: http/json}
+            {{- end }}
+          ports: [{name: metrics, containerPort: 9092}]
+          startupProbe:
+            httpGet: {path: /metrics, port: metrics}
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet: {path: /metrics, port: metrics}
+            periodSeconds: 10
+          resources:
+            {{- toYaml $r.resources | nindent 12 }}
+          {{- include "sagat.containerSecurity" . | nindent 10 }}
+          volumeMounts:
+            - {name: config, mountPath: /etc/sagat/runner, readOnly: true}
+            - {name: identity, mountPath: /run/sagat-identity, readOnly: true}
+            - {name: ca, mountPath: /etc/sagat/engine-ca, readOnly: true}
+      volumes:
+        - name: config
+          configMap: {name: {{ include "sagat.fullname" . }}-database-runner}
+        - name: identity
+          secret: {secretName: {{ $r.tokenSecret | quote }}, defaultMode: 288, items: [{key: token, path: token}]}
+        - name: ca
+          secret: {secretName: {{ $r.caSecret | quote }}, defaultMode: 288, items: [{key: ca.crt, path: ca.crt}]}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- include "sagat.topologySpread" $ctx | nindent 6 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "sagat.fullname" . }}-database-runner
+spec:
+  clusterIP: None
+  selector:
+    {{- include "sagat.selector" $ctx | nindent 4 }}
+  ports: [{name: metrics, port: 9092, targetPort: metrics}]
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "sagat.fullname" . }}-database-runner
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      {{- include "sagat.selector" $ctx | nindent 6 }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "sagat.fullname" . }}-database-runner
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "sagat.selector" $ctx | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - ports: [{port: 9092, protocol: TCP}]
+      from:
+        {{- toYaml .Values.networkPolicy.metricsFrom | nindent 8 }}
+  egress:
+    - ports: [{port: 53, protocol: UDP}, {port: 53, protocol: TCP}]
+      to:
+        {{- toYaml .Values.networkPolicy.egress.dnsTo | nindent 8 }}
+    - ports: [{port: {{ .Values.engine.grpc.port }}, protocol: TCP}]
+      to:
+        - podSelector:
+            matchLabels:
+              {{- include "sagat.selector" (dict "root" . "component" "execution-engine") | nindent 14 }}
+    {{- with $r.targetEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- with $r.telemetry.egress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}

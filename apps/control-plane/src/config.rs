@@ -233,6 +233,18 @@ impl Config {
     }
 }
 
+pub fn read_openbao(
+    get: Lookup<'_>,
+    environment: Environment,
+) -> Result<Option<sagat_infra_secrets::openbao::OpenBaoSettings>, ConfigError> {
+    sagat_infra_secrets::openbao::OpenBaoSettings::from_lookup(get, environment == Environment::Dev)
+        .map_err(|_| ConfigError::Invalid {
+            name: "SAGAT_OPENBAO_ADDRESS",
+            reason: "invalid OpenBao transport, mount, token-file or development configuration"
+                .to_owned(),
+        })
+}
+
 /// The key ring that seals secrets, from `SAGAT_SECRETS_KEYS` (`id:base64,id2:base64`, the first
 /// entry seals new values and every entry opens what it sealed). Absent means secrets are off.
 /// The error never contains the value.
@@ -376,6 +388,7 @@ pub struct ServeConfig {
     /// The key ring that seals secrets (`SAGAT_SECRETS_KEYS`); without it the secret routes do not
     /// exist.
     pub secrets: Option<sagat_infra_secrets::SecretsConfig>,
+    pub openbao: Option<sagat_infra_secrets::openbao::OpenBaoSettings>,
     /// The key that signs artifacts and the most a script may be given; without a key the script
     /// routes do not exist.
     pub scripts: Option<ScriptsConfig>,
@@ -404,16 +417,18 @@ impl ServeConfig {
         // engine's operator does for the worker API.
         let secrets = read_secrets(get)?;
         let environment: Environment = optional(get, "SAGAT_ENV", Environment::Prod)?;
+        let openbao = read_openbao(get, environment)?;
+
         let tls = read_http_tls(get)?;
         let webhook_oidc = read_webhook_oidc(get, environment == Environment::Dev)?;
-        if secrets.is_some()
+        if (secrets.is_some() || openbao.is_some())
             && tls.is_none()
             && environment != Environment::Dev
             && !flag(get, "SAGAT_API_ALLOW_PLAINTEXT_SECRETS")?
         {
             return Err(ConfigError::Invalid {
                 name: "SAGAT_API_ALLOW_PLAINTEXT_SECRETS",
-                reason: "SAGAT_SECRETS_KEYS is set, so this API receives secret values, and it \
+                reason: "secret storage is configured, so this API receives secret values, and it \
                          listens in plaintext; set this to true to state that TLS is terminated \
                          in front of it"
                     .to_owned(),
@@ -572,6 +587,7 @@ impl ServeConfig {
             },
             migrate_on_start: flag(get, "SAGAT_MIGRATE_ON_START")?,
             secrets,
+            openbao,
             scripts: read_scripts(get)?,
             studio: read_studio(get)?,
             streams,

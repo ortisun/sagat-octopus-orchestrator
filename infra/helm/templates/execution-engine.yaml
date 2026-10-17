@@ -24,12 +24,17 @@ spec:
       labels:
         {{- include "sagat.labels" . | nindent 8 }}
         app.kubernetes.io/component: execution-engine
-      {{- with .Values.podAnnotations }}
+      {{- if or .Values.podAnnotations .Values.openbao.enabled }}
       annotations:
+        {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- if .Values.openbao.enabled }}
+        checksum/openbao-agent: {{ include (print .Template.BasePath "/openbao-agent.yaml") . | sha256sum }}
+        {{- end }}
       {{- end }}
     spec:
-      serviceAccountName: {{ include "sagat.fullname" . }}
+      serviceAccountName: {{ include "sagat.openbao.serviceAccount" $ctx }}
       automountServiceAccountToken: false
       # Long enough for the engine to stop its loops, give its shards back and drain its calls.
       terminationGracePeriodSeconds: {{ $e.terminationGracePeriodSeconds }}
@@ -38,6 +43,10 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- if .Values.openbao.enabled }}
+      initContainers:
+        {{- include "sagat.openbao.agent" $ctx | nindent 8 }}
+      {{- end }}
       containers:
         - name: execution-engine
           image: {{ include "sagat.image" (dict "root" . "repository" .Values.image.executionEngine) | quote }}
@@ -45,6 +54,7 @@ spec:
           args: [serve]
           env:
             {{- include "sagat.oidcEnv" . | nindent 12 }}
+            {{- include "sagat.openbao.env" $ctx | nindent 12 }}
             - {name: SAGAT_GRPC_ADDR, value: "0.0.0.0:{{ $e.grpc.port }}"}
             - {name: SAGAT_ADMIN_ADDR, value: "0.0.0.0:9091"}
             # The name the replica holds its shards under; the process adds a random suffix.
@@ -90,6 +100,7 @@ spec:
             {{- toYaml $e.resources | nindent 12 }}
           {{- include "sagat.containerSecurity" . | nindent 10 }}
           volumeMounts:
+            {{- include "sagat.openbao.mounts" $ctx | nindent 12 }}
             - {name: tmp, mountPath: /tmp}
             {{- if $e.grpc.tlsSecret }}
             - {name: tls, mountPath: /etc/sagat/tls, readOnly: true}
@@ -98,6 +109,7 @@ spec:
             - {name: nats-creds, mountPath: /etc/sagat/nats, readOnly: true}
             {{- end }}
       volumes:
+        {{- include "sagat.openbao.volumes" $ctx | nindent 8 }}
         - {name: tmp, emptyDir: {sizeLimit: 64Mi}}
         {{- if $e.grpc.tlsSecret }}
         - name: tls

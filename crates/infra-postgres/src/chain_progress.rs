@@ -836,6 +836,42 @@ async fn typed_segment_blocker(
 /// The boundary step is not a pending root step any more.
 struct BoundaryGone;
 
+/// How a successor begins, as the definition's entrypoint declares it.
+enum SuccessorEntry {
+    /// A task for a worker, announced by a `task.ready` hint.
+    Activity(sagat_domain::workflow::ActivityName),
+    /// A wait that is already open: its subscription commits with the hand-off.
+    Wait {
+        event_type: String,
+        key: sagat_domain::execution::CorrelationKey,
+        deadline: OffsetDateTime,
+        since: OffsetDateTime,
+    },
+}
+
+impl SuccessorEntry {
+    const fn run_status(&self) -> &'static str {
+        match self {
+            Self::Activity(_) => "RUNNING",
+            Self::Wait { .. } => "WAITING",
+        }
+    }
+
+    /// The third event of the successor's journal: what the entry step does first.
+    fn opening_event(&self, entrypoint: &sagat_domain::workflow::NodeId) -> RunEvent {
+        match self {
+            Self::Activity(_) => RunEvent::StepReleased {
+                node: entrypoint.clone(),
+            },
+            Self::Wait { key, deadline, .. } => RunEvent::WaitStarted {
+                node: entrypoint.clone(),
+                correlation_key: key.clone(),
+                deadline: *deadline,
+            },
+        }
+    }
+}
+
 async fn ensure_tree_capacity_for_successor(
     conn: &mut PgConnection,
     tenant_id: TenantId,
@@ -1594,8 +1630,38 @@ impl ChainProgressStore for PgChainProgressStore {
             Ok(None) => {}
         }
         let entrypoint = definition.entrypoint().clone();
-        let activity = match definition.node(&entrypoint).map(|node| node.kind()) {
-            Some(NodeKind::Activity { activity, .. }) => activity.clone(),
+        // What the successor begins with. The selection must match the definition exactly: a key for
+        // an activity entry, or none for a wait, is a caller that did not read the same snapshot.
+        let entry = match (
+            definition.node(&entrypoint).map(|node| node.kind()),
+            prepared.correlation_key(),
+        ) {
+            (Some(NodeKind::Activity { activity, .. }), None) => {
+                SuccessorEntry::Activity(activity.clone())
+            }
+            (
+                Some(NodeKind::WaitEvent {
+                    event_type,
+                    timeout,
+                    lookback,
+                    ..
+                }),
+                Some(key),
+            ) if lookback.is_zero() => {
+                // The wait is measured from this transaction's clock, not from the scheduler's
+                // earlier read: an event admitted in between is later than the wait it finds.
+                let timeout = time::Duration::try_from(*timeout)
+                    .map_err(|_| corrupt("wait timeout exceeds the calendar"))?;
+                let deadline = transaction_now
+                    .checked_add(timeout)
+                    .ok_or_else(|| corrupt("wait deadline exceeds the calendar"))?;
+                SuccessorEntry::Wait {
+                    event_type: event_type.as_str().to_owned(),
+                    key: key.clone(),
+                    deadline,
+                    since: transaction_now,
+                }
+            }
             _ => return Err(ChainProgressError::RuntimeNotIntegrated),
         };
         let successor_index = chain.segment_count;
@@ -1680,7 +1746,7 @@ impl ChainProgressStore for PgChainProgressStore {
               paused, input_digest, started_by, trace_id, deadline_at, created_at, updated_at, \
               root_run_id, depth, parent_run_id, parent_node, cancel_policy, trace_parent_span, \
               parent_settled) \
-             VALUES ($1,$2,$3,$4,$5,'RUNNING',3,false,$6,$7,$8,$9,$10,$10,$11,$12,$13,$14,$15,$16, \
+             VALUES ($1,$2,$3,$4,$5,$17,3,false,$6,$7,$8,$9,$10,$10,$11,$12,$13,$14,$15,$16, \
                      $13 IS NOT NULL)",
         )
         .bind(command.successor().as_uuid())
@@ -1699,6 +1765,7 @@ impl ChainProgressStore for PgChainProgressStore {
         .bind(run.parent_node.as_deref())
         .bind(run.cancel_policy.as_deref())
         .bind(run.trace_parent_span.as_deref())
+        .bind(entry.run_status())
         .execute(&mut *tx)
         .await
         .map_err(store_error)?;
@@ -1710,26 +1777,56 @@ impl ChainProgressStore for PgChainProgressStore {
         )
         .await?;
         let entry_instance = ExecutionInstanceId::root(entrypoint.clone());
-        sqlx::query(
-            "INSERT INTO steps \
-             (tenant_id, run_id, node, step_id, namespace_id, status, activity, ready_at, \
-              last_hinted_at, hint_count, updated_at, instance_path_nodes, instance_path_indices) \
-             VALUES ($1,$2,$3,$4,$5,'READY',$6,$7,$7,1,$7,'{}','{}')",
-        )
-        .bind(command.scope().tenant_id().as_uuid())
-        .bind(command.successor().as_uuid())
-        .bind(entrypoint.as_str())
-        .bind(instance_step_id(
-            run.version_id,
-            command.successor(),
-            &entry_instance,
-        ))
-        .bind(command.scope().namespace_id().as_uuid())
-        .bind(activity.as_str())
-        .bind(command.occurred_at())
-        .execute(&mut *tx)
-        .await
-        .map_err(store_error)?;
+        let entry_step = instance_step_id(run.version_id, command.successor(), &entry_instance);
+        match &entry {
+            SuccessorEntry::Activity(activity) => {
+                sqlx::query(
+                    "INSERT INTO steps \
+                     (tenant_id, run_id, node, step_id, namespace_id, status, activity, ready_at, \
+                      last_hinted_at, hint_count, updated_at, instance_path_nodes, \
+                      instance_path_indices) \
+                     VALUES ($1,$2,$3,$4,$5,'READY',$6,$7,$7,1,$7,'{}','{}')",
+                )
+                .bind(command.scope().tenant_id().as_uuid())
+                .bind(command.successor().as_uuid())
+                .bind(entrypoint.as_str())
+                .bind(entry_step)
+                .bind(command.scope().namespace_id().as_uuid())
+                .bind(activity.as_str())
+                .bind(command.occurred_at())
+                .execute(&mut *tx)
+                .await
+                .map_err(store_error)?;
+            }
+            SuccessorEntry::Wait {
+                event_type,
+                key,
+                deadline,
+                since,
+            } => {
+                // The subscription: the dispatcher and the chain signal find the wait through this
+                // row, so it commits with the hand-off and with nothing after it.
+                sqlx::query(
+                    "INSERT INTO steps \
+                     (tenant_id, run_id, node, step_id, namespace_id, status, waiting_kind, \
+                      due_at, event_type, correlation_key, event_since, updated_at, \
+                      instance_path_nodes, instance_path_indices) \
+                     VALUES ($1,$2,$3,$4,$5,'WAITING','EVENT',$6,$7,$8,$9,$9,'{}','{}')",
+                )
+                .bind(command.scope().tenant_id().as_uuid())
+                .bind(command.successor().as_uuid())
+                .bind(entrypoint.as_str())
+                .bind(entry_step)
+                .bind(command.scope().namespace_id().as_uuid())
+                .bind(deadline)
+                .bind(event_type)
+                .bind(key.as_str())
+                .bind(since)
+                .execute(&mut *tx)
+                .await
+                .map_err(store_error)?;
+            }
+        }
         for (sequence, event) in [
             (
                 1,
@@ -1749,12 +1846,7 @@ impl ChainProgressStore for PgChainProgressStore {
                     state_digest: command.transfer().state(),
                 },
             ),
-            (
-                3,
-                RunEvent::StepReleased {
-                    node: entrypoint.clone(),
-                },
-            ),
+            (3, entry.opening_event(&entrypoint)),
         ] {
             append_event(
                 &mut tx,
@@ -1868,27 +1960,30 @@ impl ChainProgressStore for PgChainProgressStore {
         .execute(&mut *tx)
         .await
         .map_err(store_error)?;
-        sqlx::query(
-            "INSERT INTO event_outbox \
-             (id, tenant_id, aggregate_id, event_type, routing_key, payload) \
-             VALUES ($1,$2,$3,'task.ready',$4,$5)",
-        )
-        .bind(command.successor_outbox_id())
-        .bind(command.scope().tenant_id().as_uuid())
-        .bind(command.successor().as_uuid())
-        .bind(activity.as_str())
-        .bind(json!({
-            "tenantId": command.scope().tenant_id().to_string(),
-            "namespaceId": command.scope().namespace_id().to_string(),
-            "runId": command.successor().to_string(),
-            "node": entrypoint.as_str(),
-            "instancePath": [],
-            "activity": activity.as_str(),
-            "traceId": command.trace_id(),
-        }))
-        .execute(&mut *tx)
-        .await
-        .map_err(store_error)?;
+        // Only an activity is a task for a worker; a wait has nothing to announce.
+        if let SuccessorEntry::Activity(activity) = &entry {
+            sqlx::query(
+                "INSERT INTO event_outbox \
+                 (id, tenant_id, aggregate_id, event_type, routing_key, payload) \
+                 VALUES ($1,$2,$3,'task.ready',$4,$5)",
+            )
+            .bind(command.successor_outbox_id())
+            .bind(command.scope().tenant_id().as_uuid())
+            .bind(command.successor().as_uuid())
+            .bind(activity.as_str())
+            .bind(json!({
+                "tenantId": command.scope().tenant_id().to_string(),
+                "namespaceId": command.scope().namespace_id().to_string(),
+                "runId": command.successor().to_string(),
+                "node": entrypoint.as_str(),
+                "instancePath": [],
+                "activity": activity.as_str(),
+                "traceId": command.trace_id(),
+            }))
+            .execute(&mut *tx)
+            .await
+            .map_err(store_error)?;
+        }
         insert_audit(&mut tx, command.audit()).await?;
         mark_telemetry(
             &mut tx,

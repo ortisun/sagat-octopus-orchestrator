@@ -472,6 +472,7 @@ const (
 	ActionRetryCompensation Action = "RETRY_COMPENSATION"
 	ActionSkipCompensation  Action = "SKIP_COMPENSATION"
 	ActionResolveStep       Action = "RESOLVE_STEP"
+	ActionRerunAsNew        Action = "RERUN_AS_NEW"
 )
 
 // Operate applies an action to a run. reason has 8 to 2000 characters. Reads WithStepID,
@@ -523,7 +524,17 @@ func (c *Client) Operate(ctx context.Context, runID string, action Action, reaso
 	status, _ := jsonx.String(raw, "runStatus")
 	result.RunStatus = RunStatus(status)
 	result.RunVersion, _ = jsonx.Int(raw, "runVersion")
+	result.NewRunID, _ = jsonx.String(raw, "newRunId")
 	return result, nil
+}
+
+// RerunAsNew starts a new run of the same version, with the same input and correlation id, from a
+// run that ended. reason has 8 to 2000 characters. It needs run:operate and run:start; a run that
+// has not ended is refused with CONFLICT. The answer's NewRunID is the new run, which names its
+// origin in Run.RerunOf; a segment of a continuation chain starts a run with a chain of its own.
+// It is Operate with ActionRerunAsNew.
+func (c *Client) RerunAsNew(ctx context.Context, runID, reason string, opts ...CallOption) (*OperationResult, error) {
+	return c.Operate(ctx, runID, ActionRerunAsNew, reason, opts...)
 }
 
 // Cancel cancels a run. reason has 8 to 2000 characters. It is Operate with ActionCancel.

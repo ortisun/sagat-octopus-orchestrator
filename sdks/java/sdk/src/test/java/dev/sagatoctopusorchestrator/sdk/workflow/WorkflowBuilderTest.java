@@ -32,6 +32,18 @@ class WorkflowBuilderTest {
     }
 
     @Test
+    void classifiedResultSchemasAndWorkflowLimitsUseTheirTypedCarriers() {
+        JsonNode schema = json("{\"type\":\"object\",\"x-sagat-classification\":\"internal\",\"properties\":{\"value\":{\"type\":\"string\"}}}");
+        JsonNode document = workflow("classified-flow").limits(new WorkflowLimits(23, 4)).outputSchema(schema)
+                .step("a", "act.a", StepOptions.create().outputSchema(schema))
+                .script("s", "sha256:" + "0".repeat(64), ScriptOptions.create().outputSchema(schema))
+                .waitForEvent("w", WaitForEventOptions.of("done", "input.id", 10).outputSchema(schema))
+                .invokeChild("c", "child-flow", ChildOptions.create().outputSchema(schema)).end("done").build();
+        same(json("{\"maxInstances\":23,\"maxDepth\":4}"), document.get("limits"));
+        for (int i = 0; i < 4; i++) same(schema, document.get("nodes").get(i).get("outputSchema"));
+    }
+
+    @Test
     void aChainOfStepsIsLinkedInOrderAndStartsAtTheFirst() {
         JsonNode doc = workflow("order-flow")
                 .description("charges and ships")

@@ -6,6 +6,7 @@
 //! classification, and delegates every rule to `sagat_application::worker::WorkerService`.
 
 mod blobs;
+mod database;
 mod limits;
 mod request;
 mod server;
@@ -39,3 +40,19 @@ pub use blobs::{BLOB_CHUNK_BYTES, BlobTransfer};
 pub use server::{AdmissionProvider, GrpcConfig, TlsConfig, serve, worker_service};
 pub use service::WorkerGrpc;
 pub use status::{ERROR_METADATA, RETRY_AFTER_METADATA, to_status};
+
+impl std::fmt::Debug for pb::ResolvedDatabase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ResolvedDatabase { <redacted> }")
+    }
+}
+impl std::fmt::Debug for pb::DatabaseValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("DatabaseValue { <redacted> }")
+    }
+}
+impl std::fmt::Debug for pb::database_value::Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("DatabaseValue::Value(<redacted>)")
+    }
+}

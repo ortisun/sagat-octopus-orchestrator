@@ -5,6 +5,12 @@
 //! [`RunTx`], so the journal, the projections, the audit record and the idempotency record commit
 //! together or not at all.
 
+mod ad_hoc;
+pub(crate) use ad_hoc::audit_denied as audit_database_execution_denied;
+pub use ad_hoc::{
+    AdHocMode, ConnectionProbe, RetainedDefinition, RunOrigin, StartDatabaseExecution,
+};
+
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
@@ -46,6 +52,8 @@ pub enum Lock {
 /// A run about to be created.
 #[derive(Debug, Clone)]
 pub struct NewRun {
+    /// Private definition to retain atomically with this run; only managed admission constructs it.
+    pub retained: Option<RetainedDefinition>,
     /// The quotas the creation is judged against, atomically with the insert.
     pub limits: RunLimits,
     pub info: RunInfo,
@@ -180,12 +188,15 @@ impl GraphChanges {
 pub struct RunFilter {
     pub workflow: Option<WorkflowId>,
     pub status: Option<RunStatus>,
+    pub origin: Option<RunOrigin>,
 }
 
 /// Storage port for runs. Implemented by `sagat-infra-postgres`.
 ///
 /// Every method takes the tenant explicitly; adapters MUST apply it as a filter on every statement.
-pub trait RunStore: QuotaLookup + crate::telemetry::TelemetryStore + Send + Sync {
+pub trait RunStore:
+    QuotaLookup + crate::telemetry::TelemetryStore + crate::authz::NamespaceDirectory + Send + Sync
+{
     type Tx: RunTx;
 
     /// Reads an already committed start before resolving an ephemeral upload. `create` repeats
@@ -193,6 +204,7 @@ pub trait RunStore: QuotaLookup + crate::telemetry::TelemetryStore + Send + Sync
     fn replay_start(
         &self,
         tenant: TenantId,
+        subject: &str,
         idempotency: &Idempotency,
     ) -> impl Future<Output = Result<Option<String>, StoreError>> + Send;
 
@@ -202,6 +214,21 @@ pub trait RunStore: QuotaLookup + crate::telemetry::TelemetryStore + Send + Sync
         &self,
         new: NewRun,
     ) -> impl Future<Output = Result<Applied<Self::Tx>, StoreError>> + Send;
+
+    /// Private immutable document, only for its initiating actor's rerun.
+    fn private_definition(
+        &self,
+        tenant: TenantId,
+        actor: &str,
+        run: RunId,
+    ) -> impl Future<Output = Result<Option<Vec<u8>>, StoreError>> + Send;
+
+    fn latest_connection_probe(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        name: &sagat_domain::identity::Slug,
+    ) -> impl Future<Output = Result<Option<ConnectionProbe>, StoreError>> + Send;
 
     /// Opens a run for a command. `None` when it does not exist (or, with
     /// [`Lock::SkipLocked`], when another transaction holds it).
@@ -547,6 +574,18 @@ where
         let Some(source) = self.store.rerun_source(principal.tenant_id(), id).await? else {
             return Err(self.missing(principal, id, ctx).await);
         };
+        if original.info.origin.is_some() {
+            return self
+                .rerun_private(
+                    principal,
+                    &original,
+                    &source,
+                    Rerun { of: id, reason },
+                    key,
+                    ctx,
+                )
+                .await;
+        }
         self.start_with(
             principal,
             &StartRun {
@@ -621,8 +660,7 @@ where
             // A stable request identity does not depend on the catalog still containing an unused
             // upload, or on which version is active when a lost response is retried.
             if let Some(existing) = self
-                .store
-                .replay_start(principal.tenant_id(), idempotency)
+                .replay_start_authorized(principal, workflow.id(), idempotency, ctx)
                 .await?
             {
                 return self.replayed_start(principal, &existing).await;
@@ -676,6 +714,7 @@ where
         };
         let run_id = RunId::generate();
         let info = RunInfo {
+            origin: None,
             run_id,
             tenant_id: principal.tenant_id(),
             namespace_id: namespace.id(),
@@ -748,8 +787,7 @@ where
                     Err(crate::blobs::BlobReadError::NotFound) => {
                         // A peer may have committed this exact start after the first replay read.
                         if let Some(existing) = self
-                            .store
-                            .replay_start(principal.tenant_id(), &idempotency)
+                            .replay_start_authorized(principal, workflow.id(), &idempotency, ctx)
                             .await?
                         {
                             return self.replayed_start(principal, &existing).await;
@@ -782,6 +820,7 @@ where
                 )
             })?;
         let new = NewRun {
+            retained: None,
             limits,
             info,
             definition: Arc::clone(&definition),
@@ -790,7 +829,25 @@ where
             audit,
             idempotency,
         };
-        match self.store.create(new).await? {
+        let created = match self.store.create(new).await {
+            Ok(created) => created,
+            Err(error) => {
+                self.audit_database_denial(principal, workflow.id(), &error, ctx)
+                    .await;
+                return Err(error.into());
+            }
+        };
+        self.finish_start(principal, run_id, created, ctx).await
+    }
+
+    async fn finish_start(
+        &self,
+        principal: &Principal,
+        run_id: RunId,
+        created: Applied<S::Tx>,
+        ctx: &RequestContext,
+    ) -> Result<RunRecord, AppError> {
+        match created {
             Applied::Replayed(existing) => {
                 let id = existing.parse::<RunId>().map_err(|_| AppError::Internal)?;
                 self.store
@@ -818,6 +875,55 @@ where
                     .ok_or(AppError::Internal)
             }
         }
+    }
+
+    async fn audit_database_denial(
+        &self,
+        principal: &Principal,
+        workflow: WorkflowId,
+        error: &StoreError,
+        ctx: &RequestContext,
+    ) {
+        if !matches!(
+            error,
+            StoreError::DatabaseUnavailable | StoreError::DatabaseLimit
+        ) {
+            return;
+        }
+        let audit = AuditRecord::by(
+            principal,
+            AuditAction::DatabaseDenied,
+            ResourceType::Workflow,
+            workflow.to_string(),
+            ctx.trace_id.clone(),
+            self.clock.now(),
+        )
+        .with_reason("database run admission refused");
+        if let Err(error) = RunStore::record_denial(&self.store, &audit).await {
+            tracing::error!(%error, "failed to record database denial");
+        }
+    }
+
+    async fn replay_start_authorized(
+        &self,
+        principal: &Principal,
+        workflow: WorkflowId,
+        idempotency: &Idempotency,
+        ctx: &RequestContext,
+    ) -> Result<Option<String>, AppError> {
+        let result = self
+            .store
+            .replay_start(
+                principal.tenant_id(),
+                principal.subject().as_str(),
+                idempotency,
+            )
+            .await;
+        if let Err(error) = &result {
+            self.audit_database_denial(principal, workflow, error, ctx)
+                .await;
+        }
+        result.map_err(Into::into)
     }
 
     async fn replayed_start(

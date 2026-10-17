@@ -163,6 +163,7 @@ const fn role_order(role: Role) -> u8 {
         Role::Viewer => 3,
         Role::Worker => 4,
         Role::Runner => 5,
+        Role::DatabaseRunner => 6,
     }
 }
 

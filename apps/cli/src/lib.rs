@@ -421,6 +421,9 @@ async fn run_with(
         Command::WorkflowCancel { run, reason } => {
             workflow::cancel(&common, env, &run, &reason, &mut io).await
         }
+        Command::WorkflowRerun { run, reason } => {
+            workflow::rerun(&common, env, &run, &reason, &mut io).await
+        }
         Command::Doctor { json, nats } => {
             doctor::run(&common, env, json, nats.as_deref(), &mut io).await
         }

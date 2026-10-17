@@ -266,8 +266,15 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
             raw.TryGetProperty("accepted", out var accepted) && accepted.ValueKind == JsonValueKind.True,
             OptStr(raw, "runStatus"),
             raw.TryGetProperty("runVersion", out var runVersion) && runVersion.ValueKind == JsonValueKind.Number && runVersion.TryGetInt64(out var v) ? v : null,
-            raw);
+            raw)
+        {
+            NewRunId = OptStr(raw, "newRunId"),
+        };
     }
+
+    /// <inheritdoc/>
+    public Task<OperationResult> RerunAsNewAsync(string runId, string reason, OperateOptions? options = null, CancellationToken cancellationToken = default) =>
+        OperateAsync(runId, RunAction.RerunAsNew, reason, options, cancellationToken);
 
     /// <inheritdoc/>
     public Task<OperationResult> CancelAsync(string runId, string reason, OperateOptions? options = null, CancellationToken cancellationToken = default) =>
@@ -896,6 +903,7 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
         RunAction.RetryCompensation => "RETRY_COMPENSATION",
         RunAction.SkipCompensation => "SKIP_COMPENSATION",
         RunAction.ResolveStep => "RESOLVE_STEP",
+        RunAction.RerunAsNew => "RERUN_AS_NEW",
         _ => throw new ArgumentOutOfRangeException(nameof(action)),
     };
 
@@ -975,6 +983,7 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
             Depth = (int)Num(raw, "depth"),
             Parent = parent,
             Chain = ToRunChain(raw),
+            RerunOf = OptStr(raw, "rerunOf"),
             Raw = raw,
         };
     }

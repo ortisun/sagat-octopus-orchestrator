@@ -14,6 +14,8 @@ mod breaker;
 mod chain_progress;
 mod connectors;
 mod content_usage;
+mod database;
+mod database_results;
 mod declared_operations;
 mod definitions;
 mod dispatch;
@@ -24,14 +26,17 @@ mod execution;
 mod identity;
 mod loop_progress;
 mod maintenance;
+mod managed_secrets;
 mod operations;
 mod outbound;
 mod partitioning;
+mod payload_disclosure;
 mod payload_inspection;
 mod pool;
 mod primitives;
 mod privilege;
 mod quotas;
+mod reveal_grants;
 mod scope_compensation;
 mod scripts;
 mod secrets;
@@ -51,6 +56,7 @@ pub use operations::{MONITOR_LEASE, READ_AUDIT_SQL};
 pub use pool::{BeginSafely, PoolConfig, connect, spawn_pool_metrics};
 pub use primitives::PgCollectionStore;
 pub use privilege::{LeastPrivilegeError, PrivilegeFinding};
+pub use reveal_grants::has_effective_payload_reveal_grant;
 pub use sqlx::PgPool;
 pub use telemetry::PROJECTOR_LEASE;
 /// The query that finds the runs a worker may claim, exposed so a test can check its plan.
@@ -72,3 +78,5 @@ pub async fn migrate(pool: &PgPool) -> Result<(), sqlx::migrate::MigrateError> {
 mod blobs;
 
 pub use blobs::PgBlobCatalog;
+
+mod secret_cleanup;

@@ -11,6 +11,9 @@
 //! * Key material is wiped from memory when the ring is dropped, never printed, and parsed from a
 //!   `id:base64` list (`SAGAT_SECRETS_KEYS`).
 
+pub mod database;
+pub mod openbao;
+
 use std::collections::BTreeMap;
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};

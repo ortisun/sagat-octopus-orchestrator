@@ -4,6 +4,8 @@ const origin = process.env['STUDIO_ORIGIN'] ?? 'http://127.0.0.1:8080';
 
 export default defineConfig({
   testDir: './tests',
+  // This journey requires the separate real-OpenBao harness.
+  testIgnore: process.env['STUDIO_DATABASE_CONNECTIONS'] === '1' ? [] : ['**/database-connections.spec.ts'],
   // One platform, one browser at a time: the journeys share the platform and create what they need with unique names.
   fullyParallel: false,
   workers: 1,

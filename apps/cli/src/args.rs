@@ -28,6 +28,8 @@ ONE WORKFLOW:
     workflow runs <NAME> [--limit <N>]   the latest runs of a workflow (the ones an event or a schedule started too)
     workflow inspect <RUN>               the status, the journal and the attempts of a run
     workflow cancel <RUN> --reason <TEXT>
+    workflow rerun <RUN> --reason <TEXT>
+                          start the same version again, with the same input, from a run that ended
     script test <FILE> [--input <JSON|@FILE>] [--language <typescript|python>] [--name <NAME>] [--timeout <SECONDS>]
     script publish <FILE> [--language <typescript|python>] [--name <NAME>] [--timeout <SECONDS>]
     worker dev --mocks <FILE> [--workflow <FILE>] [--bind] [--show-payloads] [--idle-exit <SECONDS>] [--max-tasks <N>] [--allow-non-dev]
@@ -149,6 +151,10 @@ pub enum Command {
         run: String,
     },
     WorkflowCancel {
+        run: String,
+        reason: String,
+    },
+    WorkflowRerun {
         run: String,
         reason: String,
     },
@@ -549,14 +555,18 @@ pub fn parse(args: &[String]) -> Result<Invocation, UsageError> {
                 run: run_id(argument(tail, "the run (its id)")?)?,
                 reason: flags.required("--reason")?,
             },
+            Some((sub, tail)) if sub == "rerun" => Command::WorkflowRerun {
+                run: run_id(argument(tail, "the run (its id)")?)?,
+                reason: flags.required("--reason")?,
+            },
             Some((other, _)) => {
                 return Err(UsageError(format!(
-                    "'workflow {other}' is not a command (validate, publish, run, runs, inspect, cancel)"
+                    "'workflow {other}' is not a command (validate, publish, run, runs, inspect, cancel, rerun)"
                 )));
             }
             None => {
                 return Err(UsageError(
-                    "workflow needs a command (validate, publish, run, runs, inspect, cancel)"
+                    "workflow needs a command (validate, publish, run, runs, inspect, cancel, rerun)"
                         .to_owned(),
                 ));
             }

@@ -135,15 +135,20 @@ export function renameStepReference(source: string, from: string, to: string, te
 }
 
 /** The fields of a node that hold an expression, with whether each is a template. */
-export function expressionFields(node: IrNode): Array<{ field: string; template: boolean; value: string }> {
+export function expressionFields(node: IrNode): Array<{ field: string; template: boolean; value: string; parameterIndex?: number }> {
   const spec = kindOf(node.type);
   if (!spec) return [];
-  return spec.fields
+  const fields = spec.fields
     .filter((f) => f.kind === 'expression')
     .flatMap((f) => {
       const value = node[f.name];
       return typeof value === 'string' ? [{ field: f.name, template: f.name === 'idempotencyTemplate', value }] : [];
     });
+  const bindings = node.type === 'database' && Array.isArray(node['parameters']) ? node['parameters'] : [];
+  return [...fields, ...bindings.flatMap((binding: unknown, parameterIndex: number) => {
+    if (binding === null || typeof binding !== 'object' || !('expression' in binding) || typeof binding.expression !== 'string') return [];
+    return [{ field: `parameters[${parameterIndex}].expression`, template: false, value: binding.expression, parameterIndex }];
+  })];
 }
 
 /** The reads of a step that does not exist: `[node, field, id]`. */

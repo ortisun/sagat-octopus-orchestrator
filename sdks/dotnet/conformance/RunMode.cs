@@ -183,8 +183,9 @@ internal sealed class RunMode : IAsyncDisposable
                 : throw new InvalidOperationException($"step {page} has no segment {index}");
         }
 
+        // A rerun answers "newRunId" and no "runId": the step then names the run it started.
         var key = (string)step["run"]!;
-        return results.TryGetValue(key, out var result) && result["runId"] is JsonValue id && id.TryGetValue<string>(out var text)
+        return results.TryGetValue(key, out var result) && (result["runId"] ?? result["newRunId"]) is JsonValue id && id.TryGetValue<string>(out var text)
             ? text
             : throw new InvalidOperationException($"step {key} has no run");
     }
@@ -376,13 +377,32 @@ internal sealed class RunMode : IAsyncDisposable
                     }
                     else
                     {
-                        foreach (var item in (await client.ListAsync(options, cancellationToken).ConfigureAwait(false)).Items)
+                        // "waitForCount": the runs of a chain are made by the scheduler, so a scenario that needs a
+                        // hand-off to have happened waits for it by the count of runs in a status.
+                        for (var attempt = 0; ; attempt++)
                         {
-                            ids.Add(item.RunId);
+                            ids = new JsonArray();
+                            foreach (var item in (await client.ListAsync(options, cancellationToken).ConfigureAwait(false)).Items)
+                            {
+                                ids.Add(item.RunId);
+                            }
+
+                            if (ids.Count >= ((int?)step["waitForCount"] ?? 0) || attempt >= 100)
+                            {
+                                break;
+                            }
+
+                            await Task.Delay(50, cancellationToken).ConfigureAwait(false);
                         }
                     }
 
-                    // In the order the server gave (newest first): the SDK keeps it, also across pages.
+                    // In the order the server gave (newest first): the SDK keeps it, also across pages. "countOnly"
+                    // answers the number alone, for runs whose ids are derived from their parent's and so sort anywhere.
+                    if ((bool?)step["countOnly"] == true)
+                    {
+                        return new JsonObject { ["count"] = ids.Count };
+                    }
+
                     return new JsonObject { ["items"] = ids };
                 }
 
@@ -439,7 +459,14 @@ internal sealed class RunMode : IAsyncDisposable
                             ErrorCode = (string?)step["errorCode"],
                         },
                         cancellationToken).ConfigureAwait(false);
-                    return new JsonObject { ["accepted"] = operated.Accepted, ["runStatus"] = operated.RunStatus };
+                    var observed = new JsonObject { ["accepted"] = operated.Accepted, ["runStatus"] = operated.RunStatus };
+                    // "newRunId" only for the action that starts a run, so the other operations observe as they did.
+                    if (operated.NewRunId is { } newRunId)
+                    {
+                        observed["newRunId"] = newRunId;
+                    }
+
+                    return observed;
                 }
 
             case "decideApproval":
@@ -774,6 +801,7 @@ internal sealed class RunMode : IAsyncDisposable
         "RETRY_COMPENSATION" => RunAction.RetryCompensation,
         "SKIP_COMPENSATION" => RunAction.SkipCompensation,
         "RESOLVE_STEP" => RunAction.ResolveStep,
+        "RERUN_AS_NEW" => RunAction.RerunAsNew,
         _ => throw new InvalidOperationException($"unknown action {action}"),
     };
 
@@ -788,6 +816,12 @@ internal sealed class RunMode : IAsyncDisposable
                 ["chainId"] = chain.ChainId, ["segmentIndex"] = chain.SegmentIndex,
                 ["completionKind"] = chain.CompletionKind, ["successorRunId"] = chain.SuccessorRunId,
             };
+        }
+
+        // Present only for a run started again from an ended one.
+        if (run.RerunOf is { } origin)
+        {
+            observed["rerunOf"] = origin;
         }
 
         return observed;

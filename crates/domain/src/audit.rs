@@ -54,6 +54,15 @@ pub enum AuditAction {
     PayloadInspected,
     /// An authenticated caller without the dedicated permission tried to inspect a payload.
     PayloadInspectionDenied,
+    /// A disclosure returned at least one `internal` value. Carries no payload data or digest.
+    PayloadDisclosed,
+    /// An explicit reveal returned at least one `pii` value. Every reveal keeps its own record.
+    PayloadPiiRevealed,
+    /// An explicit reveal was refused because its namespace grant was absent.
+    PayloadRevealDenied,
+    /// An administrator granted or revoked a subject's namespace-scoped PII reveal right.
+    PayloadRevealGranted,
+    PayloadRevealRevoked,
     /// A signal was delivered to a waiting run.
     RunSignalled,
     /// The caller asked for a resource that exists only in another tenant. The record carries the
@@ -66,6 +75,13 @@ pub enum AuditAction {
     PermissionDenied,
     /// A secret was created, or a new version of it was stored (rotation). Never carries a value.
     SecretStored,
+    SecretProvisioningStarted,
+    SecretProviderAbandoned,
+    SecretProviderRetired,
+    SecretAttemptPinsReleased,
+    DatabaseConnectionChanged,
+    DatabaseDenied,
+    DatabaseResultRead,
     SecretDeleted,
     /// Someone was allowed to reference a secret from workflows, or no longer is.
     SecretAccessGranted,
@@ -193,12 +209,15 @@ impl AuditAction {
                 | Self::SecretResolved
                 | Self::SecretDenied
                 | Self::SecretDeliveryRefused
+                | Self::DatabaseDenied
                 | Self::EventRejected
                 | Self::ScriptViolation
                 | Self::AuditRead
                 | Self::PublicationDenied
                 | Self::PayloadInspected
                 | Self::PayloadInspectionDenied
+                | Self::PayloadDisclosed
+                | Self::PayloadRevealDenied
                 | Self::RunQueried
                 | Self::ApprovalDenied
         )
@@ -213,8 +232,11 @@ impl AuditAction {
         match self {
             Self::AuditRead
             | Self::PublicationDenied
+            | Self::DatabaseDenied
             | Self::PayloadInspected
             | Self::PayloadInspectionDenied
+            | Self::PayloadDisclosed
+            | Self::PayloadRevealDenied
             | Self::RunQueried => Some(std::time::Duration::from_secs(300)),
             Self::ApprovalDenied => Some(std::time::Duration::from_secs(300)),
             _ => None,
@@ -258,10 +280,22 @@ impl AuditAction {
             Self::ApprovalDenied => "approval.denied",
             Self::PayloadInspected => "payload.inspected",
             Self::PayloadInspectionDenied => "payload.inspection_denied",
+            Self::PayloadDisclosed => "payload.disclosed",
+            Self::PayloadPiiRevealed => "payload.pii_revealed",
+            Self::PayloadRevealDenied => "payload.reveal_denied",
+            Self::PayloadRevealGranted => "payload.reveal_granted",
+            Self::PayloadRevealRevoked => "payload.reveal_revoked",
             Self::RunSignalled => "run.signalled",
             Self::CrossTenantAccessDenied => "access.denied.cross_tenant",
             Self::PermissionDenied => "access.denied.permission",
             Self::SecretStored => "secret.stored",
+            Self::SecretProvisioningStarted => "secret.provisioning_started",
+            Self::SecretProviderAbandoned => "secret.provider_abandoned",
+            Self::SecretProviderRetired => "secret.provider_retired",
+            Self::SecretAttemptPinsReleased => "secret.attempt_pins_released",
+            Self::DatabaseConnectionChanged => "database.connection_changed",
+            Self::DatabaseResultRead => "database.result_read",
+            Self::DatabaseDenied => "database.denied",
             Self::SecretDeleted => "secret.deleted",
             Self::SecretAccessGranted => "secret.access_granted",
             Self::SecretAccessRevoked => "secret.access_revoked",
@@ -343,6 +377,7 @@ pub enum ResourceType {
     WorkflowVersion,
     Run,
     Secret,
+    DatabaseConnection,
     Quota,
     EgressPolicy,
     WorkerBinding,
@@ -361,6 +396,8 @@ pub enum ResourceType {
     PublicationRequest,
     /// A durable human decision request owned by one workflow step instance.
     ApprovalRequest,
+    /// A namespace-scoped PII reveal grant, identified as `namespace-id/subject`.
+    PayloadRevealGrant,
     /// A call of the API, as `METHOD /route/{template}` or `grpc Service/Method`: a fixed set of the
     /// server's own names, never something the caller wrote.
     Endpoint,
@@ -379,6 +416,7 @@ impl ResourceType {
             Self::WorkflowVersion => "workflow_version",
             Self::Run => "run",
             Self::Secret => "secret",
+            Self::DatabaseConnection => "database_connection",
             Self::Quota => "quota",
             Self::EgressPolicy => "egress_policy",
             Self::WorkerBinding => "worker_binding",
@@ -392,6 +430,7 @@ impl ResourceType {
             Self::ScriptVersion => "script_version",
             Self::PublicationRequest => "publication_request",
             Self::ApprovalRequest => "approval_request",
+            Self::PayloadRevealGrant => "payload_reveal_grant",
             Self::Endpoint => "endpoint",
         }
     }

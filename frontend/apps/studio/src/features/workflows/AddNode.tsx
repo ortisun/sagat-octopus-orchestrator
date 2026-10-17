@@ -52,12 +52,12 @@ export function Palette({ onPick }: { onPick: (type: string) => void }) {
 }
 
 /** The keyboard way to add a node: a menu of the kinds, opened by the button or Alt+N. */
-export function AddNodeDialog({ open, where, onClose, onPick }: { open: boolean; where: string; onClose: () => void; onPick: (type: string) => void }) {
+export function AddNodeDialog({ open, where, onClose, onPick, kinds = NODE_KINDS }: { open: boolean; where: string; onClose: () => void; onPick: (type: string) => void; kinds?: readonly NodeKindSpec[] }) {
   return (
     <Modal open={open} title="Add a node" onClose={onClose}>
       <p>{where}</p>
       <ul className="wf-kinds">
-        {NODE_KINDS.map((kind) => (
+        {kinds.map((kind) => (
           <li key={kind.type}>
             <KindButton
               kind={kind}

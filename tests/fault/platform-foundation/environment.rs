@@ -27,6 +27,7 @@ fn cfg(url: &str) -> (Config, ServeConfig) {
             },
         },
         ServeConfig {
+            openbao: Default::default(),
             bind_addr: "127.0.0.1:0".parse().expect("addr"),
             tls: None,
             webhook_oidc: Vec::new(),

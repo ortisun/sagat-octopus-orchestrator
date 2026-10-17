@@ -47,8 +47,10 @@ import dev.sagatoctopusorchestrator.sdk.workflow.ChainPolicy;
 import dev.sagatoctopusorchestrator.sdk.workflow.Flow;
 import dev.sagatoctopusorchestrator.sdk.workflow.LoopOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.QueryDefinition;
+import dev.sagatoctopusorchestrator.sdk.workflow.DatabaseOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.RetryOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.SagaOptions;
+import dev.sagatoctopusorchestrator.sdk.workflow.ScriptOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.StateDefinition;
 import dev.sagatoctopusorchestrator.sdk.workflow.StepOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.SwitchCase;
@@ -56,6 +58,7 @@ import dev.sagatoctopusorchestrator.sdk.workflow.Trigger;
 import dev.sagatoctopusorchestrator.sdk.workflow.UpdateDefinition;
 import dev.sagatoctopusorchestrator.sdk.workflow.WaitForEventOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.WorkflowBuilder;
+import dev.sagatoctopusorchestrator.sdk.workflow.WorkflowLimits;
 import java.io.File;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -153,7 +156,7 @@ public final class Runner {
             return options;
         }
         known(node, "step", "retry", "timeoutMs", "compensateWith", "reconcileWith", "idempotencyTemplate", "secrets",
-                "compensationRetry", "compensationTimeoutMs", "irreversible", "highRisk", "onError");
+                "compensationRetry", "compensationTimeoutMs", "irreversible", "highRisk", "onError", "outputSchema");
         if (node.has("retry")) {
             options.retry(retryOf(node.get("retry")));
         }
@@ -189,18 +192,67 @@ public final class Runner {
         if (node.has("onError")) {
             options.onError(node.get("onError").asText());
         }
+        if (node.has("outputSchema")) {
+            options.outputSchema(node.get("outputSchema"));
+        }
         return options;
+    }
+
+    private static int databaseInt(JsonNode node) {
+        if (!node.isIntegralNumber() || !node.canConvertToInt()) throw SagatException.invalid("invalid managed database operation");
+        return node.intValue();
+    }
+
+    private static DatabaseOptions databaseOptionsOf(JsonNode node) {
+        try {
+            JsonNode ref = node.path("connectionRef");
+            DatabaseOptions options = DatabaseOptions.create(new DatabaseOptions.ConnectionRef(ref.path("name").asText(null), ref.has("revision") ? databaseInt(ref.path("revision")) : null),
+                DatabaseOptions.Operation.valueOf(node.path("operation").asText().toUpperCase(java.util.Locale.ROOT)), node.path("statement").asText(null));
+            if (node.has("parameters")) {
+                List<DatabaseOptions.Parameter> parameters = new ArrayList<>();
+                for (JsonNode p : node.path("parameters")) {
+                    JsonNode literal = p.get("literal");
+                    parameters.add(literal != null
+                        ? DatabaseOptions.Parameter.literal(DatabaseOptions.Type.valueOf(literal.path("type").asText().toUpperCase(java.util.Locale.ROOT)), literal.get("value"))
+                        : DatabaseOptions.Parameter.expression(DatabaseOptions.Type.valueOf(p.path("type").asText().toUpperCase(java.util.Locale.ROOT)), p.path("expression").asText()));
+                }
+                options.parameters(parameters);
+            }
+            if (node.has("limits")) {
+                Map<String, Integer> limits = new LinkedHashMap<>();
+                node.path("limits").fields().forEachRemaining(p -> limits.put(p.getKey(), databaseInt(p.getValue())));
+                options.limits(limits);
+            }
+            if (node.has("timeoutMs")) options.timeoutMs(databaseInt(node.path("timeoutMs")));
+            if (node.has("onError")) options.onError(node.path("onError").asText());
+            return options;
+        } catch (IllegalArgumentException error) {
+            throw SagatException.invalid("invalid managed database operation");
+        }
     }
 
     private static void apply(Flow target, JsonNode ops) {
         for (JsonNode op : ops) {
             String id = op.path("id").asText(null);
             switch (op.path("op").asText()) {
+                case "database" -> target.database(id, databaseOptionsOf(op.path("options")));
                 case "step" -> target.step(id, op.path("activity").asText(null), stepOptionsOf(op.get("options")));
+                case "script" -> {
+                    JsonNode o = op.path("options");
+                    known(o, "script", "language", "retry", "compensateWith", "secrets", "onError", "outputSchema");
+                    ScriptOptions options = ScriptOptions.create();
+                    if (o.has("language")) options.language(o.get("language").asText());
+                    if (o.has("retry")) options.retry(retryOf(o.get("retry")));
+                    if (o.has("compensateWith")) options.compensateWith(o.get("compensateWith").asText());
+                    if (o.has("secrets")) { List<String> values = new ArrayList<>(); o.get("secrets").forEach(value -> values.add(value.asText())); options.secrets(values); }
+                    if (o.has("onError")) options.onError(o.get("onError").asText());
+                    if (o.has("outputSchema")) options.outputSchema(o.get("outputSchema"));
+                    target.script(id, op.path("artifactDigest").asText(null), options);
+                }
                 case "sleep" -> target.sleepMs(id, op.path("durationMs").asLong());
                 case "waitForEvent" -> {
                     JsonNode o = op.path("options");
-                    known(o, "waitForEvent", "eventType", "correlationExpr", "timeoutMs", "onTimeout", "lookbackMs");
+                    known(o, "waitForEvent", "eventType", "correlationExpr", "timeoutMs", "onTimeout", "lookbackMs", "outputSchema");
                     WaitForEventOptions options = WaitForEventOptions.of(
                             o.path("eventType").asText(null), o.path("correlationExpr").asText(null), o.path("timeoutMs").asLong());
                     if (o.has("onTimeout")) {
@@ -209,11 +261,14 @@ public final class Runner {
                     if (o.has("lookbackMs")) {
                         options.lookbackMs(o.get("lookbackMs").asLong());
                     }
+                    if (o.has("outputSchema")) {
+                        options.outputSchema(o.get("outputSchema"));
+                    }
                     target.waitForEvent(id, options);
                 }
                 case "invokeChild" -> {
                     JsonNode o = op.get("options");
-                    known(o, "invokeChild", "version", "input", "cancelPolicy");
+                    known(o, "invokeChild", "version", "input", "cancelPolicy", "outputSchema");
                     ChildOptions options = ChildOptions.create();
                     if (o != null && o.has("version")) {
                         options.version(o.get("version").asInt());
@@ -223,6 +278,9 @@ public final class Runner {
                     }
                     if (o != null && o.has("cancelPolicy")) {
                         options.cancelPolicy(enumOf(ChildOptions.CancelPolicy.class, o.get("cancelPolicy")));
+                    }
+                    if (o != null && o.has("outputSchema")) {
+                        options.outputSchema(o.get("outputSchema"));
                     }
                     target.invokeChild(id, op.path("workflow").asText(null), options);
                 }
@@ -352,6 +410,12 @@ public final class Runner {
         if (definition.has("outputSchema")) {
             builder.outputSchema(definition.get("outputSchema"));
         }
+        if (definition.has("limits")) {
+            JsonNode limits = definition.get("limits");
+            builder.limits(new WorkflowLimits(
+                    limits.has("maxInstances") ? limits.get("maxInstances").intValue() : null,
+                    limits.has("maxDepth") ? limits.get("maxDepth").intValue() : null));
+        }
         if (definition.has("state")) {
             JsonNode state = definition.path("state");
             Map<String, QueryDefinition> queries = new LinkedHashMap<>();
@@ -466,6 +530,10 @@ public final class Runner {
             chain.put("segmentIndex", run.chain().segmentIndex());
             if (run.chain().completionKind() == null) chain.putNull("completionKind"); else chain.put("completionKind", run.chain().completionKind());
             if (run.chain().successorRunId() == null) chain.putNull("successorRunId"); else chain.put("successorRunId", run.chain().successorRunId());
+        }
+        // Present only for a run started again from an ended one.
+        if (run.rerunOf() != null) {
+            out.put("rerunOf", run.rerunOf());
         }
         return out;
     }
@@ -670,8 +738,9 @@ public final class Runner {
             }
             return items.get(index).get("runId").textValue();
         }
+        // A rerun answers "newRunId" and no "runId": the step then names the run it started.
         JsonNode result = results.get(step.path("run").asText());
-        JsonNode id = result == null ? null : result.get("runId");
+        JsonNode id = result == null ? null : (result.has("runId") ? result.get("runId") : result.get("newRunId"));
         if (id == null || !id.isTextual()) {
             throw new IllegalStateException("step " + step.path("run").asText() + " has no run");
         }
@@ -781,11 +850,24 @@ public final class Runner {
                 if (step.path("all").asBoolean(false)) {
                     client.listAll(options).forEach(run -> ids.add(run.runId()));
                 } else {
-                    // In the order the server gave (newest first): the SDK keeps it, also across pages.
-                    client.list(options).items().forEach(run -> ids.add(run.runId()));
+                    // "waitForCount": the runs of a chain are made by the scheduler, so a scenario that needs a
+                    // hand-off to have happened waits for it by the count of runs in a status.
+                    for (int attempt = 0; ; attempt++) {
+                        ids.removeAll();
+                        // In the order the server gave (newest first): the SDK keeps it, also across pages.
+                        client.list(options).items().forEach(run -> ids.add(run.runId()));
+                        if (ids.size() >= step.path("waitForCount").asInt(0) || attempt >= 100) break;
+                        Thread.sleep(50);
+                    }
                 }
                 ObjectNode result = F.objectNode();
-                result.set("items", ids);
+                // "countOnly" answers the number alone, for runs whose ids are derived from their parent's and so
+                // sort anywhere.
+                if (step.path("countOnly").asBoolean(false)) {
+                    result.put("count", ids.size());
+                } else {
+                    result.set("items", ids);
+                }
                 return result;
             }
             case "listApprovals": {
@@ -1157,6 +1239,10 @@ public final class Runner {
         ObjectNode result = F.objectNode();
         result.put("accepted", r.accepted());
         result.put("runStatus", r.runStatus());
+        // "newRunId" only for the action that starts a run, so the other operations observe as they did.
+        if (r.newRunId() != null) {
+            result.put("newRunId", r.newRunId());
+        }
         return result;
     }
 

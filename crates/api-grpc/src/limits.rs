@@ -499,7 +499,9 @@ enum Class {
 impl Class {
     fn of(path: &str) -> Self {
         match path.rsplit('/').next() {
-            Some("Heartbeat" | "CompleteStep" | "FailStep" | "ResolveSecrets") => Self::Lease,
+            Some(
+                "Heartbeat" | "CompleteStep" | "FailStep" | "ResolveSecrets" | "ResolveDatabase",
+            ) => Self::Lease,
             Some("WriteBlob" | "ReadBlob") => Self::Transfer,
             // Registering and polling, and whatever a future method does until it is classified.
             _ => Self::Discovery,
@@ -672,6 +674,7 @@ mod tests {
         let class =
             |m: &str| Class::of(&format!("/sagat_octopus_orchestrator.v1.WorkerService/{m}"));
         assert_eq!(class("WriteBlob"), Class::Transfer);
+        assert_eq!(class("ResolveDatabase"), Class::Lease);
         assert_eq!(class("ReadBlob"), Class::Transfer);
         assert_eq!(class("PollTasks"), Class::Discovery);
         assert_eq!(class("RegisterWorker"), Class::Discovery);

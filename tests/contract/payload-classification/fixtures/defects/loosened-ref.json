@@ -1,0 +1,1 @@
+{"inputSchema":{"type":"object","$defs":{"unsafe":{"type":"string","x-sagat-classification":"public"}},"properties":{"value":{"$ref":"#/$defs/unsafe"}}}}

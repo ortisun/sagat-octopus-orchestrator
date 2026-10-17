@@ -75,6 +75,15 @@ internal static class BuildMode
             builder.OutputSchema(output);
         }
 
+        if (definition["limits"] is JsonObject limits)
+        {
+            builder.Limits(new WorkflowLimitsOptions
+            {
+                MaxInstances = (int?)limits["maxInstances"],
+                MaxDepth = (int?)limits["maxDepth"],
+            });
+        }
+
         if (definition["state"] is JsonObject state)
         {
             builder.State(StateOf(state));
@@ -152,6 +161,20 @@ internal static class BuildMode
                 case "step":
                     target.Step(id, (string)op["activity"]!, StepOptionsOf(options));
                     break;
+                case "database":
+                    target.Database(id, DatabaseOptionsOf(options!));
+                    break;
+                case "script":
+                    target.Script(id, (string)op["artifactDigest"]!, new ScriptOptions
+                    {
+                        Language = (string?)options?["language"],
+                        Retry = RetryOf(options?["retry"] as JsonObject),
+                        CompensateWith = (string?)options?["compensateWith"],
+                        Secrets = options?["secrets"] is JsonArray secrets ? [.. secrets.Select(secret => (string)secret!)] : null,
+                        OnError = (string?)options?["onError"],
+                        OutputSchema = options?["outputSchema"]?.DeepClone().AsObject(),
+                    });
+                    break;
                 case "sleep":
                     target.Sleep(id, Ms(op["durationMs"]));
                     break;
@@ -163,6 +186,7 @@ internal static class BuildMode
                         Timeout = Ms(options["timeoutMs"]),
                         OnTimeout = (string?)options["onTimeout"],
                         Lookback = options["lookbackMs"] is { } lookback ? Ms(lookback) : null,
+                        OutputSchema = options["outputSchema"]?.DeepClone().AsObject(),
                     });
                     break;
                 case "invokeChild":
@@ -178,6 +202,7 @@ internal static class BuildMode
                             "request_cancel" => ChildCancelPolicy.RequestCancel,
                             var other => throw new InvalidOperationException($"unknown child cancel policy {other}"),
                         },
+                        OutputSchema = options?["outputSchema"]?.DeepClone().AsObject(),
                     });
                     break;
                 case "condition":
@@ -284,6 +309,30 @@ internal static class BuildMode
         }
     }
 
+    private static DatabaseOptions DatabaseOptionsOf(JsonObject options)
+    {
+        try { return ParseDatabaseOptions(options); }
+        catch (Exception error) when (error is InvalidOperationException or FormatException or OverflowException)
+        {
+            throw new SagatException(SagatErrorCode.ValidationFailed, "invalid managed database operation");
+        }
+    }
+
+    private static DatabaseOptions ParseDatabaseOptions(JsonObject options) => new()
+    {
+        ConnectionRef = new ConnectionRef((string)options["connectionRef"]!["name"]!, (int?)options["connectionRef"]!["revision"]),
+        Operation = Enum.TryParse<DatabaseOperation>((string?)options["operation"], true, out var operation) ? operation : (DatabaseOperation)(-1),
+        Statement = (string)options["statement"]!,
+        Parameters = options["parameters"]?.AsArray().Select(p => p!["literal"] is { } literal
+            ? DatabaseParameter.Literal(DatabaseTypeOf(literal["type"]), literal["value"])
+            : DatabaseParameter.Expression(DatabaseTypeOf(p["type"]), (string)p["expression"]!)).ToArray(),
+        Limits = options["limits"]?.AsObject().ToDictionary(p => p.Key, p => (int)p.Value!, StringComparer.Ordinal),
+        Timeout = options["timeoutMs"] is { } timeout ? Ms(timeout) : null,
+        OnError = (string?)options["onError"],
+    };
+
+    private static DatabaseType DatabaseTypeOf(JsonNode? node) => Enum.TryParse<DatabaseType>((string?)node, true, out var type) ? type : (DatabaseType)(-1);
+
     private static TimeSpan Ms(JsonNode? value) => TimeSpan.FromMilliseconds((long)value!);
 
     private static LoopOptions LoopOptionsOf(JsonObject op) => new()
@@ -309,6 +358,7 @@ internal static class BuildMode
             Irreversible = (bool?)options["irreversible"],
             HighRisk = (bool?)options["highRisk"],
             OnError = (string?)options["onError"],
+            OutputSchema = options["outputSchema"]?.DeepClone().AsObject(),
         };
 
     private static StepRetry? RetryOf(JsonObject? retry) => retry is null

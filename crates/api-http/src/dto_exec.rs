@@ -34,12 +34,34 @@ fn problem_body(problem: &sagat_application::definitions::Problem) -> Value {
 
 /// What a dry-run validation found.
 pub fn validation_body(validation: &sagat_application::definitions::Validation) -> Value {
-    json!({
+    let mut body = json!({
         "valid": validation.is_valid(),
         "digest": validation.digest,
         "problems": validation.problems.iter().map(problem_body).collect::<Vec<_>>(),
         "warnings": validation.warnings.iter().map(problem_body).collect::<Vec<_>>(),
-    })
+    });
+    if let Some(analysis) = &validation.classification {
+        use sagat_application::classification::CarrierPointer;
+        body["classification"] = Value::Array(analysis.report.iter().map(|entry| {
+            let mut value = json!({"path": entry.path.as_str(), "level": entry.level.as_str(), "declared": entry.declared});
+            match &entry.carrier {
+                CarrierPointer::Input => value["carrier"] = json!("inputSchema"),
+                CarrierPointer::Result => value["carrier"] = json!("outputSchema"),
+                CarrierPointer::NodeOutput(node) => {
+                    value["carrier"] = json!("nodeOutputSchema");
+                    value["nodeId"] = json!(node.as_str());
+                },
+                CarrierPointer::BodyNodeOutput { body, node } => {
+                    value["carrier"] = json!("nodeOutputSchema");
+                    value["nodeId"] = json!(node.as_str());
+                    value["bodyName"] = json!(body.as_str());
+                },
+            }
+            value
+        }).collect());
+        body["classificationTruncated"] = json!(analysis.report_truncated);
+    }
+    body
 }
 
 fn diff_side(side: sagat_application::diff::DiffSide) -> Value {
@@ -296,6 +318,8 @@ pub struct SignalResultBody {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunBody {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<&'static str>,
     pub run_id: String,
     pub workflow_id: String,
     pub version_id: String,
@@ -346,6 +370,10 @@ pub struct ParentBody {
 impl From<&RunRecord> for RunBody {
     fn from(r: &RunRecord) -> Self {
         Self {
+            origin: r
+                .info
+                .origin
+                .map(sagat_application::runs::RunOrigin::as_str),
             run_id: r.info.run_id.to_string(),
             workflow_id: r.info.workflow_id.to_string(),
             version_id: r.info.version_id.to_string(),
@@ -541,7 +569,7 @@ fn runtime_nodes(graph: &GraphSnapshot, wanted: impl Fn(&NodeView<'_>) -> bool) 
             switch_selection_body(node.kind(), step.and_then(|s| s.switch_selection.as_ref()));
         nodes.push(json!({
             "id": id,
-            "type": node.kind().label(),
+            "type": if node.database_operation().is_some() { "database" } else { node.kind().label() },
             "kind": if node.id().is_compensation() {
                 "COMPENSATION"
             } else if node.id().is_reconciliation() {
@@ -991,6 +1019,7 @@ mod switch_graph_tests {
         let graph = GraphSnapshot {
             run: RunRecord {
                 info: sagat_application::execution::RunInfo {
+                    origin: None,
                     run_id,
                     tenant_id: TenantId::new(uuid::Uuid::from_u128(2)),
                     namespace_id: NamespaceId::new(uuid::Uuid::from_u128(3)),
