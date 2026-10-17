@@ -586,6 +586,17 @@ impl IdentityStore for PgIdentityStore {
         Ok(())
     }
 
+    async fn record_permission_denial(&self, audit: &AuditRecord) -> Result<(), StoreError> {
+        // Counted by what was denied (a closed set of audit actions), whether or not the write
+        // succeeds: a failing audit table must not hide a flood of denials.
+        metrics::counter!("security_denials_total", "action" => audit.action().as_str())
+            .increment(1);
+        // One statement, awaited and never collapsed: one record per denial. Its volume is bounded
+        // upstream by the per-subject budget, which the call was charged to before authorization.
+        let mut conn = self.pool.acquire().await.map_err(store_error)?;
+        insert_audit(&mut conn, audit).await
+    }
+
     async fn ping(&self) -> Result<(), StoreError> {
         // Readiness means "can do this process's work", not merely "the server answers": every
         // table it reads or writes must exist, so an instance pointed at an unmigrated database is

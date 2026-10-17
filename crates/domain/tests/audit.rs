@@ -87,6 +87,11 @@ fn stored_names_are_a_stable_contract() {
         AuditAction::CrossTenantAccessDenied.as_str(),
         "access.denied.cross_tenant"
     );
+    assert_eq!(
+        AuditAction::PermissionDenied.as_str(),
+        "access.denied.permission"
+    );
+    assert_eq!(ResourceType::Endpoint.as_str(), "endpoint");
     assert_eq!(ResourceType::Tenant.as_str(), "tenant");
     assert_eq!(ResourceType::Workspace.as_str(), "workspace");
     assert_eq!(ResourceType::Namespace.as_str(), "namespace");
