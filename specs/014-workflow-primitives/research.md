@@ -378,3 +378,70 @@ asserts that no scheduled job removes primitive data.
   scope inputs of checkpointed iterations loaded too (bounded by the 256 KiB snapshot); it is left
   for the collection owner.
 
+
+## Runtime privilege audit
+
+G294 showed that the suites cannot see a missing privilege: they connect as the database owner, and
+`sagat_app`, the role the control plane and the engine are required to run as, was refused a row lock
+that the owner takes without noticing. This increment asks the same question of every statement the
+stores issue instead of waiting for the next one.
+
+- **D350 — The privileges the runtime role needs are derived from the statements, not from a list
+  kept by hand.** `tests/integration/platform-foundation/runtime_privileges.rs` reads the SQL
+  literals out of every non-test `src` directory of the workspace (`rust_source.rs`: `\`
+  continuations, raw strings, `concat!`, `macro_rules!` select templates, `const` fragments named in
+  `format!`), turns each statement into the privileges it asks for (`sql_needs.rs`: SELECT, INSERT and
+  UPDATE per column, DELETE, TRUNCATE, row locks, function calls, `ON CONFLICT DO UPDATE`,
+  `RETURNING`, data-modifying CTEs), and asks the catalog of the fully migrated schema whether
+  `sagat_app` holds each one. A new statement or a migration that drops a grant fails the test with the
+  file, line and statement.
+- **D351 — A row lock is modelled as UPDATE on at least one column, and the model is checked against the
+  server.** For every need the test also runs the smallest equivalent statement as `sagat_app` inside a
+  transaction it rolls back (`SELECT 1 FROM t WHERE false FOR NO KEY UPDATE`, `UPDATE t SET c = DEFAULT
+  WHERE false`, `INSERT INTO t (c) VALUES (DEFAULT)`, ...) and reads SQLSTATE `42501` as a refusal. Any
+  disagreement between the catalog and the server fails the test, so the audit cannot drift from what
+  PostgreSQL does. 564 of 593 distinct needs have a probe; function calls and unresolved placeholders are checked by the catalog only.
+- **D352 — What the role is not meant to run is listed with a reason, and an entry that excuses nothing
+  fails.** `ALLOWED` holds `provision-tenant` and `seed-dev` (`tenants`, `memberships`), `scheduling-weight`
+  (`tenant_scheduling`, G260), the unused `apply_content_delta` (`tenant_retained_usage`), and two
+  statements assembled at run time. Nothing else is excused.
+- **D353 — The triggers a write fires are held to the same rule.** A trigger function that is not
+  `SECURITY DEFINER` runs with the caller's privileges, so its body is read with the same scanner, and
+  the triggers it fires in turn are followed. The functions that CHECK constraints and column defaults
+  call, and the sequences behind `serial` defaults, are checked for EXECUTE and USAGE. Triggers that are
+  `SECURITY DEFINER` run as the owner and are listed, not followed.
+- **D354 — The audit proves it catches the defect it exists for.** A second test feeds it the statement
+  of G294 (`FOR SHARE` on `memberships`), an `UPDATE`, a `DELETE` and a `TRUNCATE` of `audit_records`, a
+  write to a table the role may not insert into, a column that does not exist, a renamed table, a
+  `SECURITY DEFINER` function the role may not call and a `serial` key whose sequence the role may not use,
+  and requires each to be reported; a third feeds it statements the role is meant to run and requires
+  silence.
+- **D355 — Representative write paths run as the runtime role, and the API-backed suites can be re-run
+  as it.** Loop entry and checkpoint, collection entry, admission, checkpoint and finish, chain handoff and
+  finalization, an applied declared Update and the secret store (put, rotate, grant, revoke, delete) each
+  have a test whose store is connected as `sagat_app` while the fixture is seeded by the owner.
+  `SAGAT_TEST_AS_RUNTIME_ROLE=1` connects the API of every API-backed test as `sagat_app`.
+
+Result of the first run: no statement outside `ALLOWED` lacks a privilege. G294 was the only gap of its
+class in the statements the stores issue today; the audit exists for the next one.
+
+- **G350 — The extractor cannot see SQL that is not a literal in the Rust source.** The two statements
+  built from a `format!` argument at run time (`operations.rs` `{groups}`, `telemetry.rs` `{condition}`)
+  are reported as unresolved and allowlisted; the pieces they are made from are literals that are audited
+  on their own. A statement assembled by `push_str` from parts that each look like a clause would be
+  missed unless the part carries a verb or a lock clause, which the fragment test (`no_literal_outside_a_
+  statement_carries_a_lock_clause_or_a_write`) then rejects. Statements of a kind the audit does not model
+  (`LOCK TABLE`, `COPY`, DDL, `NOTIFY`) fail the test when they appear in capitals in the sources; there is
+  none today.
+- **G351 — The audit proves the migrations, not the deployed database.** It uses the grants the
+  migrations make. A role widened or narrowed by hand afterwards, a restore that loses the grants, or a
+  `sagat_app` created after `migrate` (the grants are skipped when the role does not exist) is not seen;
+  `\dp` on the deployed database after those events is the check (control-plane runbook, sections 1 and 7).
+- **G352 — Not audited: the bodies of `SECURITY DEFINER` functions, foreign-key checks, column-only
+  `SELECT` grants.** Definer functions and the referential checks run as the owner; the audit checks that
+  the role may call the definer functions the stores call and nothing about what they do. A table the role
+  can read only through column grants would be reported as lacking `SELECT`; there is none.
+- **G353 — `control-plane scheduling-weight` needs the owner role** (G260), and `apply_content_delta` is
+  dead code that would fail as the runtime role. Both are allowlisted with that reason. If the weight
+  should be settable with the runtime role, `tenant_scheduling` needs a column-level `INSERT`/`UPDATE` and
+  a `DELETE` grant in a new migration and the entries come out of `ALLOWED`.
