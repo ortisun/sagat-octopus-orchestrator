@@ -8,6 +8,7 @@ mod support;
 mod approval_combinations;
 mod approvals;
 mod chains;
+mod collection_sources;
 mod collections;
 mod loops;
 mod operations;

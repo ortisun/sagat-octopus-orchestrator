@@ -869,6 +869,104 @@ async fn collection_payloads_require_same_tenant_and_matching_content_digests() 
     assert_eq!(counts, (0, 0));
 }
 
+/// The membership of a collection is fixed by its entry (T014-014, "snapshot immutability"): the
+/// same entry again changes nothing, and an entry for another membership of the same owner is
+/// refused with no write, so a retry or a restart can never swap the array under a running scope.
+#[tokio::test]
+async fn a_collection_entered_once_keeps_its_membership_against_any_later_entry() {
+    let w = world().await;
+    let owner_node = NodeId::parse("b").expect("owner node");
+    let owner = ExecutionInstanceId::root(owner_node);
+    let (workflow, workflow_version, definitions) =
+        publish_collection_fixture(&w, "collection-immutable", "b").await;
+    let run = primitive_run(&w, workflow, workflow_version, &owner).await;
+    let tenant = w.admin.tenant_id().as_uuid();
+    let authority = scheduler_authority(&w.db.pool, run).await;
+    set_tenant_collection_capacity(&w.db.pool, tenant, 1).await;
+    let store = PgCollectionStore::with_definition_cache(w.db.pool.clone(), definitions);
+    let scope = CollectionScopeId::generate();
+    let snapshot = retain_payload(&w.db.pool, tenant, b"[1]").await;
+    let limits = CollectionLimits::new(1, 1, 100_000, 8).expect("limits");
+    let entry = |version: u64, scope: CollectionScopeId, snapshot, items: u32| {
+        CollectionEntry::new(
+            transition(&w, run, version, owner.clone(), authority.clone()),
+            scope,
+            items,
+            snapshot,
+            limits,
+        )
+        .expect("entry")
+    };
+
+    let entered = store
+        .enter_collection(&entry(0, scope, snapshot, 1))
+        .await
+        .expect("enter collection");
+    assert!(entered.applied);
+    let events_after_entry: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM run_events WHERE tenant_id = $1 AND run_id = $2")
+            .bind(tenant)
+            .bind(run.as_uuid())
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("journal length");
+
+    // The same entry, replayed by a retry: acknowledged, nothing written.
+    let replay = store
+        .enter_collection(&entry(0, scope, snapshot, 1))
+        .await
+        .expect("an exact replay is accepted");
+    assert!(!replay.applied);
+    assert_eq!(replay.run_version, entered.run_version);
+
+    // Another membership for the same owner, however it arrives, is refused.
+    let other = retain_payload(&w.db.pool, tenant, b"[2]").await;
+    for (label, version, scope, snapshot) in [
+        ("another array, same scope", 0, scope, other),
+        (
+            "another array, new scope",
+            0,
+            CollectionScopeId::generate(),
+            other,
+        ),
+        (
+            "the same array, new scope",
+            0,
+            CollectionScopeId::generate(),
+            snapshot,
+        ),
+    ] {
+        assert_eq!(
+            store
+                .enter_collection(&entry(version, scope, snapshot, 1))
+                .await
+                .expect_err(label),
+            PrimitiveStoreError::DuplicateMismatch,
+            "{label}"
+        );
+    }
+    let (scopes, digest, events): (i64, Vec<u8>, i64) = sqlx::query_as(
+        "SELECT count(*), (array_agg(snapshot_digest))[1], \
+                (SELECT count(*) FROM run_events WHERE tenant_id = $1 AND run_id = $2) \
+         FROM iteration_scopes WHERE tenant_id = $1 AND run_id = $2",
+    )
+    .bind(tenant)
+    .bind(run.as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("scope rows");
+    assert_eq!(scopes, 1);
+    assert_eq!(
+        digest,
+        snapshot.as_bytes().to_vec(),
+        "the first membership stands"
+    );
+    assert_eq!(
+        events, events_after_entry,
+        "no refused entry wrote a journal event"
+    );
+}
+
 #[tokio::test]
 async fn collection_admission_writes_expected_journal_projection_and_usage_atomically() {
     let w = world().await;

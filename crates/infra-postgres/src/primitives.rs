@@ -5,12 +5,14 @@
 //! finish additionally require an immutable definition cache. Runtime orchestration stays gated
 //! until the planner owns scoped routing and supplies semantic audit evidence for every transition.
 
+use sagat_application::collection_source::{SourceManifest, items_digest as source_items_digest};
 use sagat_application::error::StoreError;
-use sagat_application::execution::{DefinitionCache, instance_step_id};
+use sagat_application::execution::{DefinitionCache, MAX_PAYLOAD_BYTES, instance_step_id};
 use sagat_application::primitives::{
     CollectionAdmission, CollectionCheckpoint, CollectionDrain, CollectionDrainFinish,
     CollectionEntry, CollectionFinish, CollectionIterationDrain, CollectionProgress,
-    CollectionScopeId, CollectionStore, CollectionTransition, PrimitiveStoreError, PrimitiveWrite,
+    CollectionScopeId, CollectionScopeRef, CollectionStore, CollectionTransition,
+    PrimitiveStoreError, PrimitiveWrite,
 };
 use sagat_domain::audit::{AuditAction, ResourceType};
 use sagat_domain::definition::WorkflowVersionId;
@@ -773,16 +775,24 @@ impl CollectionStore for PgCollectionStore {
                 content,
             ));
         }
-        let snapshot_items = serde_json::from_slice::<Vec<Value>>(&snapshot)
-            .map_err(|_| invalid_storage("collection snapshot payload"))?
-            .into_iter()
-            .map(|item| {
-                serde_json::to_vec(&item)
-                    .map_err(|_| invalid_storage("collection snapshot payload"))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        if snapshot_items != items {
-            return Err(invalid_storage("collection membership projection"));
+        if let Some(manifest) = SourceManifest::parse(&snapshot) {
+            if usize::try_from(manifest.count()).ok() != Some(items.len())
+                || source_items_digest(&items) != *manifest.items_digest()
+            {
+                return Err(invalid_storage("collection membership projection"));
+            }
+        } else {
+            let snapshot_items = serde_json::from_slice::<Vec<Value>>(&snapshot)
+                .map_err(|_| invalid_storage("collection snapshot payload"))?
+                .into_iter()
+                .map(|item| {
+                    serde_json::to_vec(&item)
+                        .map_err(|_| invalid_storage("collection snapshot payload"))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            if snapshot_items != items {
+                return Err(invalid_storage("collection membership projection"));
+            }
         }
         Ok(Some(CollectionProgress {
             scope_id,
@@ -790,6 +800,67 @@ impl CollectionStore for PgCollectionStore {
             items,
             results,
         }))
+    }
+
+    async fn collection_scope(
+        &self,
+        tenant_id: TenantId,
+        run_id: sagat_domain::execution::RunId,
+        owner: &ExecutionInstanceId,
+    ) -> Result<Option<CollectionScopeRef>, PrimitiveStoreError> {
+        let (owner_nodes, owner_indices) = path_parts(owner);
+        let Some(row) = sqlx::query(
+            "SELECT scope_id, item_count FROM iteration_scopes \
+             WHERE tenant_id=$1 AND run_id=$2 AND owner_path_nodes=$3 \
+               AND owner_path_indices=$4 AND owner_node=$5",
+        )
+        .bind(tenant_id.as_uuid())
+        .bind(run_id.as_uuid())
+        .bind(owner_nodes)
+        .bind(owner_indices)
+        .bind(owner.node().as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(store_error)?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(CollectionScopeRef {
+            scope_id: CollectionScopeId::new(row.get("scope_id")),
+            item_count: u32::try_from(row.get::<i32, _>("item_count"))
+                .map_err(|_| invalid_storage("collection item count"))?,
+        }))
+    }
+
+    async fn collection_item(
+        &self,
+        tenant_id: TenantId,
+        run_id: sagat_domain::execution::RunId,
+        scope_id: CollectionScopeId,
+        index: u32,
+    ) -> Result<Option<Vec<u8>>, PrimitiveStoreError> {
+        let Some(row) = sqlx::query(
+            "SELECT i.item_digest, p.content \
+             FROM collection_scope_items i JOIN payloads p \
+               ON p.tenant_id=i.tenant_id AND p.digest=i.item_digest \
+             WHERE i.tenant_id=$1 AND i.run_id=$2 AND i.scope_id=$3 AND i.iteration_index=$4",
+        )
+        .bind(tenant_id.as_uuid())
+        .bind(run_id.as_uuid())
+        .bind(scope_id.as_uuid())
+        .bind(i32::try_from(index).map_err(|_| invalid_storage("collection item index"))?)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(store_error)?
+        else {
+            return Ok(None);
+        };
+        let content: Vec<u8> = row.get("content");
+        let digest: Vec<u8> = row.get("item_digest");
+        if Sha256::digest(&content).to_vec() != digest {
+            return Err(invalid_storage("collection item payload"));
+        }
+        Ok(Some(content))
     }
 
     async fn enter_collection(
@@ -842,22 +913,45 @@ impl CollectionStore for PgCollectionStore {
             entry.snapshot_content(),
         )
         .await?;
-        let snapshot: Value = serde_json::from_slice(&snapshot_content)
-            .map_err(|_| PrimitiveStoreError::InvalidTransition)?;
-        let Value::Array(items) = snapshot else {
-            return Err(PrimitiveStoreError::InvalidTransition);
+        let item_payloads = if let Some(source) = entry.blob_source() {
+            // The snapshot payload is the manifest of a blob read: it must describe exactly the
+            // items the entry carries, so the digest the scope pins is the membership.
+            let manifest = SourceManifest::parse(&snapshot_content)
+                .ok_or(PrimitiveStoreError::InvalidTransition)?;
+            if manifest.blob().id() != source.blob
+                || usize::try_from(manifest.count()).ok() != Some(source.items.len())
+                || source.items.len() != usize::try_from(entry.item_count).unwrap_or(usize::MAX)
+                || source
+                    .items
+                    .iter()
+                    .any(|item| item.len() > MAX_PAYLOAD_BYTES)
+                || source_items_digest(&source.items) != *manifest.items_digest()
+            {
+                return Err(PrimitiveStoreError::InvalidTransition);
+            }
+            source
+                .items
+                .iter()
+                .map(|item| (Sha256::digest(item).to_vec(), item.clone()))
+                .collect::<Vec<_>>()
+        } else {
+            let snapshot: Value = serde_json::from_slice(&snapshot_content)
+                .map_err(|_| PrimitiveStoreError::InvalidTransition)?;
+            let Value::Array(items) = snapshot else {
+                return Err(PrimitiveStoreError::InvalidTransition);
+            };
+            if items.len() != usize::try_from(entry.item_count).unwrap_or(usize::MAX) {
+                return Err(PrimitiveStoreError::InvalidTransition);
+            }
+            items
+                .iter()
+                .map(|item| {
+                    serde_json::to_vec(item)
+                        .map(|bytes| (Sha256::digest(&bytes).to_vec(), bytes))
+                        .map_err(|_| invalid_storage("collection snapshot item"))
+                })
+                .collect::<Result<Vec<_>, _>>()?
         };
-        if items.len() != usize::try_from(entry.item_count).unwrap_or(usize::MAX) {
-            return Err(PrimitiveStoreError::InvalidTransition);
-        }
-        let item_payloads = items
-            .iter()
-            .map(|item| {
-                serde_json::to_vec(item)
-                    .map(|bytes| (Sha256::digest(&bytes).to_vec(), bytes))
-                    .map_err(|_| invalid_storage("collection snapshot item"))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
         let item_digests = item_payloads
             .iter()
             .map(|(digest, _)| digest.clone())
@@ -952,8 +1046,8 @@ impl CollectionStore for PgCollectionStore {
             "INSERT INTO iteration_scopes \
              (tenant_id, run_id, scope_id, namespace_id, owner_path_nodes, owner_path_indices, \
               owner_node, kind, lifecycle, snapshot_digest, item_count, max_items, max_concurrency, \
-              created_at, updated_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, 'COLLECTION', 'OPEN', $8, $9, $10, $11, $12, $12)",
+              created_at, updated_at, source_blob_id) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, 'COLLECTION', 'OPEN', $8, $9, $10, $11, $12, $12, $13)",
         )
         .bind(entry.transition.tenant_id().as_uuid())
         .bind(entry.transition.run_id().as_uuid())
@@ -967,9 +1061,13 @@ impl CollectionStore for PgCollectionStore {
         .bind(i32::try_from(entry.limits.max_items()).unwrap_or(i32::MAX))
         .bind(i32::from(entry.limits.max_concurrency()))
         .bind(entry.transition.occurred_at())
+        .bind(entry.blob_source().map(|source| source.blob.as_uuid()))
         .execute(&mut *tx)
         .await
         .map_err(store_error)?;
+        if let Some(audit) = entry.transition.audit() {
+            insert_audit(&mut tx, audit).await?;
+        }
         if !item_digests.is_empty() {
             let indices = (0..item_digests.len())
                 .map(|index| i32::try_from(index).unwrap_or(i32::MAX))
@@ -1001,6 +1099,7 @@ impl CollectionStore for PgCollectionStore {
                 "max_items": entry.limits.max_items(),
                 "max_concurrency": entry.limits.max_concurrency(),
                 "snapshot_digest": entry.snapshot_digest.to_hex(),
+                "source_blob": entry.blob_source().map(|source| source.blob.to_string()),
             }),
         )
         .await?;
@@ -2872,6 +2971,29 @@ impl CollectionStore for PgRunStore {
     ) -> Result<Option<CollectionProgress>, PrimitiveStoreError> {
         PgCollectionStore::with_definition_cache(self.pool.clone(), self.cache.clone())
             .collection_progress(tenant_id, run_id, owner)
+            .await
+    }
+
+    async fn collection_scope(
+        &self,
+        tenant_id: TenantId,
+        run_id: sagat_domain::execution::RunId,
+        owner: &ExecutionInstanceId,
+    ) -> Result<Option<CollectionScopeRef>, PrimitiveStoreError> {
+        PgCollectionStore::with_definition_cache(self.pool.clone(), self.cache.clone())
+            .collection_scope(tenant_id, run_id, owner)
+            .await
+    }
+
+    async fn collection_item(
+        &self,
+        tenant_id: TenantId,
+        run_id: sagat_domain::execution::RunId,
+        scope_id: CollectionScopeId,
+        index: u32,
+    ) -> Result<Option<Vec<u8>>, PrimitiveStoreError> {
+        PgCollectionStore::with_definition_cache(self.pool.clone(), self.cache.clone())
+            .collection_item(tenant_id, run_id, scope_id, index)
             .await
     }
 

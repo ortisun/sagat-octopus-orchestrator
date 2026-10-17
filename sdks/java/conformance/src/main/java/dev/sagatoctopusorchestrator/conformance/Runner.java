@@ -742,8 +742,13 @@ public final class Runner {
             }
             case "startWithBlob": {
                 JsonNode workflow = config.path("workflows").path(step.get("workflow").asText());
-                byte[] body = new byte[step.get("inputBlobBytes").asInt()];
-                java.util.Arrays.fill(body, (byte) 'i');
+                byte[] body;
+                if (step.has("inputBlobText")) {
+                    body = step.get("inputBlobText").asText().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                } else {
+                    body = new byte[step.get("inputBlobBytes").asInt()];
+                    java.util.Arrays.fill(body, (byte) 'i');
+                }
                 String sha256 = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(body));
                 var descriptor = client.uploadRunInput(new ByteArrayInputStream(body),
                         new RunInputBlobOptions("application/octet-stream", (long) body.length, sha256));

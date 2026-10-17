@@ -162,6 +162,7 @@ pub fn compared(out: &Value, normalizer: &mut Normalizer) -> Value {
         "blobEvidence",
         "runInputBlobEvidence",
         "scopeEvidence",
+        "sourceEvidence",
         "auditEvidence",
     ] {
         if let Some(value) = out.get(key) {

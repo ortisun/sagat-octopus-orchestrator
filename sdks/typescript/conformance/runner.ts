@@ -409,7 +409,7 @@ async function run(scenario: Obj, config: Obj): Promise<Obj> {
         }
         case 'startWithBlob': {
           const workflowId = config['workflows'][step['workflow']].workflowId as string;
-          const body = Buffer.alloc(step['inputBlobBytes'], 'i');
+          const body = typeof step['inputBlobText'] === 'string' ? Buffer.from(step['inputBlobText'], 'utf8') : Buffer.alloc(step['inputBlobBytes'], 'i');
           const sha256 = createHash('sha256').update(body).digest('hex');
           const descriptor = await client.uploadRunInput([body], { expectedSize: body.length, expectedSha256: sha256 });
           result = runJson(await client.startWithBlob(workflowId, descriptor, {

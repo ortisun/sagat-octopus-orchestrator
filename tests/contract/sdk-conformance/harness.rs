@@ -577,6 +577,53 @@ async fn scope_evidence(run: &Run, state: &Value, summary: bool) -> Result<Value
     Ok(Value::Array(runs))
 }
 
+/// How each run of the scenario ended and where its collection took its items from, read from the
+/// platform's own rows: the run's status and stop code, and, when a collection was entered, its item
+/// count, whether the membership came from a blob, and how many times the engine's read of that blob
+/// was audited. A scenario asks for it with `"sourceEvidence": true`.
+async fn source_evidence(run: &Run, state: &Value) -> Result<Value, String> {
+    let pool = &run.platform.api.db.pool;
+    let mut runs = Vec::new();
+    for item in state.as_array().into_iter().flatten() {
+        let id = item["runId"].as_str().ok_or("a run without an id")?;
+        let run_id = uuid::Uuid::parse_str(id).map_err(|e| format!("run id {id}: {e}"))?;
+        let (status, stop_code): (String, Option<String>) =
+            sqlx::query_as("SELECT status, stop_code FROM runs WHERE id = $1")
+                .bind(run_id)
+                .fetch_one(pool)
+                .await
+                .map_err(|e| format!("reading run {id}: {e}"))?;
+        let scope: Option<(i32, Option<uuid::Uuid>)> = sqlx::query_as(
+            "SELECT item_count, source_blob_id FROM iteration_scopes WHERE run_id = $1",
+        )
+        .bind(run_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| format!("reading the scope of run {id}: {e}"))?;
+        let scope = match scope {
+            None => Value::Null,
+            Some((item_count, blob)) => {
+                let reads: i64 = match blob {
+                    Some(blob) => sqlx::query_scalar(
+                        "SELECT count(*) FROM audit_records WHERE action = 'blob.read' \
+                           AND resource_id = $1",
+                    )
+                    .bind(blob.to_string())
+                    .fetch_one(pool)
+                    .await
+                    .map_err(|e| format!("reading the blob audit of run {id}: {e}"))?,
+                    None => 0,
+                };
+                json!({"itemCount": item_count, "fromBlob": blob.is_some(), "blobReads": reads})
+            }
+        };
+        runs.push(json!({
+            "runId": id, "status": status, "stopCode": stop_code, "collection": scope,
+        }));
+    }
+    Ok(Value::Array(runs))
+}
+
 /// The approval audit rows of the tenant, in the order they were written, from the audit trail itself:
 /// who was refused or allowed, with the trace of the call that caused it. A scenario asks for it with
 /// `"auditEvidence": true`.
@@ -1166,6 +1213,12 @@ async fn play(
                     if let Some(mode) = scenario["scopeEvidence"].as_str() {
                         match scope_evidence(&run, &out["serverState"], mode == "summary").await {
                             Ok(evidence) => out["scopeEvidence"] = evidence,
+                            Err(e) => failures.push(format!("{name}/{lang}: {e}")),
+                        }
+                    }
+                    if scenario["sourceEvidence"].as_bool() == Some(true) {
+                        match source_evidence(&run, &out["serverState"]).await {
+                            Ok(evidence) => out["sourceEvidence"] = evidence,
                             Err(e) => failures.push(format!("{name}/{lang}: {e}")),
                         }
                     }

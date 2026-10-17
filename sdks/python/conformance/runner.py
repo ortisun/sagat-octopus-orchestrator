@@ -618,7 +618,7 @@ async def run(scenario: Obj, config: Obj) -> Obj:
                     )
                 elif op == "startWithBlob":
                     workflow_id = config["workflows"][step["workflow"]]["workflowId"]
-                    blob_body = b"i" * step["inputBlobBytes"]
+                    blob_body = step["inputBlobText"].encode("utf-8") if "inputBlobText" in step else b"i" * step["inputBlobBytes"]
                     descriptor = await client.upload_run_input(
                         [blob_body], expected_size=len(blob_body), expected_sha256=hashlib.sha256(blob_body).hexdigest()
                     )

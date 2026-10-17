@@ -15,6 +15,7 @@ use sha2::{Digest as _, Sha256};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use crate::collection_source::SourceItems;
 use crate::error::StoreError;
 use crate::shards::Lease;
 
@@ -84,6 +85,15 @@ pub struct CollectionProgress {
     pub snapshot: Vec<u8>,
     pub items: Vec<Vec<u8>>,
     pub results: Vec<(u32, Vec<u8>)>,
+}
+
+/// The identity and size of a collection's membership, without its content. Loading the content of
+/// every item and result on every transition costs a digest of all of them each time, which makes
+/// the whole of a large collection quadratic; a transition reads one item (or, at the end, all).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CollectionScopeRef {
+    pub scope_id: CollectionScopeId,
+    pub item_count: u32,
 }
 
 /// Effective definition and tenant limits pinned when a collection enters.
@@ -255,6 +265,14 @@ pub struct CollectionEntry {
     pub limits: CollectionLimits,
     snapshot_content: Option<Vec<u8>>,
     iteration_charge: u32,
+    source: Option<BlobItems>,
+}
+
+/// Items materialized from a blob and the blob that stays referenced by the scope (D420).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlobItems {
+    pub items: Vec<Vec<u8>>,
+    pub blob: sagat_domain::blobs::BlobId,
 }
 
 impl CollectionEntry {
@@ -278,6 +296,7 @@ impl CollectionEntry {
             limits,
             snapshot_content: None,
             iteration_charge: 1,
+            source: None,
         })
     }
 
@@ -313,9 +332,42 @@ impl CollectionEntry {
         Ok(entry)
     }
 
+    /// Constructs an entry whose items come from a blob. The snapshot payload is the manifest
+    /// (descriptor, count and digest of the canonical array), not the array: an array of 10,000
+    /// descriptors does not fit one 256 KiB payload, but each element does.
+    ///
+    /// # Errors
+    /// Returns [`PrimitiveInputError::ItemCount`] if the array exceeds the pinned item limit.
+    pub fn from_blob_source(
+        transition: CollectionTransition,
+        scope_id: CollectionScopeId,
+        source: SourceItems,
+        limits: CollectionLimits,
+    ) -> Result<Self, PrimitiveInputError> {
+        let manifest = source.manifest.to_json();
+        let mut entry = Self::from_snapshot(
+            transition,
+            scope_id,
+            source.manifest.count(),
+            manifest,
+            limits,
+        )?;
+        entry.source = Some(BlobItems {
+            items: source.items,
+            blob: source.manifest.blob().id(),
+        });
+        Ok(entry)
+    }
+
     #[must_use]
     pub fn snapshot_content(&self) -> Option<&[u8]> {
         self.snapshot_content.as_deref()
+    }
+
+    /// The items read from a blob, when that is where they came from.
+    #[must_use]
+    pub const fn blob_source(&self) -> Option<&BlobItems> {
+        self.source.as_ref()
     }
 }
 
@@ -696,6 +748,23 @@ pub trait CollectionStore: Send + Sync {
         run_id: RunId,
         owner: &ExecutionInstanceId,
     ) -> impl Future<Output = Result<Option<CollectionProgress>, PrimitiveStoreError>> + Send;
+
+    /// The scope of a collection and its item count, nothing else.
+    fn collection_scope(
+        &self,
+        tenant_id: TenantId,
+        run_id: RunId,
+        owner: &ExecutionInstanceId,
+    ) -> impl Future<Output = Result<Option<CollectionScopeRef>, PrimitiveStoreError>> + Send;
+
+    /// One captured item, checked against its digest; `None` past the last index.
+    fn collection_item(
+        &self,
+        tenant_id: TenantId,
+        run_id: RunId,
+        scope_id: CollectionScopeId,
+        index: u32,
+    ) -> impl Future<Output = Result<Option<Vec<u8>>, PrimitiveStoreError>> + Send;
 
     fn enter_collection(
         &self,

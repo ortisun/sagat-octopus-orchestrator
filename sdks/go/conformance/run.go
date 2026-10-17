@@ -312,7 +312,12 @@ func playStep(ctx context.Context, step object, op string, c *client.Client, con
 		if v, ok := step["deadlineInMs"]; ok {
 			opts = append(opts, client.WithDeadlineIn(asMillis(v)))
 		}
-		body := bytes.Repeat([]byte("i"), asInt(step["inputBlobBytes"]))
+		var body []byte
+		if text, ok := step["inputBlobText"].(string); ok {
+			body = []byte(text)
+		} else {
+			body = bytes.Repeat([]byte("i"), asInt(step["inputBlobBytes"]))
+		}
 		digest := sha256.Sum256(body)
 		size := int64(len(body))
 		descriptor, err := c.UploadRunInput(ctx, bytes.NewReader(body), client.UploadRunInputOptions{
