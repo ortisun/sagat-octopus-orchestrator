@@ -4,7 +4,9 @@ use sagat_domain::workflow::NodeId;
 use sagat_scheduler::CollectionAdvance;
 use serde_json::json;
 
-use super::collections::{ACTIVITY, collection_document, open_tenant_capacity, probe_transition};
+use super::collections::{
+    ACTIVITY, collection_document, open_tenant_capacity, probe_transition, run_case,
+};
 use super::common::platform;
 
 #[test]
@@ -22,6 +24,33 @@ fn an_even_probe_stride_samples_admission_and_checkpoint() {
     );
     assert!(!probe_transition(0, 10));
     assert!(!probe_transition(1, 10));
+}
+
+#[tokio::test]
+async fn measured_peak_and_queue_include_every_admitted_member() {
+    let result = run_case(16, 16).await;
+    assert!(result.complete);
+    assert!(result.probes.iter().any(|probe| probe.label == "admit"));
+    assert!(
+        result
+            .probes
+            .iter()
+            .any(|probe| probe.label == "checkpoint")
+    );
+    assert_eq!(
+        result.peak_active, 16,
+        "the observation must capture the actual configured peak"
+    );
+    let delays = result
+        .samples
+        .0
+        .get("worker: ready-to-lease queue delay")
+        .expect("queue measurements");
+    assert_eq!(
+        delays.len(),
+        16,
+        "one ready-to-lease observation per member"
+    );
 }
 
 #[tokio::test]

@@ -145,6 +145,39 @@ impl Platform {
             .expect("poll")
     }
 
+    /// Observe the persisted READY-to-LEASED interval before this driver completes any task.
+    /// Missing rows/timestamps are failed measurements, never fabricated zero-delay samples.
+    pub async fn ready_queue_delays(
+        &self,
+        session: &Session,
+        tasks: &[ClaimedTask],
+    ) -> Vec<Duration> {
+        if tasks.is_empty() {
+            return Vec::new();
+        }
+        let ids: Vec<_> = tasks.iter().map(|task| task.step_id).collect();
+        let seconds: Vec<f64> = sqlx::query_scalar(
+            "SELECT extract(epoch FROM (updated_at-ready_at))::float8 FROM steps \
+             WHERE tenant_id=$1 AND step_id=ANY($2) AND status='LEASED' AND ready_at IS NOT NULL",
+        )
+        .bind(session.principal.tenant_id().as_uuid())
+        .bind(ids)
+        .fetch_all(&self.world.db.pool)
+        .await
+        .expect("queue timestamps");
+        assert_eq!(
+            seconds.len(),
+            tasks.len(),
+            "every claimed task needs a real queue observation"
+        );
+        seconds
+            .into_iter()
+            .map(|seconds| {
+                Duration::try_from_secs_f64(seconds).expect("nonnegative finite queue delay")
+            })
+            .collect()
+    }
+
     pub async fn complete(
         &self,
         session: &Session,
@@ -221,9 +254,14 @@ pub async fn resources(world: &World) -> Resources {
     .fetch_one(&world.db.pool)
     .await
     .expect("connection counts");
+    let rss_bytes = super::process_rss_bytes();
+    assert!(
+        threads > 0 && rss_bytes > 0,
+        "thread/RSS measurements are unavailable"
+    );
     Resources {
         threads,
-        rss_bytes: super::process_rss_bytes(),
+        rss_bytes,
         pg_connections: row.0,
         pg_active: row.1,
         pg_idle_in_transaction: row.2,

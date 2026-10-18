@@ -1405,3 +1405,16 @@ An earlier attempt to compile to a separate path failed because rustc disallows 
 that compiler error is not counted as RED test evidence. Normal compilation waited until the old
 frozen benchmark completed. Queue-delay/peak and improved slot sampling remain the next measurement
 work; nesting and the other feature acceptance gates remain open.
+
+## 2026-10-17 — Queue and active-peak measurement verification
+
+The real RED test observed active15 instead of16. The driver now observes every admission,
+records one real ready-to-lease database timestamp difference per task (also for loops), rejects
+missing data and reports sampled RSS separately from process-wide OS measurements. Admission and
+checkpoint early/late work comparisons never mix transition families. The latest three focused
+tests passed3/3,6.33s; strict performance-target Clippy passed5.47s. A default disposable-fixture
+32-item/width16 ignored benchmark passed1/1,4.65s, observed peak16 and32 queue samples, both SQL-cost
+families, and runtime-role execution. Native Darwin `/usr/bin/time -l` output was retained separately
+at `/tmp/sagat-completion-perf-profile-smoke/process-resources.log`; logs/fragments share that
+directory. This smoke is parent6bf74f8d plus the measurement diff, not frozen-source capacity
+acceptance. No production limit or task checkbox changes.

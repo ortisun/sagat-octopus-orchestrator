@@ -1348,3 +1348,17 @@ The server was a dedicated manually started diagnostic profile; later acceptance
 repository-declared disposable fixture. These limitations remain acceptance work, along with
 nested/low-capacity admission, 100k nested instances, waits and fairness. No production ceilings
 or complete T014-042 acceptance are claimed by these three diagnostic runs.
+
+### Measurement-driver verification
+
+The corrected driver records each leased member's database `ready_at`→`updated_at` queue delay
+before completion, observes active counts after every admission, and separates admission and
+checkpoint cost comparisons. Missing timestamps or resource observations fail the measurement.
+RSS sampled before/after and every 256 transitions is explicitly distinct from the OS process peak.
+Three measurement tests passed (6.33s), including an actual journal-writer runtime-role guard.
+A self-contained 32-item/width16 smoke passed (4.65s): observed active peak16, 32 queue observations,
+both transition families and verified `sagat_app` execution. This small dirty-source diagnostic is
+not a frozen 10k acceptance run; raw logs are under `/tmp/sagat-completion-perf-profile-smoke/`.
+On Darwin the command was additionally wrapped with `/usr/bin/time -l -o process-resources.log`
+to retain native maximum-resident-set/peak-footprint fields for the entire process. Retain this
+native output alongside future per-width fragments; do not label sampled RSS an OS peak.
