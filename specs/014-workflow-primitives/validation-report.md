@@ -3044,3 +3044,18 @@ permission guards. Strict targeted Clippy23.90s, fmt4.28s and architecture0.44s 
 inputs unchanged. One fresh bounded implementation review found no issue. No scoped producer,
 caller, new runtime grant or production capacity eligibility is introduced.
 Evidence: tasks/project-completion/evidence/scoped-finish-hint-20261018/manifest.json.
+
+
+## Dormant flat scoped native Finish contract — 2026-10-18
+
+Local B1b.2b.12, refs:T014-014..017/040. One fresh bounded Astra review found no issue in
+the next owning transaction contract. Namespace-qualified binding discovery precedes the
+existing applicable chain/Run/G NOWAIT/current scheduler guards; flat context and validated
+canonical metadata precede operation receipt, creation CAS and A1 mutation. Closed source/
+receipt decoding, guarded trace, local SQLSTATE-only diagnostics and conservative COMMIT
+outcomes are specified. Three executable prerequisites are integrated; no native scoped
+result, production caller or new grant is claimed yet. The contract splits first transaction,
+decoding, actual barriers, unknown-COMMIT/process and observations into separate evidence units.
+This closes no broader B1/B2/C0 or canonical runtime/release task.
+See tasks/project-completion/scoped-leaf-finish-native-contract.md and
+evidence/scoped-finish-native-decision-20261018/manifest.json.

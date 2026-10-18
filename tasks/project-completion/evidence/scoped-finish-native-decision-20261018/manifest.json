@@ -1,0 +1,11 @@
+{
+  "source_base": "3f6b2973",
+  "local_unit": "B1b.2b.12",
+  "review": "None",
+  "tests_executed_for_documentary_unit": false,
+  "contract_sha256": "e1e8f22df02e17ae68d6f8eaa9171514d98e1554a236ab36794d4234b2b644bf",
+  "files": {
+    "claim.md": "34f753c08d0c98046c369a39e2dfbb81cb34f00989b9c79f58570392bd508d9b",
+    "review.md": "65b56b35ec4c28a6165d3a6c27d6334b355bb89eab3422bb3bdbeab2c37a16d1"
+  }
+}
