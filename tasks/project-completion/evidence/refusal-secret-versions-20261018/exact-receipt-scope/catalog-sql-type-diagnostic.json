@@ -1,0 +1,12 @@
+{
+  "command": [
+    "/opt/homebrew/bin/psql",
+    "postgres://postgres@127.0.0.1:65117/t_01a151187f257321a7b9aca4aa23d57b",
+    "-Atc",
+    "SELECT 'original',jsonb_typeof(to_jsonb(version)) FROM secret_versions version UNION ALL SELECT 'explicit_row',jsonb_typeof(to_jsonb(version_row)) FROM secret_versions version_row"
+  ],
+  "exit_code": 0,
+  "seconds": 0.02,
+  "started_utc": "2026-10-18T22:20:27.831154+00:00",
+  "log": "catalog-sql-type-diagnostic.txt"
+}

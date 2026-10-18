@@ -1,0 +1,22 @@
+[
+  {
+    "file": "sagat-refusal-fresh-authority-plan.md",
+    "sha256": "c61bddf1eb3c896c9156cd3a333f681f243f5f9b5bceb3643e5b8147ff170b1c"
+  },
+  {
+    "file": "sagat-refusal-secret-versions.patch",
+    "sha256": "fa37b3ee8856c084a99df0bcb0a47b722ccdc7c2d7e54f20ea81a43d7dcc26de"
+  },
+  {
+    "file": "sagat-refusal-secret-versions-c2.patch",
+    "sha256": "9271eb010c808da42ab4ad7199a501e302c818164f0cb3c39b503eceb14de172"
+  },
+  {
+    "file": "sagat-refusal-secret-versions-final-c3.patch",
+    "sha256": "8fade66847574bc337022f6439eff477c30067d906b9dbfc228dd8a714567e0a"
+  },
+  {
+    "file": "sagat-refusal-secret-versions-c2-to-final-c3.patch",
+    "sha256": "fbb62fd6c73e35e172ecca18d73e670f9952005fa22a56f8185fab03afec83f5"
+  }
+]

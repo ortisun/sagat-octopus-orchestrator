@@ -1,0 +1,19 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "integration_workflow_primitives",
+    "refusal_secret_versions::a_scoped_refusal_rechecks_openbao_versions_after_its_path_check",
+    "--",
+    "--exact",
+    "--nocapture"
+  ],
+  "exit_code": 101,
+  "seconds": 50.98,
+  "started_utc": "2026-10-18T22:15:48.061126+00:00",
+  "log": "focused-default.txt"
+}

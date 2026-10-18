@@ -54,6 +54,7 @@ mod operations_http;
 mod primitive_transactions;
 mod projection;
 mod publication_rejections;
+mod refusal_secret_versions;
 mod scope_compensation_http;
 mod scope_frontier;
 mod scoped_blob_completion;

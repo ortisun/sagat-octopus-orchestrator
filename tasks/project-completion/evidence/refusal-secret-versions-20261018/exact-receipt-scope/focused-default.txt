@@ -1,0 +1,19 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 44.84s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 1 test
+
+thread 'refusal_secret_versions::a_scoped_refusal_rechecks_openbao_versions_after_its_path_check' (135958556) panicked at tests/integration/workflow-primitives/refusal_secret_versions.rs:268:5:
+version one and every preexisting secret catalog row must remain unchanged
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test refusal_secret_versions::a_scoped_refusal_rechecks_openbao_versions_after_its_path_check ... FAILED
+
+failures:
+
+failures:
+    refusal_secret_versions::a_scoped_refusal_rechecks_openbao_versions_after_its_path_check
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 536 filtered out; finished in 5.18s
+
+error: test failed, to rerun pass `-p sagat-tests --test integration_workflow_primitives`

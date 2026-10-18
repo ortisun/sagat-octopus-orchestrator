@@ -368,3 +368,20 @@ retained separately. Evidence: `tasks/project-completion/evidence/legacy-infligh
 This closes only ordinary report-before-drain at E>limit. Drain-first, Applied, the other byte
 condition, cold post-ACK process/unknown-COMMIT, external effects and the full Q10c/canonical
 014 release gates remain open. No production nesting activation is inferred.
+
+
+### Fresh full exact OpenBao version recheck — 2026-10-18
+
+Actual OpenBao 2.7.1 public secret rotation now passes while the genuine seventeenth
+completion is held at observed full checkpoint restoration after its checked path/provider scan.
+Exact immutable v1 rows, one native v2 operation/version, two operation-specific audits and
+physical retained-byte charge are verified. Releasing the gate returns UNAVAILABLE without
+execution/refusal effects for the stale scanned vector. Same original key/lease retry accepts
+SUCCEEDED/RUN_DATA_LIMIT without output/new report outbox; cold journal reconstruction and
+stable replay pass. Both secret values remain absent from captured logs. Final focused 1/1
+default/runtime, both actual sagat_app; strict Clippy/fmt/architecture and1125 identical inputs.
+Evidence: `tasks/project-completion/evidence/refusal-secret-versions-20261018/README.md`.
+Two fixture-oracle failures are retained (shared key across instances and SQL alias/column
+collision). This is not a literal pre-begin fence/terminal race or an owner/runtime matrix.
+Other authority, old-order/Applied, cold-process/uncertain-COMMIT, nesting and release gates
+remain open; canonical014 checkboxes are unchanged.
