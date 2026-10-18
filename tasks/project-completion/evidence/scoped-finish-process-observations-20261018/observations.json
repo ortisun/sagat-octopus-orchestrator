@@ -1,0 +1,19 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "integration_workflow_primitives",
+    "leaf_certification_native::scoped_finish::observations::",
+    "--",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "exit_code": 0,
+  "seconds": 6.35,
+  "started_utc": "2026-10-18T16:31:49.439838+00:00",
+  "log": "observations.txt"
+}

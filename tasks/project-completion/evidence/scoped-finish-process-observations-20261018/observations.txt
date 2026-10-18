@@ -1,0 +1,10 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.23s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 3 tests
+test leaf_certification_native::scoped_finish::observations::abandoned_scoped_finish_waiting_on_run_has_no_returned_observation_or_effect ... ok
+test leaf_certification_native::scoped_finish::observations::filtered_scoped_finish_span_cannot_overwrite_its_callers_outcome_or_status ... ok
+test leaf_certification_native::scoped_finish::observations::returned_scoped_finish_outcomes_are_closed_redacted_and_count_only_acknowledged_apply ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 493 filtered out; finished in 6.07s
+

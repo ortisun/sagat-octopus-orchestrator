@@ -1,0 +1,18 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "contract_asyncapi_events_webhooks_messaging",
+    "--",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "exit_code": 0,
+  "seconds": 22.42,
+  "started_utc": "2026-10-18T16:31:56.141322+00:00",
+  "log": "asyncapi.txt"
+}

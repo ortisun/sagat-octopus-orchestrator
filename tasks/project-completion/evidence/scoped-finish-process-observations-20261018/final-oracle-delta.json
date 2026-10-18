@@ -1,0 +1,6 @@
+{
+  "tests/integration/workflow-primitives/scoped_leaf_finish_observations.rs": {
+    "native_baseline": "b11bbb188831085d94ec15a72c5d6ad2bc4b828c040c2f9e54c2e925f2d9d9ed",
+    "final": "6fa2fcf1d66a2566e8461e5ab1661cb9d43d323b52666f1fff6055ec988238e7"
+  }
+}

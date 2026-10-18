@@ -1080,3 +1080,9 @@ mod contexts;
 
 #[path = "scoped_leaf_finish_commit_loss.rs"]
 mod commit_loss;
+
+#[path = "scoped_leaf_finish_process.rs"]
+mod process;
+
+#[path = "scoped_leaf_finish_observations.rs"]
+mod observations;

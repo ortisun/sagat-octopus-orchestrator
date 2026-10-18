@@ -1,0 +1,8 @@
+{
+  "passed": 3,
+  "tests": [
+    "leaf_certification_native::scoped_finish::observations::abandoned_scoped_finish_waiting_on_run_has_no_returned_observation_or_effect",
+    "leaf_certification_native::scoped_finish::observations::filtered_scoped_finish_span_cannot_overwrite_its_callers_outcome_or_status",
+    "leaf_certification_native::scoped_finish::observations::returned_scoped_finish_outcomes_are_closed_redacted_and_count_only_acknowledged_apply"
+  ]
+}
