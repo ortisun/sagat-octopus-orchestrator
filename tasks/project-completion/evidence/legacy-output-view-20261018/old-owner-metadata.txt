@@ -1,0 +1,6 @@
+ node |               step_id                |             namespace_id             |  kind   |   node_kind   |  status   | routed | waiting_kind | no_token | no_expiry | no_deadline | no_worker | no_retry |            run_namespace             | finish_sequence | has_outbox 
+------+--------------------------------------+--------------------------------------+---------+---------------+-----------+--------+--------------+----------+-----------+-------------+-----------+----------+--------------------------------------+-----------------+------------
+ c0   | e3f141a4-bc8f-8936-8cfe-1f600e27158a | 01a15086-e3e5-727b-969e-fa06895e6926 | FORWARD | forEach       | SUCCEEDED | t      |              | t        | t         | t           | t         | t        | 01a15086-e3e5-727b-969e-fa06895e6926 |              10 | t
+ c1   | e0180373-6eac-809f-8385-a32e4eecb232 | 01a15086-e3e5-727b-969e-fa06895e6926 | FORWARD | legacyControl | SUCCEEDED | t      |              | t        | t         | t           | t         | t        | 01a15086-e3e5-727b-969e-fa06895e6926 |              20 | t
+(2 rows)
+

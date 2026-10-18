@@ -1,0 +1,9 @@
+{
+  "command": [
+    "scripts/test-legacy-collection-output-view.sh"
+  ],
+  "exit_code": 0,
+  "seconds": 133.91,
+  "started_utc": "2026-10-18T19:46:40.000285+00:00",
+  "log": "process-gate.txt"
+}

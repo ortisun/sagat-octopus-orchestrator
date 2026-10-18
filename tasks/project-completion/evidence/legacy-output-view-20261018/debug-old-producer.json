@@ -1,0 +1,12 @@
+{
+  "command": [
+    "/tmp/sagat-project-completion-q5-20261018/run.7XGUmz/artifacts/integration-workflow-primitives-old",
+    "--exact",
+    "legacy_collection_output_producer::frozen_old_collection_output_producer",
+    "--nocapture"
+  ],
+  "exit_code": 0,
+  "seconds": 9.42,
+  "started_utc": "2026-10-18T19:39:39.067971+00:00",
+  "log": "debug-old-producer.txt"
+}

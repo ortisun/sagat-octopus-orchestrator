@@ -1,0 +1,18 @@
+{
+  "command": [
+    "cargo",
+    "clippy",
+    "--locked",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "integration_workflow_primitives",
+    "--",
+    "-D",
+    "warnings"
+  ],
+  "exit_code": 101,
+  "seconds": 11.01,
+  "started_utc": "2026-10-18T19:27:00.688277+00:00",
+  "log": "lint-pass1-clippy.txt"
+}

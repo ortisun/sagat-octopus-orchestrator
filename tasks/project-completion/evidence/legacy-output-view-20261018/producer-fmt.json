@@ -1,0 +1,13 @@
+{
+  "command": [
+    "rustfmt",
+    "--check",
+    "--edition",
+    "2024",
+    "tests/fixtures/legacy-collection-output/producer.rs"
+  ],
+  "exit_code": 0,
+  "seconds": 0.05,
+  "started_utc": "2026-10-18T19:49:10.158442+00:00",
+  "log": "producer-fmt.txt"
+}

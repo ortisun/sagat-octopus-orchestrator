@@ -1,0 +1,21 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "integration_workflow_primitives",
+    "legacy_collection_output_view::a_current_full_run_transaction_reads_frozen_legacy_collection_outputs",
+    "--",
+    "--ignored",
+    "--exact",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "exit_code": 101,
+  "seconds": 49.4,
+  "started_utc": "2026-10-18T19:41:14.293180+00:00",
+  "log": "debug-current-consumer.txt"
+}

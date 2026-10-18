@@ -1,0 +1,9 @@
+{
+  "command": [
+    "scripts/test-legacy-collection-output-view.sh"
+  ],
+  "exit_code": 101,
+  "seconds": 20.55,
+  "started_utc": "2026-10-18T19:35:29.704208+00:00",
+  "log": "process-build-cache-error.txt"
+}

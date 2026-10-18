@@ -1,0 +1,9 @@
+{
+  "command": [
+    "scripts/test-legacy-collection-output-view.sh"
+  ],
+  "exit_code": 101,
+  "seconds": 30.83,
+  "started_utc": "2026-10-18T19:36:12.625944+00:00",
+  "log": "process-producer-compile-error.txt"
+}

@@ -1,0 +1,4 @@
+{
+  "scripts/test-legacy-collection-output-view.sh": "17d3cf6ef87641256a2adde5a1eb876788f38fbe78cfbbdc277e782cbd39e63e",
+  "tests/fixtures/legacy-collection-output/producer.rs": "f8510fb70d9587373bfc9b35462e0e91de6c3304f539925ecc7bbcdbaab0c630"
+}

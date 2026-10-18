@@ -1,0 +1,9 @@
+{
+  "command": [
+    "scripts/test-legacy-collection-output-view.sh"
+  ],
+  "exit_code": 1,
+  "seconds": 126.73,
+  "started_utc": "2026-10-18T19:43:00.880610+00:00",
+  "log": "process-corruption-fixture-trigger-error.txt"
+}

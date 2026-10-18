@@ -1,0 +1,63 @@
+Filesystem      Size    Used   Avail Capacity iused ifree %iused  Mounted on
+/dev/disk3s5   926Gi   857Gi    43Gi    96%    9.2M  452M    2%   /System/Volumes/Data
+   Compiling sagat-domain v0.1.0 (/private/tmp/sagat-project-completion-q5-20261018/run.X2ohtR/old-source/crates/domain)
+   Compiling sagat-telemetry v0.1.0 (/private/tmp/sagat-project-completion-q5-20261018/run.X2ohtR/old-source/crates/telemetry)
+   Compiling sagat-api-grpc v0.1.0 (/private/tmp/sagat-project-completion-q5-20261018/run.X2ohtR/old-source/crates/api-grpc)
+   Compiling sagat-infra-expr v0.1.0 (/private/tmp/sagat-project-completion-q5-20261018/run.X2ohtR/old-source/crates/infra-expr)
+   Compiling sagat-infra-postgres v0.1.0 (/private/tmp/sagat-project-completion-q5-20261018/run.X2ohtR/old-source/crates/infra-postgres)
+   Compiling sagat-application v0.1.0 (/private/tmp/sagat-project-completion-q5-20261018/run.X2ohtR/old-source/crates/application)
+   Compiling sagat-infra-egress v0.1.0 (/private/tmp/sagat-project-completion-q5-20261018/run.X2ohtR/old-source/crates/infra-egress)
+   Compiling sagat-dev-idp v0.1.0 (/private/tmp/sagat-project-completion-q5-20261018/run.X2ohtR/old-source/apps/dev-idp)
+   Compiling sagat-infra-schema v0.1.0 (/private/tmp/sagat-project-completion-q5-20261018/run.X2ohtR/old-source/crates/infra-schema)
+   Compiling sagat-api-http v0.1.0 (/private/tmp/sagat-project-completion-q5-20261018/run.X2ohtR/old-source/crates/api-http)
+   Compiling sagat-infra-ir v0.1.0 (/private/tmp/sagat-project-completion-q5-20261018/run.X2ohtR/old-source/crates/infra-ir)
+   Compiling sagat-infra-secrets v0.1.0 (/private/tmp/sagat-project-completion-q5-20261018/run.X2ohtR/old-source/crates/infra-secrets)
+   Compiling sagat-infra-blobstore v0.1.0 (/private/tmp/sagat-project-completion-q5-20261018/run.X2ohtR/old-source/crates/infra-blobstore)
+   Compiling sagat-infra-sandbox v0.1.0 (/private/tmp/sagat-project-completion-q5-20261018/run.X2ohtR/old-source/crates/infra-sandbox)
+   Compiling sagat-infra-nats v0.1.0 (/private/tmp/sagat-project-completion-q5-20261018/run.X2ohtR/old-source/crates/infra-nats)
+   Compiling sagat-infra-connectors v0.1.0 (/private/tmp/sagat-project-completion-q5-20261018/run.X2ohtR/old-source/crates/infra-connectors)
+   Compiling sagat-scheduler v0.1.0 (/private/tmp/sagat-project-completion-q5-20261018/run.X2ohtR/old-source/crates/scheduler)
+   Compiling sagat-cli v0.1.0 (/private/tmp/sagat-project-completion-q5-20261018/run.X2ohtR/old-source/apps/cli)
+   Compiling sagat-control-plane v0.1.0 (/private/tmp/sagat-project-completion-q5-20261018/run.X2ohtR/old-source/apps/control-plane)
+   Compiling sagat-execution-engine v0.1.0 (/private/tmp/sagat-project-completion-q5-20261018/run.X2ohtR/old-source/apps/execution-engine)
+   Compiling sagat-sandbox-runner v0.1.0 (/private/tmp/sagat-project-completion-q5-20261018/run.X2ohtR/old-source/apps/sandbox-runner)
+   Compiling sagat-tests v0.1.0 (/private/tmp/sagat-project-completion-q5-20261018/run.X2ohtR/old-source/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 52.83s
+   Compiling sagat-domain v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/domain)
+   Compiling sagat-telemetry v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/telemetry)
+   Compiling sagat-api-grpc v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/api-grpc)
+   Compiling sagat-infra-expr v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-expr)
+   Compiling sagat-application v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/application)
+   Compiling sagat-infra-postgres v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-postgres)
+   Compiling sagat-infra-egress v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-egress)
+   Compiling sagat-dev-idp v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/dev-idp)
+   Compiling sagat-infra-schema v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-schema)
+   Compiling sagat-api-http v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/api-http)
+   Compiling sagat-infra-ir v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-ir)
+   Compiling sagat-infra-blobstore v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-blobstore)
+   Compiling sagat-infra-secrets v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-secrets)
+   Compiling sagat-infra-sandbox v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-sandbox)
+   Compiling sagat-scheduler v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/scheduler)
+   Compiling sagat-infra-nats v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-nats)
+   Compiling sagat-infra-connectors v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-connectors)
+   Compiling sagat-control-plane v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/control-plane)
+   Compiling sagat-cli v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/cli)
+   Compiling sagat-execution-engine v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/execution-engine)
+   Compiling sagat-sandbox-runner v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/sandbox-runner)
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 56.70s
+
+running 1 test
+
+thread 'legacy_collection_output_view::a_current_full_run_transaction_reads_frozen_legacy_collection_outputs' (125851503) panicked at tests/integration/workflow-primitives/legacy_collection_output_view.rs:435:10:
+restore append-only guard inside static corruption fixture: Database(PgDatabaseError { severity: Error, code: "55006", message: "cannot ALTER TABLE \"payloads\" because it has pending trigger events", detail: None, hint: None, position: None, where: None, schema: None, table: None, column: None, data_type: None, constraint: None, file: Some("tablecmds.c"), line: Some(4152), routine: Some("CheckTableNotInUse") })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test legacy_collection_output_view::a_current_full_run_transaction_reads_frozen_legacy_collection_outputs ... FAILED
+
+failures:
+
+failures:
+    legacy_collection_output_view::a_current_full_run_transaction_reads_frozen_legacy_collection_outputs
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 518 filtered out; finished in 0.29s
+

@@ -1,0 +1,7 @@
+# Actual old-owner discovery metadata incompatibility
+
+The immutable old writer 6c44a0e49670cf19660792cd1518d241e6c99b3b produced real c0/c1 collection successes via HTTP/gRPC/scheduler. The current reader's first effective-byte query rejected c1 as a corrupt owner. Actual stored c0.node_kind is forEach; c1.node_kind is legacyControl. Both are FORWARD/SUCCEEDED/routed, same namespace, deterministic owner identity, and without waiting/lease/retry work. This is retained old discovery metadata, not a fake fixture or a different pinned business node.
+
+The published immutable workflow defines c1 as a root ForEach. collection_outputs::inspect independently validates that definition before validating stored metadata; exact scope counters, full address, finish identity/digest and bounded CollectionFinished→StepRouted journal remain mandatory. Existing ensure_node_kind already accepts legacyControl as a materialization hint. The bounded amendment allows only forEach or legacyControl in that discovery column, preserving all independent business checks. It performs no backfill or projection repair.
+
+Actual first run: old producer 1/1, current consumer 0/1 at scalar read. Complete old archive/migration before-after manifests and failed process log retained in evidence/legacy-output-view-20261018. An independent rerun of only the immutable old producer created an owned debugging database; its owner metadata is observed in old-owner-metadata.txt. That database is private disposable test state and must be explicitly dropped after debugging.

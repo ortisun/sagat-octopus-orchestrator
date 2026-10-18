@@ -1,0 +1,11 @@
+{
+  "command": [
+    "python3",
+    "/tmp/sagat-q5-signal-probe.py",
+    "scripts/test-legacy-collection-output-view.sh"
+  ],
+  "exit_code": 1,
+  "seconds": 15.07,
+  "started_utc": "2026-10-18T19:25:10.279841+00:00",
+  "log": "signal-probe-harness-error.txt"
+}

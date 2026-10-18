@@ -1,0 +1,9 @@
+{
+  "command": [
+    "scripts/test-legacy-collection-output-view.sh"
+  ],
+  "exit_code": 1,
+  "seconds": 126.39,
+  "started_utc": "2026-10-18T19:37:06.018405+00:00",
+  "log": "process-owner-kind-red.txt"
+}

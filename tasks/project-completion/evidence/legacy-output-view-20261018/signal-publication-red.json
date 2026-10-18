@@ -1,0 +1,11 @@
+{
+  "command": [
+    "python3",
+    "/tmp/sagat-q5-signal-probe.py",
+    "scripts/test-legacy-collection-output-view.sh"
+  ],
+  "exit_code": 1,
+  "seconds": 0.09,
+  "started_utc": "2026-10-18T19:25:31.594775+00:00",
+  "log": "signal-publication-red.txt"
+}

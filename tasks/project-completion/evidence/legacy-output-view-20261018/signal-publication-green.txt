@@ -1,0 +1,2 @@
+{"signal": "SIGINT", "wrapper_exit": 130, "child_pid": 69438, "child_alive_after_wrapper_exit": false, "runner_sha256": "6a0740ddb25cdad95bf2201210ae9713364731c868481f0fba8e96c6f670678e", "embedded_wrapper_sha256": "392ec5c68a2bef9b37517130222d12ed42958bf65b1f3db6d37c692b5ecb755e"}
+{"signal": "SIGTERM", "wrapper_exit": 143, "child_pid": 69440, "child_alive_after_wrapper_exit": false, "runner_sha256": "6a0740ddb25cdad95bf2201210ae9713364731c868481f0fba8e96c6f670678e", "embedded_wrapper_sha256": "392ec5c68a2bef9b37517130222d12ed42958bf65b1f3db6d37c692b5ecb755e"}

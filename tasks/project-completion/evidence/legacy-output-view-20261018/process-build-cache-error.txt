@@ -1,0 +1,18 @@
+Filesystem      Size    Used   Avail Capacity iused ifree %iused  Mounted on
+/dev/disk3s5   926Gi   856Gi    44Gi    96%    9.1M  459M    2%   /System/Volumes/Data
+   Compiling sagat-telemetry v0.1.0 (/private/tmp/sagat-project-completion-q5-20261018/run.Ta7UKR/old-source/crates/telemetry)
+   Compiling sagat-api-grpc v0.1.0 (/private/tmp/sagat-project-completion-q5-20261018/run.Ta7UKR/old-source/crates/api-grpc)
+   Compiling sagat-infra-expr v0.1.0 (/private/tmp/sagat-project-completion-q5-20261018/run.Ta7UKR/old-source/crates/infra-expr)
+   Compiling sagat-infra-postgres v0.1.0 (/private/tmp/sagat-project-completion-q5-20261018/run.Ta7UKR/old-source/crates/infra-postgres)
+   Compiling sagat-application v0.1.0 (/private/tmp/sagat-project-completion-q5-20261018/run.Ta7UKR/old-source/crates/application)
+   Compiling sagat-infra-schema v0.1.0 (/private/tmp/sagat-project-completion-q5-20261018/run.Ta7UKR/old-source/crates/infra-schema)
+   Compiling sagat-api-http v0.1.0 (/private/tmp/sagat-project-completion-q5-20261018/run.Ta7UKR/old-source/crates/api-http)
+   Compiling sagat-infra-ir v0.1.0 (/private/tmp/sagat-project-completion-q5-20261018/run.Ta7UKR/old-source/crates/infra-ir)
+   Compiling sagat-infra-secrets v0.1.0 (/private/tmp/sagat-project-completion-q5-20261018/run.Ta7UKR/old-source/crates/infra-secrets)
+   Compiling sagat-infra-blobstore v0.1.0 (/private/tmp/sagat-project-completion-q5-20261018/run.Ta7UKR/old-source/crates/infra-blobstore)
+   Compiling sagat-infra-sandbox v0.1.0 (/private/tmp/sagat-project-completion-q5-20261018/run.Ta7UKR/old-source/crates/infra-sandbox)
+   Compiling sagat-scheduler v0.1.0 (/private/tmp/sagat-project-completion-q5-20261018/run.Ta7UKR/old-source/crates/scheduler)
+   Compiling sagat-infra-nats v0.1.0 (/private/tmp/sagat-project-completion-q5-20261018/run.Ta7UKR/old-source/crates/infra-nats)
+   Compiling sagat-infra-connectors v0.1.0 (/private/tmp/sagat-project-completion-q5-20261018/run.Ta7UKR/old-source/crates/infra-connectors)
+   Compiling sagat-cli v0.1.0 (/private/tmp/sagat-project-completion-q5-20261018/run.Ta7UKR/old-source/apps/cli)
+error: could not compile `sagat-infra-postgres` (lib) due to 4 previous errors

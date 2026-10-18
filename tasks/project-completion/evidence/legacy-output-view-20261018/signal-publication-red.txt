@@ -1,0 +1,3 @@
+{"signal": "SIGINT", "wrapper_exit": 130, "child_pid": 59146, "child_alive_after_wrapper_exit": true, "runner_sha256": "17d3cf6ef87641256a2adde5a1eb876788f38fbe78cfbbdc277e782cbd39e63e", "embedded_wrapper_sha256": "5f2d36f91de8f3aa13174a4a5292dc210b684d6468beab76d4a95bd8142cff79"}
+{"signal": "SIGTERM", "wrapper_exit": 143, "child_pid": 59148, "child_alive_after_wrapper_exit": true, "runner_sha256": "17d3cf6ef87641256a2adde5a1eb876788f38fbe78cfbbdc277e782cbd39e63e", "embedded_wrapper_sha256": "5f2d36f91de8f3aa13174a4a5292dc210b684d6468beab76d4a95bd8142cff79"}
+publication signal was not reaped: SIGINT,SIGTERM

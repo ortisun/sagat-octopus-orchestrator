@@ -34,7 +34,7 @@ SELECT scope.owner_node, scope.item_count, scope.next_admission_index,
        scope.result_digest, scope.finish_sequence, scope.finish_outbox_id,
        step.step_id, step.namespace_id AS step_namespace_id,
        (step.kind = 'FORWARD') AS forward_step,
-       (step.node_kind = 'forEach') AS foreach_step,
+       (step.node_kind IN ('forEach', 'legacyControl')) AS foreach_step,
        (step.status = 'SUCCEEDED') AS succeeded_step, step.routed,
        (step.waiting_kind IS NULL AND step.lease_token_hash IS NULL
         AND step.lease_expires_at IS NULL AND step.attempt_deadline_at IS NULL
