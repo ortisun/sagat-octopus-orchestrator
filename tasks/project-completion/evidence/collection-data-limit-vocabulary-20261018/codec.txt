@@ -1,0 +1,19 @@
+   Compiling sagat-domain v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/domain)
+   Compiling sagat-application v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/application)
+   Compiling sagat-infra-postgres v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-postgres)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 11.65s
+     Running unittests src/lib.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/sagat_infra_postgres-f451de1a7134e528)
+
+running 9 tests
+test event_codec::tests::raw_collection_data_limit_drain_decodes_without_a_fictitious_member ... ok
+test event_codec::tests::malformed_switch_selections_are_not_replayed ... ok
+test event_codec::tests::collection_run_data_limit_drain_has_exact_codec_and_cause ... ok
+test event_codec::tests::switch_case_and_default_are_exact_codec_inverses ... ok
+test event_codec::tests::state_update_keeps_only_bounded_metadata_and_digest ... ok
+test event_codec::tests::scope_compensation_events_are_exact_codec_inverses ... ok
+test event_codec::tests::execution_chain_events_are_exact_codec_inverses ... ok
+test event_codec::tests::collection_events_keep_digest_and_scoped_instance_fields ... ok
+test event_codec::tests::loop_events_preserve_checkpoints_and_next_actions ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+

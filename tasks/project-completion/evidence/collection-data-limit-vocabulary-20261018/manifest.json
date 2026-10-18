@@ -1,0 +1,31 @@
+{
+  "source_base": "63956f51",
+  "local_unit": "B1b.2c.1d.0Q1",
+  "codec_passed": 9,
+  "existing_domain_targets": {
+    "collection_reducer": 15,
+    "collection_restore_state": 5,
+    "scoped_compensation": 29
+  },
+  "frozen_inputs": 1109,
+  "sources_unchanged": true,
+  "native_producer_available": false,
+  "new_reason_domain_acceptance_pending": true,
+  "files": {
+    "architecture.json": "87c8f31526600653f4a08f1c22c50530144f7d65d1bbdf7dd7dfb18ca65f5a8f",
+    "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "checkpoint.md": "f078bc8fc9b50d05b5eff514eebe1ae31ddea1aa8a32b99c2557be63e2e4b588",
+    "clippy.json": "71e8b010a261ab3ea9a2443711c3036f3ce3e3e11a99e97a16631b6c30decbb5",
+    "clippy.txt": "6a952789b8142b38daf7eae09a033a0c71e400c82c892b014bbcfe057bfa8d39",
+    "codec.json": "dcfaf3b5e10df40e151f5b6effaf039d9d53242b69bb0cc5713cd587ca0358f3",
+    "codec.txt": "18253417e10af7012001dfe85d1c824b1deb9c05e8942a0ef21eae46c046fcc2",
+    "existing-domain-collections.json": "54e812a1726fb9fe44ff746bd59ae7c28384789bb1b6eed4c2991d532ca9a575",
+    "existing-domain-collections.txt": "8f5339fda36c6aaef4d10b2e8d000a86531c92bd90622303711c4960324810a7",
+    "fmt.json": "fea7cc535b1df4134ac677c4a608702472ffaa72d83fd3c7180f5b20391ae562",
+    "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "reproduce.md": "bd065ba43307fdcbc90c6c24116d922d54bad0837f37245619ce8a73aec968fc",
+    "review.md": "2212358e688f2c903d07d0236fe9e636123ab8aaac0bcaeb861c1ff103649a41",
+    "source-after.json": "44d60143bc90b5cb2c535b5d19363de8b2e35b67eec53621b8f64367e334cc65",
+    "source-before.json": "44d60143bc90b5cb2c535b5d19363de8b2e35b67eec53621b8f64367e334cc65"
+  }
+}

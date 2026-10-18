@@ -198,3 +198,7 @@ No collection scheduler/store caller consumes this answer yet. Genuine collectio
 ## Genuine empty-collection quota RED — 2026-10-18
 
 At source980baabb, public root prefix reports genuinely consume4194304 bytes. Empty collection still succeeds instead of typed RUN_DATA_LIMIT. Nearby4194302 case succeeds but has no owner aggregate output (the expected logical +2 assertion is not reached). Corrected test invocation0/2,44.42 s wall/7.17 harness. Existing raw decoder rejects run_data_limit,0/1,24.70 wall. Initial private-import compile error retained separately. 1109 inputs unchanged in both respective pin pairs. See evidence/collection-empty-quota-20261018/manifest.json. No GREEN/native activation/.0Q acceptance claimed.
+
+## Q1 vocabulary preparation — 2026-10-18
+
+Closed internal RunDataLimit reason, exact run_data_limit codec/cause, domain failure restoration/finish and scope saga cause now exist. Native production explicitly refuses RuntimeNotIntegrated before transaction; this is not a deployed/complete reader bridge. Fresh five-file C1 None. Codec9/9 (12.91 s wall) includes the raw-decoder genuine RED now GREEN; existing collection reducer15/15, restore5/5 and scoped compensation29/29 (one8.99 s invocation) pass. Clippy11.79 s, fmt4.26 s, architecture0.44 s/24 crates pass;1109 source inputs unchanged. Evidence: evidence/collection-data-limit-vocabulary-20261018/manifest.json. New no-member/compensation tests, Q2+ readers/schema/evidence/producer, effective accounting, upgrade and .0Q acceptance remain pending.

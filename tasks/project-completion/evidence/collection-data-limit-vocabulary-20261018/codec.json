@@ -1,0 +1,17 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-infra-postgres",
+    "--lib",
+    "event_codec::tests",
+    "--",
+    "--nocapture"
+  ],
+  "exit_code": 0,
+  "seconds": 12.91,
+  "started_utc": "2026-10-18T18:17:02.853347+00:00",
+  "log": "codec.txt"
+}
