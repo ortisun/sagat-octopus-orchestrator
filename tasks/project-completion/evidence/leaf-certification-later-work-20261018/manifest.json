@@ -1,0 +1,143 @@
+{
+  "base": "ce60a328",
+  "scope": "B1b.2a.1d.3b.3 later complete/fail and READY cancel, flat Run orders only",
+  "commands": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "leaf_certification_native::later_work::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "log": "first.txt",
+      "exit_code": 0,
+      "seconds": 50.13
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "leaf_certification_native::later_work::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "log": "final.txt",
+      "exit_code": 0,
+      "seconds": 79.58
+    },
+    {
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "log": "clippy-final.txt",
+      "exit_code": 0,
+      "seconds": 14.94
+    },
+    {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "log": "fmt-final.txt",
+      "exit_code": 0,
+      "seconds": 4.33
+    },
+    {
+      "command": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "log": "architecture-final.txt",
+      "exit_code": 0,
+      "seconds": 0.69
+    },
+    {
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "log": "clippy.txt",
+      "exit_code": 0,
+      "seconds": 8.51
+    },
+    {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "log": "fmt.txt",
+      "exit_code": 0,
+      "seconds": 4.12
+    },
+    {
+      "command": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "log": "architecture.txt",
+      "exit_code": 0,
+      "seconds": 0.32
+    }
+  ],
+  "final_source": {
+    "tests/integration/workflow-primitives/leaf_certification_native.rs": "747ff6b9462888c145f4310b08b4db235e1a753160f4de59adf428d077cd384f",
+    "tests/integration/workflow-primitives/leaf_certification_later_work.rs": "e00184bf3cd342965923aeeb9574ab4b69c57e69c4f67d1952ca07991a5bad1c",
+    "tests/integration/workflow-primitives/leaf_certification_late_reports.rs": "4d4fba7f2e0e8647b220678890eba55c74095b704136cd71fc6a8d2d81f75e7e",
+    "crates/infra-postgres/src/leaf_certification.rs": "caae3491985e749d84e3bd736fd3362aa8687526966f0d2694358c44aa259cde"
+  },
+  "fresh_review_cycles": 2,
+  "external_cli": false,
+  "files": {
+    "architecture-final.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "clippy-final.txt": "b359c6c7c13ead0706968f124f17de13ee280d58c599dad0d49585604b9d8313",
+    "clippy.txt": "54d017203ae73a2de2876c221052e2a410345315d288b8c517d53b083e7db874",
+    "commands.json": "27e936f42da8d0f78d59db06c7caf47bf42302d808ef08669e69ae0e6e6a68b8",
+    "final.txt": "063edc1bf0232e2787efe94ab3f60f830b9ead1a0305da006e99a63022399d2b",
+    "first.txt": "ac06fa480bb32579e10aea8d6af7b77b20543e59aaf3965bec1c0c41e13bfc3c",
+    "fmt-final.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "gates.json": "f0660892e695a5348ddcc3bca94819719f7b5a6d72b25e5eb0fda83d0d9958f7",
+    "implementation.diff": "daf1293b389d9b96b634df3e2d5391d41eb0454a9bc1541958f43bc08d62c1e7",
+    "reproduce.md": "82cf83c9c945c174bbc2aa2f7e4e6ae5e12ee7eaccbcf2b642366cd326ebe56f",
+    "review.md": "b75d9cb13ef39506065e1d9e5c9e769753346e8daaa63882b27df0159917830c",
+    "source-final.json": "3ac2e530e76aff6fa4f836056ef396d46881e03bd0ba73816b74a091116d7672",
+    "source-first.json": "59ae9294fe6ef9d8a5a6fd735238bc70009e703fad0b29009dc07734c2365fe6"
+  }
+}

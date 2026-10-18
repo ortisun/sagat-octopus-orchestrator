@@ -107,6 +107,12 @@ races certification in both observed flat Run queue orders. Certification first 
 closure first makes the queued creation CAS stale. Fresh CAS certifies, and the original closure
 descriptor replays without changing the certified source. Evidence:
 evidence/leaf-certification-closure-20261018. This does not close other producer families.
+Actual later ordinary completion/failure and READY cancellation also race first certification in
+both observed flat Run queue directions; actual scheduler planning then reaches SUCCEEDED/FAILED/
+CANCELLED without altering the selected source or creating its saga obligations. Producer-first
+creation requires fresh CAS; canonical replay survives terminal later work. Evidence:
+evidence/leaf-certification-later-work-20261018. This excludes active-lease cancellation and does
+not establish other producers, chain membership or old-writer/C0 preservation.
 Actual dispatched-COMMIT response loss and fresh direct pool/cache/store reconstruction are
 covered in evidence/leaf-certification-commit-loss-20261018 for both confirmed backend outcomes.
 The original qualified Run and shared scheduler fence remain held while the client sees Unknown;

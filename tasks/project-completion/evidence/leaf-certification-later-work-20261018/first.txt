@@ -1,0 +1,9 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 31.47s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 1 test
+test leaf_certification_native::later_work::later_success_failure_and_ready_cancel_preserve_source_in_both_run_queue_orders ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 448 filtered out; finished in 16.41s
+

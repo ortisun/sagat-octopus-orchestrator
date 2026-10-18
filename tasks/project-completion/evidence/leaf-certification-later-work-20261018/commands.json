@@ -1,0 +1,76 @@
+[
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "leaf_certification_native::later_work::",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "log": "first.txt",
+    "exit_code": 0,
+    "seconds": 50.13
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "leaf_certification_native::later_work::",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "log": "final.txt",
+    "exit_code": 0,
+    "seconds": 79.58
+  },
+  {
+    "command": [
+      "cargo",
+      "clippy",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "log": "clippy-final.txt",
+    "exit_code": 0,
+    "seconds": 14.94
+  },
+  {
+    "command": [
+      "cargo",
+      "fmt",
+      "--all",
+      "--",
+      "--check"
+    ],
+    "log": "fmt-final.txt",
+    "exit_code": 0,
+    "seconds": 4.33
+  },
+  {
+    "command": [
+      "python3",
+      "scripts/check-architecture.py"
+    ],
+    "log": "architecture-final.txt",
+    "exit_code": 0,
+    "seconds": 0.69
+  }
+]
