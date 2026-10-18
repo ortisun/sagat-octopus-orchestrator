@@ -938,6 +938,22 @@ mod tests {
     }
 
     #[test]
+    fn raw_collection_data_limit_drain_decodes_without_a_fictitious_member() {
+        let detail = json!({"reason":"run_data_limit"});
+        let event = decode("collection.drain_started", Some("items"), &detail)
+            .expect("an entered empty collection can exceed the run-data limit without a member");
+        let encoded = encode(&event);
+        assert_eq!(encoded.event_type, "collection.drain_started");
+        assert_eq!(encoded.node.as_deref(), Some("items"));
+        assert_eq!(encoded.detail, detail);
+        let cause = event.cause().expect("typed boundary failure");
+        assert_eq!(
+            (cause.kind, cause.code.as_str()),
+            ("failure", "RUN_DATA_LIMIT")
+        );
+    }
+
+    #[test]
     fn switch_case_and_default_are_exact_codec_inverses() {
         for (selection, detail) in [
             (

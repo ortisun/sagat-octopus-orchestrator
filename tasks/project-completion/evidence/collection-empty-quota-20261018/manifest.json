@@ -1,0 +1,30 @@
+{
+  "status": "genuine RED; correction pending",
+  "source_base": "980baabb",
+  "distinct_tests": 3,
+  "passed": 0,
+  "expected_behavioral_failure_gates": [
+    "red-raw-codec.json",
+    "red-empty-boundaries-import-fixed.json"
+  ],
+  "initial_compile_failure": "red-empty-boundaries.json",
+  "frozen_inputs": 1109,
+  "sources_unchanged": true,
+  "product_implementation_changed": false,
+  "test_codec_only": true,
+  "files": {
+    "checkpoint.md": "13a59ce92c909587e1f3f03d6d7a468f320acea804f8208b03b3a24d6da03508",
+    "diagnosis.md": "cd75126b138e082ec1adcbe2cb54c120babdc6c84cf841430abe88b2ac496084",
+    "initial-source-after.json": "0c968f0e84e66906bc585ee6668fad115c3e28b7f8e26ee4d76d7bfaa19a622f",
+    "initial-source-before.json": "0c968f0e84e66906bc585ee6668fad115c3e28b7f8e26ee4d76d7bfaa19a622f",
+    "red-empty-boundaries-import-fixed.json": "7bca776928f737c17ce41d29aec80db71a9d4bec6c59b6a96bc5d7cafa28a079",
+    "red-empty-boundaries-import-fixed.txt": "57437a9d115b7a34af0b27a2e223767d7685095df692e4cb5adbf3d4b869d93a",
+    "red-empty-boundaries.json": "2e405e0cf66d4ea53b6e6dad8ed83e174d5b03e8377eca3cd11e6acf9e7512e3",
+    "red-empty-boundaries.txt": "69326ea841b0bf6439c992c773f67e0252d5e8ab327cc064597ff8bbe646035f",
+    "red-raw-codec.json": "04597ba59debeaedc684e4a7fe281af682a8770870c72a407d23e6d0f0c59986",
+    "red-raw-codec.txt": "bc89629ef091ba6e987bda835fe22ccdfcedd8f638b55d2a3a8c24ecca235299",
+    "reproduce.md": "ec8b49e216616b9b6e601a5abdaf57e10bc2db7605bc54cbe1d026a5d360d7d7",
+    "source-after.json": "e4ad1179b233875c3c7842839c807f85a7b0c2bfcad5d60f36d766950d3cce0b",
+    "source-before.json": "e4ad1179b233875c3c7842839c807f85a7b0c2bfcad5d60f36d766950d3cce0b"
+  }
+}

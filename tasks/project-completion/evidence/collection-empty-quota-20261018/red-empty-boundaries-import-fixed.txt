@@ -1,0 +1,28 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 35.07s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 2 tests
+test collection_empty_quota::empty_collection_aggregate_fits_with_exactly_two_bytes_remaining ... 
+thread 'collection_empty_quota::empty_collection_aggregate_fits_with_exactly_two_bytes_remaining' (121204889) panicked at tests/integration/workflow-primitives/collection_empty_quota.rs:351:5:
+assertion `left == right` failed: the collection owner retains the successful aggregate
+  left: Some([79, 83, 205, 161, 140, 43, 170, 12, 3, 84, 187, 95, 154, 62, 203, 229, 237, 18, 171, 77, 142, 17, 186, 135, 60, 47, 17, 22, 18, 2, 185, 69])
+ right: None
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test collection_empty_quota::empty_collection_aggregate_obeys_remaining_run_bytes ... 
+thread 'collection_empty_quota::empty_collection_aggregate_obeys_remaining_run_bytes' (121208548) panicked at tests/integration/workflow-primitives/collection_empty_quota.rs:193:5:
+assertion `left == right` failed: RED on the old finalizer: it incorrectly succeeds and retains [] after the prefix spent all 4 MiB
+  left: ("SUCCEEDED", None)
+ right: ("FAILED", Some("RUN_DATA_LIMIT"))
+FAILED
+
+failures:
+
+failures:
+    collection_empty_quota::empty_collection_aggregate_fits_with_exactly_two_bytes_remaining
+    collection_empty_quota::empty_collection_aggregate_obeys_remaining_run_bytes
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 505 filtered out; finished in 7.17s
+
+error: test failed, to rerun pass `-p sagat-tests --test integration_workflow_primitives`

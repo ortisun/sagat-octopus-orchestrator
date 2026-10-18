@@ -1,0 +1,19 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "integration_workflow_primitives",
+    "collection_empty_quota",
+    "--",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "exit_code": 101,
+  "seconds": 44.42,
+  "started_utc": "2026-10-18T18:13:59.216130+00:00",
+  "log": "red-empty-boundaries-import-fixed.txt"
+}

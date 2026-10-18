@@ -1,0 +1,3 @@
+## Genuine empty-collection quota RED — 2026-10-18
+
+At source980baabb, public root prefix reports genuinely consume4194304 bytes. Empty collection still succeeds instead of typed RUN_DATA_LIMIT. Nearby4194302 case succeeds but has no owner aggregate output (the expected logical +2 assertion is not reached). Corrected test invocation0/2,44.42 s wall/7.17 harness. Existing raw decoder rejects run_data_limit,0/1,24.70 wall. Initial private-import compile error retained separately. 1109 inputs unchanged in both respective pin pairs. See evidence/collection-empty-quota-20261018/manifest.json. No GREEN/native activation/.0Q acceptance claimed.

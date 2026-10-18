@@ -1,0 +1,29 @@
+   Compiling sqlx-core v0.9.0
+   Compiling hyper-rustls v0.27.10
+   Compiling reqwest v0.13.5
+   Compiling sqlx-postgres v0.9.0
+   Compiling sagat-telemetry v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/telemetry)
+   Compiling sagat-domain v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/domain)
+   Compiling sqlx-macros-core v0.9.0
+   Compiling sagat-application v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/application)
+   Compiling sqlx-macros v0.9.0
+   Compiling sqlx v0.9.0
+   Compiling sagat-infra-postgres v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-postgres)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 23.50s
+     Running unittests src/lib.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/sagat_infra_postgres-f451de1a7134e528)
+
+running 1 test
+
+thread 'event_codec::tests::raw_collection_data_limit_drain_decodes_without_a_fictitious_member' (121152497) panicked at crates/infra-postgres/src/event_codec.rs:944:14:
+an entered empty collection can exceed the run-data limit without a member
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test event_codec::tests::raw_collection_data_limit_drain_decodes_without_a_fictitious_member ... FAILED
+
+failures:
+
+failures:
+    event_codec::tests::raw_collection_data_limit_drain_decodes_without_a_fictitious_member
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p sagat-infra-postgres --lib`
