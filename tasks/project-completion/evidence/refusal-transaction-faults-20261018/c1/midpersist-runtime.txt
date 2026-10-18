@@ -1,0 +1,8 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.28s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 1 test
+test byte_ceilings::a_between_persist_fault_rolls_back_the_whole_refusal_and_same_lease_retries ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 533 filtered out; finished in 10.08s
+

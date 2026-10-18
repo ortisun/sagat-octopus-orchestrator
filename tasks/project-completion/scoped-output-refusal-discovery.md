@@ -63,3 +63,13 @@ and worker commits are not independent release candidates.
 This checkpoint does not close Q9/Q10. Genuine old-produced effective-over-limit discovery with
 full concurrency, report transaction faults/current-secret races, cold recovery/uncertain COMMIT
 and the remaining release gates still require their separately recorded acceptance.
+
+
+## Report/drain transaction-fault checkpoint — 2026-10-18
+
+Required acceptance 3/4 now has focused current-version [evidence](evidence/refusal-transaction-faults-20261018/README.md)
+for the post-root/pre-scoped journal failure and actual drain-outbox failure. The first rolls
+back the entire report; the second preserves the committed report and rolls back its drain.
+Same-key replay and normal retry/compensation pass, as do strict integration lint/fmt/architecture.
+This does not replace the remaining audit/telemetry points, current-secret/authority races,
+cold report recovery/unknown COMMIT, immutable-old known-success cases or rollout gates.

@@ -280,3 +280,15 @@ The obligation remains WAITING/OPERATOR/MANUAL_REVIEW until audited failed resol
 finishes COMPENSATION_FAILED truthfully. Final-source focused 1/1 in both invocations, strict
 Clippy/fmt/architecture; prior query-model revision passed full byte 23/23. Evidence:
 evidence/refused-output-worker-20261018. No provider, old-binary or OS restart guarantee.
+
+
+### Successful refusal report and drain fault boundaries — 2026-10-18
+
+Actual PostgreSQL barriers prove rollback after the root-only persist and before the first
+scoped journal insertion, then separately at the later drain outbox insertion. The former
+rolls back the whole report and permits the same key/lease to retry; the latter preserves
+the committed report/stop/ACK and rolls back only the drain. Both tests pass in default
+and runtime invocations (actual Flow sagat_app), with strict integration Clippy/fmt/architecture
+and 1122 matching source inputs. Normal retries drain and complete 17 actual engine compensation
+tasks. Evidence: `tasks/project-completion/evidence/refusal-transaction-faults-20261018/README.md`.
+No old binary, OS process, unknown-COMMIT or external-provider claim; canonical tasks remain open.

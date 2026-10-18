@@ -3317,3 +3317,15 @@ pass. Full byte 23/23 passed before the named SQL result-model-only lint correct
 See `tasks/project-completion/evidence/refused-output-worker-20261018/README.md`.
 This is current worker/engine behavior with fixture in-memory state, not external provider undo,
 old-process upgrade or canonical task closure.
+
+
+### Successful refusal report and drain fault boundaries — 2026-10-18
+
+Actual PostgreSQL barriers prove rollback after the root-only persist and before the first
+scoped journal insertion, then separately at the later drain outbox insertion. The former
+rolls back the whole report and permits the same key/lease to retry; the latter preserves
+the committed report/stop/ACK and rolls back only the drain. Both tests pass in default
+and runtime invocations (actual Flow sagat_app), with strict integration Clippy/fmt/architecture
+and 1122 matching source inputs. Normal retries drain and complete 17 actual engine compensation
+tasks. Evidence: `tasks/project-completion/evidence/refusal-transaction-faults-20261018/README.md`.
+No old binary, OS process, unknown-COMMIT or external-provider claim; canonical tasks remain open.

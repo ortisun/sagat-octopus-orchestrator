@@ -1,0 +1,19 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "integration_workflow_primitives",
+    "byte_ceilings::a_between_persist_fault_rolls_back_the_whole_refusal_and_same_lease_retries",
+    "--",
+    "--exact",
+    "--nocapture"
+  ],
+  "exit_code": 0,
+  "seconds": 66.96,
+  "started_utc": "2026-10-18T21:28:38.583282+00:00",
+  "log": "midpersist.txt"
+}

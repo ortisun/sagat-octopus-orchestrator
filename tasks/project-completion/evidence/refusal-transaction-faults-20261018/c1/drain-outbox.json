@@ -1,0 +1,19 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "integration_workflow_primitives",
+    "byte_ceilings::a_drain_outbox_fault_preserves_the_committed_report_and_one_retry_compensates",
+    "--",
+    "--exact",
+    "--nocapture"
+  ],
+  "exit_code": 0,
+  "seconds": 9.24,
+  "started_utc": "2026-10-18T21:29:49.580147+00:00",
+  "log": "drain-outbox.txt"
+}

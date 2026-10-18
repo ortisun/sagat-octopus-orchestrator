@@ -241,6 +241,64 @@ async fn remove_refusal_receipt_fault(pool: &sqlx::PgPool) {
     .expect("remove labelled refusal receipt fault");
 }
 
+async fn install_refusal_scoped_persist_fault(pool: &sqlx::PgPool, key: i64) {
+    let ddl = format!(
+        "CREATE FUNCTION scoped_refusal_persist_fault() RETURNS trigger LANGUAGE plpgsql AS $$ \
+         BEGIN \
+           PERFORM pg_advisory_xact_lock({key}); \
+           RAISE EXCEPTION 'test-only scoped output refusal between-persist abort' \
+             USING ERRCODE='23514',CONSTRAINT='scoped_refusal_between_persist_forced_abort'; \
+         END $$; \
+         CREATE TRIGGER scoped_refusal_persist_gate BEFORE INSERT ON run_events \
+         FOR EACH ROW WHEN (NEW.event_type='step.completed' AND NEW.node='reserve' \
+           AND NEW.instance_path_nodes=ARRAY['lines']::text[] \
+           AND NEW.instance_path_indices=ARRAY[16]::integer[]) \
+         EXECUTE FUNCTION scoped_refusal_persist_fault();"
+    );
+    sqlx::raw_sql(sqlx::AssertSqlSafe(ddl))
+        .execute(pool)
+        .await
+        .expect("install labelled between-persist refusal fault");
+}
+
+async fn remove_refusal_scoped_persist_fault(pool: &sqlx::PgPool) {
+    sqlx::raw_sql(
+        "DROP TRIGGER scoped_refusal_persist_gate ON run_events; \
+         DROP FUNCTION scoped_refusal_persist_fault();",
+    )
+    .execute(pool)
+    .await
+    .expect("remove labelled between-persist refusal fault");
+}
+
+async fn install_collection_drain_outbox_fault(pool: &sqlx::PgPool, key: i64) {
+    let ddl = format!(
+        "CREATE FUNCTION collection_drain_outbox_fault() RETURNS trigger LANGUAGE plpgsql AS $$ \
+         BEGIN \
+           PERFORM pg_advisory_xact_lock({key}); \
+           RAISE EXCEPTION 'test-only collection drain outbox abort' \
+             USING ERRCODE='23514',CONSTRAINT='collection_drain_outbox_forced_abort'; \
+         END $$; \
+         CREATE TRIGGER collection_drain_outbox_gate AFTER INSERT ON event_outbox \
+         FOR EACH ROW WHEN (NEW.event_type='collection.drain.started') \
+         EXECUTE FUNCTION collection_drain_outbox_fault();"
+    );
+    sqlx::raw_sql(sqlx::AssertSqlSafe(ddl))
+        .execute(pool)
+        .await
+        .expect("install labelled collection drain outbox fault");
+}
+
+async fn remove_collection_drain_outbox_fault(pool: &sqlx::PgPool) {
+    sqlx::raw_sql(
+        "DROP TRIGGER collection_drain_outbox_gate ON event_outbox; \
+         DROP FUNCTION collection_drain_outbox_fault();",
+    )
+    .execute(pool)
+    .await
+    .expect("remove labelled collection drain outbox fault");
+}
+
 async fn refusal_transaction_snapshot(flow: &Flow) -> Value {
     sqlx::query_scalar(
         "SELECT jsonb_build_object( \
@@ -309,6 +367,46 @@ async fn waiting_refusal_receipt(flow: &Flow, gate_pid: i32) -> i32 {
             .fetch_optional(&flow.api.db.pool)
             .await
             .expect("refusal receipt advisory wait witness")
+        },
+    )
+    .await
+}
+
+async fn waiting_refusal_scoped_persist(flow: &Flow, gate_pid: i32) -> i32 {
+    crate::support::eventually(
+        "actual refusal writer waits on the first scoped persist write",
+        || async {
+            sqlx::query_scalar::<_, i32>(
+                "SELECT pid FROM pg_stat_activity \
+                   WHERE datname=current_database() AND usename='sagat_app' \
+                     AND state='active' AND wait_event_type='Lock' \
+                     AND $1=ANY(pg_blocking_pids(pid)) \
+                     AND position('INSERT INTO run_events' in query)>0 LIMIT 1",
+            )
+            .bind(gate_pid)
+            .fetch_optional(&flow.api.db.pool)
+            .await
+            .expect("between-persist refusal advisory wait witness")
+        },
+    )
+    .await
+}
+
+async fn waiting_collection_drain_outbox(flow: &Flow, gate_pid: i32) -> i32 {
+    crate::support::eventually(
+        "actual collection drain writer waits on its outbox insertion",
+        || async {
+            sqlx::query_scalar::<_, i32>(
+                "SELECT pid FROM pg_stat_activity \
+                   WHERE datname=current_database() AND usename='sagat_app' \
+                     AND state='active' AND wait_event_type='Lock' \
+                     AND $1=ANY(pg_blocking_pids(pid)) \
+                     AND position('INSERT INTO event_outbox' in query)>0 LIMIT 1",
+            )
+            .bind(gate_pid)
+            .fetch_optional(&flow.api.db.pool)
+            .await
+            .expect("collection drain outbox advisory wait witness")
         },
     )
     .await
@@ -981,6 +1079,223 @@ mod refused_output_compensation {
         );
         flow.verify().await;
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_between_persist_fault_rolls_back_the_whole_refusal_and_same_lease_retries() {
+    let name = format!("refusal-midpersist-{}", uuid::Uuid::now_v7());
+    let (flow, task, output) = collection_at_seventeenth_member(&name, false).await;
+    let outboxes_before = run_outboxes(&flow).await;
+    let key = format!("between-persist-refusal-{}", uuid::Uuid::now_v7());
+    let before = refusal_transaction_snapshot(&flow).await;
+    let fault_key = positive_advisory_key();
+    install_refusal_scoped_persist_fault(&flow.api.db.pool, fault_key).await;
+    let mut gate = flow
+        .api
+        .db
+        .pool
+        .begin()
+        .await
+        .expect("owned between-persist refusal gate");
+    let gate_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *gate)
+        .await
+        .expect("between-persist refusal gate backend pid");
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(fault_key)
+        .execute(&mut *gate)
+        .await
+        .expect("hold between-persist refusal gate");
+    let (_fault_log_guard, fault_logs) = crate::support::logs::capture_at(tracing::Level::ERROR);
+
+    let reporting = flow.try_complete(&task, output.clone(), &key);
+    tokio::pin!(reporting);
+    let observe = async {
+        // The trigger is on the exact first scoped journal write. Reaching it proves the root-only
+        // persist ran first, while PostgreSQL still hides every uncommitted change from this reader.
+        let writer_pid = waiting_refusal_scoped_persist(&flow, gate_pid).await;
+        assert_ne!(writer_pid, gate_pid);
+        assert_eq!(
+            refusal_transaction_snapshot(&flow).await,
+            before,
+            "a second connection sees the old complete snapshot while the writer is between the root-only and scoped persists"
+        );
+        let still_blocked: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM pg_stat_activity \
+               WHERE pid=$1 AND state='active' AND wait_event_type='Lock' \
+                 AND $2=ANY(pg_blocking_pids(pid)) \
+                 AND position('INSERT INTO run_events' in query)>0)",
+        )
+        .bind(writer_pid)
+        .bind(gate_pid)
+        .fetch_one(&flow.api.db.pool)
+        .await
+        .expect("between-persist writer remains blocked after the complete observation");
+        gate.rollback()
+            .await
+            .expect("release only the owned between-persist refusal gate");
+        still_blocked
+    };
+    tokio::pin!(observe);
+    let (failed, blocked_through_observation) = tokio::join!(&mut reporting, &mut observe);
+    assert!(
+        blocked_through_observation,
+        "the actual scoped persist writer must remain blocked until observation releases the gate"
+    );
+    let failure = failed.expect_err("the between-persist fault returns no fabricated StepAck");
+    assert_eq!(failure.code(), tonic::Code::Internal);
+    assert_eq!(crate::support::worker::machine_code(&failure), "INTERNAL");
+    let fault_log = fault_logs.text();
+    assert!(
+        fault_log.contains("test-only scoped output refusal between-persist abort"),
+        "the public failure must come from the labelled scoped-persist trigger: {fault_log}"
+    );
+    assert!(
+        !fault_log.contains("statement timeout"),
+        "the report timed out before the labelled scoped-persist fault: {fault_log}"
+    );
+    assert_eq!(
+        refusal_transaction_snapshot(&flow).await,
+        before,
+        "the labelled between-persist failure rolls back the root stop and every scoped report effect"
+    );
+
+    remove_refusal_scoped_persist_fault(&flow.api.db.pool).await;
+    let accepted = flow
+        .try_complete(&task, output.clone(), &key)
+        .await
+        .expect("the identical public report and lease apply after the fault is removed");
+    assert!(!accepted.already_applied);
+    assert_eq!(accepted.step_status, "SUCCEEDED");
+    assert_eq!(accepted.run_status, "CANCELLING");
+    assert_successful_refusal(&flow, &task, &key, outboxes_before).await;
+    flow.verify().await;
+
+    let committed = refusal_transaction_snapshot(&flow).await;
+    let identity = refusal_identity(&flow, &key).await;
+    let replay = flow
+        .try_complete(&task, output, &key)
+        .await
+        .expect("the committed retry returns its original truthful ACK");
+    assert!(replay.already_applied);
+    assert_eq!(replay.command_id, accepted.command_id);
+    assert_eq!(replay.step_status, "SUCCEEDED");
+    assert_eq!(replay.run_status, "CANCELLING");
+    assert_eq!(refusal_identity(&flow, &key).await, identity);
+    assert_eq!(refusal_transaction_snapshot(&flow).await, committed);
+
+    drain_and_compensate_every_reservation(&flow).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_drain_outbox_fault_preserves_the_committed_report_and_one_retry_compensates() {
+    let name = format!("refusal-drain-{}", uuid::Uuid::now_v7());
+    let (flow, task, output) = collection_at_seventeenth_member(&name, false).await;
+    let outboxes_before = run_outboxes(&flow).await;
+    let key = format!("drain-outbox-refusal-{}", uuid::Uuid::now_v7());
+    let accepted = flow
+        .try_complete(&task, output.clone(), &key)
+        .await
+        .expect("commit the successful report before the drain fault");
+    assert!(!accepted.already_applied);
+    assert_eq!(accepted.step_status, "SUCCEEDED");
+    assert_eq!(accepted.run_status, "CANCELLING");
+    assert_successful_refusal(&flow, &task, &key, outboxes_before).await;
+    flow.verify().await;
+    let committed_report = refusal_transaction_snapshot(&flow).await;
+    let report_identity = refusal_identity(&flow, &key).await;
+
+    let fault_key = positive_advisory_key();
+    install_collection_drain_outbox_fault(&flow.api.db.pool, fault_key).await;
+    let mut gate = flow
+        .api
+        .db
+        .pool
+        .begin()
+        .await
+        .expect("owned collection drain outbox gate");
+    let gate_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *gate)
+        .await
+        .expect("collection drain outbox gate backend pid");
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(fault_key)
+        .execute(&mut *gate)
+        .await
+        .expect("hold collection drain outbox gate");
+    let (_fault_log_guard, fault_logs) = crate::support::logs::capture_at(tracing::Level::ERROR);
+
+    let draining = flow.scheduler.tick();
+    tokio::pin!(draining);
+    let observe = async {
+        let writer_pid = waiting_collection_drain_outbox(&flow, gate_pid).await;
+        assert_ne!(writer_pid, gate_pid);
+        assert_eq!(
+            refusal_transaction_snapshot(&flow).await,
+            committed_report,
+            "the committed report, stop and ACK remain exact while the actual drain outbox writer is blocked"
+        );
+        let still_blocked: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM pg_stat_activity \
+               WHERE pid=$1 AND state='active' AND wait_event_type='Lock' \
+                 AND $2=ANY(pg_blocking_pids(pid)) \
+                 AND position('INSERT INTO event_outbox' in query)>0)",
+        )
+        .bind(writer_pid)
+        .bind(gate_pid)
+        .fetch_one(&flow.api.db.pool)
+        .await
+        .expect("collection drain outbox writer remains blocked after observation");
+        gate.rollback()
+            .await
+            .expect("release only the owned collection drain outbox gate");
+        still_blocked
+    };
+    tokio::pin!(observe);
+    let (failed, blocked_through_observation) = tokio::join!(&mut draining, &mut observe);
+    assert!(
+        blocked_through_observation,
+        "the actual drain outbox writer must remain blocked until observation releases the gate"
+    );
+    assert_eq!(
+        failed.failed, 1,
+        "the labelled drain outbox fault is observed"
+    );
+    assert_eq!(
+        failed.collections_advanced, 0,
+        "the rejected outbox insertion cannot count a drain transition"
+    );
+    let fault_log = fault_logs.text();
+    assert!(
+        fault_log.contains("test-only collection drain outbox abort"),
+        "the scheduler failure must come from the labelled drain outbox trigger: {fault_log}"
+    );
+    assert!(
+        !fault_log.contains("statement timeout"),
+        "the drain timed out before the labelled outbox fault: {fault_log}"
+    );
+    assert_eq!(
+        refusal_transaction_snapshot(&flow).await,
+        committed_report,
+        "the outbox fault rolls back the entire drain and preserves the earlier report transaction"
+    );
+    assert_eq!(refusal_identity(&flow, &key).await, report_identity);
+    assert_successful_refusal(&flow, &task, &key, outboxes_before).await;
+    flow.verify().await;
+
+    let replay = flow
+        .try_complete(&task, output, &key)
+        .await
+        .expect("the original ACK remains replayable after the rejected drain");
+    assert!(replay.already_applied);
+    assert_eq!(replay.command_id, accepted.command_id);
+    assert_eq!(replay.step_status, "SUCCEEDED");
+    assert_eq!(replay.run_status, "CANCELLING");
+    assert_eq!(refusal_identity(&flow, &key).await, report_identity);
+    assert_eq!(refusal_transaction_snapshot(&flow).await, committed_report);
+
+    remove_collection_drain_outbox_fault(&flow.api.db.pool).await;
+    drain_and_compensate_every_reservation(&flow).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
