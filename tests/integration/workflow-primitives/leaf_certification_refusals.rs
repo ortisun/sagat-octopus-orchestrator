@@ -3,7 +3,7 @@
 use super::*;
 use sagat_domain::{execution::RunId, identity::TenantId};
 
-async fn closed(
+pub(super) async fn closed(
     name: &str,
 ) -> (
     Flow,

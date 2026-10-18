@@ -1,0 +1,142 @@
+{
+  "base": "bd00cb33",
+  "scope": "B1b.2a.1d.3c.1 actual uncertainCOMMIT + cold direct pool/cache/store reconstruction, noOSrestart",
+  "commands": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "leaf_certification_native::commit_loss::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 101,
+      "seconds": 81.58,
+      "log": "first.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "leaf_certification_native::commit_loss::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 45.22,
+      "log": "green.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 101,
+      "seconds": 15.15,
+      "log": "clippy.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "commit_loss::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 79.49,
+      "log": "shared-proxy.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "seconds": 17.11,
+      "log": "clippy-final.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "seconds": 4.5,
+      "log": "fmt-final.txt"
+    },
+    {
+      "command": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "exit_code": 0,
+      "seconds": 0.4,
+      "log": "architecture-final.txt"
+    }
+  ],
+  "files": {
+    "architecture-final.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "clippy-final.txt": "3905179ab94d088bc00455593b7dce2ea2444be8db2b4149da49c50aedabd965",
+    "clippy.txt": "13bbfe7c5947301e599001ad881d3c9172cbcf452a515a132bdc6bd0cb76ed0f",
+    "commands.json": "ccfc767f4197c4816d341aeee4a82005ca251efb098db40d56e854d252ab8e8f",
+    "first.txt": "09a8bf466f66d6affb9320620872fce43c0b1023a04a03e72dd604a6a1166fdb",
+    "fmt-final.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "green.txt": "b5499bea2cee5b822b2add32c99f98ba82b61391dc3cb038d22d17f81f7de987",
+    "implementation.diff": "11ea4f0ab5b0267d0e7f4a9597102828b579933f09e7702ec39cd969674c3374",
+    "reproduce.md": "7958b2d1766a43ffe2ebaba70701ac4eca121b8b2bbea8a20ac199796cc589e0",
+    "review.md": "bcb7d43959e9c9519ac3617b3f724b32ff72fe1c041f1dcca5832a2cbfbfc52b",
+    "shared-proxy.txt": "3e0926a502a9cb61edd28c2bd62b479fa58d3f17e73e91e63b2b855aed888f75",
+    "source-final.json": "625f8861ef3de7c4480d3733cb62234904d8132e029052bce7beebbdc4bf3c2e",
+    "source-first.json": "b33e07b4a73d452d76b206bfb7bb5b27d4c376f827af00d37fe9faee01a02f88",
+    "source-shared-proxy.json": "2eaf0ae5c7074eace633fd6afea0d8189aa2cf6215b7a373585f5f7bd50080a0"
+  },
+  "final_source": {
+    "tests/integration/workflow-primitives/leaf_certification_native.rs": "fd82bad95211e9bb0561cea32990d6d584638e4cfa1727c3be418e6044787d1a",
+    "tests/integration/workflow-primitives/leaf_certification_refusals.rs": "de9834e3c92dc1f2d329fa91291c15498db0074393097d3b584be164159805d8",
+    "tests/integration/workflow-primitives/leaf_certification_commit_loss.rs": "39eeface137d9f5377bbc6b140d539bcb35dd5715f8f4083b6af2416e2b0b975",
+    "tests/integration/workflow-primitives/capacity_finish.rs": "4f3a44e0e7c8a58707801d6c71f2ca0ae46f4ca178143cf2fd362840fcf8bb97",
+    "tests/integration/workflow-primitives/capacity_finish_proxy.rs": "98838f211342a30320300786c474e46f0cd87005a9d5674e1787d07a5b662b23",
+    "crates/infra-postgres/src/leaf_certification.rs": "caae3491985e749d84e3bd736fd3362aa8687526966f0d2694358c44aa259cde",
+    "crates/infra-postgres/src/execution.rs": "fccef861b6c07b963a22c8e15d1f01401fc063870dd77d1ed414638cc186f22f"
+  },
+  "fresh_review_cycles": 3,
+  "external_cli": false
+}

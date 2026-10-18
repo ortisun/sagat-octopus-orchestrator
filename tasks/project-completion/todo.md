@@ -102,7 +102,7 @@ not a SQL port or own-member authority. See evidence/capacity-header-restore-202
   actual original-Run lock queue orders; no full producer-preservation acceptance follows.
 - [ ] B1b.2a.1d.3c: Test real uncertain-COMMIT outcomes, fresh same-identity reconciliation and
   reconstruction after restart; absence requires fresh CAS and complete source proof.
-- [ ] B1b.2a.1d.3c.1: Lose actual dispatched COMMIT replies for committed/aborted outcomes and
+- [x] B1b.2a.1d.3c.1: Lose actual dispatched COMMIT replies for committed/aborted outcomes and
   prove unresolved original-Run fencing and fresh direct reconstruction without assumed rollback.
 - [ ] B1b.2a.1d.3c.2: Kill and restart an actual native reconciliation process against retained
   identity/current authority; distinguish it from a control-plane or execution-engine restart.
@@ -126,6 +126,13 @@ directions for already stale completion/failure versus first certification. Sour
 fingerprints unchanged, exactly1fact/audit and original-record replay.1fresh review, targeted
 Clippy/fmt/architecture passed. No chain-member or other producer proof follows. See
 evidence/leaf-certification-late-reports-20261018.
+
+Unknown-COMMIT unit: actual leaf commit and23514abort replies lost, retained Run/fence strength and
+same-identity wait observed, explicit server resolution followed by new pool/cache/store and fresh
+revision/authority discovery; exact1fact/audit and unchanged source/run/journal. Both shared proxy
+consumers passed2/2, targeted Clippy/fmt/architecture passed, third fresh review found no issue.
+Object reconstruction only; native reconciliation-process restart remains open. See
+evidence/leaf-certification-commit-loss-20261018.
 - [ ] B1b.2b: Review scoped binding/fingerprint/receipt/retention extension and its actual queries.
 - [ ] B1b.2c: Review nested/child relationship closure and remaining quiescence/transition authority.
 

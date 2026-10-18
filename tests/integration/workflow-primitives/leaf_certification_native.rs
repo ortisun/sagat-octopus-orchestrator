@@ -20,6 +20,9 @@ use sqlx::Row;
 use std::{sync::Arc, time::Duration};
 use uuid::Uuid;
 
+#[path = "leaf_certification_commit_loss.rs"]
+mod commit_loss;
+use crate::capacity_finish::commit_proxy;
 #[path = "leaf_certification_late_reports.rs"]
 mod late_reports;
 #[path = "leaf_certification_refusals.rs"]

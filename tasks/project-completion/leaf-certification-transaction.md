@@ -102,6 +102,10 @@ One bounded late-report unit is implemented: new-key stale completion/failure ve
 certification in both observed flat original-Run lock queue directions. It does not prove an
 in-flight successful writer, chain-member source, closure or other producer families. Evidence:
 evidence/leaf-certification-late-reports-20261018.
+Actual dispatched-COMMIT response loss and fresh direct pool/cache/store reconstruction are
+covered in evidence/leaf-certification-commit-loss-20261018 for both confirmed backend outcomes.
+The original qualified Run and shared scheduler fence remain held while the client sees Unknown;
+cancellation of a blocked reconciler proves no original rollback. This is not process restart.
 No source UPDATE immutability, old-writer/C0, scoped Finish or nesting acceptance follows.
 
 Fresh Astra/xhigh cycle1 found that row count did not bound steps.activity bytes; explicit SQL

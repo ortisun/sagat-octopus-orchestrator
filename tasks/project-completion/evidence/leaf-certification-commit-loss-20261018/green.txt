@@ -1,0 +1,11 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 36.85s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 1 test
+test leaf_certification_native::commit_loss::lost_leaf_commit_reconciles_actual_commit_and_abort_with_cold_same_identity_store ... leaf COMMIT scenario: Committed
+leaf COMMIT scenario: Aborted23514
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 444 filtered out; finished in 5.88s
+

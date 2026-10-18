@@ -27,12 +27,12 @@ const COMMIT_SENT: u8 = 2;
 const MAX_FRAME: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum CommitResolution {
+pub(crate) enum CommitResolution {
     Committed,
     Aborted23514,
 }
 
-pub(super) struct CommitAckLossProxy {
+pub(crate) struct CommitAckLossProxy {
     pub pool: PgPool,
     state: Arc<AtomicU8>,
     sent: Option<oneshot::Receiver<()>>,
