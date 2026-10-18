@@ -1,7 +1,8 @@
-# Dormant scoped Finish schema extension — candidate
+# Dormant scoped Finish schema extension
 
 Refs:T014-014..017/040; local B1b.2b.2. Dependency: reviewed scoped-leaf-finish-binding.md.
-Status: reviewed bounded storage contract only, before a new additive migration. No executable scoped writer,
+Status: dormant schema implemented in migration20261212000000 with30actual PostgreSQL tests.
+Conditional downgrade evidence remains a separate bounded unit. No executable scoped writer,
 certificate consumption, caller, creation/activation, release permission or nested authority.
 
 ## Discriminated identity
@@ -92,3 +93,22 @@ Separate downgrade increment must prove ChildRoot-only down/up preserves data, a
 scoped rows block, and an actual held writer is observed behind lock-before-inspection barriers.
 No sleep-only lock oracle. Schema-only implementation does not close actual scoped port, native
 canonical source read, receipt fingerprint, truthful audit/hint, caller intent, C0 or B1 authority.
+
+## Executed schema increment — 2026-10-18
+
+The new migration pair, classification and five schema tests implement this contract. The complete
+capacity Finish regression passed30/30 under sagat_app in75.28s (harness39.41s) on PostgreSQL16.15.
+Before migration, the initial five tests all failed with42703; the first schema snapshot passed5/5.
+Subsequent bounded test reviews strengthened independent nullable fields, qualified flat Run and
+receipt binding, exact effective20-column grant, ACTIVE identity and timestamp-only FINISHED
+immutability. Cross-group/tenant receipt probes and both grammar endpoints now execute successfully.
+The cycle3 destination fixture correction uses a valid empty RETIRED group.
+
+A preceding regression attempt passed13 then failed PostgreSQL startup (SSLRequest0x48); its
+16subsequent shared-mutex failures are retained separately. The successful run used a dedicated
+held test server and unique database per World. No production server/configuration was changed.
+Classification completeness, runtime SQL privilege audit and execution-plane retention gates all
+passed against the same SQL/catalog. Source hashes and all logs are retained under
+`evidence/scoped-finish-schema-20261018`. No native scoped source consumption, release INSERT,
+caller, C0 or nesting acceptance follows. The conditional down SQL still needs its dedicated
+legacy/native and held-writer verification before the parent binding unit closes.

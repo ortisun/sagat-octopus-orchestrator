@@ -1041,3 +1041,6 @@ mod races;
 
 #[path = "capacity_finish_observations.rs"]
 mod observations;
+
+#[path = "capacity_scoped_binding.rs"]
+mod scoped_binding;

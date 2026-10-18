@@ -519,3 +519,11 @@ ordinary activity-chain body with one to eight activities/return in a frozen roo
 This is definition metadata only, with owner/body-qualified IDs and no persisted version/run or
 settlement authority. Matching pinned source facts, immutable certification storage and actual
 producer race/restart evidence remain prerequisites before any scoped Finish.
+
+## Dormant scoped Finish metadata status — 2026-10-18
+
+The fixed OrdinaryLeafV1 capacity member and receipt schema now retains a qualified original Run,
+root owner and iteration index, with closed ChildRoot/ScopedPath variants. The extension preserves
+the existing native ChildRoot writer and denies the new scoped INSERT columns to sagat_app.
+This is dormant storage metadata only; native scoped source consumption, conditional downgrade
+verification, production intent/permissions and broader nested execution remain separately gated.

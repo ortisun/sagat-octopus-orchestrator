@@ -1,0 +1,115 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 56.08s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 30 tests
+test capacity_finish::active_holder_fk_is_deferred_and_abort_preserves_both_rows ... ok
+test capacity_finish::barriers::audit_outbox_receipt_and_deferred_commit_failures_roll_back_all_effects ... ok
+test capacity_finish::barriers::group_busy_consumes_transaction_and_releases_own_chain_and_run ... ok
+test capacity_finish::barriers::own_chain_wait_precedes_run_lock_and_serializes_duplicate_commands ... ok
+test capacity_finish::barriers::postwait_expiry_refuses_first_application_and_receipt_replay ... ok
+test capacity_finish::commit_loss::unknown_commit_reconciles_actual_commit_and_abort_without_inventing_a_new_key ... ok
+test capacity_finish::continued_history_never_finishes_logical_member_even_after_successor_final ... ok
+test capacity_finish::contradictory_final_outcome_refuses_finish_and_root_binding_grants_no_authority ... ok
+test capacity_finish::counters_identity_and_tenant_namespace_bindings_are_enforced ... ok
+test capacity_finish::current_child_final_finishes_once_without_rewriting_execution ... ok
+test capacity_finish::downgrade_waits_for_writer_before_deciding_whether_storage_is_empty ... ok
+test capacity_finish::empty_schema_reverses_but_retained_tombstones_refuse_downgrade ... ok
+test capacity_finish::exhausted_sql_revision_leaves_no_partial_finish ... ok
+test capacity_finish::finishing_selected_child_preserves_other_members_and_historical_receipt ... 
+thread '<unnamed>' (108540833) panicked at tests/integration/workflow-primitives/../../support/mod.rs:161:27:
+PostgreSQL never became queryable: encountered unexpected or invalid data: unexpected response from SSLRequest: 0x48 (sqlx_postgres::connection::tls:95)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'capacity_finish::finishing_selected_child_preserves_other_members_and_historical_receipt' (108540832) panicked at tests/integration/workflow-primitives/../../support/mod.rs:94:14:
+server thread: Any { .. }
+FAILED
+test capacity_finish::historical_holder_receipt_survives_later_holder_finish ... 
+thread 'capacity_finish::historical_holder_receipt_survives_later_holder_finish' (108590775) panicked at tests/integration/workflow-primitives/../../support/mod.rs:83:34:
+server lock: PoisonError { .. }
+FAILED
+test capacity_finish::native_finish_rejects_live_wrong_scope_stale_fence_and_conflicting_replay ... 
+thread 'capacity_finish::native_finish_rejects_live_wrong_scope_stale_fence_and_conflicting_replay' (108590776) panicked at tests/integration/workflow-primitives/../../support/mod.rs:83:34:
+server lock: PoisonError { .. }
+FAILED
+test capacity_finish::native_fixture_reaches_current_child_final_through_real_runtime_writers ... 
+thread 'capacity_finish::native_fixture_reaches_current_child_final_through_real_runtime_writers' (108590777) panicked at tests/integration/workflow-primitives/../../support/mod.rs:83:34:
+server lock: PoisonError { .. }
+FAILED
+test capacity_finish::observations::filtered_finish_span_cannot_overwrite_its_callers_outcome_or_status ... 
+thread 'capacity_finish::observations::filtered_finish_span_cannot_overwrite_its_callers_outcome_or_status' (108590778) panicked at tests/integration/workflow-primitives/../../support/mod.rs:83:34:
+server lock: PoisonError { .. }
+FAILED
+test capacity_finish::observations::returned_outcomes_export_closed_spans_and_only_confirmed_first_commits_count ... 
+thread 'capacity_finish::observations::returned_outcomes_export_closed_spans_and_only_confirmed_first_commits_count' (108590779) panicked at tests/integration/workflow-primitives/../../support/mod.rs:83:34:
+server lock: PoisonError { .. }
+FAILED
+test capacity_finish::races::committed_handoff_overtakes_discovered_old_owner_without_forwarding_finish ... 
+thread 'capacity_finish::races::committed_handoff_overtakes_discovered_old_owner_without_forwarding_finish' (108590780) panicked at tests/integration/workflow-primitives/../../support/mod.rs:83:34:
+server lock: PoisonError { .. }
+FAILED
+test capacity_finish::races::same_tenant_members_in_two_namespaces_keep_exact_binding_and_receipt_identity ... 
+thread 'capacity_finish::races::same_tenant_members_in_two_namespaces_keep_exact_binding_and_receipt_identity' (108590781) panicked at tests/integration/workflow-primitives/../../support/mod.rs:83:34:
+server lock: PoisonError { .. }
+FAILED
+test capacity_finish::runtime_has_only_selected_columns_and_receipt_append_privileges ... 
+thread 'capacity_finish::runtime_has_only_selected_columns_and_receipt_append_privileges' (108590782) panicked at tests/integration/workflow-primitives/../../support/mod.rs:83:34:
+server lock: PoisonError { .. }
+FAILED
+test capacity_finish::scoped_binding::active_scoped_identity_and_finished_retention_use_always_guards ... 
+thread 'capacity_finish::scoped_binding::active_scoped_identity_and_finished_retention_use_always_guards' (108590783) panicked at tests/integration/workflow-primitives/../../support/mod.rs:83:34:
+server lock: PoisonError { .. }
+FAILED
+test capacity_finish::scoped_binding::receipt_operation_revision_and_member_keys_remain_global_across_kinds ... 
+thread 'capacity_finish::scoped_binding::receipt_operation_revision_and_member_keys_remain_global_across_kinds' (108590784) panicked at tests/integration/workflow-primitives/../../support/mod.rs:83:34:
+server lock: PoisonError { .. }
+FAILED
+test capacity_finish::scoped_binding::runtime_insert_columns_are_exactly_legacy_and_scoped_release_stays_closed ... 
+thread 'capacity_finish::scoped_binding::runtime_insert_columns_are_exactly_legacy_and_scoped_release_stays_closed' (108590786) panicked at tests/integration/workflow-primitives/../../support/mod.rs:83:34:
+server lock: PoisonError { .. }
+FAILED
+test capacity_finish::scoped_binding::scoped_member_and_receipt_bind_to_a_qualified_flat_run_beside_child_root ... 
+thread 'capacity_finish::scoped_binding::scoped_member_and_receipt_bind_to_a_qualified_flat_run_beside_child_root' (108590787) panicked at tests/integration/workflow-primitives/../../support/mod.rs:83:34:
+server lock: PoisonError { .. }
+FAILED
+test capacity_finish::scoped_binding::variants_bounds_qualified_run_and_exact_receipt_binding_are_closed ... 
+thread 'capacity_finish::scoped_binding::variants_bounds_qualified_run_and_exact_receipt_binding_are_closed' (108590788) panicked at tests/integration/workflow-primitives/../../support/mod.rs:83:34:
+server lock: PoisonError { .. }
+FAILED
+test capacity_finish::tombstones_and_receipts_survive_owner_mutation_attempts ... 
+thread 'capacity_finish::tombstones_and_receipts_survive_owner_mutation_attempts' (108590789) panicked at tests/integration/workflow-primitives/../../support/mod.rs:83:34:
+server lock: PoisonError { .. }
+FAILED
+test capacity_finish::vacant_nonholder_receipt_keeps_epoch_and_fixed_fingerprint_bounds ... 
+thread 'capacity_finish::vacant_nonholder_receipt_keeps_epoch_and_fixed_fingerprint_bounds' (108590790) panicked at tests/integration/workflow-primitives/../../support/mod.rs:83:34:
+server lock: PoisonError { .. }
+FAILED
+test capacity_finish::valid_owner_fixture_precedes_capacity_constraint_probes ... 
+thread 'capacity_finish::valid_owner_fixture_precedes_capacity_constraint_probes' (108590791) panicked at tests/integration/workflow-primitives/../../support/mod.rs:83:34:
+server lock: PoisonError { .. }
+FAILED
+
+failures:
+
+failures:
+    capacity_finish::finishing_selected_child_preserves_other_members_and_historical_receipt
+    capacity_finish::historical_holder_receipt_survives_later_holder_finish
+    capacity_finish::native_finish_rejects_live_wrong_scope_stale_fence_and_conflicting_replay
+    capacity_finish::native_fixture_reaches_current_child_final_through_real_runtime_writers
+    capacity_finish::observations::filtered_finish_span_cannot_overwrite_its_callers_outcome_or_status
+    capacity_finish::observations::returned_outcomes_export_closed_spans_and_only_confirmed_first_commits_count
+    capacity_finish::races::committed_handoff_overtakes_discovered_old_owner_without_forwarding_finish
+    capacity_finish::races::same_tenant_members_in_two_namespaces_keep_exact_binding_and_receipt_identity
+    capacity_finish::runtime_has_only_selected_columns_and_receipt_append_privileges
+    capacity_finish::scoped_binding::active_scoped_identity_and_finished_retention_use_always_guards
+    capacity_finish::scoped_binding::receipt_operation_revision_and_member_keys_remain_global_across_kinds
+    capacity_finish::scoped_binding::runtime_insert_columns_are_exactly_legacy_and_scoped_release_stays_closed
+    capacity_finish::scoped_binding::scoped_member_and_receipt_bind_to_a_qualified_flat_run_beside_child_root
+    capacity_finish::scoped_binding::variants_bounds_qualified_run_and_exact_receipt_binding_are_closed
+    capacity_finish::tombstones_and_receipts_survive_owner_mutation_attempts
+    capacity_finish::vacant_nonholder_receipt_keeps_epoch_and_fixed_fingerprint_bounds
+    capacity_finish::valid_owner_fixture_precedes_capacity_constraint_probes
+
+test result: FAILED. 13 passed; 17 failed; 0 ignored; 0 measured; 428 filtered out; finished in 98.73s
+
+error: test failed, to rerun pass `-p sagat-tests --test integration_workflow_primitives`

@@ -488,3 +488,12 @@ adapter, INSERT runtime grant, production caller, scoped Finish or nested execut
 B1b.2a.1c.3b adds the dedicated noncollapsing collection.leaf_success_certified audit action and
 leaf_collection_success resource type. Domain audit8/8 checks vocabulary/dedupe policy only;
 first-record/atomic audit/replay/source correctness still requires the native adapter and tests.
+
+## Dormant scoped Finish schema increment — 2026-10-18
+
+The fixed OrdinaryLeafV1 member/receipt binding is now represented by additive migration
+20261212000000. Total discriminated CHECKs and exact tenant/group/path FKs preserve ChildRoot
+metadata, original20-column runtime INSERT, immutable identity and permanent tombstones. Actual
+capacity Finish regression passes30tests, including five new schema probes. Conditional downgrade
+execution is a separate bounded unit. This introduces no scoped native writer or production caller;
+B1/C0/general nested publication and canonical runtime gates remain open.

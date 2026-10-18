@@ -1,0 +1,21 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "integration_workflow_primitives",
+    "capacity_finish::",
+    "--",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "exit_code": 101,
+  "seconds": 156.93,
+  "log": "regression-infra-failure.txt",
+  "runtime_role": true,
+  "sources_unchanged": true,
+  "failure": "PostgreSQL readiness SSLRequest 0x48, then poisoned shared-server mutex;13 passed/17 failed, scoped probes never entered"
+}

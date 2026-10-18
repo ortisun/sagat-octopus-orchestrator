@@ -1,0 +1,56 @@
+[
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_security_multitenancy",
+      "manifest_covers_every_variable_size_column",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "seconds": 25.59,
+    "log": "classification.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_platform_foundation",
+      "every_statement_the_stores_issue_is_within_the_runtime_roles_privileges",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "seconds": 26.06,
+    "log": "runtime-sql-audit.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_platform_foundation",
+      "each_append_only_table_of_the_execution_plane_is_guarded_too",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "seconds": 21.49,
+    "log": "least-privilege.txt"
+  }
+]

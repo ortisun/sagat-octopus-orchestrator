@@ -1,0 +1,222 @@
+{
+  "scope": "B1b.2b.3 dormant scoped Finish binding schema/classification/tests; no source consumer, scoped INSERT grant, production caller or nested acceptance",
+  "red": {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "capacity_finish::scoped_binding::",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 101,
+    "seconds": 72.79,
+    "log": "red.txt"
+  },
+  "first_schema": {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "capacity_finish::scoped_binding::",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "seconds": 51.79,
+    "log": "first.txt"
+  },
+  "full_native_regression": {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "capacity_finish::",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "seconds": 75.28,
+    "log": "final.txt",
+    "runtime_role": true,
+    "held_postgresql": "16.15 dedicated local testcontainer; unique database per World",
+    "sources_unchanged": true,
+    "tests_passed": 30,
+    "tests_failed": 0
+  },
+  "final_gates": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "capacity_finish::scoped_binding::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 38.32,
+      "log": "accepted-scoped.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "seconds": 8.78,
+      "log": "clippy.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "seconds": 4.1,
+      "log": "fmt.txt"
+    },
+    {
+      "command": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "exit_code": 0,
+      "seconds": 0.35,
+      "log": "architecture.txt"
+    }
+  ],
+  "metadata_gates": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_security_multitenancy",
+        "manifest_covers_every_variable_size_column",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 25.59,
+      "log": "classification.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_platform_foundation",
+        "every_statement_the_stores_issue_is_within_the_runtime_roles_privileges",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 26.06,
+      "log": "runtime-sql-audit.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_platform_foundation",
+        "each_append_only_table_of_the_execution_plane_is_guarded_too",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 21.49,
+      "log": "least-privilege.txt"
+    }
+  ],
+  "source_delta_after_native_regression": "Only two local SQL result tuple type aliases for Clippy; all five scoped tests rerun successfully afterward. SQL/catalog/parent/stores unchanged.",
+  "retained_failures": [
+    "regression-infra-failure-command.json",
+    "clippy-initial.txt"
+  ],
+  "review": "SQL one clean bounded Astra review; partitioned schema-test cycles1..3 reconciled direct fixture/oracle findings; no fourth protocol review or external CLI",
+  "pending": [
+    "Dedicated conditional downgrade/native replay/held-writer evidence",
+    "Scoped application/native source consumption/fingerprint/audit/hint",
+    "B1/C0/production caller/release INSERT/nesting"
+  ],
+  "files": {
+    "accepted-scoped.txt": "d77efa6f130f00a9e7c619aa7b8569838d037c33826b25090215de7c87ac2df0",
+    "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "classification-before.sha256": "0cde389bb421399e87edaea218a77026be0a818928ff1c3aef42976c132f7a6e",
+    "classification.txt": "24a72061140ca28d2658c74452711747e35e60ef90134912824bbccb111f65fb",
+    "clippy-initial.txt": "781d4fe55ed6aa8c1a2b8aafa92b3cc902731b106ac02051b6137536188d6da6",
+    "clippy.txt": "71dd0480c8e22ba3c8cd10d9b6f52c1418a2a21ee97c7cf0dc22de44f6b8abd8",
+    "final-command.json": "df0263e1e92a16a43f733acad95f8d0d2932f39e20bda17be265a29c76e87de3",
+    "final.txt": "da294d7ad71cdfbb18eb75f73f9658d75d9ca1cf760ae5f17bd437d9a0d05227",
+    "first-command.json": "9a14c9598e815b83ee0e07ffeebc7c609a03a8ebc1a5b02c89a1c917f3baae11",
+    "first.txt": "0dc3670d3827c0b098a71062555a2a0cff98aa42898022ff2df8f190a210e8fe",
+    "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "gates-initial.json": "01750cb5b0b6fb15a7aa17c5e4324de8073ec5e15af5cf39b7eb578519dc834c",
+    "gates.json": "60befd496af6f2dd7ff4eaa3a277239cad7b7ce73d6bc72b46574e74ad23ffca",
+    "least-privilege.txt": "b726af624fa364b91ba9e427bbf467388a99aebae68207c2502641c20bee536f",
+    "metadata-gates.json": "1e5424def1a820b0f08eab61ce18d0ef1fcf53a13cc0fec00e01effc97d635fe",
+    "parent-before.sha256": "7be70591b77df5f47fe049c43d0492f00bae5653b7a56ff6a5df162bd9114e10",
+    "red-command.json": "0b36afa8a59c33cd3a40c02d71b7ec44d1fbfffd5dd863fb9ef87e46796b047e",
+    "red-sources.json": "ace3d34fd9f268d9fe7eb4f61ca87e1130e0a3b83e51e50cc1af33401749bb5f",
+    "red.txt": "b689370a709c067f83ca5f76d88e9c74b0c9ad0316576d3f77eaea6346bf0311",
+    "regression-infra-failure-command.json": "b02316224a46907dc97ff4a4bfd73d900503e4d3b92f0009b5d3540796b3b13f",
+    "regression-infra-failure.txt": "6940827e627faec5ae26c91a9f23e1233bc4d5edef832166f8f7d0b082647917",
+    "review-tests-c1.md": "fdb9daaf5c3598920b1e13eb67ca2cee6bffd674205d833c00a7f016b8ea4250",
+    "review-tests-c2-c3.md": "fc8129fa55a228332ae3b89da8caa6ffd49017d046f546f7094dc374986f4b51",
+    "runtime-sql-audit.txt": "294a156f8b7dca4834f4ca26dd1863bf3f10d52b4aa0059118ff69a3872e090d",
+    "source-accepted-after.json": "232bd685d958efcc0444904af1f33af30980047638dd32e53e000436ffa5a3d0",
+    "source-accepted-before.json": "232bd685d958efcc0444904af1f33af30980047638dd32e53e000436ffa5a3d0",
+    "source-final-after.json": "f0f8d835967ac2abf73591ea00d36285af212d24f2bcb1885731b20af3bbebe4",
+    "source-final-before.json": "f0f8d835967ac2abf73591ea00d36285af212d24f2bcb1885731b20af3bbebe4",
+    "source-first.json": "bcb94a12bdda2d932adedce81126e352249632a25cadd28d4bfbbbbb901aadf3",
+    "source-metadata-gates.json": "26e39e4bc03a5a4bc835bd5d53a948bab1e64d22554187820413ff1f23b1c3fb",
+    "source-regression-infra-failure-after.json": "cfe6199f881b190c34243f0da811893fd461f33929660b580917f25b8ab9aa5f",
+    "source-regression-infra-failure-before.json": "cfe6199f881b190c34243f0da811893fd461f33929660b580917f25b8ab9aa5f",
+    "sql-review.md": "750bc157802da25a2e3c5145461fcd6910713f430832fe65706075cca12889f6"
+  }
+}

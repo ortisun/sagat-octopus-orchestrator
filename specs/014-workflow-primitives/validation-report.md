@@ -2884,3 +2884,28 @@ publish;32approval principals author successfully and prior33 negatives remain.
 One fresh review per fixture unit found no actionable issue. No new Rust/runner/server logic,
 blessing or unchanged lint suite rerun. Full60 integration and other canonical runtime gates stay
 open. Evidence:`tasks/project-completion/evidence/sdk-public-gaps-20261018/manifest.json`.
+
+## Dormant scoped Finish schema execution — 2026-10-18
+
+Refs:T014-014..017/040; local B1b.2b.3. The initial five schema probes were RED with42703 before
+migration; the first implementation snapshot passed5/5. Final complete capacity Finish regression
+passed30/30 in75.28s (harness39.41s), including the strengthened flat-Run, tenant/group/namespace,
+complete nullable variants, grammar/index endpoints, group-wide keys, ACTIVE identity, FINISHED
+timestamp retention and exact20-column effective runtime INSERT tests. Native ChildRoot
+apply/replay, contention, uncertain-COMMIT, independent members, handoff and observations remain
+successful through sagat_app. Metadata completeness1/1, actual runtime SQL privilege audit1/1
+and append-only/least-privilege1/1 passed against unchanged SQL/catalog.
+
+A previous full regression passed13 then failed PostgreSQL initialization with SSLRequest0x48,
+followed by16 poisoned shared-server-mutex failures. That complete failure log is preserved;
+the successful repeat used a dedicated held PostgreSQL16.15 with unique per-World databases.
+Bounded SQL review had no issue; test review cycles1..3 produced concrete oracle/fixture fixes.
+No fourth protocol review or external CLI. Conditional down/up and lock-before-inspection tests
+remain a separate unit; no scoped writer, source consumption, INSERT grant, C0 or caller follows.
+Evidence:`tasks/project-completion/evidence/scoped-finish-schema-20261018/manifest.json`.
+
+Final schema gates: strict targeted Clippy passed8.78s, format4.10s and24-crate architecture0.35s.
+Initial Clippy flagged two complex test tuple annotations; local type aliases preserve the same
+SQL/result values. After that type-only change all five scoped tests passed again in38.32s
+(harness4.03s), with unchanged frozen final sources through the gates. No full native rerun is
+claimed for this type-only annotation delta; its complete30/30 result is retained separately.

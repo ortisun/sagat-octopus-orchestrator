@@ -1,0 +1,21 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "integration_workflow_primitives",
+    "capacity_finish::",
+    "--",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "exit_code": 0,
+  "seconds": 75.28,
+  "log": "final.txt",
+  "runtime_role": true,
+  "held_postgresql": "16.15 dedicated local testcontainer; unique database per World",
+  "sources_unchanged": true
+}

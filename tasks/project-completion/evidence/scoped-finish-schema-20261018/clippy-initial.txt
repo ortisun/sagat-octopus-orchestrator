@@ -1,0 +1,38 @@
+   Compiling sagat-infra-postgres v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-postgres)
+    Checking sagat-control-plane v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/control-plane)
+    Checking sagat-sandbox-runner v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/sandbox-runner)
+    Checking sagat-execution-engine v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/execution-engine)
+    Checking sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+error: very complex type used. Consider factoring parts into `type` definitions
+   --> tests/integration/workflow-primitives/capacity_scoped_binding.rs:371:18
+    |
+371 |       let members: Vec<(
+    |  __________________^
+372 | |         String,
+373 | |         Option<Uuid>,
+374 | |         Option<Uuid>,
+...   |
+377 | |         String,
+378 | |     )> = sqlx::query_as(
+    | |______^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#type_complexity
+    = note: `-D clippy::type-complexity` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::type_complexity)]`
+
+error: very complex type used. Consider factoring parts into `type` definitions
+   --> tests/integration/workflow-primitives/capacity_scoped_binding.rs:408:18
+    |
+408 |       let receipt: (
+    |  __________________^
+409 | |         String,
+410 | |         Option<Uuid>,
+411 | |         Option<Uuid>,
+...   |
+416 | |         i64,
+417 | |     ) = sqlx::query_as(
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#type_complexity
+
+error: could not compile `sagat-tests` (test "integration_workflow_primitives") due to 2 previous errors

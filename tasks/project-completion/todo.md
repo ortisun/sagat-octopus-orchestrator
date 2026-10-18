@@ -158,8 +158,10 @@ See evidence/leaf-certification-process-20261018. Other producer/observation/rel
   and retention/lock proposal only; no schema/query/port or executable source consumption.
 - [x] B1b.2b.2: Review dormant discriminated member/receipt schema, exact keys/FKs, original-column
   ChildRoot INSERT compatibility, scoped INSERT denial and conditional downgrade requirements only.
-- [ ] B1b.2b.3: Implement dormant scoped binding schema/classification and actual constraints,
-  privileges/immutability/legacy native regression; verify downgrade in a separate bounded unit.
+- [x] B1b.2b.3: Implement dormant scoped binding schema/classification and actual constraints,
+  privileges/immutability/legacy native regression;30actual PostgreSQL tests pass.
+- [ ] B1b.2b.4: Prove conditional extension downgrade with actual native legacy down/up replay,
+  ACTIVE/FINISHED scoped retention refusal and observed original-Run relation lock barrier.
 - [ ] B1b.2c: Review nested/child relationship closure and remaining quiescence/transition authority.
 
 ## B2 dormant Finish increments

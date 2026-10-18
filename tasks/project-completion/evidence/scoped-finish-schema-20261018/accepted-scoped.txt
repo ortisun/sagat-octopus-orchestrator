@@ -1,0 +1,13 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 32.17s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 5 tests
+test capacity_finish::scoped_binding::active_scoped_identity_and_finished_retention_use_always_guards ... ok
+test capacity_finish::scoped_binding::receipt_operation_revision_and_member_keys_remain_global_across_kinds ... ok
+test capacity_finish::scoped_binding::runtime_insert_columns_are_exactly_legacy_and_scoped_release_stays_closed ... ok
+test capacity_finish::scoped_binding::scoped_member_and_receipt_bind_to_a_qualified_flat_run_beside_child_root ... ok
+test capacity_finish::scoped_binding::variants_bounds_qualified_run_and_exact_receipt_binding_are_closed ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 453 filtered out; finished in 4.03s
+

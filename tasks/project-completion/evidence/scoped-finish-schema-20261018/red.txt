@@ -1,0 +1,39 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 01s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 5 tests
+test capacity_finish::scoped_binding::receipt_operation_revision_and_member_keys_remain_global_across_kinds ... 
+thread 'capacity_finish::scoped_binding::receipt_operation_revision_and_member_keys_remain_global_across_kinds' (107621130) panicked at tests/integration/workflow-primitives/capacity_scoped_binding.rs:66:6:
+valid retained fixed scoped member: Database(PgDatabaseError { severity: Error, code: "42703", message: "column \"original_run_id\" of relation \"capacity_group_members\" does not exist", detail: None, hint: None, position: Some(Original(99)), where: None, schema: None, table: None, column: None, data_type: None, constraint: None, file: Some("parse_target.c"), line: Some(1066), routine: Some("checkInsertTargets") })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test capacity_finish::scoped_binding::runtime_keeps_original_receipt_insert_but_cannot_release_scoped_or_certificate_rows ... 
+thread 'capacity_finish::scoped_binding::runtime_keeps_original_receipt_insert_but_cannot_release_scoped_or_certificate_rows' (107622859) panicked at tests/integration/workflow-primitives/capacity_scoped_binding.rs:749:6:
+effective receipt privileges: Database(PgDatabaseError { severity: Error, code: "42703", message: "column \"member_kind\" of relation \"capacity_group_finish_receipts\" does not exist", detail: None, hint: None, position: None, where: None, schema: None, table: None, column: None, data_type: None, constraint: None, file: Some("acl.c"), line: Some(2891), routine: Some("convert_column_name") })
+FAILED
+test capacity_finish::scoped_binding::scoped_identity_and_receipt_retention_are_enforced_by_always_guards ... 
+thread 'capacity_finish::scoped_binding::scoped_identity_and_receipt_retention_are_enforced_by_always_guards' (107623628) panicked at tests/integration/workflow-primitives/capacity_scoped_binding.rs:66:6:
+valid retained fixed scoped member: Database(PgDatabaseError { severity: Error, code: "42703", message: "column \"original_run_id\" of relation \"capacity_group_members\" does not exist", detail: None, hint: None, position: Some(Original(99)), where: None, schema: None, table: None, column: None, data_type: None, constraint: None, file: Some("parse_target.c"), line: Some(1066), routine: Some("checkInsertTargets") })
+FAILED
+test capacity_finish::scoped_binding::scoped_member_and_receipt_bind_to_the_qualified_original_run_beside_child_root ... 
+thread 'capacity_finish::scoped_binding::scoped_member_and_receipt_bind_to_the_qualified_original_run_beside_child_root' (107624824) panicked at tests/integration/workflow-primitives/capacity_scoped_binding.rs:66:6:
+valid retained fixed scoped member: Database(PgDatabaseError { severity: Error, code: "42703", message: "column \"original_run_id\" of relation \"capacity_group_members\" does not exist", detail: None, hint: None, position: Some(Original(99)), where: None, schema: None, table: None, column: None, data_type: None, constraint: None, file: Some("parse_target.c"), line: Some(1066), routine: Some("checkInsertTargets") })
+FAILED
+test capacity_finish::scoped_binding::total_variants_bounds_run_fk_and_exact_path_binding_refuse_named_failures ... 
+thread 'capacity_finish::scoped_binding::total_variants_bounds_run_fk_and_exact_path_binding_refuse_named_failures' (107626588) panicked at tests/integration/workflow-primitives/capacity_scoped_binding.rs:66:6:
+valid retained fixed scoped member: Database(PgDatabaseError { severity: Error, code: "42703", message: "column \"original_run_id\" of relation \"capacity_group_members\" does not exist", detail: None, hint: None, position: Some(Original(99)), where: None, schema: None, table: None, column: None, data_type: None, constraint: None, file: Some("parse_target.c"), line: Some(1066), routine: Some("checkInsertTargets") })
+FAILED
+
+failures:
+
+failures:
+    capacity_finish::scoped_binding::receipt_operation_revision_and_member_keys_remain_global_across_kinds
+    capacity_finish::scoped_binding::runtime_keeps_original_receipt_insert_but_cannot_release_scoped_or_certificate_rows
+    capacity_finish::scoped_binding::scoped_identity_and_receipt_retention_are_enforced_by_always_guards
+    capacity_finish::scoped_binding::scoped_member_and_receipt_bind_to_the_qualified_original_run_beside_child_root
+    capacity_finish::scoped_binding::total_variants_bounds_run_fk_and_exact_path_binding_refuse_named_failures
+
+test result: FAILED. 0 passed; 5 failed; 0 ignored; 0 measured; 453 filtered out; finished in 9.17s
+
+error: test failed, to rerun pass `-p sagat-tests --test integration_workflow_primitives`

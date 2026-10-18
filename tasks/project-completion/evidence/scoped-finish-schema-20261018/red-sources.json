@@ -1,0 +1,4 @@
+{
+  "tests/integration/workflow-primitives/capacity_scoped_binding.rs": "88da44eb4fb9fe2bd09a9876791dd28ea46fbb17ed4a60c725d1b5762f23bb85",
+  "tests/integration/workflow-primitives/capacity_finish.rs": "6db1cff3c5d13239642d69e525f414bea410df1a0227cdce13c8c8874998e6c8"
+}
