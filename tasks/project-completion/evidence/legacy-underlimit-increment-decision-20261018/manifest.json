@@ -1,0 +1,7 @@
+{
+  "design_baseline": "d30f5a74320bdb3f1c250277ac9e2698585007bd",
+  "implementation_source_baseline": "5ad34370",
+  "plan_sha256": "9b52480cbdfcfd0517baf7d257914fe34583abe04d2d790373f14227f78de9fc",
+  "required_findings": "None",
+  "execution_claim": false
+}
