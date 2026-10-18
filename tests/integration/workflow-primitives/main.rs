@@ -31,6 +31,7 @@ mod collection_data_limit_readers;
 mod collection_data_limit_schema;
 mod collection_empty_quota;
 mod collection_end_result;
+mod collection_finish_atomic;
 mod collection_pipeline;
 mod collection_restore;
 mod collection_sources;

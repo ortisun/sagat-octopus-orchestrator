@@ -783,6 +783,31 @@ impl CollectionFinish {
         }
     }
 
+    /// Reconstructs a source-bound Finish from already retained aggregate and checkpoint digests.
+    ///
+    /// This constructor carries no aggregate body. The store remains responsible for matching the
+    /// supplied ordered sources to the locked checkpoint rows; the metadata is replay identity,
+    /// not authority to replace those rows. An empty source list is retained as `Some([])`, while
+    /// [`Self::new`] keeps the legacy unbound representation of `None`.
+    #[must_use]
+    pub const fn from_checkpoint_digests(
+        transition: CollectionTransition,
+        scope_id: CollectionScopeId,
+        result_digest: Digest,
+        source_digests: Vec<(u32, Digest)>,
+        outbox_id: Uuid,
+    ) -> Self {
+        Self {
+            transition,
+            scope_id,
+            result_digest,
+            outbox_id,
+            result_content: None,
+            source_digests: Some(source_digests),
+            end_answer: None,
+        }
+    }
+
     #[must_use]
     pub fn from_result(
         transition: CollectionTransition,

@@ -75,6 +75,7 @@ async fn start_public_parent_with_policy_and_document(
     label: &str,
     cancel_policy: CancelPolicy,
     child_document: fn(&str) -> Value,
+    parent_end_output_expr: Option<&str>,
 ) -> (RunId, RunId) {
     let suffix = Uuid::now_v7();
     let child_name = format!("ocs-c-{label}-{suffix}");
@@ -90,6 +91,10 @@ async fn start_public_parent_with_policy_and_document(
         CancelPolicy::Detach => "detach",
         CancelPolicy::RequestCancel => "request_cancel",
     });
+    let mut parent_end = json!({"id": "done", "type": "end"});
+    if let Some(expression) = parent_end_output_expr {
+        parent_end["outputExpr"] = json!(expression);
+    }
     let parent_document = json!({
         "apiVersion": "sagat-octopus-orchestrator.io/v1",
         "kind": "Workflow",
@@ -97,7 +102,7 @@ async fn start_public_parent_with_policy_and_document(
         "entrypoint": "kid",
         "nodes": [
             child_node,
-            {"id": "done", "type": "end"}
+            parent_end
         ]
     });
     let parent_workflow =
@@ -310,10 +315,11 @@ async fn assert_later_task_pending(f: &Flow, later: &TaskLease) {
     );
 }
 
-pub(super) async fn ordinary_child_source_boundary_with_document(
+async fn ordinary_child_source_boundary_with_parent_end(
     label: &str,
     cancel_policy: CancelPolicy,
     child_document: fn(&str) -> Value,
+    parent_end_output_expr: Option<&str>,
 ) -> OrdinaryChildSourceBoundary {
     let bootstrap_name = format!("ocs-b-{label}-{}", Uuid::now_v7());
     let mut flow = Flow::start(
@@ -331,9 +337,14 @@ pub(super) async fn ordinary_child_source_boundary_with_document(
     flow.scheduler = flow
         .scheduler
         .with_children(DefinitionCache::new(Arc::new(JsonIrCodec), 8));
-    let (parent, child) =
-        start_public_parent_with_policy_and_document(&flow, label, cancel_policy, child_document)
-            .await;
+    let (parent, child) = start_public_parent_with_policy_and_document(
+        &flow,
+        label,
+        cancel_policy,
+        child_document,
+        parent_end_output_expr,
+    )
+    .await;
     flow.drive().await;
     assert_ordinary_child_context(&flow, parent, child, cancel_policy).await;
 
@@ -387,6 +398,14 @@ pub(super) async fn ordinary_child_source_boundary_with_document(
         later,
         source,
     }
+}
+
+pub(super) async fn ordinary_child_source_boundary_with_document(
+    label: &str,
+    cancel_policy: CancelPolicy,
+    child_document: fn(&str) -> Value,
+) -> OrdinaryChildSourceBoundary {
+    ordinary_child_source_boundary_with_parent_end(label, cancel_policy, child_document, None).await
 }
 
 pub(super) async fn ordinary_child_source_boundary_with_policy(
@@ -1244,3 +1263,6 @@ mod detached_progress;
 
 #[path = "leaf_certification_child_own_cancel.rs"]
 mod own_cancel;
+
+#[path = "leaf_certification_child_result.rs"]
+mod result;
