@@ -1,0 +1,18 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 38.84s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 10 tests
+test leaf_certification_native::native_certification_compares_far_future_scheduler_expiry_on_the_server ... ok
+test leaf_certification_native::native_certification_guard_failure_redacts_driver_diagnostics ... ok
+test leaf_certification_native::native_certification_is_metadata_only_and_replays_after_later_scope_failure ... ok
+test leaf_certification_native::native_certification_refuses_unrepresentable_canonical_time ... ok
+test leaf_certification_native::refusals::compensating_definition_is_not_an_ordinary_leaf_source ... ok
+test leaf_certification_native::refusals::complete_local_step_set_and_bounded_metadata_are_required ... ok
+test leaf_certification_native::refusals::current_authority_precedes_canonical_replay_and_fresh_owner_keeps_original_record ... ok
+test leaf_certification_native::refusals::journal_reference_and_checkpoint_digest_must_match_actual_retained_evidence ... ok
+test leaf_certification_native::refusals::original_qualified_identity_and_creation_cas_refuse_without_metadata_writes ... ok
+test leaf_certification_native::refusals::outstanding_reservation_refuses_and_creation_cas_precedes_source_corruption ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 433 filtered out; finished in 39.46s
+

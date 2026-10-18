@@ -1,6 +1,7 @@
 //! Dormant immutable source-certification port, fixed ordinary-leaf V1 only.
 //!
-//! No source writer or production caller is implemented. One exact identity is the canonical
+//! A dormant PostgreSQL writer is verified separately; no production caller is enabled. One exact
+//! identity is the canonical
 //! receipt. Current authority precedes replay; creation CAS applies only on a receipt miss.
 //! Cancellation/uncertain COMMIT requires fresh same-identity reconciliation, never assumed rollback.
 //! Storage must prove the pinned source facts and preserve receipt/source retention before use.
@@ -194,7 +195,7 @@ impl std::fmt::Debug for LeafCollectionSuccessError {
     }
 }
 
-/// No implementation is supplied here. A future adapter must follow the reviewed exact guard,
+/// Adapters must follow the reviewed exact guard,
 /// authority/replay/CAS/source-proof/commit order and atomic canonical-record/audit contract.
 pub trait LeafCollectionSuccessStore: Send + Sync {
     fn certify_leaf_collection_success(

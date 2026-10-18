@@ -94,6 +94,16 @@ not a SQL port or own-member authority. See evidence/capacity-header-restore-202
   write tests with disposable test-only INSERT grant; no released INSERT or caller.
 - [ ] B1b.2a.1d.3: Prove every actual producer's preservation barriers, bounded failures/recovery,
   uncertain-COMMIT/restart and closed observations before permitting release INSERT.
+- [x] B1b.2a.1d.3a: Test bounded source contradictions/missing evidence, tenant/namespace binding,
+  creation CAS and current authority before replay; owner corruption fixtures are refusal only.
+- [ ] B1b.2a.1d.3b: Prove preservation against actual late reports, closure, later work/cancel,
+  saga planning and ambient writers with both transaction orders where applicable.
+- [ ] B1b.2a.1d.3b.1: Race new-key stale completion/failure against first certification in both
+  actual original-Run lock queue orders; no full producer-preservation acceptance follows.
+- [ ] B1b.2a.1d.3c: Test real uncertain-COMMIT outcomes, fresh same-identity reconciliation and
+  reconstruction after restart; absence requires fresh CAS and complete source proof.
+- [ ] B1b.2a.1d.3d: Add closed observations and actual export/count/redaction evidence, then
+  consider a separate released INSERT migration only after all source-writer gates pass.
 
 First native certifier increment: actual public HTTP/gRPC source creation, before-closure refusal,
 audit/fact rollback/retry, metadata-only replay after later scope failure, redacted guard errors and
@@ -101,6 +111,11 @@ strict canonical time decoding.4tests passed in default and runtime modes; share
 25/25, runtime SQL/trigger privilege audit and strict workspace Clippy/fmt/architecture passed.
 Driver review3cycles and source proof review1cycle reached no remaining bounded finding; actual
 producer races/recovery/observations remain open. See evidence/leaf-certification-native-20261018.
+
+Source refusals:6tests including schema-valid owner corruption cases, exact typed errors and
+unchanged run/journal/source/metadata witnesses passed; targeted integration Clippy/fmt/architecture
+passed.3fresh review cycles corrected test oracles and ended without remaining bounded findings.
+See evidence/leaf-certification-refusals-20261018. Production certifier/privileges remain unchanged.
 - [ ] B1b.2b: Review scoped binding/fingerprint/receipt/retention extension and its actual queries.
 - [ ] B1b.2c: Review nested/child relationship closure and remaining quiescence/transition authority.
 

@@ -93,8 +93,10 @@ CAS and complete source proof. Retained sources/identity obey the already implem
 The first native increment tests actual HTTP/gRPC source creation, before-closure refusal,
 metadata-only audit/record atomicity and replay while a later scope is active/failed. Explicit
 owner GRANT only in disposable native tests keeps the released schema SELECT-only. These tests
-are not sufficient producer preservation/recovery acceptance. Actual bounded contradiction/
-missing/refusal/rollback, every producer's both-order barrier, real unknown-COMMIT/reconciliation/
+are not sufficient producer preservation/recovery acceptance. Additional bounded source refusal,
+identity/CAS/current-authority and run/journal nonmutation evidence is recorded in
+evidence/leaf-certification-refusals-20261018. Owner corruption fixtures do not prove producer
+reachability. Every producer's both-order barrier, real unknown-COMMIT/reconciliation/
 restart and closed observations remain required before release INSERT or a production caller.
 No source UPDATE immutability, old-writer/C0, scoped Finish or nesting acceptance follows.
 

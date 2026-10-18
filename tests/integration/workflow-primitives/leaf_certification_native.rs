@@ -20,6 +20,9 @@ use sqlx::Row;
 use std::{sync::Arc, time::Duration};
 use uuid::Uuid;
 
+#[path = "leaf_certification_refusals.rs"]
+mod refusals;
+
 fn document(name: &str) -> Value {
     let mut d = collection_document(
         name,
@@ -72,7 +75,7 @@ async fn command(f: &Flow) -> CertifyLeafCollectionSuccess {
 
 async fn selected_sources(f: &Flow) -> String {
     // Full selected-source fingerprint is a test oracle, never a production certification query.
-    sqlx::query_scalar("SELECT md5(jsonb_build_object('scope',(SELECT to_jsonb(s) FROM iteration_scopes s WHERE tenant_id=$1 AND run_id=$2 AND owner_node='lines'),'iteration',(SELECT to_jsonb(i) FROM collection_iterations i JOIN iteration_scopes s USING(tenant_id,run_id,scope_id) WHERE i.tenant_id=$1 AND i.run_id=$2 AND s.owner_node='lines'),'checkpoint',(SELECT to_jsonb(c) FROM iteration_checkpoints c JOIN iteration_scopes s USING(tenant_id,run_id,scope_id) WHERE c.tenant_id=$1 AND c.run_id=$2 AND s.owner_node='lines'),'steps',(SELECT jsonb_agg(to_jsonb(t) ORDER BY node) FROM steps t WHERE tenant_id=$1 AND run_id=$2 AND instance_path_nodes=ARRAY['lines']::text[] AND instance_path_indices=ARRAY[0]::integer[]))::text)")
+    sqlx::query_scalar("SELECT md5(jsonb_build_object('scope',(SELECT to_jsonb(s) FROM iteration_scopes s WHERE tenant_id=$1 AND run_id=$2 AND owner_node='lines'),'iteration',(SELECT to_jsonb(i) FROM collection_iterations i JOIN iteration_scopes s USING(tenant_id,run_id,scope_id) WHERE i.tenant_id=$1 AND i.run_id=$2 AND s.owner_node='lines'),'checkpoint',(SELECT to_jsonb(c) FROM iteration_checkpoints c JOIN iteration_scopes s USING(tenant_id,run_id,scope_id) WHERE c.tenant_id=$1 AND c.run_id=$2 AND s.owner_node='lines'),'owner',(SELECT to_jsonb(t) FROM steps t WHERE tenant_id=$1 AND run_id=$2 AND node='lines' AND instance_path_nodes='{}' AND instance_path_indices='{}'),'saga',(SELECT to_jsonb(s) FROM scope_sagas s WHERE tenant_id=$1 AND run_id=$2 AND owner_node='lines' AND owner_path_nodes='{}' AND owner_path_indices='{}'),'saga_entries',(SELECT jsonb_agg(to_jsonb(e) ORDER BY to_jsonb(e)::text) FROM scope_saga_entries e WHERE tenant_id=$1 AND run_id=$2 AND owner_node='lines' AND owner_path_nodes='{}' AND owner_path_indices='{}' AND iteration_index=0),'steps',(SELECT jsonb_agg(to_jsonb(t) ORDER BY node) FROM steps t WHERE tenant_id=$1 AND run_id=$2 AND instance_path_nodes=ARRAY['lines']::text[] AND instance_path_indices=ARRAY[0]::integer[]))::text)")
         .bind(f.tenant.as_uuid()).bind(f.run.as_uuid()).fetch_one(&f.api.db.pool).await.expect("selected source oracle")
 }
 
