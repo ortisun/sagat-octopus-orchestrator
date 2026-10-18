@@ -335,6 +335,8 @@ sampling the database clock, then renews in the same transaction only if still l
 that expires during an unchanged-row wait returns the existing unauthenticated outcome without
 changing expiry, leases, run version, journal or outbox. Fresh registration remains supported.
 This is post-lock freshness, not continuous validity through commit; TTL/wire policy is unchanged.
-The separate full/path claim-room and managed-database session checks remain pending B0 units.
+Full/path claim-room checks now share a transaction-typed post-lock clock check: expired
+authority supplies zero room without renewal, retaining the guard through count/claim commit.
+The managed-database session check remains a pending B0 unit.
 Runtime-role public-poll RED/GREEN and exact source/commands are retained under
 `tasks/project-completion/evidence/session-renewal-postwait-20261018/`. No canonical task closes.

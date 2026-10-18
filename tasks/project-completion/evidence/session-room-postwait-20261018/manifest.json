@@ -1,0 +1,234 @@
+{
+  "source_base": "875ff0861dc1530a6214fea41aa256c3c59229b3",
+  "recorded_utc": "2026-10-18T06:10:35.242003+00:00",
+  "scope": "Full/exact-path session capacity authority after unchanged row wait",
+  "commands": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "session_room_post_wait_",
+        "--",
+        "--nocapture",
+        "--test-threads=3"
+      ],
+      "exit_code": 101,
+      "seconds": 57.27,
+      "log": "red.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "session_room_post_wait_",
+        "--",
+        "--nocapture",
+        "--test-threads=3"
+      ],
+      "exit_code": 0,
+      "seconds": 51.64,
+      "log": "green.txt"
+    }
+  ],
+  "regression_commands": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "scoped_worker::",
+        "--",
+        "--test-threads=3"
+      ],
+      "exit_code": 0,
+      "seconds": 40.04,
+      "log": "scoped-worker.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "bounded_fences::",
+        "--",
+        "--test-threads=3"
+      ],
+      "exit_code": 0,
+      "seconds": 38.45,
+      "log": "bounded-fences.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_security_multitenancy",
+        "--",
+        "--test-threads=3"
+      ],
+      "exit_code": 0,
+      "seconds": 113.62,
+      "log": "security-all.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "seconds": 113.29,
+      "log": "clippy.txt"
+    }
+  ],
+  "gates": [
+    {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "seconds": 4.35,
+      "log": "fmt.txt"
+    },
+    {
+      "command": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "exit_code": 0,
+      "seconds": 0.45,
+      "log": "architecture.txt"
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit_code": 0,
+      "seconds": 0.04,
+      "log": "diff-check.txt"
+    }
+  ],
+  "results": {
+    "red.txt": [
+      {
+        "passed": 0,
+        "failed": 2,
+        "ignored": 0,
+        "seconds": 5.58
+      }
+    ],
+    "green.txt": [
+      {
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 7.02
+      }
+    ],
+    "scoped-worker.txt": [
+      {
+        "passed": 18,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 15.62
+      }
+    ],
+    "bounded-fences.txt": [
+      {
+        "passed": 10,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 14.04
+      }
+    ],
+    "security-all.txt": [
+      {
+        "passed": 126,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 85.39
+      }
+    ]
+  },
+  "review": {
+    "cycles": 2,
+    "model": "gpt-6-astra",
+    "reasoning": "xhigh",
+    "external_cli": false,
+    "final": "no concrete scoped defects; corrected prompt root/scoped prefix; reviewers ran no tests"
+  },
+  "limits": [
+    "Actual native capacity RED0/2 returned8 afterexpiry, not public lease acceptance",
+    "Actual knownblocker sagat_app wait, unchanged tuple; DBclock expiry",
+    "Post-lock sample, not continuously live until commit",
+    "Managed database session SHARE remains pending",
+    "No all-workspace/SDK58/Compose/advisory/resource/group gate or checkbox closure"
+  ],
+  "source_sha256": {
+    ".gitattributes": "2b0a81b217d31576ca6b738283d886e0d4b5611788805f10b3acd34c7b6d32a2",
+    "crates/infra-postgres/src/execution.rs": "d2b15ee29cc08087cb8307b75223f4d8323d86895f4403a66e7bf3c82c54369e",
+    "crates/infra-postgres/src/execution/path.rs": "012044db467dc12d378889c889bcc197dbe56c204f790016325057573d2716d7",
+    "docs/architecture/worker-runtime-protocol.md": "5845821d8356fff3767b5aa92f6c5b27176b387d71736b5af983d0d84bfeaca9",
+    "docs/traceability.md": "d2ca0f5d8ee8efee288976212c024d6992a74afdf459a7d3ea2b7028fb410b9d",
+    "specs/009-security-multitenancy/plan.md": "8dec74cce99e710986764bc7c677d92d9d479d49c1131833a827e03ed55ea3fd",
+    "specs/009-security-multitenancy/spec.md": "914029295baa7646b4527d0accfae42bb97acfc92af321ae8be1100dba5be4b1",
+    "specs/014-workflow-primitives/plan.md": "ad4a3e2ea1ee18d7ae407334301f750bf4fb6eaaa0863d651bafae78a672cc3e",
+    "specs/014-workflow-primitives/spec.md": "f50ac52ddad6541be83dc9c06cabbc0fe83b184f15942c828c3677cf4375bd2e",
+    "specs/014-workflow-primitives/validation-report.md": "cceeab4ee43fa16d644e03706963ca1dd26ac55a4fa8d00096e07c64d5d1975f",
+    "tasks/project-completion/capacity-lock-inventory.md": "a3c870b1233efbfdc589ab5e63c66a4c3ebcb83633b254fa7b98e9d1f92f19b4",
+    "tasks/project-completion/integration-notes.md": "4d62ce8c0bbaa9d64b62770fcde2d2019282ee5ae305f14f7f1f745073259446",
+    "tests/integration/workflow-primitives/bounded_fences.rs": "750b2de312afc7fbe75d64455a083677cea9dfc6337a37e6e11971eee8f87259"
+  },
+  "evidence_sha256": {
+    "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "bounded-fences.txt": "e39912c78b4205b77a01d3a8fd657d470c6a94ae796f39a5b83dfc75b80124f3",
+    "clippy.txt": "57fcc533d0f3b10d010cd66fad8d1354344146ced5e8ad7e1c1be17fb6ec0ee6",
+    "commands.json": "2a731e181d52e32a8290c908a10be3bac178299cfbb1675ba1474ed084d71074",
+    "diff-check.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "gates.json": "9b77f3b412549f331c0e6efe8586a67a205d51bf1e33d66f4fd4f0410139135f",
+    "green.txt": "d7452cad53a40af6187eed182179856f2721a8d472b70ffb924991541e8de224",
+    "production.diff": "4c67b70b580d31219b4d44a4326521a5c42d34c3244e0d584f3672c2cadfaf55",
+    "red-source.json": "72490a02d47b35dd856af99faad116b8e43d04d99c1c2cc300726504c37c5a94",
+    "red.txt": "e697876e3d148d7351948e3fae0e36686fa96512b421fd731e35b483e83f9ef8",
+    "regression-commands.json": "b0995eef5255737cd4c5043fd3d2943d89e1a1ec5492cd7a10caf47175e0c7c2",
+    "reproduce.md": "27a95114c0a70444dc6fde293210cc7810a80c09a572abc1fc61d6fd7162fece",
+    "review.md": "0f659110807c8aad22222de6e41725d6d5a5d5b417aa9a3324fda6097f630cf4",
+    "scoped-worker.txt": "b64c09f965a33e86d8b6578ef5e90834c7f04d019f2d94c8985446604068bd84",
+    "security-all.txt": "5724c6c3ee0b3dd44e6829f2917a0728ecbc70e628770d190d6b7efec7ce8659",
+    "test-red.diff": "93d140a0ed5918bec023793b340831aedf8be43bada1a589c49aedf2ab304198",
+    "tested-source.json": "e6bfd44fe31688bf237b500f97f28849d57273d498b2a63e47905cb3a9ddce64"
+  }
+}

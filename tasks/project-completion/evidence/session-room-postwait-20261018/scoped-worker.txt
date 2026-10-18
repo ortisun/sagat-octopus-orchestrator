@@ -1,0 +1,29 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on build directory
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 22.27s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 18 tests
+test scoped_worker::a_late_journal_failure_rolls_back_the_whole_scoped_report ... ok
+test scoped_worker::a_scoped_failure_retries_after_restart_and_rejects_the_old_fence ... ok
+test scoped_worker::a_scoped_lease_observes_cancellation_and_acknowledges_it_before_restart ... ok
+test scoped_worker::a_scoped_lost_lease_rolls_back_then_recovers_after_restart ... ok
+test scoped_worker::automatic_collection_progress_rechecks_the_tenant_capacity ... ok
+test scoped_worker::aggregate_retention_quota_atomically_drains_and_replays_the_open_scope ... ok
+test scoped_worker::collection_discovery_filters_unrelated_pending_roots_before_pagination ... ok
+test scoped_worker::cancellation_drains_members_atomically_and_finishes_after_restart ... ok
+test scoped_worker::exhausted_member_failure_starts_fail_fast_drain_and_survives_restart ... ok
+test scoped_worker::scope_chain_prefix_collection_drain_precedes_own_run_and_replays ... ok
+test scoped_worker::scheduler_resumes_collection_through_checkpoint_and_finish ... ok
+test scoped_worker::failed_derived_obligations_keep_member_capacity_reserved ... ok
+test scoped_worker::scope_chain_prefix_collection_entry_precedes_own_run_and_replays ... ok
+test scoped_worker::scoped_lease_capabilities_reject_a_foreign_tenant_without_leaking_the_attempt ... ok
+test scoped_worker::scoped_maintenance_does_not_read_whole_run_iteration_history ... ok
+test scoped_worker::snapshot_retention_quota_stops_the_pending_owner_without_creating_a_scope ... ok
+test scoped_worker::stale_hints_are_renewed_for_each_scoped_instance ... ok
+test scoped_worker::two_equal_nodes_keep_distinct_leases_outputs_routes_and_replays ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 384 filtered out; finished in 15.62s
+

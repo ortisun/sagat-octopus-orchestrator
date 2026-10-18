@@ -71,10 +71,11 @@ These reviews do not accept the complete B0 graph or the group transaction desig
 - WorkerStore.use_session now locks the matching row before a fresh database clock check and
   renews in the same transaction. The actual expired-renewal counterexample/correction is below;
   no session resurrection is claimed from this source observation alone.
-- Full/exact-path worker_session_room and managed database_owner still have volatile session
-  expiry predicates in locking SELECTs. Scheduler post-wait evidence does not prove current
-  worker-session freshness after an unchanged-row wait. These are separate source/test gaps;
-  no expired-session acceptance is claimed without a counterexample.
+- Full/exact-path worker_session_room now shares a post-session-lock database clock check;
+  each returned8 for expired authority in the actual counterexample, and returns0 after correction.
+  Managed database_owner still has a volatile session expiry predicate in its locking SELECT.
+  That separate SHARE guard needs its own counterexample; scheduler/renewal/claim-room evidence
+  does not prove it current.
 - New group eligibility/settlement may not lock a second existing run or assume source terminal
   rows can be reopened under scheduler authority. Group/member CAS is subordinate to the verified
   current owning authority; exact link/group/counter ordering is still pending B1.
@@ -414,3 +415,27 @@ with no external CLI. Existing worker authentication/transport error and trace m
 these integration tests do not assert telemetry counters. No all-workspace/SDK58/Compose/advisory/
 resource/nesting acceptance or canonical checkbox closure is claimed. Exact source/commands/
 limits: tasks/project-completion/evidence/session-renewal-postwait-20261018/manifest.json.
+
+
+## Full/exact-path claim-room session freshness — 2026-10-18
+
+Refs:T014-040/044, FR-009-001/003, FR-014-014. Both claim-time ports now share a private
+transaction-typed matching tenant/namespace/id/token/subject session guard. Sample DB clock
+after row acquisition; expired/missing yields0, otherwise preserve active LEASED/RUNNING count,
+conversion and saturation. Keep row guard on owning execution TX through count/lease commit;
+no renewal or new lock/API/TTL policy. Preserve root run/drain→session and scoped run/drain/
+binding→session separately; there is no new root binding guard. This sample does not promise
+continuous validity until commit. Separate managed-database SHARE guard/B0/group remain open.
+
+Both native-port RED cases returned8 after expiry (0/2,5.58s); GREEN2/2,7.02s. Actual known
+blocker and sagat_app wait are observed before expiry, unchanged guard rolls back after DB
+expiry, and zero room leaves21-table execution checkpoint and session expiry unchanged. Fresh
+public registration supplies8, old remains0, verify_run passes. These are claim-time port
+barriers, not publicpoll expired-lease acceptance: earlier publicpoll renewal is separate.
+Regression: scoped_worker18/18 (15.62s), bounded_fences10/10 (14.04s), security126/126 (85.39s).
+The10 include the focused2. Strict locked workspace/all-target Clippy113.29s, fmt/diff and
+24-crate architecture pass. Two bounded reviews ended with no concrete issues after correcting
+the prompt's root/scoped prefix wording; reviewers ran no tests. Existing worker.scoped.claim
+trace and outcome/error mapping stay intact; port tests do not assert counters. No new full
+workspace/SDK58/Compose/advisory/resource/nested acceptance or canonical checkbox closure.
+Exact source/commands/limits: tasks/project-completion/evidence/session-room-postwait-20261018/manifest.json.

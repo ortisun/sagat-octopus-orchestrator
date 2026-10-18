@@ -1,0 +1,67 @@
+[
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "scoped_worker::",
+      "--",
+      "--test-threads=3"
+    ],
+    "exit_code": 0,
+    "seconds": 40.04,
+    "log": "scoped-worker.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "bounded_fences::",
+      "--",
+      "--test-threads=3"
+    ],
+    "exit_code": 0,
+    "seconds": 38.45,
+    "log": "bounded-fences.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_security_multitenancy",
+      "--",
+      "--test-threads=3"
+    ],
+    "exit_code": 0,
+    "seconds": 113.62,
+    "log": "security-all.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "clippy",
+      "--workspace",
+      "--all-targets",
+      "--locked",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit_code": 0,
+    "seconds": 113.29,
+    "log": "clippy.txt"
+  }
+]

@@ -579,3 +579,194 @@ pub(super) async fn through_member_chain<T: std::fmt::Debug>(
     guard.rollback().await.expect("release member chain");
     mutation.await
 }
+
+#[tokio::test]
+async fn session_room_post_wait_full_rejects_expired_authority() {
+    assert_session_room_post_wait(false).await;
+}
+
+#[tokio::test]
+async fn session_room_post_wait_path_rejects_expired_authority() {
+    assert_session_room_post_wait(true).await;
+}
+
+async fn assert_session_room_post_wait(bounded: bool) {
+    use sagat_application::entropy::Token;
+    use sagat_application::worker::Capabilities;
+
+    let fixture = fixture("session-room-post-wait").await;
+    let pool = &fixture.world.db.pool;
+    let tenant = fixture.world.admin.tenant_id();
+    let id = fixture.session.worker_id;
+    let expires_at: time::OffsetDateTime = sqlx::query_scalar(
+        "UPDATE worker_sessions SET expires_at=clock_timestamp()+interval '3 seconds' \
+         WHERE tenant_id=$1 AND id=$2 RETURNING expires_at",
+    )
+    .bind(tenant.as_uuid())
+    .bind(id)
+    .fetch_one(pool)
+    .await
+    .expect("short session expiry");
+    let before = scope_checkpoint(pool, tenant.as_uuid()).await;
+    let mut guard = pool.begin().await.expect("unchanged session guard");
+    let backend: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *guard)
+        .await
+        .expect("session guard backend");
+    sqlx::query("SELECT id FROM worker_sessions WHERE tenant_id=$1 AND id=$2 FOR UPDATE")
+        .bind(tenant.as_uuid())
+        .bind(id)
+        .execute(&mut *guard)
+        .await
+        .expect("lock unchanged session");
+    let store = fixture.store.clone();
+    let run = fixture.run;
+    let hash = Token::hash_of(&fixture.session.token);
+    let subject = fixture.session.principal.subject().as_str().to_owned();
+    // Exercise the claim-time port directly, after session creation. Public poll first renews
+    // the session; blocking that earlier renewal would not test either claim-time guard.
+    let waiter = tokio::spawn(async move {
+        if bounded {
+            let mut tx = store
+                .begin_current_path(tenant, run, first_path(), Lock::Wait)
+                .await
+                .expect("path claim transaction")
+                .expect("run");
+            let room = tx
+                .worker_session_room(id, &hash, &subject)
+                .await
+                .expect("path session room");
+            tx.commit().await.expect("commit path authority read");
+            room
+        } else {
+            let mut tx = store
+                .begin(tenant, run, Lock::Wait)
+                .await
+                .expect("full claim transaction")
+                .expect("run");
+            let room = tx
+                .worker_session_room(id, &hash, &subject)
+                .await
+                .expect("full session room");
+            tx.commit().await.expect("commit full authority read");
+            room
+        }
+    });
+    eventually("claim session guard actually waits while live", || async {
+        sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() \
+             AND $1=ANY(pg_blocking_pids(pid)) AND query LIKE '%FROM worker_sessions%' \
+             AND (NOT $2 OR usename='sagat_app'))",
+        )
+        .bind(backend)
+        .bind(crate::support::as_runtime_role())
+        .fetch_one(pool)
+        .await
+        .expect("actual session room guard wait")
+        .then_some(())
+    })
+    .await;
+    assert!(
+        sqlx::query_scalar::<_, bool>("SELECT clock_timestamp()<$1")
+            .bind(expires_at)
+            .fetch_one(pool)
+            .await
+            .expect("session live at wait")
+    );
+    eventually(
+        "session expires while its tuple stays unchanged",
+        || async {
+            sqlx::query_scalar::<_, bool>("SELECT clock_timestamp()>=$1")
+                .bind(expires_at)
+                .fetch_one(pool)
+                .await
+                .expect("database expiry")
+                .then_some(())
+        },
+    )
+    .await;
+    guard.rollback().await.expect("release expired session");
+    assert_eq!(
+        waiter.await.expect("claim room waiter"),
+        0,
+        "session expired while waiting cannot supply claim capacity"
+    );
+    assert_eq!(
+        scope_checkpoint(pool, tenant.as_uuid()).await,
+        before,
+        "refused capacity cannot change execution effects"
+    );
+    let unchanged_expiry: time::OffsetDateTime =
+        sqlx::query_scalar("SELECT expires_at FROM worker_sessions WHERE tenant_id=$1 AND id=$2")
+            .bind(tenant.as_uuid())
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .expect("session not renewed by room check");
+    assert_eq!(unchanged_expiry, expires_at);
+
+    let fresh = fixture
+        .workers
+        .register(
+            &fixture.world.worker,
+            "payments",
+            &format!("room-positive-{}", uuid::Uuid::now_v7()),
+            &Capabilities {
+                activities: vec!["scoped.a".into(), "scoped.b".into()],
+                languages: vec!["rust".into()],
+                pools: vec![],
+                max_inflight: 8,
+                protocol_version: "1.5".into(),
+            },
+        )
+        .await
+        .expect("fresh registered claim authority");
+    let hash = fresh.session_token.hash();
+    let subject = fixture.world.worker.subject().as_str();
+    if bounded {
+        let mut tx = fixture
+            .store
+            .begin_current_path(tenant, run, first_path(), Lock::Wait)
+            .await
+            .expect("fresh path transaction")
+            .expect("run");
+        assert_eq!(
+            tx.worker_session_room(fresh.worker_id, &hash, subject)
+                .await
+                .expect("live room"),
+            8
+        );
+        assert_eq!(
+            tx.worker_session_room(id, &Token::hash_of(&fixture.session.token), subject)
+                .await
+                .expect("old room remains refused"),
+            0
+        );
+        tx.commit().await.expect("commit fresh path check");
+    } else {
+        let mut tx = fixture
+            .store
+            .begin(tenant, run, Lock::Wait)
+            .await
+            .expect("fresh full transaction")
+            .expect("run");
+        assert_eq!(
+            tx.worker_session_room(fresh.worker_id, &hash, subject)
+                .await
+                .expect("live room"),
+            8
+        );
+        assert_eq!(
+            tx.worker_session_room(id, &Token::hash_of(&fixture.session.token), subject)
+                .await
+                .expect("old room remains refused"),
+            0
+        );
+        tx.commit().await.expect("commit fresh full check");
+    }
+    fixture
+        .store
+        .verify_run(tenant, run)
+        .await
+        .expect("execution projection stays consistent");
+}

@@ -456,4 +456,6 @@ execution capability or complete group lock graph is accepted.
 
 Existing009 worker renewal must sample expiry after acquiring its session row, retaining the
 guard through renewal commit. The public poll counterexample and correction are tracked in
-B0; separate claim-room/database checks and the complete group lock graph remain pending.
+B0. Complete and exact-path claim-room checks also sample time after their own session lock,
+with zero capacity after expiry and the count/lease serialized through commit. The managed
+database session check and complete group lock graph remain pending.
