@@ -2958,3 +2958,15 @@ established and no speculative product fix, write retry or golden change was add
 and passing focused logs are retained separately at
 tasks/project-completion/evidence/sdk60-first-failure-20261018/manifest.json. T014-041 remains
 open pending a complete current60 pass; component successes are not combined into one.
+
+## Scoped Finish audit/hint vocabulary contract — 2026-10-18
+
+Local B1b.2b.9 only, refs:T014-014..017/040. The reviewed vocabulary reuses the genuine capacity
+membership audit action/resource with a scoped reason and proposes a distinct closed
+capacity.scoped_member.finished reference message. It contains originalRun/owner/index metadata,
+never invented chain/head values, and preserves the ChildRoot message/baseline. Existing closed
+returned-attempt outcomes/metrics and exact span-handle redaction rules apply; no identifier metric
+labels or broker/execution authority follows. One fresh bounded Astra review found no issue.
+No schema, tests, native producer, privilege or caller is claimed by this documentary unit.
+See tasks/project-completion/scoped-leaf-finish-audit-hint-contract.md and
+evidence/scoped-finish-vocabulary-decision-20261018.

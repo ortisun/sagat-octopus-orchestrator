@@ -1,0 +1,10 @@
+{
+  "scope": "B1b.2b.9 scoped Finish audit/reference-hint/observation vocabulary decision only",
+  "base": "6b34f227",
+  "contract_sha256": "ff4595808481acf01e56b22b726b42aafa09c17022b105432e478cbcfcc4f931",
+  "review_cycles": 1,
+  "findings": 0,
+  "tests_run": false,
+  "executable_authority": false,
+  "review_sha256": "eced4658ca53e73b579c68bfd3f6e65e8502a66674888ff04f3f936389e9d086"
+}
