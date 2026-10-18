@@ -1386,4 +1386,21 @@ the runtime role, without increasing a pool. The contention store now also share
 pool rather than using the owner observer pool. The report states the two budgets explicitly.
 A 20-approval/20-timer check passed1/1,8.13s: 40 waits without leases/worker identities, zero worker
 sessions, zero scheduler failures, all resource observations inside the existing combined bound24,
-and exact8/64 slot admissions. Full-size corrected evidence is still pending.
+and exact8/64 slot admissions. Full-size corrected evidence is recorded below.
+
+
+### Runtime-role 20,000 durable waits
+
+The corrected frozen `60dfc824` workload passed1/1 (213.73s harness,214.70s command):
+10,000 approvals plus10,000 one-hour timers, using the repository disposable PostgreSQL fixture
+and verified `sagat_app` execution. All20,000 waits had no lease/token/expiry/worker identity;
+there were zero worker sessions and zero skipped, fenced or failed scheduler outcomes.
+Runtime/observer pools retained their existing16/8 maxima. Observed connections peaked at18,
+with no idle transactions. Separate runtime contention accepted8 of64 attempts and returned56
+typed quota refusals; persisted holders and counters both measured8. No client retry was added.
+Native Darwin process resources are retained without relabelling sampled RSS as a peak;
+PostgreSQL container RSS was not isolated and the shared host also ran SDK/build/flat workloads.
+[Source, command and result](raw/workflow-primitives/20261017-waits-runtime/result.json),
+[workload details](raw/workflow-primitives/20261017-waits-runtime/waits.md), and
+[native process resources](raw/workflow-primitives/20261017-waits-runtime/process-resources.txt)
+are reproducible evidence for this workload, not full T014-042 acceptance or a latency SLO.

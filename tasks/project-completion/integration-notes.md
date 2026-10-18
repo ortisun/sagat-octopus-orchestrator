@@ -1509,3 +1509,12 @@ are separate scopes and do not become new requirements for that task. Ten014task
 The aggregate56-scenario command is still running and retains its original optional blob-heartbeat
 failure; the corrected blob case passed separately. This closure does not relabel that whole
 command green or close shared release/capacity/compatibility gates.
+
+
+### Corrected full-size durable wait measurement
+
+Frozen `60dfc824` passed the runtime-role10,000-approval plus10,000-timer workload1/1,
+213.73s harness/214.70s command. All20,000 waits were workerless; zero scheduler errors,
+18 observed connections inside existing16+8 pool budgets, no idle transactions, exact8/64
+cross-run slot admissions. Raw logs, settings, native process resources and source manifest
+are retained in the performance report. Flat widths and nested100k evidence remain separate gates.

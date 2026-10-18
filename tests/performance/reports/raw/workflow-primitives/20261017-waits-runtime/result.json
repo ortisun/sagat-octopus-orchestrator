@@ -1,0 +1,25 @@
+{
+  "commit": "60dfc82497e8bff4db1789761711338a8e8a1d07",
+  "source": "/Users/marcelo/Documents/Projects/sagat-octopus-completion-waits-60dfc824",
+  "source_clean": true,
+  "compiler_checkout": "/Users/marcelo/Documents/Projects/sagat-octopus-project-completion (same committed test/source code; later uncommitted changes were documentation only)",
+  "binary_sha256": "bfa6eaa0281b3b348bc81655ba3e9841636393d3e691d52ad61de2526714dd9d",
+  "profile": "debug",
+  "approvals": 10000,
+  "timers": 10000,
+  "command": [
+    "/usr/bin/time",
+    "-l",
+    "-o",
+    "/tmp/sagat-completion-waits-60dfc824/process-resources.txt",
+    "/tmp/sagat-completion-waits-60dfc824/perf_workflow_primitives",
+    "measure_durable_waits_and_cross_run_tenant_slot_contention",
+    "--exact",
+    "--ignored",
+    "--nocapture"
+  ],
+  "fixture": "repository disposable PostgreSQL; no external URL",
+  "limitations": "Shared host runs flat benchmark and all-five SDK matrix; native time-l maximum RSS is process-wide, PostgreSQL RSS is not isolated",
+  "exit_code": 0,
+  "elapsed_seconds": 214.7
+}

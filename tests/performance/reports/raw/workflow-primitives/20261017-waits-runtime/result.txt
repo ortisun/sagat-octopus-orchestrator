@@ -1,0 +1,91 @@
+
+running 1 test
+test measure_durable_waits_and_cross_run_tenant_slot_contention has been running for over 60 seconds
+
+===== waits =====
+- CPU: Apple M3 Max (16 logical cores), 48 GiB RAM
+- OS: Darwin 25.3.0 arm64
+- Load average at start: 15.45 20.34 20.86
+- Docker VM: 16 CPUs, 8318709760 bytes
+- Build profile: debug
+- Commit: 60dfc824
+- PostgreSQL: PostgreSQL 16.15 on aarch64-unknown-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit
+- Setup/observer role: postgres; worker/scheduler role: sagat_app (verified by fixture)
+  - `shared_buffers` = `128MB`
+  - `max_connections` = `100`
+  - `work_mem` = `4MB`
+  - `effective_cache_size` = `4GB`
+  - `synchronous_commit` = `on`
+  - `fsync` = `on`
+  - `max_wal_size` = `1GB`
+  - `wal_level` = `replica`
+  - `random_page_cost` = `4`
+### Durable waits and the tenant slot lock
+
+- CPU: Apple M3 Max (16 logical cores)
+- OS: Darwin 25.3.0 arm64
+- Load average when the report was written (end of the run): 15.48 17.74 19.59
+- Build profile: debug
+- Commit: 60dfc824
+- PostgreSQL: Docker container on the same host
+- Services: in-process; no client network latency
+
+#### Configuration
+
+- Execution role sagat_app, pool maximum 16; owner setup/observer pool maximum 8; combined configured bound 24.
+- 10000 approval runs, loaded with 32 concurrent callers
+- 10000 one-hour timer runs, loaded with 32 concurrent callers
+- scheduler batch 200, scheduler concurrency 8, 50 idle ticks
+- 64 collection runs contending for 8 tenant slots with 5 concurrent callers
+- tenant usage row held for 100 ms to make lock contention observable
+
+#### Latency observations
+
+| Operation | Samples | p50 | p95 | p99 | max |
+|---|---:|---:|---:|---:|---:|
+| approval start transaction | 10000 | 194.1 ms | 324.0 ms | 397.8 ms | 806.7 ms |
+| timer start transaction | 10000 | 268.9 ms | 457.7 ms | 721.3 ms | 980.1 ms |
+| approval scheduling delay (run created to request persisted) | 10000 | 56814.2 ms | 64559.6 ms | 65399.0 ms | 66044.9 ms |
+| timer scheduling delay (run created to wait persisted) | 10000 | 0.0 ms | 0.0 ms | 0.0 ms | 0.0 ms |
+| scheduler tick, no waits exist (control) | 10 | 21.1 ms | 54.3 ms | 54.3 ms | 54.3 ms |
+| scheduler tick, 10000 approvals pending (statistics as the load left them) | 10 | 220.8 ms | 233.9 ms | 233.9 ms | 233.9 ms |
+| scheduler tick, 10000 approvals pending (after ANALYZE) | 10 | 33.9 ms | 46.5 ms | 46.5 ms | 46.5 ms |
+| scheduler tick, 10000 approvals + 10000 timers pending | 50 | 20.8 ms | 36.4 ms | 38.5 ms | 38.5 ms |
+| collection admission accepted under tenant-slot contention | 8 | 130.8 ms | 224.7 ms | 224.7 ms | 224.7 ms |
+| collection admission rejected at tenant capacity | 56 | 5.4 ms | 45.6 ms | 95.4 ms | 95.4 ms |
+
+#### Throughput and storage
+
+- Approval run creation: 65.6 s, 152 runs/s.
+- Approval opening: 44.1 s, 227 approvals/s across 50 scheduler ticks.
+- Timer run creation and wait persistence: 94.5 s, 106 runs/s.
+- Observed relation growth: 4884 bytes per suspended approval and 2541 bytes per suspended timer. This is a delta over shared PostgreSQL relations and includes index allocation noise.
+- Journal row bytes: 458 bytes per approval run and 394 bytes per timer run, measured with `pg_column_size` and excluding index/toast overhead.
+- Test-process RSS: 29196288 bytes before loading and 38027264 bytes after measurement, a signed change of 8830976 bytes. PostgreSQL container RSS was not isolated in this run.
+
+#### Correctness observations
+
+- Resources while the waits are pending (the engine, scheduler and worker service run in this process; PostgreSQL connections are every backend of the benchmark database):
+  - no waits: 6 threads, 28 MiB RSS, 4 PostgreSQL connections (1 active, 0 idle in transaction)
+  - 10000 approvals started, none opened yet: 5 threads, 40 MiB RSS, 18 PostgreSQL connections (1 active, 0 idle in transaction)
+  - 10000 approvals pending: 5 threads, 41 MiB RSS, 18 PostgreSQL connections (1 active, 0 idle in transaction)
+  - 10000 approvals pending + 10000 timers waiting: 5 threads, 36 MiB RSS, 18 PostgreSQL connections (1 active, 0 idle in transaction)
+  - after 50 idle ticks over all waits: 5 threads, 36 MiB RSS, 19 PostgreSQL connections (2 active, 0 idle in transaction)
+- 8/64 collection admissions committed; 56 were rejected with the typed tenant-capacity error. Durable tenant usage and persisted iterations both equal 8.
+- PostgreSQL exposed 5 lock waiters while the tenant usage row was deliberately held. Admission latencies therefore include a known 100 ms contention interval plus connection-pool and serialization delay.
+- 20000 approval/timer steps are durably waiting with no lease token, lease expiry or worker identity. Active worker sessions: 0.
+- Scheduler outcomes while opening and observing waits: 0 skipped, 0 fenced and 0 failed. Explicit client transaction retries: 0; every start and admission was submitted once.
+
+#### Notes
+
+- The first default-population attempt was rejected after reaching the platform's default 10,000 active-run namespace quota. The benchmark now grants and configures explicit headroom before loading; this preserves production admission behavior while isolating the wait measurement.
+- Approval and timer runs use the supported publish/start/scheduler paths. Waiting consumes database rows and scheduler index scans; it does not allocate one process, connection, worker session or broker consumer per wait.
+- The shared development host, local container, declared connection pools and in-process services are not representative of a production cluster. Repeat on target hardware before sizing.
+- The controlled slot test measures one tenant and one database. It proves exact enforcement under cross-run contention; it does not establish a cluster-wide throughput floor.
+- No timeout, queue-delay or capacity ceiling is inferred beyond the populations and concurrency recorded above.
+
+
+test measure_durable_waits_and_cross_run_tenant_slot_contention ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 213.73s
+
