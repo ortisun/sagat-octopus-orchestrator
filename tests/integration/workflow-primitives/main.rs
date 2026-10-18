@@ -17,6 +17,7 @@ mod bounded_report_provider;
 mod bounded_reports;
 mod bounded_worker;
 mod byte_ceilings;
+mod capacity_finish;
 mod chain_handoff;
 mod chain_progress;
 mod chain_storage;

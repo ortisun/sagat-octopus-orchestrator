@@ -1,0 +1,19 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 34.25s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 1 test
+test capacity_finish::valid_owner_fixture_precedes_capacity_constraint_probes ... 
+thread 'capacity_finish::valid_owner_fixture_precedes_capacity_constraint_probes' (90156087) panicked at tests/integration/workflow-primitives/capacity_finish.rs:64:6:
+owner-only dormant group fixture: Database(PgDatabaseError { severity: Error, code: "42P01", message: "relation \"capacity_groups\" does not exist", detail: None, hint: None, position: Some(Original(13)), where: None, schema: None, table: None, column: None, data_type: None, constraint: None, file: Some("parse_relation.c"), line: Some(1449), routine: Some("parserOpenTable") })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    capacity_finish::valid_owner_fixture_precedes_capacity_constraint_probes
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 403 filtered out; finished in 1.78s
+
+error: test failed, to rerun pass `-p sagat-tests --test integration_workflow_primitives`

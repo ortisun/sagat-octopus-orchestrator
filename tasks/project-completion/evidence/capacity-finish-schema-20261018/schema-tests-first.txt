@@ -1,0 +1,53 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+error[E0277]: dynamic SQL strings should be audited for possible injections
+   --> tests/integration/workflow-primitives/capacity_finish.rs:242:25
+    |
+242 |             sqlx::query(&sql)
+    |             ----------- ^^^^ dynamic SQL string
+    |             |
+    |             required by a bound introduced by this call
+    |
+    = help: the trait `SqlSafeStr` is not implemented for `&std::string::String`
+    = note: prefer literal SQL strings with bind parameters or `QueryBuilder` to add dynamic data to a query.
+            
+            To bypass this error, manually audit for potential injection vulnerabilities and wrap with `AssertSqlSafe()`.
+            For details, see the docs for `SqlSafeStr`.
+            
+    = note: this trait is only implemented for `&'static str`, not all `&str` like the compiler error may suggest
+note: required by a bound in `sqlx::query`
+   --> /Users/marcelo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sqlx-core-0.9.0/src/query.rs:653:32
+    |
+653 | pub fn query<'a, DB>(sql: impl SqlSafeStr) -> Query<'a, DB, <DB as Database>::Arguments>
+    |                                ^^^^^^^^^^ required by this bound in `query`
+help: consider dereferencing here
+    |
+242 |             sqlx::query(&*sql)
+    |                          +
+
+error[E0277]: dynamic SQL strings should be audited for possible injections
+   --> tests/integration/workflow-primitives/capacity_finish.rs:263:25
+    |
+263 |             sqlx::query(&sql)
+    |             ----------- ^^^^ dynamic SQL string
+    |             |
+    |             required by a bound introduced by this call
+    |
+    = help: the trait `SqlSafeStr` is not implemented for `&std::string::String`
+    = note: prefer literal SQL strings with bind parameters or `QueryBuilder` to add dynamic data to a query.
+            
+            To bypass this error, manually audit for potential injection vulnerabilities and wrap with `AssertSqlSafe()`.
+            For details, see the docs for `SqlSafeStr`.
+            
+    = note: this trait is only implemented for `&'static str`, not all `&str` like the compiler error may suggest
+note: required by a bound in `sqlx::query`
+   --> /Users/marcelo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sqlx-core-0.9.0/src/query.rs:653:32
+    |
+653 | pub fn query<'a, DB>(sql: impl SqlSafeStr) -> Query<'a, DB, <DB as Database>::Arguments>
+    |                                ^^^^^^^^^^ required by this bound in `query`
+help: consider dereferencing here
+    |
+263 |             sqlx::query(&*sql)
+    |                          +
+
+For more information about this error, try `rustc --explain E0277`.
+error: could not compile `sagat-tests` (test "integration_workflow_primitives") due to 2 previous errors

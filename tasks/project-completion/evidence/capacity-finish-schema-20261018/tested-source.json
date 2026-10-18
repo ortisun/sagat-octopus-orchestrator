@@ -1,0 +1,10 @@
+{
+  "base": "0ad46f4bef8d19ab6271a0e53705631f7b4f0212",
+  "files": {
+    "crates/infra-postgres/migrations/20261210000000_capacity_finish_storage.up.sql": "1e3d93bc918544219fe3c8230f278447c2b1b3aeed23255afe2c55041b3b2dc0",
+    "crates/infra-postgres/migrations/20261210000000_capacity_finish_storage.down.sql": "a4515af7cc9b5d52275b4524d5670f14a84212bdba8f8902b644d700df23d6cc",
+    "crates/infra-postgres/storage-classification.json": "95a604c76d9d378e629206707e7c2d3e2faddfae16d16e2deea32a29670a8994",
+    "tests/integration/workflow-primitives/capacity_finish.rs": "14b4adaee1970b66cf018068ee1231167a4e0eec44e3e3f508ad3b0d9288f864",
+    "tests/integration/workflow-primitives/main.rs": "18abcb7011eec45da7ab8c25aa0546e71e2149f368a6d482db7770bcf8d4edcf"
+  }
+}

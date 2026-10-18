@@ -1,0 +1,114 @@
+[
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "capacity_finish::valid_owner_fixture_precedes_capacity_constraint_probes",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 101,
+    "seconds": 38.08,
+    "log": "schema-absence.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_security_multitenancy",
+      "manifest_covers_every_variable_size_column",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "seconds": 25.86,
+    "log": "classification.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "capacity_finish::valid_owner_fixture_precedes_capacity_constraint_probes",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "seconds": null,
+    "log": "schema-positive.txt",
+    "wall_time_note": "Whole command wall time was not instrumented; build/test elapsed times remain in raw log."
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "capacity_finish::",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 101,
+    "seconds": null,
+    "log": "schema-tests-first.txt",
+    "wall_time_note": "Whole command wall time was not instrumented; build/test elapsed times remain in raw log."
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "capacity_finish::",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 101,
+    "seconds": null,
+    "log": "schema-tests-second.txt",
+    "wall_time_note": "Whole command wall time was not instrumented; build/test elapsed times remain in raw log."
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "capacity_finish::",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "seconds": null,
+    "log": "schema-tests-final.txt",
+    "wall_time_note": "Whole command wall time was not instrumented; build/test elapsed times remain in raw log."
+  }
+]

@@ -1,6 +1,7 @@
 # Dormant ChildRoot Finish storage — B2a
 
-Status: reviewed scoped contract, unimplemented. Baseline49ee1997; consumes A1, checked restoration, B1a and
+Status: reviewed scoped contract; vocabulary and dormant schema implemented, native port pending.
+Baseline49ee1997; consumes A1, checked restoration, B1a and
 B1b.1. One native method, existing groups populated only in explicit owner fixtures, no scheduler
 call site, public endpoint, production seed, admission API, usage projection or nested activation.
 
@@ -56,7 +57,10 @@ Grant sagat_app SELECT and only necessary header/member UPDATE columns, plus rec
 no header/member INSERT, DELETE or TRUNCATE. Actual migrations/harness privileges must be inspected
 and tested, not inferred. Immutable/absorbing/append-only triggers protect the declared metadata.
 Guarded downgrade refuses any capacity row, including tombstones/receipts. No production purge or
-backfill is implemented; later retention/rollout needs a compatible contract.
+backfill is implemented; later retention/rollout needs a compatible contract. Permanent member and
+receipt references to execution_chains currently pin chain/run history even after member Finish.
+Resolving tombstone/replay retention without blocking history cleanup is a C0 prerequisite before
+production activation; this dormant schema does not provide production purge compatibility.
 
 ## Exact native operation
 
@@ -158,4 +162,6 @@ rollout, SDK58,100k and release gates remain pending. Nested runtime remains clo
 Schema decision review completed1bounded cycle with no concrete issues. Operation/recovery
 review completed2bounded cycles: same-command chain/run wait versus distinct-member G Busy
 corrected; final review found no remaining concrete issues, including postlock timing wording.
-No SQL implementation or runtime/test acceptance follows from this decision review.
+Those decision reviews alone did not establish SQL/runtime acceptance. The subsequent B2c SQL
+implementation and focused schema tests are recorded in evidence/capacity-finish-schema-20261018;
+no native finality, receipt replay or production execution guarantee follows from schema fixtures.

@@ -1,0 +1,35 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 29.73s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 9 tests
+test capacity_finish::active_holder_fk_is_deferred_and_abort_preserves_both_rows ... ok
+test capacity_finish::counters_identity_and_tenant_namespace_bindings_are_enforced ... 
+thread 'capacity_finish::counters_identity_and_tenant_namespace_bindings_are_enforced' (90505335) panicked at tests/integration/workflow-primitives/capacity_finish.rs:121:9:
+assertion `left == right` failed
+  left: Some("capacity_groups_possession_consistent")
+ right: Some("capacity_groups_possession_value")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test capacity_finish::downgrade_waits_for_writer_before_deciding_whether_storage_is_empty ... ok
+test capacity_finish::empty_schema_reverses_but_retained_tombstones_refuse_downgrade ... ok
+test capacity_finish::historical_holder_receipt_survives_later_holder_finish ... ok
+test capacity_finish::runtime_has_only_selected_columns_and_receipt_append_privileges ... 
+thread 'capacity_finish::runtime_has_only_selected_columns_and_receipt_append_privileges' (90512307) panicked at tests/integration/workflow-primitives/capacity_finish.rs:119:5:
+assertion `left == right` failed
+  left: "428C9"
+ right: "42501"
+FAILED
+test capacity_finish::tombstones_and_receipts_survive_owner_mutation_attempts ... ok
+test capacity_finish::vacant_nonholder_receipt_keeps_epoch_and_fixed_fingerprint_bounds ... ok
+test capacity_finish::valid_owner_fixture_precedes_capacity_constraint_probes ... ok
+
+failures:
+
+failures:
+    capacity_finish::counters_identity_and_tenant_namespace_bindings_are_enforced
+    capacity_finish::runtime_has_only_selected_columns_and_receipt_append_privileges
+
+test result: FAILED. 7 passed; 2 failed; 0 ignored; 0 measured; 403 filtered out; finished in 17.17s
+
+error: test failed, to rerun pass `-p sagat-tests --test integration_workflow_primitives`

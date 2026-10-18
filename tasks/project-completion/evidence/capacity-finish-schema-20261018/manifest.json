@@ -1,0 +1,186 @@
+{
+  "source_base": "0ad46f4bef8d19ab6271a0e53705631f7b4f0212",
+  "recorded_utc": "2026-10-18T07:54:06.371336+00:00",
+  "scope": "B2c dormant schema only; native Finish pending",
+  "commands": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "capacity_finish::valid_owner_fixture_precedes_capacity_constraint_probes",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 101,
+      "seconds": 38.08,
+      "log": "schema-absence.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_security_multitenancy",
+        "manifest_covers_every_variable_size_column",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 25.86,
+      "log": "classification.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "capacity_finish::valid_owner_fixture_precedes_capacity_constraint_probes",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": null,
+      "log": "schema-positive.txt",
+      "wall_time_note": "Whole command wall time was not instrumented; build/test elapsed times remain in raw log."
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "capacity_finish::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 101,
+      "seconds": null,
+      "log": "schema-tests-first.txt",
+      "wall_time_note": "Whole command wall time was not instrumented; build/test elapsed times remain in raw log."
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "capacity_finish::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 101,
+      "seconds": null,
+      "log": "schema-tests-second.txt",
+      "wall_time_note": "Whole command wall time was not instrumented; build/test elapsed times remain in raw log."
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "capacity_finish::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": null,
+      "log": "schema-tests-final.txt",
+      "wall_time_note": "Whole command wall time was not instrumented; build/test elapsed times remain in raw log."
+    }
+  ],
+  "gates": {
+    "clippy": {
+      "command": [
+        "cargo",
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "seconds": 54.85
+    },
+    "fmt": {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--check"
+      ],
+      "exit_code": 0,
+      "seconds": 4.23
+    },
+    "architecture": {
+      "command": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "exit_code": 0,
+      "seconds": 0.33
+    }
+  },
+  "results": {
+    "schema": {
+      "passed": 9,
+      "failed": 0,
+      "seconds": 18.13
+    },
+    "classification": {
+      "passed": 1,
+      "failed": 0,
+      "seconds": 1.79
+    }
+  },
+  "evidence_sha256": {
+    "architecture.json": "9b3052edd3ba57537c3624649718a5781bf34088490945e7c218b53ca0689685",
+    "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "classification.txt": "d81b953cc660cd453f7355359ba90394e781b087464208bd089a90dcdd3d4103",
+    "clippy.json": "fea299909fb2a6f2aea3992172554cc13a758c49b218cac3684170e8f2e8f49f",
+    "clippy.txt": "0de0cf7592a3f7c6bdebc56eb60e63300ac1e9d452bf9db66ec25f2680857dc8",
+    "commands.json": "20bb4652e2b1221c9783afb3b5e812fb3ea557d83a5214f519a0fe994a43f8ee",
+    "fmt.json": "2d6d53c6874aa20d4a687a6e79550af19c2052f919d19e056d9c82e0a8c52adc",
+    "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "implementation.diff": "e84fedbac8402571ad06994f9a325d001575c4babde23e8178796d198e03dedc",
+    "reproduce.md": "e44d145fa7c2b9feab8cec30acfed63e6e32ba6b3f4a9602a4e3d9b5668d5ffa",
+    "review.md": "1dfe635b42a2dab1a5eb7accc5bc105169ae6f683c8f86381d7244e3954e6c99",
+    "schema-absence-source.json": "88f05f9f2f604fdbc78d150acc599b1525ce3c090b9e9d9ab1d96ce67267c11f",
+    "schema-absence.txt": "b1f33a242bf11de5b04da9724d6a3979061f7415069d7f8df61feff25c85fae1",
+    "schema-positive.txt": "a6d1e78b2dc826f44064c9a031008565da2da7f67e44171f39ab2e419cff38ee",
+    "schema-tests-final.txt": "158a9b839756591f88a97b59db059148acd77a63fd7330e690d206e323e70106",
+    "schema-tests-first.txt": "68e9242f75eae494bd3579f561887d1a3f9c8861a64ecf1542def230c98720e5",
+    "schema-tests-second.txt": "fc01f5c965bb87256bdeaf6a49f9cab48f9fe39e29c8dbcebb3a64f631f8a2ea",
+    "test-first.rs": "33aa35409a6ca50b7144f1bd169ede23360514cd7b213b96588df1df9070ca84",
+    "tested-source.json": "01ea38bb509bfe71e2df7a03c5d2bfc9876623d278740ce560e0e5db03c52497"
+  }
+}

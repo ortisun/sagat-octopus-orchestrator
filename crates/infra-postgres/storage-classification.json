@@ -554,6 +554,114 @@
       ]
     },
     {
+      "table": "capacity_group_finish_receipts",
+      "column": "fingerprint",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Database CHECK requires exactly 32 bytes for the command fingerprint. Dormant fixture-only metadata; no retained content/log delta."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20261210000000_capacity_finish_storage.up.sql"
+      ]
+    },
+    {
+      "table": "capacity_group_finish_receipts",
+      "column": "resulting_possession",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Database CHECK limits resulting_possession to HELD, VACANT or RETIRED (at most 7 ASCII bytes). Dormant fixture-only metadata; no retained content/log delta."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20261210000000_capacity_finish_storage.up.sql"
+      ]
+    },
+    {
+      "table": "capacity_group_members",
+      "column": "member_kind",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Database CHECK limits member_kind to CHILD_ROOT (10 ASCII bytes). Dormant fixture-only metadata; no retained content/log delta."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20261210000000_capacity_finish_storage.up.sql"
+      ]
+    },
+    {
+      "table": "capacity_group_members",
+      "column": "state",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Database CHECK limits state to ACTIVE or FINISHED (at most 8 ASCII bytes). Dormant fixture-only metadata; no retained content/log delta."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20261210000000_capacity_finish_storage.up.sql"
+      ]
+    },
+    {
+      "table": "capacity_groups",
+      "column": "holder_state",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Generated column is NULL or ACTIVE (6 ASCII bytes), never caller text. Dormant fixture-only metadata; no retained content/log delta."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20261210000000_capacity_finish_storage.up.sql"
+      ]
+    },
+    {
+      "table": "capacity_groups",
+      "column": "possession",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Database CHECK limits possession to HELD, VACANT or RETIRED (at most 7 ASCII bytes). Dormant fixture-only metadata; no retained content/log delta."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20261210000000_capacity_finish_storage.up.sql"
+      ]
+    },
+    {
       "table": "chain_segments",
       "column": "completion_kind",
       "sql_type": "text",

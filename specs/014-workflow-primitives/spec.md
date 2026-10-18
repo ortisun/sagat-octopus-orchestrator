@@ -482,3 +482,13 @@ after exact current chain/head/segment FINAL under its own fence. Groups are fix
 no production creator, caller, admission/accounting or execution capability is accepted. It leaves
 terminal run journals unchanged and requires an atomic group receipt/journal, truthful audit and
 reference hint. The scoped contract is tasks/project-completion/capacity-finish-storage.md.
+
+### Dormant capacity schema checkpoint — 2026-10-18
+
+The fixture-only capacity header/member/Finish-journal schema is present with protected bounded
+metadata, exact composite identity FKs, deferred active-holder consistency, immutable tombstones,
+append-only receipts and narrow runtime column privileges. Empty downgrade is reversible; any
+retained row prevents downgrade under table locks. This is no native Finish or nested execution
+capability. Permanent chain FKs currently pin chain/run history; C0 must resolve retention/replay
+compatibility before production activation. Evidence: tasks/project-completion/evidence/
+capacity-finish-schema-20261018. T014-014..017/040 and broader acceptance remain open.

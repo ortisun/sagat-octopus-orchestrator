@@ -2127,3 +2127,19 @@ Clippy83.89s, fmt4.04s,24-crate architecture pass. Fresh Astra/xhigh review's on
 overclaiming test name, corrected and audit rerun. No external reviewCLI. Native schema/port,
 SDK58/fullworkspace/resource/old-writer/nested acceptance and canonical tasks remain pending.
 Evidence: tasks/project-completion/evidence/capacity-finish-vocabulary-20261018/manifest.json.
+
+
+## Dormant capacity Finish schema — 2026-10-18
+
+Refs:T014-014/017/040. Three dormant metadata tables, protected bounded classification, deferred
+active-holder FK, immutable member/group tombstones, append-only Finish journal and narrow
+sagat_app column privileges. Actual PostgreSQL runtime-role schema tests9/9 (18.13s), exhaustive
+variable-column classification1/1 (1.79s), strict locked workspace/all-target Clippy54.85s,
+fmt4.23s and architecture24crates pass. Typed55000 guarded downgrade tested empty/nonempty and
+with an actual migration lock wait behind a concurrent committing writer. Fresh Astra/xhigh SQL
+review found no concrete issue. Initial schema absence, compile issue and two corrected test-probe
+failures remain in evidence; they are not behavioral regression proofs. No native Finish/current
+child FINAL/fence/replay/producer/unknown-COMMIT evidence follows from these fixtures. Permanent
+chain FKs pin cleanup until C0 retention/replay compatibility is resolved. B2c only closes locally;
+canonical014, fullB1/B2, SDK58/fullworkspace/resource/old-writer/nested/release gates remain open.
+Evidence: tasks/project-completion/evidence/capacity-finish-schema-20261018/manifest.json.

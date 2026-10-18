@@ -394,3 +394,10 @@ runtime, close full B1/B2, create/reserve groups or claim complete capacity acco
 B1 decisions still precede their corresponding persistence/runtime integrations. Implement
 vocabulary → schema → exact port → real barriers/recovery → observations in separate increments;
 retain B1a's actual retained-usage gate for a later command with a real delta.
+
+
+B2c schema is implemented and tested only with explicit owner fixtures and real runtime-role
+schema probes. No production creator/caller is introduced. Preserve permanent member/receipt
+chain references until C0 defines compatible tombstone/replay/history retention; current schema
+pins chain/run cleanup. B2d exact native Finish remains the next implementation unit, followed by
+B2e barriers/recovery and B2f observations. See capacity-finish-schema-20261018 evidence.
