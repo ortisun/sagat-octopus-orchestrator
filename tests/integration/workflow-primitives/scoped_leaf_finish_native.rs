@@ -1068,3 +1068,12 @@ mod entry_barriers;
 
 #[path = "scoped_leaf_finish_shard_expiry.rs"]
 mod shard_expiry;
+
+#[path = "scoped_leaf_finish_writer_order.rs"]
+mod writer_order;
+
+#[path = "scoped_leaf_finish_atomic_failures.rs"]
+mod atomic_failures;
+
+#[path = "scoped_leaf_finish_contexts.rs"]
+mod contexts;

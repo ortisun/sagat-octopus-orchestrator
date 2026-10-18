@@ -1,0 +1,38 @@
+{
+  "source_base": "76df372b",
+  "local_units": [
+    "B1b.2b.15c",
+    "B1b.2b.15d",
+    "B1b.2b.15e",
+    "B1b.2b.15"
+  ],
+  "test_scope": "complete current scoped native family",
+  "tests_passed": 25,
+  "frozen_inputs": 1100,
+  "sources_unchanged": true,
+  "product_implementation_changed": false,
+  "files": {
+    "architecture.json": "71013af901efac54184f283d772abfd1d39fddb7b42950b3a626c5a6c7ad2b52",
+    "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "atomic-failures-draft-notes.md": "41c30cb9821f20bcba8184051690165b7a262a684079b7f2c255cf51e9d00a86",
+    "clippy.json": "d1c97ff4fc101ceb806680ddefc062d0da9a57edbbfe3cdf5a98aa2f7a8659e9",
+    "clippy.txt": "1ff0afc44fd76484827f6e5aa4749b3a253c0c3caa0d7c4eda04ca13b2a7b7a6",
+    "contexts-draft-notes.md": "266b37405a3866b8deea523e2772780d18e2fd78cb8e22a31432a42997e3696d",
+    "failure-analysis.md": "8976cb85c05c69537aa275a62f35d3c5338a2756f421f52171bb30ffa8ed063a",
+    "failure-diagnostics.jsonl": "2fbf934480122acebccbd2ae0616e60fa1fae3e138555ae7a017cb975203b436",
+    "failure-native-family.json": "d085e907f5feab0d2555a5d708325a01f014287571d725cebc5e15b59e22b21f",
+    "failure-native-family.txt": "d6aa953c8cae895851a2e46cb6019086b335226980402e294a7b1560fff495a1",
+    "failure-source-after.json": "9623283a13317f2d9ec64501e6cc1ccd40d3169762e731286b0bc9e7c457a206",
+    "failure-source-before.json": "9623283a13317f2d9ec64501e6cc1ccd40d3169762e731286b0bc9e7c457a206",
+    "fmt.json": "de7e4645c2f7acf1609c45025f5d98423777ce31d20d540b059850a3bfe6449a",
+    "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "native-family.json": "c29cf0d504c0eb781dd206b7ae672c5c8bede6f3494de3ab34d380a5273d4190",
+    "native-family.txt": "bcdf81470f109535639db419c66153cf6700172412cd79a31e4d1645b47f6adc",
+    "reproduce.md": "aed94697b575c4c60adba157a724b641b2b06bfcd19db09b939ae2d3eb11ba39",
+    "review.md": "42fb2162012235715df721d7a567e4124a790d6b87f91a4aef1137ac5161b674",
+    "source-after.json": "19b5a7abd616583eb0fbf3665cd6a10c8b47897cc46edc9a42946d6c3af115c6",
+    "source-before.json": "19b5a7abd616583eb0fbf3665cd6a10c8b47897cc46edc9a42946d6c3af115c6",
+    "test-index.json": "4739b5f2af34fe19fc435975c08713a2c4cab23387bbd01e45d84288fef90ee8",
+    "writer-order-draft-notes.md": "102262ef74e9b82c19679677f203bf5b42bacc39626bf3b907acf5d06305cb19"
+  }
+}

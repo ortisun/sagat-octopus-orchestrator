@@ -1,0 +1,33 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 33.77s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 25 tests
+test leaf_certification_native::scoped_finish::atomic_failures::native_scoped_finish_statement_and_deferred_commit_failures_are_atomic ... ok
+test leaf_certification_native::scoped_finish::contexts::native_scoped_finish_refuses_actual_parentless_historical_chain_segment ... ok
+test leaf_certification_native::scoped_finish::contexts::native_scoped_finish_refuses_actual_public_child_before_and_after_detachment ... ok
+test leaf_certification_native::scoped_finish::contexts::native_scoped_finish_refuses_actual_settled_final_child_chain_segment ... ok
+test leaf_certification_native::scoped_finish::entry_barriers::applicable_chain_precedes_run_and_context_refusal_precedes_source_or_receipt_reads ... ok
+test leaf_certification_native::scoped_finish::entry_barriers::duplicate_native_callers_queue_on_the_actual_run_and_share_one_original_result ... ok
+test leaf_certification_native::scoped_finish::entry_barriers::selected_group_busy_follows_actual_run_entry_and_rolls_back_every_effect ... ok
+test leaf_certification_native::scoped_finish::native_scoped_finish_applies_once_and_replays_original_after_real_later_changes ... ok
+test leaf_certification_native::scoped_finish::native_scoped_finish_preserves_exact_a1_holder_vacant_and_last_transitions ... ok
+test leaf_certification_native::scoped_finish::native_scoped_finish_refuses_signed_counter_overflow_atomically ... ok
+test leaf_certification_native::scoped_finish::native_scoped_finish_refuses_source_authority_context_cas_and_inactive_in_order ... ok
+test leaf_certification_native::scoped_finish::qualification::cross_kind_decoder::exact_scoped_fingerprint_cannot_turn_a_child_root_receipt_into_a_scoped_result ... ok
+test leaf_certification_native::scoped_finish::qualification::qualification_distinguishes_exact_absence_from_observable_binding_mismatch ... ok
+test leaf_certification_native::scoped_finish::qualification::qualification_preserves_a_same_tenant_holder_from_another_real_namespace ... ok
+test leaf_certification_native::scoped_finish::qualification::qualification_rejects_a_group_wide_cross_kind_operation_key_then_applies_a_fresh_key ... ok
+test leaf_certification_native::scoped_finish::receipts::native_receipt_checks_fingerprint_before_guarded_timestamp_and_replays_ce_bc_controls ... ok
+test leaf_certification_native::scoped_finish::receipts::native_receipt_refuses_schema_valid_counter_and_scoped_binding_contradictions ... ok
+test leaf_certification_native::scoped_finish::shard_expiry::native_exact_replay_revalidates_expiry_after_unchanged_shard_wait ... ok
+test leaf_certification_native::scoped_finish::shard_expiry::native_first_apply_revalidates_expiry_after_unchanged_shard_wait ... ok
+test leaf_certification_native::scoped_finish::source_controls::native_scoped_finish_applies_and_replays_from_certificate_metadata_only ... ok
+test leaf_certification_native::scoped_finish::source_controls::native_scoped_finish_requires_retained_certificate_before_receipt_and_after_fence ... ok
+test leaf_certification_native::scoped_finish::source_controls::native_scoped_finish_validates_certificate_pin_before_matching_receipt ... ok
+test leaf_certification_native::scoped_finish::writer_order::actual_first_certifier_and_scoped_finish_obey_both_original_run_orders ... ok
+test leaf_certification_native::scoped_finish::writer_order::actual_later_worker_and_scoped_finish_obey_both_original_run_orders ... ok
+test leaf_certification_native::scoped_finish::writer_order::two_genuine_scoped_members_complete_in_either_observed_run_queue_order ... ok
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 465 filtered out; finished in 58.70s
+
