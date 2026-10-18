@@ -1,0 +1,21 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "contract_platform_foundation",
+    "--test",
+    "contract_workflow_primitives",
+    "--test",
+    "contract_payload_classification",
+    "--",
+    "--nocapture"
+  ],
+  "exit_code": 0,
+  "seconds": 78.73,
+  "started_utc": "2026-10-18T23:09:26.581033+00:00",
+  "log": "rust-contracts.txt"
+}

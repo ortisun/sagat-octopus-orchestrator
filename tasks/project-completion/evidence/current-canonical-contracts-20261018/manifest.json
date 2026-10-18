@@ -1,0 +1,96 @@
+{
+  "baseline": "23127c38",
+  "gates": {
+    "openapi": {
+      "command": [
+        "npx",
+        "--yes",
+        "@redocly/cli@1",
+        "lint",
+        "specs/001-platform-foundation/contracts/openapi.yaml"
+      ],
+      "exit_code": 0,
+      "seconds": 3.75,
+      "started_utc": "2026-10-18T23:08:49.244292+00:00",
+      "log": "openapi.txt"
+    },
+    "protobuf": {
+      "command": [
+        "protoc",
+        "--proto_path=specs/001-platform-foundation/contracts",
+        "--descriptor_set_out=/dev/null",
+        "specs/001-platform-foundation/contracts/worker.proto"
+      ],
+      "exit_code": 0,
+      "seconds": 0.14,
+      "started_utc": "2026-10-18T23:08:49.248272+00:00",
+      "log": "protobuf.txt"
+    },
+    "asyncapi": {
+      "command": [
+        "npx",
+        "--yes",
+        "--ignore-scripts",
+        "@asyncapi/cli@3.6.0",
+        "validate",
+        "specs/001-platform-foundation/contracts/events.asyncapi.yaml"
+      ],
+      "exit_code": 0,
+      "seconds": 4.54,
+      "started_utc": "2026-10-18T23:08:49.248201+00:00",
+      "log": "asyncapi.txt"
+    },
+    "workflow-schema": {
+      "command": [
+        "npx",
+        "--yes",
+        "-p",
+        "ajv-cli@5",
+        "-p",
+        "ajv-formats@3",
+        "ajv",
+        "validate",
+        "--spec=draft2020",
+        "-c",
+        "ajv-formats",
+        "--strict=false",
+        "-s",
+        "specs/001-platform-foundation/contracts/workflow.schema.json",
+        "-d",
+        "examples/payment-saga.workflow.json"
+      ],
+      "exit_code": 0,
+      "seconds": 1.99,
+      "started_utc": "2026-10-18T23:08:49.248213+00:00",
+      "log": "workflow-schema.txt"
+    },
+    "rust-contracts": {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "contract_platform_foundation",
+        "--test",
+        "contract_workflow_primitives",
+        "--test",
+        "contract_payload_classification",
+        "--",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "seconds": 78.73,
+      "started_utc": "2026-10-18T23:09:26.581033+00:00",
+      "log": "rust-contracts.txt"
+    }
+  },
+  "rust_target_passes": {
+    "contract_payload_classification": 18,
+    "contract_platform_foundation": 30,
+    "contract_workflow_primitives": 47
+  },
+  "identical_native_inputs": 1125,
+  "canonical_task_closed": false
+}

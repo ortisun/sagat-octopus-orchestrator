@@ -1,0 +1,24 @@
+{
+  "command": [
+    "npx",
+    "--yes",
+    "-p",
+    "ajv-cli@5",
+    "-p",
+    "ajv-formats@3",
+    "ajv",
+    "validate",
+    "--spec=draft2020",
+    "-c",
+    "ajv-formats",
+    "--strict=false",
+    "-s",
+    "specs/001-platform-foundation/contracts/workflow.schema.json",
+    "-d",
+    "examples/payment-saga.workflow.json"
+  ],
+  "exit_code": 0,
+  "seconds": 1.99,
+  "started_utc": "2026-10-18T23:08:49.248213+00:00",
+  "log": "workflow-schema.txt"
+}

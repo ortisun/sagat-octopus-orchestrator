@@ -1,0 +1,12 @@
+{
+  "command": [
+    "protoc",
+    "--proto_path=specs/001-platform-foundation/contracts",
+    "--descriptor_set_out=/dev/null",
+    "specs/001-platform-foundation/contracts/worker.proto"
+  ],
+  "exit_code": 0,
+  "seconds": 0.14,
+  "started_utc": "2026-10-18T23:08:49.248272+00:00",
+  "log": "protobuf.txt"
+}

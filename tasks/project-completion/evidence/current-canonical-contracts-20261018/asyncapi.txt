@@ -1,0 +1,8 @@
+
+File specs/001-platform-foundation/contracts/events.asyncapi.yaml is valid but has (itself and/or referenced documents) governance issues.
+Information 
+specs/001-platform-foundation/contracts/events.asyncapi.yaml
+ 1:11  information  asyncapi-latest-version  The latest version of AsyncAPi is not used. It is recommended update to the "3.1.0" version.  asyncapi
+
+✖ 1 problem (0 errors, 0 warnings, 1 info, 0 hints)
+

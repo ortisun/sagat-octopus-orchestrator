@@ -1,0 +1,1 @@
+examples/payment-saga.workflow.json valid

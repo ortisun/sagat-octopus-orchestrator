@@ -1,0 +1,13 @@
+{
+  "command": [
+    "npx",
+    "--yes",
+    "@redocly/cli@1",
+    "lint",
+    "specs/001-platform-foundation/contracts/openapi.yaml"
+  ],
+  "exit_code": 0,
+  "seconds": 3.75,
+  "started_utc": "2026-10-18T23:08:49.244292+00:00",
+  "log": "openapi.txt"
+}
