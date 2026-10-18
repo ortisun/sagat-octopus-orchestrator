@@ -306,3 +306,167 @@ async fn journal_reference_and_checkpoint_digest_must_match_actual_retained_evid
         assert_eq!(refusal_state(&f).await, before, "{name}");
     }
 }
+
+// Draft insertion for tests/integration/workflow-primitives/leaf_certification_refusals.rs.
+// The existing module imports `super::*` and owns `closed`, `counts`, and `refusal_state`.
+
+async fn rewrite_canonical_metadata_for_decode_control(
+    f: &Flow,
+    definition_version: Uuid,
+    certified_run_revision: i64,
+) {
+    // Owner-only metadata-decoding fixture. Disabling this immutable-row guard does not prove
+    // that a native producer can create or preserve either corrupted value.
+    let mut tx = f
+        .api
+        .db
+        .pool
+        .begin()
+        .await
+        .expect("canonical metadata owner fixture");
+    sqlx::query(
+        "ALTER TABLE leaf_collection_success_certifications \
+         DISABLE TRIGGER leaf_success_append_only",
+    )
+    .execute(&mut *tx)
+    .await
+    .expect("disable canonical append-only guard for metadata-decoding fixture");
+    let changed = sqlx::query(
+        "UPDATE leaf_collection_success_certifications \
+         SET definition_version_id=$3, certified_run_revision=$4 \
+         WHERE tenant_id=$1 AND run_id=$2 AND owner_node='lines' AND iteration_index=0",
+    )
+    .bind(f.tenant.as_uuid())
+    .bind(f.run.as_uuid())
+    .bind(definition_version)
+    .bind(certified_run_revision)
+    .execute(&mut *tx)
+    .await
+    .expect("write schema-valid canonical metadata decode fixture");
+    assert_eq!(changed.rows_affected(), 1);
+    sqlx::query(
+        "ALTER TABLE leaf_collection_success_certifications \
+         ENABLE ALWAYS TRIGGER leaf_success_append_only",
+    )
+    .execute(&mut *tx)
+    .await
+    .expect("restore canonical append-only guard");
+    tx.commit()
+        .await
+        .expect("commit canonical metadata decode fixture");
+    let trigger_mode: String = sqlx::query_scalar(
+        "SELECT tgenabled::text FROM pg_trigger \
+         WHERE tgrelid='leaf_collection_success_certifications'::regclass \
+         AND tgname='leaf_success_append_only'",
+    )
+    .fetch_one(&f.api.db.pool)
+    .await
+    .expect("canonical append-only trigger mode");
+    assert_eq!(trigger_mode, "A", "restore the production ALWAYS guard");
+}
+
+#[tokio::test]
+async fn canonical_metadata_reader_refuses_wrong_pin_and_future_revision() {
+    let (f, store, c) = closed("leaf-canonical-metadata-refusal").await;
+    let created = store
+        .certify_leaf_collection_success(&c)
+        .await
+        .expect("actual source first certification");
+    assert!(!created.replayed);
+
+    // Establish one stable native record and live current authority before owner fault injection.
+    let stable = store
+        .certify_leaf_collection_success(&c)
+        .await
+        .expect("stable canonical record under current authority");
+    assert!(stable.replayed);
+    assert_eq!(stable.record, created.record);
+    assert_eq!(counts(&f).await, (1, 1));
+    let source_before = refusal_state(&f).await;
+
+    let actual_revision: i64 = sqlx::query_scalar(
+        "SELECT run_version FROM runs \
+         WHERE tenant_id=$1 AND namespace_id=$2 AND id=$3",
+    )
+    .bind(c.identity.tenant_id().as_uuid())
+    .bind(c.identity.namespace_id().as_uuid())
+    .bind(c.identity.run_id().as_uuid())
+    .fetch_one(&f.api.db.pool)
+    .await
+    .expect("actual guarded Run revision");
+    assert_eq!(
+        u64::try_from(actual_revision).expect("positive Run revision"),
+        created.record.certified_run_revision
+    );
+
+    rewrite_canonical_metadata_for_decode_control(&f, Uuid::new_v4(), actual_revision).await;
+    assert_eq!(
+        store.certify_leaf_collection_success(&c).await,
+        Err(LeafCollectionSuccessError::ContradictorySource),
+        "schema-valid stored definition pin must match the actual guarded Run"
+    );
+    assert_eq!(counts(&f).await, (1, 1));
+    assert_eq!(refusal_state(&f).await, source_before);
+
+    let future_revision = actual_revision
+        .checked_add(1)
+        .expect("fixture revision remains signed");
+    rewrite_canonical_metadata_for_decode_control(
+        &f,
+        created.record.definition_version.as_uuid(),
+        future_revision,
+    )
+    .await;
+    assert_eq!(
+        store.certify_leaf_collection_success(&c).await,
+        Err(LeafCollectionSuccessError::ContradictorySource),
+        "stored certified revision cannot exceed the actual guarded Run revision"
+    );
+    assert_eq!(counts(&f).await, (1, 1));
+    assert_eq!(refusal_state(&f).await, source_before);
+}
+
+#[tokio::test]
+async fn canonical_metadata_reader_qualifies_owner_and_index_before_creation_cas() {
+    let (f, store, c) = closed("leaf-canonical-exact-key").await;
+    let created = store
+        .certify_leaf_collection_success(&c)
+        .await
+        .expect("actual source first certification");
+    assert!(!created.replayed);
+
+    let mut stale = c.clone();
+    stale.expected_run_revision = stale
+        .expected_run_revision
+        .checked_sub(1)
+        .expect("closed fixture has a prior signed revision");
+    let neighbor = store
+        .certify_leaf_collection_success(&stale)
+        .await
+        .expect("exact neighboring canonical record replays before stale creation CAS");
+    assert!(neighbor.replayed);
+    assert_eq!(neighbor.record, created.record);
+
+    let source_before = refusal_state(&f).await;
+    for (owner, index) in [("missing", 0), ("lines", 1)] {
+        let mut absent = stale.clone();
+        absent.identity = LeafCollectionPathIdentity::new(
+            c.identity.tenant_id(),
+            c.identity.namespace_id(),
+            c.identity.run_id(),
+            InstancePath::root()
+                .child(NodeId::parse(owner).expect("bounded owner"), index)
+                .expect("depth-one absent key"),
+        )
+        .expect("qualified absent key");
+        assert_eq!(
+            store.certify_leaf_collection_success(&absent).await,
+            Err(LeafCollectionSuccessError::StaleRunRevision {
+                current: c.expected_run_revision
+            }),
+            "absent {owner}/{index} must miss the neighboring lines/0 record and reach creation CAS"
+        );
+    }
+    assert_eq!(counts(&f).await, (1, 1));
+    assert_eq!(refusal_state(&f).await, source_before);
+}

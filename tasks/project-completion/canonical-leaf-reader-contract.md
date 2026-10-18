@@ -112,3 +112,17 @@ leaf_certification_refusals.rs:57,114,182 in the same dir. No unresolved extract
 One fresh independent Astra/xhigh bounded read-only review found no actionable issue. Root
 reconciled test guidance to retain actual passing baselines for behavior-preserving extraction;
 no artificial RED failure is required. No tests, executable extraction or Finish authority claimed.
+
+
+## Implemented bounded extraction — 2026-10-18
+
+The genuine identity/locked pin/revision signature is crate-private in leaf_certification.rs;
+its exact SQL, strict metadata decoding and existing certifier ordering are preserved. Two
+new real PostgreSQL controls passed before extraction, then the complete current native
+certifier suite passed21/21 (one private subprocess probe ignored in direct enumeration).
+Those controls inject owner-only schema-valid wrong pin/future revision, restore ALWAYS
+append-only enforcement, and distinguish exact owner/index misses from neighboring replay
+before stale creation CAS. They are decoder tests, not native production mutation proofs.
+Strict targeted Clippy/fmt/architecture pass. Two fresh bounded reviews found no issue.
+No new authority, certificate writer/INSERT permission, scoped Finish consumer or caller follows.
+Evidence: evidence/canonical-leaf-reader-20261018/manifest.json.

@@ -1,0 +1,4 @@
+{
+  "crates/infra-postgres/src/leaf_certification.rs": "d39f67bc5a41fdb00b2e2d3eff05c1705f27e22583abcc9f1fb7ecfcbe744669",
+  "tests/integration/workflow-primitives/leaf_certification_refusals.rs": "05a03fc682dd2a9d52d9363b93be6a7af3c367cc58ef9341a67fd9d59161925f"
+}

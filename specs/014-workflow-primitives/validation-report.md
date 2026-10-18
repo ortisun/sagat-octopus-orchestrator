@@ -3011,3 +3011,19 @@ always records ParentLink, but initializes a chain only with continuation policy
 No native adapter, source query, runtime grant, caller, C0 or broader nested acceptance follows.
 Evidence: tasks/project-completion/evidence/scoped-finish-application-20261018/manifest.json;
 contracts: scoped-leaf-finish-application-contract.md and scoped-leaf-finish-flat-context.md.
+
+
+## Shared canonical leaf metadata reader — 2026-10-18
+
+Local B1b.2b.8, refs:T014-014..017/040. The crate-private reader now accepts genuine shared
+identity and actual locked Run pin/revision; exact query/binds/strict finite timestamp and
+metadata/error/replay behavior are unchanged. Two owner-only corruption/exact-key controls
+passed before refactoring (72.48s including compilation;2.98s harness). After extraction,
+full current leaf_certification_native passed21 tests in106.65s (64.44s harness), with one
+private subprocess probe ignored in direct enumeration; the parent process-recovery test
+executes that probe in its own actual children. Native uncertain-COMMIT, both-order source
+barriers, recovery, typed refusals and OTLP/redaction regressions pass. Targeted strict
+Clippy23.71s, fmt4.34s and architecture0.34s pass; both frozen input hashes unchanged.
+Two fresh bounded reviews found no issue. No metadata reader grants authority or detects
+coherent arbitrary database-owner forgery; no new source producer, permission or caller.
+Evidence: tasks/project-completion/evidence/canonical-leaf-reader-20261018/manifest.json.

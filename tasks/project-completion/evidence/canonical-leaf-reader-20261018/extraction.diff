@@ -1,0 +1,60 @@
+diff --git a/crates/infra-postgres/src/leaf_certification.rs b/crates/infra-postgres/src/leaf_certification.rs
+index 31e30792..037b2c15 100644
+--- a/crates/infra-postgres/src/leaf_certification.rs
++++ b/crates/infra-postgres/src/leaf_certification.rs
+@@ -4,9 +4,10 @@ use sagat_application::{
+     error::StoreError,
+     execution::{DefinitionCache, instance_step_id},
+     leaf_certification::{
+-        CertifyLeafCollectionSuccess as Command, LeafCollectionSuccessError as Error,
+-        LeafCollectionSuccessProfile, LeafCollectionSuccessRecord as Record,
+-        LeafCollectionSuccessResult, LeafCollectionSuccessStore,
++        CertifyLeafCollectionSuccess as Command, LeafCollectionPathIdentity,
++        LeafCollectionSuccessError as Error, LeafCollectionSuccessProfile,
++        LeafCollectionSuccessRecord as Record, LeafCollectionSuccessResult,
++        LeafCollectionSuccessStore,
+     },
+     primitives::CollectionScopeId,
+ };
+@@ -71,7 +72,9 @@ impl PgLeafCollectionSuccessStore {
+             trace: col(&row, "trace_id")?,
+             now,
+         };
+-        if let Some(record) = canonical(tx, c, &run).await? {
++        if let Some(record) =
++            read_canonical_leaf_success(tx, &c.identity, run.version, run.revision).await?
++        {
+             return Ok(LeafCollectionSuccessResult {
+                 record,
+                 replayed: true,
+@@ -255,12 +258,15 @@ fn node(row: &PgRow, name: &str) -> Result<NodeId, Error> {
+     NodeId::parse(&col::<String>(row, name)?).map_err(|_| Error::ContradictorySource)
+ }
+ 
+-async fn canonical(
++/// Read canonical metadata only. The caller retains the exact original Run and current fence in
++/// this transaction and supplies its actual pin/revision; this reader grants no authority and
++/// does not repeat the source proof or follow a chain head.
++pub(crate) async fn read_canonical_leaf_success(
+     tx: &mut Transaction<'_, Postgres>,
+-    c: &Command,
+-    run: &LockedSourceRun,
++    i: &LeafCollectionPathIdentity,
++    actual_definition_version: WorkflowVersionId,
++    actual_run_revision: u64,
+ ) -> Result<Option<Record>, Error> {
+-    let i = &c.identity;
+     let segment = &i.path().segments()[0];
+     // PostgreSQL finite timestamps extend beyond time::OffsetDateTime's year 9999. SQLx's
+     // binary decoder panics outside that range, so reject before transferring the timestamp.
+@@ -293,7 +299,9 @@ async fn canonical(
+         audit_id: AuditId::new(col(&row, "audit_id")?),
+     };
+     r.validate_structure()?;
+-    if r.definition_version != run.version || r.certified_run_revision > run.revision {
++    if r.definition_version != actual_definition_version
++        || r.certified_run_revision > actual_run_revision
++    {
+         return Err(Error::ContradictorySource);
+     }
+     Ok(Some(r))

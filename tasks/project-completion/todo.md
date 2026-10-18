@@ -169,7 +169,7 @@ See evidence/leaf-certification-process-20261018. Other producer/observation/rel
   tests without native source queries, new runtime grants or a production caller.
 - [x] B1b.2b.7: Review crate-private canonical leaf reader extraction using genuine shared identity
   and actual locked pin/revision; unchanged metadata/replay semantics and no new authority.
-- [ ] B1b.2b.8: Extract the canonical metadata reader and prove unchanged certifier behavior plus
+- [x] B1b.2b.8: Extract the canonical metadata reader and prove unchanged certifier behavior plus
   concrete missing metadata controls before the future native scoped Finish consumer.
 - [x] B1b.2b.9: Review truthful scoped Finish audit, distinct closed reference hint and existing
   closed operational observations while preserving ChildRoot wire/metric semantics.
