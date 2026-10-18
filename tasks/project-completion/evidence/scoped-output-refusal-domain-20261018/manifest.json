@@ -1,0 +1,13 @@
+{
+  "architecture.json": "a0b248976d5d8856f7662550bdcb6988ef56a1782a44d004efc6eb145099bb04",
+  "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+  "clippy.json": "ad7a28c86ead0c4e90b39da6facae42b09217fa4ae1892884ab253a333340cb4",
+  "clippy.txt": "fdf7ba6968d2bd045e0058362a882046d27d5ace1e8b0894c4e039ddcb875103",
+  "domain.json": "9983f5cec1e85df0367325357ad83aa292b3aa49973e51d072cf7b05adadfff1",
+  "domain.txt": "b0e6cf7b8b2892ec4bf75ed4e507ac3d4bffc61825b53aa76cad23fecad4b0cd",
+  "fmt.json": "c3da445e9bf5e9218d2840bd0fb96c23cd79d79e009743febf7c037907bfbb47",
+  "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "reproduce.md": "db50c616ff70e24c4cd798549f7af65798cc7fe4843e6835adef9e5a2196e9e6",
+  "source-after.json": "96ed75739e1f4cbf6a290c6f5443e24f03688646b5d542c4ce5a05ebede69808",
+  "source-before.json": "96ed75739e1f4cbf6a290c6f5443e24f03688646b5d542c4ce5a05ebede69808"
+}

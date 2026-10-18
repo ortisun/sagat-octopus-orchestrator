@@ -36,6 +36,19 @@ pub struct AddressedProgress {
     pub events: Vec<AddressedRunEvent>,
 }
 
+/// The successful report whose retained output was refused for the run data limit.
+///
+/// This deliberately names only the two successful scoped reports that can be preserved without
+/// retaining their output. Other reconciliation verdicts and failed attempts use their existing
+/// commands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScopedOutputRefusalSuccess {
+    /// A declared forward activity completed successfully.
+    Forward,
+    /// A reconciliation reported that its forward effect was applied.
+    ReconciliationApplied,
+}
+
 /// The outcome of an evaluation, handed back by the adapter that performed it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Resolution {
@@ -538,6 +551,110 @@ pub fn complete_step(
             generation: fence.generation,
         },
     )
+}
+
+fn has_live_ancestry(
+    def: &WorkflowDefinition,
+    state: &RunState,
+    instance: &ExecutionInstanceId,
+) -> bool {
+    let mut parent = super::instance::InstancePath::root();
+    for segment in instance.path().segments() {
+        let owner = ExecutionInstanceId::in_path(parent.clone(), segment.scope_node().clone());
+        let active = match def
+            .node_for_instance(&owner)
+            .map(crate::workflow::Node::kind)
+        {
+            Some(NodeKind::ForEach { .. }) => state.collection(&owner).is_some_and(|collection| {
+                collection
+                    .active_iterations()
+                    .any(|index| index == segment.iteration_index())
+            }),
+            Some(NodeKind::While { .. } | NodeKind::RepeatUntil { .. }) => state
+                .loop_state(&owner)
+                .is_some_and(|scope| scope.active_iteration() == Some(segment.iteration_index())),
+            _ => false,
+        };
+        if !active {
+            return false;
+        }
+        let Ok(next) = parent.child(segment.scope_node().clone(), segment.iteration_index()) else {
+            return false;
+        };
+        parent = next;
+    }
+    true
+}
+
+/// Prepares the root-only half of preserving a successful scoped report whose output cannot be
+/// retained. The caller persists this [`Progress`] first, then invokes [`complete_instance`] or
+/// [`complete_reconciliation_instance`] with the same instance and fence and persists that
+/// addressed progress separately in the same full-run transaction.
+///
+/// This command does not settle the root or the scoped path. A pre-existing stop wins unchanged.
+///
+/// # Errors
+/// Returns a typed instance/fence error when the exact leased instance is stale or no longer has a
+/// live admitted ancestry. [`ExecutionError::Invariant`] means the selected success kind does not
+/// describe the leased definition node.
+pub fn prepare_scoped_output_refusal(
+    def: &WorkflowDefinition,
+    state: &mut RunState,
+    instance: &ExecutionInstanceId,
+    fence: Fence,
+    success: ScopedOutputRefusalSuccess,
+) -> Result<Progress, ExecutionError> {
+    if instance.path().is_root() {
+        return Err(ExecutionError::Invariant(
+            "root work used the scoped output-refusal command",
+        ));
+    }
+    require_instance_lease(state, instance, fence)?;
+    let declared = def
+        .node_for_instance(instance)
+        .ok_or_else(|| ExecutionError::UnknownInstance(instance.clone()))?;
+    let kind_matches = match success {
+        ScopedOutputRefusalSuccess::Forward => {
+            *declared.origin() == NodeOrigin::Declared
+                && matches!(declared.kind(), NodeKind::Activity { .. })
+        }
+        ScopedOutputRefusalSuccess::ReconciliationApplied => {
+            let NodeOrigin::Reconciliation(forward) = declared.origin() else {
+                return Err(ExecutionError::Invariant(
+                    "an applied reconciliation refusal requires a reconciliation instance",
+                ));
+            };
+            let forward = ExecutionInstanceId::in_path(instance.path().clone(), forward.clone());
+            instance.node().is_reconciliation()
+                && matches!(declared.kind(), NodeKind::Activity { .. })
+                && state.instance(&forward).is_some_and(|step| {
+                    step.status() == StepStatus::Waiting
+                        && matches!(step.waiting_on(), Some(WaitingOn::Reconciliation))
+                })
+        }
+    };
+    if !kind_matches {
+        return Err(ExecutionError::Invariant(
+            "the output-refusal success kind does not match the leased instance",
+        ));
+    }
+    if !has_live_ancestry(def, state, instance) {
+        return Err(ExecutionError::UnknownInstance(instance.clone()));
+    }
+
+    let mut events = Vec::new();
+    if state.stop_reason().is_none() {
+        let stop = RunEvent::RunStopRequested {
+            reason: StopReason::Failed,
+            code: Some(FailureCode::run_data_limit()),
+        };
+        state.apply(&stop)?;
+        events.push(stop);
+    }
+    Ok(Progress {
+        events,
+        pending: None,
+    })
 }
 
 /// Records success for one leased activity instance and advances its admitted path.

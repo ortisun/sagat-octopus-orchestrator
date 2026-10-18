@@ -1,0 +1,17 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-domain",
+    "--test",
+    "scoped_compensation",
+    "--",
+    "--nocapture"
+  ],
+  "exit_code": 0,
+  "seconds": 6.99,
+  "started_utc": "2026-10-18T18:58:24.751203+00:00",
+  "log": "domain.txt"
+}
