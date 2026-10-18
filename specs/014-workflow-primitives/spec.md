@@ -525,5 +525,6 @@ producer race/restart evidence remain prerequisites before any scoped Finish.
 The fixed OrdinaryLeafV1 capacity member and receipt schema now retains a qualified original Run,
 root owner and iteration index, with closed ChildRoot/ScopedPath variants. The extension preserves
 the existing native ChildRoot writer and denies the new scoped INSERT columns to sagat_app.
-This is dormant storage metadata only; native scoped source consumption, conditional downgrade
-verification, production intent/permissions and broader nested execution remain separately gated.
+Conditional downgrade is verified against retained scoped rows and actual native ChildRoot replay.
+This is dormant storage metadata only; native scoped source consumption, production intent/
+permissions and broader nested execution remain separately gated.

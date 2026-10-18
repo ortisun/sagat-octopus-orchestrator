@@ -1,0 +1,103 @@
+{
+  "scope": "B1b.2b.4 conditional scoped Finish extension downgrade only",
+  "schema_base": "2deef834",
+  "commands": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "capacity_finish::scoped_binding::downgrade::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 37.62,
+      "log": "downgrade.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "compatibility::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 6.32,
+      "log": "compatibility.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "seconds": 8.78,
+      "log": "clippy.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "seconds": 4.12,
+      "log": "fmt.txt"
+    },
+    {
+      "command": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "exit_code": 0,
+      "seconds": 0.32,
+      "log": "architecture.txt"
+    }
+  ],
+  "postgresql": "16.15 dedicated held local test server, unique database per World",
+  "runtime_role": true,
+  "tests": {
+    "downgrade": 3,
+    "native_compatibility": 8
+  },
+  "review_cycles": 1,
+  "source_unchanged": true,
+  "pending": [
+    "native scoped source consumer/port implementation",
+    "C0/production caller/INSERT grant/complete nested protocol"
+  ],
+  "files": {
+    "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "clippy.txt": "15b01da7ff016803a95639760c9865698eced09315ae7cf5f13129238ccd459b",
+    "commands.json": "f452005562e005eb8f5544f31bbde07adfce418c738be4d07c6ab69609d9d638",
+    "compatibility.txt": "7088201d6b7f5dae596da8384742ba49d4517804deddaa4d5f769030ab8798b9",
+    "downgrade.txt": "675be76cdb5a72f09341063220d3967b9f2e2bcdeda38e71405d1f22a04d2da4",
+    "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "review.md": "f930b9c981ff387886ec6a2918ddbf3bee5c844d14c2bd50797db6483fd993f2",
+    "source-after.json": "c9421e804afd3f72e3d405019f4bb529bf646046594f40f3a5737699830a7d76",
+    "source-before.json": "c9421e804afd3f72e3d405019f4bb529bf646046594f40f3a5737699830a7d76"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "crates/infra-postgres/migrations/20261212000000_scoped_finish_binding.down.sql": "83da1764a971cfa5ef134bfa4d643f23e981c97a0458bf47153df7c5949f1f6e",
+  "crates/infra-postgres/migrations/20261212000000_scoped_finish_binding.up.sql": "a13861e74b7993f3411605538b6552a610db0e3afa973fa6b906f43f0002212c",
+  "tests/integration/workflow-primitives/capacity_finish.rs": "6db1cff3c5d13239642d69e525f414bea410df1a0227cdce13c8c8874998e6c8",
+  "tests/integration/workflow-primitives/capacity_scoped_binding.rs": "1fb9dfa118d2b50f07801202f415b15ef80778862827966130a4f1303c991c3a",
+  "tests/integration/workflow-primitives/capacity_scoped_downgrade.rs": "6828aeedba0d03761c896dbc959311a4a8e15446b28cf8ea70e1f2a66303f142"
+}

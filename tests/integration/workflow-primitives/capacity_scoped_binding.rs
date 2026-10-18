@@ -1200,3 +1200,6 @@ async fn runtime_insert_columns_are_exactly_legacy_and_scoped_release_stays_clos
         None,
     );
 }
+
+#[path = "capacity_scoped_downgrade.rs"]
+mod downgrade;

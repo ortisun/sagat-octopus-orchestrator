@@ -495,5 +495,6 @@ The fixed OrdinaryLeafV1 member/receipt binding is now represented by additive m
 20261212000000. Total discriminated CHECKs and exact tenant/group/path FKs preserve ChildRoot
 metadata, original20-column runtime INSERT, immutable identity and permanent tombstones. Actual
 capacity Finish regression passes30tests, including five new schema probes. Conditional downgrade
-execution is a separate bounded unit. This introduces no scoped native writer or production caller;
+execution passed in a separate bounded unit, including native down/up replay and observed writer
+lock wait/refusal. This introduces no scoped native writer or production caller;
 B1/C0/general nested publication and canonical runtime gates remain open.

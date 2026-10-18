@@ -2921,3 +2921,16 @@ One fresh bounded Astra review found no issue. This is documentation only: no na
 source proof from types, runtime permission, caller or nesting acceptance. No tests run for this
 contract decision. See tasks/project-completion/scoped-leaf-finish-application-contract.md and
 evidence/scoped-finish-port-decision-20261018.
+
+## Conditional scoped Finish downgrade execution — 2026-10-18
+
+Refs:T014-014..017/040; local B1b.2b.4. Three actual PostgreSQL tests pass37.62s (harness3.45s):
+explicit sagat_app native ChildRoot apply/down-replay/up-replay with preserved legacy rows/grants;
+separate ACTIVE and FINISHED+receipt retained variants refusing55000; and uncommitted original-Run
+thenG writer observed blocking runs AccessExclusiveLock before inspection, whose later commit is
+retained and causes55000. Migration version, scoped identity, ALWAYS guards and effective grant
+survive refusal. No sleep-only lock oracle, row rewrite, source-consumption or global lock claim.
+Native compatibility passes8/8 in6.32s on the current migration set. Strict targeted Clippy8.78s,
+format4.12s and24-crate architecture0.32s pass. All frozen SQL/test inputs unchanged. One fresh
+read-only bounded Astra review found no issue; native store uses an explicit runtime pool.
+Evidence:tasks/project-completion/evidence/scoped-finish-downgrade-20261018/manifest.json.

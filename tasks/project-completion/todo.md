@@ -160,7 +160,7 @@ See evidence/leaf-certification-process-20261018. Other producer/observation/rel
   ChildRoot INSERT compatibility, scoped INSERT denial and conditional downgrade requirements only.
 - [x] B1b.2b.3: Implement dormant scoped binding schema/classification and actual constraints,
   privileges/immutability/legacy native regression;30actual PostgreSQL tests pass.
-- [ ] B1b.2b.4: Prove conditional extension downgrade with actual native legacy down/up replay,
+- [x] B1b.2b.4: Prove conditional extension downgrade with actual native legacy down/up replay,
   ACTIVE/FINISHED scoped retention refusal and observed original-Run relation lock barrier.
 - [x] B1b.2b.5: Review the additive fixed scoped Finish application contract, shared path identity,
   distinct fingerprint, original-Run result and authority/source/receipt/CAS ordering only.

@@ -2,7 +2,7 @@
 
 Refs:T014-014..017/040; local B1b.2b.2. Dependency: reviewed scoped-leaf-finish-binding.md.
 Status: dormant schema implemented in migration20261212000000 with30actual PostgreSQL tests.
-Conditional downgrade evidence remains a separate bounded unit. No executable scoped writer,
+Conditional downgrade/native replay/held-writer evidence also passed as a separate bounded unit. No executable scoped writer,
 certificate consumption, caller, creation/activation, release permission or nested authority.
 
 ## Discriminated identity
@@ -110,5 +110,22 @@ held test server and unique database per World. No production server/configurati
 Classification completeness, runtime SQL privilege audit and execution-plane retention gates all
 passed against the same SQL/catalog. Source hashes and all logs are retained under
 `evidence/scoped-finish-schema-20261018`. No native scoped source consumption, release INSERT,
-caller, C0 or nesting acceptance follows. The conditional down SQL still needs its dedicated
-legacy/native and held-writer verification before the parent binding unit closes.
+caller, C0 or nesting acceptance follows. The dedicated legacy/native and held-writer verification below proves conditional reversal only;
+the parent binding/source-consumption unit remains open.
+
+## Conditional downgrade executed — 2026-10-18
+
+Three dedicated tests passed in37.62s (compile32.01s; harness3.45s), on the held PostgreSQL16.15.
+Actual native ChildRoot apply and exact replay use an explicit sagat_app pool before/while-down/
+after-upgrade, preserving hashes of original member/header/receipt fields and restoring the
+legacy table INSERT while down then the narrow grant when up. Fresh ACTIVE and FINISHED+receipt
+scoped fixtures independently refuse55000 without changing stored state or migration version.
+An uncommitted writer holding originalRun thenG blocks the real migration on an ungranted runs
+AccessExclusiveLock, observed with pg_locks and pg_blocking_pids. Its commit is then visible to
+the guarded refusal; retained row, ALWAYS guards and narrow grant survive. No global DDL/lock
+safety, source finality or production authority is inferred from these fixtures.
+
+Current native compatibility also passed8/8 in6.32s; strict integration-target Clippy8.78s,
+format4.12s and24-crate architecture0.32s all passed with unchanged frozen sources. One fresh
+bounded Astra review found no issue. The initial model-capacity failure was retried with the same
+model; no substitute or external CLI was used. See evidence/scoped-finish-downgrade-20261018.

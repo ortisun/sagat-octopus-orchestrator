@@ -1,0 +1,11 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 32.01s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 3 tests
+test capacity_finish::scoped_binding::downgrade::active_member_and_finished_tombstone_receipt_each_refuse_downgrade ... ok
+test capacity_finish::scoped_binding::downgrade::child_root_native_finish_survives_down_and_up_with_legacy_grants ... ok
+test capacity_finish::scoped_binding::downgrade::downgrade_waits_on_original_run_then_observes_committed_scoped_member ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 458 filtered out; finished in 3.45s
+
