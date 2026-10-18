@@ -13,6 +13,7 @@ mod bindings;
 mod breaker;
 mod capacity_finish;
 mod chain_progress;
+mod collection_outputs;
 mod connectors;
 mod content_usage;
 mod database;

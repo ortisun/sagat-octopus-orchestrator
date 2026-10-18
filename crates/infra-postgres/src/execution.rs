@@ -56,6 +56,7 @@ use sqlx::{PgConnection, PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use crate::collection_outputs;
 use crate::definitions::{PgDefinitionStore, hash, remember, replay};
 use crate::event_codec::{decode, encode};
 use crate::identity::{PgIdentityStore, col, corrupt, insert_audit, store_error};
@@ -3097,23 +3098,35 @@ impl PgRunTx {
         if charge == 0 {
             return Ok(());
         }
+        let effective = collection_outputs::inspect(&mut self.tx, &self.info, &self.def).await?;
+        let charge = u64::try_from(charge).map_err(|_| corrupt("output byte charge"))?;
+        let after = effective
+            .total()
+            .checked_add(charge)
+            .ok_or_else(|| corrupt("effective output byte total"))?;
+        if after > u64::try_from(MAX_RUN_OUTPUT_BYTES).map_err(|_| corrupt("run output limit"))? {
+            return Err(StoreError::QuotaExceeded {
+                what: "output retained by one run",
+            });
+        }
         let updated = sqlx::query(
             "UPDATE run_instance_usage \
-             SET logical_output_bytes=logical_output_bytes+$3 \
+             SET logical_output_bytes=logical_output_bytes+$4 \
              WHERE tenant_id=$1 AND run_id=$2 \
-               AND logical_output_bytes+$3 <= $4",
+               AND logical_output_bytes=$3 \
+               AND logical_output_bytes+$4+$5 <= $6",
         )
         .bind(self.info.tenant_id.as_uuid())
         .bind(self.info.run_id.as_uuid())
-        .bind(charge)
+        .bind(i64::try_from(effective.ledger()).map_err(|_| corrupt("output byte ledger"))?)
+        .bind(i64::try_from(charge).map_err(|_| corrupt("output byte charge"))?)
+        .bind(i64::try_from(effective.legacy_bytes()?).map_err(|_| corrupt("legacy output bytes"))?)
         .bind(i64::try_from(MAX_RUN_OUTPUT_BYTES).map_err(|_| corrupt("run output limit"))?)
         .execute(&mut *self.tx)
         .await
         .map_err(store_error)?;
         if updated.rows_affected() != 1 {
-            return Err(StoreError::Internal {
-                detail: "the logical run output byte limit was exceeded".into(),
-            });
+            return Err(corrupt("run output byte ledger changed under its run lock"));
         }
         Ok(())
     }
@@ -3159,6 +3172,19 @@ impl RunTx for PgRunTx {
 
     async fn data(&mut self) -> Result<&RunData, StoreError> {
         if self.data.is_none() {
+            // Validate and count legacy collection owners before transferring any payload body.
+            // Historical writers may have retained more than the current Run ceiling.
+            let effective =
+                collection_outputs::inspect(&mut self.tx, &self.info, &self.def).await?;
+            if effective.total()
+                > u64::try_from(MAX_RUN_OUTPUT_BYTES).map_err(|_| corrupt("run output limit"))?
+            {
+                return Err(StoreError::QuotaExceeded {
+                    what: "output retained by one run",
+                });
+            }
+            let legacy_outputs =
+                collection_outputs::hydrate_missing(&mut self.tx, &self.info, &effective).await?;
             let tenant = self.info.tenant_id.as_uuid();
             let input_row = sqlx::query(
                 "SELECT p.content, r.input_blob_id FROM runs r JOIN payloads p \
@@ -3184,13 +3210,34 @@ impl RunTx for PgRunTx {
             let mut outputs = BTreeMap::new();
             for row in &rows {
                 let node: String = col(row, "node")?;
-                outputs.insert(
-                    ExecutionInstanceId::in_path(
-                        step_instance_path(row)?,
-                        NodeId::parse_stored(&node).map_err(|_| corrupt("step node"))?,
-                    ),
-                    col::<Vec<u8>>(row, "content")?,
-                );
+                if outputs
+                    .insert(
+                        ExecutionInstanceId::in_path(
+                            step_instance_path(row)?,
+                            NodeId::parse_stored(&node).map_err(|_| corrupt("step node"))?,
+                        ),
+                        col::<Vec<u8>>(row, "content")?,
+                    )
+                    .is_some()
+                {
+                    return Err(corrupt("duplicate step output"));
+                }
+            }
+            for (instance, content) in legacy_outputs {
+                if outputs.insert(instance, content).is_some() {
+                    return Err(corrupt("legacy collection owner already has an output"));
+                }
+            }
+            let loaded_output_bytes = outputs.values().try_fold(0_u64, |total, output| {
+                total
+                    .checked_add(
+                        u64::try_from(output.len())
+                            .map_err(|_| corrupt("output payload length"))?,
+                    )
+                    .ok_or_else(|| corrupt("effective output byte total"))
+            })?;
+            if loaded_output_bytes != effective.total() {
+                return Err(corrupt("effective output byte total"));
             }
             let state_row = sqlx::query(
                 "SELECT p.content, s.state_revision FROM workflow_operation_states s JOIN payloads p \
@@ -3324,6 +3371,14 @@ impl RunTx for PgRunTx {
         self.data.as_ref().ok_or_else(|| StoreError::Internal {
             detail: "run data was not loaded".into(),
         })
+    }
+
+    async fn logical_output_bytes(&mut self) -> Result<u64, StoreError> {
+        Ok(
+            collection_outputs::inspect(&mut self.tx, &self.info, &self.def)
+                .await?
+                .total(),
+        )
     }
 
     async fn stage_outputs(&mut self, outputs: &[(NodeId, Vec<u8>)]) -> Result<(), StoreError> {
