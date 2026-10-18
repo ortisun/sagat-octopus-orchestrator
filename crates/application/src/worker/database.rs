@@ -204,13 +204,19 @@ where
     }
 
     /// Returns the frozen bound only for a live managed attempt with a retained credential pin.
-    /// Ordinary uploads continue through their existing streaming admission.
+    /// Ordinary uploads continue through their existing streaming admission. `None` does not
+    /// authorize an upload: the caller must still obtain its exact-path blob capability.
     pub async fn database_blob_limit(
         &self,
         principal: &Principal,
         task: &TaskRef<'_>,
     ) -> Result<Option<usize>, AppError> {
         principal.authorize(Permission::WorkerExecute)?;
+        // Managed database execution is root-only. Do not restore unrelated scoped history merely
+        // to discover that this is ordinary work; check_blob_upload enforces its live capability.
+        if !task.instance.path().is_root() {
+            return Ok(None);
+        }
         let mut tx = self.open(principal, task, Lock::Wait).await?;
         self.verify(&mut tx, task).await?;
         self.ensure_bound(principal, &mut tx, task).await?;

@@ -1667,6 +1667,17 @@ lookup intentionally permits an expired lease for receipt replay while checking 
 and echoed step identity. Actual catalog/object authorization remains in the existing blob service;
 these tests do not claim an object-store byte transfer, or enable scoped blob completion.
 
+Follow-up public-RPC evidence: the managed database bound probe previously restored the whole run
+before the bounded upload check. `database_blob_limit` now returns no managed bound for non-root
+instances; this is not authorization, and the existing upload capability remains mandatory.
+The new real gRPC test first failed with `Internal` under denied historical reads (0/1,4.63s).
+After the fix, the pipeline group passed5/5,8.01s, including actual uploaded bytes/hash and a
+self-consistent forged generation refused with `STALE_ATTEMPT` before a second object reservation.
+An intermediate test incorrectly expected a capability error for an internally inconsistent task
+ID/generation; the server correctly returned `InvalidArgument`. The fixture now changes both and
+asserts `Aborted/STALE_ATTEMPT`. A prior field-name compiler error is also retained, not counted as
+behavioral RED. Logs: `/tmp/sagat-completion-scoped-grpc-blob-{red,red-runtime,green,green-fixed}.log`.
+
 Evidence:
 
 - The two new history-denial cases first failed **0/2** with `Internal`, because the old full-run

@@ -362,6 +362,12 @@ a current cancelled attempt: this only returns a denial. Other scoped blob acces
 uncancelled attempt. Report-scope lookup requires current authority and identity but permits an
 expired lease for receipt replay; it does not authorize any bytes or a new output commit.
 
+Public gRPC `WriteBlob` skips the root-only managed database probe for a scoped instance. It still
+requires the current exact-path upload capability before object reservation. The real RPC fixture
+revokes SELECT on unrelated iteration checkpoints and verifies a successful upload plus a typed
+`STALE_ATTEMPT` refusal for a self-consistent forged generation, with no second object reserved.
+This does not enable the separately closed scoped blob-completion path.
+
 Reproduce the bounded secret/blob checks and real-provider withdrawal barriers:
 
 ```sh

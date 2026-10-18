@@ -382,6 +382,9 @@ value. Each logical step UUID has its own delivery audit even when two iteration
 node and attempt. Root addressing and audit text remain compatible. Blob upload by a step that
 declares secrets still returns the existing content-scanning refusal. Scoped blob output completion
 remains a separate unsupported operation; authorizing a read is not approval of an output commit.
+Public scoped uploads bypass only the root-only managed-database bound probe; the current
+exact-path upload capability is mandatory before object reservation. A missing managed bound is
+never an authorization result.
 No wire field, worker minor, SDK builder or normalized expected output changes in this increment.
 
 Every SDK gains idiomatic declarative builders for the six node types/state operations plus the

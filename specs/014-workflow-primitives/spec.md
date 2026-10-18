@@ -34,7 +34,9 @@ Scoped scheduler expiry/retry, worker discovery/claim, heartbeat and inline comp
 now use exact-path transactions, including compensation/reconciliation and fenced provider output
 scans. Scoped secret delivery and blob capability checks also use current exact-path state;
 secret resolution closes its transaction around provider reads and rechecks current authority before
-auditing a handoff. Blob completion, broader body planning and the large resource gates remain
+auditing a handoff. Public scoped uploads skip the root-only managed database probe and obtain their
+current exact-path capability before reserving object bytes; a skipped probe grants no access.
+Blob completion, broader body planning and the large resource gates remain
 separate work; these focused bounded paths do not establish the production ceilings. A new child is
 admitted under its parent's shard lease only inside its uncommitted zero-event creation transaction;
 a reopened child requires its own shard lease for subsequent scheduler mutations.

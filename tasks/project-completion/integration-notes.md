@@ -1432,3 +1432,19 @@ test invocation lacked pytest; installing the repository's hash-locked developme
 resolved that environment failure before the actual RED run. Logs:
 `/tmp/sagat-completion-python-sync-{dependencies,red,green,mypy,ruff}.log`.
 T014-038 awaits fresh all-five continuation/chain scenario evidence; no task checkbox changed.
+
+## 2026-10-17 — Public scoped upload admission
+
+Fresh read-only security/correctness review found that public gRPC `WriteBlob` called the managed
+database bound probe before its bounded upload check, restoring unrelated history even for ordinary
+scoped work. The new public-RPC test reproduced `Internal` with iteration-checkpoint SELECT denied
+(0/1,4.63s). The managed-root probe now returns None for a non-root identity; this grants no access,
+and current exact-path upload authority remains mandatory. Root/managed behavior is unchanged.
+Actual upload/hash, self-consistent forged generation (Aborted/STALE_ATTEMPT, no extra reservation),
+inline completion and full replay passed in the pipeline group5/5,8.01s. Scoped blob completion
+remains explicitly unsupported. The first compiler field-name error and intermediate malformed
+forgery expectation (InvalidArgument correctly returned) are retained separately from behavioral
+RED/GREEN. Logs: `/tmp/sagat-completion-scoped-grpc-blob-…`.
+The real PostgreSQL/OpenBao aggregate passed3/3,45.24s; complete gRPC and strict workspace/all-target
+Clippy are running. The full Python package also passed264/264,24.96s after the blocking-alias fix.
+No task checkbox, grant, wire field, SDK golden or schema change.

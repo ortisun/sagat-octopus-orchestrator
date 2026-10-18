@@ -28,6 +28,89 @@ async fn a_public_activity_can_produce_inline_collection_membership() {
 }
 
 #[tokio::test]
+async fn a_scoped_grpc_blob_upload_needs_no_unrelated_iteration_history() {
+    let p = platform().await;
+    let workflow = p
+        .publish(
+            "bounded-scoped-blob-upload",
+            &collection_ir("bounded-scoped-blob-upload", "input.items", 1),
+        )
+        .await;
+    let run = start_inline(&p, &workflow, &json!({"items":[{"v":1}]})).await;
+    let scheduler = scheduler(&p, None).await;
+    let mut worker = scoped_worker(&p, "bounded-scoped-blob-worker", &["src.line"]).await;
+    let mut leased = None;
+    for _ in 0..8 {
+        scheduler.tick().await;
+        if let Some(task) = worker.poll(1).await.pop() {
+            leased = Some(task);
+            break;
+        }
+    }
+    let task = leased.expect("one admitted scoped activity");
+    assert!(
+        task.instance
+            .as_ref()
+            .is_some_and(|id| !id.instance_path.is_empty())
+    );
+    sqlx::query("REVOKE SELECT ON iteration_checkpoints FROM sagat_app")
+        .execute(&p.api.db.pool)
+        .await
+        .expect("deny full-history restoration");
+    let bytes = br#"{"v":1}"#;
+    let header = sagat_api_grpc::pb::WriteBlobHeader {
+        content_type: "application/json".into(),
+        expected_size: bytes.len() as i64,
+        expected_sha256: sha(bytes),
+        ..Default::default()
+    };
+    let uploaded = worker
+        .write_blob(&task, header.clone(), bytes, 4)
+        .await
+        .expect("public scoped upload must authorize only the current exact path");
+    assert_eq!(uploaded.size, bytes.len() as i64);
+    assert_eq!(uploaded.sha256, sha(bytes));
+    let mut forged = task.clone();
+    forged.generation += 1;
+    forged.task_id = format!(
+        "{}/{}",
+        task.task_id.rsplit_once('/').expect("task generation").0,
+        forged.generation
+    );
+    let refused = worker
+        .write_blob(&forged, header, bytes, 4)
+        .await
+        .expect_err("skipping the managed-root probe must not grant a forged capability");
+    assert_eq!(refused.code(), tonic::Code::Aborted);
+    assert_eq!(
+        crate::support::worker::machine_code(&refused),
+        "STALE_ATTEMPT"
+    );
+    let objects: i64 = sqlx::query_scalar("SELECT count(*) FROM blobs WHERE tenant_id=$1")
+        .bind(p.tenant.as_uuid())
+        .fetch_one(&p.api.db.pool)
+        .await
+        .expect("object reservations");
+    assert_eq!(objects, 1, "forged upload reserves no second object");
+    sqlx::query("GRANT SELECT ON iteration_checkpoints TO sagat_app")
+        .execute(&p.api.db.pool)
+        .await
+        .expect("restore replay oracle");
+    // Upload permission alone does not enable the separately closed scoped blob-completion path.
+    worker
+        .complete(&task, &json!({"v":1}))
+        .await
+        .expect("inline completion");
+    tick_until_settled(&p, &scheduler, run, 20).await;
+    assert_eq!(status_and_code(&p, run).await.0, "SUCCEEDED");
+    p.api
+        .executions
+        .verify_run(p.tenant, RunId::new(run))
+        .await
+        .expect("full replay");
+}
+
+#[tokio::test]
 async fn a_public_activity_can_commit_a_blob_as_its_collection_source() {
     assert_pipeline_source(true, false).await;
 }
