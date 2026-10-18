@@ -1,0 +1,204 @@
+--- a/tests/integration/workflow-primitives/byte_ceilings.rs
++++ b/tests/integration/workflow-primitives/byte_ceilings.rs
+@@ -4,7 +4,8 @@
+ 
+ use std::time::Duration;
+ 
+-use sagat_api_grpc::pb::TaskLease;
++use sagat_api_grpc::pb::worker_service_client::WorkerServiceClient;
++use sagat_api_grpc::pb::{CompleteStepRequest, TaskLease};
+ use sagat_application::clock::SystemClock;
+ use sagat_application::definitions::Idempotency;
+ use sagat_application::entropy::SystemEntropy;
+@@ -33,6 +34,7 @@
+ use crate::support::engine::{World, activity, document, end_node, task_ref, with, world};
+ use crate::support::scope_flow::{
+     Flow, activity as scoped_activity, collection_document, iteration, node, retry, row, summary,
++    worker_request,
+ };
+ 
+ type Workers = WorkerService<PgRunStore, SystemClock, JsonEvaluator, SystemEntropy>;
+@@ -219,7 +221,7 @@
+ }
+ 
+ #[derive(sqlx::FromRow)]
+-struct WorkerUnboundAudit {
++struct RecordedAudit {
+     id: uuid::Uuid,
+     tenant_id: uuid::Uuid,
+     actor: String,
+@@ -431,7 +433,7 @@
+     let before_updated_at = before_step["updated_at"].clone();
+     let before_content_bytes = before["tenantRetainedUsage"]["content_bytes"].clone();
+ 
+-    let mut stable = after.clone();
++    let mut stable = without_exact_audit(after, audit_id);
+     let mut matching_steps = stable["steps"]
+         .as_array_mut()
+         .expect("refusal snapshot steps")
+@@ -448,6 +450,15 @@
+     target.insert("lease_expires_at".into(), before_lease_expires_at);
+     target.insert("updated_at".into(), before_updated_at);
+ 
++    stable["tenantRetainedUsage"]
++        .as_object_mut()
++        .expect("tenant retained usage snapshot")
++        .insert("content_bytes".into(), before_content_bytes);
++    stable
++}
++
++fn without_exact_audit(snapshot: &Value, audit_id: uuid::Uuid) -> Value {
++    let mut stable = snapshot.clone();
+     let audit_id = audit_id.to_string();
+     let audits = stable["audits"]
+         .as_array_mut()
+@@ -456,13 +467,8 @@
+     audits.retain(|audit| audit["id"].as_str() != Some(audit_id.as_str()));
+     assert!(
+         audits.len() + 1 == audit_count,
+-        "the post-unbind snapshot contains exactly the traced native audit"
++        "the snapshot contains exactly the traced native audit"
+     );
+-
+-    stable["tenantRetainedUsage"]
+-        .as_object_mut()
+-        .expect("tenant retained usage snapshot")
+-        .insert("content_bytes".into(), before_content_bytes);
+     stable
+ }
+ 
+@@ -916,6 +922,39 @@
+     .await
+     .expect("worker-unbound audit baseline");
+ 
++    let mut report_client = WorkerServiceClient::connect(flow.api.grpc_url.clone())
++        .await
++        .expect("connect the actual worker transport");
++    let report_trace = sagat_telemetry::TraceId::generate();
++    let report_trace_id = report_trace.to_string();
++    let report_traceparent = sagat_telemetry::traceparent(
++        report_trace,
++        sagat_telemetry::SpanId::generate(),
++        true,
++    );
++    let mut report_request = worker_request(
++        &flow.api,
++        CompleteStepRequest {
++            task_id: task.task_id.clone(),
++            run_id: task.run_id.clone(),
++            step_id: task.step_id.clone(),
++            attempt: task.attempt,
++            generation: task.generation,
++            lease_token: task.lease_token.clone(),
++            idempotency_key: key.clone(),
++            output_json: output.to_string(),
++            output_blob_ref: String::new(),
++            output_sha256: String::new(),
++            traceparent: String::new(),
++            instance: task.instance.clone(),
++        },
++    );
++    report_request.metadata_mut().insert(
++        "traceparent",
++        tonic::metadata::MetadataValue::try_from(report_traceparent)
++            .expect("valid generated report traceparent"),
++    );
++
+     let mut gate = flow
+         .api
+         .db
+@@ -932,7 +971,8 @@
+         .await
+         .expect("hold full-only checkpoint restoration gate");
+ 
+-    let reporting = flow.try_complete(&task, output, &key);
++    let report_started_at = time::OffsetDateTime::now_utc();
++    let reporting = report_client.complete_step(report_request);
+     tokio::pin!(reporting);
+     let observe = async {
+         // The exact-path report does not read iteration_checkpoints. Reaching this full-only query
+@@ -974,7 +1014,7 @@
+         assert_eq!(body["sessionsClosed"], 1);
+         assert_eq!(body["leasesReleased"], 1);
+ 
+-        let mut traced_audits: Vec<WorkerUnboundAudit> = sqlx::query_as(
++        let mut traced_audits: Vec<RecordedAudit> = sqlx::query_as(
+             "SELECT id,tenant_id,actor,action,resource_type,resource_id,reason,trace_id,created_at \
+                FROM audit_records WHERE tenant_id=$1 AND trace_id=$2 ORDER BY id",
+         )
+@@ -1114,13 +1154,72 @@
+     .await
+     .expect("report and native authority withdrawal must finish");
+ 
+-    let refusal = refused.expect_err("fresh full authority must reject the report");
++    let report_finished_at = time::OffsetDateTime::now_utc();
++    let refusal = match refused {
++        Err(refusal) => refusal,
++        Ok(_) => panic!("fresh full authority must reject the report"),
++    };
+     assert_eq!(refusal.code(), tonic::Code::PermissionDenied);
+     assert_eq!(crate::support::worker::machine_code(&refusal), "NOT_BOUND");
++
++    let mut denial_audits: Vec<RecordedAudit> = sqlx::query_as(
++        "SELECT id,tenant_id,actor,action,resource_type,resource_id,reason,trace_id,created_at \
++           FROM audit_records WHERE tenant_id=$1 AND trace_id=$2 ORDER BY id",
++    )
++    .bind(flow.tenant.as_uuid())
++    .bind(&report_trace_id)
++    .fetch_all(&flow.api.db.pool)
++    .await
++    .expect("traced fresh-authority denial audit");
+     assert!(
+-        refusal_transaction_snapshot(&flow).await == after_unbind,
+-        "the rejected report adds no stop, completion, receipt, audit, output, head or outbox effect"
++        denial_audits.len() == 1,
++        "the rejected report appends exactly one traced policy audit"
+     );
++    let denial_audit = denial_audits.pop().expect("one traced policy audit");
++    let denial_reason =
++        sagat_application::error::AccessDenial::Refused("NOT_BOUND").reason();
++    assert!(
++        denial_audit.id != uuid::Uuid::nil(),
++        "the policy denial audit has an identity"
++    );
++    assert!(
++        denial_audit.tenant_id == flow.tenant.as_uuid(),
++        "the policy denial audit belongs to the exact tenant"
++    );
++    assert!(
++        denial_audit.actor == "scope-worker",
++        "the policy denial audit records the authenticated worker"
++    );
++    assert!(
++        denial_audit.action == "access.denied.permission",
++        "the policy denial audit records the exact action"
++    );
++    assert!(
++        denial_audit.resource_type == "endpoint",
++        "the policy denial audit records the exact resource type"
++    );
++    assert!(
++        denial_audit.resource_id == "grpc WorkerService/CompleteStep",
++        "the policy denial audit records the exact RPC"
++    );
++    assert!(
++        denial_audit.reason.as_deref() == Some(denial_reason.as_str()),
++        "the policy denial audit records the closed refusal reason"
++    );
++    assert!(
++        denial_audit.trace_id.as_deref() == Some(report_trace_id.as_str()),
++        "the policy denial audit carries the supplied report trace"
++    );
++    assert!(
++        denial_audit.created_at >= report_started_at
++            && denial_audit.created_at <= report_finished_at,
++        "the policy denial audit timestamp belongs to this report"
++    );
++    let after_denial = refusal_transaction_snapshot(&flow).await;
++    assert!(
++        without_exact_audit(&after_denial, denial_audit.id) == after_unbind,
++        "the rejected report adds only its exact required policy denial audit"
++    );
+     let rejected: RejectedRefusalState = sqlx::query_as(
+         "SELECT run.status AS run_status,run.stop_reason,run.stop_code, \
+                 step.status AS step_status,step.output_digest IS NULL AS output_absent, \

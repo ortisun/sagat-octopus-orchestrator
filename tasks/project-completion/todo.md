@@ -292,3 +292,17 @@ and runtime invocations (actual Flow sagat_app), with strict integration Clippy/
 and 1122 matching source inputs. Normal retries drain and complete 17 actual engine compensation
 tasks. Evidence: `tasks/project-completion/evidence/refusal-transaction-faults-20261018/README.md`.
 No old binary, OS process, unknown-COMMIT or external-provider claim; canonical tasks remain open.
+
+
+### Current binding recheck after the checked report path — 2026-10-18
+
+The genuine public seventeenth-output fixture now proves NOT_BOUND from fresh full authority
+after native HTTP unbind while the exact full checkpoint restoration query remains blocked.
+It verifies only the intended lease change, exact binding-byte refund and traced unbind audit;
+after rejection it permits only the exact report-traced mandatory policy denial audit. All
+execution/payload/usage/receipt/head/outbox state otherwise remains identical. Fresh store/cache
+journal reconstruction passes. Final focused 1/1 default/runtime (actual Flow sagat_app both),
+strict integration Clippy/fmt/architecture and 1122 matching source inputs.
+Evidence: `tasks/project-completion/evidence/refusal-fresh-binding-20261018/README.md`.
+Two failed fixture contracts are retained and explained. This does not close other authority,
+secret, fence, cold-process, legacy or nested capacity cases, nor canonical task checkboxes.

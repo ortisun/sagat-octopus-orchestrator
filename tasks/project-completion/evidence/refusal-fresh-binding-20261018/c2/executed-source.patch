@@ -1,0 +1,523 @@
+diff --git a/tests/integration/workflow-primitives/byte_ceilings.rs b/tests/integration/workflow-primitives/byte_ceilings.rs
+index 3b6ff21a..7e14164a 100644
+--- a/tests/integration/workflow-primitives/byte_ceilings.rs
++++ b/tests/integration/workflow-primitives/byte_ceilings.rs
+@@ -206,6 +206,62 @@ async fn refusal_identity(flow: &Flow, key: &str) -> (i64, i64, i64, i64, i64) {
+     .expect("refusal identity")
+ }
+ 
++#[derive(sqlx::FromRow)]
++struct RefusalLeaseState {
++    status: String,
++    lease_token_hash: Vec<u8>,
++    attempt: i32,
++    generation: i64,
++    leased_by: String,
++    lease_expires_at: time::OffsetDateTime,
++    updated_at: time::OffsetDateTime,
++    expired: bool,
++}
++
++#[derive(sqlx::FromRow)]
++struct WorkerUnboundAudit {
++    id: uuid::Uuid,
++    tenant_id: uuid::Uuid,
++    actor: String,
++    action: String,
++    resource_type: String,
++    resource_id: String,
++    reason: Option<String>,
++    trace_id: Option<String>,
++    created_at: time::OffsetDateTime,
++}
++
++#[derive(Debug, sqlx::FromRow)]
++struct RejectedRefusalState {
++    run_status: String,
++    stop_reason: Option<String>,
++    stop_code: Option<String>,
++    step_status: String,
++    output_absent: bool,
++    report_absent: bool,
++    logical_output_bytes: i64,
++    head_seq: i64,
++    run_version: i64,
++    receipts: i64,
++    refusal_audits: i64,
++}
++
++async fn refusal_lease_state(flow: &Flow, step: uuid::Uuid) -> RefusalLeaseState {
++    sqlx::query_as(
++        "SELECT status,lease_token_hash,attempt,generation,leased_by,lease_expires_at,updated_at, \
++                lease_expires_at<=clock_timestamp() AS expired \
++           FROM steps WHERE tenant_id=$1 AND run_id=$2 AND step_id=$3 \
++             AND instance_path_nodes=ARRAY['lines']::text[] \
++             AND instance_path_indices=ARRAY[16]::integer[] AND node='reserve'",
++    )
++    .bind(flow.tenant.as_uuid())
++    .bind(flow.run.as_uuid())
++    .bind(step)
++    .fetch_one(&flow.api.db.pool)
++    .await
++    .expect("exact seventeenth refusal lease")
++}
++
+ fn positive_advisory_key() -> i64 {
+     i64::try_from(uuid::Uuid::new_v4().as_u128() & ((1_u128 << 63) - 1))
+         .expect("positive advisory key")
+@@ -352,6 +408,64 @@ async fn refusal_transaction_snapshot(flow: &Flow) -> Value {
+     .expect("complete refusal transaction snapshot")
+ }
+ 
++fn after_expected_binding_withdrawal(
++    before: &Value,
++    after: &Value,
++    step_id: uuid::Uuid,
++    audit_id: uuid::Uuid,
++) -> Value {
++    let step_id = step_id.to_string();
++    let mut matching_before_steps = before["steps"]
++        .as_array()
++        .expect("refusal snapshot steps")
++        .iter()
++        .filter(|step| step["step_id"].as_str() == Some(step_id.as_str()));
++    let before_step = matching_before_steps
++        .next()
++        .expect("seventeenth refusal step in pre-unbind snapshot");
++    assert!(
++        matching_before_steps.next().is_none(),
++        "the pre-unbind snapshot contains one exact target step"
++    );
++    let before_lease_expires_at = before_step["lease_expires_at"].clone();
++    let before_updated_at = before_step["updated_at"].clone();
++    let before_content_bytes = before["tenantRetainedUsage"]["content_bytes"].clone();
++
++    let mut stable = after.clone();
++    let mut matching_steps = stable["steps"]
++        .as_array_mut()
++        .expect("refusal snapshot steps")
++        .iter_mut()
++        .filter(|step| step["step_id"].as_str() == Some(step_id.as_str()));
++    let target = matching_steps
++        .next()
++        .expect("seventeenth refusal step in post-unbind snapshot");
++    assert!(
++        matching_steps.next().is_none(),
++        "the refusal snapshot contains one exact target step"
++    );
++    let target = target.as_object_mut().expect("refusal snapshot step");
++    target.insert("lease_expires_at".into(), before_lease_expires_at);
++    target.insert("updated_at".into(), before_updated_at);
++
++    let audit_id = audit_id.to_string();
++    let audits = stable["audits"]
++        .as_array_mut()
++        .expect("refusal snapshot audits");
++    let audit_count = audits.len();
++    audits.retain(|audit| audit["id"].as_str() != Some(audit_id.as_str()));
++    assert!(
++        audits.len() + 1 == audit_count,
++        "the post-unbind snapshot contains exactly the traced native audit"
++    );
++
++    stable["tenantRetainedUsage"]
++        .as_object_mut()
++        .expect("tenant retained usage snapshot")
++        .insert("content_bytes".into(), before_content_bytes);
++    stable
++}
++
+ async fn waiting_refusal_receipt(flow: &Flow, gate_pid: i32) -> i32 {
+     crate::support::eventually(
+         "actual refusal receipt waits after the root and scoped persists",
+@@ -392,6 +506,32 @@ async fn waiting_refusal_scoped_persist(flow: &Flow, gate_pid: i32) -> i32 {
+     .await
+ }
+ 
++async fn waiting_refusal_full_restore(flow: &Flow, gate_pid: i32) -> i32 {
++    crate::support::eventually(
++        "actual refusal full transaction waits on the checkpoint restoration query",
++        || async {
++            sqlx::query_scalar::<_, i32>(
++                "SELECT activity.pid FROM pg_stat_activity activity \
++                   WHERE activity.datname=current_database() AND activity.usename='sagat_app' \
++                     AND activity.state='active' AND activity.wait_event_type='Lock' \
++                     AND $1=ANY(pg_blocking_pids(activity.pid)) \
++                     AND position('SELECT scope_id, iteration_index, return_instance_id, result_digest, journal_sequence' in activity.query)>0 \
++                     AND position('FROM iteration_checkpoints WHERE tenant_id = $1 AND run_id = $2' in activity.query)>0 \
++                     AND EXISTS(SELECT 1 FROM pg_locks relation_lock \
++                       WHERE relation_lock.pid=activity.pid AND relation_lock.locktype='relation' \
++                         AND relation_lock.relation=to_regclass('public.iteration_checkpoints') \
++                         AND relation_lock.mode='AccessShareLock' AND NOT relation_lock.granted) \
++                   LIMIT 1",
++            )
++            .bind(gate_pid)
++            .fetch_optional(&flow.api.db.pool)
++            .await
++            .expect("full refusal restoration lock witness")
++        },
++    )
++    .await
++}
++
+ async fn waiting_collection_drain_outbox(flow: &Flow, gate_pid: i32) -> i32 {
+     crate::support::eventually(
+         "actual collection drain writer waits on its outbox insertion",
+@@ -681,6 +821,357 @@ async fn a_known_successful_seventeenth_member_is_preserved_without_its_refused_
+     drain_and_compensate_every_reservation(&flow).await;
+ }
+ 
++#[tokio::test(flavor = "current_thread")]
++async fn a_scoped_output_refusal_rechecks_binding_after_the_checked_path_is_dropped() {
++    let name = format!("refusal-bind-{}", uuid::Uuid::now_v7());
++    assert!(name.len() <= 63, "fixture name must remain a valid slug");
++    let (flow, task, output) = collection_at_seventeenth_member(&name, false).await;
++    let candidate_bytes = output.to_string().len();
++    let premise: (i64, String, i64) = sqlx::query_as(
++        "SELECT usage.logical_output_bytes,scope.lifecycle, \
++                (SELECT count(*) FROM steps retained \
++                  WHERE retained.tenant_id=run.tenant_id AND retained.run_id=run.id \
++                    AND retained.instance_path_nodes=ARRAY['lines']::text[] \
++                    AND retained.node='reserve' AND retained.status='SUCCEEDED' \
++                    AND retained.output_digest IS NOT NULL) \
++           FROM runs run JOIN run_instance_usage usage \
++             ON usage.tenant_id=run.tenant_id AND usage.run_id=run.id \
++           JOIN iteration_scopes scope \
++             ON scope.tenant_id=run.tenant_id AND scope.run_id=run.id \
++          WHERE run.tenant_id=$1 AND run.id=$2",
++    )
++    .bind(flow.tenant.as_uuid())
++    .bind(flow.run.as_uuid())
++    .fetch_one(&flow.api.db.pool)
++    .await
++    .expect("real retained-output refusal premise");
++    assert_eq!(premise, (4_000_000, "OPEN".into(), 16));
++    assert_eq!(candidate_bytes, 250_000);
++    assert!(
++        usize::try_from(premise.0).expect("nonnegative retained bytes") + candidate_bytes
++            > MAX_RUN_OUTPUT_BYTES,
++        "the genuine seventeenth output must select the refusal path"
++    );
++
++    let namespace: uuid::Uuid =
++        sqlx::query_scalar("SELECT namespace_id FROM runs WHERE tenant_id=$1 AND id=$2")
++            .bind(flow.tenant.as_uuid())
++            .bind(flow.run.as_uuid())
++            .fetch_one(&flow.api.db.pool)
++            .await
++            .expect("run namespace");
++    let binding_before: (i64, i64) = sqlx::query_as(
++        "SELECT count(*), \
++                coalesce(sum((octet_length(pattern)+octet_length(subject))::bigint),0)::bigint \
++           FROM worker_bindings \
++          WHERE tenant_id=$1 AND namespace_id=$2 AND subject='scope-worker'",
++    )
++    .bind(flow.tenant.as_uuid())
++    .bind(namespace)
++    .fetch_one(&flow.api.db.pool)
++    .await
++    .expect("current exact binding");
++    assert!(binding_before.0 > 0, "the worker must begin bound");
++    assert!(
++        binding_before.1 > 0,
++        "the worker binding must have physical retained bytes"
++    );
++    let sessions_before: Vec<uuid::Uuid> = sqlx::query_scalar(
++        "SELECT id FROM worker_sessions \
++          WHERE tenant_id=$1 AND namespace_id=$2 AND subject='scope-worker' ORDER BY id",
++    )
++    .bind(flow.tenant.as_uuid())
++    .bind(namespace)
++    .fetch_all(&flow.api.db.pool)
++    .await
++    .expect("current exact worker session");
++    assert_eq!(sessions_before.len(), 1);
++    let session = sessions_before[0];
++    let step = uuid::Uuid::parse_str(&task.step_id).expect("public refusal step id");
++    let lease_before = refusal_lease_state(&flow, step).await;
++    assert_eq!(lease_before.status, "LEASED");
++    assert!(
++        lease_before.lease_token_hash == Token::hash_of(&task.lease_token),
++        "the public lease token matches its stored fence"
++    );
++    assert_eq!(lease_before.attempt, task.attempt);
++    assert_eq!(lease_before.generation, task.generation);
++    assert_eq!(lease_before.leased_by, session.to_string());
++    assert!(!lease_before.expired, "the public lease starts live");
++
++    let key = format!("fresh-binding-refusal-{}", uuid::Uuid::now_v7());
++    let outboxes_before = run_outboxes(&flow).await;
++    let before = refusal_transaction_snapshot(&flow).await;
++    let retained_content_before = before["tenantRetainedUsage"]["content_bytes"]
++        .as_i64()
++        .expect("pre-unbind retained content bytes");
++    let unbound_audits_before: i64 = sqlx::query_scalar(
++        "SELECT count(*) FROM audit_records \
++          WHERE tenant_id=$1 AND resource_type='worker_binding' AND resource_id=$2::text \
++            AND action='worker.unbound' AND reason='scope-worker'",
++    )
++    .bind(flow.tenant.as_uuid())
++    .bind(namespace)
++    .fetch_one(&flow.api.db.pool)
++    .await
++    .expect("worker-unbound audit baseline");
++
++    let mut gate = flow
++        .api
++        .db
++        .pool
++        .begin()
++        .await
++        .expect("checkpoint table gate");
++    let gate_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
++        .fetch_one(&mut *gate)
++        .await
++        .expect("checkpoint gate backend pid");
++    sqlx::query("LOCK TABLE public.iteration_checkpoints IN ACCESS EXCLUSIVE MODE")
++        .execute(&mut *gate)
++        .await
++        .expect("hold full-only checkpoint restoration gate");
++
++    let reporting = flow.try_complete(&task, output, &key);
++    tokio::pin!(reporting);
++    let observe = async {
++        // The exact-path report does not read iteration_checkpoints. Reaching this full-only query
++        // proves it selected refusal and dropped its path transaction before current full authority.
++        let writer_pid = waiting_refusal_full_restore(&flow, gate_pid).await;
++        assert_ne!(writer_pid, gate_pid);
++        assert!(
++            refusal_transaction_snapshot(&flow).await == before,
++            "the report has no visible effect while fresh full restoration is blocked"
++        );
++
++        let unbind_started_at = time::OffsetDateTime::now_utc();
++        let (status, trace_id, body, unbind_finished_at) =
++            tokio::time::timeout(Duration::from_secs(5), async {
++                let response = flow
++                    .api
++                    .as_user(
++                        reqwest::Method::DELETE,
++                        &format!("/namespaces/{namespace}/worker-bindings/scope-worker"),
++                        "alice",
++                        "acme",
++                    )
++                    .send()
++                    .await
++                    .expect("actual worker unbind request");
++                let status = response.status();
++                let trace_id = response
++                    .headers()
++                    .get("x-trace-id")
++                    .and_then(|value| value.to_str().ok())
++                    .expect("native unbind response trace id")
++                    .to_owned();
++                let body: Value = response.json().await.expect("worker unbind response");
++                (status, trace_id, body, time::OffsetDateTime::now_utc())
++            })
++            .await
++            .expect("native unbind must complete while full restoration is blocked");
++        assert_eq!(status, reqwest::StatusCode::OK);
++        assert_eq!(body["sessionsClosed"], 1);
++        assert_eq!(body["leasesReleased"], 1);
++
++        let mut traced_audits: Vec<WorkerUnboundAudit> = sqlx::query_as(
++            "SELECT id,tenant_id,actor,action,resource_type,resource_id,reason,trace_id,created_at \
++               FROM audit_records WHERE tenant_id=$1 AND trace_id=$2 ORDER BY id",
++        )
++        .bind(flow.tenant.as_uuid())
++        .bind(&trace_id)
++        .fetch_all(&flow.api.db.pool)
++        .await
++        .expect("native unbind traced audit");
++        assert!(
++            traced_audits.len() == 1,
++            "the native unbind request appends exactly one audit"
++        );
++        let unbound_audit = traced_audits.pop().expect("one native unbind audit");
++        assert!(
++            unbound_audit.id != uuid::Uuid::nil(),
++            "the native unbind audit has an identity"
++        );
++        assert!(
++            unbound_audit.tenant_id == flow.tenant.as_uuid(),
++            "the native unbind audit belongs to the exact tenant"
++        );
++        assert!(
++            unbound_audit.actor == "alice",
++            "the native unbind audit records the authenticated administrator"
++        );
++        assert!(
++            unbound_audit.action == "worker.unbound",
++            "the native unbind audit records the exact action"
++        );
++        assert!(
++            unbound_audit.resource_type == "worker_binding",
++            "the native unbind audit records the exact resource type"
++        );
++        assert!(
++            unbound_audit.resource_id == namespace.to_string(),
++            "the native unbind audit records the exact namespace"
++        );
++        assert!(
++            unbound_audit.reason.as_deref() == Some("scope-worker"),
++            "the native unbind audit records the exact worker subject"
++        );
++        assert!(
++            unbound_audit.trace_id.as_deref() == Some(trace_id.as_str()),
++            "the native unbind audit carries the response trace"
++        );
++        assert!(
++            unbound_audit.created_at >= unbind_started_at
++                && unbound_audit.created_at <= unbind_finished_at,
++            "the native unbind audit timestamp belongs to this request"
++        );
++
++        let authority_after: (i64, i64, i64) = sqlx::query_as(
++            "SELECT \
++               (SELECT count(*) FROM worker_bindings \
++                 WHERE tenant_id=$1 AND namespace_id=$2 AND subject='scope-worker'), \
++               (SELECT count(*) FROM worker_sessions \
++                 WHERE tenant_id=$1 AND namespace_id=$2 AND id=$3 AND subject='scope-worker'), \
++               (SELECT count(*) FROM audit_records \
++                 WHERE tenant_id=$1 AND resource_type='worker_binding' \
++                   AND resource_id=$2::text AND action='worker.unbound' \
++                   AND reason='scope-worker')",
++        )
++        .bind(flow.tenant.as_uuid())
++        .bind(namespace)
++        .bind(session)
++        .fetch_one(&flow.api.db.pool)
++        .await
++        .expect("committed exact binding withdrawal");
++        assert_eq!(
++            authority_after,
++            (0, 0, unbound_audits_before + 1),
++            "the exact binding and session are gone with one native audit"
++        );
++        let lease_after = refusal_lease_state(&flow, step).await;
++        assert_eq!(lease_after.status, lease_before.status);
++        assert!(
++            lease_after.lease_token_hash == lease_before.lease_token_hash,
++            "native unbind preserves the stored lease fence"
++        );
++        assert_eq!(lease_after.attempt, lease_before.attempt);
++        assert_eq!(lease_after.generation, lease_before.generation);
++        assert_eq!(lease_after.leased_by, lease_before.leased_by);
++        assert!(
++            lease_after.expired,
++            "native unbind withdraws the live lease"
++        );
++        assert!(
++            lease_after.lease_expires_at < lease_before.lease_expires_at,
++            "native unbind must shorten the actual lease expiry"
++        );
++        assert!(lease_after.updated_at >= lease_before.updated_at);
++
++        let after_unbind = refusal_transaction_snapshot(&flow).await;
++        let retained_content_after = after_unbind["tenantRetainedUsage"]["content_bytes"]
++            .as_i64()
++            .expect("post-unbind retained content bytes");
++        assert!(
++            retained_content_after == retained_content_before - binding_before.1,
++            "native unbind refunds exactly the deleted binding's physical content bytes"
++        );
++        assert!(
++            after_expected_binding_withdrawal(&before, &after_unbind, step, unbound_audit.id,)
++                == before,
++            "unbind changes only its traced audit, target lease timestamps, and exact binding-byte refund"
++        );
++        let still_blocked: bool = sqlx::query_scalar(
++            "SELECT EXISTS(SELECT 1 FROM pg_stat_activity activity \
++               WHERE activity.pid=$1 AND activity.datname=current_database() \
++                 AND activity.usename='sagat_app' AND activity.state='active' \
++                 AND activity.wait_event_type='Lock' \
++                 AND $2=ANY(pg_blocking_pids(activity.pid)) \
++                 AND position('SELECT scope_id, iteration_index, return_instance_id, result_digest, journal_sequence' in activity.query)>0 \
++                 AND position('FROM iteration_checkpoints WHERE tenant_id = $1 AND run_id = $2' in activity.query)>0 \
++                 AND EXISTS(SELECT 1 FROM pg_locks relation_lock \
++                   WHERE relation_lock.pid=activity.pid AND relation_lock.locktype='relation' \
++                     AND relation_lock.relation=to_regclass('public.iteration_checkpoints') \
++                     AND relation_lock.mode='AccessShareLock' AND NOT relation_lock.granted))",
++        )
++        .bind(writer_pid)
++        .bind(gate_pid)
++        .fetch_one(&flow.api.db.pool)
++        .await
++        .expect("full restoration remains blocked after binding withdrawal");
++        assert!(
++            still_blocked,
++            "the same runtime PID must remain on the exact full-only relation lock"
++        );
++        gate.rollback()
++            .await
++            .expect("release only the owned checkpoint restoration gate");
++        after_unbind
++    };
++    tokio::pin!(observe);
++    let (refused, after_unbind) = tokio::time::timeout(Duration::from_secs(15), async {
++        tokio::join!(&mut reporting, &mut observe)
++    })
++    .await
++    .expect("report and native authority withdrawal must finish");
++
++    let refusal = refused.expect_err("fresh full authority must reject the report");
++    assert_eq!(refusal.code(), tonic::Code::PermissionDenied);
++    assert_eq!(crate::support::worker::machine_code(&refusal), "NOT_BOUND");
++    assert!(
++        refusal_transaction_snapshot(&flow).await == after_unbind,
++        "the rejected report adds no stop, completion, receipt, audit, output, head or outbox effect"
++    );
++    let rejected: RejectedRefusalState = sqlx::query_as(
++        "SELECT run.status AS run_status,run.stop_reason,run.stop_code, \
++                step.status AS step_status,step.output_digest IS NULL AS output_absent, \
++                step.reported_lease_token_hash IS NULL AS report_absent, \
++                usage.logical_output_bytes,telemetry.head_seq,run.run_version, \
++                (SELECT count(*) FROM command_dedupe \
++                  WHERE tenant_id=run.tenant_id AND idempotency_key=$4) AS receipts, \
++                (SELECT count(*) FROM audit_records audit \
++                  WHERE audit.tenant_id=run.tenant_id AND audit.resource_type='run' \
++                    AND audit.resource_id=run.id::text \
++                    AND audit.action='run.data_limit_exceeded' \
++                    AND audit.reason='successful scoped output refused by run data limit') \
++                  AS refusal_audits \
++           FROM runs run JOIN steps step \
++             ON step.tenant_id=run.tenant_id AND step.run_id=run.id \
++           JOIN run_instance_usage usage \
++             ON usage.tenant_id=run.tenant_id AND usage.run_id=run.id \
++           JOIN telemetry_pending telemetry \
++             ON telemetry.tenant_id=run.tenant_id AND telemetry.run_id=run.id \
++          WHERE run.tenant_id=$1 AND run.id=$2 AND step.step_id=$3",
++    )
++    .bind(flow.tenant.as_uuid())
++    .bind(flow.run.as_uuid())
++    .bind(step)
++    .bind(&key)
++    .fetch_one(&flow.api.db.pool)
++    .await
++    .expect("rejected refusal projection");
++    assert_eq!(rejected.run_status, "RUNNING");
++    assert_eq!(rejected.stop_reason, None);
++    assert_eq!(rejected.stop_code, None);
++    assert_eq!(rejected.step_status, "LEASED");
++    assert!(
++        rejected.output_absent,
++        "the refused candidate was not retained"
++    );
++    assert!(
++        rejected.report_absent,
++        "the rejected lease was not reported"
++    );
++    assert_eq!(rejected.logical_output_bytes, 4_000_000);
++    assert_eq!(
++        rejected.head_seq, rejected.run_version,
++        "the journal head is unchanged"
++    );
++    assert_eq!(rejected.receipts, 0, "no report receipt was stored");
++    assert_eq!(rejected.refusal_audits, 0, "no refusal audit was stored");
++    assert_eq!(run_outboxes(&flow).await, outboxes_before);
++    flow.verify().await;
++}
++
+ mod refused_output_compensation {
+     use std::collections::BTreeSet;
+ 

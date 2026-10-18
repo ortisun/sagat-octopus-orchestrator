@@ -1,0 +1,319 @@
+--- a/tests/integration/workflow-primitives/byte_ceilings.rs
++++ b/tests/integration/workflow-primitives/byte_ceilings.rs
+@@ -206,7 +206,7 @@
+     .expect("refusal identity")
+ }
+ 
+-#[derive(Debug, PartialEq, Eq, sqlx::FromRow)]
++#[derive(sqlx::FromRow)]
+ struct RefusalLeaseState {
+     status: String,
+     lease_token_hash: Vec<u8>,
+@@ -216,6 +216,19 @@
+     lease_expires_at: time::OffsetDateTime,
+     updated_at: time::OffsetDateTime,
+     expired: bool,
++}
++
++#[derive(sqlx::FromRow)]
++struct WorkerUnboundAudit {
++    id: uuid::Uuid,
++    tenant_id: uuid::Uuid,
++    actor: String,
++    action: String,
++    resource_type: String,
++    resource_id: String,
++    reason: Option<String>,
++    trace_id: Option<String>,
++    created_at: time::OffsetDateTime,
+ }
+ 
+ #[derive(Debug, sqlx::FromRow)]
+@@ -395,20 +408,61 @@
+     .expect("complete refusal transaction snapshot")
+ }
+ 
+-fn without_binding_withdrawal(snapshot: &Value) -> Value {
+-    let mut stable = snapshot.clone();
+-    stable
+-        .as_object_mut()
+-        .expect("refusal snapshot object")
+-        .remove("audits");
+-    for step in stable["steps"]
++fn after_expected_binding_withdrawal(
++    before: &Value,
++    after: &Value,
++    step_id: uuid::Uuid,
++    audit_id: uuid::Uuid,
++) -> Value {
++    let step_id = step_id.to_string();
++    let mut matching_before_steps = before["steps"]
++        .as_array()
++        .expect("refusal snapshot steps")
++        .iter()
++        .filter(|step| step["step_id"].as_str() == Some(step_id.as_str()));
++    let before_step = matching_before_steps
++        .next()
++        .expect("seventeenth refusal step in pre-unbind snapshot");
++    assert!(
++        matching_before_steps.next().is_none(),
++        "the pre-unbind snapshot contains one exact target step"
++    );
++    let before_lease_expires_at = before_step["lease_expires_at"].clone();
++    let before_updated_at = before_step["updated_at"].clone();
++    let before_content_bytes = before["tenantRetainedUsage"]["content_bytes"].clone();
++
++    let mut stable = after.clone();
++    let mut matching_steps = stable["steps"]
+         .as_array_mut()
+         .expect("refusal snapshot steps")
+-    {
+-        let step = step.as_object_mut().expect("refusal snapshot step");
+-        step.remove("lease_expires_at");
+-        step.remove("updated_at");
+-    }
++        .iter_mut()
++        .filter(|step| step["step_id"].as_str() == Some(step_id.as_str()));
++    let target = matching_steps
++        .next()
++        .expect("seventeenth refusal step in post-unbind snapshot");
++    assert!(
++        matching_steps.next().is_none(),
++        "the refusal snapshot contains one exact target step"
++    );
++    let target = target.as_object_mut().expect("refusal snapshot step");
++    target.insert("lease_expires_at".into(), before_lease_expires_at);
++    target.insert("updated_at".into(), before_updated_at);
++
++    let audit_id = audit_id.to_string();
++    let audits = stable["audits"]
++        .as_array_mut()
++        .expect("refusal snapshot audits");
++    let audit_count = audits.len();
++    audits.retain(|audit| audit["id"].as_str() != Some(audit_id.as_str()));
++    assert!(
++        audits.len() + 1 == audit_count,
++        "the post-unbind snapshot contains exactly the traced native audit"
++    );
++
++    stable["tenantRetainedUsage"]
++        .as_object_mut()
++        .expect("tenant retained usage snapshot")
++        .insert("content_bytes".into(), before_content_bytes);
+     stable
+ }
+ 
+@@ -806,8 +860,10 @@
+             .fetch_one(&flow.api.db.pool)
+             .await
+             .expect("run namespace");
+-    let binding_rows_before: i64 = sqlx::query_scalar(
+-        "SELECT count(*) FROM worker_bindings \
++    let binding_before: (i64, i64) = sqlx::query_as(
++        "SELECT count(*), \
++                coalesce(sum((octet_length(pattern)+octet_length(subject))::bigint),0)::bigint \
++           FROM worker_bindings \
+           WHERE tenant_id=$1 AND namespace_id=$2 AND subject='scope-worker'",
+     )
+     .bind(flow.tenant.as_uuid())
+@@ -815,7 +871,11 @@
+     .fetch_one(&flow.api.db.pool)
+     .await
+     .expect("current exact binding");
+-    assert!(binding_rows_before > 0, "the worker must begin bound");
++    assert!(binding_before.0 > 0, "the worker must begin bound");
++    assert!(
++        binding_before.1 > 0,
++        "the worker binding must have physical retained bytes"
++    );
+     let sessions_before: Vec<uuid::Uuid> = sqlx::query_scalar(
+         "SELECT id FROM worker_sessions \
+           WHERE tenant_id=$1 AND namespace_id=$2 AND subject='scope-worker' ORDER BY id",
+@@ -830,9 +890,9 @@
+     let step = uuid::Uuid::parse_str(&task.step_id).expect("public refusal step id");
+     let lease_before = refusal_lease_state(&flow, step).await;
+     assert_eq!(lease_before.status, "LEASED");
+-    assert_eq!(
+-        lease_before.lease_token_hash,
+-        Token::hash_of(&task.lease_token)
++    assert!(
++        lease_before.lease_token_hash == Token::hash_of(&task.lease_token),
++        "the public lease token matches its stored fence"
+     );
+     assert_eq!(lease_before.attempt, task.attempt);
+     assert_eq!(lease_before.generation, task.generation);
+@@ -842,6 +902,9 @@
+     let key = format!("fresh-binding-refusal-{}", uuid::Uuid::now_v7());
+     let outboxes_before = run_outboxes(&flow).await;
+     let before = refusal_transaction_snapshot(&flow).await;
++    let retained_content_before = before["tenantRetainedUsage"]["content_bytes"]
++        .as_i64()
++        .expect("pre-unbind retained content bytes");
+     let unbound_audits_before: i64 = sqlx::query_scalar(
+         "SELECT count(*) FROM audit_records \
+           WHERE tenant_id=$1 AND resource_type='worker_binding' AND resource_id=$2::text \
+@@ -876,34 +939,93 @@
+         // proves it selected refusal and dropped its path transaction before current full authority.
+         let writer_pid = waiting_refusal_full_restore(&flow, gate_pid).await;
+         assert_ne!(writer_pid, gate_pid);
+-        assert_eq!(
+-            refusal_transaction_snapshot(&flow).await,
+-            before,
++        assert!(
++            refusal_transaction_snapshot(&flow).await == before,
+             "the report has no visible effect while fresh full restoration is blocked"
+         );
+ 
+-        let (status, body) = tokio::time::timeout(Duration::from_secs(5), async {
+-            let response = flow
+-                .api
+-                .as_user(
+-                    reqwest::Method::DELETE,
+-                    &format!("/namespaces/{namespace}/worker-bindings/scope-worker"),
+-                    "alice",
+-                    "acme",
+-                )
+-                .send()
+-                .await
+-                .expect("actual worker unbind request");
+-            let status = response.status();
+-            let body: Value = response.json().await.expect("worker unbind response");
+-            (status, body)
+-        })
+-        .await
+-        .expect("native unbind must complete while full restoration is blocked");
++        let unbind_started_at = time::OffsetDateTime::now_utc();
++        let (status, trace_id, body, unbind_finished_at) =
++            tokio::time::timeout(Duration::from_secs(5), async {
++                let response = flow
++                    .api
++                    .as_user(
++                        reqwest::Method::DELETE,
++                        &format!("/namespaces/{namespace}/worker-bindings/scope-worker"),
++                        "alice",
++                        "acme",
++                    )
++                    .send()
++                    .await
++                    .expect("actual worker unbind request");
++                let status = response.status();
++                let trace_id = response
++                    .headers()
++                    .get("x-trace-id")
++                    .and_then(|value| value.to_str().ok())
++                    .expect("native unbind response trace id")
++                    .to_owned();
++                let body: Value = response.json().await.expect("worker unbind response");
++                (status, trace_id, body, time::OffsetDateTime::now_utc())
++            })
++            .await
++            .expect("native unbind must complete while full restoration is blocked");
+         assert_eq!(status, reqwest::StatusCode::OK);
+         assert_eq!(body["sessionsClosed"], 1);
+         assert_eq!(body["leasesReleased"], 1);
+ 
++        let mut traced_audits: Vec<WorkerUnboundAudit> = sqlx::query_as(
++            "SELECT id,tenant_id,actor,action,resource_type,resource_id,reason,trace_id,created_at \
++               FROM audit_records WHERE tenant_id=$1 AND trace_id=$2 ORDER BY id",
++        )
++        .bind(flow.tenant.as_uuid())
++        .bind(&trace_id)
++        .fetch_all(&flow.api.db.pool)
++        .await
++        .expect("native unbind traced audit");
++        assert!(
++            traced_audits.len() == 1,
++            "the native unbind request appends exactly one audit"
++        );
++        let unbound_audit = traced_audits.pop().expect("one native unbind audit");
++        assert!(
++            unbound_audit.id != uuid::Uuid::nil(),
++            "the native unbind audit has an identity"
++        );
++        assert!(
++            unbound_audit.tenant_id == flow.tenant.as_uuid(),
++            "the native unbind audit belongs to the exact tenant"
++        );
++        assert!(
++            unbound_audit.actor == "alice",
++            "the native unbind audit records the authenticated administrator"
++        );
++        assert!(
++            unbound_audit.action == "worker.unbound",
++            "the native unbind audit records the exact action"
++        );
++        assert!(
++            unbound_audit.resource_type == "worker_binding",
++            "the native unbind audit records the exact resource type"
++        );
++        assert!(
++            unbound_audit.resource_id == namespace.to_string(),
++            "the native unbind audit records the exact namespace"
++        );
++        assert!(
++            unbound_audit.reason.as_deref() == Some("scope-worker"),
++            "the native unbind audit records the exact worker subject"
++        );
++        assert!(
++            unbound_audit.trace_id.as_deref() == Some(trace_id.as_str()),
++            "the native unbind audit carries the response trace"
++        );
++        assert!(
++            unbound_audit.created_at >= unbind_started_at
++                && unbound_audit.created_at <= unbind_finished_at,
++            "the native unbind audit timestamp belongs to this request"
++        );
++
+         let authority_after: (i64, i64, i64) = sqlx::query_as(
+             "SELECT \
+                (SELECT count(*) FROM worker_bindings \
+@@ -928,7 +1050,10 @@
+         );
+         let lease_after = refusal_lease_state(&flow, step).await;
+         assert_eq!(lease_after.status, lease_before.status);
+-        assert_eq!(lease_after.lease_token_hash, lease_before.lease_token_hash);
++        assert!(
++            lease_after.lease_token_hash == lease_before.lease_token_hash,
++            "native unbind preserves the stored lease fence"
++        );
+         assert_eq!(lease_after.attempt, lease_before.attempt);
+         assert_eq!(lease_after.generation, lease_before.generation);
+         assert_eq!(lease_after.leased_by, lease_before.leased_by);
+@@ -943,10 +1068,21 @@
+         assert!(lease_after.updated_at >= lease_before.updated_at);
+ 
+         let after_unbind = refusal_transaction_snapshot(&flow).await;
+-        assert_eq!(
+-            without_binding_withdrawal(&after_unbind),
+-            without_binding_withdrawal(&before),
+-            "unbind changes only its audit and the lease expiry/update timestamp in report state"
++        let retained_content_after = after_unbind["tenantRetainedUsage"]["content_bytes"]
++            .as_i64()
++            .expect("post-unbind retained content bytes");
++        assert!(
++            retained_content_after == retained_content_before - binding_before.1,
++            "native unbind refunds exactly the deleted binding's physical content bytes"
++        );
++        assert!(
++            after_expected_binding_withdrawal(
++                &before,
++                &after_unbind,
++                step,
++                unbound_audit.id,
++            ) == before,
++            "unbind changes only its traced audit, target lease timestamps, and exact binding-byte refund"
+         );
+         let still_blocked: bool = sqlx::query_scalar(
+             "SELECT EXISTS(SELECT 1 FROM pg_stat_activity activity \
+@@ -985,9 +1121,8 @@
+     let refusal = refused.expect_err("fresh full authority must reject the report");
+     assert_eq!(refusal.code(), tonic::Code::PermissionDenied);
+     assert_eq!(crate::support::worker::machine_code(&refusal), "NOT_BOUND");
+-    assert_eq!(
+-        refusal_transaction_snapshot(&flow).await,
+-        after_unbind,
++    assert!(
++        refusal_transaction_snapshot(&flow).await == after_unbind,
+         "the rejected report adds no stop, completion, receipt, audit, output, head or outbox effect"
+     );
+     let rejected: RejectedRefusalState = sqlx::query_as(

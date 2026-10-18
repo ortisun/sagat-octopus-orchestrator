@@ -1,0 +1,8 @@
+{
+  "original_sha256": "b5c62ae1b8d301c95cded6d4d67f305cfbb422e2b6b647cdaa8685ce5230826c",
+  "original_bytes": 17388986,
+  "reason": "Full snapshot Debug output includes fixture bodies and lease hashes; omitted from public evidence. Original retained only in task-private mode0600 file.",
+  "differing_paths_without_values": [
+    "snapshot.tenantRetainedUsage.content_bytes"
+  ]
+}

@@ -1,0 +1,19 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 09s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 1 test
+
+thread 'byte_ceilings::a_scoped_output_refusal_rechecks_binding_after_the_checked_path_is_dropped' (134100908) panicked at tests/integration/workflow-primitives/byte_ceilings.rs:1120:5:
+the rejected report adds no stop, completion, receipt, audit, output, head or outbox effect
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test byte_ceilings::a_scoped_output_refusal_rechecks_binding_after_the_checked_path_is_dropped ... FAILED
+
+failures:
+
+failures:
+    byte_ceilings::a_scoped_output_refusal_rechecks_binding_after_the_checked_path_is_dropped
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 534 filtered out; finished in 4.40s
+
+error: test failed, to rerun pass `-p sagat-tests --test integration_workflow_primitives`

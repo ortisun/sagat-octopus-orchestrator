@@ -341,3 +341,15 @@ invocations under actual sagat_app; strict integration Clippy/fmt/architecture p
 This does not substitute for old in-flight compatibility or external provider evidence.
 The earlier checkpoint's pending statement is superseded only for this current worker case;
 Q10c/master Q and canonical 014 checkboxes remain open.
+
+
+## Current fresh-full binding authority checkpoint — 2026-10-18
+
+Section 11.2 item 3 now has focused current-version [binding revocation evidence](evidence/refusal-fresh-binding-20261018/README.md)
+at the actual exceptional full restoration barrier, after the checked path ends. The public
+report returns NOT_BOUND with no successful-refusal or execution effect; the existing required
+policy-denial audit remains exact and trace-bound. Native unbind's physical binding-byte refund
+and audit are checked independently. Final focused test passes in both invocations, alongside
+strict integration Clippy/fmt/architecture. This refines test wording, not the transaction/API
+contract: no-refusal-event never prohibited the platform's mandatory security denial audit.
+Other current-authority/secret/fence controls and master Q/Q10c remain open.

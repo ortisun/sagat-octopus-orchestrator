@@ -1,0 +1,9 @@
+{
+  "attempt": "Repeat read-only query after final gates",
+  "database": "t_01a150fe72d67016b1811cc7fc5317fc",
+  "exit_code": 2,
+  "error": "connection refused on owned PostgreSQL loopback65117",
+  "historical_observation": "At21:51 UTC, earlier successful tool query reported one access.denied.permission audit, RUNNING/no stop/version117; this later attempt cannot reproduce retained data because original owned server is unavailable.",
+  "cause": "not established; original container name absent from Docker Desktop and Colima inventories",
+  "passed_gates": "completed before later server unavailability; no failed repeat query is counted as a test pass"
+}
