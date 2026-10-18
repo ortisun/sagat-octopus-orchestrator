@@ -523,6 +523,14 @@ remain unaccepted. This is a bounded evidence refinement under ADR-0030/0031/003
 The ordinary-child incoming parent flag family now has real PROPAGATE/DETACH/REQUEST_CANCEL
 queue-order and actual certifier-COMMIT guard evidence. The four-test child suite passes in
 default/runtime-role modes, with seven recorded three-PID observations per mode. No runtime
-implementation or activation changed. Own-child cancellation/compensation, detached progress
+implementation or activation changed. Own-child cancellation/compensation
 and terminal fanout remain pending. Evidence: tasks/project-completion/evidence/
 ordinary-child-parent-flags-20261018/manifest.json.
+
+
+The separate DETACH later-worker-progress characterization passes its focused test in default
+and runtime-role modes, including unchanged settled parent/source and cold original-CAS replay.
+No whole-child completion or terminal-result/fanout guarantee follows. The newly identified
+collection End/owner-result retention defect remains an explicit .1d.0 prerequisite requiring
+genuine RED and a reviewed correction. Evidence: tasks/project-completion/evidence/
+ordinary-child-detached-progress-20261018/manifest.json.
