@@ -2083,3 +2083,13 @@ Evidence: tasks/project-completion/evidence/rerun-source-identity-20261018/manif
 
 Final stronger-control full connections3/3 (27.36s), strict locked all-target workspace Clippy
 passes2.87s, formatting4.11s, architecture24crates and diff check pass.
+
+## B0 source inventory completion — 2026-10-18
+
+The consolidated capacity-lock-graph.md records current A execution, B authority/admission and
+C implicit/deferred/auxiliary edges at9702a166. Three bounded fresh Astra/xhigh source review
+cycles per section incorporated actual mode/family/counter/FK omissions; final scoped reviews
+found no remaining concrete issues. Historical evidence is preserved separately. The managed
+replay and rerun-source inversions have independent actual RED/GREEN corrections. B0 local
+checklist closes; canonical014 tasks, B1/B2/C and nested runtime remain open. No global DAG or
+new group transaction is accepted by a source inventory.

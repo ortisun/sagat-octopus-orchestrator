@@ -1,0 +1,31 @@
+{
+  "source_base": "9702a166a766c46ea5865219896c48439ca5a66e",
+  "recorded_utc": "2026-10-18T07:00:02.716733+00:00",
+  "scope": "B0 current source inventory only",
+  "reviews": {
+    "A": 3,
+    "B": 3,
+    "C": 3,
+    "model": "gpt-6-astra/xhigh fresh-context read-only",
+    "final": "no concrete scoped issues",
+    "external_cli": false
+  },
+  "runtime_tests": "No new tests for inventory. Independent actual proof in managed-replay-prefix and rerun-source-identity evidence.",
+  "limits": [
+    "No global acyclicity/deadlock-free proof",
+    "No group protocol/eligibility/old-writer/migration/resource acceptance",
+    "Nested runtime remains closed; canonical tasks unchanged"
+  ],
+  "source_sha256": {
+    "tasks/project-completion/capacity-lock-graph.md": "e73cf19673f57bb7972ba2c144e032e319ce650e48978e925ab9cbae693a3e90",
+    "tasks/project-completion/capacity-lock-inventory.md": "cbc1e44e20fedf77a15b025917e07d58663b9b3381e77d82a78d5d1f424fd91e",
+    "tasks/project-completion/todo.md": "a1694a2321c81569b1feb3bd8f65187b8067593582775e7d9b1d2a3f50d044e3",
+    "tasks/project-completion/integration-notes.md": "de6e718086e98b1510670483db8a672f9f8984f9a9545016190b459f60bc530e"
+  },
+  "evidence_sha256": {
+    "artifact-v2.md": "0f9cab8d3beb8bd492e6ebceb9bdee75d535ba6ffd1377dbff7160972e08d04b",
+    "final-inventory.md": "e73cf19673f57bb7972ba2c144e032e319ce650e48978e925ab9cbae693a3e90",
+    "official-source.md": "32228678cfa162b567f06b0f2d60fecf8b4ac03950e2c06e0468ebafa9a8aca6",
+    "review-findings.md": "61931e088d0ff586d4987cc86fa3999add11f732d5b0b7c21735e99b2d024aa9"
+  }
+}

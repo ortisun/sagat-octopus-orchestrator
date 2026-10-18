@@ -1,6 +1,9 @@
 # Capacity lock inventory — B0 working evidence
 
-Status: incomplete source inventory, not an approved new group ordering. Group persistence and
+Status: historical evidence ledger; the [consolidated current inventory](capacity-lock-graph.md)
+completed its bounded source reviews at9702a166. This historical ledger retains observations at
+their original baselines; use the consolidated inventory for current lock modes. It is not an
+approved new group ordering. Group persistence and
 runtime eligibility remain unimplemented. Initial source at2455389e; expanded against3f302a9d.
 
 | Existing writer | Observed explicit prefix/resources | Source |
