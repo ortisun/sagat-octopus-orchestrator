@@ -1,0 +1,12 @@
+{
+  "base": "b6e83866",
+  "files": {
+    "specs/001-platform-foundation/contracts/openapi.yaml": "b6b958df45dd0f985ba5e956fd1402bb6c87140a273a43b66733a0349bc2ced5",
+    "specs/001-platform-foundation/contracts/events.asyncapi.yaml": "d44ef0bb4336973363814413769851c33e0e6cdb795d8c574fc2109d213e44dc",
+    "specs/001-platform-foundation/contracts/workflow.schema.json": "a0aabe5817b668d063f5eea28fea32a08e6c26a40c1a9904a827289ce3d49a16",
+    "specs/001-platform-foundation/contracts/worker.proto": "372da41f56897e534ba7b5495f6cd28a2ab90a86dd14c876a184773e01cc9554",
+    "examples/payment-saga.workflow.json": "42ac795497e657de2c416eca03c35b96e986922df7ee721061c3ea966fd6baf1",
+    "Cargo.lock": "4b1a45c6872d754071e456d49d996d942668ec63ca0b7dd749666cbcee326bee",
+    ".github/workflows/ci.yml": "bfb5fc553bc22188b00a509174935a774621de6b0d7a2f9dcd4681e1bff0e8b4"
+  }
+}

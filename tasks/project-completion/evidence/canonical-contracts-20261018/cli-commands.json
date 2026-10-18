@@ -1,0 +1,102 @@
+[
+  {
+    "command": [
+      "node",
+      "--version"
+    ],
+    "exit_code": 0,
+    "seconds": 0.04,
+    "log": "node.txt"
+  },
+  {
+    "command": [
+      "protoc",
+      "--version"
+    ],
+    "exit_code": 0,
+    "seconds": 0.11,
+    "log": "protoc-version.txt"
+  },
+  {
+    "command": [
+      "protoc",
+      "--proto_path=specs/001-platform-foundation/contracts",
+      "--descriptor_set_out=/dev/null",
+      "specs/001-platform-foundation/contracts/worker.proto"
+    ],
+    "exit_code": 0,
+    "seconds": 0.03,
+    "log": "protobuf.txt"
+  },
+  {
+    "command": [
+      "npx",
+      "--yes",
+      "@redocly/cli@1",
+      "lint",
+      "specs/001-platform-foundation/contracts/openapi.yaml"
+    ],
+    "exit_code": 0,
+    "seconds": 4.47,
+    "log": "openapi.txt"
+  },
+  {
+    "command": [
+      "npx",
+      "--yes",
+      "--ignore-scripts",
+      "@asyncapi/cli@3.6.0",
+      "validate",
+      "specs/001-platform-foundation/contracts/events.asyncapi.yaml"
+    ],
+    "exit_code": 0,
+    "seconds": 3.9,
+    "log": "asyncapi.txt"
+  },
+  {
+    "command": [
+      "npx",
+      "--yes",
+      "-p",
+      "ajv-cli@5",
+      "-p",
+      "ajv-formats@3",
+      "ajv",
+      "validate",
+      "--spec=draft2020",
+      "-c",
+      "ajv-formats",
+      "--strict=false",
+      "-s",
+      "specs/001-platform-foundation/contracts/workflow.schema.json",
+      "-d",
+      "examples/payment-saga.workflow.json"
+    ],
+    "exit_code": 0,
+    "seconds": 1.64,
+    "log": "workflow-schema.txt"
+  },
+  {
+    "command": [
+      "npx",
+      "--yes",
+      "@redocly/cli@1",
+      "--version"
+    ],
+    "exit_code": 0,
+    "seconds": 1.31,
+    "log": "redocly-version.txt"
+  },
+  {
+    "command": [
+      "npx",
+      "--yes",
+      "@redocly/cli@1",
+      "lint",
+      "specs/001-platform-foundation/contracts/openapi.yaml"
+    ],
+    "exit_code": 0,
+    "seconds": 1.76,
+    "log": "openapi-final.txt"
+  }
+]

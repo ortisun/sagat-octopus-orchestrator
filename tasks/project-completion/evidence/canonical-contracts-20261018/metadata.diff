@@ -1,0 +1,32 @@
+diff --git a/specs/001-platform-foundation/contracts/openapi.yaml b/specs/001-platform-foundation/contracts/openapi.yaml
+index bc387ec5..12e78302 100644
+--- a/specs/001-platform-foundation/contracts/openapi.yaml
++++ b/specs/001-platform-foundation/contracts/openapi.yaml
+@@ -2,6 +2,9 @@ openapi: 3.1.0
+ info:
+   title: Sagat Octopus Orchestrator Control & Execution API
+   version: 0.1.0
++  license:
++    name: MIT
++    identifier: MIT
+   description: |
+     Operations tagged `Identity` are implemented by the control plane (feature 001); operations marked
+     `x-implemented: '002'` (workflow definitions, runs, operator actions and signals) by the durable
+@@ -26,11 +29,17 @@ security:
+   - bearerAuth: []
+ tags:
+   - name: Identity
++    description: Authentication context, tenant and namespace identity, and service health.
+   - name: Workflows
++    description: Draft authoring, validation, publication, and immutable workflow definitions.
+   - name: Runs
++    description: Execution state, commands, signals, scoped progress, and retained run data.
+   - name: Events
++    description: Event ingestion, subscriptions, inbox and dead-letter operations, and outbound integrations.
+   - name: Scripts
++    description: Script authoring, versions, validation, and isolated test execution.
+   - name: Operations
++    description: Operator inspection, reconciliation, audit, and platform operations.
+   - name: Governance
+     description: Quotas, worker bindings, secrets and egress policy of a tenant or namespace (feature 009).
+   - name: Versions

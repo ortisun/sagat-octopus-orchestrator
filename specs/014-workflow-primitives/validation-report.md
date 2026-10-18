@@ -2603,3 +2603,16 @@ there and in foundation research. This result is passing under that policy, not 
 known advisories. No dependency/lock/policy change. Other T014-043 gates and the task remain open.
 Exact lock/config/CI hashes, tool output and commands:
 tasks/project-completion/evidence/dependency-advisories-20261018/manifest.json.
+
+
+## Integrated canonical contract checkpoint — 2026-10-18
+
+Refs:T014-043. Redocly1.34.21 validates canonical OpenAPI without warnings after adding existing
+MIT-license metadata and six tag descriptions; initial seven warnings retained. paths/components
+are byte-identical. protoc36.2 compiles worker.proto; AsyncAPI CLI3.6.0 reports0errors/0warnings/
+1latest-versioninfo; AJV validates the payment-saga example with the documented custom-keyword
+strict=false option. Rust primitive contracts47/47 (1.00s), before metadata-only addition; includes
+canonical protobuf compilation, identity/schema/public IR contracts, not SDK client execution.
+HostNode26.11.1 differs from CI22/Linux; no exact environment parity. Npx transitive dependencies
+remain unpinned as in CI. T014-043 and broader release/runtime/SDK/resource gates stay open.
+Evidence: tasks/project-completion/evidence/canonical-contracts-20261018/manifest.json.
