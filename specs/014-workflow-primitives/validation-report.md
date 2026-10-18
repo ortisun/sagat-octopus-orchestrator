@@ -2934,3 +2934,15 @@ Native compatibility passes8/8 in6.32s on the current migration set. Strict targ
 format4.12s and24-crate architecture0.32s pass. All frozen SQL/test inputs unchanged. One fresh
 read-only bounded Astra review found no issue; native store uses an explicit runtime pool.
 Evidence:tasks/project-completion/evidence/scoped-finish-downgrade-20261018/manifest.json.
+
+## Canonical ordinary-leaf metadata reader contract — 2026-10-18
+
+Local B1b.2b.7 only, refs:T014-014..017/040. The reviewed crate-private extraction accepts the
+genuine shared path identity and actual locked Run pin/revision, preserving the exact existing
+metadata-only query, finite timestamp guard, typed decoder and authority-before-replay ordering.
+It proves stored metadata/key/pin relationships only and supplies no locks, new source proof,
+protection from coherent owner-written certificates, chain-source acceptance or INSERT grant.
+One independent bounded Astra review found no issue. No tests or executable extraction claimed;
+actual current baselines and concrete missing metadata controls precede that next implementation.
+See tasks/project-completion/canonical-leaf-reader-contract.md and
+evidence/canonical-leaf-reader-decision-20261018.

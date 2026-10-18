@@ -1,0 +1,10 @@
+{
+  "scope": "B1b.2b.7 crate-private canonical metadata reader extraction contract only",
+  "base": "8d15bacc",
+  "contract_sha256": "1091d936637e09134676a98d4004a1fd49e6d47167a6befddc8820b18b0522d2",
+  "review_cycles": 1,
+  "findings": 0,
+  "tests_run": false,
+  "executable_authority": false,
+  "review_sha256": "21967544e43be203c05a3672c91ff99b3674a3ac8f8bb390c0c976e0fb1d8ad0"
+}

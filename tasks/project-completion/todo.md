@@ -166,6 +166,10 @@ See evidence/leaf-certification-process-20261018. Other producer/observation/rel
   distinct fingerprint, original-Run result and authority/source/receipt/CAS ordering only.
 - [ ] B1b.2b.6: Implement application types, structural bounds and independent fingerprint/error
   tests without native source queries, new runtime grants or a production caller.
+- [x] B1b.2b.7: Review crate-private canonical leaf reader extraction using genuine shared identity
+  and actual locked pin/revision; unchanged metadata/replay semantics and no new authority.
+- [ ] B1b.2b.8: Extract the canonical metadata reader and prove unchanged certifier behavior plus
+  concrete missing metadata controls before the future native scoped Finish consumer.
 - [ ] B1b.2c: Review nested/child relationship closure and remaining quiescence/transition authority.
 
 ## B2 dormant Finish increments
