@@ -1,0 +1,10 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 33.20s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 2 tests
+test leaf_certification_native::scoped_finish::shard_expiry::native_exact_replay_revalidates_expiry_after_unchanged_shard_wait ... ok
+test leaf_certification_native::scoped_finish::shard_expiry::native_first_apply_revalidates_expiry_after_unchanged_shard_wait ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 481 filtered out; finished in 8.99s
+

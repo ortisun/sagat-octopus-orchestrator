@@ -1,0 +1,19 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "integration_workflow_primitives",
+    "leaf_certification_native::scoped_finish::shard_expiry::",
+    "--",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "exit_code": 0,
+  "seconds": 44.33,
+  "started_utc": "2026-10-18T15:59:13.115260+00:00",
+  "log": "shard-expiry.txt"
+}

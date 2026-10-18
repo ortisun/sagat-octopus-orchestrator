@@ -1065,3 +1065,6 @@ mod receipts;
 
 #[path = "scoped_leaf_finish_entry_barriers.rs"]
 mod entry_barriers;
+
+#[path = "scoped_leaf_finish_shard_expiry.rs"]
+mod shard_expiry;

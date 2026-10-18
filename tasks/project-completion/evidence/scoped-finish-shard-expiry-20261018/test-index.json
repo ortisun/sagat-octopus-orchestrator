@@ -1,0 +1,7 @@
+{
+  "passed": 2,
+  "tests": [
+    "leaf_certification_native::scoped_finish::shard_expiry::native_exact_replay_revalidates_expiry_after_unchanged_shard_wait",
+    "leaf_certification_native::scoped_finish::shard_expiry::native_first_apply_revalidates_expiry_after_unchanged_shard_wait"
+  ]
+}

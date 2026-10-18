@@ -1,0 +1,27 @@
+{
+  "source_base": "2426083b",
+  "local_units": [
+    "B1b.2b.15b"
+  ],
+  "test_scope": "focused unchanged-row shard expiry controls",
+  "tests_passed": 2,
+  "frozen_inputs": 1097,
+  "sources_unchanged": true,
+  "product_implementation_changed": false,
+  "files": {
+    "architecture.json": "7ef031c362aa63a3ad7f7c4645cd47fdd6cbe66b0c08949185dbdc6fa2b49037",
+    "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "clippy.json": "fcd2cc92cfdb2e932ee4122a57c1497f031c0fd85251cf34988a47079f95c752",
+    "clippy.txt": "59052f6831a9a680e4d4721af3124ce2cf4d7f38c2f2c1a2a2ea3a41dbc7cb03",
+    "draft-notes.md": "2c211a481d4638ea4f4f6e8e2106053cb125a3e2a6f4875f60836f4a7541c68b",
+    "fmt.json": "5a19a417d5f06819bddbf0b8ed8ee5c2bc82305a4763a3592567b907be441d4b",
+    "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "reproduce.md": "dd4744cbffed3d1f90482ade500ccd4d19e5c681cd3de05b6763841c803f726e",
+    "review.md": "9dda17be2ccae11108d0039567236af96c00928921de9fb050ab1d294fd01dc9",
+    "shard-expiry.json": "d5fec55a3a96fb4a03dfb819fb9900621145920b1c58ed7779598a9be168a77e",
+    "shard-expiry.txt": "f36eb8ed9e6419192ac987a0b2f41a79882f3a0b2dc7e4639fc311a162bad511",
+    "source-after.json": "11cc98f27ca6fddeea59bf0792e117c42e77a33dc753d86896bce9fbc182c8f7",
+    "source-before.json": "11cc98f27ca6fddeea59bf0792e117c42e77a33dc753d86896bce9fbc182c8f7",
+    "test-index.json": "0d560ff6ae7ccb00657e36f91aba534dde68b3f6a557b4f4b90da12d480d6850"
+  }
+}

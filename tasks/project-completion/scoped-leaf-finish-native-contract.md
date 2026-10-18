@@ -417,3 +417,13 @@ Clippy9.43s, fmt4.19s and architecture0.29s/24crates. All1096 frozen executable/
 inputs match. Fresh bounded Astra review found none. Production adapter unchanged;15b..e,
 16/17, production/C0/nesting and canonical runtime/release tasks remain open.
 Evidence: tasks/project-completion/evidence/scoped-finish-entry-barriers-20261018/manifest.json.
+
+
+## Post-shard-wait current authority — 2026-10-18
+
+Local B1b.2b.15b. Two tests use real renewal to shorten the current lease, hold its committed tuple unchanged, observe the native shard-row wait while still live, and prove original Run/G guards retained with NOWAIT probes. Database-clock expiry occurs before releasing that unchanged row. Both first application and exact receipt replay return SchedulerFenceLost with exact source/capacity snapshots and no extra effects. Actual fresh owner/generation changes only renewable command authority; the unchanged logical fingerprint applies once or returns the exact original receipt.
+
+Actual focused unchanged-row shard expiry controls 2/2 in44.33s wall (8.99s harness); strict integration Clippy9.31s, fmt4.2s, architecture0.28s/24crates. All1097 frozen executable/contract inputs match.
+Fresh bounded Astra review found no remaining substantive issue.
+No production implementation changed. Previous complete scoped16/16 result remains separately scoped to2426083b; this run is focused2/2, not an aggregate18-test pass. Remaining15c..e,16/17 and production/C0/nesting/canonical runtime/release gates stay open. No sleep ordering, forced expiry UPDATE during wait, or non-flat source claim.
+Evidence: tasks/project-completion/evidence/scoped-finish-shard-expiry-20261018/manifest.json.
