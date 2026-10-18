@@ -1,3 +1,6 @@
 # Captured test/compiler logs retain their original final blank lines.
 /tasks/project-completion/evidence/scoped-blob-20261017/*.txt whitespace=-blank-at-eof
 /tasks/project-completion/evidence/capacity-a1-20261018/*.txt whitespace=-blank-at-eof
+/tasks/project-completion/evidence/child-root-fk-20261018/*.txt whitespace=-blank-at-eof
+# The native harness ends its in-progress test prefix with a space before a panic newline.
+/tasks/project-completion/evidence/child-root-fk-20261018/red.txt whitespace=-blank-at-eof,-blank-at-eol

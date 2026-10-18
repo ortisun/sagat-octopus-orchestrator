@@ -1570,3 +1570,16 @@ format/diff checks passed, architecture passed24 crates. Full source hashes, com
 interrupted results and fixture limitations are in `evidence/scoped-blob-20261017/manifest.json`.
 The blob backend is production Memory, not an S3 acceptance environment; the database aggregate
 uses real OpenBao. No fourth review or external CLI was run. Canonical broader tasks remain open.
+
+
+### Child admission lock correction (2026-10-18)
+
+Two barrier regressions failed before correction: depth-two handoff/root-child admission returned
+an explicit database deadlock; a separate new-root/handoff collision on novel payload returned
+public Unavailable. Parent reservation now takes NO KEY UPDATE; input/initial-state payload
+retention follows active-run admission in create, matching handoff. Focused2/2 passed8.59s,
+including rollback and actual scheduler child retry. Two isolated review cycles settled the
+narrow remedy; runtime-role regression passed709 tests with the separate long10k source case ignored. Strict
+locked workspace/all-target Clippy, formatting/diff and24-crate architecture checks passed.
+See evidence/child-root-fk-20261018/manifest.json for exact source, commands and failures. B0 remains an incomplete inventory;
+no group persistence, nesting activation or canonical task closure is inferred.

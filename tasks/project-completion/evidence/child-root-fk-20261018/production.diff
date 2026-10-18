@@ -1,0 +1,115 @@
+diff --git a/crates/infra-postgres/src/execution.rs b/crates/infra-postgres/src/execution.rs
+index 6a64f5f9..65b17328 100644
+--- a/crates/infra-postgres/src/execution.rs
++++ b/crates/infra-postgres/src/execution.rs
+@@ -753,42 +753,6 @@ impl RunStore for PgRunStore {
+                 declared_state.as_ref(),
+             )
+             .await?;
+-            sqlx::query(
+-                "INSERT INTO payloads (tenant_id, digest, content) VALUES ($1, $2, $3) \
+-                 ON CONFLICT DO NOTHING",
+-            )
+-            .bind(tenant.as_uuid())
+-            .bind(&input_digest)
+-            .bind(&new.input)
+-            .execute(&mut *tx)
+-            .await
+-            .map_err(store_error)?;
+-            if let Some(initial_state) = &initial_state {
+-                sqlx::query(
+-                    "INSERT INTO payloads (tenant_id, digest, content) VALUES ($1, $2, $3) \
+-                     ON CONFLICT (tenant_id, digest) DO NOTHING",
+-                )
+-                .bind(tenant.as_uuid())
+-                .bind(initial_state.value().digest().as_bytes().as_slice())
+-                .bind(initial_state.content())
+-                .execute(&mut *tx)
+-                .await
+-                .map_err(store_error)?;
+-                let retained: Option<Vec<u8>> = sqlx::query_scalar(
+-                    "SELECT content FROM payloads WHERE tenant_id = $1 AND digest = $2",
+-                )
+-                .bind(tenant.as_uuid())
+-                .bind(initial_state.value().digest().as_bytes().as_slice())
+-                .fetch_optional(&mut *tx)
+-                .await
+-                .map_err(store_error)?;
+-                if retained.as_deref() != Some(initial_state.content()) {
+-                    return Err(StoreError::Internal {
+-                        detail: "retained declared initial state does not match its digest"
+-                            .to_owned(),
+-                    });
+-                }
+-            }
+             let now: OffsetDateTime = sqlx::query_scalar("SELECT clock_timestamp()")
+                 .fetch_one(&mut *tx)
+                 .await
+@@ -855,6 +819,44 @@ impl RunStore for PgRunStore {
+                 let _ = tx.rollback().await;
+                 return Err(error);
+             }
++            // Admission locks precede payload uniqueness checks, as in evaluated handoff.
++            // A novel input/state can be retained concurrently by either writer.
++            sqlx::query(
++                "INSERT INTO payloads (tenant_id, digest, content) VALUES ($1, $2, $3) \
++                 ON CONFLICT DO NOTHING",
++            )
++            .bind(tenant.as_uuid())
++            .bind(&input_digest)
++            .bind(&new.input)
++            .execute(&mut *tx)
++            .await
++            .map_err(store_error)?;
++            if let Some(initial_state) = &initial_state {
++                sqlx::query(
++                    "INSERT INTO payloads (tenant_id, digest, content) VALUES ($1, $2, $3) \
++                     ON CONFLICT (tenant_id, digest) DO NOTHING",
++                )
++                .bind(tenant.as_uuid())
++                .bind(initial_state.value().digest().as_bytes().as_slice())
++                .bind(initial_state.content())
++                .execute(&mut *tx)
++                .await
++                .map_err(store_error)?;
++                let retained: Option<Vec<u8>> = sqlx::query_scalar(
++                    "SELECT content FROM payloads WHERE tenant_id = $1 AND digest = $2",
++                )
++                .bind(tenant.as_uuid())
++                .bind(initial_state.value().digest().as_bytes().as_slice())
++                .fetch_optional(&mut *tx)
++                .await
++                .map_err(store_error)?;
++                if retained.as_deref() != Some(initial_state.content()) {
++                    return Err(StoreError::Internal {
++                        detail: "retained declared initial state does not match its digest"
++                            .to_owned(),
++                    });
++                }
++            }
+             sqlx::query(
+                 "INSERT INTO runs (id, tenant_id, namespace_id, workflow_id, workflow_version_id, \
+                  status, run_version, paused, input_digest, correlation_id, started_by, trace_id, \
+@@ -1408,7 +1410,7 @@ async fn claim_reservation(
+     child: RunId,
+ ) -> Result<(), StoreError> {
+     let locked = sqlx::query_scalar::<_, i32>(
+-        "SELECT 1 FROM runs WHERE tenant_id = $1 AND id = $2 FOR UPDATE",
++        "SELECT 1 FROM runs WHERE tenant_id = $1 AND id = $2 FOR NO KEY UPDATE",
+     )
+     .bind(tenant.as_uuid())
+     .bind(parent.run.as_uuid())
+@@ -1419,9 +1421,10 @@ async fn claim_reservation(
+         return Err(StoreError::MissingReference);
+     }
+     // One tree, one budget. The advisory lock serialises only the creators of this tree's runs (each
+-    // already holds its own parent's lock, and none waits for anything else while holding it), so the
+-    // count cannot be overshot by racing siblings and no row lock of the root is ever needed, which
+-    // would deadlock against the root's own commands.
++    // already holds its own parent's write lock), so the count cannot be overshot by racing
++    // siblings. NO KEY UPDATE still excludes parent commands and another reservation, but lets
++    // another creator/child handoff validate a root FK with KEY SHARE while holding this tree
++    // lock. An UPDATE-mode parent lock would deadlock with that late FK at depth two.
+     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+         .bind(format!("run-tree:{tenant}:{root}"))
+         .execute(&mut **tx)

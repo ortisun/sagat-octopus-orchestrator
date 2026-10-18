@@ -445,3 +445,14 @@ blob upload/read auditing and quota refusal counters remain. Reproduce happy/fai
 the commands in `docs/runbooks/workflow-primitives.md`. Exact runtime/static evidence is recorded
 in `specs/014-workflow-primitives/validation-report.md` and its scoped-blob manifest. This is a
 partial checkpoint; broader/nested bodies and complete feature/release tasks remain unchecked.
+
+### Admission lock checkpoint — 2026-10-18
+
+FR-014-012/014/015: `chains::grandchild_handoff_and_root_child_admission_do_not_deadlock_on_the_root_foreign_key`
+and `chains::handoff_and_new_root_admission_do_not_invert_quota_and_payload_locks` exercise real
+PostgreSQL tree/FK and active-quota/payload competition. The correction preserves transactional
+journal/audit/outbox boundaries and existing scheduler failure telemetry. Contract details are
+in feature014's spec/plan/data model; reproduction is in the workflow-primitives runbook.
+The validation report and `tasks/project-completion/evidence/child-root-fk-20261018/` retain
+failed fixtures separately from behavioral RED and subsequent GREEN. B0's complete lock graph,
+nested capacity and canonical release tasks remain open.

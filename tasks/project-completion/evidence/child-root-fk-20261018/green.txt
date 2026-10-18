@@ -1,0 +1,10 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 32.92s
+     Running fault/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/fault_workflow_primitives-69bdcc40cb8c1b06)
+
+running 2 tests
+test chains::grandchild_handoff_and_root_child_admission_do_not_deadlock_on_the_root_foreign_key ... ok
+test chains::handoff_and_new_root_admission_do_not_invert_quota_and_payload_locks ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 87 filtered out; finished in 8.59s
+

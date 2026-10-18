@@ -1042,6 +1042,210 @@ use sagat_domain::execution::StepStatus;
 
 use crate::support::engine::{World, activity, child_node, document};
 
+/// Exercises the real child-creation adapter against a depth-two public handoff. The new child's
+/// transaction is deliberately dropped after admission: this test checks the lock protocol, not
+/// scheduler authority for committing a new child's first events.
+#[tokio::test]
+async fn grandchild_handoff_and_root_child_admission_do_not_deadlock_on_the_root_foreign_key() {
+    use crate::support::engine::{end_node, parallel_node, with};
+    use sagat_application::definitions::{DefinitionStore, Idempotency};
+    use sagat_application::execution::ParentLink;
+    use sagat_application::quotas::RunLimits;
+    use sagat_application::runs::{NewRun, RunStore};
+    use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
+
+    let world = Arc::new(world().await);
+    let suffix = Uuid::now_v7();
+    let leaf_name = format!("root-fk-leaf-{suffix}");
+    let (leaf_workflow, leaf_version) = world
+        .publish(document(&leaf_name, "leaf", vec![activity("leaf")]))
+        .await;
+    let grandchild_name = format!("root-fk-chain-{suffix}");
+    world.publish(rolling(&grandchild_name)).await;
+    let middle_name = format!("root-fk-middle-{suffix}");
+    world
+        .publish(document(
+            &middle_name,
+            "kid",
+            vec![child_node("kid", &grandchild_name, None)],
+        ))
+        .await;
+    let (root_workflow, _) = world
+        .publish(document(
+            &format!("root-fk-root-{suffix}"),
+            "fork",
+            vec![
+                with(
+                    parallel_node("fork", &["middle", "gate"], "all"),
+                    "next",
+                    json!("done"),
+                ),
+                child_node("middle", &middle_name, None),
+                with(activity("gate"), "next", json!("other")),
+                child_node("other", &leaf_name, None),
+                end_node("done"),
+            ],
+        ))
+        .await;
+    let input = json!({"continue": true, "next": {"continue": false}});
+    let root = world.start(root_workflow, &input).await;
+    let middle = child_run_id(root, &NodeId::parse("middle").expect("middle"));
+    let chain = child_run_id(middle, &NodeId::parse("kid").expect("kid"));
+    let scheduler = Arc::new(
+        scheduler(&world, placement(&world, "root-fk").await).with_children(world.cache.clone()),
+    );
+    for _ in 0..2 {
+        let report = scheduler.tick().await;
+        assert_eq!(
+            (report.children_started, report.failed),
+            (1, 0),
+            "{report:?}"
+        );
+    }
+    for activity in ["chain.child", "act.gate"] {
+        let session = world.session(&[activity]).await;
+        let task = world.one_task_of(&session, activity).await;
+        world
+            .complete(&session, &task, &json!({}))
+            .await
+            .expect("complete activity");
+    }
+    let tenant = world.admin.tenant_id();
+    let mut info = world
+        .store
+        .get(tenant, root)
+        .await
+        .expect("root")
+        .expect("exists")
+        .info;
+    let other_node = NodeId::parse("other").expect("other");
+    info.run_id = child_run_id(root, &other_node);
+    info.workflow_id = leaf_workflow;
+    info.version_id = leaf_version;
+    info.depth = 1;
+    info.parent = Some(ParentLink {
+        run: root,
+        node: other_node.clone(),
+        cancel_policy: sagat_domain::workflow::CancelPolicy::Propagate,
+    });
+    let version = world
+        .store
+        .get_version_by_id(tenant, leaf_version)
+        .await
+        .expect("version")
+        .expect("exists");
+    let new = NewRun {
+        retained: None,
+        limits: RunLimits::of(&world.store, tenant, world.namespace.id())
+            .await
+            .expect("limits"),
+        definition: world
+            .cache
+            .get_or_parse(leaf_version, &version.document)
+            .expect("definition"),
+        input: serde_json::to_vec(&input).expect("input"),
+        input_blob: None,
+        audit: AuditRecord::engine(
+            tenant,
+            AuditAction::RunStarted,
+            ResourceType::Run,
+            info.run_id.to_string(),
+            "root foreign-key lock regression",
+            info.trace_id.clone(),
+            crate::support::now(),
+        ),
+        idempotency: Idempotency {
+            scope: format!("child:{root}"),
+            key: format!("child-start:{other_node}"),
+            fingerprint: info.run_id.as_uuid().as_bytes().to_vec(),
+        },
+        info,
+    };
+    let mut guard = world.db.pool.begin().await.expect("tree gate");
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+        .bind(format!("run-tree:{tenant}:{root}"))
+        .execute(&mut *guard)
+        .await
+        .expect("hold tree admission");
+    let moving = tokio::spawn(handoff(scheduler.clone(), world.clone(), chain));
+    until_blocked(&world.db.pool, 1).await;
+    let creating = tokio::spawn({
+        let world = world.clone();
+        async move { world.store.create(new).await.map(drop) }
+    });
+    until_blocked(&world.db.pool, 2).await;
+    guard.rollback().await.expect("release tree admission");
+    let (moved, created) = tokio::time::timeout(Duration::from_secs(20), async {
+        tokio::join!(moving, creating)
+    })
+    .await
+    .expect("both writers must finish");
+    let moved = moved.expect("handoff task");
+    let created = created.expect("creation task");
+    assert!(moved.is_ok(), "handoff: {moved:?}; creation: {created:?}");
+    assert!(created.is_ok(), "creation: {created:?}");
+    assert_eq!(chain_state(&world, chain).await.1, 2);
+    let reserved = child_run_id(root, &NodeId::parse("other").expect("other"));
+    assert!(
+        world.run_record(reserved).await.is_none(),
+        "dropped admission rolls back"
+    );
+    let report = scheduler.tick().await;
+    assert_eq!(
+        (report.children_started, report.failed),
+        (1, 0),
+        "{report:?}"
+    );
+    world.assert_consistent(reserved).await;
+    world.assert_consistent(chain).await;
+    world.assert_consistent(root).await;
+}
+
+#[tokio::test]
+async fn handoff_and_new_root_admission_do_not_invert_quota_and_payload_locks() {
+    let (world, chain, scheduler) = pending_boundary("quota-payload", 3).await;
+    let (workflow, _) = world
+        .publish(document(
+            &format!("quota-payload-root-{}", Uuid::now_v7()),
+            "work",
+            vec![activity("work")],
+        ))
+        .await;
+    // This equals the continuation's evaluated transfer, but is not yet a retained payload.
+    // Its bytes occurring inside the predecessor input does not create a separate payload row.
+    let novel_input = json!({"next": {}});
+    let gate = Gate::inside_the_write(
+        &world.db.pool,
+        world.admin.tenant_id(),
+        world.namespace.id(),
+    )
+    .await;
+    let moving = tokio::spawn(handoff(scheduler, world.clone(), chain));
+    until_blocked(&world.db.pool, 1).await;
+    let creating = tokio::spawn({
+        let world = world.clone();
+        async move {
+            world
+                .start_with(workflow, &novel_input, "quota-payload-root-key", None)
+                .await
+        }
+    });
+    until_blocked(&world.db.pool, 2).await;
+    gate.release().await;
+    let (moved, created) = tokio::time::timeout(Duration::from_secs(20), async {
+        tokio::join!(moving, creating)
+    })
+    .await
+    .expect("both writers must finish");
+    let moved = moved.expect("handoff task");
+    let created = created.expect("creation task");
+    assert!(moved.is_ok(), "handoff: {moved:?}; creation: {created:?}");
+    let created = created.expect("new root must commit");
+    assert_eq!(chain_state(&world, chain).await.1, 2);
+    world.assert_consistent(chain).await;
+    world.assert_consistent(created).await;
+}
+
 /// A continuation workflow that keeps going while `input.continue` is true and then ends.
 fn rolling(name: &str) -> Value {
     json!({

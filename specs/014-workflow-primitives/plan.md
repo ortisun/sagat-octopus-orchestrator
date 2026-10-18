@@ -163,6 +163,13 @@ admission and all benchmark/failure evidence remain release gates, not architect
 
 ## Transaction and scheduling design
 
+Run creation and evaluated continuation acquire applicable tree and active-run admission before
+retaining input/initial-state payloads. Child reservation uses `FOR NO KEY UPDATE` on the parent:
+it excludes cancellation and competing reservation writes while permitting the root/parent
+foreign-key key-share checks of another creator. A depth-two handoff/root-child barrier and a
+novel-payload root-start/handoff barrier exercise these edges; they do not implement capacity
+groups or resolve every outstanding child-link/chain ordering question.
+
 Planner decisions remain pure and bounded. Application obtains a committed snapshot/revision,
 evaluates only trusted bounded expression interpreters, and proposes a typed transition. The store
 rechecks run sequence, the scheduler owner/fence for scheduler actions, and the worker lease for

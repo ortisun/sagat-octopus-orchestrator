@@ -1,0 +1,92 @@
+{
+  "source_base": "3f302a9d",
+  "scope": "existing run admission correction only; incomplete B0 lock inventory; no group runtime activation",
+  "environment": "repository disposable PostgreSQL16; SAGAT_TEST_AS_RUNTIME_ROLE=1, no external database URL; actual OpenBao in database aggregate",
+  "red": {
+    "passed": 0,
+    "failed": 2,
+    "seconds": 7.97,
+    "observations": [
+      "explicit database deadlock in root-child creation",
+      "public Unavailable in novel-payload root-start competition; source review identifies inverse order, public error alone does not expose DB cause"
+    ],
+    "production_base_sha256": "63843faf7170149a43e3150f72667f81b5c0f6aae0b0c1e21efcb2c6bb86609d",
+    "test_provenance": "same two race/assertion bodies before additional post-success rollback/scheduler-retry assertions; full RED test source snapshot was not separately frozen"
+  },
+  "green": {
+    "passed": 2,
+    "failed": 0,
+    "seconds": 8.59
+  },
+  "acceptance": {
+    "grpc": {
+      "passed": 70,
+      "failed": 0,
+      "ignored": 0,
+      "seconds": 38.98
+    },
+    "workflow_fault": {
+      "passed": 89,
+      "failed": 0,
+      "ignored": 0,
+      "seconds": 79.82
+    },
+    "database_openbao": {
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "seconds": 30.03
+    },
+    "durable_execution": {
+      "passed": 178,
+      "failed": 0,
+      "ignored": 0,
+      "seconds": 95.89
+    },
+    "workflow_integration": {
+      "passed": 369,
+      "failed": 0,
+      "ignored": 1,
+      "seconds": 178.62
+    }
+  },
+  "total_passed": 709,
+  "ignored_case": "collection_10k::ten_thousand_items_are_admitted_concurrently_aggregated_in_order_and_bounded (not counted passed)",
+  "static": {
+    "locked_workspace_all_targets_clippy": "passed,117s",
+    "format": "passed",
+    "architecture": "passed,24crates",
+    "diff_check": "passed"
+  },
+  "review": {
+    "cycles": 2,
+    "model": "gpt-6-astra",
+    "reasoning": "xhigh",
+    "external_cli": false,
+    "details": "review.md"
+  },
+  "excluded_failures": [
+    "fixture-invalid-parallel.txt",
+    "fixture-session-overclaim.txt",
+    "compile-test-arc-ownership.txt"
+  ],
+  "current_tested_source_sha256": {
+    "crates/infra-postgres/src/execution.rs": "aeb2b820df90119310cccbccc92ef7da5fb45831ea14be268b0e053624a29f50",
+    "tests/fault/workflow-primitives/chains.rs": "4160f0b7f2741d8265d6120cf25c81a233504bd617806129ee2e5470a35c38b2"
+  },
+  "hashes": {
+    "acceptance.txt": "b86faee501e291f8adfe9171e1aa547c05f96f066e2a3dc00775f8db4854343e",
+    "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "clippy.txt": "76f6f22e38563aebf748583b76d066b1ae71d116bc0dbff2aff5b36a5ae8888e",
+    "commands.json": "b4b2e114d9a79baa365f5e7d27310e524d88ed65259855589c5ccd987c5afb76",
+    "compile-test-arc-ownership.txt": "f638a224ca435e3dab1f5a7acc690cbf43ae4f566e7ae42416ac40ad3209b3cc",
+    "fixture-invalid-parallel.txt": "c3989939b750feede7ce3492aa822387f9d510358faf99e2fc307a81042efeea",
+    "fixture-session-overclaim.txt": "c8912919eb1745f417eae46633b8ae8acd970a8277edf62d2afdd8afbd36cc00",
+    "formatting.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "green.txt": "eeaa0f7bce5aafe9b1b1e921451fad52a7098153b5dcf2017e5fd76da8f54c68",
+    "production.diff": "a4ce681b6fa3414b4daee18e961b2fc2ad23497f4aed14bc4a1f0ef9bf2e0007",
+    "red.txt": "dc61fc26990196477eea11283f0629bfe97c7f3ae9f6ce1a61075254770b5725",
+    "review.md": "13ddc2f0a277e8bd869e93545152c5aae4b6ecc458a2e155b72f67b4f0d854ab"
+  },
+  "limits": "not a full locked-workspace/Compose/advisory release gate; no current all-five SDK reexecution inferred; existing public paths only"
+}

@@ -290,6 +290,15 @@ activity quota order; creation takes the tree-admission advisory lock before its
 resources. Handoff inserts a new successor and never locks two preexisting runs. Direct-run mutations
 for a chain member use the same chain-before-run order.
 
+Initial child reservation takes a parent `FOR NO KEY UPDATE` lock before the lifetime tree
+advisory lock. It still excludes parent mutation/duplicate reservation but admits foreign-key
+`KEY SHARE` checks on stable run identities. Creation and evaluated handoff retain new input
+and initial-state payload rows after namespace/tenant active-run admission; payload uniqueness
+can block on an uncommitted equal digest. The two focused admission barriers cover these edges.
+The [source inventory](../../tasks/project-completion/capacity-lock-inventory.md) separately records
+the unresolved existing handoff parent guard/legacy settlement deviations; this is not a complete
+lock-DAG acceptance or permission to activate nested groups.
+
 Parent transitions lock their own chain/run then child-instance links; child handoff/finalization
 locks its own chain/run then its link. Neither locks the other chain/run. Link cancellation/final
 outcome state is authoritative across rollover, preventing cancellation loss or premature parent

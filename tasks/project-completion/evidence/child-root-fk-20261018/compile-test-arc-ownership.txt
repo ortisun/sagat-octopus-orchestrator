@@ -1,0 +1,38 @@
+   Compiling sagat-infra-postgres v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-postgres)
+   Compiling sagat-control-plane v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/control-plane)
+   Compiling sagat-execution-engine v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/execution-engine)
+   Compiling sagat-sandbox-runner v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/sandbox-runner)
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+error[E0382]: the type `Arc` does not implement `Copy`
+    --> tests/fault/workflow-primitives/chains.rs:1193:18
+     |
+1094 |     let scheduler = Arc::new(
+     |         --------- this move could be avoided by cloning the original `Arc`, which is inexpensive
+...
+1170 |     let moving = tokio::spawn(handoff(scheduler, world.clone(), chain));
+     |                                       --------- value moved here
+...
+1193 |     let report = scheduler.tick().await;
+     |                  ^^^^^^^^^ value borrowed here after move
+     |
+     = note: consider using `Arc::clone`
+note: consider changing this parameter type in function `handoff` to borrow instead if owning the value isn't necessary
+    --> tests/fault/workflow-primitives/chains.rs:673:16
+     |
+ 672 | async fn handoff(
+     |          ------- in this function
+ 673 |     scheduler: Arc<Sched>,
+     |                ^^^^^^^^^^ this parameter takes ownership of the value
+     = note: borrow occurs due to deref coercion to `Scheduler<PgRunStore, JsonEvaluator, SystemEntropy>`
+note: deref defined here
+    --> /Users/marcelo/.rustup/toolchains/1.98.0-aarch64-apple-darwin/lib/rustlib/src/rust/library/alloc/src/sync.rs:2444:5
+     |
+2444 |     type Target = T;
+     |     ^^^^^^^^^^^
+help: clone the value to increment its reference count
+     |
+1170 |     let moving = tokio::spawn(handoff(scheduler.clone(), world.clone(), chain));
+     |                                                ++++++++
+
+For more information about this error, try `rustc --explain E0382`.
+error: could not compile `sagat-tests` (test "fault_workflow_primitives") due to 1 previous error

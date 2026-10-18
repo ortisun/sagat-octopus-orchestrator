@@ -1,0 +1,24 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 31.16s
+     Running fault/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/fault_workflow_primitives-69bdcc40cb8c1b06)
+
+running 2 tests
+test chains::grandchild_handoff_and_root_child_admission_do_not_deadlock_on_the_root_foreign_key ... 
+thread 'chains::grandchild_handoff_and_root_child_admission_do_not_deadlock_on_the_root_foreign_key' (74434558) panicked at tests/fault/workflow-primitives/chains.rs:1186:5:
+creation: Err(Unavailable { detail: "error returned from database: deadlock detected at line 1130" })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test chains::handoff_and_new_root_admission_do_not_invert_quota_and_payload_locks ... 
+thread 'chains::handoff_and_new_root_admission_do_not_invert_quota_and_payload_locks' (74437318) panicked at tests/fault/workflow-primitives/chains.rs:1231:27:
+new root must commit: Unavailable
+FAILED
+
+failures:
+
+failures:
+    chains::grandchild_handoff_and_root_child_admission_do_not_deadlock_on_the_root_foreign_key
+    chains::handoff_and_new_root_admission_do_not_invert_quota_and_payload_locks
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 87 filtered out; finished in 7.97s
+
+error: test failed, to rerun pass `-p sagat-tests --test fault_workflow_primitives`

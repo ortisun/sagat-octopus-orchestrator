@@ -1894,3 +1894,34 @@ scan. No PostgreSQL store, scheduler/worker gate, new quota projection or public
 implemented by A1. Authority, quiescence, exact fact freshness, atomic header/member persistence,
 compatible restore and actual low-quota/100k behavior remain unproved B/C dependencies; canonical
 T014-014..017 and the broader release tasks remain unchecked.
+
+
+## 2026-10-18 — Child admission/continuation lock regressions
+
+B0 source inventory exposed two existing admission-order risks, independently of nested groups.
+Two controlled real-PostgreSQL competitions were added to the fault suite: depth-two child
+handoff against root-child creation under the tree advisory gate, and evaluated continuation
+against a new public root start sharing a novel payload under the active-run quota gate.
+Before correction both failed: the first returned an explicit PostgreSQL deadlock; the second
+returned public `Unavailable`. The source review identifies its quota/payload uniqueness
+inversion; the public error alone does not expose the database cause. Earlier invalid parallel
+and overclaiming-session fixtures, and a later test Arc ownership compile error, are retained
+separately and are not behavioral RED evidence.
+
+The reservation's parent lock now uses `NO KEY UPDATE`, permitting stable-key FK checks while
+still excluding parent writes. Both input and initial-state retention blocks now follow tree/
+active-run admission, matching evaluated handoff's resource order. No boundary, payload hash,
+role, audit, outbox, migration or wire contract changed. Two bounded independent review cycles
+addressed payload inversion findings and then found no issues in the actual patch/barriers.
+The owner selected the existing review; no external CLI was invoked.
+
+Focused regression: **2/2 passed in8.59s**. The first also verifies rollback of admitted child
+creation, retries through the real scheduler and verifies journals; the second commits both
+new root and successor with independent journal checks. Runtime-role regression passed709 tests: gRPC70/38.98s, workflow faults89/79.82s, real
+PostgreSQL/OpenBao3/30.03s, durable execution178/95.89s, and workflow integration369/178.62s.
+The separately long10k reference-source case remains ignored, not passed. Locked workspace/all-target
+Clippy passed1m57s; format/diff checks and24-crate architecture checks passed.
+[Exact commands, failures and source hashes](../../tasks/project-completion/evidence/child-root-fk-20261018/manifest.json)
+are retained. This does not close the full workspace/Compose/advisory release gate. The working lock inventory remains incomplete, including
+its recorded parent-guard/legacy child-link questions. A1 does not authorize runtime nesting;
+B0 and all previously open canonical tasks remain unchecked.

@@ -45,6 +45,9 @@ refused. Broader body planning and the large resource gates remain separate work
 bounded paths do not establish the production ceilings. A new child is
 admitted under its parent's shard lease only inside its uncommitted zero-event creation transaction;
 a reopened child requires its own shard lease for subsequent scheduler mutations.
+Child reservation uses a parent write lock compatible with foreign-key key-share checks; tree
+and active-run admission precede input/initial-state payload retention. This ordering applies
+to existing child creation and evaluated continuation, independently of nested collection capacity.
 
 Other collection and loop graphs and nested scopes remain closed for general publication. The
 remaining acceptance and release evidence is tracked

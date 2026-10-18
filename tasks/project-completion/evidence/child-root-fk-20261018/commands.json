@@ -1,0 +1,76 @@
+{
+  "environment": {
+    "SAGAT_TEST_DATABASE_URL": "unset",
+    "SAGAT_TEST_AS_RUNTIME_ROLE": "1",
+    "CARGO_TARGET_DIR": "/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_BUILD_JOBS": "3",
+    "RUST_MIN_STACK": "16777216"
+  },
+  "red": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "fault_workflow_primitives",
+    "do_not_",
+    "--",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "green": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "fault_workflow_primitives",
+    "do_not_",
+    "--",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "acceptance": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "contract_grpc_durable_execution",
+    "--test",
+    "fault_workflow_primitives",
+    "--test",
+    "integration_database_connections",
+    "--test",
+    "integration_durable_execution",
+    "--test",
+    "integration_workflow_primitives",
+    "--",
+    "--test-threads=4"
+  ],
+  "clippy": [
+    "cargo",
+    "clippy",
+    "--locked",
+    "--workspace",
+    "--all-targets",
+    "--",
+    "-D",
+    "warnings"
+  ],
+  "format": [
+    "cargo",
+    "fmt",
+    "--all",
+    "--",
+    "--check"
+  ],
+  "architecture": [
+    "python3",
+    "scripts/check-architecture.py"
+  ]
+}

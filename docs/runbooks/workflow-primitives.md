@@ -394,3 +394,25 @@ SAGAT_TEST_AS_RUNTIME_ROLE=1 SAGAT_SDK_SCENARIO=collection-blob-output \
   cargo test --locked -p sagat-tests --test sdk_conformance \
   every_sdk_conforms_to_every_scenario -- --exact --ignored --nocapture
 ```
+
+### Child admission and handoff contention
+
+Child reservation serializes against parent cancellation with `FOR NO KEY UPDATE`, then takes
+the lifetime tree lock. Creation and evaluated handoff take active-run admission locks before
+retaining input/state payloads. This avoids an inversion with a successor's root foreign-key
+check or a competing novel payload's uniqueness check. A database deadlock remains a failed
+transaction, never an acknowledged transition; inspect existing scheduler action failures/logs
+and retry from persisted state. The journal, quota deltas, audit and outbox retain their atomic
+commit boundary. No payload bytes are needed in diagnostic logs.
+
+Reproduce the two lock barriers with the repository's disposable PostgreSQL fixture:
+
+```sh
+SAGAT_TEST_AS_RUNTIME_ROLE=1 cargo test --locked -p sagat-tests \
+  --test fault_workflow_primitives do_not_ -- --test-threads=1 --nocapture
+```
+
+The depth-two case includes aborted admission and a real scheduler retry; the quota/payload case
+commits a new root alongside continuation. Their focused results do not establish the complete
+child-link lock graph or nested collection capacity; see the
+[working lock inventory](../../tasks/project-completion/capacity-lock-inventory.md).
