@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Closed immutable-old/current cases for ordering one ordinary known success and collection drain.
+# Closed immutable-old/current cases for ordering one ordinary known success, stop and drain.
 set -euo pipefail
 umask 077
 
@@ -8,7 +8,7 @@ readonly old_test="legacy_collection_inflight_report_producer_v1::frozen_old_ord
 case_name="report-before-drain"
 if (( $# != 0 )); then
   if (( $# != 2 )) || [[ "$1" != "--case" ]]; then
-    echo "usage: $0 [--case report-before-drain|drain-before-report]" >&2
+    echo "usage: $0 [--case report-before-drain|drain-before-report|cancellation-before-report]" >&2
     exit 2
   fi
   case_name="$2"
@@ -23,6 +23,11 @@ case "${case_name}" in
     current_test="legacy_collection_inflight_report_v1::old_ordinary_success_after_drain_preserves_the_report_and_compensation"
     artifact_namespace="sagat-q10c-ordinary-drain-before-report-v1"
     log_label="ordinary-drain-before-report"
+    ;;
+  cancellation-before-report)
+    current_test="legacy_collection_inflight_report_v1::old_ordinary_success_after_cancellation_drain_preserves_the_original_stop"
+    artifact_namespace="sagat-q10c-ordinary-cancellation-before-report-v1"
+    log_label="ordinary-cancellation-before-report"
     ;;
   *)
     echo "unknown case: ${case_name}" >&2

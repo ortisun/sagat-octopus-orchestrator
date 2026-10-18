@@ -1,0 +1,73 @@
+--- C1-formatted-consumer
++++ tests/integration/workflow-primitives/legacy_collection_inflight_report_v1.rs
+@@ -974,6 +974,22 @@
+     .await
+     .expect("immutable public cancellation identity");
+     sha(&value)
++}
++
++async fn assert_cancellation_data_limit_audits(pool: &PgPool, receipt: &Receipt, expected: i64) {
++    let count: i64 = sqlx::query_scalar(
++        "SELECT count(*) FROM audit_records WHERE tenant_id=$1 AND resource_type='run' \
++          AND resource_id=$2 AND action='run.data_limit_exceeded'",
++    )
++    .bind(receipt.tenant.as_uuid())
++    .bind(receipt.run.to_string())
++    .fetch_one(pool)
++    .await
++    .expect("complete cancellation-specific data-limit audit count");
++    assert_eq!(
++        count, expected,
++        "cancellation gained an unexpected data-limit audit"
++    );
+ }
+ 
+ async fn cancellation_drain_fingerprint(pool: &PgPool, receipt: &Receipt) -> String {
+@@ -2859,6 +2875,7 @@
+     );
+     fresh_verify(&platform.api, &receipt).await;
+ 
++    assert_cancellation_data_limit_audits(&platform.api.db.pool, &receipt, 0).await;
+     let report_lookups_before = platform.api.authentication_lookups();
+     let report_request = worker.req(receipt.completion.clone());
+     let accepted = worker
+@@ -2925,6 +2942,7 @@
+         order.0 < order.1 && order.1 < order.2 && order.2 < order.3,
+         "public cancellation ordering changed"
+     );
++    assert_cancellation_data_limit_audits(&platform.api.db.pool, &receipt, 1).await;
+     let original_report_receipt =
+         verified_report_receipt(&platform.api.db.pool, &receipt, &accepted.command_id).await;
+     fresh_verify(&platform.api, &receipt).await;
+@@ -2955,6 +2973,7 @@
+         "cancelled report replay changed its exact receipt"
+     );
+ 
++    assert_cancellation_data_limit_audits(&platform.api.db.pool, &receipt, 1).await;
+     let current_before_cancel_replay: i64 =
+         sqlx::query_scalar("SELECT run_version FROM runs WHERE tenant_id=$1 AND id=$2")
+             .bind(receipt.tenant.as_uuid())
+@@ -3045,6 +3064,7 @@
+     );
+     fresh_verify(&platform.api, &receipt).await;
+ 
++    assert_cancellation_data_limit_audits(&platform.api.db.pool, &receipt, 1).await;
+     let compensation = poll_compensation(&scheduler, &mut worker).await;
+     assert!(
+         compensation.task_kind == "COMPENSATION"
+@@ -3167,7 +3187,7 @@
+                   WHERE drain_audit.tenant_id=$1 AND drain_audit.resource_type='run' \
+                     AND drain_audit.resource_id=$2::text \
+                     AND drain_audit.action='run.data_limit_exceeded' \
+-                    AND drain_audit.reason='existing_outputs') AS data_limit_drain_audits \
++                    AND drain_audit.reason IS DISTINCT FROM 'successful scoped output refused by run data limit') AS data_limit_drain_audits \
+            FROM runs run JOIN telemetry_pending telemetry \
+              ON telemetry.tenant_id=run.tenant_id AND telemetry.run_id=run.id \
+            JOIN iteration_scopes scope ON scope.tenant_id=run.tenant_id \
+@@ -3282,5 +3302,6 @@
+         stored_report_receipt(&platform.api.db.pool, &receipt).await == original_report_receipt,
+         "final scheduling changed the exact report receipt"
+     );
++    assert_cancellation_data_limit_audits(&platform.api.db.pool, &receipt, 1).await;
+     fresh_verify(&platform.api, &receipt).await;
+ }

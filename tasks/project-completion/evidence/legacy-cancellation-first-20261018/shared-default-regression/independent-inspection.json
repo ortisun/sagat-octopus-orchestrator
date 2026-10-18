@@ -1,0 +1,40 @@
+{
+  "phase_count": 4,
+  "identical_native_inputs": 1125,
+  "phases": [
+    {
+      "phase": "ordinary-before-drain-owner-consumer.log",
+      "one_test_passed": true,
+      "sha256": "c853d24ba1a3062ae67abac75f11833e995a5557a4089ecfd4645e9f2a5e6781",
+      "results": [
+        "q10c ordinary-before-drain API roles: producer=postgres, consumer=postgres",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 539 filtered out; finished in 2.36s"
+      ]
+    },
+    {
+      "phase": "ordinary-before-drain-owner-producer.log",
+      "one_test_passed": true,
+      "sha256": "7c2867f8abc5d0c67ca9e051918c08c5f159cf434440c5e560c8c3130c14a0d7",
+      "results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 501 filtered out; finished in 11.05s"
+      ]
+    },
+    {
+      "phase": "ordinary-before-drain-runtime-consumer.log",
+      "one_test_passed": true,
+      "sha256": "8eb28d88c1389bce522c1735c6b4e5b863f569ff145a1153e24d1f223c6475d9",
+      "results": [
+        "q10c ordinary-before-drain API roles: producer=sagat_app, consumer=sagat_app",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 539 filtered out; finished in 2.40s"
+      ]
+    },
+    {
+      "phase": "ordinary-before-drain-runtime-producer.log",
+      "one_test_passed": true,
+      "sha256": "efef66583b4f7dc9c2b2a95b8d82d550b95d297b4c02366f07e395a0c08e3615",
+      "results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 501 filtered out; finished in 11.64s"
+      ]
+    }
+  ]
+}

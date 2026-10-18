@@ -1,5 +1,6 @@
-//! Two bounded old/current acceptance cases for one genuine immutable-old ordinary success:
-//! report it before the current drain, or after the current drain has requested cancellation.
+//! Three bounded old/current acceptance cases for one genuine immutable-old ordinary success:
+//! report it before the current drain, after the data-limit drain requests cancellation, or after
+//! a public cancellation starts the normal collection drain.
 #![allow(clippy::expect_used, clippy::panic)]
 
 use std::os::unix::fs::PermissionsExt as _;
@@ -8,6 +9,7 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use prost::Message as _;
+use reqwest::{Method, StatusCode};
 use sagat_api_grpc::pb::{CompleteStepRequest, TaskLease};
 use sagat_application::entropy::{SystemEntropy, Token};
 use sagat_application::execution::{DefinitionCache, Engine};
@@ -30,6 +32,8 @@ use crate::support::{RUNTIME_ROLE, RUNTIME_ROLE_PASSWORD, attach_existing_db};
 
 const FORMAT: &str = "q10c-ordinary-before-drain-v1";
 const PINNED_OLD_COMMIT: &str = "6c44a0e49670cf19660792cd1518d241e6c99b3b";
+const CANCELLATION_KEY: &str = "legacy-cancellation-before-report-v1";
+const CANCELLATION_REASON: &str = "Cancel before the legacy drain";
 
 const PROJECTION_WITNESS_SQL: &str = r#"WITH selected_runs AS (
   SELECT run.id FROM runs run WHERE run.tenant_id=$1 AND run.id=$2
@@ -173,6 +177,16 @@ struct Receipt {
 
 #[derive(PartialEq, Eq)]
 struct ReportReceipt {
+    tenant: Uuid,
+    scope: String,
+    key: String,
+    request_hash: Vec<u8>,
+    resource: String,
+    created_at: time::OffsetDateTime,
+}
+
+#[derive(PartialEq, Eq)]
+struct OperationReceipt {
     tenant: Uuid,
     scope: String,
     key: String,
@@ -510,6 +524,88 @@ fn completion_fingerprint(receipt: &Receipt) -> Vec<u8> {
     fingerprint
 }
 
+fn cancel_operation_fingerprint(expected_version: i64) -> Vec<u8> {
+    let expected_version = u64::try_from(expected_version)
+        .expect("the retained journal version must be nonnegative")
+        .to_be_bytes();
+    let parts: [&[u8]; 3] = [b"cancel", CANCELLATION_REASON.as_bytes(), &expected_version];
+    let mut fingerprint = Vec::new();
+    for part in parts {
+        fingerprint.extend_from_slice(&(part.len() as u64).to_be_bytes());
+        fingerprint.extend_from_slice(part);
+    }
+    fingerprint
+}
+
+fn expected_operation_id(receipt: &Receipt) -> String {
+    let digest =
+        Sha256::digest(format!("operation/{}/{}", receipt.run, CANCELLATION_KEY).as_bytes());
+    let mut bytes = [0_u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    bytes[6] = (bytes[6] & 0x0f) | 0x80;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    Uuid::from_bytes(bytes).to_string()
+}
+
+fn operation_scope(receipt: &Receipt) -> String {
+    format!("run.operate:{}", receipt.run)
+}
+
+async fn verified_operation_receipt(
+    pool: &PgPool,
+    receipt: &Receipt,
+    expected_version: i64,
+) -> OperationReceipt {
+    let scope = operation_scope(receipt);
+    let mut rows: Vec<(Uuid, String, String, Vec<u8>, String, time::OffsetDateTime)> =
+        sqlx::query_as(
+            "SELECT tenant_id,scope,idempotency_key,request_hash,resource_id,created_at \
+               FROM command_dedupe \
+              WHERE tenant_id=$1 AND scope=$2 AND idempotency_key=$3",
+        )
+        .bind(receipt.tenant.as_uuid())
+        .bind(&scope)
+        .bind(CANCELLATION_KEY)
+        .fetch_all(pool)
+        .await
+        .expect("exact public cancellation receipt");
+    assert!(
+        rows.len() == 1,
+        "public cancellation must have one exact receipt"
+    );
+    let (tenant, stored_scope, key, request_hash, resource, created_at) =
+        rows.pop().expect("one checked public cancellation receipt");
+    assert!(
+        tenant == receipt.tenant.as_uuid(),
+        "public cancellation receipt changed tenant"
+    );
+    assert!(
+        stored_scope == scope,
+        "public cancellation receipt changed scope"
+    );
+    assert!(
+        key == CANCELLATION_KEY,
+        "public cancellation receipt changed key"
+    );
+    let expected_hash = Sha256::digest(cancel_operation_fingerprint(expected_version)).to_vec();
+    assert!(
+        request_hash == expected_hash,
+        "public cancellation receipt changed request fingerprint"
+    );
+    assert!(
+        resource == "cancel",
+        "public cancellation receipt changed resource"
+    );
+    OperationReceipt {
+        tenant,
+        scope: stored_scope,
+        key,
+        request_hash,
+        resource,
+        created_at,
+    }
+}
+
 fn report_scope(receipt: &Receipt) -> String {
     use std::fmt::Write as _;
 
@@ -652,6 +748,8 @@ async fn assert_successful_refusal(
     outboxes_before: i64,
     payloads_before: i64,
     expected_scope_lifecycle: &str,
+    expected_stop_reason: &str,
+    expected_stop_code: Option<&str>,
 ) {
     let state: SuccessfulRefusalState = sqlx::query_as(
         "SELECT run.status,run.stop_reason,run.stop_code,scope.lifecycle,step.status, \
@@ -683,8 +781,8 @@ async fn assert_successful_refusal(
     .await
     .expect("successful refusal projection");
     assert_eq!(state.0, "CANCELLING");
-    assert_eq!(state.1.as_deref(), Some("FAILED"));
-    assert_eq!(state.2.as_deref(), Some("RUN_DATA_LIMIT"));
+    assert_eq!(state.1.as_deref(), Some(expected_stop_reason));
+    assert_eq!(state.2.as_deref(), expected_stop_code);
     assert_eq!(state.3, expected_scope_lifecycle);
     assert_eq!(state.4, "SUCCEEDED");
     assert!(state.5 && state.6 && state.7);
@@ -850,6 +948,187 @@ async fn reservation_usage_fingerprint(pool: &PgPool, receipt: &Receipt) -> Stri
     .await
     .expect("live member reservation and iteration usage snapshot");
     sha(&value)
+}
+
+async fn public_cancellation_fingerprint(pool: &PgPool, receipt: &Receipt) -> String {
+    let value: Value = sqlx::query_scalar(
+        "SELECT jsonb_build_object( \
+          'stop',jsonb_build_object('reason',run.stop_reason,'code',run.stop_code), \
+          'stopEvent',(SELECT to_jsonb(stop_event) FROM run_events stop_event \
+            WHERE stop_event.tenant_id=run.tenant_id AND stop_event.run_id=run.id \
+              AND stop_event.event_type='run.stop_requested'), \
+          'audit',(SELECT to_jsonb(cancel_audit) FROM audit_records cancel_audit \
+            WHERE cancel_audit.tenant_id=run.tenant_id \
+              AND cancel_audit.resource_type='run' AND cancel_audit.resource_id=run.id::text \
+              AND cancel_audit.action='run.cancel_requested'), \
+          'receipt',(SELECT to_jsonb(cancel_receipt) FROM command_dedupe cancel_receipt \
+            WHERE cancel_receipt.tenant_id=run.tenant_id \
+              AND cancel_receipt.scope=concat('run.operate:',run.id::text) \
+              AND cancel_receipt.idempotency_key=$3)) \
+         FROM runs run WHERE run.tenant_id=$1 AND run.id=$2",
+    )
+    .bind(receipt.tenant.as_uuid())
+    .bind(receipt.run.as_uuid())
+    .bind(CANCELLATION_KEY)
+    .fetch_one(pool)
+    .await
+    .expect("immutable public cancellation identity");
+    sha(&value)
+}
+
+async fn assert_cancellation_data_limit_audits(pool: &PgPool, receipt: &Receipt, expected: i64) {
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_records WHERE tenant_id=$1 AND resource_type='run' \
+          AND resource_id=$2 AND action='run.data_limit_exceeded'",
+    )
+    .bind(receipt.tenant.as_uuid())
+    .bind(receipt.run.to_string())
+    .fetch_one(pool)
+    .await
+    .expect("complete cancellation-specific data-limit audit count");
+    assert_eq!(
+        count, expected,
+        "cancellation gained an unexpected data-limit audit"
+    );
+}
+
+async fn cancellation_drain_fingerprint(pool: &PgPool, receipt: &Receipt) -> String {
+    let value: Value = sqlx::query_scalar(
+        "SELECT jsonb_build_object( \
+          'publicCancel',$3::text, \
+          'scope',(SELECT jsonb_build_object( \
+              'kind',scope.drain_kind,'iteration',scope.drain_iteration, \
+              'code',scope.drain_failure_code,'sequence',scope.drain_sequence, \
+              'outbox',scope.drain_outbox_id) FROM iteration_scopes scope \
+            WHERE scope.tenant_id=run.tenant_id AND scope.run_id=run.id \
+              AND scope.owner_path_nodes='{}'::text[] \
+              AND scope.owner_path_indices='{}'::integer[] AND scope.owner_node='c10'), \
+          'drainEvent',(SELECT to_jsonb(drain_event) FROM run_events drain_event \
+            WHERE drain_event.tenant_id=run.tenant_id AND drain_event.run_id=run.id \
+              AND drain_event.event_type='collection.drain_started' \
+              AND drain_event.node='c10'), \
+          'cancelEvent',(SELECT to_jsonb(cancel_event) FROM run_events cancel_event \
+            WHERE cancel_event.tenant_id=run.tenant_id AND cancel_event.run_id=run.id \
+              AND cancel_event.event_type='step.cancel_requested' \
+              AND cancel_event.node='reserve' \
+              AND cancel_event.instance_path_nodes=ARRAY['c10']::text[] \
+              AND cancel_event.instance_path_indices=ARRAY[0]::integer[]), \
+          'outbox',(SELECT to_jsonb(drain_message) FROM event_outbox drain_message \
+            WHERE drain_message.tenant_id=run.tenant_id \
+              AND drain_message.aggregate_id=run.id \
+              AND drain_message.event_type='collection.drain.started' \
+              AND drain_message.routing_key='c10')) \
+         FROM runs run WHERE run.tenant_id=$1 AND run.id=$2",
+    )
+    .bind(receipt.tenant.as_uuid())
+    .bind(receipt.run.as_uuid())
+    .bind(public_cancellation_fingerprint(pool, receipt).await)
+    .fetch_one(pool)
+    .await
+    .expect("immutable cancellation drain identity");
+    sha(&value)
+}
+
+async fn assert_public_cancellation(
+    pool: &PgPool,
+    receipt: &Receipt,
+    expected_version: i64,
+    outboxes_before: i64,
+    payloads_before: i64,
+    output_fingerprint: &str,
+) -> (OperationReceipt, String) {
+    let row = sqlx::query(
+        "SELECT run.status AS run_status,run.stop_reason,run.stop_code,run.run_version, \
+                telemetry.head_seq,scope.lifecycle,step.status AS step_status,step.cancel_requested, \
+                (SELECT count(*) FROM run_events stop_event \
+                  WHERE stop_event.tenant_id=$1 AND stop_event.run_id=$2 \
+                    AND stop_event.event_type='run.stop_requested') AS stops, \
+                COALESCE((SELECT bool_and(stop_event.detail->>'reason'='CANCELLED' \
+                    AND stop_event.detail->>'code' IS NULL) FROM run_events stop_event \
+                  WHERE stop_event.tenant_id=$1 AND stop_event.run_id=$2 \
+                    AND stop_event.event_type='run.stop_requested'),false) AS stop_exact, \
+                (SELECT count(*) FROM run_events drain_event \
+                  WHERE drain_event.tenant_id=$1 AND drain_event.run_id=$2 \
+                    AND drain_event.event_type='collection.drain_started' \
+                    AND drain_event.node='c10') AS drains, \
+                (SELECT count(*) FROM run_events cancel_event \
+                  WHERE cancel_event.tenant_id=$1 AND cancel_event.run_id=$2 \
+                    AND cancel_event.event_type='step.cancel_requested' \
+                    AND cancel_event.node='reserve' \
+                    AND cancel_event.instance_path_nodes=ARRAY['c10']::text[] \
+                    AND cancel_event.instance_path_indices=ARRAY[0]::integer[]) AS cancellations, \
+                (SELECT count(*) FROM audit_records cancel_audit \
+                  WHERE cancel_audit.tenant_id=$1 AND cancel_audit.resource_type='run' \
+                    AND cancel_audit.resource_id=$2::text \
+                    AND cancel_audit.action='run.cancel_requested') AS cancel_audits, \
+                COALESCE((SELECT bool_and(cancel_audit.actor='alice' \
+                    AND cancel_audit.reason=$3) FROM audit_records cancel_audit \
+                  WHERE cancel_audit.tenant_id=$1 AND cancel_audit.resource_type='run' \
+                    AND cancel_audit.resource_id=$2::text \
+                    AND cancel_audit.action='run.cancel_requested'),false) AS cancel_audit_exact, \
+                COALESCE((SELECT bool_and(cancel_audit.trace_id ~ '^[0-9a-f]{32}$' \
+                    AND cancel_audit.trace_id IS NOT DISTINCT FROM stop_event.trace_id) \
+                  FROM audit_records cancel_audit JOIN run_events stop_event \
+                    ON stop_event.tenant_id=cancel_audit.tenant_id \
+                   AND stop_event.run_id=$2 AND stop_event.event_type='run.stop_requested' \
+                  WHERE cancel_audit.tenant_id=$1 AND cancel_audit.resource_type='run' \
+                    AND cancel_audit.resource_id=$2::text \
+                    AND cancel_audit.action='run.cancel_requested'),false) AS http_trace, \
+                (SELECT count(*) FROM audit_records limit_audit \
+                  WHERE limit_audit.tenant_id=$1 AND limit_audit.resource_type='run' \
+                    AND limit_audit.resource_id=$2::text \
+                    AND limit_audit.action='run.data_limit_exceeded') AS data_limit_audits \
+           FROM runs run JOIN telemetry_pending telemetry \
+             ON telemetry.tenant_id=run.tenant_id AND telemetry.run_id=run.id \
+           JOIN iteration_scopes scope ON scope.tenant_id=run.tenant_id \
+            AND scope.run_id=run.id AND scope.owner_path_nodes='{}'::text[] \
+            AND scope.owner_path_indices='{}'::integer[] AND scope.owner_node='c10' \
+           JOIN steps step ON step.tenant_id=run.tenant_id AND step.run_id=run.id \
+            AND step.node='reserve' AND step.instance_path_nodes=ARRAY['c10']::text[] \
+            AND step.instance_path_indices=ARRAY[0]::integer[] \
+          WHERE run.tenant_id=$1 AND run.id=$2",
+    )
+    .bind(receipt.tenant.as_uuid())
+    .bind(receipt.run.as_uuid())
+    .bind(CANCELLATION_REASON)
+    .fetch_one(pool)
+    .await
+    .expect("public cancellation before scheduler drain");
+    assert_eq!(row.get::<String, _>("run_status"), "CANCELLING");
+    assert_eq!(
+        row.get::<Option<String>, _>("stop_reason").as_deref(),
+        Some("CANCELLED")
+    );
+    assert!(row.get::<Option<String>, _>("stop_code").is_none());
+    assert_eq!(row.get::<i64, _>("run_version"), expected_version + 1);
+    assert_eq!(
+        row.get::<i64, _>("run_version"),
+        row.get::<i64, _>("head_seq")
+    );
+    assert_eq!(row.get::<String, _>("lifecycle"), "OPEN");
+    assert_eq!(row.get::<String, _>("step_status"), "LEASED");
+    assert!(!row.get::<bool, _>("cancel_requested"));
+    assert_eq!(row.get::<i64, _>("stops"), 1);
+    assert!(row.get::<bool, _>("stop_exact"));
+    assert_eq!(row.get::<i64, _>("drains"), 0);
+    assert_eq!(row.get::<i64, _>("cancellations"), 0);
+    assert_eq!(row.get::<i64, _>("cancel_audits"), 1);
+    assert!(row.get::<bool, _>("cancel_audit_exact"));
+    assert!(row.get::<bool, _>("http_trace"));
+    assert_eq!(row.get::<i64, _>("data_limit_audits"), 0);
+    assert_eq!(outboxes(pool, receipt).await, outboxes_before);
+    assert_eq!(payloads(pool, receipt).await, payloads_before);
+    assert_eq!(
+        effective_totals(pool, receipt).await,
+        (2_100_000, 2_100_020, 4_200_020)
+    );
+    assert!(
+        output_reference_fingerprint(pool, receipt).await == output_fingerprint,
+        "public cancellation changed output or blob references"
+    );
+    let operation_receipt = verified_operation_receipt(pool, receipt, expected_version).await;
+    let fingerprint = public_cancellation_fingerprint(pool, receipt).await;
+    (operation_receipt, fingerprint)
 }
 
 async fn stop_drain_fingerprint(pool: &PgPool, receipt: &Receipt) -> String {
@@ -1173,10 +1452,189 @@ async fn assert_first_drain(
     stop_drain_fingerprint(pool, receipt).await
 }
 
-async fn assert_pending_compensation(pool: &PgPool, receipt: &Receipt) -> String {
+async fn assert_cancellation_first_drain(
+    pool: &PgPool,
+    receipt: &Receipt,
+    outboxes_before: i64,
+    payloads_before: i64,
+    output_fingerprint: &str,
+) -> String {
+    let row = sqlx::query(
+        "SELECT run.status AS run_status,run.stop_reason,run.stop_code,run.run_version, \
+                telemetry.head_seq,scope.lifecycle,scope.drain_kind,scope.drain_iteration, \
+                scope.drain_failure_code,scope.drain_sequence, \
+                member.lifecycle AS member_lifecycle,member.slot_held, \
+                step.status AS step_status,step.cancel_requested, \
+                step.step_id=$3 AS same_step,step.lease_token_hash=$4 AS same_token, \
+                step.leased_by=$5 AS same_worker,step.attempt=$6 AS same_attempt, \
+                step.generation=$7 AS same_generation, \
+                step.lease_expires_at>clock_timestamp() AS live_lease, \
+                (SELECT count(*) FROM run_events stop_event \
+                  WHERE stop_event.tenant_id=$1 AND stop_event.run_id=$2 \
+                    AND stop_event.event_type='run.stop_requested') AS stops, \
+                COALESCE((SELECT bool_and(stop_event.detail->>'reason'='CANCELLED' \
+                    AND stop_event.detail->>'code' IS NULL) FROM run_events stop_event \
+                  WHERE stop_event.tenant_id=$1 AND stop_event.run_id=$2 \
+                    AND stop_event.event_type='run.stop_requested'),false) AS stop_exact, \
+                (SELECT min(stop_event.seq) FROM run_events stop_event \
+                  WHERE stop_event.tenant_id=$1 AND stop_event.run_id=$2 \
+                    AND stop_event.event_type='run.stop_requested') AS stop_seq, \
+                (SELECT count(*) FROM run_events drain_event \
+                  WHERE drain_event.tenant_id=$1 AND drain_event.run_id=$2 \
+                    AND drain_event.event_type='collection.drain_started' \
+                    AND drain_event.node='c10' \
+                    AND drain_event.detail->>'reason'='cancelled') AS drains, \
+                (SELECT min(drain_event.seq) FROM run_events drain_event \
+                  WHERE drain_event.tenant_id=$1 AND drain_event.run_id=$2 \
+                    AND drain_event.event_type='collection.drain_started' \
+                    AND drain_event.node='c10') AS drain_seq, \
+                (SELECT count(*) FROM run_events cancel_event \
+                  WHERE cancel_event.tenant_id=$1 AND cancel_event.run_id=$2 \
+                    AND cancel_event.event_type='step.cancel_requested' \
+                    AND cancel_event.node='reserve' \
+                    AND cancel_event.instance_path_nodes=ARRAY['c10']::text[] \
+                    AND cancel_event.instance_path_indices=ARRAY[0]::integer[]) AS cancellations, \
+                (SELECT min(cancel_event.seq) FROM run_events cancel_event \
+                  WHERE cancel_event.tenant_id=$1 AND cancel_event.run_id=$2 \
+                    AND cancel_event.event_type='step.cancel_requested' \
+                    AND cancel_event.node='reserve' \
+                    AND cancel_event.instance_path_nodes=ARRAY['c10']::text[] \
+                    AND cancel_event.instance_path_indices=ARRAY[0]::integer[]) AS cancel_seq, \
+                (SELECT count(*) FROM run_events premature_event \
+                  WHERE premature_event.tenant_id=$1 AND premature_event.run_id=$2 \
+                    AND ((premature_event.event_type IN ('step.completed','step.failed', \
+                          'step.cancelled','step.retry_scheduled') \
+                         AND premature_event.node='reserve' \
+                         AND premature_event.instance_path_nodes=ARRAY['c10']::text[] \
+                         AND premature_event.instance_path_indices=ARRAY[0]::integer[]) \
+                      OR (premature_event.event_type IN ('collection.iteration_returned', \
+                          'collection.iteration_checkpointed','collection.iteration_drained', \
+                          'collection.finished') AND premature_event.node='c10') \
+                      OR premature_event.event_type='run.finished')) AS premature_events, \
+                (SELECT count(*) FROM scope_sagas saga \
+                  WHERE saga.tenant_id=$1 AND saga.run_id=$2) AS sagas, \
+                (SELECT count(*) FROM steps extra \
+                  WHERE extra.tenant_id=$1 AND extra.run_id=$2 \
+                    AND extra.instance_path_nodes=ARRAY['c10']::text[] \
+                    AND extra.instance_path_indices=ARRAY[0]::integer[] \
+                    AND (extra.node='reserve~c' OR extra.node='reserve~r')) AS extra_effects, \
+                (SELECT count(*) FROM audit_records limit_audit \
+                  WHERE limit_audit.tenant_id=$1 AND limit_audit.resource_type='run' \
+                    AND limit_audit.resource_id=$2::text \
+                    AND limit_audit.action='run.data_limit_exceeded') AS data_limit_audits, \
+                (SELECT count(*) FROM event_outbox drain_message \
+                  WHERE drain_message.tenant_id=$1 AND drain_message.aggregate_id=$2 \
+                    AND drain_message.event_type='collection.drain.started' \
+                    AND drain_message.routing_key='c10' \
+                    AND drain_message.payload->>'reason'='CANCELLED') AS drain_outboxes, \
+                (SELECT count(*) FROM command_dedupe report_receipt \
+                  WHERE report_receipt.tenant_id=$1 AND report_receipt.scope=$8 \
+                    AND report_receipt.idempotency_key=$9) AS report_receipts, \
+                (SELECT count(*) FROM command_dedupe cancel_receipt \
+                  WHERE cancel_receipt.tenant_id=$1 AND cancel_receipt.scope=$10 \
+                    AND cancel_receipt.idempotency_key=$11) AS cancel_receipts \
+           FROM runs run JOIN telemetry_pending telemetry \
+             ON telemetry.tenant_id=run.tenant_id AND telemetry.run_id=run.id \
+           JOIN iteration_scopes scope ON scope.tenant_id=run.tenant_id \
+            AND scope.run_id=run.id AND scope.owner_path_nodes='{}'::text[] \
+            AND scope.owner_path_indices='{}'::integer[] AND scope.owner_node='c10' \
+           JOIN collection_iterations member ON member.tenant_id=scope.tenant_id \
+            AND member.run_id=scope.run_id AND member.scope_id=scope.scope_id \
+            AND member.iteration_index=0 \
+           JOIN steps step ON step.tenant_id=run.tenant_id AND step.run_id=run.id \
+            AND step.node='reserve' AND step.instance_path_nodes=ARRAY['c10']::text[] \
+            AND step.instance_path_indices=ARRAY[0]::integer[] \
+          WHERE run.tenant_id=$1 AND run.id=$2",
+    )
+    .bind(receipt.tenant.as_uuid())
+    .bind(receipt.run.as_uuid())
+    .bind(Uuid::parse_str(&receipt.lease.step_id).expect("step id"))
+    .bind(Token::hash_of(&receipt.lease.lease_token))
+    .bind(&receipt.worker_id)
+    .bind(receipt.lease.attempt)
+    .bind(receipt.lease.generation)
+    .bind(report_scope(receipt))
+    .bind(&receipt.completion.idempotency_key)
+    .bind(operation_scope(receipt))
+    .bind(CANCELLATION_KEY)
+    .fetch_one(pool)
+    .await
+    .expect("first normal cancellation drain state");
+    assert_eq!(row.get::<String, _>("run_status"), "CANCELLING");
+    assert_eq!(
+        row.get::<Option<String>, _>("stop_reason").as_deref(),
+        Some("CANCELLED")
+    );
+    assert!(row.get::<Option<String>, _>("stop_code").is_none());
+    assert_eq!(
+        row.get::<i64, _>("run_version"),
+        row.get::<i64, _>("head_seq")
+    );
+    assert_eq!(row.get::<String, _>("lifecycle"), "DRAINING");
+    assert_eq!(
+        row.get::<Option<String>, _>("drain_kind").as_deref(),
+        Some("CANCELLED")
+    );
+    assert!(row.get::<Option<i32>, _>("drain_iteration").is_none());
+    assert!(row.get::<Option<String>, _>("drain_failure_code").is_none());
+    assert_eq!(row.get::<String, _>("member_lifecycle"), "ADMITTED");
+    assert!(row.get::<bool, _>("slot_held"));
+    assert_eq!(row.get::<String, _>("step_status"), "LEASED");
+    assert!(row.get::<bool, _>("cancel_requested"));
+    assert!(row.get::<bool, _>("same_step"));
+    assert!(row.get::<bool, _>("same_token"));
+    assert!(row.get::<bool, _>("same_worker"));
+    assert!(row.get::<bool, _>("same_attempt"));
+    assert!(row.get::<bool, _>("same_generation"));
+    assert!(row.get::<bool, _>("live_lease"));
+    assert_eq!(row.get::<i64, _>("stops"), 1);
+    assert!(row.get::<bool, _>("stop_exact"));
+    assert_eq!(row.get::<i64, _>("drains"), 1);
+    assert_eq!(row.get::<i64, _>("cancellations"), 1);
+    let stop_seq = row.get::<i64, _>("stop_seq");
+    let drain_seq = row.get::<i64, _>("drain_seq");
+    let cancel_seq = row.get::<i64, _>("cancel_seq");
+    assert!(
+        stop_seq < drain_seq && drain_seq < cancel_seq,
+        "public stop, cancellation drain and lease cancellation order changed"
+    );
+    assert_eq!(
+        row.get::<Option<i64>, _>("drain_sequence"),
+        Some(cancel_seq)
+    );
+    assert_eq!(row.get::<i64, _>("run_version"), cancel_seq);
+    assert_eq!(row.get::<i64, _>("premature_events"), 0);
+    assert_eq!(row.get::<i64, _>("sagas"), 0);
+    assert_eq!(row.get::<i64, _>("extra_effects"), 0);
+    assert_eq!(row.get::<i64, _>("data_limit_audits"), 0);
+    assert_eq!(row.get::<i64, _>("drain_outboxes"), 1);
+    assert_eq!(row.get::<i64, _>("report_receipts"), 0);
+    assert_eq!(row.get::<i64, _>("cancel_receipts"), 1);
+    assert_eq!(outboxes(pool, receipt).await, outboxes_before + 1);
+    assert_eq!(payloads(pool, receipt).await, payloads_before);
+    assert_eq!(
+        effective_totals(pool, receipt).await,
+        (2_100_000, 2_100_020, 4_200_020)
+    );
+    assert!(
+        output_reference_fingerprint(pool, receipt).await == output_fingerprint,
+        "cancellation drain retained or rewired an output or blob"
+    );
+    assert!(
+        source_witness(pool, receipt.tenant, receipt.run).await == receipt.source_witness,
+        "cancellation drain changed the immutable old source"
+    );
+    cancellation_drain_fingerprint(pool, receipt).await
+}
+
+async fn assert_pending_compensation(
+    pool: &PgPool,
+    receipt: &Receipt,
+    expected_cause: &str,
+) -> String {
     let row = sqlx::query(
         "SELECT run.status,run.finished_at IS NULL AS unfinished,scope.lifecycle AS scope_lifecycle,member.lifecycle AS member_lifecycle, \
-                saga.phase,saga.outcome,compensation.status AS compensation_status, \
+                saga.phase,saga.cause_code,saga.outcome,compensation.status AS compensation_status, \
                 compensation.lease_expires_at>clock_timestamp() AS compensation_live, \
                 (SELECT count(*) FROM scope_saga_entries entry WHERE entry.tenant_id=$1 \
                   AND entry.run_id=$2 AND entry.owner_path_nodes='{}'::text[] \
@@ -1218,6 +1676,7 @@ async fn assert_pending_compensation(pool: &PgPool, receipt: &Receipt) -> String
     assert_eq!(row.get::<String, _>("scope_lifecycle"), "DRAINING");
     assert_eq!(row.get::<String, _>("member_lifecycle"), "DRAINED");
     assert_eq!(row.get::<String, _>("phase"), "COMPENSATING");
+    assert_eq!(row.get::<String, _>("cause_code"), expected_cause);
     assert!(row.get::<Option<String>, _>("outcome").is_none());
     assert_eq!(row.get::<String, _>("compensation_status"), "LEASED");
     assert!(row.get::<bool, _>("compensation_live"));
@@ -1286,6 +1745,7 @@ async fn finish_after_compensation(
     scheduler: &Scheduler<PgRunStore, JsonEvaluator, SystemEntropy>,
     api: &TestApi,
     receipt: &Receipt,
+    expected_status: &str,
 ) {
     for _ in 0..40 {
         let status: String =
@@ -1295,13 +1755,13 @@ async fn finish_after_compensation(
                 .fetch_one(&api.db.pool)
                 .await
                 .expect("run status");
-        if status == "COMPENSATED" {
+        if status == expected_status {
             return;
         }
         let report = scheduler.tick().await;
         assert_eq!(report.failed, 0, "final scheduler pass: {report:?}");
     }
-    panic!("the compensated run did not reach its real terminal outcome");
+    panic!("the run did not reach its real terminal outcome after compensation");
 }
 
 #[tokio::test]
@@ -1414,6 +1874,8 @@ async fn old_ordinary_success_before_drain_preserves_the_report_and_compensation
         outboxes_before,
         payloads_before,
         "OPEN",
+        "FAILED",
+        Some("RUN_DATA_LIMIT"),
     )
     .await;
     let original_report_receipt =
@@ -1590,7 +2052,7 @@ async fn old_ordinary_success_before_drain_preserves_the_report_and_compensation
         .expect("complete the real engine compensation task");
     assert!(!compensation_ack.already_applied);
     assert_eq!(compensation_ack.step_status, "SUCCEEDED");
-    finish_after_compensation(&scheduler, &platform.api, &receipt).await;
+    finish_after_compensation(&scheduler, &platform.api, &receipt, "COMPENSATED").await;
 
     let final_state: FinalCompensationState = sqlx::query_as(
         "SELECT run.status,scope.lifecycle,scope.drain_kind,scope.drain_failure_code, \
@@ -1868,6 +2330,8 @@ async fn old_ordinary_success_after_drain_preserves_the_report_and_compensation(
         outboxes_before + 1,
         payloads_before,
         "DRAINING",
+        "FAILED",
+        Some("RUN_DATA_LIMIT"),
     )
     .await;
     assert!(
@@ -1971,11 +2435,13 @@ async fn old_ordinary_success_after_drain_preserves_the_report_and_compensation(
     assert_eq!(compensation_instance.instance_path[0].scope_node_id, "c10");
     assert_eq!(compensation_instance.instance_path[0].iteration_index, 0);
 
-    let pending_compensation = assert_pending_compensation(&platform.api.db.pool, &receipt).await;
+    let pending_compensation =
+        assert_pending_compensation(&platform.api.db.pool, &receipt, "RUN_DATA_LIMIT").await;
     let pending_report = scheduler.tick().await;
     assert_eq!(pending_report.failed, 0, "leased compensation wait failed");
     assert!(
-        assert_pending_compensation(&platform.api.db.pool, &receipt).await == pending_compensation,
+        assert_pending_compensation(&platform.api.db.pool, &receipt, "RUN_DATA_LIMIT").await
+            == pending_compensation,
         "normal scheduling finalized or replaced an unfinished compensation"
     );
     assert!(
@@ -1989,7 +2455,7 @@ async fn old_ordinary_success_after_drain_preserves_the_report_and_compensation(
         .expect("complete the real engine compensation task");
     assert!(!compensation_ack.already_applied);
     assert_eq!(compensation_ack.step_status, "SUCCEEDED");
-    finish_after_compensation(&scheduler, &platform.api, &receipt).await;
+    finish_after_compensation(&scheduler, &platform.api, &receipt, "COMPENSATED").await;
 
     let final_state = sqlx::query(
         "SELECT run.status,run.result_digest IS NULL AS no_run_result, \
@@ -2120,5 +2586,722 @@ async fn old_ordinary_success_after_drain_preserves_the_report_and_compensation(
         stored_report_receipt(&platform.api.db.pool, &receipt).await == original_report_receipt,
         "final scheduling changed the exact report receipt"
     );
+    fresh_verify(&platform.api, &receipt).await;
+}
+
+#[tokio::test]
+#[ignore = "requires scripts/test-legacy-collection-inflight-report-v1.sh"]
+async fn old_ordinary_success_after_cancellation_drain_preserves_the_original_stop() {
+    let receipt_path = std::env::var_os("SAGAT_Q10C_ORDINARY_PHASE_RECEIPT")
+        .map(std::path::PathBuf::from)
+        .expect("phased runner receipt path");
+    assert_eq!(
+        std::fs::metadata(&receipt_path)
+            .expect("private receipt metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+    let receipt = Receipt::parse(&std::fs::read(&receipt_path).expect("read private receipt"));
+    assert_wire_identity(&receipt);
+
+    let admin_url = std::env::var("SAGAT_TEST_DATABASE_URL")
+        .expect("coordinator-owned external PostgreSQL admin URL");
+    let db = attach_existing_db(&admin_url, &receipt.database_name).await;
+    let actual_database: String = sqlx::query_scalar("SELECT current_database()::text")
+        .fetch_one(&db.pool)
+        .await
+        .expect("retained database identity");
+    assert_eq!(actual_database, receipt.database_name);
+    assert!(
+        projection_witness(&db.pool, receipt.tenant, receipt.run).await
+            == receipt.projection_witness,
+        "immutable-old projection witness changed before migration"
+    );
+    assert!(
+        source_witness(&db.pool, receipt.tenant, receipt.run).await == receipt.source_witness,
+        "closed source witness changed before migration"
+    );
+    let authority_before = identity_witness(&db.pool, &receipt).await;
+
+    migrate(&db.pool)
+        .await
+        .expect("apply current migrations as owner");
+    assert!(
+        projection_witness(&db.pool, receipt.tenant, receipt.run).await
+            == receipt.projection_witness,
+        "immutable-old projection witness changed during migration"
+    );
+    assert!(
+        source_witness(&db.pool, receipt.tenant, receipt.run).await == receipt.source_witness,
+        "closed source witness changed during migration"
+    );
+    let api = start_on_db(db, current_options()).await;
+    let platform = Platform {
+        api,
+        tenant: receipt.tenant,
+        other_tenant: receipt.other_tenant,
+    };
+    let current_api_role: String = sqlx::query_scalar("SELECT current_user::text")
+        .fetch_one(&platform.api.api_pool)
+        .await
+        .expect("consumer API database role");
+    assert_eq!(current_api_role, receipt.producer_api_role);
+    if crate::support::as_runtime_role() {
+        assert_eq!(receipt.producer_api_role, RUNTIME_ROLE);
+        assert_eq!(current_api_role, RUNTIME_ROLE);
+    } else {
+        assert_ne!(receipt.producer_api_role, RUNTIME_ROLE);
+        assert_ne!(current_api_role, RUNTIME_ROLE);
+    }
+    eprintln!(
+        "q10c ordinary-cancellation-before-report API roles: producer={}, consumer={current_api_role}",
+        receipt.producer_api_role
+    );
+    assert!(
+        identity_witness(&platform.api.db.pool, &receipt).await == authority_before,
+        "persisted worker authority changed during current API startup"
+    );
+    assert_live_target(&platform.api.db.pool, &receipt, false).await;
+    assert_eq!(
+        effective_totals(&platform.api.db.pool, &receipt).await,
+        (2_100_000, 2_100_020, 4_200_020)
+    );
+
+    let mut worker = platform
+        .connect(&receipt.worker_subject, &receipt.tenant_alias)
+        .await;
+    worker.worker_id = receipt.worker_id.clone();
+    worker.session = receipt.session_token.clone();
+    assert!(
+        identity_witness(&platform.api.db.pool, &receipt).await == authority_before,
+        "transport connection changed persisted worker authority"
+    );
+
+    let outboxes_before = outboxes(&platform.api.db.pool, &receipt).await;
+    let payloads_before = payloads(&platform.api.db.pool, &receipt).await;
+    let output_fingerprint = output_reference_fingerprint(&platform.api.db.pool, &receipt).await;
+    let reservations_before = reservation_usage_fingerprint(&platform.api.db.pool, &receipt).await;
+    assert_initial_drain_first_state(&platform.api.db.pool, &receipt, &output_fingerprint).await;
+
+    let stored_owner: (i64, i64, Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT count(*) FILTER (WHERE owner IS NOT NULL), \
+                count(DISTINCT owner) FILTER (WHERE owner IS NOT NULL),min(owner),max(owner) \
+           FROM scheduler_shards",
+    )
+    .fetch_one(&platform.api.db.pool)
+    .await
+    .expect("immutable-old scheduler owner");
+    assert_eq!(stored_owner.0, i64::from(SHARDS));
+    assert_eq!(stored_owner.1, 1);
+    assert_eq!(
+        stored_owner.2.as_deref(),
+        Some(receipt.scheduler_owner.as_str())
+    );
+    assert_eq!(
+        stored_owner.3.as_deref(),
+        Some(receipt.scheduler_owner.as_str())
+    );
+
+    let placement = Placement::new(receipt.scheduler_owner.clone());
+    let round = Keeper::new(
+        platform.api.executions.clone(),
+        placement.clone(),
+        KeeperSettings {
+            ttl: Duration::from_secs(3_600),
+        },
+    )
+    .round()
+    .await
+    .expect("renew immutable-old scheduler identity");
+    assert_eq!(round.replicas, 1);
+    assert_eq!(round.held, usize::from(SHARDS));
+    assert!(placement.owned().contains(Shard::of(receipt.run.as_uuid())));
+    let scheduler = Scheduler::new(
+        platform.api.executions.clone(),
+        Engine::new(JsonEvaluator),
+        SystemEntropy,
+        SchedulerSettings {
+            discovery_rest: Duration::ZERO,
+            ..SchedulerSettings::default()
+        },
+    )
+    .with_placement(placement);
+
+    let cancellation_absence: (i64, i64, i64) = sqlx::query_as(
+        "SELECT \
+          (SELECT count(*) FROM run_events stop_event WHERE stop_event.tenant_id=$1 \
+            AND stop_event.run_id=$2 AND stop_event.event_type='run.stop_requested'), \
+          (SELECT count(*) FROM audit_records cancel_audit WHERE cancel_audit.tenant_id=$1 \
+            AND cancel_audit.resource_type='run' AND cancel_audit.resource_id=$2::text \
+            AND cancel_audit.action='run.cancel_requested'), \
+          (SELECT count(*) FROM command_dedupe cancel_receipt \
+            WHERE cancel_receipt.tenant_id=$1 AND cancel_receipt.scope=$3 \
+              AND cancel_receipt.idempotency_key=$4)",
+    )
+    .bind(receipt.tenant.as_uuid())
+    .bind(receipt.run.as_uuid())
+    .bind(operation_scope(&receipt))
+    .bind(CANCELLATION_KEY)
+    .fetch_one(&platform.api.db.pool)
+    .await
+    .expect("no public cancellation evidence before the command");
+    assert_eq!(cancellation_absence, (0, 0, 0));
+    let pre_cancel_version: i64 =
+        sqlx::query_scalar("SELECT run_version FROM runs WHERE tenant_id=$1 AND id=$2")
+            .bind(receipt.tenant.as_uuid())
+            .bind(receipt.run.as_uuid())
+            .fetch_one(&platform.api.db.pool)
+            .await
+            .expect("actual pre-cancellation journal head");
+    let cancel_lookups_before = platform.api.authentication_lookups();
+    let cancel_response = platform
+        .api
+        .as_user(
+            Method::POST,
+            &format!("/runs/{}/operations", receipt.run),
+            "alice",
+            "acme",
+        )
+        .header("X-Octopus-Namespace", "payments")
+        .header("Idempotency-Key", CANCELLATION_KEY)
+        .json(&json!({
+            "action": "CANCEL",
+            "reason": CANCELLATION_REASON,
+            "expectedRunVersion": pre_cancel_version,
+        }))
+        .send()
+        .await
+        .expect("public cancellation before legacy drain");
+    assert_eq!(cancel_response.status(), StatusCode::ACCEPTED);
+    let cancel_body = crate::support::api::json_of(cancel_response).await;
+    assert!(
+        cancel_body["accepted"].as_bool() == Some(true),
+        "public cancellation was not accepted"
+    );
+    assert!(
+        cancel_body["runStatus"].as_str() == Some("CANCELLING"),
+        "public cancellation returned the wrong status"
+    );
+    assert!(
+        cancel_body["runVersion"].as_i64() == Some(pre_cancel_version + 1),
+        "public cancellation returned the wrong committed version"
+    );
+    let operation_id = expected_operation_id(&receipt);
+    assert!(
+        cancel_body["operationId"].as_str() == Some(operation_id.as_str()),
+        "public cancellation returned a nondeterministic operation id"
+    );
+    assert!(
+        platform.api.authentication_lookups() > cancel_lookups_before,
+        "public cancellation did not authenticate a fresh current JWT"
+    );
+    let (operation_receipt, frozen_public_cancel) = assert_public_cancellation(
+        &platform.api.db.pool,
+        &receipt,
+        pre_cancel_version,
+        outboxes_before,
+        payloads_before,
+        &output_fingerprint,
+    )
+    .await;
+    assert_live_target(&platform.api.db.pool, &receipt, false).await;
+    assert!(
+        reservation_usage_fingerprint(&platform.api.db.pool, &receipt).await == reservations_before,
+        "public cancellation changed live reservations or run/tenant iteration usage"
+    );
+    fresh_verify(&platform.api, &receipt).await;
+
+    let drain_report = scheduler.tick().await;
+    assert_eq!(drain_report.failed, 0, "normal cancellation drain failed");
+    assert_eq!(
+        drain_report.collections_advanced, 1,
+        "normal discovery did not select the publicly cancelled c10 scope"
+    );
+    let frozen_cancellation_drain = assert_cancellation_first_drain(
+        &platform.api.db.pool,
+        &receipt,
+        outboxes_before,
+        payloads_before,
+        &output_fingerprint,
+    )
+    .await;
+    assert!(
+        public_cancellation_fingerprint(&platform.api.db.pool, &receipt).await
+            == frozen_public_cancel,
+        "normal drain changed the public cancellation receipt, audit or stop"
+    );
+    assert_live_target(&platform.api.db.pool, &receipt, true).await;
+    assert!(
+        reservation_usage_fingerprint(&platform.api.db.pool, &receipt).await == reservations_before,
+        "cancellation drain changed live reservations or run/tenant iteration usage"
+    );
+    fresh_verify(&platform.api, &receipt).await;
+
+    let waiting = drain_wait_fingerprint(&platform.api.db.pool, &receipt).await;
+    let wait_report = scheduler.tick().await;
+    assert_eq!(wait_report.failed, 0, "cancelled live-member wait failed");
+    assert_eq!(
+        wait_report.collections_advanced, 0,
+        "a live cancelled member must not count as collection progress"
+    );
+    assert!(
+        wait_report.skipped >= 1,
+        "the cancelled live draining scope was not observed waiting"
+    );
+    assert!(
+        drain_wait_fingerprint(&platform.api.db.pool, &receipt).await == waiting,
+        "a live public cancellation was incorrectly treated as a drained member"
+    );
+    assert_live_target(&platform.api.db.pool, &receipt, true).await;
+    assert!(
+        public_cancellation_fingerprint(&platform.api.db.pool, &receipt).await
+            == frozen_public_cancel,
+        "live-member wait changed the public cancellation"
+    );
+    assert!(
+        cancellation_drain_fingerprint(&platform.api.db.pool, &receipt).await
+            == frozen_cancellation_drain,
+        "live-member wait changed the cancellation drain"
+    );
+    assert!(
+        reservation_usage_fingerprint(&platform.api.db.pool, &receipt).await == reservations_before,
+        "live-member wait changed reservations or run/tenant iteration usage"
+    );
+    assert_eq!(
+        outboxes(&platform.api.db.pool, &receipt).await,
+        outboxes_before + 1
+    );
+    fresh_verify(&platform.api, &receipt).await;
+
+    assert_cancellation_data_limit_audits(&platform.api.db.pool, &receipt, 0).await;
+    let report_lookups_before = platform.api.authentication_lookups();
+    let report_request = worker.req(receipt.completion.clone());
+    let accepted = worker
+        .client
+        .complete_step(report_request)
+        .await
+        .expect("submit exact old success after public cancellation drain")
+        .into_inner();
+    assert!(!accepted.already_applied);
+    assert!(
+        accepted.step_status == "SUCCEEDED" && accepted.run_status == "CANCELLING",
+        "the old completion returned the wrong accepted status"
+    );
+    assert!(platform.api.authentication_lookups() > report_lookups_before);
+    assert_successful_refusal(
+        &platform.api,
+        &receipt,
+        outboxes_before + 1,
+        payloads_before,
+        "DRAINING",
+        "CANCELLED",
+        None,
+    )
+    .await;
+    assert!(
+        public_cancellation_fingerprint(&platform.api.db.pool, &receipt).await
+            == frozen_public_cancel,
+        "the genuine success changed the public cancellation"
+    );
+    assert!(
+        cancellation_drain_fingerprint(&platform.api.db.pool, &receipt).await
+            == frozen_cancellation_drain,
+        "the genuine success changed the cancellation drain"
+    );
+    assert!(
+        output_reference_fingerprint(&platform.api.db.pool, &receipt).await == output_fingerprint,
+        "the cancelled refused success retained an output or blob reference"
+    );
+    let order: (i64, i64, i64, i64) = sqlx::query_as(
+        "SELECT \
+          (SELECT stop_event.seq FROM run_events stop_event WHERE stop_event.tenant_id=$1 \
+            AND stop_event.run_id=$2 AND stop_event.event_type='run.stop_requested'), \
+          (SELECT drain_event.seq FROM run_events drain_event WHERE drain_event.tenant_id=$1 \
+            AND drain_event.run_id=$2 AND drain_event.event_type='collection.drain_started' \
+            AND drain_event.node='c10'), \
+          (SELECT cancel_event.seq FROM run_events cancel_event WHERE cancel_event.tenant_id=$1 \
+            AND cancel_event.run_id=$2 AND cancel_event.event_type='step.cancel_requested' \
+            AND cancel_event.node='reserve' \
+            AND cancel_event.instance_path_nodes=ARRAY['c10']::text[] \
+            AND cancel_event.instance_path_indices=ARRAY[0]::integer[]), \
+          (SELECT completion_event.seq FROM run_events completion_event \
+            WHERE completion_event.tenant_id=$1 AND completion_event.run_id=$2 \
+              AND completion_event.event_type='step.completed' \
+              AND completion_event.node='reserve' \
+              AND completion_event.instance_path_nodes=ARRAY['c10']::text[] \
+              AND completion_event.instance_path_indices=ARRAY[0]::integer[])",
+    )
+    .bind(receipt.tenant.as_uuid())
+    .bind(receipt.run.as_uuid())
+    .fetch_one(&platform.api.db.pool)
+    .await
+    .expect("public cancel, drain, lease cancellation and report order");
+    assert!(
+        order.0 < order.1 && order.1 < order.2 && order.2 < order.3,
+        "public cancellation ordering changed"
+    );
+    assert_cancellation_data_limit_audits(&platform.api.db.pool, &receipt, 1).await;
+    let original_report_receipt =
+        verified_report_receipt(&platform.api.db.pool, &receipt, &accepted.command_id).await;
+    fresh_verify(&platform.api, &receipt).await;
+
+    let first_report_identity = report_identity(&platform.api.db.pool, &receipt).await;
+    let replay_request = worker.req(receipt.completion.clone());
+    let replay = worker
+        .client
+        .complete_step(replay_request)
+        .await
+        .expect("exact cancelled report receipt replay")
+        .into_inner();
+    assert!(replay.already_applied);
+    assert!(
+        replay.command_id == accepted.command_id
+            && replay.step_status == "SUCCEEDED"
+            && replay.run_status == "CANCELLING",
+        "the exact completion replay changed its accepted identity"
+    );
+    assert_eq!(
+        report_identity(&platform.api.db.pool, &receipt).await,
+        first_report_identity
+    );
+    let replayed_report_receipt =
+        verified_report_receipt(&platform.api.db.pool, &receipt, &replay.command_id).await;
+    assert!(
+        replayed_report_receipt == original_report_receipt,
+        "cancelled report replay changed its exact receipt"
+    );
+
+    assert_cancellation_data_limit_audits(&platform.api.db.pool, &receipt, 1).await;
+    let current_before_cancel_replay: i64 =
+        sqlx::query_scalar("SELECT run_version FROM runs WHERE tenant_id=$1 AND id=$2")
+            .bind(receipt.tenant.as_uuid())
+            .bind(receipt.run.as_uuid())
+            .fetch_one(&platform.api.db.pool)
+            .await
+            .expect("current journal head before public operation replay");
+    assert!(
+        current_before_cancel_replay > pre_cancel_version + 1,
+        "public operation replay must observe a newer current projection"
+    );
+    let public_replay_lookups = platform.api.authentication_lookups();
+    let cancel_replay_response = platform
+        .api
+        .as_user(
+            Method::POST,
+            &format!("/runs/{}/operations", receipt.run),
+            "alice",
+            "acme",
+        )
+        .header("X-Octopus-Namespace", "payments")
+        .header("Idempotency-Key", CANCELLATION_KEY)
+        .json(&json!({
+            "action": "CANCEL",
+            "reason": CANCELLATION_REASON,
+            "expectedRunVersion": pre_cancel_version,
+        }))
+        .send()
+        .await
+        .expect("replay public cancellation against current projection");
+    assert_eq!(cancel_replay_response.status(), StatusCode::ACCEPTED);
+    let cancel_replay_body = crate::support::api::json_of(cancel_replay_response).await;
+    assert!(
+        cancel_replay_body["accepted"].as_bool() == Some(true),
+        "public cancellation replay was not accepted"
+    );
+    assert!(
+        cancel_replay_body["operationId"].as_str() == Some(operation_id.as_str()),
+        "public cancellation replay changed operation id"
+    );
+    assert!(
+        cancel_replay_body["runStatus"].as_str() == Some("CANCELLING"),
+        "public cancellation replay returned the wrong current status"
+    );
+    assert!(
+        cancel_replay_body["runVersion"].as_i64() == Some(current_before_cancel_replay),
+        "public cancellation replay returned a frozen acknowledgement"
+    );
+    assert!(platform.api.authentication_lookups() > public_replay_lookups);
+    assert!(
+        verified_operation_receipt(&platform.api.db.pool, &receipt, pre_cancel_version).await
+            == operation_receipt,
+        "public cancellation replay changed its exact receipt"
+    );
+    assert!(
+        public_cancellation_fingerprint(&platform.api.db.pool, &receipt).await
+            == frozen_public_cancel,
+        "public cancellation replay changed the original public stop"
+    );
+    assert!(
+        cancellation_drain_fingerprint(&platform.api.db.pool, &receipt).await
+            == frozen_cancellation_drain,
+        "public cancellation replay changed the original drain"
+    );
+    assert_eq!(
+        report_identity(&platform.api.db.pool, &receipt).await,
+        first_report_identity
+    );
+    assert!(
+        stored_report_receipt(&platform.api.db.pool, &receipt).await == original_report_receipt,
+        "public cancellation replay changed the report receipt"
+    );
+    assert!(
+        output_reference_fingerprint(&platform.api.db.pool, &receipt).await == output_fingerprint,
+        "public cancellation replay changed output or blob references"
+    );
+    assert_eq!(
+        outboxes(&platform.api.db.pool, &receipt).await,
+        outboxes_before + 1
+    );
+    assert_eq!(
+        payloads(&platform.api.db.pool, &receipt).await,
+        payloads_before
+    );
+    assert!(
+        identity_witness(&platform.api.db.pool, &receipt).await == authority_before,
+        "public cancellation replay changed persisted worker authority"
+    );
+    fresh_verify(&platform.api, &receipt).await;
+
+    assert_cancellation_data_limit_audits(&platform.api.db.pool, &receipt, 1).await;
+    let compensation = poll_compensation(&scheduler, &mut worker).await;
+    assert!(
+        compensation.task_kind == "COMPENSATION"
+            && compensation.activity_name == "line.release"
+            && compensation.target_node == "reserve"
+            && compensation.target_idempotency_key == receipt.lease.idempotency_key,
+        "the cancellation compensation changed its reviewed task or target identity"
+    );
+    assert!(
+        compensation.target_instance == receipt.lease.instance,
+        "cancel compensation targets the exact original forward instance"
+    );
+    let compensation_instance = compensation
+        .instance
+        .as_ref()
+        .expect("cancellation compensation identity");
+    assert!(
+        compensation_instance.definition_node_id == "reserve~c"
+            && compensation_instance.instance_path.len() == 1
+            && compensation_instance.instance_path[0].scope_node_id == "c10"
+            && compensation_instance.instance_path[0].iteration_index == 0,
+        "the cancellation compensation changed its reviewed scoped instance"
+    );
+
+    let pending_compensation =
+        assert_pending_compensation(&platform.api.db.pool, &receipt, "RUN_CANCELLED").await;
+    let pending_report = scheduler.tick().await;
+    assert_eq!(pending_report.failed, 0, "cancel compensation wait failed");
+    assert!(
+        assert_pending_compensation(&platform.api.db.pool, &receipt, "RUN_CANCELLED").await
+            == pending_compensation,
+        "normal scheduling finalized or replaced unfinished cancel compensation"
+    );
+    assert!(
+        public_cancellation_fingerprint(&platform.api.db.pool, &receipt).await
+            == frozen_public_cancel,
+        "compensation planning changed the public cancellation"
+    );
+    assert!(
+        cancellation_drain_fingerprint(&platform.api.db.pool, &receipt).await
+            == frozen_cancellation_drain,
+        "compensation planning changed the cancellation drain"
+    );
+
+    let compensation_ack = worker
+        .complete(&compensation, &json!({"released": true}))
+        .await
+        .expect("complete real cancellation compensation task");
+    assert!(
+        !compensation_ack.already_applied && compensation_ack.step_status == "SUCCEEDED",
+        "the real cancellation compensation did not commit one success"
+    );
+    finish_after_compensation(&scheduler, &platform.api, &receipt, "CANCELLED").await;
+
+    let final_state = sqlx::query(
+        "SELECT run.status AS run_status,run.stop_reason,run.stop_code, \
+                run.result_digest IS NULL AS no_run_result,scope.lifecycle, \
+                scope.drain_kind,scope.drain_failure_code, \
+                owner.status AS owner_status,owner.failure_code AS owner_failure, \
+                saga.phase,saga.cause_code,saga.outcome,forward.status AS forward_status, \
+                forward.output_digest IS NULL AS no_forward_output, \
+                compensation.status AS compensation_status, \
+                telemetry.head_seq,run.run_version, \
+                (SELECT count(*) FROM scope_saga_entries saga_entry \
+                  WHERE saga_entry.tenant_id=$1 AND saga_entry.run_id=$2 \
+                    AND saga_entry.owner_path_nodes='{}'::text[] \
+                    AND saga_entry.owner_path_indices='{}'::integer[] \
+                    AND saga_entry.owner_node='c10' AND saga_entry.iteration_index=0 \
+                    AND saga_entry.node='reserve' AND saga_entry.kind='COMPENSATE') AS saga_entries, \
+                (SELECT count(*) FROM run_events drain_event \
+                  WHERE drain_event.tenant_id=$1 AND drain_event.run_id=$2 \
+                    AND drain_event.event_type='collection.iteration_drained' \
+                    AND drain_event.node='c10') AS drained_events, \
+                (SELECT count(*) FROM run_events completion_event \
+                  WHERE completion_event.tenant_id=$1 AND completion_event.run_id=$2 \
+                    AND completion_event.event_type='step.completed' \
+                    AND completion_event.node='reserve~c' \
+                    AND completion_event.instance_path_nodes=ARRAY['c10']::text[] \
+                    AND completion_event.instance_path_indices=ARRAY[0]::integer[]) AS compensation_completions, \
+                (SELECT count(*) FROM run_events finish_event \
+                  WHERE finish_event.tenant_id=$1 AND finish_event.run_id=$2 \
+                    AND finish_event.event_type='collection.finished' \
+                    AND finish_event.node='c10' \
+                    AND finish_event.detail->>'outcome'='cancelled' \
+                    AND finish_event.detail->>'code' IS NULL) AS collection_finishes, \
+                (SELECT count(*) FROM run_events finish_event \
+                  WHERE finish_event.tenant_id=$1 AND finish_event.run_id=$2 \
+                    AND finish_event.event_type='run.finished' \
+                    AND finish_event.detail->>'status'='CANCELLED') AS run_finishes, \
+                (SELECT count(*) FROM event_outbox finish_message \
+                  WHERE finish_message.tenant_id=$1 AND finish_message.aggregate_id=$2 \
+                    AND finish_message.event_type='collection.finished' \
+                    AND finish_message.routing_key='c10' \
+                    AND finish_message.payload->>'status'='CANCELLED') AS collection_outboxes, \
+                (SELECT count(*) FROM event_outbox finish_message \
+                  WHERE finish_message.tenant_id=$1 AND finish_message.aggregate_id=$2 \
+                    AND finish_message.event_type='run.finished' \
+                    AND finish_message.payload->>'status'='CANCELLED') AS run_outboxes, \
+                (SELECT count(*) FROM steps final_step \
+                  WHERE final_step.tenant_id=$1 AND final_step.run_id=$2 \
+                    AND final_step.node='done' \
+                    AND cardinality(final_step.instance_path_nodes)=0) AS end_steps, \
+                (SELECT count(*) FROM steps reconciliation \
+                  WHERE reconciliation.tenant_id=$1 AND reconciliation.run_id=$2 \
+                    AND reconciliation.node='reserve~r' \
+                    AND reconciliation.instance_path_nodes=ARRAY['c10']::text[] \
+                    AND reconciliation.instance_path_indices=ARRAY[0]::integer[]) AS reconciliations, \
+                (SELECT count(*) FROM audit_records cancel_audit \
+                  WHERE cancel_audit.tenant_id=$1 AND cancel_audit.resource_type='run' \
+                    AND cancel_audit.resource_id=$2::text \
+                    AND cancel_audit.action='run.cancel_requested' \
+                    AND cancel_audit.actor='alice' \
+                    AND cancel_audit.reason=$3) AS cancel_audits, \
+                (SELECT count(*) FROM audit_records refusal_audit \
+                  WHERE refusal_audit.tenant_id=$1 AND refusal_audit.resource_type='run' \
+                    AND refusal_audit.resource_id=$2::text \
+                    AND refusal_audit.action='run.data_limit_exceeded' \
+                    AND refusal_audit.reason='successful scoped output refused by run data limit') AS refusal_audits, \
+                (SELECT count(*) FROM audit_records drain_audit \
+                  WHERE drain_audit.tenant_id=$1 AND drain_audit.resource_type='run' \
+                    AND drain_audit.resource_id=$2::text \
+                    AND drain_audit.action='run.data_limit_exceeded' \
+                    AND drain_audit.reason IS DISTINCT FROM 'successful scoped output refused by run data limit') AS data_limit_drain_audits \
+           FROM runs run JOIN telemetry_pending telemetry \
+             ON telemetry.tenant_id=run.tenant_id AND telemetry.run_id=run.id \
+           JOIN iteration_scopes scope ON scope.tenant_id=run.tenant_id \
+            AND scope.run_id=run.id AND scope.owner_path_nodes='{}'::text[] \
+            AND scope.owner_path_indices='{}'::integer[] AND scope.owner_node='c10' \
+           JOIN steps owner ON owner.tenant_id=run.tenant_id AND owner.run_id=run.id \
+            AND owner.instance_path_nodes='{}'::text[] \
+            AND owner.instance_path_indices='{}'::integer[] AND owner.node='c10' \
+           JOIN scope_sagas saga ON saga.tenant_id=run.tenant_id AND saga.run_id=run.id \
+            AND saga.owner_path_nodes='{}'::text[] \
+            AND saga.owner_path_indices='{}'::integer[] AND saga.owner_node='c10' \
+           JOIN steps forward ON forward.tenant_id=run.tenant_id AND forward.run_id=run.id \
+            AND forward.node='reserve' \
+            AND forward.instance_path_nodes=ARRAY['c10']::text[] \
+            AND forward.instance_path_indices=ARRAY[0]::integer[] \
+           JOIN steps compensation ON compensation.tenant_id=run.tenant_id \
+            AND compensation.run_id=run.id AND compensation.node='reserve~c' \
+            AND compensation.instance_path_nodes=ARRAY['c10']::text[] \
+            AND compensation.instance_path_indices=ARRAY[0]::integer[] \
+          WHERE run.tenant_id=$1 AND run.id=$2",
+    )
+    .bind(receipt.tenant.as_uuid())
+    .bind(receipt.run.as_uuid())
+    .bind(CANCELLATION_REASON)
+    .fetch_one(&platform.api.db.pool)
+    .await
+    .expect("final cancellation-first compensated state");
+    assert_eq!(final_state.get::<String, _>("run_status"), "CANCELLED");
+    assert_eq!(
+        final_state
+            .get::<Option<String>, _>("stop_reason")
+            .as_deref(),
+        Some("CANCELLED")
+    );
+    assert!(final_state.get::<Option<String>, _>("stop_code").is_none());
+    assert!(final_state.get::<bool, _>("no_run_result"));
+    assert_eq!(final_state.get::<String, _>("lifecycle"), "CANCELLED");
+    assert_eq!(
+        final_state
+            .get::<Option<String>, _>("drain_kind")
+            .as_deref(),
+        Some("CANCELLED")
+    );
+    assert!(
+        final_state
+            .get::<Option<String>, _>("drain_failure_code")
+            .is_none()
+    );
+    assert_eq!(final_state.get::<String, _>("owner_status"), "CANCELLED");
+    assert!(
+        final_state
+            .get::<Option<String>, _>("owner_failure")
+            .is_none()
+    );
+    assert_eq!(final_state.get::<String, _>("phase"), "DONE");
+    assert_eq!(final_state.get::<String, _>("cause_code"), "RUN_CANCELLED");
+    assert_eq!(
+        final_state.get::<Option<String>, _>("outcome").as_deref(),
+        Some("COMPENSATED")
+    );
+    assert_eq!(final_state.get::<String, _>("forward_status"), "SUCCEEDED");
+    assert!(final_state.get::<bool, _>("no_forward_output"));
+    assert_eq!(
+        final_state.get::<String, _>("compensation_status"),
+        "SUCCEEDED"
+    );
+    assert_eq!(
+        final_state.get::<i64, _>("head_seq"),
+        final_state.get::<i64, _>("run_version")
+    );
+    assert_eq!(final_state.get::<i64, _>("saga_entries"), 1);
+    assert_eq!(final_state.get::<i64, _>("drained_events"), 1);
+    assert_eq!(final_state.get::<i64, _>("compensation_completions"), 1);
+    assert_eq!(final_state.get::<i64, _>("collection_finishes"), 1);
+    assert_eq!(final_state.get::<i64, _>("run_finishes"), 1);
+    assert_eq!(final_state.get::<i64, _>("collection_outboxes"), 1);
+    assert_eq!(final_state.get::<i64, _>("run_outboxes"), 1);
+    assert_eq!(final_state.get::<i64, _>("end_steps"), 0);
+    assert_eq!(final_state.get::<i64, _>("reconciliations"), 0);
+    assert_eq!(final_state.get::<i64, _>("cancel_audits"), 1);
+    assert_eq!(final_state.get::<i64, _>("refusal_audits"), 1);
+    assert_eq!(final_state.get::<i64, _>("data_limit_drain_audits"), 0);
+    assert_eq!(
+        effective_totals(&platform.api.db.pool, &receipt).await,
+        (2_100_000, 2_100_020, 4_200_020)
+    );
+    assert!(
+        source_witness(&platform.api.db.pool, receipt.tenant, receipt.run).await
+            == receipt.source_witness,
+        "closed source witness changed during cancellation-first compensation"
+    );
+    assert!(
+        identity_witness(&platform.api.db.pool, &receipt).await == authority_before,
+        "cancellation compensation changed persisted worker authority"
+    );
+    assert!(
+        public_cancellation_fingerprint(&platform.api.db.pool, &receipt).await
+            == frozen_public_cancel,
+        "final scheduling changed the original public cancellation"
+    );
+    assert!(
+        cancellation_drain_fingerprint(&platform.api.db.pool, &receipt).await
+            == frozen_cancellation_drain,
+        "final scheduling changed the original cancellation drain"
+    );
+    assert!(
+        verified_operation_receipt(&platform.api.db.pool, &receipt, pre_cancel_version).await
+            == operation_receipt,
+        "final scheduling changed the public operation receipt"
+    );
+    assert!(
+        stored_report_receipt(&platform.api.db.pool, &receipt).await == original_report_receipt,
+        "final scheduling changed the exact report receipt"
+    );
+    assert_cancellation_data_limit_audits(&platform.api.db.pool, &receipt, 1).await;
     fresh_verify(&platform.api, &receipt).await;
 }

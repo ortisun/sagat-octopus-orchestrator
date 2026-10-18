@@ -1,0 +1,17 @@
+[
+  {
+    "file": "tests/integration/workflow-primitives/legacy_collection_inflight_report_v1.rs",
+    "sha256": "29adb90e4efc5dc76062d417eac3fed023ad90c22f47f005123e78bd6a3bee41",
+    "snapshot": "legacy_collection_inflight_report_v1.rs.snapshot"
+  },
+  {
+    "file": "scripts/test-legacy-collection-inflight-report-v1.sh",
+    "sha256": "5e62d14358e2439f23f363ebd5c8907ddec0fa6cefb840822c96c9c4ed7a076a",
+    "snapshot": "test-legacy-collection-inflight-report-v1.sh.snapshot"
+  },
+  {
+    "file": "tests/fixtures/legacy-collection-inflight-report-v1/README.md",
+    "sha256": "fafd8b6e660d12f43c720d0431ff89680995eb4d99be7b2d7318474e46c9acc6",
+    "snapshot": "README.md.snapshot"
+  }
+]

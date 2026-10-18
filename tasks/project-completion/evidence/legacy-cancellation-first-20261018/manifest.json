@@ -1,0 +1,215 @@
+{
+  "baseline": "d30f5a74320bdb3f1c250277ac9e2698585007bd",
+  "production_changes": false,
+  "old_commit": "6c44a0e49670cf19660792cd1518d241e6c99b3b",
+  "cases": [
+    {
+      "case": "root-c2-executed",
+      "gate": {
+        "command": [
+          "bash",
+          "scripts/test-legacy-collection-inflight-report-v1.sh",
+          "--case",
+          "cancellation-before-report"
+        ],
+        "exit_code": 0,
+        "seconds": 198.77,
+        "started_utc": "2026-10-18T22:53:20.572521+00:00",
+        "log": "old-current.txt"
+      },
+      "inspection": {
+        "phase_count": 4,
+        "identical_native_inputs": 1125,
+        "phases": [
+          {
+            "phase": "ordinary-cancellation-before-report-owner-consumer.log",
+            "one_test_passed": true,
+            "sha256": "181c2297942666475cc145869188a7bde7ed63114b14d74bfb7a4c2ab63cfe83",
+            "results": [
+              "q10c ordinary-cancellation-before-report API roles: producer=postgres, consumer=postgres",
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 539 filtered out; finished in 3.00s"
+            ]
+          },
+          {
+            "phase": "ordinary-cancellation-before-report-owner-producer.log",
+            "one_test_passed": true,
+            "sha256": "06c40a7b666e7134b46f1a59a248509dbbd77faf93e705c4a96b39b61c646b70",
+            "results": [
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 501 filtered out; finished in 11.68s"
+            ]
+          },
+          {
+            "phase": "ordinary-cancellation-before-report-runtime-consumer.log",
+            "one_test_passed": true,
+            "sha256": "7c35bff98f5e4180bcbee075a3e6c7dbf8023596da1e1bece5da3d3c6a099156",
+            "results": [
+              "q10c ordinary-cancellation-before-report API roles: producer=sagat_app, consumer=sagat_app",
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 539 filtered out; finished in 3.07s"
+            ]
+          },
+          {
+            "phase": "ordinary-cancellation-before-report-runtime-producer.log",
+            "one_test_passed": true,
+            "sha256": "3245d4be1dcab59db28320d0e15ba9b812efe15da7e03cfbb77d5b3b6a516fab",
+            "results": [
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 501 filtered out; finished in 11.79s"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "case": "shared-default-regression",
+      "gate": {
+        "command": [
+          "bash",
+          "scripts/test-legacy-collection-inflight-report-v1.sh"
+        ],
+        "exit_code": 0,
+        "seconds": 173.73,
+        "started_utc": "2026-10-18T22:57:07.997460+00:00",
+        "log": "old-current.txt"
+      },
+      "inspection": {
+        "phase_count": 4,
+        "identical_native_inputs": 1125,
+        "phases": [
+          {
+            "phase": "ordinary-before-drain-owner-consumer.log",
+            "one_test_passed": true,
+            "sha256": "c853d24ba1a3062ae67abac75f11833e995a5557a4089ecfd4645e9f2a5e6781",
+            "results": [
+              "q10c ordinary-before-drain API roles: producer=postgres, consumer=postgres",
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 539 filtered out; finished in 2.36s"
+            ]
+          },
+          {
+            "phase": "ordinary-before-drain-owner-producer.log",
+            "one_test_passed": true,
+            "sha256": "7c2867f8abc5d0c67ca9e051918c08c5f159cf434440c5e560c8c3130c14a0d7",
+            "results": [
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 501 filtered out; finished in 11.05s"
+            ]
+          },
+          {
+            "phase": "ordinary-before-drain-runtime-consumer.log",
+            "one_test_passed": true,
+            "sha256": "8eb28d88c1389bce522c1735c6b4e5b863f569ff145a1153e24d1f223c6475d9",
+            "results": [
+              "q10c ordinary-before-drain API roles: producer=sagat_app, consumer=sagat_app",
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 539 filtered out; finished in 2.40s"
+            ]
+          },
+          {
+            "phase": "ordinary-before-drain-runtime-producer.log",
+            "one_test_passed": true,
+            "sha256": "efef66583b4f7dc9c2b2a95b8d82d550b95d297b4c02366f07e395a0c08e3615",
+            "results": [
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 501 filtered out; finished in 11.64s"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "case": "shared-drain-regression",
+      "gate": {
+        "command": [
+          "bash",
+          "scripts/test-legacy-collection-inflight-report-v1.sh",
+          "--case",
+          "drain-before-report"
+        ],
+        "exit_code": 0,
+        "seconds": 154.46,
+        "started_utc": "2026-10-18T23:03:05.178530+00:00",
+        "log": "old-current.txt"
+      },
+      "inspection": {
+        "phase_count": 4,
+        "identical_native_inputs": 1125,
+        "phases": [
+          {
+            "phase": "ordinary-drain-before-report-owner-consumer.log",
+            "one_test_passed": true,
+            "sha256": "7ac1fbb2f36fd5666d639309f8338629ad2abf174f31396246324116fa5ee865",
+            "results": [
+              "q10c ordinary-drain-before-report API roles: producer=postgres, consumer=postgres",
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 539 filtered out; finished in 1.51s"
+            ]
+          },
+          {
+            "phase": "ordinary-drain-before-report-owner-producer.log",
+            "one_test_passed": true,
+            "sha256": "102d6fe24ab8476bed0de0561bff796f9f4e88d83131e6842df2a9e002cbec75",
+            "results": [
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 501 filtered out; finished in 6.14s"
+            ]
+          },
+          {
+            "phase": "ordinary-drain-before-report-runtime-consumer.log",
+            "one_test_passed": true,
+            "sha256": "cc2958c7f329032d1f9f1837f474d79238f3fa27717253fcb8c29b36a301d7a6",
+            "results": [
+              "q10c ordinary-drain-before-report API roles: producer=sagat_app, consumer=sagat_app",
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 539 filtered out; finished in 1.47s"
+            ]
+          },
+          {
+            "phase": "ordinary-drain-before-report-runtime-producer.log",
+            "one_test_passed": true,
+            "sha256": "102d6fe24ab8476bed0de0561bff796f9f4e88d83131e6842df2a9e002cbec75",
+            "results": [
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 501 filtered out; finished in 6.14s"
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "total_separate_phase_passes": 12,
+  "canonical_tasks_closed": [],
+  "static_gates": {
+    "clippy": {
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "seconds": 33.54,
+      "started_utc": "2026-10-18T23:06:04.823715+00:00",
+      "log": "clippy.txt"
+    },
+    "fmt": {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "seconds": 7.03,
+      "started_utc": "2026-10-18T22:53:47.470212+00:00",
+      "log": "fmt.txt"
+    },
+    "architecture": {
+      "command": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "exit_code": 0,
+      "seconds": 0.97,
+      "started_utc": "2026-10-18T22:53:47.471565+00:00",
+      "log": "architecture.txt"
+    }
+  }
+}
