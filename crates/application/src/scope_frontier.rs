@@ -34,6 +34,10 @@ pub struct ScopeRun {
     /// The journal head the snapshot was read at; the writes compare it under the run's row lock.
     pub version: u64,
     pub stop_reason: Option<StopReason>,
+    /// The typed failure paired with the stop, when the stored Run has one.
+    pub stop_code: Option<FailureCode>,
+    /// The stored logical-output ledger plus verified legacy root-collection owner outputs.
+    pub effective_output_bytes: u64,
     pub definition: Arc<WorkflowDefinition>,
     /// Instances charged against the run's lifetime budget: the same number as
     /// `RunState::charged_instances` (D522).
@@ -128,8 +132,9 @@ pub trait ScopeFrontierStore: Send + Sync {
         owner: &ExecutionInstanceId,
     ) -> impl Future<Output = Result<Option<LoopFrontier>, StoreError>> + Send;
 
-    /// Bytes of step output the run retains, as `RunData::outputs` would sum them. Read when a loop
-    /// ends, to prove the carry it leaves fits beside them.
+    /// Effective bytes retained by the Run: actual step-output references plus verified successful
+    /// root-collection aggregates whose owner output is absent. Read when a loop ends, to prove the
+    /// carry it leaves fits beside them.
     fn retained_output_bytes(
         &self,
         tenant_id: TenantId,

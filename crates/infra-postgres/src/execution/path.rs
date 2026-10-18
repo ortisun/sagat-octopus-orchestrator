@@ -4,15 +4,13 @@ use super::*;
 
 impl PathExecutionTx for PgPathExecutionTx {
     async fn logical_output_bytes(&mut self) -> Result<u64, StoreError> {
-        let bytes: i64 = sqlx::query_scalar(
-            "SELECT logical_output_bytes FROM run_instance_usage WHERE tenant_id=$1 AND run_id=$2",
+        Ok(crate::collection_outputs::inspect(
+            &mut self.tx,
+            &self.snapshot.info,
+            &self.snapshot.definition,
         )
-        .bind(self.snapshot.info.tenant_id.as_uuid())
-        .bind(self.snapshot.info.run_id.as_uuid())
-        .fetch_one(&mut *self.tx)
-        .await
-        .map_err(store_error)?;
-        u64::try_from(bytes).map_err(|_| corrupt("logical run output bytes"))
+        .await?
+        .total())
     }
 
     fn snapshot(&mut self) -> &mut PathExecutionSnapshot {
@@ -667,21 +665,38 @@ impl PgPathExecutionTx {
         if charge == 0 {
             return Ok(());
         }
+        let effective = crate::collection_outputs::inspect(
+            &mut self.tx,
+            &self.snapshot.info,
+            &self.snapshot.definition,
+        )
+        .await?;
+        let charge = u64::try_from(charge).map_err(|_| corrupt("output byte charge"))?;
+        let after = effective
+            .total()
+            .checked_add(charge)
+            .ok_or_else(|| corrupt("effective output byte total"))?;
+        if after > u64::try_from(MAX_RUN_OUTPUT_BYTES).map_err(|_| corrupt("run output limit"))? {
+            return Err(StoreError::QuotaExceeded {
+                what: "output retained by one run",
+            });
+        }
         let updated = sqlx::query(
-            "UPDATE run_instance_usage SET logical_output_bytes=logical_output_bytes+$3 \
-             WHERE tenant_id=$1 AND run_id=$2 AND logical_output_bytes+$3 <= $4",
+            "UPDATE run_instance_usage SET logical_output_bytes=logical_output_bytes+$4 \
+             WHERE tenant_id=$1 AND run_id=$2 AND logical_output_bytes=$3 \
+               AND logical_output_bytes+$4+$5 <= $6",
         )
         .bind(self.snapshot.info.tenant_id.as_uuid())
         .bind(self.snapshot.info.run_id.as_uuid())
-        .bind(charge)
+        .bind(i64::try_from(effective.ledger()).map_err(|_| corrupt("output byte ledger"))?)
+        .bind(i64::try_from(charge).map_err(|_| corrupt("output byte charge"))?)
+        .bind(i64::try_from(effective.legacy_bytes()?).map_err(|_| corrupt("legacy output bytes"))?)
         .bind(i64::try_from(MAX_RUN_OUTPUT_BYTES).map_err(|_| corrupt("run output limit"))?)
         .execute(&mut *self.tx)
         .await
         .map_err(store_error)?;
         if updated.rows_affected() != 1 {
-            return Err(StoreError::Internal {
-                detail: "the logical run output byte limit was exceeded".into(),
-            });
+            return Err(corrupt("run output byte ledger changed under its run lock"));
         }
         Ok(())
     }
