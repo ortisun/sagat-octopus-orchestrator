@@ -134,3 +134,16 @@ No source UPDATE immutability, old-writer/C0, scoped Finish or nesting acceptanc
 Fresh Astra/xhigh cycle1 found that row count did not bound steps.activity bytes; explicit SQL
 metadata length/validity projections now cover steps too. Cycle2 found no concrete issue in this
 bounded contract. This review supplies no executed SQL or producer/recovery acceptance.
+
+## Returned-attempt observations
+
+The native wrapper emits the operational `workflow.collection.leaf.certify` span, inherited from
+caller context, with only exact tenant/namespace/originalRun/owner/index plus finite outcome.
+Outcomes: certified/replayed/refused/storage_error/unknown. Metrics use only outcome; the unlabeled
+confirmed counter increments only for an acknowledged first commit, never Unknown or replay.
+Cancelled futures have no returned outcome. A disabled child never records onto its caller.
+No raw driver/authority/payload/digest/audit detail is logged or exported; the fixed DEBUG completion
+event contains only its exact message and closed outcome. Atomic audit/canonical records remain
+authoritative after uncertain COMMIT or process metrics loss. No SQL transaction order changes.
+Real OTLP/structured-log/metric/redaction/caller-isolation evidence and full native regression are
+in evidence/leaf-certification-observations-20261018. This does not close producer/C0/release gates.

@@ -16,9 +16,11 @@ use sagat_domain::{
     execution::{CollectionOutcome, ExecutionInstanceId, RunEvent},
     workflow::{Digest, LeafCollectionSuccessShape, NodeId, NodeKind, WorkflowDefinition},
 };
+use sagat_telemetry::{LEAF_CERTIFICATION_SPAN, LeafCertificationOutcome};
 use serde_json::{Value, json};
 use sqlx::{Decode, PgPool, Postgres, Row, Transaction, Type, postgres::PgRow};
 use time::OffsetDateTime;
+use tracing::Instrument;
 use uuid::Uuid;
 
 use crate::{
@@ -135,6 +137,64 @@ impl LeafCollectionSuccessStore for PgLeafCollectionSuccessStore {
         &self,
         c: &Command,
     ) -> Result<LeafCollectionSuccessResult, Error> {
+        let i = &c.identity;
+        let segment = &i.path().segments()[0]; // The application identity enforces depth1.
+        // Operational attempt span inherits the caller trace. This is not a workflow journal
+        // projection; direct untraced calls still emit metrics. No command/error/payload logging.
+        let span = tracing::info_span!(
+            LEAF_CERTIFICATION_SPAN,
+            sagat.tenant.id = %i.tenant_id(),
+            sagat.namespace.id = %i.namespace_id(),
+            sagat.run.id = %i.run_id(),
+            sagat.collection.owner_node = %segment.scope_node(),
+            sagat.collection.index = segment.iteration_index(),
+            sagat.outcome = tracing::field::Empty,
+            otel.status_code = tracing::field::Empty,
+        );
+        let entered = span.clone();
+        async {
+            let started = std::time::Instant::now();
+            let result = self.certify_transaction(c).await;
+            let outcome = match &result {
+                Ok(result) if result.replayed => LeafCertificationOutcome::Replayed,
+                Ok(_) => LeafCertificationOutcome::Certified,
+                Err(Error::Storage(_)) => LeafCertificationOutcome::StorageError,
+                Err(Error::CommitOutcomeUnknown { .. }) => LeafCertificationOutcome::Unknown,
+                Err(
+                    Error::UnsupportedPath
+                    | Error::Missing
+                    | Error::UnsupportedShape(_)
+                    | Error::UnsupportedStoredProfile
+                    | Error::SchedulerFenceLost
+                    | Error::StaleRunRevision { .. }
+                    | Error::SourceNotClosed
+                    | Error::SourceEvidenceMissing
+                    | Error::ContradictorySource
+                    | Error::InvalidRevision,
+                ) => LeafCertificationOutcome::Refused,
+            };
+            // A disabled child must never record onto the caller's current span instead.
+            span.record("sagat.outcome", outcome.as_str());
+            if matches!(
+                outcome,
+                LeafCertificationOutcome::StorageError | LeafCertificationOutcome::Unknown
+            ) {
+                span.record("otel.status_code", "error");
+            }
+            outcome.record(started.elapsed());
+            tracing::debug!(
+                outcome = outcome.as_str(),
+                "leaf certification attempt completed"
+            );
+            result
+        }
+        .instrument(entered)
+        .await
+    }
+}
+
+impl PgLeafCollectionSuccessStore {
+    async fn certify_transaction(&self, c: &Command) -> Result<LeafCollectionSuccessResult, Error> {
         c.validate()?;
         let mut tx = self.pool.begin_safely().await.map_err(storage)?;
         let result = match self.apply(&mut tx, c).await {

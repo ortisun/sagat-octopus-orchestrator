@@ -2691,3 +2691,54 @@ journal event is added. Missing-variant compile failure retained, not behavioral
 Fresh bounded Astra/xhigh review found none. Atomic source/audit/replay, producer preservation,
 recovery and production activation remain pending. Evidence:
 tasks/project-completion/evidence/leaf-certification-audit-20261018/manifest.json.
+
+## Dormant leaf native source writer and bounded barriers — 2026-10-18
+
+Refs:T014-014/017/040. Local B1b.2a.1d adds the dormant exact PostgreSQL certifier. Current chain/
+originalRun and fresh post-lock scheduler authority precede canonical replay; replay precedes
+creation CAS, immutable pin/profile and bounded selected-source proof. Canonical fact+noncollapsing
+audit commit together, without changing source, Run, journal, usage or outbox. Storage errors expose
+only sanitized SQLSTATE, malformed canonical time is refused and valid far-future shard expiry is
+compared server-side. Runtime INSERT remains absent in released schema; disposable tests grant it.
+
+Native first-increment evidence:4/4default and runtime tests,25/25shared guard regression, real
+runtime SQL/trigger privilege audit and strict workspace gates; source-driver review3cycles and
+source-proof review1cycle reached no remaining bounded finding. Evidence:
+`tasks/project-completion/evidence/leaf-certification-native-20261018/manifest.json`.
+
+Subsequent bounded increments use actual HTTP/gRPC execution as source and preserve release gates:
+
+| Increment | Actual bounded evidence | Evidence directory under tasks/project-completion/evidence |
+| --- | --- | --- |
+| Source refusals |6tests, tenant/namespace/CAS/current authority, missing/contradictory evidence; corruption fixtures prove refusal only |leaf-certification-refusals-20261018 |
+| Already stale reports |complete/fail with new keys, both observed flat originalRun queue directions |leaf-certification-late-reports-20261018 |
+| Successful closure |scheduler checkpoint then actual finish_collection, both queue directions, fresh CAS and producer replay |leaf-certification-closure-20261018 |
+| Unknown COMMIT |actual reply loss for commit/23514abort, retained guards and fresh direct reconstruction |leaf-certification-commit-loss-20261018 |
+| Process recovery |kill/reap actual blocked native reconciler, natural backend cleanup, new OS client/current acquired authority, same identity |leaf-certification-process-20261018 |
+| Later work/cancel |later completion/failure and READY cancellation both queue directions, real terminal planning with stable source/saga absence |leaf-certification-later-work-20261018 |
+| Ambient binding |actual later lease expiry/session closure before proof and during blocked native COMMIT, without Run serialization |leaf-certification-binding-20261018 |
+
+Owner corruption is not producer reachability. Native reconciliation-client restart is not a crash
+of the original writer, control plane or engine. READY cancellation is not active-lease cancellation.
+Chain-member source, effect-bearing later saga planning, remaining ambient/C0/source preservation,
+path Finish, nested execution and canonical feature014 acceptance remain open.
+
+## Dormant leaf returned-attempt observations — 2026-10-18
+
+The operational span `workflow.collection.leaf.certify` inherits caller trace and carries only
+qualified tenant/namespace/originalRun/owner/index plus closed outcome. Attempt counts/duration
+have outcome only; `workflow_collection_leaf_certified_total` counts acknowledged first commits,
+not Unknown/server-inferred success or replay. Cancellation has no returned outcome. These are
+process observations, not durable counts or journal-projected workflow attempts.
+
+Actual OTLP collector receives7native outcomes across invalid/current-authority refusals, deferred
+COMMIT abort, acknowledged creation/replay and actual lost-reply commit/recovery. Metrics/histogram
+counts, exact unredacted JSON completion events, empty exported status descriptions/events/links,
+payload/driver/authority marker absence and filtered-child caller preservation are asserted.
+First RED2/2failed missing counters; fixture SQL capture was corrected before final verification.
+Three bounded fresh review cycles ended with no remaining concrete finding. Final integrated
+regression passed18tests with1private subprocess helper ignored in direct selection but explicitly
+executed by its parent in4OS processes;151.14s including compilation,86.61s harness.
+Evidence:`tasks/project-completion/evidence/leaf-certification-observations-20261018/manifest.json`.
+Strict workspace/all-target Clippy passed89.00s; formatting and architecture results are retained
+in the same manifest. No production caller or released INSERT follows from these observations.

@@ -1,0 +1,143 @@
+{
+  "base": "371848c0",
+  "scope": "B1b.2a.1d.3d.1 dormant returned native leaf observations only",
+  "commands": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "leaf_certification_native::observations::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "log": "red.txt",
+      "exit_code": 101,
+      "seconds": 40.45
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "leaf_certification_native::observations::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "log": "green.txt",
+      "exit_code": 101,
+      "seconds": 57.95
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "leaf_certification_native::observations::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "log": "final.txt",
+      "exit_code": 0,
+      "seconds": 40.43
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "leaf_certification_native::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "log": "native-regression.txt",
+      "exit_code": 0,
+      "seconds": 151.14
+    },
+    {
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "--workspace",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "log": "clippy.txt",
+      "exit_code": 0,
+      "seconds": 89.0
+    },
+    {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "log": "fmt.txt",
+      "exit_code": 0,
+      "seconds": 4.17
+    },
+    {
+      "command": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "log": "architecture.txt",
+      "exit_code": 0,
+      "seconds": 0.33
+    }
+  ],
+  "final_source": {
+    "tests/integration/workflow-primitives/leaf_certification_native.rs": "edb8b49e9a51f60492ecbf54096d287f7258377d365675d2c7762af643cb1cc7",
+    "tests/integration/workflow-primitives/leaf_certification_observations.rs": "111054fb5fc2ef341914ec8118b2500430634d99039ce3dc7319e1827b663bfb",
+    "crates/infra-postgres/src/leaf_certification.rs": "6c866d2be5bbce07dbefc1aada3c904bc08e4d3d3c45c818960c8db4bde57b5b",
+    "crates/telemetry/src/lib.rs": "04d17642f98178a27cab4e33bbaf1b725f9cf62dc25da41dd4d4247418772601",
+    "crates/telemetry/src/leaf_certification.rs": "8c6034a7d3610c8f0b1f3009a5166aa96828c917b329f619dcdcb38ca008e70c",
+    "tests/support/collector.rs": "e42e029e4cc89d3d6c5fc34e5fcb0c2ad18314808511fd3b7376c64a8f62ff35",
+    "tests/integration/workflow-primitives/leaf_certification_refusals.rs": "90d703b9879830c7a46fff8fe54f1e0d0d6609afe1b7821745b12cf6a75e9f04"
+  },
+  "fresh_review_cycles": 3,
+  "external_cli": false,
+  "files": {
+    "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "clippy.txt": "f0fcbfd3b497996eb3d8692ef6c962ca3753125ec628dba703e867c21661e442",
+    "commands.json": "24bfba6a4751f4cddf1f9a61ef1f68d4298770c78e9556551962337c10c4b82c",
+    "final.txt": "45e4c4f76d70afe7f1485b05d892cc19887e7791485effb0d5e4d3f8a2e77a66",
+    "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "green.txt": "135d0cbd0a6a3a356f38ad851cdc5d689b32f603cd1c27aa0112a3b990393973",
+    "implementation.diff": "5bb4fa61f9f994550405f47f9aa535dfdd9a9cb18f8bfa20d777a4a72c5aa5ea",
+    "native-regression.txt": "9062d998c0120b36b2492240a21d1f8585a16ecdbe958d39643d1ebb1abead59",
+    "red.txt": "31f5114b7329dfe54b55f75e59ebd300d41f57d7d6f3e54765197403a57641fd",
+    "reproduce.md": "55eec83e29d38ff22bbeff84c506af1f8dc67597e03dfdb882dffae1970af3a9",
+    "review.md": "2dd9a5b54c0579c028319ecbc427531523e3cc60c57321a485cf13bf17011170",
+    "source-complete.json": "f5ebd4187695036632b690951d4a9a69b8ec4244ced57fa82e04e2bef8e5e785",
+    "source-green.json": "f6be939716c6a175589f5459b7535be8f91fee04d5a9615d30b7eccb753d2204",
+    "source-oracles-v2.json": "6c33bec58d4912f9238a0e3e5b67a300746974727d8de61d64a58dd26fcbea7d",
+    "source-red.json": "1b4f772130cf5419842424f62bba2d065d4190a6d45c2d6c17f27fc5ea3253a0",
+    "sql-literal-preservation.json": "fa3b2e2de1042fa528486721cbde443e33476bc1fe491836c394ce9efb099ba6"
+  }
+}

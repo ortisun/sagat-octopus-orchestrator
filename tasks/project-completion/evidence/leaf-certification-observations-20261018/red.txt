@@ -1,0 +1,28 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 31.85s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 2 tests
+test leaf_certification_native::observations::actual_leaf_outcomes_export_closed_metadata_and_count_only_acknowledged_first_commits ... 
+thread 'leaf_certification_native::observations::actual_leaf_outcomes_export_closed_metadata_and_count_only_acknowledged_first_commits' (103068098) panicked at tests/integration/workflow-primitives/leaf_certification_observations.rs:123:9:
+assertion `left == right` failed
+  left: 0
+ right: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test leaf_certification_native::observations::filtered_leaf_span_preserves_callers_outcome_and_records_storage_error_metric ... 
+thread 'leaf_certification_native::observations::filtered_leaf_span_preserves_callers_outcome_and_records_storage_error_metric' (103071744) panicked at tests/integration/workflow-primitives/leaf_certification_observations.rs:64:5:
+assertion `left == right` failed
+  left: 0
+ right: 1
+FAILED
+
+failures:
+
+failures:
+    leaf_certification_native::observations::actual_leaf_outcomes_export_closed_metadata_and_count_only_acknowledged_first_commits
+    leaf_certification_native::observations::filtered_leaf_span_preserves_callers_outcome_and_records_storage_error_metric
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 450 filtered out; finished in 6.51s
+
+error: test failed, to rerun pass `-p sagat-tests --test integration_workflow_primitives`

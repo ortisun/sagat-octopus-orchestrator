@@ -112,8 +112,12 @@ not a SQL port or own-member authority. See evidence/capacity-header-restore-202
   prove unresolved original-Run fencing and fresh direct reconstruction without assumed rollback.
 - [x] B1b.2a.1d.3c.2: Kill and restart an actual native reconciliation process against retained
   identity/current authority; distinguish it from a control-plane or execution-engine restart.
+- [ ] B1b.2a.1d.3b.5: Exercise actual saga planning in effect-bearing later collections while the
+  selected ordinary leaf stays closed; other producer/C0 preservation remains separately required.
 - [ ] B1b.2a.1d.3d: Add closed observations and actual export/count/redaction evidence, then
   consider a separate released INSERT migration only after all source-writer gates pass.
+- [x] B1b.2a.1d.3d.1: Add closed returned-attempt observations with real OTLP/log/metric count,
+  redaction, filtered-caller isolation and full native regression; no released INSERT/caller.
 
 First native certifier increment: actual public HTTP/gRPC source creation, before-closure refusal,
 audit/fact rollback/retry, metadata-only replay after later scope failure, redacted guard errors and

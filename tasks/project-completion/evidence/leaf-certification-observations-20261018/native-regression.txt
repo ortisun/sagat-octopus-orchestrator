@@ -1,0 +1,29 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 02s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 19 tests
+test leaf_certification_native::binding::ambient_binding_replacement_preserves_source_before_proof_and_during_commit ... ok
+test leaf_certification_native::closure::actual_collection_closure_and_certification_obey_both_original_run_queue_orders ... ok
+test leaf_certification_native::commit_loss::lost_leaf_commit_reconciles_actual_commit_and_abort_with_cold_same_identity_store ... leaf COMMIT scenario: Committed
+leaf COMMIT scenario: Aborted23514
+ok
+test leaf_certification_native::late_reports::stale_new_key_reports_preserve_closed_source_in_both_run_lock_orders ... ok
+test leaf_certification_native::later_work::later_success_failure_and_ready_cancel_preserve_source_in_both_run_queue_orders ... ok
+test leaf_certification_native::native_certification_compares_far_future_scheduler_expiry_on_the_server ... ok
+test leaf_certification_native::native_certification_guard_failure_redacts_driver_diagnostics ... ok
+test leaf_certification_native::native_certification_is_metadata_only_and_replays_after_later_scope_failure ... ok
+test leaf_certification_native::native_certification_refuses_unrepresentable_canonical_time ... ok
+test leaf_certification_native::observations::actual_leaf_outcomes_export_closed_metadata_and_count_only_acknowledged_first_commits ... ok
+test leaf_certification_native::observations::filtered_leaf_span_preserves_callers_outcome_and_records_storage_error_metric ... ok
+test leaf_certification_native::process::killed_native_reconciler_restarts_same_identity_after_actual_commit_or_abort ... ok
+test leaf_certification_native::process::native_reconciliation_probe ... ignored, private subprocess probe; requires parent-provided database and metadata paths
+test leaf_certification_native::refusals::compensating_definition_is_not_an_ordinary_leaf_source ... ok
+test leaf_certification_native::refusals::complete_local_step_set_and_bounded_metadata_are_required ... ok
+test leaf_certification_native::refusals::current_authority_precedes_canonical_replay_and_fresh_owner_keeps_original_record ... ok
+test leaf_certification_native::refusals::journal_reference_and_checkpoint_digest_must_match_actual_retained_evidence ... ok
+test leaf_certification_native::refusals::original_qualified_identity_and_creation_cas_refuse_without_metadata_writes ... ok
+test leaf_certification_native::refusals::outstanding_reservation_refuses_and_creation_cas_precedes_source_corruption ... ok
+
+test result: ok. 18 passed; 0 failed; 1 ignored; 0 measured; 433 filtered out; finished in 86.61s
+

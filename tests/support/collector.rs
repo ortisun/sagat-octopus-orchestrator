@@ -47,6 +47,7 @@ pub struct Received {
     pub start: u128,
     pub end: u128,
     pub status: u64,
+    pub status_message: String,
     pub attributes: HashMap<String, String>,
     pub events: Vec<String>,
     pub links: Vec<(String, String)>,
@@ -128,6 +129,10 @@ async fn receive(State(inner): State<Arc<Inner>>, body: axum::body::Bytes) -> St
                     start: number(&span["startTimeUnixNano"]),
                     end: number(&span["endTimeUnixNano"]),
                     status: span["status"]["code"].as_u64().unwrap_or(0),
+                    status_message: span["status"]["message"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned(),
                     attributes: attributes(&span["attributes"]),
                     events: span["events"]
                         .as_array()

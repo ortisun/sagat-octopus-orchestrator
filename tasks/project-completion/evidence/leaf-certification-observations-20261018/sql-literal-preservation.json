@@ -1,0 +1,6 @@
+{
+  "base": "371848c0",
+  "file": "crates/infra-postgres/src/leaf_certification.rs",
+  "unchanged_sql_literal_count": 10,
+  "note": "Static source comparison only; real native regression is separate"
+}

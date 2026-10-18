@@ -1,0 +1,110 @@
+[
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "leaf_certification_native::observations::",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "log": "red.txt",
+    "exit_code": 101,
+    "seconds": 40.45
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "leaf_certification_native::observations::",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "log": "green.txt",
+    "exit_code": 101,
+    "seconds": 57.95
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "leaf_certification_native::observations::",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "log": "final.txt",
+    "exit_code": 0,
+    "seconds": 40.43
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "leaf_certification_native::",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "log": "native-regression.txt",
+    "exit_code": 0,
+    "seconds": 151.14
+  },
+  {
+    "command": [
+      "cargo",
+      "clippy",
+      "--locked",
+      "--workspace",
+      "--all-targets",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "log": "clippy.txt",
+    "exit_code": 0,
+    "seconds": 89.0
+  },
+  {
+    "command": [
+      "cargo",
+      "fmt",
+      "--all",
+      "--",
+      "--check"
+    ],
+    "log": "fmt.txt",
+    "exit_code": 0,
+    "seconds": 4.17
+  },
+  {
+    "command": [
+      "python3",
+      "scripts/check-architecture.py"
+    ],
+    "log": "architecture.txt",
+    "exit_code": 0,
+    "seconds": 0.33
+  }
+]

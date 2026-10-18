@@ -10,6 +10,17 @@ pub(super) async fn closed(
     PgLeafCollectionSuccessStore,
     CertifyLeafCollectionSuccess,
 ) {
+    closed_with_output(name, json!({"accepted":true})).await
+}
+
+pub(super) async fn closed_with_output(
+    name: &str,
+    output: Value,
+) -> (
+    Flow,
+    PgLeafCollectionSuccessStore,
+    CertifyLeafCollectionSuccess,
+) {
     let f = Flow::start(name, document(name), json!([{"v":1}])).await;
     sqlx::query("GRANT INSERT ON leaf_collection_success_certifications TO sagat_app")
         .execute(&f.api.db.pool)
@@ -18,7 +29,7 @@ pub(super) async fn closed(
     f.drive().await;
     let tasks = f.poll().await;
     assert_eq!(tasks.len(), 1);
-    f.complete(&tasks[0], json!({"accepted":true})).await;
+    f.complete(&tasks[0], output).await;
     f.drive().await;
     f.verify().await;
     let c = command(&f).await;

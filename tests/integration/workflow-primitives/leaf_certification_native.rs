@@ -31,6 +31,8 @@ use crate::capacity_finish::commit_proxy;
 mod late_reports;
 #[path = "leaf_certification_later_work.rs"]
 mod later_work;
+#[path = "leaf_certification_observations.rs"]
+mod observations;
 #[path = "leaf_certification_process.rs"]
 mod process;
 #[path = "leaf_certification_refusals.rs"]

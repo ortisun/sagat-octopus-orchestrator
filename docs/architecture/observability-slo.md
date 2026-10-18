@@ -41,3 +41,29 @@ What the sections above propose is partly built; this says which part, and where
 - **Alerts.** Seventeen Prometheus rules for the whole deployment (`infra/observability/alerts.yaml`) and five conditions the engine finds itself per namespace (`docs/runbooks/alerts.md`): outbox stuck, lease not taken back, step nobody serves, review waiting, dead items. Not built: replication lag, disk and memory (the platform does not see them), webhook signature spikes, tenant skew.
 - **SLOs.** None of the proposed targets is measured as an SLO. `tests/performance/reports/observability-operations.md` measures what observability costs the paths it watches (the note a writer pays, the projector's rate and lag, the monitor's rounds), on one machine.
 - **Runbooks.** [`observability.md`](../runbooks/observability.md) and [`alerts.md`](../runbooks/alerts.md); the five scenarios above are in [`sagas.md`](../runbooks/sagas.md), [`events.md`](../runbooks/events.md) and the control-plane and engine runbooks.
+
+## Dormant leaf source certification observations (feature014)
+
+Operational questions: did this returned native attempt certify, replay or refuse; did storage fail
+or leave COMMIT uncertain; how long did the attempt take; which qualified original source does its
+trace identify? These observations describe the native metadata transaction, not workflow attempt
+history. Journal-derived workflow spans remain unchanged.
+
+The dormant port emits `workflow.collection.leaf.certify` under the caller's trace, with
+`sagat.tenant.id`, `sagat.namespace.id`, `sagat.run.id`, `sagat.collection.owner_node`,
+`sagat.collection.index` and `sagat.outcome`. Error status is fixed for storage/Unknown, without an
+exported error description. Direct calls without caller trace still emit metrics. Filtering this
+child span cannot write an outcome/status onto the caller's span.
+
+`workflow_collection_leaf_certification_attempts_total{outcome}` and
+`workflow_collection_leaf_certification_duration_seconds{outcome}` count/time returned attempts.
+The closed outcomes are `certified`, `replayed`, `refused`, `storage_error`, `unknown`. No tenant,
+source, authority or error identifier is a metric label. Cancellation returns no outcome and is
+not counted. `workflow_collection_leaf_certified_total` has no labels and counts only acknowledged
+first commits. A server commit whose reply was lost is not inferred as a confirmed transition;
+its reconciliation replay does not increment that counter. The immutable canonical table and
+atomic audit record are authoritative, including when process metrics reset or miss Unknown.
+
+The fixed debug completion event has only the closed `outcome`; no payload, digest, audit ID,
+scheduler owner/generation or raw driver diagnostic is included. Released INSERT and a production
+caller remain gated; these observations grant no source preservation or nested execution authority.
