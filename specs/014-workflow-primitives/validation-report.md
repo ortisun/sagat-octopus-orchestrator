@@ -1709,3 +1709,54 @@ This increment does not close the remaining broad body/nesting, low-capacity des
 blob completion, full old-version compatibility, 10k/100k resource or release gates. The task
 checkboxes remain open. The ongoing flat 10k benchmark executes frozen commit `025ce8d4`, not this
 increment; its source and environment remain explicit in its own manifest.
+
+
+## 2026-10-17 — Public root activity sources for collections (G420)
+
+Refs: T014-004, T014-016–017, FR-014-003–005,016–017.
+
+Publication now accepts a plain root activity prefix followed by the existing root collection
+chain. The root producer may return an inline array or commit its output blob; the existing
+collection source port captures it under the original ownership, digest, value and context limits.
+No runtime transaction, wire field, migration or adapter query changed. Error edges, compensation,
+reconciliation, effect policies and managed database operations in the prefix remain unsupported,
+as do activity successors and nested/broader bodies. This is another implementation increment,
+not a reduction of the accepted feature scope or completion of its remaining tasks.
+
+Four native public pipeline tests first failed **0/4**, 11.08 s, on the closed entrypoint gate
+(`/tmp/sagat-completion-collection-pipeline-red.log`). After enabling the bounded prefix they
+passed **4/4**, 6.46 s (`...-green.log`). The inline case was strengthened to use a legacy minor
+1.4 producer advertising both activities: it produces root work but cannot claim the admitted
+scoped work; a minor 1.5 body worker completes the run. These four cases passed **4/4**, 4.92 s
+(`...-legacy-root.log`). They cover REST publication/start, real gRPC blob upload and exact source
+completion replay, ordered/equal members, uncommitted descriptor refusal (`BLOB_UNAVAILABLE`),
+failed producer with no collection, and independent full replay. They use the repository's
+self-contained PostgreSQL/object fixtures, not an external database URL.
+
+The final fixture deliberately gives the root producer and body activity the same `fetch` node
+id. The identical `steps.fetch.output` expression resolves the root array at capture and the
+scoped result at body return. Updated native cases passed **4/4**, 5.66 s (`...-same-node.log`).
+Both data and binding identity remain scoped; this also checks that body contexts do not expose
+the producer's array as local step data.
+
+The new five-SDK `collection-step-source` scenario first failed only because its two reviewed
+expected phase documents did not yet exist (20.59 s, `...-sdk-review.log`); all five builders and
+normalized runtime documents agreed. Both complete documents were manually reviewed against the
+scenario before writing the new expected files, with no bless mode. The initial reviewed case
+passed **1/1 across all five**, 19.81 s (`...-sdk-green.log`). After strengthening the fixture to
+the equal root/body node ids, the manually updated definitions/observations passed all five again,
+22.71 s (`...-sdk-same-node.log`). Review manifests are `...-golden-review.json` and
+`...-same-node-review.json`; existing semantic goldens and SDK/runner sources remain unchanged.
+The suite now contains 56 scenarios. Scenario/phase validation passed **1/1**, 0.05 s.
+
+Two focused IR guard tests passed (0.03 s), exercising five unsupported source-policy mutations
+and the still-closed activity successor. Complete IR package tests passed **169/0/0 ignored**;
+doctests compiled with zero executable examples (`...-full-ir-regression.log`). Complete primitive
+integration passed **360/0/1 ignored**, 270.21 s, with four threads on the repository's disposable
+fixture (`...-workflow-regression.log`), before the final same-node test-data enhancement; the
+production code stayed unchanged and the four affected cases then passed as recorded above.
+Strict workspace/all-target Clippy passed (1m10s, `...-clippy.log`); formatting/diff checks passed.
+
+The G420 public source gap is closed for this plain prefix. Broader source policies/graphs,
+nesting and descendant admission under low quotas, remaining resource/compatibility and release
+criteria stay open. No task checkbox is advanced on the strength of this focused subset alone.

@@ -214,6 +214,15 @@ the source of a live membership. The engine's read is audited (`blob.read`, reso
 outage, or a replica with no blob store, leaves the run waiting; it is never failed for that.
 The engine assembles the indexed aggregate separately from expression list concatenation.
 
+An ordinary root activity prefix may now produce the inline array or committed output blob the
+collection captures (`items: "steps.fetch.output"`). The producer completes before its collection
+can enter. Its existing root execution quotas and lease protocol apply; a minor 1.4 worker can
+produce root work while admitted body work still requires minor 1.5. Source-prefix `onError`,
+compensation/reconciliation, effect policies and managed database operations remain unsupported,
+as do activity successors of a collection. No new IR revision or wire field is introduced. The
+shared `collection-step-source` fixture pins the authored limits, canonical document, root/scoped
+identities, ordered captured members and local-only body task context across all five SDKs.
+
 Numeric limits, payload ceilings and uniqueness rules are specified in `data-model.md`. SDK builders
 perform useful local validation but the server owns all decisions and revalidates the document.
 A builder cannot turn language `for`, `await`, Promise/Task concurrency or arbitrary callbacks into

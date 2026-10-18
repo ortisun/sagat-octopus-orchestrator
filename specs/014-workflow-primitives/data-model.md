@@ -386,3 +386,13 @@ not enable scoped blob completion.
 
 Blob completion, broader scoped control nodes, global/ancestor drain and root finalization still
 need their remaining consumer integration and larger workload/fault evidence. These current consumers do not establish a 10k/100k capacity claim.
+
+
+### Ordinary root sources for collections
+
+A plain root activity prefix may now precede the existing collection chain. Its inline array or
+committed output blob is selected by `steps.fetch.output` in the owner's root context, then captured
+by the existing bounded source port. A body may also name its activity `fetch`; the same expression
+in its return resolves its own path's output. Root and scoped outputs, binding checks, step UUIDs
+and task contexts retain their separate identities. Prefix error/effect/managed-database policies
+and activity successors remain unsupported. No persistence schema or worker minor changes.

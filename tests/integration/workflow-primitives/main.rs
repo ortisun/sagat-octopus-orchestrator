@@ -25,6 +25,7 @@ mod chains;
 mod chains_http;
 mod collection_10k;
 mod collection_budgets;
+mod collection_pipeline;
 mod collection_restore;
 mod collection_sources;
 mod collections_http;

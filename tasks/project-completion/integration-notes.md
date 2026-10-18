@@ -1350,3 +1350,36 @@ The flat 10k/width1,16,256 benchmark still runs from detached frozen `025ce8d4`;
 not rebuilt while active. Its source worktree and manifest remain unchanged. Broader body graphs,
 public step-output collection sources, nesting/low quotas, scoped blob completion and the final
 compatibility/resource/release tasks remain open; no task was ticked by reducing scope.
+
+
+## 2026-10-17 — Public producer/collection pipeline
+
+G420 now has public evidence for a plain ordinary root activity prefix before a collection chain.
+The producer supplies an inline array or its own committed output blob via `steps.fetch.output`.
+No runtime transaction/schema/query/wire/SDK source changed; only the publication gate is widened.
+Prefix error/effect/managed-database policies, activity successors and nested/broader bodies remain
+closed. Four new pipeline cases were genuine runtime RED (0/4, 11.08s), then passed (4/4, 6.46s).
+The legacy 1.4 root producer cannot lease admitted scoped work (4/4 enhanced cases, 4.92s).
+Finally root and body both use node id `fetch`, proving distinct output/binding identity and local
+contexts; latest native cases passed 4/4, 5.66s. All use self-contained fixtures.
+
+New all-five `collection-step-source` initially failed only missing new expected documents after
+all builders and normalized runs agreed (20.59s). Both complete documents were manually reviewed
+against the scenario, then the reviewed case passed (19.81s). The deliberate equal-name enhancement
+also passed all five (22.71s); review manifests and all logs use
+`/tmp/sagat-completion-collection-pipeline-…`. Existing semantic expected files and all SDK/runner
+sources remain unchanged. There are now 56 shared scenarios; phase validation passed 1/1.
+Complete IR package:169 passed, no failures/ignored, zero executable doctest examples. Full primitive
+integration:360 passed/0failed/1ignored,270.21s before final same-name fixture strengthening;
+production code unchanged and its four affected cases passed afterward. Strict workspace/all-target
+Clippy passed (1m10s), fmt/diff checks passed. Task 016's evidence records G420 progress without
+closing broader scope or any remaining checkbox.
+
+Frozen benchmark 025ce8d4 produced its first completed 10k fragment (width1,1580.7s,0errors,
+peak observed active1,10000checkpoints). Width16/256 continue in the same frozen process. Important
+profile detail found by inspecting `performance/…/common.rs`: workers/scheduler explicitly use
+`world.db.pool` (owner), so SAGAT_TEST_AS_RUNTIME_ROLE does not convert these performance ports.
+This diagnostic must be labelled owner-role; it is not a least-privilege capacity gate. Final
+measurement work must wire runtime pools explicitly, sample both admission/checkpoint (the old
+even probe interval samples only checkpoints), report queue delay, and capture peak memory with
+a stated method. Do not rebuild/overwrite the active shared perf executable before it finishes.

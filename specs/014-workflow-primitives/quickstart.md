@@ -59,8 +59,9 @@ default route wins. A missing `amount` fails evaluation; no later case or defaul
 switch integration target exercises these outcomes against PostgreSQL and checks journal/replay.
 
 The five SDKs can construct additive v1 collection, bounded-loop, approval and continuation
-documents. The server accepts a restricted collection graph made from one or more root `forEach`
-nodes ending at `end`; every referenced body must contain a chain of one to eight activities followed
+documents. The server accepts a restricted collection graph with an optional ordinary source
+activity prefix followed by one or more root `forEach` nodes ending at `end`; each body contains a
+chain of one to eight activities followed
 by one `return`. Before starting work, an administrator must set the tenant-wide active iteration budget:
 
 ```sh
@@ -512,3 +513,37 @@ See `docs/runbooks/workflow-primitives.md` for the operator procedure.
 The report lists only commands actually executed. US01 success does not close SC-014-002–006,
 prove crash recovery for new primitives, accept the proposed ADR or make its contracts available.
 Future implementation tasks stay unchecked until their named tests and documentation exist.
+
+
+## Producing collection membership in an activity
+
+An ordinary root activity can produce the array a later collection captures. Set the owner's
+`items` expression to `steps.fetch.output`, where `fetch` is the producing activity. The value is
+an inline array or a descriptor of a blob the producer committed through the worker blob protocol.
+Merely returning an uploaded object's descriptor as inline JSON does not commit it or authorize
+its use. An unavailable/uncommitted/foreign source fails with `BLOB_UNAVAILABLE` before membership
+is admitted. A failed producer starts no collection.
+
+The producer uses the existing root run/worker quotas; iteration capacity is checked when the
+collection is admitted. Source activities must precede the collection chain and currently have no
+`onError`, compensation, reconciliation, irreversible/high-risk policy or managed database operation.
+Activities after a collection remain outside this publication subset. These restrictions preserve
+the remaining broad graph/nesting tasks and do not change external-effect idempotency obligations.
+
+The shared [collection-step-source scenario](../../tests/contract/sdk-conformance/scenarios/collection-step-source.json)
+is an executable authoring/runtime example in all five SDKs. It preserves authored limits and
+returns two distinct captured members to scoped workers without exposing the root producer's
+outputs as their local `steps`:
+
+```sh
+SAGAT_TEST_AS_RUNTIME_ROLE=1 SAGAT_SDK_SCENARIO=collection-step-source \
+  cargo test --locked -p sagat-tests --test sdk_conformance -- --ignored --nocapture
+```
+
+The public blob happy path, exact source-report replay and unavailable-source failure are exercised
+with real PostgreSQL, REST publication and gRPC workers:
+
+```sh
+SAGAT_TEST_AS_RUNTIME_ROLE=1 cargo test --locked -p sagat-tests \
+  --test integration_workflow_primitives collection_pipeline -- --test-threads=2 --nocapture
+```

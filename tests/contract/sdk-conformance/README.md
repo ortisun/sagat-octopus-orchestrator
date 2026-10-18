@@ -231,6 +231,14 @@ awaits the public `collection.iteration_admitted` journal event with a bounded d
 (`RUNNING`) under load. The journal barrier makes the existing `RUNNING` observation reproducible;
 the reviewed expected document changes only the observation's operation label to `awaitJournal`.
 
+`collection-step-source.json` runs an ordinary root producer before the public `map`. The run's
+input is empty; the producer returns two members, which are captured and delivered in order to
+scoped workers. The reviewed document retains `maxInstances: 16`/`maxDepth: 1`; the root task has an
+empty path and each body task its own indexed path despite sharing the same `fetch` node id. The body tasks see their assigned member and
+local outputs, not the root producer's array in `steps`. This fixture uses polling and unchanged
+public SDK builders/worker APIs. Its new definition and observation files were manually reviewed
+against the scenario after all five languages agreed; no bless mode is used.
+
 `collection-runtime.json` executes the public `map` builder with a non-identity result expression
 in all five SDKs. Its reviewed graph has two ordered scoped members and a terminal result. The
 scenario chooses polling in every language so worker-stream lifetime races do not alter attempt

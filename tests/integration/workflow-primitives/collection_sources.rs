@@ -120,9 +120,9 @@ async fn a_run_input_blob_array_is_the_membership_and_each_item_reaches_its_iter
         .expect("journal and projection agree");
 }
 
-/// A step's committed output blob is a source of its own run and of no other. No published
-/// workflow can put an activity before a collection yet (the public path starts at the collection
-/// owner), so this drives the reader the scheduler uses, with a real committed step output.
+/// A step's committed output blob is a source of its own run and of no other. This exercises
+/// the reader's provenance/limit contract with real committed outputs; `collection_pipeline`
+/// separately drives the complete published producer-to-collection graph.
 #[tokio::test]
 async fn a_step_output_blob_is_a_source_of_its_own_run_only() {
     let p = platform().await;

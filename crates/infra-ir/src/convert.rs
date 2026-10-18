@@ -703,19 +703,22 @@ pub(crate) fn published_collection_definition(
         return Err(pending);
     }
     let definition = structured_definition(document)?;
+    let source_activities = collection_source_activities(&definition)?;
     if !definition
         .node(definition.entrypoint())
-        .is_some_and(|node| matches!(node.kind(), NodeKind::ForEach { .. }))
+        .is_some_and(|node| {
+            matches!(node.kind(), NodeKind::ForEach { .. }) || source_activities.contains(node.id())
+        })
     {
         return Err(IrError::UnsupportedDeclaration {
             field: "entrypoint",
             reason: "a published collection workflow starts at its collection owner",
         });
     }
-    if let Some(node) = definition
-        .nodes()
-        .find(|node| !matches!(node.kind(), NodeKind::ForEach { .. } | NodeKind::End { .. }))
-    {
+    if let Some(node) = definition.nodes().find(|node| {
+        !matches!(node.kind(), NodeKind::ForEach { .. } | NodeKind::End { .. })
+            && !source_activities.contains(node.id())
+    }) {
         return Err(IrError::Unsupported {
             node: node.id().as_str().to_owned(),
             kind: node.kind().label().to_owned(),
@@ -773,6 +776,54 @@ pub(crate) fn published_collection_definition(
         }
     }
     Ok(definition)
+}
+
+/// Ordinary source activities may precede the existing root collection chain. Only the prefix is
+/// enabled: unrelated/successor activities and unproven error/effect-policy combinations stay closed.
+fn collection_source_activities(
+    definition: &WorkflowDefinition,
+) -> Result<std::collections::BTreeSet<NodeId>, IrError> {
+    let mut sources = std::collections::BTreeSet::new();
+    let mut current = definition.node(definition.entrypoint());
+    while let Some(node) = current {
+        let NodeKind::Activity {
+            compensate_with,
+            reconcile_with,
+            ..
+        } = node.kind()
+        else {
+            break;
+        };
+        if node.on_error().is_some()
+            || compensate_with.is_some()
+            || reconcile_with.is_some()
+            || node.effect().irreversible
+            || node.effect().high_risk
+            || node.database_operation().is_some()
+        {
+            return Err(IrError::Unsupported {
+                node: node.id().as_str().to_owned(),
+                kind: node.kind().label().to_owned(),
+                reason: "collection source activities have no onError edge, compensation, reconciliation, effect policy or managed database operation",
+            });
+        }
+        if !sources.insert(node.id().clone()) {
+            return Err(IrError::UnsupportedDeclaration {
+                field: "entrypoint",
+                reason: "collection source activities must lead to a collection owner",
+            });
+        }
+        current = node.next().and_then(|next| definition.node(next));
+    }
+    if !sources.is_empty()
+        && !current.is_some_and(|node| matches!(node.kind(), NodeKind::ForEach { .. }))
+    {
+        return Err(IrError::UnsupportedDeclaration {
+            field: "entrypoint",
+            reason: "collection source activities must lead to a collection owner",
+        });
+    }
+    Ok(sources)
 }
 
 /// The root activities a loop's `onError` edge recovers with (G340): the target of the edge and the

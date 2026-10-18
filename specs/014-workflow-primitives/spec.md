@@ -20,10 +20,14 @@ and signal-controlled `waitEvent` followed by input-only continuation. Direct an
 continuation may transfer the exact declared state snapshot. A continuation may also start with a
 `waitEvent` (followed by an input-only continuation, or one condition choosing it or an `end`): the successor
 is created already waiting, in the hand-off transaction.
-Collections have a restricted public path: one or more root `forEach` nodes ending at `end`, with
-each referenced body containing a chain of one to eight activities followed by one `return`; a body
+Collections have a restricted public path: an optional prefix of ordinary root source activities,
+then one or more root `forEach` nodes ending at `end`, with each referenced body containing a chain of one to eight activities followed by one `return`; a body
 activity may declare `compensateWith`, `reconcileWith`, `irreversible` and `highRisk`, and a failed or
-cancelled scope then compensates its completed iterations (FR-014-005, FR-014-006). Admission remains
+cancelled scope then compensates its completed iterations (FR-014-005, FR-014-006). A source prefix
+may supply an inline array or its own committed blob through `steps.fetch.output`; source-prefix
+error edges, compensation/reconciliation, effect policies and managed database operations remain
+closed. Producer failure enters no collection, and an uncommitted/foreign blob is not a source
+capability. Admission remains
 disabled until an administrator sets the tenant-wide iteration-concurrency quota. A restricted
 public loop with an activity/return body has focused PostgreSQL restart and rollback evidence.
 Scoped scheduler expiry/retry, worker discovery/claim, heartbeat and inline completion/failure

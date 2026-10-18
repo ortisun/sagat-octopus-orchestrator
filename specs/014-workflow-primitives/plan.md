@@ -257,3 +257,13 @@ Blob authorization preserves scanning refusals and does not enable scoped blob o
 The real-provider/history-denial and current regression evidence is recorded in
 [validation-report.md](./validation-report.md). The larger graph, descendant admission, resource,
 compatibility and release tasks retain their existing acceptance criteria and remain open.
+
+
+### Public producer-to-collection increment (2026-10-17)
+
+Publication now permits an ordinary activity prefix before the existing root collection chain.
+The existing root worker/output transaction and collection-source capture port handle execution;
+no alternate runtime, wire field or adapter query is introduced. Root producers with error edges,
+compensation/reconciliation, effect policies or managed database operations remain closed, as do
+activity successors and nested bodies. Real public inline/blob pipelines and equal root/body node
+ids are covered in native and all-five SDK fixtures; current evidence is in the validation report.

@@ -2,8 +2,9 @@
 
 The public workflow document remains additive `sagat-octopus-orchestrator.io/v1`. Bounded
 `switch`, run-addressed declared Query/Update and a bounded root human approval are available
-with the existing basic root nodes. A public collection workflow is a chain of `forEach` nodes that
-ends at `end`; every referenced body contains exactly one activity followed by one `return`.
+with the existing basic root nodes. A public collection workflow may start with ordinary source
+activities followed by a chain of `forEach` nodes ending at `end`; each referenced body contains a
+chain of one to eight activities followed by one `return`.
 The restricted public loop shape uses an activity followed by a return in its body; a loop's
 `onError` edge may lead to an `end` or to recovery activities that end at an `end`. Nested
 collections, triggers, structured-primitive combinations and broader body graphs remain closed.
