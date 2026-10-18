@@ -1,0 +1,128 @@
+{
+  "scope": "Three remaining shared public observations only; no full60 aggregate yet",
+  "commands": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "sdk_conformance",
+        "every_scenario_declares_phases_with_reviewed_expected_documents",
+        "--",
+        "--exact"
+      ],
+      "scenario": null,
+      "log": "registry.txt",
+      "exit_code": 0,
+      "seconds": 1.38
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "sdk_conformance",
+        "every_sdk_conforms_to_every_scenario",
+        "--",
+        "--exact",
+        "--ignored",
+        "--nocapture"
+      ],
+      "scenario": "approval-builders",
+      "log": "approval-builders.txt",
+      "exit_code": 0,
+      "seconds": 16.11
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "sdk_conformance",
+        "every_sdk_conforms_to_every_scenario",
+        "--",
+        "--exact",
+        "--ignored",
+        "--nocapture"
+      ],
+      "scenario": "expression-limits",
+      "log": "expression-limits.txt",
+      "exit_code": 0,
+      "seconds": 20.38
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "sdk_conformance",
+        "every_sdk_conforms_to_every_scenario",
+        "--",
+        "--exact",
+        "--ignored",
+        "--nocapture"
+      ],
+      "scenario": "collection-fail-fast-drain",
+      "log": "collection-fail-fast-drain.txt",
+      "exit_code": 0,
+      "seconds": 22.33
+    }
+  ],
+  "inspection": {
+    "input_count": 1244,
+    "all_frozen_inputs_unchanged": true,
+    "runtime_artifacts": {
+      "expression-limits": {
+        "complete_outputs": 5,
+        "all_equal_pre_authored_full_golden": true,
+        "harness_pid": "112"
+      },
+      "collection-fail-fast-drain": {
+        "complete_outputs": 5,
+        "all_equal_pre_authored_full_golden": true,
+        "harness_pid": "14709"
+      }
+    },
+    "authoring_only_approval_case_languages": 5,
+    "registry_count": 60
+  },
+  "files": {
+    "active-drain-notes.md": "da2e581ffb73254b4a6d51dc21faee632aa8438e6a06afeb34ea939aaff75420",
+    "approval-builders.txt": "eabea5aedc8fd9ed4cd3846dad6d6ad7d36b2b4d264ddbda147d17ec100dc1e0",
+    "collection-fail-fast-drain.txt": "7782bfa2701ca0185ee30e7d7ebff4acab4dc1f7e470e8fe97a82205aee22b54",
+    "commands.json": "ff134a14a88781663a919c2a4970ccb60f47d74e8ebcf73dc2b11bbc5b35526f",
+    "expression-limits.txt": "a5ba455132736bafaf0a19f479b1fc0ec84b10f5a744fcdabde60f77e4ae598d",
+    "implementation.diff": "a8e8d4f15bb232c684ad465471c0d300ea6590fdcb292c1ec8203e9845b19477",
+    "inspection.json": "ed38b5a3d67d1f70da0544cddcb0eb9c169c9ab5c9c309abc11b587969cfad5b",
+    "normalized/collection-fail-fast-drain/dotnet.json": "e2ce40e345e6a42d28658b7896b4c065ed9f1807c2df56de437485ac55d298ce",
+    "normalized/collection-fail-fast-drain/go.json": "e2ce40e345e6a42d28658b7896b4c065ed9f1807c2df56de437485ac55d298ce",
+    "normalized/collection-fail-fast-drain/java.json": "e2ce40e345e6a42d28658b7896b4c065ed9f1807c2df56de437485ac55d298ce",
+    "normalized/collection-fail-fast-drain/python.json": "e2ce40e345e6a42d28658b7896b4c065ed9f1807c2df56de437485ac55d298ce",
+    "normalized/collection-fail-fast-drain/typescript.json": "e2ce40e345e6a42d28658b7896b4c065ed9f1807c2df56de437485ac55d298ce",
+    "normalized/expression-limits/dotnet.json": "70c3a7ab20d546af70acd8fbdf650ff875a08d3a381f67e386d3a3967f586ed7",
+    "normalized/expression-limits/go.json": "70c3a7ab20d546af70acd8fbdf650ff875a08d3a381f67e386d3a3967f586ed7",
+    "normalized/expression-limits/java.json": "70c3a7ab20d546af70acd8fbdf650ff875a08d3a381f67e386d3a3967f586ed7",
+    "normalized/expression-limits/python.json": "70c3a7ab20d546af70acd8fbdf650ff875a08d3a381f67e386d3a3967f586ed7",
+    "normalized/expression-limits/typescript.json": "70c3a7ab20d546af70acd8fbdf650ff875a08d3a381f67e386d3a3967f586ed7",
+    "registry.txt": "e217b96bc983211692a7b75ecc5182ca8ffbac40e5c5b149b6383447593fe537",
+    "reproduce.md": "e89bffdfd58026a0820f7891e7d0f4fd2c1cdcd1a15fce188984fb91bbd24f13",
+    "review-active-drain.md": "029b0e5e4b8ffdb0e110fda254f6e5a0dc93c1b2c3f87df313ab784935df047e",
+    "review-upper-limits.md": "809adb09c8e50d8171154bece4d88d4ef24d6881a330787050f547140b767759",
+    "source-after-tests.json": "3cd2b25fae72580c5fd28b01561addf2b9141443bc020116ef57cb7d8c0fd887",
+    "source-before-fixtures.json": "fbc009818f0f48dd837cb0c7b2ae53a6aee89e18ef77f50378be25133be66399",
+    "source-tested.json": "3cd2b25fae72580c5fd28b01561addf2b9141443bc020116ef57cb7d8c0fd887",
+    "upper-limits-contract.md": "d6393d3e5268281aba56090da7ddcd0ff4b5261fecea33a73cdcc419c8273f88"
+  }
+}

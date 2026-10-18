@@ -1757,3 +1757,13 @@ historical full-completion D429 run is retained and not claimed as a fresh pass.
 This does not close nested execution, quota composition, the 100k resource gate or T014-041's
 complete all 58 matrix. Current normal regressions still skip the separate long 10k source test.
 Exact commands, source hashes and limits: `tasks/project-completion/evidence/publication-scope-20261018/manifest.json`.
+
+## Shared public WP04/08/12 acceptance refresh — 2026-10-18
+
+The shared collection-fail-fast-drain case now covers another active owned iteration during
+permanent sibling failure, without pinning cross-iteration compensation or global journal order.
+All five actual polling hosts agree on full graph/logs and summary/source facts. The shared
+expression case adds distinct query result-schema failure, raw canary redaction and unchanged
+Run/state versions, plus actual publication of32queries/32updates. Approval authoring accepts32
+principals and retains33 refusal. Focused all-five results and exact commands are retained in
+`tasks/project-completion/evidence/sdk-public-gaps-20261018`; full60 integration remains separate.

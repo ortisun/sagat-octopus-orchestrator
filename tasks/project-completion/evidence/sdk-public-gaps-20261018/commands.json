@@ -1,0 +1,80 @@
+[
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "sdk_conformance",
+      "every_scenario_declares_phases_with_reviewed_expected_documents",
+      "--",
+      "--exact"
+    ],
+    "scenario": null,
+    "log": "registry.txt",
+    "exit_code": 0,
+    "seconds": 1.38
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "sdk_conformance",
+      "every_sdk_conforms_to_every_scenario",
+      "--",
+      "--exact",
+      "--ignored",
+      "--nocapture"
+    ],
+    "scenario": "approval-builders",
+    "log": "approval-builders.txt",
+    "exit_code": 0,
+    "seconds": 16.11
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "sdk_conformance",
+      "every_sdk_conforms_to_every_scenario",
+      "--",
+      "--exact",
+      "--ignored",
+      "--nocapture"
+    ],
+    "scenario": "expression-limits",
+    "log": "expression-limits.txt",
+    "exit_code": 0,
+    "seconds": 20.38
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "sdk_conformance",
+      "every_sdk_conforms_to_every_scenario",
+      "--",
+      "--exact",
+      "--ignored",
+      "--nocapture"
+    ],
+    "scenario": "collection-fail-fast-drain",
+    "log": "collection-fail-fast-drain.txt",
+    "exit_code": 0,
+    "seconds": 22.33
+  }
+]

@@ -1,63 +1,33 @@
 {
-  "name": "approval-builders",
   "buildOnly": true,
-  "description": "Builder-only parity for additive v1 native approval nodes. The harness does not publish or execute these workflows until server runtime support is enabled.",
-  "workflows": {
-    "role-and-subject": {
-      "name": "approval-role-subject",
-      "program": [
-        {
-          "op": "approval",
-          "id": "review",
-          "policy": {
-            "subjects": ["reviewer@example.com"],
-            "roles": ["operator"],
-            "excludeInitiator": false
-          },
-          "timeoutMs": 86400000,
-          "onApprove": "approved",
-          "onReject": "rejected",
-          "onExpire": "expired"
-        },
-        { "op": "end", "id": "approved", "options": { "outputExpr": "'approved'" } },
-        { "op": "end", "id": "rejected", "options": { "outputExpr": "'rejected'" } },
-        { "op": "end", "id": "expired", "options": { "outputExpr": "'expired'" } }
-      ]
-    },
-    "default-exclusion": {
-      "name": "approval-default-exclusion",
-      "program": [
-        {
-          "op": "approval",
-          "id": "review",
-          "policy": { "roles": ["admin", "developer"] },
-          "timeoutMs": 31622400000,
-          "onApprove": "approved",
-          "onReject": "rejected",
-          "onExpire": "expired"
-        },
-        { "op": "end", "id": "approved" },
-        { "op": "end", "id": "rejected" },
-        { "op": "end", "id": "expired" }
-      ]
-    }
-  },
+  "description": "Shared approval authoring boundaries: 32 distinct subjects/roles accepted and 33 refused, with finite timeout, routing and exclusion checks. Build-only evidence, no publication or execution claim.",
   "invalidWorkflows": {
-    "empty-policy": {
-      "contains": "between 1 and 32",
+    "dangling-route": {
+      "contains": "not a node",
       "workflow": {
-        "name": "approval-empty-policy",
+        "name": "approval-dangling-route",
         "program": [
-          { "op": "approval", "id": "review", "policy": {}, "timeoutMs": 1000, "onApprove": "approved", "onReject": "rejected", "onExpire": "expired" }
-        ]
-      }
-    },
-    "unsupported-role": {
-      "contains": "role",
-      "workflow": {
-        "name": "approval-unsupported-role",
-        "program": [
-          { "op": "approval", "id": "review", "policy": { "roles": ["viewer"] }, "timeoutMs": 1000, "onApprove": "approved", "onReject": "rejected", "onExpire": "expired" }
+          {
+            "id": "review",
+            "onApprove": "missing",
+            "onExpire": "expired",
+            "onReject": "rejected",
+            "op": "approval",
+            "policy": {
+              "roles": [
+                "operator"
+              ]
+            },
+            "timeoutMs": 1000
+          },
+          {
+            "id": "rejected",
+            "op": "end"
+          },
+          {
+            "id": "expired",
+            "op": "end"
+          }
         ]
       }
     },
@@ -66,32 +36,57 @@
       "workflow": {
         "name": "approval-duplicate-subject",
         "program": [
-          { "op": "approval", "id": "review", "policy": { "subjects": ["reviewer@example.com", "reviewer@example.com"] }, "timeoutMs": 1000, "onApprove": "approved", "onReject": "rejected", "onExpire": "expired" }
+          {
+            "id": "review",
+            "onApprove": "approved",
+            "onExpire": "expired",
+            "onReject": "rejected",
+            "op": "approval",
+            "policy": {
+              "subjects": [
+                "reviewer@example.com",
+                "reviewer@example.com"
+              ]
+            },
+            "timeoutMs": 1000
+          }
         ]
       }
     },
-    "too-many-principals": {
+    "empty-policy": {
       "contains": "between 1 and 32",
       "workflow": {
-        "name": "approval-too-many",
+        "name": "approval-empty-policy",
         "program": [
           {
-            "op": "approval",
             "id": "review",
-            "policy": {
-              "subjects": [
-                "subject-01", "subject-02", "subject-03", "subject-04", "subject-05", "subject-06",
-                "subject-07", "subject-08", "subject-09", "subject-10", "subject-11", "subject-12",
-                "subject-13", "subject-14", "subject-15", "subject-16", "subject-17", "subject-18",
-                "subject-19", "subject-20", "subject-21", "subject-22", "subject-23", "subject-24",
-                "subject-25", "subject-26", "subject-27", "subject-28", "subject-29", "subject-30"
-              ],
-              "roles": ["admin", "developer", "operator"]
-            },
-            "timeoutMs": 1000,
             "onApprove": "approved",
+            "onExpire": "expired",
             "onReject": "rejected",
-            "onExpire": "expired"
+            "op": "approval",
+            "policy": {},
+            "timeoutMs": 1000
+          }
+        ]
+      }
+    },
+    "missing-route": {
+      "contains": "onReject",
+      "workflow": {
+        "name": "approval-missing-route",
+        "program": [
+          {
+            "id": "review",
+            "onApprove": "approved",
+            "onExpire": "expired",
+            "onReject": "",
+            "op": "approval",
+            "policy": {
+              "roles": [
+                "operator"
+              ]
+            },
+            "timeoutMs": 1000
           }
         ]
       }
@@ -101,30 +96,205 @@
       "workflow": {
         "name": "approval-timeout",
         "program": [
-          { "op": "approval", "id": "review", "policy": { "roles": ["operator"] }, "timeoutMs": 0, "onApprove": "approved", "onReject": "rejected", "onExpire": "expired" }
+          {
+            "id": "review",
+            "onApprove": "approved",
+            "onExpire": "expired",
+            "onReject": "rejected",
+            "op": "approval",
+            "policy": {
+              "roles": [
+                "operator"
+              ]
+            },
+            "timeoutMs": 0
+          }
         ]
       }
     },
-    "missing-route": {
-      "contains": "onReject",
+    "too-many-principals": {
+      "contains": "between 1 and 32",
       "workflow": {
-        "name": "approval-missing-route",
+        "name": "approval-too-many",
         "program": [
-          { "op": "approval", "id": "review", "policy": { "roles": ["operator"] }, "timeoutMs": 1000, "onApprove": "approved", "onReject": "", "onExpire": "expired" }
+          {
+            "id": "review",
+            "onApprove": "approved",
+            "onExpire": "expired",
+            "onReject": "rejected",
+            "op": "approval",
+            "policy": {
+              "roles": [
+                "admin",
+                "developer",
+                "operator"
+              ],
+              "subjects": [
+                "subject-01",
+                "subject-02",
+                "subject-03",
+                "subject-04",
+                "subject-05",
+                "subject-06",
+                "subject-07",
+                "subject-08",
+                "subject-09",
+                "subject-10",
+                "subject-11",
+                "subject-12",
+                "subject-13",
+                "subject-14",
+                "subject-15",
+                "subject-16",
+                "subject-17",
+                "subject-18",
+                "subject-19",
+                "subject-20",
+                "subject-21",
+                "subject-22",
+                "subject-23",
+                "subject-24",
+                "subject-25",
+                "subject-26",
+                "subject-27",
+                "subject-28",
+                "subject-29",
+                "subject-30"
+              ]
+            },
+            "timeoutMs": 1000
+          }
         ]
       }
     },
-    "dangling-route": {
-      "contains": "not a node",
+    "unsupported-role": {
+      "contains": "role",
       "workflow": {
-        "name": "approval-dangling-route",
+        "name": "approval-unsupported-role",
         "program": [
-          { "op": "approval", "id": "review", "policy": { "roles": ["operator"] }, "timeoutMs": 1000, "onApprove": "missing", "onReject": "rejected", "onExpire": "expired" },
-          { "op": "end", "id": "rejected" },
-          { "op": "end", "id": "expired" }
+          {
+            "id": "review",
+            "onApprove": "approved",
+            "onExpire": "expired",
+            "onReject": "rejected",
+            "op": "approval",
+            "policy": {
+              "roles": [
+                "viewer"
+              ]
+            },
+            "timeoutMs": 1000
+          }
         ]
       }
     }
   },
-  "steps": []
+  "name": "approval-builders",
+  "steps": [],
+  "workflows": {
+    "default-exclusion": {
+      "name": "approval-default-exclusion",
+      "program": [
+        {
+          "id": "review",
+          "onApprove": "approved",
+          "onExpire": "expired",
+          "onReject": "rejected",
+          "op": "approval",
+          "policy": {
+            "roles": [
+              "admin",
+              "developer"
+            ]
+          },
+          "timeoutMs": 31622400000
+        },
+        {
+          "id": "approved",
+          "op": "end"
+        },
+        {
+          "id": "rejected",
+          "op": "end"
+        },
+        {
+          "id": "expired",
+          "op": "end"
+        }
+      ]
+    },
+    "role-and-subject": {
+      "name": "approval-role-subject",
+      "program": [
+        {
+          "id": "review",
+          "onApprove": "approved",
+          "onExpire": "expired",
+          "onReject": "rejected",
+          "op": "approval",
+          "policy": {
+            "excludeInitiator": false,
+            "roles": [
+              "operator"
+            ],
+            "subjects": [
+              "reviewer@example.com",
+              "limit-reviewer-01",
+              "limit-reviewer-02",
+              "limit-reviewer-03",
+              "limit-reviewer-04",
+              "limit-reviewer-05",
+              "limit-reviewer-06",
+              "limit-reviewer-07",
+              "limit-reviewer-08",
+              "limit-reviewer-09",
+              "limit-reviewer-10",
+              "limit-reviewer-11",
+              "limit-reviewer-12",
+              "limit-reviewer-13",
+              "limit-reviewer-14",
+              "limit-reviewer-15",
+              "limit-reviewer-16",
+              "limit-reviewer-17",
+              "limit-reviewer-18",
+              "limit-reviewer-19",
+              "limit-reviewer-20",
+              "limit-reviewer-21",
+              "limit-reviewer-22",
+              "limit-reviewer-23",
+              "limit-reviewer-24",
+              "limit-reviewer-25",
+              "limit-reviewer-26",
+              "limit-reviewer-27",
+              "limit-reviewer-28",
+              "limit-reviewer-29",
+              "limit-reviewer-30"
+            ]
+          },
+          "timeoutMs": 86400000
+        },
+        {
+          "id": "approved",
+          "op": "end",
+          "options": {
+            "outputExpr": "'approved'"
+          }
+        },
+        {
+          "id": "rejected",
+          "op": "end",
+          "options": {
+            "outputExpr": "'rejected'"
+          }
+        },
+        {
+          "id": "expired",
+          "op": "end",
+          "options": {
+            "outputExpr": "'expired'"
+          }
+        }
+      ]
+    }
+  }
 }

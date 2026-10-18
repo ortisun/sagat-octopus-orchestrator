@@ -2871,3 +2871,16 @@ principals/queries/updates. These are separate from the open nested/C0/resource 
 those public observations are outside the tested snapshot and cannot be counted as passing yet.
 
 Refs:T014-041. Evidence:`tasks/project-completion/evidence/sdk59-current-20261018/manifest.json`.
+
+## Shared active drain, result-schema error and upper declarations — 2026-10-18
+
+Refs:T014-041, WP04/08/12. Registry60 preflight1/1 passed1.38s; all-five approval-builders passed
+16.11s (authoring-only), expression-limits passed20.38s, collection-fail-fast-drain passed22.33s.
+All ten complete live outputs equal pre-authored goldens; all1,244frozen inputs stayed unchanged.
+Actual concurrent failure drains the other active worker, stops at two of three admissions and
+produces no successful join. Query schema-result failure is INVALID_OPERATION_STATE with raw
+full/prefix canary absent and unchanged Run/state revisions. Exactly32query/update declarations
+publish;32approval principals author successfully and prior33 negatives remain.
+One fresh review per fixture unit found no actionable issue. No new Rust/runner/server logic,
+blessing or unchanged lint suite rerun. Full60 integration and other canonical runtime gates stay
+open. Evidence:`tasks/project-completion/evidence/sdk-public-gaps-20261018/manifest.json`.

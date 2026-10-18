@@ -1,0 +1,7 @@
+{
+  "tests/contract/sdk-conformance/scenarios/expression-limits.json": "bc14991936ab3a7cccf2de8efdba690e295b1ac6aa9d56d9127b4c68c3a5c03b",
+  "tests/contract/sdk-conformance/expected/expression-limits.workflows.json": "4c3e90b3f5a270a7f0ca200cc60bf0effa3e59d5affaffefa9e884caaf58b7dd",
+  "tests/contract/sdk-conformance/expected/expression-limits.json": "e021c7d1eccdfb1b7969ddcb8e3347ed9741e65dc12dc4b25187c954d00aaceb",
+  "tests/contract/sdk-conformance/scenarios/approval-builders.json": "1099aa7698a2d564bfe6479543f20d1eba6a3c5be7d3a0158da6955351c01cb7",
+  "tests/contract/sdk-conformance/expected/approval-builders.workflows.json": "31327c79cc8ebf69e351ee40eafe06456952dd31724516543491a7620f02c4e4"
+}

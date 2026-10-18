@@ -644,3 +644,17 @@ normalized golden. SDKs expose no publisher; this phase is explicitly HTTP serve
 the documents authored by all five builders. The expression fixture covers 1,025-byte source,
 65-item literal and unsupported object literal refusals here, before execution. Scenarios without
 the optional declaration retain their existing staging and normalized output.
+
+### Active sibling drain and public upper boundaries
+
+`collection-fail-fast-drain` starts a maxInflight=1 holding polling worker, waits for actual
+`step.started`, then starts a different failing polling worker. Summary/source evidence and the
+complete graph/logs require two active admitted iterations, permanent failure plus cancellation,
+no third admission/checkpoint and no successful join. The barrier proves server-observed running
+work, not a separate callback-entry acknowledgement. No full global journal order is pinned.
+
+`approval-builders` accepts 31 distinct subjects plus one role, keeping the existing 33-principal
+refusal. This remains authoring-only. `expression-limits` publishes 32 queries and 32 updates;
+the existing builder fixture rejects 33. Its schema.read returns a marker string against integer
+schema: runtime must refuse with INVALID_OPERATION_STATE without leaking full/prefix marker,
+and the following successful query must retain the same Run/state revisions.

@@ -403,3 +403,11 @@ principals/queries/updates. These are separate from the open nested/C0/resource 
 those public observations are outside the tested snapshot and cannot be counted as passing yet.
 
 Evidence: [complete SDK59 aggregate](../tasks/project-completion/evidence/sdk59-current-20261018/reproduce.md).
+
+### Final three public observations: focused all-five refresh
+
+Registry now contains 60 cases. Approval principal boundary passed in all five (16.11 s,
+authoring-only); expression declaration/schema observations passed in all five (20.38 s); new
+active sibling drain passed in all five (22.33 s). All ten complete live outputs equal reviewed
+goldens. No blessing or runner/server change. A complete current 60-case aggregate remains a
+separate integration gate. Evidence: [public contract gaps](../tasks/project-completion/evidence/sdk-public-gaps-20261018/reproduce.md).

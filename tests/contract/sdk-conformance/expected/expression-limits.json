@@ -69,6 +69,21 @@
       "op": "query"
     },
     {
+      "error": {
+        "code": "VALIDATION_FAILED",
+        "message": "<text>",
+        "reason": "INVALID_OPERATION_STATE",
+        "remediation": "A field is invalid: the reason names it. Fix the input; repeating it fails the same way.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 422,
+        "traceId": "<trace:3>"
+      },
+      "id": "schema-refusal",
+      "ok": false,
+      "op": "query"
+    },
+    {
       "id": "after-refusal",
       "ok": true,
       "op": "query",

@@ -1,0 +1,18 @@
+{
+  "input_count": 1244,
+  "all_frozen_inputs_unchanged": true,
+  "runtime_artifacts": {
+    "expression-limits": {
+      "complete_outputs": 5,
+      "all_equal_pre_authored_full_golden": true,
+      "harness_pid": "112"
+    },
+    "collection-fail-fast-drain": {
+      "complete_outputs": 5,
+      "all_equal_pre_authored_full_golden": true,
+      "harness_pid": "14709"
+    }
+  },
+  "authoring_only_approval_case_languages": 5,
+  "registry_count": 60
+}

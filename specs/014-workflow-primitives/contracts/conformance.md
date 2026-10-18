@@ -224,3 +224,15 @@ Run/state revisions. The same five builders author reviewed documents containing
 source, a 65-item literal and an unsupported object literal; shared HTTP publication rejects each
 with `EXPRESSION`, leaving no active or published version. Those compile-time refusals never run.
 Complete normalized `publicationEvidence` distinguishes this server phase from SDK query results.
+
+### Remaining shared public observations
+
+WP-04 `collection-fail-fast-drain` retains concurrency2 while one real polling host holds owned
+work; only after journal step.started does a second host fail the other iteration. The complete
+graph/logs plus summary/source evidence require FAILED/NO_STOCK, sibling cancellation, admitted
+indices0/1, no index2/checkpoint and no successful join. No global journal or compensation order
+is added. WP-08 expression-limits additionally exercises query result-schema refusal with
+INVALID_OPERATION_STATE, raw full/prefix marker absence and unchanged revisions after failure.
+WP-12 approval-builders accepts32principals (authoring-only); expression-limits actually publishes
+32queries/32updates. Existing shared33-negative fixtures remain required. These observations do
+not replace general nested/tree/retention/resource gates.
