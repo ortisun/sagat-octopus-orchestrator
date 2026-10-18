@@ -2357,7 +2357,8 @@ impl CollectionStore for PgCollectionStore {
         let (owner_nodes, owner_indices) = path_parts(finish.transition.owner());
         let scope = sqlx::query(
             "SELECT namespace_id,owner_path_nodes,owner_path_indices,owner_node,lifecycle, \
-                    active_count,drain_kind,drain_failure_code,finish_sequence,finish_outbox_id \
+                    active_count,drain_kind,drain_iteration,drain_failure_code,finish_sequence, \
+                    finish_outbox_id \
              FROM iteration_scopes WHERE tenant_id=$1 AND run_id=$2 AND scope_id=$3 FOR UPDATE",
         )
         .bind(finish.transition.tenant_id().as_uuid())
@@ -2425,9 +2426,15 @@ impl CollectionStore for PgCollectionStore {
         let kind = scope
             .get::<Option<String>, _>("drain_kind")
             .ok_or_else(|| invalid_storage("collection drain reason"))?;
+        let iteration = scope.get::<Option<i32>, _>("drain_iteration");
         let code = scope.get::<Option<String>, _>("drain_failure_code");
         let (outcome, terminal_status, expected_reason) = match (kind.as_str(), code.as_deref()) {
             ("FAILED", Some(code)) => (json!({"outcome":"failed","code":code}), "FAILED", "FAILED"),
+            ("RUN_DATA_LIMIT", Some(code))
+                if iteration.is_none() && code == FailureCode::run_data_limit().as_str() =>
+            {
+                (json!({"outcome":"failed","code":code}), "FAILED", "FAILED")
+            }
             ("STORAGE_QUOTA", Some(code))
                 if code == FailureCode::storage_quota_exceeded().as_str() =>
             {

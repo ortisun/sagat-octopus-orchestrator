@@ -1,0 +1,11 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.39s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 4 tests
+test collection_restore::addressed_persistence_keeps_scoped_journal_projection_and_output_identity ... ok
+test collection_restore::admitted_collection_reopens_with_exact_scope_and_verifies_from_addressed_journal ... ok
+test collection_restore::journal_attempt_spans_use_the_complete_instance_path ... ok
+test collection_restore::verification_detects_a_scope_projection_that_differs_from_the_journal ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 503 filtered out; finished in 5.07s
+

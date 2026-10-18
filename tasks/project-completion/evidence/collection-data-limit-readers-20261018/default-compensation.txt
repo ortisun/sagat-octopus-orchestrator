@@ -1,0 +1,26 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.54s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 19 tests
+test scope_compensation_http::a_cancellation_never_gives_up_on_a_compensation_that_waits_for_a_person ... ok
+test scope_compensation_http::a_cancelled_collection_undoes_what_completed_and_ends_cancelled ... ok
+test scope_compensation_http::a_cancelled_loop_undoes_what_completed_and_ends_cancelled ... ok
+test scope_compensation_http::a_cancelled_run_whose_compensation_keeps_failing_ends_partial_not_cancelled ... ok
+test scope_compensation_http::a_closed_storage_quota_does_not_stop_the_compensation ... ok
+test scope_compensation_http::a_collection_undoes_no_more_iterations_at_once_than_it_may_run ... ok
+test scope_compensation_http::a_compensation_that_keeps_failing_waits_for_a_person_who_can_retry_it ... ok
+test scope_compensation_http::a_failed_collection_undoes_what_its_iterations_completed_in_reverse_order ... ok
+test scope_compensation_http::a_failed_loop_undoes_its_completed_iterations_last_first ... ok
+test scope_compensation_http::a_lookup_that_cannot_say_waits_for_a_person_who_declares_what_happened ... ok
+test scope_compensation_http::a_loop_error_edge_is_taken_only_after_its_failure_was_undone ... ok
+test scope_compensation_http::a_loop_failure_that_was_not_fully_undone_is_not_handled_by_its_error_edge ... ok
+test scope_compensation_http::a_loop_stopped_by_its_iteration_limit_undoes_its_iterations_last_first ... ok
+test scope_compensation_http::a_loop_stopped_by_the_instance_budget_undoes_its_iterations_last_first ... ok
+test scope_compensation_http::a_person_can_declare_a_compensation_failed_and_the_run_ends_compensation_failed ... ok
+test scope_compensation_http::a_person_can_skip_a_compensation_and_the_run_ends_partial ... ok
+test scope_compensation_http::an_effect_found_not_applied_is_tried_again_with_the_same_key ... ok
+test scope_compensation_http::an_effect_of_unknown_outcome_is_looked_up_and_found_applied_before_anything_repeats ... ok
+test scope_compensation_http::an_irreversible_effect_ends_the_run_partial_and_is_never_called_compensated ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 488 filtered out; finished in 67.45s
+

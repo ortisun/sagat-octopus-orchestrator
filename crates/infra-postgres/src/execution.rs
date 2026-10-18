@@ -2130,6 +2130,11 @@ async fn load_collections(
                         .map_err(|_| corrupt("collection drain failure code"))?,
                 })
             }
+            (Some("RUN_DATA_LIMIT"), None, Some(code), Some(sequence), Some(_))
+                if code == FailureCode::run_data_limit().as_str() && sequence > 0 =>
+            {
+                Some(CollectionDrainReason::RunDataLimit)
+            }
             (Some("STORAGE_QUOTA"), None, Some(code), Some(_), Some(_))
                 if code == FailureCode::storage_quota_exceeded().as_str() =>
             {
@@ -2164,6 +2169,15 @@ async fn load_collections(
                     && drain_reason.is_some() =>
             {
                 CollectionPhase::Draining
+            }
+            "FAILED"
+                if stored_result_digest.is_none()
+                    && col::<Option<i64>>(row, "finish_sequence")?
+                        .is_some_and(|sequence| sequence > 0)
+                    && col::<Option<Uuid>>(row, "finish_outbox_id")?.is_some()
+                    && matches!(&drain_reason, Some(CollectionDrainReason::RunDataLimit)) =>
+            {
+                CollectionPhase::Failed
             }
             "FAILED"
                 if stored_result_digest.is_none()

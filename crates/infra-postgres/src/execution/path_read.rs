@@ -57,7 +57,8 @@ impl PgRunStore {
         let collection_rows = sqlx::query(
             "SELECT owner_node,kind,lifecycle,snapshot_digest,item_count,max_items, \
                     max_concurrency,next_admission_index,admitted_count,completed_count, \
-                    active_count,result_digest,drain_kind,drain_iteration,drain_failure_code \
+                    active_count,result_digest,drain_kind,drain_iteration,drain_failure_code, \
+                    drain_sequence,drain_outbox_id,finish_sequence,finish_outbox_id \
              FROM iteration_scopes WHERE tenant_id=$1 AND run_id=$2 \
                AND owner_path_nodes=$3 AND owner_path_indices=$4 ORDER BY owner_node",
         )
@@ -86,6 +87,13 @@ impl PgRunStore {
                 "CANCELLED" => CollectionPhase::Cancelled,
                 _ => return Err(corrupt("bounded collection lifecycle")),
             };
+            let result_digest = col::<Option<Vec<u8>>>(row, "result_digest")?
+                .map(|digest| stored_digest(digest, "bounded collection result"))
+                .transpose()?;
+            let drain_sequence = col::<Option<i64>>(row, "drain_sequence")?;
+            let drain_outbox_id = col::<Option<Uuid>>(row, "drain_outbox_id")?;
+            let finish_sequence = col::<Option<i64>>(row, "finish_sequence")?;
+            let finish_outbox_id = col::<Option<Uuid>>(row, "finish_outbox_id")?;
             let drain_reason = match (
                 col::<Option<String>>(row, "drain_kind")?.as_deref(),
                 col::<Option<i32>>(row, "drain_iteration")?,
@@ -100,6 +108,13 @@ impl PgRunStore {
                             .map_err(|_| corrupt("bounded collection drain code"))?,
                     })
                 }
+                (Some("RUN_DATA_LIMIT"), None, Some(code))
+                    if code == FailureCode::run_data_limit().as_str()
+                        && drain_sequence.is_some_and(|sequence| sequence > 0)
+                        && drain_outbox_id.is_some() =>
+                {
+                    Some(CollectionDrainReason::RunDataLimit)
+                }
                 (Some("STORAGE_QUOTA"), None, Some(code))
                     if code == FailureCode::storage_quota_exceeded().as_str() =>
                 {
@@ -108,6 +123,33 @@ impl PgRunStore {
                 (Some("CANCELLED"), None, None) => Some(CollectionDrainReason::Cancelled),
                 _ => return Err(corrupt("bounded collection drain reason")),
             };
+            if matches!(&drain_reason, Some(CollectionDrainReason::RunDataLimit)) {
+                let run_data_limit = FailureCode::run_data_limit();
+                let owner = steps
+                    .get(&node)
+                    .ok_or_else(|| corrupt("bounded collection owner"))?;
+                let owner_matches = match phase {
+                    CollectionPhase::Draining => {
+                        result_digest.is_none()
+                            && finish_sequence.is_none()
+                            && finish_outbox_id.is_none()
+                            && owner.status() == StepStatus::Waiting
+                            && matches!(owner.waiting_on(), Some(WaitingOn::Collection))
+                    }
+                    CollectionPhase::Failed => {
+                        result_digest.is_none()
+                            && finish_sequence.is_some_and(|sequence| sequence > 0)
+                            && finish_outbox_id.is_some()
+                            && owner.status() == StepStatus::Failed
+                            && owner.waiting_on().is_none()
+                            && owner.failure() == Some(&run_data_limit)
+                    }
+                    _ => false,
+                };
+                if !owner_matches {
+                    return Err(corrupt("bounded collection data-limit projection"));
+                }
+            }
             let next_admission = u32::try_from(col::<i32>(row, "next_admission_index")?)
                 .map_err(|_| corrupt("bounded collection next admission"))?;
             if col::<i32>(row, "admitted_count")?
@@ -129,9 +171,7 @@ impl PgRunStore {
                     .map_err(|_| corrupt("bounded collection completed count"))?,
                 u16::try_from(col::<i32>(row, "active_count")?)
                     .map_err(|_| corrupt("bounded collection active count"))?,
-                col::<Option<Vec<u8>>>(row, "result_digest")?
-                    .map(|digest| stored_digest(digest, "bounded collection result"))
-                    .transpose()?,
+                result_digest,
                 drain_reason,
             )
             .map_err(|_| corrupt("bounded collection scalar progress"))?;
@@ -233,15 +273,27 @@ impl PgRunStore {
             let index =
                 i32::try_from(segment.iteration_index()).map_err(|_| corrupt("iteration index"))?;
             let mut scopes = sqlx::query(
-                "SELECT 'COLLECTION' AS family,scope.lifecycle,member.slot_held AS active \
+                "SELECT 'COLLECTION' AS family,scope.lifecycle,member.slot_held AS active, \
+                        scope.result_digest,scope.drain_kind,scope.drain_iteration, \
+                        scope.drain_failure_code,scope.drain_sequence,scope.drain_outbox_id, \
+                        scope.finish_sequence,scope.finish_outbox_id,owner.status AS owner_status, \
+                        owner.waiting_kind AS owner_waiting_kind, \
+                        owner.failure_code AS owner_failure_code \
                  FROM iteration_scopes scope JOIN collection_iterations member \
                    ON member.tenant_id=scope.tenant_id AND member.run_id=scope.run_id \
                   AND member.scope_id=scope.scope_id AND member.iteration_index=$6 \
+                 LEFT JOIN steps owner \
+                   ON owner.tenant_id=scope.tenant_id AND owner.run_id=scope.run_id \
+                  AND owner.instance_path_nodes=scope.owner_path_nodes \
+                  AND owner.instance_path_indices=scope.owner_path_indices \
+                  AND owner.node=scope.owner_node \
                  WHERE scope.tenant_id=$1 AND scope.run_id=$2 \
                    AND scope.owner_path_nodes=$3 AND scope.owner_path_indices=$4 \
                    AND scope.owner_node=$5 \
                  UNION ALL \
-                 SELECT 'LOOP',scope.lifecycle,coalesce(scope.active_iteration=$6,false) \
+                 SELECT 'LOOP',scope.lifecycle,coalesce(scope.active_iteration=$6,false), \
+                        NULL::bytea,NULL::text,NULL::integer,NULL::text,NULL::bigint,NULL::uuid, \
+                        NULL::bigint,NULL::uuid,NULL::text,NULL::text,NULL::text \
                  FROM loop_scopes scope WHERE scope.tenant_id=$1 AND scope.run_id=$2 \
                    AND scope.owner_path_nodes=$3 AND scope.owner_path_indices=$4 \
                    AND scope.owner_node=$5",
@@ -266,19 +318,62 @@ impl PgRunStore {
             let lifecycle = col::<String>(&scope, "lifecycle")?;
             let active = col::<bool>(&scope, "active")?;
             ancestors.push(match col::<String>(&scope, "family")?.as_str() {
-                "COLLECTION" => AncestorExecutionFence::Collection {
-                    owner,
-                    iteration_index: segment.iteration_index(),
-                    phase: match lifecycle.as_str() {
+                "COLLECTION" => {
+                    let phase = match lifecycle.as_str() {
                         "OPEN" => CollectionPhase::Open,
                         "DRAINING" => CollectionPhase::Draining,
                         "SUCCEEDED" => CollectionPhase::Succeeded,
                         "FAILED" => CollectionPhase::Failed,
                         "CANCELLED" => CollectionPhase::Cancelled,
                         _ => return Err(corrupt("collection lifecycle")),
-                    },
-                    active,
-                },
+                    };
+                    if col::<Option<String>>(&scope, "drain_kind")?.as_deref()
+                        == Some("RUN_DATA_LIMIT")
+                    {
+                        let run_data_limit = FailureCode::run_data_limit();
+                        let drain_matches = col::<Option<i32>>(&scope, "drain_iteration")?
+                            .is_none()
+                            && col::<Option<String>>(&scope, "drain_failure_code")?.as_deref()
+                                == Some(run_data_limit.as_str())
+                            && col::<Option<i64>>(&scope, "drain_sequence")?
+                                .is_some_and(|sequence| sequence > 0)
+                            && col::<Option<Uuid>>(&scope, "drain_outbox_id")?.is_some()
+                            && col::<Option<Vec<u8>>>(&scope, "result_digest")?.is_none();
+                        let lifecycle_matches = match phase {
+                            CollectionPhase::Draining => {
+                                col::<Option<i64>>(&scope, "finish_sequence")?.is_none()
+                                    && col::<Option<Uuid>>(&scope, "finish_outbox_id")?.is_none()
+                                    && col::<Option<String>>(&scope, "owner_status")?.as_deref()
+                                        == Some("WAITING")
+                                    && col::<Option<String>>(&scope, "owner_waiting_kind")?
+                                        .as_deref()
+                                        == Some("COLLECTION")
+                            }
+                            CollectionPhase::Failed => {
+                                col::<Option<i64>>(&scope, "finish_sequence")?
+                                    .is_some_and(|sequence| sequence > 0)
+                                    && col::<Option<Uuid>>(&scope, "finish_outbox_id")?.is_some()
+                                    && col::<Option<String>>(&scope, "owner_status")?.as_deref()
+                                        == Some("FAILED")
+                                    && col::<Option<String>>(&scope, "owner_waiting_kind")?
+                                        .is_none()
+                                    && col::<Option<String>>(&scope, "owner_failure_code")?
+                                        .as_deref()
+                                        == Some(run_data_limit.as_str())
+                            }
+                            _ => false,
+                        };
+                        if !drain_matches || !lifecycle_matches {
+                            return Err(corrupt("collection data-limit ancestor projection"));
+                        }
+                    }
+                    AncestorExecutionFence::Collection {
+                        owner,
+                        iteration_index: segment.iteration_index(),
+                        phase,
+                        active,
+                    }
+                }
                 "LOOP" => AncestorExecutionFence::Loop {
                     owner,
                     iteration_index: segment.iteration_index(),
