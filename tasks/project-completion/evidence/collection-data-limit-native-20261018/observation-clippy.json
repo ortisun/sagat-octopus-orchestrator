@@ -1,0 +1,19 @@
+{
+  "command": [
+    "cargo",
+    "clippy",
+    "--locked",
+    "-p",
+    "sagat-telemetry",
+    "-p",
+    "sagat-application",
+    "--all-targets",
+    "--",
+    "-D",
+    "warnings"
+  ],
+  "exit_code": 0,
+  "seconds": 13.99,
+  "started_utc": "2026-10-18T19:55:16.805887+00:00",
+  "log": "observation-clippy.txt"
+}

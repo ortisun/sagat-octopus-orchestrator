@@ -1,0 +1,16 @@
+   Compiling sagat-domain v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/domain)
+   Compiling sagat-telemetry v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/telemetry)
+   Compiling sagat-application v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/application)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.78s
+     Running tests/primitive_telemetry.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/primitive_telemetry-96474bbd2a024912)
+
+running 6 tests
+test continuation_links_predecessor_and_successor_without_transfer_values ... ok
+test failed_primitive_span_uses_a_closed_error_without_leaking_failure_data ... ok
+test data_limit_drain_span_and_observation_expose_no_candidate_evidence ... ok
+test approval_span_covers_the_durable_wait_without_identity_or_reason ... ok
+test loop_checkpoint_reports_only_closed_lifecycle_outcomes ... ok
+test collection_lifecycle_projects_closed_outcomes_and_scoped_identity ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

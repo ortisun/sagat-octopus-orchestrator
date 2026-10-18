@@ -1,0 +1,39 @@
+   Compiling sagat-telemetry v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/telemetry)
+   Compiling sagat-application v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/application)
+   Compiling sagat-infra-schema v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-schema)
+   Compiling sagat-api-http v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/api-http)
+   Compiling sagat-infra-ir v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-ir)
+   Compiling sagat-infra-postgres v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-postgres)
+   Compiling sagat-infra-blobstore v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-blobstore)
+   Compiling sagat-api-grpc v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/api-grpc)
+   Compiling sagat-infra-secrets v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-secrets)
+   Compiling sagat-infra-sandbox v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-sandbox)
+   Compiling sagat-scheduler v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/scheduler)
+   Compiling sagat-infra-connectors v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-connectors)
+   Compiling sagat-infra-nats v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-nats)
+   Compiling sagat-control-plane v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/control-plane)
+   Compiling sagat-cli v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/cli)
+   Compiling sagat-execution-engine v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/execution-engine)
+   Compiling sagat-sandbox-runner v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/sandbox-runner)
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 56.87s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 4 tests
+test collection_data_limit_native::aggregate_requires_exact_source_owner_and_complete_checkpoint_tuple ... 
+thread 'collection_data_limit_native::aggregate_requires_exact_source_owner_and_complete_checkpoint_tuple' (126196922) panicked at tests/integration/workflow-primitives/../../support/engine.rs:448:14:
+create workflow: Invalid(InvalidSlug(Length))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test collection_data_limit_native::audit_outbox_and_telemetry_faults_roll_back_the_native_command ... ok
+test collection_data_limit_native::fitting_empty_aggregate_is_rejected_without_writes ... ok
+test collection_data_limit_native::native_empty_aggregate_stops_atomically_and_cold_replays_original_receipt ... ok
+
+failures:
+
+failures:
+    collection_data_limit_native::aggregate_requires_exact_source_owner_and_complete_checkpoint_tuple
+
+test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 519 filtered out; finished in 12.44s
+
+error: test failed, to rerun pass `-p sagat-tests --test integration_workflow_primitives`

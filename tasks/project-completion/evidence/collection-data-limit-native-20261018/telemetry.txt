@@ -1,0 +1,16 @@
+   Compiling tokio-rustls v0.26.6
+   Compiling hyper-rustls v0.27.10
+   Compiling reqwest v0.13.5
+   Compiling sagat-telemetry v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/telemetry)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 11.37s
+     Running tests/primitive_vocabulary.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/primitive_vocabulary-dd0334109898ef69)
+
+running 5 tests
+test every_metric_label_value_comes_from_a_small_closed_set ... ok
+test metric_names_and_label_keys_match_the_contract ... ok
+test span_names_and_fields_are_fixed_and_carry_no_free_text ... ok
+test secret_markers_are_redacted_from_telemetry_text ... ok
+test run_data_limit_is_a_finite_private_rejection_series ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s
+

@@ -1,0 +1,12 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 49.24s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 4 tests
+test collection_data_limit_native::aggregate_requires_exact_source_owner_and_complete_checkpoint_tuple ... ok
+test collection_data_limit_native::audit_outbox_and_telemetry_faults_roll_back_the_native_command ... ok
+test collection_data_limit_native::fitting_empty_aggregate_is_rejected_without_writes ... ok
+test collection_data_limit_native::native_empty_aggregate_stops_atomically_and_cold_replays_original_receipt ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 519 filtered out; finished in 11.17s
+

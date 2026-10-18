@@ -13,7 +13,7 @@ use uuid::Uuid;
 use crate::support::blob_collections::{Sched, platform, scheduler, start_inline, status_and_code};
 use crate::support::worker::{Platform, Worker};
 
-const PREFIX_COUNT: usize = 16;
+pub(crate) const PREFIX_COUNT: usize = 16;
 const PREFIX_ACTIVITY: &str = "src.fetch";
 const BODY_ACTIVITY: &str = "src.line";
 
@@ -33,7 +33,7 @@ fn exact_empty_collection_source(bytes: usize) -> Value {
     value
 }
 
-fn empty_collection_after_prefix(name: &str) -> Value {
+pub(crate) fn empty_collection_after_prefix(name: &str) -> Value {
     let mut nodes = Vec::with_capacity(PREFIX_COUNT + 2);
     for index in 0..PREFIX_COUNT {
         let id = format!("source{index:02}");
@@ -105,7 +105,7 @@ async fn next_root_prefix_task(
     panic!("source{expected_index:02} was not leased within the bounded driver");
 }
 
-async fn complete_prefix_over_grpc(
+pub(crate) async fn complete_prefix_over_grpc(
     worker: &mut Worker<'_>,
     sched: &Sched,
     output_sizes: &[usize; PREFIX_COUNT],
@@ -143,7 +143,7 @@ async fn drive_to_terminal(p: &Platform, sched: &Sched, run: Uuid) -> (String, O
     panic!("run did not become terminal in 32 scheduler passes");
 }
 
-async fn assert_prefix_outputs(p: &Platform, run: Uuid, expected_bytes: usize) {
+pub(crate) async fn assert_prefix_outputs(p: &Platform, run: Uuid, expected_bytes: usize) {
     let row = sqlx::query(
         "SELECT count(*) AS output_count,coalesce(sum(octet_length(payload.content)),0)::bigint AS output_bytes, \
                 (SELECT logical_output_bytes FROM run_instance_usage usage \
