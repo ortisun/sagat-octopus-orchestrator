@@ -1062,3 +1062,6 @@ mod source_controls;
 mod qualification;
 #[path = "scoped_leaf_finish_receipts.rs"]
 mod receipts;
+
+#[path = "scoped_leaf_finish_entry_barriers.rs"]
+mod entry_barriers;

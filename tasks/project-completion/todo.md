@@ -188,6 +188,11 @@ See evidence/leaf-certification-process-20261018. Other producer/observation/rel
 - [x] B1b.2b.14c: Prove schema-valid receipt binding/counter and safe timestamp decoder controls.
 - [x] B1b.2b.14d: Inventory residual closed decoder/diagnostic obligations and test concrete gaps.
 - [ ] B1b.2b.15: Prove actual waits/current authority, source-writer ordering and atomic failures.
+- [x] B1b.2b.15a: Prove actual Run/chain entry barriers, G Busy rollback and exact duplicate serialization.
+- [ ] B1b.2b.15b: Prove post-shard-wait unchanged-row authority expiry for apply and replay.
+- [ ] B1b.2b.15c: Prove parent/child/historical context refusal before source/receipt reads.
+- [ ] B1b.2b.15d: Prove source-certifier/source-writer ordering and preserved source facts.
+- [ ] B1b.2b.15e: Prove atomic audit/outbox/receipt and deferred commit failures.
 - [ ] B1b.2b.16: Prove lost COMMIT/reconciliation and actual process recovery for scoped Finish.
 - [ ] B1b.2b.17: Prove all scoped returned outcomes/OTLP/redaction/filtered span/cancellation counts.
 - [ ] B1b.2c: Review nested/child relationship closure and remaining quiescence/transition authority.

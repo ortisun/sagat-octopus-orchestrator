@@ -1,0 +1,21 @@
+{
+  "passed": 16,
+  "tests": [
+    "leaf_certification_native::scoped_finish::entry_barriers::applicable_chain_precedes_run_and_context_refusal_precedes_source_or_receipt_reads",
+    "leaf_certification_native::scoped_finish::entry_barriers::duplicate_native_callers_queue_on_the_actual_run_and_share_one_original_result",
+    "leaf_certification_native::scoped_finish::entry_barriers::selected_group_busy_follows_actual_run_entry_and_rolls_back_every_effect",
+    "leaf_certification_native::scoped_finish::native_scoped_finish_applies_once_and_replays_original_after_real_later_changes",
+    "leaf_certification_native::scoped_finish::native_scoped_finish_preserves_exact_a1_holder_vacant_and_last_transitions",
+    "leaf_certification_native::scoped_finish::native_scoped_finish_refuses_signed_counter_overflow_atomically",
+    "leaf_certification_native::scoped_finish::native_scoped_finish_refuses_source_authority_context_cas_and_inactive_in_order",
+    "leaf_certification_native::scoped_finish::qualification::cross_kind_decoder::exact_scoped_fingerprint_cannot_turn_a_child_root_receipt_into_a_scoped_result",
+    "leaf_certification_native::scoped_finish::qualification::qualification_distinguishes_exact_absence_from_observable_binding_mismatch",
+    "leaf_certification_native::scoped_finish::qualification::qualification_preserves_a_same_tenant_holder_from_another_real_namespace",
+    "leaf_certification_native::scoped_finish::qualification::qualification_rejects_a_group_wide_cross_kind_operation_key_then_applies_a_fresh_key",
+    "leaf_certification_native::scoped_finish::receipts::native_receipt_checks_fingerprint_before_guarded_timestamp_and_replays_ce_bc_controls",
+    "leaf_certification_native::scoped_finish::receipts::native_receipt_refuses_schema_valid_counter_and_scoped_binding_contradictions",
+    "leaf_certification_native::scoped_finish::source_controls::native_scoped_finish_applies_and_replays_from_certificate_metadata_only",
+    "leaf_certification_native::scoped_finish::source_controls::native_scoped_finish_requires_retained_certificate_before_receipt_and_after_fence",
+    "leaf_certification_native::scoped_finish::source_controls::native_scoped_finish_validates_certificate_pin_before_matching_receipt"
+  ]
+}

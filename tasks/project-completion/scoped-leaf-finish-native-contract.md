@@ -401,3 +401,19 @@ separates current-schema guarantees from defensive changed-schema branches. Actu
 commit recovery, diagnostics/OTLP units15..17 and production/C0/nesting gates remain pending.
 
 Evidence: tasks/project-completion/evidence/scoped-finish-decoder-residual-20261018/manifest.json.
+
+
+## Actual native entry barriers — 2026-10-18
+
+Local B1b.2b.15a adds3 tests witnessing actual Run-first entry and selected-G Busy rollback
+(released Run while G still held), exact duplicate commands serialized into one apply/one
+original-result replay, and applicable-chain-before-Run followed by context refusal before
+actually denied source/receipt reads. Chain membership is an owner-labelled context fixture,
+not evidence of non-flat source closure. Source/capacity snapshots and linked fact counts
+are preserved; ordering uses actual pg_stat_activity/blocking graphs and NOWAIT probes.
+
+Root's full scoped family16/16 passes in61.22s wall (25.97s harness), strict integration
+Clippy9.43s, fmt4.19s and architecture0.29s/24crates. All1096 frozen executable/contract
+inputs match. Fresh bounded Astra review found none. Production adapter unchanged;15b..e,
+16/17, production/C0/nesting and canonical runtime/release tasks remain open.
+Evidence: tasks/project-completion/evidence/scoped-finish-entry-barriers-20261018/manifest.json.

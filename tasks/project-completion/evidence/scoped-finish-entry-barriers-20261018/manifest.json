@@ -1,0 +1,26 @@
+{
+  "source_base": "c332bffc",
+  "local_units": [
+    "B1b.2b.15a"
+  ],
+  "integrated_native_tests_passed": 16,
+  "frozen_inputs": 1096,
+  "sources_unchanged": true,
+  "product_implementation_changed": false,
+  "files": {
+    "architecture.json": "5111411f848dd4b86ebce74d23d58d38b8dcf47d01c8d0a5ba7792356150e735",
+    "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "clippy.json": "35356aae060de4c2f9ba1a76cd0f89cb44df5401f6a02e8dd4752220ab275258",
+    "clippy.txt": "101fefb0ec3688f37c42759e2293336c1c2d609273a5c69ffa2072e834314613",
+    "draft-notes.md": "ed572b1d5f3f3d4547964ed4d434ffdc9dd4d6375383aa77b07e6584bd616a2d",
+    "fmt.json": "5b8a3097edcb6bc884b8f96a4bb6edeada80b599e067037cb960c6f7fb64fb79",
+    "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "native-family.json": "8dc6659a28eaf7abbc4c86f548965cb4e946c9f832445e92f52fd1019762c436",
+    "native-family.txt": "d73c49913a5f46976a08b7e688a1e26c16f30bee7ddc1a58a6a7da74aba93ac3",
+    "reproduce.md": "4cb08590c5e53aac8e7b5e81d2a025f3f55e5583ebc880dcace35b52e33897f5",
+    "review.md": "72e38cf4aba1f62192302ec3c521e8050bed268adec2b25a52ab01a7155772a1",
+    "source-after.json": "d3b00473cf43a341e325675ac83d10204ccf485fcbd5dd82a07bbdb0298ccec0",
+    "source-before.json": "d3b00473cf43a341e325675ac83d10204ccf485fcbd5dd82a07bbdb0298ccec0",
+    "test-index.json": "86876bbebc605f7abcfe6a3cee5c0aec389202b5013af7e0c79d67aa4ec79c85"
+  }
+}
