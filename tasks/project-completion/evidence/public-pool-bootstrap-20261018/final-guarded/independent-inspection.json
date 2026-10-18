@@ -1,0 +1,60 @@
+{
+  "selection": "Four latest owned databases by catalog OID, immediately after guarded default/runtime pair; root was sole database executor",
+  "inspection": "Read-only owner queries; exact fixture output comparison done in SQL, no body/token/hash values emitted",
+  "initial_inspection_error": "First read-only query used runs.run_id, which does not exist; no inspection result was produced. Source confirms runs.id; corrected query follows. This was not a test failure.",
+  "query": "SELECT json_build_object(\n'database',current_database(),\n'run_count',(SELECT count(*) FROM runs),\n'run_statuses',(SELECT array_agg(status ORDER BY id) FROM runs),\n'exact_250k_succeeded_outputs',(SELECT count(*) FROM steps s JOIN payloads p ON p.tenant_id=s.tenant_id AND p.digest=s.output_digest WHERE s.status='SUCCEEDED' AND octet_length(p.content)=250000 AND p.content=convert_to(chr(34)||repeat('x',249998)||chr(34),'UTF8')),\n'session_count',(SELECT count(*) FROM worker_sessions),\n'sha256_session_hash_count',(SELECT count(*) FROM worker_sessions WHERE octet_length(token_hash)=32),\n'worker_receipt_count',(SELECT count(*) FROM command_dedupe WHERE scope LIKE 'step:%'),\n'sha256_worker_receipt_count',(SELECT count(*) FROM command_dedupe WHERE scope LIKE 'step:%' AND octet_length(request_hash)=32),\n'leftover_receipt_gates',(SELECT count(*) FROM pg_trigger WHERE tgname='api_reopen_public_receipt_gate'))",
+  "databases": [
+    {
+      "database": "t_01a151550426778293ca41984e8fd49b",
+      "run_count": 1,
+      "run_statuses": [
+        "SUCCEEDED"
+      ],
+      "exact_250k_succeeded_outputs": 0,
+      "session_count": 1,
+      "sha256_session_hash_count": 1,
+      "worker_receipt_count": 1,
+      "sha256_worker_receipt_count": 1,
+      "leftover_receipt_gates": 0
+    },
+    {
+      "database": "t_01a151550426778293ca41992192b94f",
+      "run_count": 1,
+      "run_statuses": [
+        "SUCCEEDED"
+      ],
+      "exact_250k_succeeded_outputs": 1,
+      "session_count": 1,
+      "sha256_session_hash_count": 1,
+      "worker_receipt_count": 1,
+      "sha256_worker_receipt_count": 1,
+      "leftover_receipt_gates": 0
+    },
+    {
+      "database": "t_01a1515456f17559ba506464d4420c0f",
+      "run_count": 1,
+      "run_statuses": [
+        "SUCCEEDED"
+      ],
+      "exact_250k_succeeded_outputs": 0,
+      "session_count": 1,
+      "sha256_session_hash_count": 1,
+      "worker_receipt_count": 1,
+      "sha256_worker_receipt_count": 1,
+      "leftover_receipt_gates": 0
+    },
+    {
+      "database": "t_01a1515456f17559ba506465c2a5a716",
+      "run_count": 1,
+      "run_statuses": [
+        "SUCCEEDED"
+      ],
+      "exact_250k_succeeded_outputs": 1,
+      "session_count": 1,
+      "sha256_session_hash_count": 1,
+      "worker_receipt_count": 1,
+      "sha256_worker_receipt_count": 1,
+      "leftover_receipt_gates": 0
+    }
+  ]
+}

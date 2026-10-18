@@ -1,0 +1,200 @@
+--- a/tests/integration/workflow-primitives/api_reopen.rs
++++ b/tests/integration/workflow-primitives/api_reopen.rs
+@@ -1,8 +1,10 @@
+ //! A current API instance can reopen its owned database and honor durable public worker authority.
+ use std::time::Duration;
+ 
++use sagat_application::entropy::Token;
+ use sagat_application::worker::WorkerSettings;
+ use serde_json::json;
++use sha2::{Digest, Sha256};
+ use sqlx::PgPool;
+ use tokio::time::timeout;
+ 
+@@ -63,6 +65,13 @@
+     created_at: time::OffsetDateTime,
+ }
+ 
++#[derive(PartialEq, Eq, sqlx::FromRow)]
++struct SessionTokenWitness {
++    tenant_id: String,
++    id: String,
++    token_hash: Vec<u8>,
++}
++
+ fn runtime_options() -> Options {
+     Options {
+         runtime_role: true,
+@@ -144,6 +153,19 @@
+     }
+ }
+ 
++async fn session_token_witness(platform: &Platform, session_id: &str) -> SessionTokenWitness {
++    sqlx::query_as(
++        "SELECT tenant_id::text AS tenant_id,id::text AS id,token_hash \
++         FROM worker_sessions WHERE tenant_id=$1 AND id=$2 AND subject=$3",
++    )
++    .bind(platform.tenant.as_uuid())
++    .bind(uuid::Uuid::parse_str(session_id).expect("worker session id"))
++    .bind(WORKER)
++    .fetch_one(&platform.api.db.pool)
++    .await
++    .expect("read exact durable worker session token hash")
++}
++
+ async fn assert_pool_roles(platform: &Platform) {
+     let api_role: String = sqlx::query_scalar("SELECT current_user::text")
+         .fetch_one(&platform.api.api_pool)
+@@ -160,6 +182,29 @@
+ fn positive_advisory_key() -> i64 {
+     i64::try_from(uuid::Uuid::new_v4().as_u128() & ((1_u128 << 63) - 1))
+         .expect("positive advisory key")
++}
++
++fn completion_request_hash(
++    completion: &sagat_api_grpc::pb::CompleteStepRequest,
++) -> Vec<u8> {
++    let attempt = u32::try_from(completion.attempt)
++        .expect("public completion attempt must be nonnegative")
++        .to_be_bytes();
++    let generation = u64::try_from(completion.generation)
++        .expect("public completion generation must be nonnegative")
++        .to_be_bytes();
++    let parts: [&[u8]; 4] = [
++        b"complete",
++        &attempt,
++        &generation,
++        completion.output_json.as_bytes(),
++    ];
++    let mut fingerprint = Vec::new();
++    for part in parts {
++        fingerprint.extend_from_slice(&(part.len() as u64).to_be_bytes());
++        fingerprint.extend_from_slice(part);
++    }
++    Sha256::digest(fingerprint).to_vec()
+ }
+ 
+ async fn exact_root_receipt_scope(
+@@ -271,6 +316,27 @@
+     .expect("read exact public completion receipt")
+ }
+ 
++async fn persisted_step_output(
++    pool: &PgPool,
++    tenant: sagat_domain::identity::TenantId,
++    run_id: &str,
++    step_id: &str,
++) -> (i32, Vec<u8>) {
++    sqlx::query_as(
++        "SELECT octet_length(payload.content),payload.content \
++         FROM steps step JOIN payloads payload \
++           ON payload.tenant_id=step.tenant_id AND payload.digest=step.output_digest \
++         WHERE step.tenant_id=$1 AND step.run_id=$2 AND step.step_id=$3 \
++           AND step.status='SUCCEEDED'",
++    )
++    .bind(tenant.as_uuid())
++    .bind(uuid::Uuid::parse_str(run_id).expect("completed run id"))
++    .bind(uuid::Uuid::parse_str(step_id).expect("completed step id"))
++    .fetch_one(pool)
++    .await
++    .expect("read exact retained public completion output")
++}
++
+ #[tokio::test(flavor = "current_thread")]
+ async fn current_api_reopens_owned_database_and_resumes_original_public_worker() {
+     let _server = hold_server();
+@@ -417,6 +483,15 @@
+ 
+ #[tokio::test(flavor = "current_thread")]
+ async fn supplied_single_connection_pool_backs_actual_public_completion_after_reopen() {
++    timeout(
++        Duration::from_secs(90),
++        supplied_single_connection_pool_scenario(),
++    )
++    .await
++    .expect("supplied-pool public completion scenario deadline");
++}
++
++async fn supplied_single_connection_pool_scenario() {
+     let _server = hold_server();
+     let original = crate::support::worker::platform_with(runtime_options()).await;
+     assert_pool_roles(&original).await;
+@@ -449,8 +524,17 @@
+             identity,
+         )
+     };
++    let expected_session_token_hash = Token::hash_of(&session);
++    let original_session_token = session_token_witness(&original, &worker_id).await;
++    assert!(
++        original_session_token.tenant_id == original.tenant.to_string()
++            && original_session_token.id == worker_id
++            && original_session_token.token_hash == expected_session_token_hash,
++        "registered worker session must persist the exact original token hash"
++    );
+     let receipt_scope = exact_root_receipt_scope(&original, &completion).await;
+     let receipt_key = completion.idempotency_key.clone();
++    let expected_receipt_hash = completion_request_hash(&completion);
+ 
+     let database_name = original.api.db.name.clone();
+     let admin_url = original.api.db.admin_url.clone();
+@@ -497,6 +581,10 @@
+         identity_before,
+         "reopen must preserve the exact worker authority"
+     );
++    assert!(
++        session_token_witness(&reopened, &worker_id).await == original_session_token,
++        "reopen must preserve the exact durable worker session token hash"
++    );
+ 
+     let (
+         actual_database,
+@@ -551,7 +639,7 @@
+ 
+     let lookups_before = reopened.api.authentication_lookups();
+     let mut resumed = reopened.connect(WORKER, TENANT).await;
+-    resumed.worker_id = worker_id;
++    resumed.worker_id = worker_id.clone();
+     resumed.session = session;
+     let replay_completion = completion.clone();
+     let mut report_client = resumed.client.clone();
+@@ -582,6 +670,17 @@
+         reopened.api.authentication_lookups() > lookups_before,
+         "public completion must perform current authentication"
+     );
++    let (persisted_output_bytes, persisted_output) = persisted_step_output(
++        &reopened.api.db.pool,
++        reopened.tenant,
++        &replay_completion.run_id,
++        &replay_completion.step_id,
++    )
++    .await;
++    assert!(
++        persisted_output_bytes == 250_000 && persisted_output.as_slice() == output.as_bytes(),
++        "public completion must retain the exact original 250000-byte output"
++    );
+ 
+     let original_receipt = receipt_witness(
+         &reopened.api.db.pool,
+@@ -595,6 +694,10 @@
+         32,
+         "receipt hash width"
+     );
++    assert!(
++        original_receipt.request_hash == expected_receipt_hash,
++        "receipt hash must match the canonical original completion request"
++    );
+     let (_, version) = completed
+         .command_id
+         .rsplit_once(':')
+@@ -644,6 +747,10 @@
+         identity_before,
+         "completion and replay must preserve worker authority"
+     );
++    assert!(
++        session_token_witness(&reopened, &worker_id).await == original_session_token,
++        "completion and replay must preserve the exact durable worker session token hash"
++    );
+ 
+     remove_exact_receipt_gate(&reopened.api.db.pool).await;
+     let settled = reopened.tick().await;
+

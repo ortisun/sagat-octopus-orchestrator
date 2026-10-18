@@ -1,0 +1,10 @@
+{
+  "tests/support/api.rs": {
+    "sha256": "44cf5f54a88de87558f05bb9476766e3ea44a12e235f0a109ca4467c59e6a989",
+    "snapshot": "api.rs.snapshot"
+  },
+  "tests/integration/workflow-primitives/api_reopen.rs": {
+    "sha256": "2d750debcfbfe7123ec1ec0aaed0bfca3099c579ba721c9e1d6a1cbafb22d574",
+    "snapshot": "api_reopen.rs.snapshot"
+  }
+}

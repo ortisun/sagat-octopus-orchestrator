@@ -1,0 +1,10 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 48.56s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 2 tests
+test api_reopen::current_api_reopens_owned_database_and_resumes_original_public_worker ... ok
+test api_reopen::supplied_single_connection_pool_backs_actual_public_completion_after_reopen ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 539 filtered out; finished in 1.49s
+
