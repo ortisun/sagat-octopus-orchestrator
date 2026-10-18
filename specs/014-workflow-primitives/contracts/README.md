@@ -502,3 +502,10 @@ SkipLocked returns no transaction for a contended chain; Wait blocks before taki
 This shares full-run entry's lock prefix while preserving snapshot CAS and exact-path event
 bounds. No public composition, chain finality transition, scheduler authority or wire contract
 is added by this storage alignment. Other primitive adapters remain separate B0 obligations.
+
+
+A declared Update addressed by Run takes any existing tenant/namespace-scoped membership chain
+mutation guard before the exact run, including receipt replay. It does not forward to the current
+head. A continued earlier segment retains RUN_CONTINUED; existing finished-run errors and update
+keys/CAS/receipts are unchanged. Apply and replay each audit access, while only the first accepted
+mutation emits its state event/outbox. Chain-addressed resolution retains its existing protocol.

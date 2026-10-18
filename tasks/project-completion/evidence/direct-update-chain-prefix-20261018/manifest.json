@@ -1,0 +1,186 @@
+{
+  "source_base": "e1fd097b07fc802128c8f081513ca0446fea82e7",
+  "recorded_utc": "2026-10-18T04:50:25.490368+00:00",
+  "scope": "Direct run Update chain-before-own-run; preserve pinned addresses and transaction authority",
+  "environment": {
+    "runtime_role": true,
+    "external_db_url": false,
+    "postgres": "repository disposable fixture",
+    "system": "Darwin arm64"
+  },
+  "commands": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "operations_http::a_run_addressed_update_locks_its_successors_chain_before_the_run_until_commit",
+        "--",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 101,
+      "seconds": 72.55,
+      "log": "red.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "operations_http",
+        "--",
+        "--nocapture",
+        "--test-threads=3"
+      ],
+      "exit_code": 0,
+      "seconds": 55.2,
+      "log": "green-http.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "operations_http::a_run_addressed_update_locks_its_successors_chain_before_the_run_until_commit",
+        "--",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 40.38,
+      "log": "green-exclusive-probe.txt"
+    }
+  ],
+  "regression_commands": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "operations",
+        "--",
+        "--test-threads=3"
+      ],
+      "exit_code": 0,
+      "seconds": 10.68,
+      "log": "operations.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "--workspace",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "seconds": 94.96,
+      "log": "clippy.txt"
+    }
+  ],
+  "results": {
+    "green-exclusive-probe.txt": [
+      {
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 2.23
+      }
+    ],
+    "green-http.txt": [
+      {
+        "passed": 10,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 5.56
+      }
+    ],
+    "red.txt": [
+      {
+        "passed": 0,
+        "failed": 1,
+        "ignored": 0,
+        "seconds": 7.03
+      }
+    ],
+    "operations.txt": [
+      {
+        "passed": 26,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 10.33
+      }
+    ]
+  },
+  "review": {
+    "cycles": 2,
+    "model": "gpt-6-astra",
+    "reasoning": "xhigh",
+    "external_cli": false,
+    "first": "two audits for replay and non-singleton successor required; reconciled",
+    "second": "no implementation defects; optional exclusive-guard probe strengthened and verified"
+  },
+  "limits": [
+    "RED observes missing chain barrier, not a reproduced PostgreSQL deadlock",
+    "Existing trusted chain/state seeds; real public HTTP mutation and independent PostgreSQL barriers",
+    "HTTP10 and operations26 overlap; production unchanged before final SHARE probe",
+    "Final focused test verifies stronger probe; no fresh whole-workflow/workspace execution",
+    "Clippy passed before one-line SQL test probe refinement",
+    "No full SDK58/Compose/advisory/nesting/resource gate or canonical checkbox closure"
+  ],
+  "source_sha256": {
+    ".gitattributes": "f31efe0bfb948da8d7591e4cecaeb094570e9041a4b921fa5a6f2b2aec721e64",
+    "crates/application/src/declared_operations.rs": "c1be970f4d7424e21a97ce47a9c2eae20cd1fab3ff84b530f17ffdd527a79667",
+    "crates/infra-postgres/src/declared_operations.rs": "e3b0e8cc4b5804028a7433019ab1438159a887e71264a9ef799533f45c04c37e",
+    "docs/runbooks/workflow-primitives.md": "dec775f43d4fab59b157e74bb82451f4a474e45748223b291cf44c75ffb7ea7d",
+    "docs/traceability.md": "77fd5d7fed0a3a6eafa890a35df2b5f3c3e6332dddbfd396f3808c0f727a0090",
+    "specs/014-workflow-primitives/contracts/README.md": "3330977559daf1890aa75d2330dae0d6d40938992e928463d80d27f13777e2b3",
+    "specs/014-workflow-primitives/plan.md": "451f120b6ad6abbc543c2b9f26306ac88b636b4263d983f753673c930dc31403",
+    "specs/014-workflow-primitives/spec.md": "1956ef3f41805bd0109b006d9e71da0ab4369501e379c0abadca691c3d3a6e60",
+    "specs/014-workflow-primitives/validation-report.md": "d43d9fd1854394b103c4478656c5ae7e0289e89a2677bb5eadcff1ea613b74e2",
+    "tasks/project-completion/capacity-lock-inventory.md": "30195281a343b136b8b1a2ae6bda1aae9d15ee28ea2ccb3025346a55b8a71341",
+    "tasks/project-completion/integration-notes.md": "ef51be2864c7ad6c423d5a0b764081380881d5aa7fdba2e54a83ff79d4cc6219",
+    "tests/integration/workflow-primitives/operations_http.rs": "fe762dfe71719fab4ad12afd5e204ab4441d8cdd38703fdb396f52ca8cbaa346"
+  },
+  "evidence_sha256": {
+    "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "clippy.txt": "2fd2968243bcb9350e764c1daf38ef7d0bbd11aeb8ac3e384cd6f5d5ca3b354b",
+    "commands.json": "7d6c378eaa0f15b004faf7efe5d1e9c9830f597715e33ff0a44f3e5c332227b5",
+    "diff-check.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "gates.json": "190ed9db59c2aca4dac3af8c196ef7a3475367cd534d3f7f4e28dcde46060311",
+    "green-exclusive-probe.txt": "ba774301b9c3609ff7e1cc30cdf16fa782b1fcfcf6f6f49994c8381030bbc5c9",
+    "green-http.txt": "75e4c71556778876b0b47ede68156ea68af4cf589b485ad5bd34f163bbdb68c6",
+    "operations.txt": "4297ea103a878f205e316de379ff8a0506e618d09000de0e166cb40d3b379192",
+    "production.diff": "443223b43f51a51876d60c56f63d641d1246a6db45e028a01af1fc354d393bcf",
+    "red.txt": "7bac0c027df8f14d5c7559acf4fde1c736f19af0a9dd0d28e571c09edd5c4fa8",
+    "regression-commands.json": "15c3dfb2f821cd90434f9968ee03c76fef5d6fcf340a4ad59dd0b0ce7e9e002b",
+    "regression-test-source.json": "71fd68c35fe1df09abd77e6e19782a2ecdc9963f80218cc222694c888afbb061",
+    "reproduce.md": "ef130e4a354c73023b91b761a6bd99ef9144745c25cc4b496b3eb049fa057d22",
+    "review.md": "87494f7135bfbab740ef81c8f4c2e4fda686cd34e0aa71b114f099bcd24f1e08",
+    "test-final.diff": "902936face56062ce6732384727f8cdf94daed16ae28cad1a6911a5eacbe31b7",
+    "test-red.diff": "6d35ee14725ede95f2d315aa5675ae37d3b3b930cf6d0b3da3c9f5979bc6cd8c"
+  }
+}

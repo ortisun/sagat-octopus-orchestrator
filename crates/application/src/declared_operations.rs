@@ -797,9 +797,9 @@ pub trait DeclaredOperationStore: Send + Sync {
         audit: &AuditRecord,
     ) -> impl Future<Output = Result<DeclaredOperationSnapshot, DeclaredOperationStoreError>> + Send;
 
-    /// Serializes on the addressed run, or on the chain before its resolved run, replays a receipt
-    /// before mutability checks, and invokes `evaluate` at most once with the current persisted
-    /// state for a new request.
+    /// Serializes on any applicable chain before the addressed run (or a chain address's resolved
+    /// run), replays a receipt before mutability checks, and invokes `evaluate` at most once with
+    /// the current persisted state for a new request. A run address never forwards to a successor.
     fn apply_update<V, F>(
         &self,
         update: &DeclaredUpdate,

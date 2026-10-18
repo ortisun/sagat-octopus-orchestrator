@@ -59,7 +59,7 @@ These reviews do not accept the complete B0 graph or the group transaction desig
   ancestry; it does not grant foreign aggregate mutation authority or accept the complete graph.
 - Exact-path storage now takes the applicable chain guard in the same transaction before the
   run (focused evidence below). Collection/loop/approval adapters still have separate direct
-  run-lock helpers, and declared Update by Run has a direct run prefix. Map each before claiming
+  run-lock helpers, and declared Update by Run now takes the membership chain first (below). Map each before claiming
   general composition compliance; publication restrictions do not prove a future shape safe.
 - Complete the implicit-FK/trigger, root-versus-scoped worker, current-role/session/activity,
   managed database/script, and cancellation incoming/outgoing-link edges beyond the prefixes above.
@@ -153,7 +153,7 @@ not accept the other primitive/direct-Update prefixes, group transactions or gen
   need alignment/proof before that composition can be enabled.
 - `declared_operations::apply_update`, OperationAddress::Run, takes own-run UPDATE directly;
   the Chain branch explicitly takes chain before its resolved run. A direct run-addressed Update
-  of a chain member therefore requires a separate narrow prefix correction. Queries are reads;
+  of a chain member now has the narrow prefix correction below. Queries are reads;
   do not silently forward a run address while aligning mutation locks.
 - The collection, loop, approval and chain-specific `check_scheduler_fence/check_fence` helpers
   still put `expires_at > clock_timestamp()` in the locking SELECT. Full/exact-path run entry uses
@@ -163,3 +163,26 @@ not accept the other primitive/direct-Update prefixes, group transactions or gen
 
 These are source observations and pending tests, not already reproduced public failures or a
 complete B0 graph. Existing suite passes do not settle these missing barriers.
+
+
+## Direct run Update chain prefix — 2026-10-18
+
+Refs:T014-040/044, FR-014-014, ADR-0030§18. PgDeclaredOperationStore::apply_update now
+locks a run's tenant/namespace-scoped membership chain before its exact run. A Run address
+never resolves to a newer head. Chain-addressed behavior, request hashes, current state CAS,
+receipt replay, audit and outbox boundaries remain unchanged. No migration or wire change.
+
+The public HTTP regression addresses a successor distinct from the chain ID. A real chain lock
+barrier must precede own-run acquisition; a test-only receipt trigger exposes guard lifetime
+until commit. Before correction, the test failed because the chain wait was never observed
+(0/1,7.03s); this is not a reproduced PostgreSQL deadlock. After correction, the10 HTTP operation
+cases passed (5.56s), including earlier-segment RUN_CONTINUED, terminal refusal, rollback/retry,
+permissions and tenant opacity. The new case checks successor mutation, unchanged predecessor,
+one durable receipt/state event/outbox, two trace-bearing audits for apply+replay, and foreign
+tenant NOT_FOUND. A replay is a separately audited access, not a second mutation.
+
+Two bounded reviews required a non-singleton successor and correct replay audit counts, then
+found no production defect. The second suggested a stronger SHARE probe for the chain mutation
+guard; its final focused verification is recorded in the evidence manifest. Remaining primitive
+adapter prefixes, post-wait authority checks and complete B0/group ordering stay open. Exact
+source, failures and commands: tasks/project-completion/evidence/direct-update-chain-prefix-20261018/.

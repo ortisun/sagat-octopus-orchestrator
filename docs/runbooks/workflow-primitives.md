@@ -470,3 +470,9 @@ Exact-path mutation entry now uses the applicable chain-before-run prefix. For l
 run `SAGAT_TEST_AS_RUNTIME_ROLE=1 cargo test --locked -p sagat-tests --test integration_workflow_primitives bounded_fences -- --test-threads=3`
 with the external database URL unset. The storage fixture combines scope and chain metadata only
 to test locking; it does not open general publication or establish chain finality for scoped work.
+
+
+A run-addressed declared Update remains pinned after continuation and acquires its membership
+chain before that run. Use the `operations_http` workflow integration filter to verify successor
+updates, RUN_CONTINUED, replay audits and rollback; an earlier run is never silently forwarded.
+Evidence: tasks/project-completion/evidence/direct-update-chain-prefix-20261018/.

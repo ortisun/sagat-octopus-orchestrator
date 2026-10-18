@@ -176,6 +176,27 @@ async fn resolve_query_run(
     }
 }
 
+/// A run address remains pinned even after rollover, but its mutation joins the chain's
+/// serialization before taking that exact run. Membership identity is immutable and tenant-bound.
+async fn lock_member_chain(
+    tx: &mut Transaction<'_, Postgres>,
+    scope: &OperationScope,
+    run: RunId,
+) -> Result<(), DeclaredOperationStoreError> {
+    sqlx::query(
+        "SELECT c.chain_id FROM chain_segments s JOIN execution_chains c \
+         ON c.tenant_id=s.tenant_id AND c.namespace_id=s.namespace_id AND c.chain_id=s.chain_id \
+         WHERE s.tenant_id=$1 AND s.namespace_id=$2 AND s.run_id=$3 FOR UPDATE OF c",
+    )
+    .bind(scope.tenant_id().as_uuid())
+    .bind(scope.namespace_id().as_uuid())
+    .bind(run.as_uuid())
+    .execute(&mut **tx)
+    .await
+    .map_err(store_error)?;
+    Ok(())
+}
+
 async fn lock_chain_head(
     tx: &mut Transaction<'_, Postgres>,
     scope: &OperationScope,
@@ -927,6 +948,7 @@ impl DeclaredOperationStore for PgDeclaredOperationStore {
         .await?;
         let (resolved_run_id, run, prior) = match request.scope().address() {
             OperationAddress::Run(run_id) => {
+                lock_member_chain(&mut tx, request.scope(), *run_id).await?;
                 let run = lock_run(&mut tx, request.scope(), *run_id, true).await?;
                 let prior = find_receipt(&mut tx, update).await?;
                 (*run_id, run, prior)

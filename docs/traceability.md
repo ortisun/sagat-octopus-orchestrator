@@ -513,3 +513,10 @@ eight bounded fence tests pass, with actual chain blocking, no premature run loc
 lifetime through commit. This is a trusted internal composition fixture, not new public nesting
 or chain-finality support. Exact commands/source/review: tasks/project-completion/evidence/
 path-chain-prefix-20261018/. Remaining B0 and canonical runtime/release tasks stay unchecked.
+
+
+FR-014-014 / ADR-0030§18: direct run-addressed declared Update now takes its membership chain
+before the exact run. HTTP successor barrier, transaction-lifetime probes, unchanged predecessor,
+one receipt/event/outbox plus two audited apply/replay calls are recorded in
+`tasks/project-completion/evidence/direct-update-chain-prefix-20261018/`. Existing terminal,
+permissions and tenant HTTP regressions remain; no canonical task closes from this narrow fix.

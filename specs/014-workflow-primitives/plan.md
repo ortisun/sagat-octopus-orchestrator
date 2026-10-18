@@ -32,6 +32,9 @@ identity guard under its immutable ancestry precondition; the remaining B0 inven
 Align exact-path begin_current_path/begin_path with full-run optional chain-before-run entry.
 Prove both Wait/SkipLocked behaviors and same-transaction lock lifetime with PostgreSQL barriers;
 keep snapshot CAS/time/bounded mutations and public shape restrictions unchanged.
+Align direct run-addressed declared Updates with the same chain prefix, resolving membership
+by tenant/namespace/run rather than assuming run ID equals chain ID. Preserve pinned addressing,
+receipt replay and terminal errors; verify public successor updates and lock lifetime.
 
 ## Technical Context
 

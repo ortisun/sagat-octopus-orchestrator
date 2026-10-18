@@ -1725,3 +1725,32 @@ Final regression for this increment: workflow383 passed,1 ignored in260.71s; the
 passed in1m17s; formatting, diff and24-crate architecture gates passed. This is not a full
 workspace execution, five-SDK matrix, Compose/advisory or nested-capacity resource result.
 Exact source/results: tasks/project-completion/evidence/path-chain-prefix-20261018/manifest.json.
+
+
+## Direct run Update chain prefix — 2026-10-18
+
+Refs:T014-040/044, FR-014-014, ADR-0030§18. PgDeclaredOperationStore::apply_update now
+locks a run's tenant/namespace-scoped membership chain before its exact run. A Run address
+never resolves to a newer head. Chain-addressed behavior, request hashes, current state CAS,
+receipt replay, audit and outbox boundaries remain unchanged. No migration or wire change.
+
+The public HTTP regression addresses a successor distinct from the chain ID. A real chain lock
+barrier must precede own-run acquisition; a test-only receipt trigger exposes guard lifetime
+until commit. Before correction, the test failed because the chain wait was never observed
+(0/1,7.03s); this is not a reproduced PostgreSQL deadlock. After correction, the10 HTTP operation
+cases passed (5.56s), including earlier-segment RUN_CONTINUED, terminal refusal, rollback/retry,
+permissions and tenant opacity. The new case checks successor mutation, unchanged predecessor,
+one durable receipt/state event/outbox, two trace-bearing audits for apply+replay, and foreign
+tenant NOT_FOUND. A replay is a separately audited access, not a second mutation.
+
+Two bounded reviews required a non-singleton successor and correct replay audit counts, then
+found no production defect. The second suggested a stronger SHARE probe for the chain mutation
+guard; its final focused verification is recorded in the evidence manifest. Remaining primitive
+adapter prefixes, post-wait authority checks and complete B0/group ordering stay open. Exact
+source, failures and commands: tasks/project-completion/evidence/direct-update-chain-prefix-20261018/.
+
+Final direct-Update regression passed26 operation cases in10.33s (includes the10 HTTP cases);
+the strengthened exclusive-guard probe passed1/1 in2.23s. Strict locked workspace/all-target
+Clippy passed in1m34s before that one-line test-probe refinement; production did not change.
+Exact test-source variants and limits: evidence/direct-update-chain-prefix-20261018/manifest.json
+under tasks/project-completion/. Broader workspace/release/nesting gates remain open.

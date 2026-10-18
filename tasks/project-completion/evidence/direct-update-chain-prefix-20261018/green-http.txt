@@ -1,0 +1,34 @@
+   Compiling sagat-application v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/application)
+   Compiling sagat-infra-schema v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-schema)
+   Compiling sagat-api-http v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/api-http)
+   Compiling sagat-infra-ir v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-ir)
+   Compiling sagat-infra-blobstore v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-blobstore)
+   Compiling sagat-infra-secrets v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-secrets)
+   Compiling sagat-infra-postgres v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-postgres)
+   Compiling sagat-infra-sandbox v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-sandbox)
+   Compiling sagat-api-grpc v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/api-grpc)
+   Compiling sagat-scheduler v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/scheduler)
+   Compiling sagat-infra-nats v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-nats)
+   Compiling sagat-infra-connectors v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-connectors)
+   Compiling sagat-cli v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/cli)
+   Compiling sagat-control-plane v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/control-plane)
+   Compiling sagat-execution-engine v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/execution-engine)
+   Compiling sagat-sandbox-runner v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/sandbox-runner)
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 47.23s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 10 tests
+test operations_http::chain_query_resolves_one_head_and_enforces_tenant_and_expected_run ... ok
+test operations_http::a_run_addressed_update_locks_its_successors_chain_before_the_run_until_commit ... ok
+test operations_http::chain_update_keeps_one_receipt_across_handoff_and_cas_protects_new_keys ... ok
+test operations_http::current_permissions_and_tenant_boundary_guard_results_and_replays ... ok
+test operations_http::outbox_failure_rolls_back_the_http_update_and_the_same_key_can_retry ... ok
+test operations_http::query_returns_only_the_declared_result_without_mutating_the_run ... ok
+test operations_http::update_commits_once_and_replays_the_durable_result ... ok
+test operations_http::update_to_a_continued_segment_is_run_continued ... ok
+test operations_http::update_to_a_finished_run_is_not_mutable ... ok
+test operations_http::validator_and_revision_rejections_are_stable_and_do_not_schedule_work ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 375 filtered out; finished in 5.56s
+

@@ -1,0 +1,58 @@
+[
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "operations_http::a_run_addressed_update_locks_its_successors_chain_before_the_run_until_commit",
+      "--",
+      "--exact",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 101,
+    "seconds": 72.55,
+    "log": "red.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "operations_http",
+      "--",
+      "--nocapture",
+      "--test-threads=3"
+    ],
+    "exit_code": 0,
+    "seconds": 55.2,
+    "log": "green-http.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "operations_http::a_run_addressed_update_locks_its_successors_chain_before_the_run_until_commit",
+      "--",
+      "--exact",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "seconds": 40.38,
+    "log": "green-exclusive-probe.txt"
+  }
+]
