@@ -1,0 +1,10 @@
+{
+  "tasks/project-completion/scoped-leaf-finish-binding.md": "9b5db52f043e7636463a5ae811e10a9a9a11999c25a21bf18f6f2b4c34da80f3",
+  "tasks/project-completion/capacity-path-settlement.md": "1605a2c72da25a9c941b552b9ea018e3f074804043e8bb62c16abe2b37116e46",
+  "tasks/project-completion/capacity-transaction-entry.md": "2d11d9838090c31d6e60659ed6e8b493c3a1ebae130a4756960bea554d8a27c8",
+  "crates/domain/src/workflow/collection_shape.rs": "0b883bd651cc4aab7ca8193194f44d9c3f2b617b73e7cdce4eee4707b5f325eb",
+  "crates/application/src/capacity_finish.rs": "320e8eec2661947198251d3b88c699abac66b546af1a3550a578fe33a90cebc2",
+  "crates/infra-postgres/src/capacity_finish.rs": "aeba73f27c303489a27d12e508b8fccbc22fb76345d57103e495cc8cafec76b2",
+  "crates/infra-postgres/src/leaf_certification.rs": "6c866d2be5bbce07dbefc1aada3c904bc08e4d3d3c45c818960c8db4bde57b5b",
+  "crates/infra-postgres/migrations/20261211000000_leaf_success_certification.up.sql": "411f1b67a3299917d3bd7bdd9009819bac93846e02678f20e125908221ff089d"
+}

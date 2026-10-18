@@ -152,6 +152,8 @@ mutation.1matrix test contains2fresh flows and4actual child processes;1fresh rev
 This is native reconciliation-client restart, not original-writer/control-plane/engine restart.
 See evidence/leaf-certification-process-20261018. Other producer/observation/release gates stay open.
 - [ ] B1b.2b: Review scoped binding/fingerprint/receipt/retention extension and its actual queries.
+- [x] B1b.2b.1: Review conditional originalRun/path binding, group-wide scoped receipt/fingerprint
+  and retention/lock proposal only; no schema/query/port or executable source consumption.
 - [ ] B1b.2c: Review nested/child relationship closure and remaining quiescence/transition authority.
 
 ## B2 dormant Finish increments
