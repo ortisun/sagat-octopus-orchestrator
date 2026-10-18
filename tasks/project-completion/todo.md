@@ -16,7 +16,7 @@ unchecked T016 task (64 at authorization). See [plan.md](plan.md).
 - [ ] Update canonical tasks, dependent documentation and exact final evidence; commit clean delivery.
 
 
-## Current checkpoint — 2026-10-17
+## Current checkpoint — 2026-10-18
 
 The authorization scope above is historical. T014-038 is now closed with its exact current
 five-SDK chain evidence; T014-004 is closed with its native ceilings, common cases and public
@@ -176,7 +176,7 @@ See evidence/leaf-certification-process-20261018. Other producer/observation/rel
 - [x] B1b.2b.10: Add canonical scoped hint vocabulary/schema/baseline tests and truthful audit
   wording before the native scoped Finish producer; no producer or release permission inferred.
 - [x] B1b.2b.11: Review the initial flat original-Run context gate and distinct typed refusal;
-  parent/chain source closure remains unproved, with actual native context tests pending.
+  parent/chain source closure remains unproved; actual native context refusals are proved by15c.
 - [x] B1b.2b.12: Review one dormant flat scoped native Finish transaction, exact source/receipt
   decoding, own guards, A1 writes, truthful audit/hint and conservative commit outcome only.
 - [x] B1b.2b.13: Implement first dormant flat scoped native transaction with genuine source,
@@ -198,6 +198,17 @@ See evidence/leaf-certification-process-20261018. Other producer/observation/rel
 - [x] B1b.2b.16b: Prove actual reconciliation process death/restart with durable complete command.
 - [x] B1b.2b.17: Prove all scoped returned outcomes/OTLP/redaction/filtered span/cancellation counts.
 - [ ] B1b.2c: Review nested/child relationship closure and remaining quiescence/transition authority.
+- [ ] B1b.2c.1: Prove the enumerated current incoming-parent preservation for one ordinary unchained child source.
+- [ ] B1b.2c.1a: Characterize genuine public child source, closure/fence/qualification/refusal and cold replay controls.
+- [ ] B1b.2c.1b: Prove actual PROPAGATE/DETACH/REQUEST_CANCEL parent flag writers in both child-row queue orders.
+- [ ] B1b.2c.1c: Prove actual own-child cancellation/drain consequences and later compensation preserve selected source.
+- [ ] B1b.2c.1d: Prove genuine terminal outcome fanout/parent settlement once in both observable orders.
+
+The bounded ordinary-child source decision is reviewed, with no test acceptance yet. Source
+certification already accepts this shaped context; current source evidence limits are not an
+implemented parent-context rejection. Parent flag writes do not advance the child revision/journal.
+Scoped Finish's parent refusal and default source/scoped INSERT denial remain in force.
+See leaf-child-source-preservation.md; general B1/B2/C0 and canonical tasks remain unchecked.
 
 ## B2 dormant Finish increments
 

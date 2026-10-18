@@ -528,3 +528,22 @@ the existing native ChildRoot writer and denies the new scoped INSERT columns to
 Conditional downgrade is verified against retained scoped rows and actual native ChildRoot replay.
 This is dormant storage metadata only; native scoped source consumption, production intent/
 permissions and broader nested execution remain separately gated.
+
+
+## Dormant ordinary-child source characterization — 2026-10-18
+
+The next bounded evidence unit is the already reachable OrdinaryLeafV1 source in a genuine
+ordinary unchained child Run, with selected root path lines/0 closed while later child work
+continues. The existing source certifier has no parent/chain-context rejection; its current
+producer-preservation evidence remains limited until the new tests pass. No new source enum,
+schema, API, caller, grant or publication shape is introduced. Scoped Finish continues to refuse
+any parent/chain context, including a genuine child certificate.
+
+The reviewed contract is [leaf-child-source-preservation.md](../../tasks/project-completion/leaf-child-source-preservation.md).
+The first baseline requires genuine public creation/closure, metadata-only exact certification,
+missing-closure/current-fence/qualified-identity controls, cold original-record replay and a genuine
+certificate that still cannot authorize Scoped Finish. It is pending execution. Actual parent flags
+(PROPAGATE/DETACH/REQUEST_CANCEL), own-child cancellation/drain and terminal fanout are separate
+subsequent proofs. Nonjournaled parent flag changes do not imply a stale child Run revision.
+General nesting, current-member authority, C0/mixed writers, resource ceilings and release gates
+remain unaccepted. This is a bounded evidence refinement under ADR-0030/0031/0032.
