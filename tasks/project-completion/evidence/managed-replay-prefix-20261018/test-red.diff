@@ -1,0 +1,146 @@
+diff --git a/tests/integration/database-connections/executor.rs b/tests/integration/database-connections/executor.rs
+index 70d707ce..1504518c 100644
+--- a/tests/integration/database-connections/executor.rs
++++ b/tests/integration/database-connections/executor.rs
+@@ -9,13 +9,14 @@ use sagat_application::{
+     error::AppError,
+     managed_secrets::{ManagedSecretService, ManagedSecretWrite},
+     secret_provider::SecretProvider,
+-    worker::Capabilities,
++    worker::{Capabilities, StepAck},
+ };
+ use sagat_domain::{
+     database::{
+         ConnectionConfig, ConnectionStatus, DatabaseLimits, MANAGED_DATABASE_ACTIVITY, TlsPolicy,
+     },
+     identity::{Role, Slug},
++    quota::QuotaResource,
+     secrets::{SecretName, SecretValue},
+ };
+ use serde_json::json;
+@@ -584,9 +585,31 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
+     );
+     // Finishing the cancelled attempt releases capacity for the other admitted run.
+     w.workers = w.workers.with_secret_provider(provider);
+-    w.fail_with(&session, task, "WORKER_ERROR", false)
++    let applied = w
++        .fail_with(&session, task, "WORKER_ERROR", false)
+         .await
+-        .unwrap();
++        .expect("persist managed failure receipt");
++    assert!(!applied.already_applied);
++    let deleted = sqlx::query("DELETE FROM worker_sessions WHERE tenant_id=$1 AND id=$2")
++        .bind(session.principal.tenant_id().as_uuid())
++        .bind(session.worker_id)
++        .execute(&w.db.pool)
++        .await
++        .expect("clear completed managed session")
++        .rows_affected();
++    assert_eq!(deleted, 1);
++    managed_receipt_replay_waits_for_binding_before_secrets(&w, &session, task, &applied).await;
++    let registered = w
++        .workers
++        .register(&session.principal, "payments", "database-machine", &caps)
++        .await
++        .expect("public registration after session-cleared receipt replay");
++    assert_eq!(registered.accepted_protocol_version, "1.6");
++    let session = Session {
++        principal: session.principal.clone(),
++        worker_id: registered.worker_id,
++        token: registered.session_token.expose().to_owned(),
++    };
+     let next = w.poll(&session, 1).await;
+     assert_eq!(next.len(), 1);
+     let next_ref = task_ref(&next[0]);
+@@ -871,3 +894,91 @@ async fn session_expiry_after_wait(
+         .expect("fresh heartbeat journal matches projection");
+     fresh
+ }
++
++async fn managed_receipt_replay_waits_for_binding_before_secrets(
++    w: &super::support::engine::World,
++    session: &Session,
++    task: &sagat_application::worker::ClaimedTask,
++    applied: &StepAck,
++) {
++    let tenant = session.principal.tenant_id();
++    let namespace = w.namespace.id();
++    let binding_key = format!(
++        "binding:{tenant}:{namespace}:{}",
++        session.principal.subject()
++    );
++    let secrets_key = format!("quota:{}:{tenant}:{namespace}", QuotaResource::Secrets);
++    let checkpoint = || async {
++        sqlx::query_as::<_, (i64, i64, i64, i64, i64)>(
++            "SELECT r.run_version, \
++             (SELECT count(*) FROM run_events WHERE tenant_id=$1 AND run_id=$2), \
++             (SELECT count(*) FROM event_outbox WHERE tenant_id=$1 AND aggregate_id=$2), \
++             (SELECT count(*) FROM audit_records WHERE tenant_id=$1), \
++             (SELECT count(*) FROM step_database_credentials WHERE tenant_id=$1 AND run_id=$2) \
++             FROM runs r WHERE tenant_id=$1 AND id=$2",
++        )
++        .bind(tenant.as_uuid())
++        .bind(task.run_id.as_uuid())
++        .fetch_one(&w.db.pool)
++        .await
++        .expect("atomic managed replay effects")
++    };
++    let before = checkpoint().await;
++    // Exact native prefix barrier around real public replay. It is not a reproduction of the
++    // candidate three-party registration/claim/replay deadlock.
++    let mut binding_guard = w.db.pool.begin().await.expect("managed binding guard");
++    let binding_backend: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
++        .fetch_one(&mut *binding_guard)
++        .await
++        .expect("binding guard backend");
++    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
++        .bind(&binding_key)
++        .execute(&mut *binding_guard)
++        .await
++        .expect("hold exact binding");
++    let mut replay = Box::pin(w.fail_with(session, task, "WORKER_ERROR", false));
++    tokio::select! {
++        _ = &mut replay => panic!("managed replay bypassed held binding authority"),
++        () = super::support::eventually("actual managed replay waits on binding", || async {
++            sqlx::query_scalar::<_,bool>(
++                "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() \
++                 AND $1=ANY(pg_blocking_pids(pid)) AND query LIKE '%pg_advisory_xact_lock_shared%' \
++                 AND (NOT $2 OR usename='sagat_app'))",
++            ).bind(binding_backend).bind(super::support::as_runtime_role()).fetch_one(&w.db.pool).await
++            .expect("actual app replay binding wait").then_some(())
++        }) => {}
++    }
++    let mut probe = w.db.pool.begin().await.expect("namespace secrets probe");
++    let available: bool =
++        sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtextextended($1,0))")
++            .bind(&secrets_key)
++            .fetch_one(&mut *probe)
++            .await
++            .expect("probe namespace Secrets X");
++    probe.rollback().await.expect("release secrets probe");
++    assert!(
++        available,
++        "managed receipt replay retained Secrets X while waiting for binding S"
++    );
++    binding_guard
++        .rollback()
++        .await
++        .expect("release binding authority");
++    let replayed = tokio::time::timeout(Duration::from_secs(5), replay)
++        .await
++        .expect("bounded receipt replay")
++        .expect("current authority permits durable receipt");
++    assert!(replayed.already_applied);
++    assert_eq!(replayed.command_id, applied.command_id);
++    assert_eq!(replayed.step_status, applied.step_status);
++    assert_eq!(replayed.run_status, applied.run_status);
++    assert_eq!(
++        checkpoint().await,
++        before,
++        "accepted replay cannot change execution/audit/pins"
++    );
++    w.store
++        .verify_run(tenant, task.run_id)
++        .await
++        .expect("managed replay journal matches projection");
++}

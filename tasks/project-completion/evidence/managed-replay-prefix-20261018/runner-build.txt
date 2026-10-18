@@ -1,0 +1,9 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling sagat-application v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/application)
+   Compiling sagat-api-http v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/api-http)
+   Compiling sagat-infra-database v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-database)
+   Compiling sagat-infra-secrets v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-secrets)
+   Compiling sagat-api-grpc v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/api-grpc)
+   Compiling sagat-database-runner v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/database-runner)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 9.68s

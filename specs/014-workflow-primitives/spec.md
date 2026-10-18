@@ -464,3 +464,7 @@ graph remains pending.
 The existing017 managed owner session SHARE guard also samples expiry after acquisition.
 Its real managed-heartbeat counterexample/correction is tracked in B0 alongside renewal and
 claim-room evidence; completion of those checks does not accept the full group lock graph.
+
+Existing017 managed report receipt replay retains binding before catalog/current-role guards.
+It preserves durable ownership and current authorization after session clearance; its focused
+ordering barrier contributes to B0 and does not prove general nested/group ordering.

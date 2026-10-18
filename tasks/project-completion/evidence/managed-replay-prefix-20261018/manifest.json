@@ -1,0 +1,198 @@
+{
+  "source_base": "56044f7598b39c6f2f619c62a02a431db1a389ed",
+  "recorded_utc": "2026-10-18T06:41:31.368587+00:00",
+  "scope": "Current binding before catalog on existing managed report receipt replay",
+  "commands": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_database_connections",
+        "durable_provider_intents_reconcile_without_plaintext_or_duplicate_rotation",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 101,
+      "seconds": 41.91,
+      "log": "red.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_database_connections",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 64.69,
+      "log": "green.txt"
+    }
+  ],
+  "regression_commands": [
+    {
+      "command": [
+        "cargo",
+        "build",
+        "--locked",
+        "-p",
+        "sagat-database-runner",
+        "--bin",
+        "database-runner"
+      ],
+      "exit_code": 0,
+      "seconds": 9.72,
+      "log": "runner-build.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_database_runner",
+        "isolated_process_executes_openbao_capabilities_and_reports_bounded_results",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 127.44,
+      "log": "runner.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "seconds": 85.74,
+      "log": "clippy.txt"
+    }
+  ],
+  "gates": [
+    {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "seconds": 4.26,
+      "log": "fmt.txt"
+    },
+    {
+      "command": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "exit_code": 0,
+      "seconds": 0.31,
+      "log": "architecture.txt"
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit_code": 0,
+      "seconds": 0.02,
+      "log": "diff-check.txt"
+    }
+  ],
+  "results": {
+    "red.txt": [
+      {
+        "passed": 0,
+        "failed": 1,
+        "ignored": 0,
+        "seconds": 17.62
+      }
+    ],
+    "green.txt": [
+      {
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 27.25
+      }
+    ],
+    "runner.txt": [
+      {
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 28.85
+      }
+    ]
+  },
+  "review": {
+    "code_cycles": 1,
+    "behavioral_red": true,
+    "draft_model": "gpt-5.6-sol/high (read-only)",
+    "review_model": "gpt-6-astra/xhigh (fresh-context read-only)",
+    "external_cli": false,
+    "final": "no concrete scoped defects; only root ran tests"
+  },
+  "limits": [
+    "Actual public replay-prefix RED, not three-party detecteddeadlock",
+    "RealPostgres/OpenBao/publishedquery/dedicatedrunner/publiclease/durablefailedreceipt",
+    "Sessioncleared replay, actualbindingwait/freeSecrets probe, atomicexecutioncounts +exactAck unchanged",
+    "Fresh isolatedrunner regression, benchmarkfiltered notmeasurement",
+    "No fullworkspace/SDK58/Compose/advisory/resource/group gate or checkboxclosure",
+    "Concurrent B0sourceinventory uncommitted docs excluded from this delivery"
+  ],
+  "source_sha256": {
+    ".gitattributes": "d34799146adf96c73e1f7aa474b873a838366a6045c7f7563f3c02fbc1cf961b",
+    "crates/application/src/worker.rs": "01d78ebd4a21953bc5827ddf03450bff188efbfbe47bb840ea74fbc536046100",
+    "tests/integration/database-connections/executor.rs": "2704135f2e158a4763860f20583aa48ad33128f70de885f3acd38b0c34aed3b7",
+    "docs/traceability.md": "50edf29f4572f5cfa016cc740336be496882d6aaa2beb3d99df4e9ad4febe5d2",
+    "specs/017-database-connections/spec.md": "173dd6750c06b6cca16b2af2a162dd7811672f6492b2891e17320509de609f10",
+    "specs/017-database-connections/plan.md": "53cb8a64a3268e4fabd515a1511bfc5cebc69a7eed00ba350cf24b8587cc6a94",
+    "specs/017-database-connections/contracts/managed-executor.md": "0b5392e1be1bee79ed914686b4d31a9bb70a4e0247f4367dbb29c75beb911e73",
+    "specs/014-workflow-primitives/spec.md": "034f65ba995922887ec66ad614576ebfc0927862546ce723e4306540aca82a3b",
+    "specs/014-workflow-primitives/plan.md": "f6be9bbd6830961c6bae7901059db110451ba14f5cd6744d68ca08b5920f7a58",
+    "specs/014-workflow-primitives/validation-report.md": "c6779231c210ddc3b09a0620e93e138645d0b00477724edadb78ce77fe1cb98f",
+    "tasks/project-completion/integration-notes.md": "2afc76d58a61d0484598d41c9da2dc1cf7e135a1be43fb32d57ceb913aca3165"
+  },
+  "evidence_sha256": {
+    "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "clippy.txt": "c4e9a7095e693abf938551c44ea8bb174255a99a8807a59a607bd2098a070a3e",
+    "commands.json": "3895a77798a6dbe2455da2e78b599ca37258ec918119f3e282b136d710983501",
+    "diff-check.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "gates.json": "f95c54eb060d12f4152eeaac1d537472507d4bd20d04e67213b22fce0f7e4bb7",
+    "green.txt": "93491dd7e7196ddcffade5a7022ca146619c03fd32aa52f1ede8f7240dba0982",
+    "production.diff": "a0cb935fc7020d951069fb9e8af0c7512564f07e0e5b64abdbe53bb3a8f12f11",
+    "red-source.json": "aa954b8cef09a24cf184e5f4542e3b8ff138d912e8275b473912ac3d145d411d",
+    "red.txt": "c132377bb403d28d734a1faeb886d28549841c020c3a3a2b44f503682bce54ea",
+    "regression-commands.json": "d83f975c9a8a1a8abe76f422da7a6092c0780b63d0e9de9abac4816301f41878",
+    "reproduce.md": "23a454b12a40dc6cb54487132259a4802b21b002e0f1054884e39206d91516db",
+    "review.md": "4a78114f254d46ab4d99d62f2bd3882a8b4de73804edcc47e2ca92cac0e0fde2",
+    "runner-build.txt": "f6327bdf070bf98993fecc02fdd278e6337afbbda3990b555439d8a902fd0db5",
+    "runner.txt": "3c13cf39533a3aedc9c48cb008fb5266797f7f6f849945c9b260ab789db27a69",
+    "test-red.diff": "04f5ddd494e7b2af906e4400e8bde54fa7654e23c6807a58052533ba7d2b0ecb",
+    "tested-source.json": "d39978455c3b2018c781c7b5c403d904b2ecf14356f0b8b2333fd45931cb32a7"
+  }
+}

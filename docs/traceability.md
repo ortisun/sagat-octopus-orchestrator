@@ -671,3 +671,26 @@ errors and after-commit audit mappings remain; native barriers do not assert cou
 Complete B0/group, fullworkspace/SDK58/Compose/advisory/resource acceptance remain pending,
 with no canonical checkbox closure. Exact sources/commands/limits:
 tasks/project-completion/evidence/database-session-postwait-20261018/manifest.json.
+
+
+## Managed report receipt binding order — 2026-10-18
+
+Refs:T014-040/044, FR-017-019, FR-014-014. Existing managed report replay now retains binding S
+before namespace Secrets quota X and dedicated membership S. Permission, durable attempt owner,
+fingerprint and current binding/role remain required, including after session removal. Live/
+missing-receipt and ordinary paths retain their semantics. No new provider I/O, execution/pin/
+resolution-audit/outbox write or public field. This is a focused existing017 dependency of B0.
+
+Actual real PostgreSQL/OpenBao public receipt replay RED aggregate0/1 (17.62s) retains Secrets X
+while blocked on Binding S. This ordered-prefix failure is not a three-party deadlock proof.
+GREEN full connections3/3 (27.25s): known blocker/app-role wait, free Secrets probe, session
+cleared, exact already-applied receipt/status, unchanged atomic runversion/events/outbox/audit/
+pincounts and verify_run; public reconnect and next managed claim succeed.
+Fresh isolated runner integration1/1 (28.85s, benchmark filtered), rebuilt binary; strict locked
+workspace/all-target Clippy85.74s, formatting/diff and24-crate architecture pass. Sol/high
+provided a read-only test draft; root inspected, extended/applied and ran all tests. Fresh
+Astra/xhigh bounded code review found no concrete issues, no tests run by reviewer. Owner's
+current-review selection applies, no external CLI. Existing typed errors, database/worker
+metrics and committed audit mapping remain; these barriers do not assert counters.
+No fullworkspace/SDK58/Compose/advisory/resource/nested/group acceptance or task closure.
+Exact source/commands/limits: tasks/project-completion/evidence/managed-replay-prefix-20261018/manifest.json.

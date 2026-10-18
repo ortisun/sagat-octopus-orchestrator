@@ -355,3 +355,17 @@ This is a focused existing-writer correction required by014 B0, not nested execu
 017 delivery gate. Real public managed lease/heartbeat RED/GREEN and reconnect controls use
 PostgreSQL/OpenBao in tasks/project-completion/evidence/database-session-postwait-20261018/.
 Standalone reference evidence remains historical; integrated release gates remain separate.
+
+
+## Integrated managed report replay ordering (2026-10-18)
+
+An existing managed report receipt checks current binding before retaining the namespace
+Secrets quota and dedicated membership guards. Durable attempt ownership, permission, role,
+receipt fingerprint and binding remain required; a live session is not required to replay the
+accepted report. Live/missing-receipt and ordinary paths keep their existing behavior.
+A real PostgreSQL/OpenBao published-query fixture proves actual app-role binding wait while
+Secrets remains free, then exact receipt replay after session removal with unchanged execution,
+audit and credential-pin counts. Reconnect and subsequent public polling remain supported.
+This is the existing017 writer dependency of014 B0, not a new capability or full graph proof.
+The ordered barrier does not claim a reproduced three-party deadlock. Evidence:
+tasks/project-completion/evidence/managed-replay-prefix-20261018/.

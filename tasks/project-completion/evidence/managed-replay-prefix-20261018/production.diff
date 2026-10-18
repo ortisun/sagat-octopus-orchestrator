@@ -1,0 +1,20 @@
+diff --git a/crates/application/src/worker.rs b/crates/application/src/worker.rs
+index 0328d1c5..f1f024b8 100644
+--- a/crates/application/src/worker.rs
++++ b/crates/application/src/worker.rs
+@@ -2109,6 +2109,7 @@ where
+         };
+         if Self::managed_database(tx, task) {
+             principal.authorize(Permission::DatabaseExecute)?;
++            self.ensure_activity_bound(principal, tx, task).await?;
+             if !tx
+                 .database_report_owns(
+                     task.instance.node(),
+@@ -2119,7 +2120,6 @@ where
+             {
+                 return Err(AppError::NotBound);
+             }
+-            self.ensure_activity_bound(principal, tx, task).await?;
+         }
+         Ok(Some(parse_ack(&stored, true, task.run_id)))
+     }

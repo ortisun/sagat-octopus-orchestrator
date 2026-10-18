@@ -1,0 +1,49 @@
+[
+  {
+    "command": [
+      "cargo",
+      "build",
+      "--locked",
+      "-p",
+      "sagat-database-runner",
+      "--bin",
+      "database-runner"
+    ],
+    "exit_code": 0,
+    "seconds": 9.72,
+    "log": "runner-build.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_database_runner",
+      "isolated_process_executes_openbao_capabilities_and_reports_bounded_results",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "seconds": 127.44,
+    "log": "runner.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "clippy",
+      "--workspace",
+      "--all-targets",
+      "--locked",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit_code": 0,
+    "seconds": 85.74,
+    "log": "clippy.txt"
+  }
+]

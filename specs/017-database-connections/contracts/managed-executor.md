@@ -143,3 +143,12 @@ attempt durations. `/metrics` listens at `SAGAT_DATABASE_RUNNER_METRICS_ADDR`
 (default `127.0.0.1:9092`); bind it only on the monitoring network. No SQL, parameter,
 credential, output, bearer token or session token is an observability field.
 The panic hook emits a fixed incident message without the panic payload.
+
+
+## Managed report receipt replay guards
+
+An accepted report replays under current dedicated role and binding plus its durable attempt
+ownership and request fingerprint. Retain binding authority before acquiring the namespace
+Secrets quota/current-membership guards. Replaying that receipt does not require a live session
+or repeat provider I/O. No new execution, pin, resolution audit or outbox entry is created.
+Live capability and missing-receipt report validation retain their separate lease/session rules.
