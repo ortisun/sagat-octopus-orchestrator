@@ -433,3 +433,11 @@ finite outcome labels. The transition counter follows acknowledged first commit 
 and replay rely on durable receipt evidence. Preserve the unchanged transaction helper and
 ensure a filtered-out child span cannot mutate caller span fields. This closes no full B1/B2
 or canonical runtime task and introduces no production caller, eligibility or nesting.
+
+
+B1b.2a defines only required exact scoped-path settlement evidence. Existing checkpoint/drain and
+inactive ancestry may precede compensation creation; they cannot authorize Finish. Require an
+explicit source-closure proof and all recorded obligation dispositions, then separately review
+one leaf collection source writer, scoped schema/retention and broader closure/quiescence. Full
+B1b.2 stays open; the ChildRoot adapter/schema cannot be repurposed by changing a tag. See
+tasks/project-completion/capacity-path-settlement.md.

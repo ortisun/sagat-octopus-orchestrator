@@ -1,0 +1,15 @@
+{
+  "base": "c2d28894",
+  "files": {
+    "tasks/project-completion/capacity-path-settlement.md": "1605a2c72da25a9c941b552b9ea018e3f074804043e8bb62c16abe2b37116e46",
+    "crates/domain/src/execution/path_state.rs": "da02a6dd7841057e1171a50e693c881c7ab82028255305f72efb9ec9c08c3ccc",
+    "crates/infra-postgres/src/execution/path_read.rs": "aab1a881a9943cfaef8e70efdc7330d682feb116096d83b6b12e80b7a2dca7a7",
+    "crates/domain/src/execution/state.rs": "e802c45c2bdbad9da159c6f60ad28ab6406c3fa04ce17b473ba7cb63f71af0e5",
+    "crates/infra-postgres/src/primitives.rs": "0c84e9a5e622e5b70135340de75c69e6e04c3e79ee1caf04cdd704c0eb027b75",
+    "crates/infra-postgres/src/execution.rs": "07ddad116cd27f84ef66228cc61c82b4633ff9cf6e7cfbd69daf0997faf77cdf",
+    "crates/infra-postgres/migrations/20261210000000_capacity_finish_storage.up.sql": "1e3d93bc918544219fe3c8230f278447c2b1b3aeed23255afe2c55041b3b2dc0"
+  },
+  "tests_run": false,
+  "review_cycles": 1,
+  "findings": 0
+}

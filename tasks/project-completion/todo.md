@@ -71,6 +71,12 @@ not a SQL port or own-member authority. See evidence/capacity-header-restore-202
   Two bounded source reviews; no SQL or complete B1b acceptance. See capacity-member-finality.md.
 - [ ] B1b.2: Define scoped-path settlement and remaining current-member quiescence/transition
   authority before any production Vacate/Acquire or path Finish.
+- [x] B1b.2a: Review exact scoped-path settlement evidence requirements, including latent
+  compensation closure; no current source-writer/schema sufficiency or runtime acceptance.
+- [ ] B1b.2a.1: Choose and prove a source writer for one supported leaf collection path; prevent
+  later work creation and retain exact immutable source/obligation evidence before storage.
+- [ ] B1b.2b: Review scoped binding/fingerprint/receipt/retention extension and its actual queries.
+- [ ] B1b.2c: Review nested/child relationship closure and remaining quiescence/transition authority.
 
 ## B2 dormant Finish increments
 
