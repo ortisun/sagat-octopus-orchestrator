@@ -276,3 +276,94 @@ those inputs and selects them through `SAGAT_SDK_SOURCE_ROOT`; current scenarios
 semantics are retained. This focused old-client proof does not close T014-041's complete current
 primitive/runtime matrix. Full source identity, commands, manifests, process upgrade and old Studio
 Chromium evidence are in [the compatibility report](../tests/integration/payload-classification/compatibility-report.md).
+
+## Current 58-case aggregate and native upgrade refresh — 2026-10-18
+
+The full current-client suite passed all 58 registered scenarios in TypeScript, Go, Python, C# and
+Java in 1055.10 s (harness 1054.80 s), using actual sagat_app runtime connections and five preparation
+scripts without SAGAT_SDK_REUSE, language/scenario/source-root selection or blessing. All 1238 tracked
+Rust/SDK/shared-contract inputs retained identical before/after hashes. A documentary-only binding
+commit during execution changed none of those inputs; execution base is dc212855.
+
+This is 290 language/scenario plays, including 30 build-only plays and 5 publication-only plays;
+255 plays perform live workflow/protocol work. Authoring is compared separately across languages
+and to reviewed canonical documents. All 260 runtime/publication normalized artifacts were retained
+and independently compared as complete JSON documents to the exact reviewed golden. Each language
+runs on an independent real platform/database. No build-only depth8 case implies nested execution.
+
+The 8 native `compatibility::` tests also passed in 15.02 s (harness 12.53 s) as the runtime role. They
+refresh the existing old-schema active-run migration/pin/journal test, old-worker minor withholding
+with current-worker positive control, unchanged pre-primitive documents/digests, unsupported-reader
+refusal, preservation of an active unsupported run and fairness among compatible candidates. These
+native fixtures are not presented as a newly executed historical engine binary. The separate
+v0.1.0 archived-client result above remains its own previously retained evidence.
+
+Current aggregate evidence, exact commands, toolchains, source hashes and complete normalized
+artifacts: [sdk58-current-20261018](../tasks/project-completion/evidence/sdk58-current-20261018/reproduce.md).
+Broader nested capacity, C0/source-producer preservation, resource ceilings and release gates stay
+separate. The table reports only each scenario's declared phase and the observed five SDK result.
+
+| Scenario | Phase | TypeScript | Go | Python | C# | Java |
+| --- | --- | --- | --- | --- | --- | --- |
+| `approval-builders` | authoring only | pass | pass | pass | pass | pass |
+| `approval-chain` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `approval-decisions` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `approval-security` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `approval-settlement` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `approval-state` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `blobs` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `builders` | authoring/publication | pass | pass | pass | pass | pass |
+| `cancellation` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `chain-cancel-parent` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `chain-child` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `chain-commands` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `chain-final-success` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `chain-inspect-cancel` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `chain-query-handoff` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `chain-query` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `chain-rerun` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `chain-root-wait` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `chain-state-final-success` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `chain-three-segments` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `classification` | authoring only | pass | pass | pass | pass | pass |
+| `collection-blob-output` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `collection-blob-source` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `collection-builders` | authoring only | pass | pass | pass | pass | pass |
+| `collection-compensation` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `collection-limits` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `collection-ordering` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `collection-runtime` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `collection-step-source` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `continuation-builders` | authoring only | pass | pass | pass | pass | pass |
+| `database-connections` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `errors` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `failures-and-retries` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `lease-lost` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `loop-builders` | authoring only | pass | pass | pass | pass | pass |
+| `loop-cancel` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `loop-compensation` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `loop-error-activity` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `loop-runtime` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `loop-semantics` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `lost-responses` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `protocol-negotiation` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `run-input-blobs` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `run-input-early-success` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `run-lifecycle` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `saga-compensation` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `scoped-identity` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `secrets` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `serialization` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `signals-and-events` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `state-operation-builders` | authoring only | pass | pass | pass | pass | pass |
+| `state-operations` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `switch-builders` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `worker-registration` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `worker-shutdown` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `worker-stream-faults` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `worker-transport-faults` | authoring/live protocol | pass | pass | pass | pass | pass |
+| `workflow-instance-limits` | authoring/live protocol | pass | pass | pass | pass | pass |
+
+Bounded acceptance review keeps T014-041 open: shared WP-13 expression/list boundaries and
+unsupported object literals, plus WP-12 switch cases at 32/excess 33, still need five-SDK coverage.
+The successful current aggregate is retained without claiming those absent scenarios.

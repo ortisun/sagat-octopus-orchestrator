@@ -1,0 +1,362 @@
+{
+  "scenarios": [
+    {
+      "name": "approval-builders",
+      "build_only": true,
+      "workflow_expected": true,
+      "runtime_expected": false
+    },
+    {
+      "name": "approval-chain",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "approval-decisions",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "approval-security",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "approval-settlement",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "approval-state",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "blobs",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "builders",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "cancellation",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "chain-cancel-parent",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "chain-child",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "chain-commands",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "chain-final-success",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "chain-inspect-cancel",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "chain-query-handoff",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "chain-query",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "chain-rerun",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "chain-root-wait",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "chain-state-final-success",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "chain-three-segments",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "classification",
+      "build_only": true,
+      "workflow_expected": true,
+      "runtime_expected": false
+    },
+    {
+      "name": "collection-blob-output",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "collection-blob-source",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "collection-builders",
+      "build_only": true,
+      "workflow_expected": true,
+      "runtime_expected": false
+    },
+    {
+      "name": "collection-compensation",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "collection-limits",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "collection-ordering",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "collection-runtime",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "collection-step-source",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "continuation-builders",
+      "build_only": true,
+      "workflow_expected": true,
+      "runtime_expected": false
+    },
+    {
+      "name": "database-connections",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "errors",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "failures-and-retries",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "lease-lost",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "loop-builders",
+      "build_only": true,
+      "workflow_expected": true,
+      "runtime_expected": false
+    },
+    {
+      "name": "loop-cancel",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "loop-compensation",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "loop-error-activity",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "loop-runtime",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "loop-semantics",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "lost-responses",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "protocol-negotiation",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "run-input-blobs",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "run-input-early-success",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "run-lifecycle",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "saga-compensation",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "scoped-identity",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "secrets",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "serialization",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "signals-and-events",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "state-operation-builders",
+      "build_only": true,
+      "workflow_expected": true,
+      "runtime_expected": false
+    },
+    {
+      "name": "state-operations",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "switch-builders",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "worker-registration",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "worker-shutdown",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "worker-stream-faults",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "worker-transport-faults",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    },
+    {
+      "name": "workflow-instance-limits",
+      "build_only": false,
+      "workflow_expected": true,
+      "runtime_expected": true
+    }
+  ],
+  "count": 58,
+  "build_only": 6,
+  "runtime_or_publication": 52,
+  "languages": [
+    "typescript",
+    "go",
+    "python",
+    "dotnet",
+    "java"
+  ]
+}

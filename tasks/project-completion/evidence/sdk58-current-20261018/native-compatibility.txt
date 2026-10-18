@@ -1,0 +1,15 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.79s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 8 tests
+test compatibility::a_reader_without_the_capability_leaves_an_active_structured_run_untouched_until_it_returns ... ok
+test compatibility::a_root_only_adapter_caps_a_newer_offer_at_1_4_and_withholds_scoped_work ... ok
+test compatibility::an_active_pre_014_run_survives_the_migrations_and_finishes_on_the_new_engine ... ok
+test compatibility::combinations_the_reader_does_not_enable_are_refused_with_a_typed_reason_and_store_nothing ... ok
+test compatibility::documents_with_only_pre_primitive_nodes_validate_identically_in_every_reader ... ok
+test compatibility::old_worker_minors_negotiate_and_are_never_offered_scoped_work ... ok
+test compatibility::pre_primitive_documents_keep_the_digest_the_pre_014_build_computed ... ok
+test compatibility::runs_a_reader_cannot_read_do_not_starve_the_ones_it_can ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 445 filtered out; finished in 12.53s
+

@@ -2763,3 +2763,30 @@ reviews ended with no concrete remaining stage/order/oracle issue. No production
 Evidence:`tasks/project-completion/evidence/leaf-certification-saga-20261018/manifest.json`.
 This closes only the known-effect later compensation unit; unknown-effect reconciliation,
 active-lease cancellation, other producers/chain/C0 and released caller/INSERT remain open.
+
+## All-five current SDK58 aggregate and native compatibility — 2026-10-18
+
+Refs:T014-041, FR-014-016, NFR-014-004, SC-014-002/005. Registry preflight 1/1 passed 23.14 s and the
+complete current-client 58-scenario aggregate passed 1/1 in 1055.10 s (harness 1054.80 s), with TypeScript,
+Go, Python, C# and Java, five preparation scripts and no reuse selection/bless/scenario/language/
+archived-source filters. Actual runtime database role is sagat_app. All 1238 tracked tested inputs
+are hash-identical before/after. No new implementation or golden change was needed for this run.
+
+The registry includes 6 authoring-only cases, 1 publication-only case and 51 live workflow/protocol
+cases: 290 language/scenario plays, of which 255 are live. All 260 runtime/publication normalized
+artifacts from this exact harness PID were copied and independently compared in full to reviewed
+goldens; authoring canonical equality is enforced by the aggregate harness. No truncated/subset
+comparison or new golden blessing is used. The previous failed 56-case attempt remains historical;
+this new aggregate is a separate complete success and includes the 58th instance-limit case.
+
+Fresh native `compatibility::` regression passed 8/8 in 15.02 s (harness 12.53 s), including old-schema
+active-run migration/pin/journal preservation, old-worker minors with scoped withholding/current
+positive control, unsupported-reader no-write behavior and compatible-reader fairness. It is not
+a newly run old-engine binary; prior archived v0.1.0 client evidence remains separate. Current
+phase/version/capability results are appended to docs/sdk-compatibility.md; broader nested/C0/
+resource/release acceptance remains open.
+Evidence:`tasks/project-completion/evidence/sdk58-current-20261018/manifest.json`.
+
+Bounded acceptance review keeps T014-041 open: shared WP-13 expression/list boundaries and
+unsupported object literals, plus WP-12 switch cases at 32/excess 33, still need five-SDK coverage.
+The successful current aggregate is retained without claiming those absent scenarios.

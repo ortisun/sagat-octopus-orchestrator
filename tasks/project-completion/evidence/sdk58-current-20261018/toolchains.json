@@ -1,0 +1,76 @@
+[
+  {
+    "command": [
+      "node",
+      "--version"
+    ],
+    "exit_code": 0,
+    "output": "v26.11.1\n"
+  },
+  {
+    "command": [
+      "npm",
+      "--version"
+    ],
+    "exit_code": 0,
+    "output": "11.20.0\n"
+  },
+  {
+    "command": [
+      "go",
+      "version"
+    ],
+    "exit_code": 0,
+    "output": "go version go1.24.2 darwin/arm64\n"
+  },
+  {
+    "command": [
+      "sdks/python/.venv/bin/python",
+      "--version"
+    ],
+    "exit_code": 0,
+    "output": "Python 3.14.3\n"
+  },
+  {
+    "command": [
+      "dotnet",
+      "--version"
+    ],
+    "exit_code": 0,
+    "output": "10.0.401\n"
+  },
+  {
+    "command": [
+      "java",
+      "-version"
+    ],
+    "exit_code": 0,
+    "output": "openjdk version \"23.0.2\" 2025-01-21\nOpenJDK Runtime Environment (build 23.0.2+7-58)\nOpenJDK 64-Bit Server VM (build 23.0.2+7-58, mixed mode, sharing)\n"
+  },
+  {
+    "command": [
+      "cargo",
+      "--version"
+    ],
+    "exit_code": 0,
+    "output": "cargo 1.98.0 (797e8a9bc 2026-08-05)\n"
+  },
+  {
+    "command": [
+      "docker",
+      "version",
+      "--format",
+      "{{.Server.Version}}"
+    ],
+    "exit_code": 0,
+    "output": "29.8.2\n"
+  },
+  {
+    "command": [
+      "sdks/java/mvnw",
+      "--version"
+    ],
+    "exit_code": 0,
+    "output": "Apache Maven 3.9.16 (2bdd9fddda4b155ebf8000e807eb73fd829a51d5)\nMaven home: /Users/marcelo/.m2/wrapper/dists/apache-maven-3.9.16/56ba1f9f\nJava version: 23.0.2, vendor: Oracle Corporation, runtime: /Users/marcelo/Library/Java/JavaVirtualMachines/openjdk-23.0.2/Contents/Home\nDefault locale: en_BR, platform encoding: UTF-8\nOS name: \"mac os x\", version: \"26.3\", arch: \"aarch64\", family: \"mac\"\n"
+  }
+]

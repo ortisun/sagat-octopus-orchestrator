@@ -1,0 +1,56 @@
+[
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "sdk_conformance",
+      "every_scenario_declares_phases_with_reviewed_expected_documents",
+      "--",
+      "--exact"
+    ],
+    "log": "registry.txt",
+    "exit_code": 0,
+    "seconds": 23.14
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "sdk_conformance",
+      "every_sdk_conforms_to_every_scenario",
+      "--",
+      "--exact",
+      "--ignored",
+      "--nocapture"
+    ],
+    "log": "aggregate.txt",
+    "exit_code": 0,
+    "seconds": 1055.1
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "compatibility::",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "log": "native-compatibility.txt",
+    "exit_code": 0,
+    "seconds": 15.02
+  }
+]

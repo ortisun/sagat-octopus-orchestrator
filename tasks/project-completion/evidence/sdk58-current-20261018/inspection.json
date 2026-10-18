@@ -1,0 +1,23 @@
+{
+  "source_inputs_unchanged": true,
+  "tracked_input_count": 1238,
+  "scenarios": 58,
+  "languages": [
+    "dotnet",
+    "go",
+    "java",
+    "python",
+    "typescript"
+  ],
+  "build_only": 6,
+  "runtime_or_publication": 52,
+  "live_workflow_or_protocol": 51,
+  "normalized_artifacts": 260,
+  "harness_pid": "81293",
+  "all_complete_normalized_documents_equal_to_reviewed_goldens": true,
+  "bytes_retained": 2914540,
+  "bless": false,
+  "reuse_selection": false,
+  "execution_base": "dc21285596f0316e5e77b97e4847efc90add2a28",
+  "documentary_head": "1bb9eed62b9e6d4cc846f179b73f19a683608865"
+}
