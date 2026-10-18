@@ -1,0 +1,12 @@
+{
+  "commit": "b1855cbeb515dc2df204f56ecf93cb75d0ef0b82",
+  "binary_sha256": "372e91c1ee31bd4ce5a85e5f244423de44a1f73be629aed14bdcb4e3d8350ed2",
+  "approvals": 10000,
+  "timers": 10000,
+  "runtime_role": true,
+  "fixture": "repository disposable PostgreSQL; no external URL",
+  "result": "failed resource assertion: 18 observed connections versus stale bound 10",
+  "harness_seconds": 286.78,
+  "accepted_capacity_evidence": false,
+  "cause": "World uses distinct runtime maximum16 and setup/observer maximum8 pools; resource assertion/environment text assumed one pool8 plus two probes. Pools were not increased by the correction. Final no-worker and slot assertions occur later and were not reached."
+}

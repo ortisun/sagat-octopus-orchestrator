@@ -1374,3 +1374,16 @@ finished in87 rounds alone and87 beside its neighbour (ratio1.00); the burst fin
 (32.9s measured workload wall). This proves the stated case, not an unmeasured throughput SLO.
 [Raw evidence and reproducible source](raw/workflow-primitives/20261017-runtime-fairness/manifest.json)
 retain the failed registration, successful output, fixture patch, settings and shared-load limitations.
+
+### Wait resource-profile correction
+
+The frozen b1855cbe 10,000-approval/10,000-timer run failed after286.78s: its stale assertion allowed
+10 connections while the fixture's existing runtime16 and observer8 pools exposed18. This is a
+failed run, not proof of zero worker ownership; later no-worker/slot assertions were not reached.
+[Failure and native process resources](raw/workflow-primitives/20261017-waits-profile-red/manifest.json)
+retain the source and failure. The correction reads both actual configured pool maxima and verifies
+the runtime role, without increasing a pool. The contention store now also shares the execution
+pool rather than using the owner observer pool. The report states the two budgets explicitly.
+A 20-approval/20-timer check passed1/1,8.13s: 40 waits without leases/worker identities, zero worker
+sessions, zero scheduler failures, all resource observations inside the existing combined bound24,
+and exact8/64 slot admissions. Full-size corrected evidence is still pending.

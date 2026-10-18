@@ -64,6 +64,8 @@ pub type DeliveryLoop = DeliveryWorker<PgRunStore, super::receiver::LoopbackSend
 
 pub struct World {
     pub db: TestDb,
+    /// The actual pool shared by execution services, distinct from owner setup/observation.
+    pub execution_pool: PgPool,
     pub store: PgRunStore,
     pub defs: Defs,
     pub publishing: Publishing,
@@ -148,7 +150,7 @@ pub async fn world_with_breaker(
     } else {
         db.pool.clone()
     };
-    let store = PgRunStore::new(store_pool, cache.clone()).with_breaker(breaker);
+    let store = PgRunStore::new(store_pool.clone(), cache.clone()).with_breaker(breaker);
     let engine = Engine::new(JsonEvaluator);
     let key_k1 = sagat_infra_secrets::generate_key().expect("a key");
     let keys =
@@ -157,6 +159,7 @@ pub async fn world_with_breaker(
         Signer::from_pkcs8(&Signer::generate_pkcs8().expect("a signing key")).expect("a signer");
     let signing_key = signer.public_key();
     let world = World {
+        execution_pool: store_pool,
         defs: DefinitionService::new(store.clone(), SystemClock, JsonIrCodec),
         publishing: Publishing::new(store.clone(), SystemClock, JsonIrCodec),
         runs: RunService::new(store.clone(), SystemClock, engine.clone(), cache.clone()),

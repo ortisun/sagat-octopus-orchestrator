@@ -1479,3 +1479,18 @@ heartbeat60s, after each30s completion deadline. The corrected all-five blob cas
 SDK/runner implementation, server guarantee or public heartbeat behavior is changed. Dedicated
 heartbeat/cancellation/fault scenarios retain their short heartbeats and exact journal assertions.
 The user chose the current agent review; no external cross-model CLI was invoked.
+
+## 2026-10-17 — Wait profile counts the actual configured pools
+
+Frozen b1855cbe10k approvals+10k timers failed after286.78s at a stale hardcoded connection budget10
+versus18 observed. The existing world has runtime maximum16 plus owner maximum8, rather than one
+8-connection pool. Failure/native resources/source are checked in under
+`tests/performance/reports/raw/workflow-primitives/20261017-waits-profile-red/`; later worker/slot
+assertions were not reached, so the failed full-size run is not accepted capacity evidence.
+The fixture now retains its actual shared execution pool for measurement; waits require verified
+sagat_app and derive the bound from the two pool configurations. The slot-contention adapter also
+uses that execution pool. No pool or production quota was raised. Small20+20 passed1/1,8.13s,
+including40workerless waits, no worker sessions, exact8/64 admissions, zero scheduler errors and
+all resource points inside the declared24-connection combined bound. Full-size corrected evidence
+is pending. Formatting passed and strict workspace/all-target Clippy passed1m06s before freezing
+the corrected large measurement source. Logs use `/tmp/sagat-completion-wait-profile-…`.
