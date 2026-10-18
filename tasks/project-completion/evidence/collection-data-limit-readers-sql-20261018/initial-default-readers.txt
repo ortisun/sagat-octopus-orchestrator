@@ -1,0 +1,28 @@
+   Compiling sagat-infra-postgres v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-postgres)
+   Compiling sagat-control-plane v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/control-plane)
+   Compiling sagat-execution-engine v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/execution-engine)
+   Compiling sagat-sandbox-runner v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/sandbox-runner)
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 54.79s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 4 tests
+test collection_data_limit_readers::malformed_static_data_limit_shapes_are_typed_corruption_in_both_readers ... 
+thread 'collection_data_limit_readers::malformed_static_data_limit_shapes_are_typed_corruption_in_both_readers' (123244254) panicked at tests/integration/workflow-primitives/collection_data_limit_readers.rs:402:57:
+assertion `left == right` failed
+  left: "stored collection drain projection violates a domain invariant"
+ right: "collection drain projection"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test collection_data_limit_readers::native_finish_guard_rejects_data_limit_iteration_before_writes ... ok
+test collection_data_limit_readers::static_data_limit_draining_restores_in_full_and_descendant_readers ... ok
+test collection_data_limit_readers::static_data_limit_failed_restores_in_full_and_descendant_readers ... ok
+
+failures:
+
+failures:
+    collection_data_limit_readers::malformed_static_data_limit_shapes_are_typed_corruption_in_both_readers
+
+test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 512 filtered out; finished in 5.96s
+
+error: test failed, to rerun pass `-p sagat-tests --test integration_workflow_primitives`

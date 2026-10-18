@@ -1,0 +1,23 @@
+    Checking sagat-infra-postgres v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-postgres)
+    Checking sagat-control-plane v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/control-plane)
+    Checking sagat-sandbox-runner v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/sandbox-runner)
+    Checking sagat-execution-engine v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/execution-engine)
+    Checking sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+error: very complex type used. Consider factoring parts into `type` definitions
+  --> tests/integration/workflow-primitives/collection_data_limit_readers.rs:59:14
+   |
+59 |       let row: (
+   |  ______________^
+60 | |         Uuid,
+61 | |         i64,
+62 | |         String,
+...  |
+72 | |         i64,
+73 | |     ) = sqlx::query_as(
+   | |_____^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#type_complexity
+   = note: `-D clippy::type-complexity` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::type_complexity)]`
+
+error: could not compile `sagat-tests` (test "integration_workflow_primitives") due to 1 previous error

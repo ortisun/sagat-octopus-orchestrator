@@ -1,0 +1,11 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.52s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 4 tests
+test collection_data_limit_readers::malformed_static_data_limit_shapes_are_typed_corruption_in_both_readers ... ok
+test collection_data_limit_readers::native_finish_guard_rejects_data_limit_iteration_before_writes ... ok
+test collection_data_limit_readers::static_data_limit_draining_restores_in_full_and_descendant_readers ... ok
+test collection_data_limit_readers::static_data_limit_failed_restores_in_full_and_descendant_readers ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 512 filtered out; finished in 6.58s
+

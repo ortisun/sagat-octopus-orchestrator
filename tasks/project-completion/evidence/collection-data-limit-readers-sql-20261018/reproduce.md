@@ -1,0 +1,11 @@
+# Q2 SQL reader acceptance and Q5 preparation regression
+
+Reproduce retained JSON commands with CARGO_TARGET_DIR=/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=3 RUST_MIN_STACK=16777216 SAGAT_TEST_DATABASE_URL=postgres://postgres@127.0.0.1:65117/postgres. Default unsets SAGAT_TEST_AS_RUNTIME_ROLE; runtime sets1. PostgreSQL16.15.
+
+Four focused reader tests pass in each mode (47.29s/4.60s and7.15s/6.58s wall/harness): genuine public member checkpoint prefix, explicitly static DRAINING/FAILED new-reason projections, full and descendant-ancestor reads, ten isolated malformed tuples, and native finish bad-iteration rejection without writes. They do not fabricate new-reason journal/certificates and are not native producer/replay or binary-upgrade evidence. The root-path owned-nested reader remains outside this public depth1 fixture scope.
+
+Existing byte_ceilings passes19/19 in runtime mode (31.22s/30.92s). These test invocations used the identical1114 inputs pinned in behavior-source-before/after. Initial reader run3/4 failed because the draft expected a raw label instead of the existing fixed 'stored ... violates a domain invariant' error wrapper; corrected tests assert the exact safe typed details.
+
+Initial strict Clippy rejected explicit dereferences in four new helper calls. Root used Rust auto-deref, then applied a local type_complexity allowance for the single13-column public-prefix fixture query. These changes do not change runtime behavior; final Clippy recompiles the entire integration target and passes12.87s, fmt4.44s, architecture0.62s/24crates. Final1114 input pins are separate from the executed behavioral revision; tests were not re-executed after these lint-only changes. Both earlier lint failures and their pinned revision are retained.
+
+Q5 helper/full-view/positive-charge preparation was present during these gates. Its two bounded reviews ended with no required issue after the namespace integrity amendment. These gates establish existing regression safety, not legacy overlay/effective-budget acceptance: genuine frozen old-producer fixtures and their positive/corruption/upgrade gates remain pending. Native start remains explicitly unavailable, scheduler emits no new reason, and this is not a deployable complete bridge A.

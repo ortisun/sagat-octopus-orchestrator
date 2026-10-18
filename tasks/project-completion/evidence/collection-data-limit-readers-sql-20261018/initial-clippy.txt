@@ -1,0 +1,36 @@
+    Checking sagat-infra-postgres v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-postgres)
+error: deref which would be done by auto-deref
+    --> crates/infra-postgres/src/execution.rs:3101:53
+     |
+3101 |         let effective = collection_outputs::inspect(&mut *self.tx, &self.info, &self.def).await?;
+     |                                                     ^^^^^^^^^^^^^ help: try: `&mut self.tx`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#explicit_auto_deref
+     = note: `-D clippy::explicit-auto-deref` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::explicit_auto_deref)]`
+
+error: deref which would be done by auto-deref
+    --> crates/infra-postgres/src/execution.rs:3178:45
+     |
+3178 |                 collection_outputs::inspect(&mut *self.tx, &self.info, &self.def).await?;
+     |                                             ^^^^^^^^^^^^^ help: try: `&mut self.tx`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#explicit_auto_deref
+
+error: deref which would be done by auto-deref
+    --> crates/infra-postgres/src/execution.rs:3187:53
+     |
+3187 |                 collection_outputs::hydrate_missing(&mut *self.tx, &self.info, &effective).await?;
+     |                                                     ^^^^^^^^^^^^^ help: try: `&mut self.tx`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#explicit_auto_deref
+
+error: deref which would be done by auto-deref
+    --> crates/infra-postgres/src/execution.rs:3378:41
+     |
+3378 |             collection_outputs::inspect(&mut *self.tx, &self.info, &self.def)
+     |                                         ^^^^^^^^^^^^^ help: try: `&mut self.tx`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#explicit_auto_deref
+
+error: could not compile `sagat-infra-postgres` (lib) due to 4 previous errors
