@@ -1,0 +1,12 @@
+{
+  "base": "1bb9eed6",
+  "scope": "B1b.2a.1d.3b current flat producer preservation only",
+  "new_test_runs": 0,
+  "review_cycles": 1,
+  "inventory_sha256": "716870a727903c24c02f50675129f994193af0d3ab39832851013896f30e122f",
+  "files": {
+    "sources.json": "10c40f0ebbe186e92505db5733636ea98fdabbe71fe6de33dd42af4bc4bfe44e",
+    "scope.md": "28752eadba1707f6069164148d77a8c9b96c93de1e3cece46b3920fb1b3c0039",
+    "review.md": "0ecae699ef5597878b3d4a6abb10bf6354c8e35d17e90e6f7cb4536d5367454f"
+  }
+}

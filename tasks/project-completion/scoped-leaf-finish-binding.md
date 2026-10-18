@@ -44,7 +44,8 @@ DDL/relation and uniqueness waits remain independently inventoried.
 
 OrdinaryLeafV1 excludes continuation policy and child/nested controllers. Applicable chain locking
 does not establish chain-source acceptance; the classifier does not inspect active capacity topology.
-Executable consumption waits for complete current flat producer preservation under B1b.2a.1d.3b.
+Current flat producer preservation under B1b.2a.1d.3b is recorded separately in
+leaf-current-producer-preservation.md; that prerequisite alone grants no executable authority.
 Broader relationship closure remains B1b.2c. Release INSERT, C0, creation/handoff, discovery/fairness
 and actual scoped schema/query/port/receipt tests remain separate prerequisites. No task above those
 dependencies closes from this documentary candidate.

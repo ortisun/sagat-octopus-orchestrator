@@ -96,8 +96,10 @@ not a SQL port or own-member authority. See evidence/capacity-header-restore-202
   uncertain-COMMIT/restart and closed observations before permitting release INSERT.
 - [x] B1b.2a.1d.3a: Test bounded source contradictions/missing evidence, tenant/namespace binding,
   creation CAS and current authority before replay; owner corruption fixtures are refusal only.
-- [ ] B1b.2a.1d.3b: Prove preservation against actual late reports, closure, later work/cancel,
+- [x] B1b.2a.1d.3b: Prove current flat preservation against actual late reports, closure, later work/cancel,
   saga planning and ambient writers with both transaction orders where applicable.
+  Current-profile mutation-family inventory and bounded review: leaf-current-producer-preservation.md;
+  chain-source/C0/activation and parent source-writer gates remain open.
 - [x] B1b.2a.1d.3b.1: Race new-key stale completion/failure against first certification in both
   actual original-Run lock queue orders; no full producer-preservation acceptance follows.
 - [x] B1b.2a.1d.3b.2: Race actual successful collection closure from a scheduler checkpoint

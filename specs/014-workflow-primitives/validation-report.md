@@ -2790,3 +2790,19 @@ Evidence:`tasks/project-completion/evidence/sdk58-current-20261018/manifest.json
 Bounded acceptance review keeps T014-041 open: shared WP-13 expression/list boundaries and
 unsupported object literals, plus WP-12 switch cases at 32/excess 33, still need five-SDK coverage.
 The successful current aggregate is retained without claiming those absent scenarios.
+
+## Current flat ordinary-leaf producer preservation inventory — 2026-10-18
+
+Refs:T014-014/017/040; local B1b.2a.1d.3b only. The current source inventory maps each distinct
+reachable mutation family to exact lifecycle/path predicates and previously executed native
+barriers for stale selected reports, actual closure, accepted later work/cancel, ambient binding
+and later saga planning/compensation. Heartbeat/expiry/retry/rehint/review/reconciliation command
+names are distinguished as static exclusions or shared exact-addressed writers; no new independent
+native race or test run is claimed for them. Separate focused inventory and fresh bounded
+Astra/xhigh adversarial review found no remaining current flat family requiring another barrier.
+
+The local producer-preservation subitem closes with the source inventory and pinned previous
+actual evidence. C0/old binaries, chain-source, arbitrary privileged UPDATE, nested relationships,
+release INSERT/production caller and parent source-writer/runtime gates remain open. See
+`tasks/project-completion/leaf-current-producer-preservation.md` and
+`tasks/project-completion/evidence/leaf-current-producer-preservation-20261018/manifest.json`.
