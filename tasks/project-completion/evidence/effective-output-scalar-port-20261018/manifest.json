@@ -1,0 +1,21 @@
+{
+  "source_base": "d35fbe90",
+  "local_unit": "B1b.2c.1d.0Q6a",
+  "kind": "port declaration only; compile/static gates",
+  "executed_tests": 0,
+  "pg_override_pending": true,
+  "production_consumers_activated": false,
+  "frozen_inputs": 1109,
+  "sources_unchanged": true,
+  "files": {
+    "checkpoint.md": "836915183344295aba7f43c027ff72b891593c1cc5b9ff93dfae540fda922685",
+    "clippy.json": "efa32ca25b80b8cb55a231e60eee7a05b449a1c57076414d42c82f4a3673057d",
+    "clippy.txt": "d1d8ddc55749d6ae2fbfcb1ad005da9b0f4675e7ccba7473de5b5c39d49f008c",
+    "fmt.json": "07e5b95b0399831da8861c088e8854eb76e7928861a423dd7a9e27d05ee62116",
+    "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "reproduce.md": "ff973a06eae545804dbaa2d4ea0f1f6cb271243a251f117f5a131a0ba300cdaa",
+    "review.md": "a3d3cd1c712ce5d573b9ea86d5ffa059a1059ed0a6bce4cc6f926be59d402449",
+    "source-after.json": "cc4746a669e128fac91ab6e202234105646601eb2d6ef5236ef869794d05fc49",
+    "source-before.json": "cc4746a669e128fac91ab6e202234105646601eb2d6ef5236ef869794d05fc49"
+  }
+}

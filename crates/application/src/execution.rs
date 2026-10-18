@@ -1239,6 +1239,29 @@ pub trait RunTx: Send {
     /// The run's input and the outputs of its finished steps (loaded once per transaction).
     fn data(&mut self) -> impl Future<Output = Result<&RunData, StoreError>> + Send;
 
+    /// Effective retained output bytes for this Run, read before staging a new output.
+    ///
+    /// Includes verified historical collection outputs absent from legacy owner projections.
+    /// PostgreSQL reads the scalar without hydrating those values, even above the Run limit.
+    /// The compatibility default requires complete RunData; adapters with partial data or staged
+    /// outputs must override it to report the durable total.
+    fn logical_output_bytes(&mut self) -> impl Future<Output = Result<u64, StoreError>> + Send {
+        async move {
+            let mut total = 0_u64;
+            for output in self.data().await?.outputs.values() {
+                let bytes = u64::try_from(output.len()).map_err(|_| StoreError::Internal {
+                    detail: "the logical output byte count overflowed".into(),
+                })?;
+                total = total
+                    .checked_add(bytes)
+                    .ok_or_else(|| StoreError::Internal {
+                        detail: "the logical output byte count overflowed".into(),
+                    })?;
+            }
+            Ok(total)
+        }
+    }
+
     /// Makes outputs that are about to be persisted visible to this transaction's evaluations: a
     /// condition that follows a step that just completed must see what that step returned. The
     /// existing path stages root nodes; scoped staging requires a typed effect identity.

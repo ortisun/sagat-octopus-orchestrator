@@ -290,3 +290,7 @@ No design alternative remains selected-but-unresolved for the two C1 findings. T
 ## Root bounded design checkpoint
 
 Original Q C1 (4c4a...) found two actionable defects: known effect loss on output refusal and bypass through the production frontier. Both were amended in section11. Fresh bounded C2 on2983c9b5... returned None. The transient fadad proposal was superseded before review after checking the mixed-event writer restriction. Only the final separate root/scoped persists within the same transaction are selected. No implementation, new production reason, actual old-binary upgrade, RED/GREEN quota recovery or release acceptance follows from this design checkpoint.
+
+## Effective output scalar port declaration — 2026-10-18
+
+RunTx now declares logical_output_bytes before staging, with checked complete-RunData compatibility default. Fresh one-file C1 None; all application targets compile under strict Clippy19.63 s and fmt passes,1109 inputs unchanged. No test execution or effective PostgreSQL behavior is claimed for this declaration. The mandatory PG override/overlay and consumer activation remain Q5/Q6b; no caller changed. Evidence: evidence/effective-output-scalar-port-20261018/manifest.json.

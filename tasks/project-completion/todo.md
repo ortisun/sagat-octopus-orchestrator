@@ -210,6 +210,9 @@ See evidence/leaf-certification-process-20261018. Other producer/observation/rel
 - [x] B1b.2c.1d.0Q1: Add closed reason/domain/codec vocabulary with native producer explicitly unavailable; collection-data-limit-vocabulary-20261018/manifest.json.
 - [x] B1b.2c.1d.0Q1a: Prove empty/checkpointed drain, strict domain projection restore and completed-effect compensation in the pure domain harness; collection-data-limit-domain-20261018/manifest.json. Real PostgreSQL/worker/upgrade gates remain.
 - [ ] B1b.2c.1d.0Q2: Integrate full/path PostgreSQL readers and existing drain finish without enabling new reason production.
+- [x] B1b.2c.1d.0Q6a: Declare effective RunTx output-byte scalar with complete-data compatibility default; compile/static gates only, no PG override/consumer activation.
+- [ ] B1b.2c.1d.0Q5: Implement verified read-only legacy aggregate overlay, metadata-only effective total and full writer guard.
+- [ ] B1b.2c.1d.0Q6b: Use the authoritative effective scalar in existing full preflights after the PG override, preserving typed outcomes.
 - [x] B1b.2c.1e: Prove real DETACH parent settlement followed by legitimate later child execution and original source replay.
 
 The bounded ordinary-child source decision is reviewed, with no test acceptance yet. Source
