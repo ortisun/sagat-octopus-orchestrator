@@ -205,7 +205,7 @@ See evidence/leaf-certification-process-20261018. Other producer/observation/rel
 - [ ] B1b.2c.1d: Prove genuine terminal outcome fanout/parent settlement once in both observable orders. Conditional [contract](leaf-child-terminal-fanout.md); .1d.0 prerequisite remains unresolved.
 - [ ] B1b.2c.1d.0: Reproduce dropped collection→End.outputExpr→Run result with genuine RED, review/correct atomic result retention and prove actual child result fanout before .1d. See [bounded correction](collection-end-result-correction.md).
 - [x] B1b.2c.1d.0b: Extract shared bounded End evaluation and typed finish answer, without activating the native path. collection-end-preparation-20261018/manifest.json; existing real result5/5 in each mode.
-- [ ] B1b.2c.1d.0Q: Review/implement effective legacy output accounting and truthful no-member RUN_DATA_LIMIT drain before native correction acceptance. Selected [quota correction](collection-result-quota-correction.md), bounded C2 None; implementation pending.
+- [ ] B1b.2c.1d.0Q: Review/implement effective legacy output accounting and truthful no-member RUN_DATA_LIMIT drain before native correction acceptance. Selected [quota correction](collection-result-quota-correction.md), bounded C2 None; coupled production correction is implemented with focused acceptance below, while remaining upgrade/fault/frontier controls and rollout are pending.
 - [x] B1b.2c.1d.0Q0: Reproduce public empty aggregate exact-byte boundaries and raw durable-reason decode with genuine RED (63956f51).
 - [x] B1b.2c.1d.0Q1: Add closed reason/domain/codec vocabulary with native producer explicitly unavailable; collection-data-limit-vocabulary-20261018/manifest.json.
 - [x] B1b.2c.1d.0Q1a: Prove empty/checkpointed drain, strict domain projection restore and completed-effect compensation in the pure domain harness; collection-data-limit-domain-20261018/manifest.json. Real PostgreSQL/worker/upgrade gates remain.
@@ -218,12 +218,19 @@ See evidence/leaf-certification-process-20261018. Other producer/observation/rel
 - [x] B1b.2c.1d.0Q6b: Use the authoritative effective scalar in existing full preflights after the PG override, preserving typed outcomes. Source012d746f; existing result gRPC5/5 each mode, legacy signal-specific acceptance separate.
 - [ ] B1b.2c.1d.0Q7c: Accept effective path/frontier accounting and same-snapshot stop/E behavior. Sourceb0a7ea5e, existing runtime byte_ceilings19/19; actual legacy E>L/CAS acceptance pending.
 - [ ] B1b.2c.1d.0Q8: Accept guarded native new-reason writer. Source9fd9405f/109908be; four native behavioral cases pass, plus genuine empty/checkpointed guards and stopped-report compensation. ExistingOutputs live-worker discovery passes in ce6560c5; remaining evidence controls/upgrade gates stay open.
-- [x] B1b.2c.1d.0Q7bD: Correct unconditional report-outbox assumption to existing durable collection discovery, reviewed source/constitution/ADR mapping; scoped-output-refusal-discovery.md. Cold discovery and application acceptance remain pending.
+- [x] B1b.2c.1d.0Q7bD: Correct unconditional report-outbox assumption to existing durable collection discovery, reviewed source/constitution/ADR mapping; scoped-output-refusal-discovery.md. Actual current report/discovery/compensation now has focused acceptance; post-ACK process recovery remains separate.
+- [ ] B1b.2c.1d.0Q7b: Complete exceptional report acceptance over the coupled implementation3710a5b7, preserving all current authority, exact receipt/fence/secret checks and one-transaction root/scoped phases; remaining fence/terminal/race/recovery controls are pending.
+- [x] B1b.2c.1d.0Q7b.1: Prove post-root/pre-scoped report rollback and later drain-outbox rollback separately, with same-key retry and real compensation; e51b3390, evidence/refusal-transaction-faults-20261018.
+- [x] B1b.2c.1d.0Q7b.2: Prove native binding revocation at actual full restoration rejects NOT_BOUND with exact binding quota/audit delta and only the mandatory traced denial audit;3a9f8c4f, evidence/refusal-fresh-binding-20261018.
+- [x] B1b.2c.1d.0Q7b.3: Prove actual OpenBao public version rotation rejects the stale scanned vector without execution effects; original-key/lease retry and replay pass with exact provider catalog/audit/quota oracles;8d07b0d3, evidence/refusal-secret-versions-20261018.
+- [ ] B1b.2c.1d.0Q10c: Complete genuine old in-flight compatibility: both byte conditions/orderings, cancellation precedence, Applied, output-dependent old worker and post-ACK process/uncertain-COMMIT controls. No external-provider undo guarantee is inferred.
+- [x] B1b.2c.1d.0Q10c.1: Prove ordinary E>limit report-before-drain through separate immutable-old/current processes with original worker/session/lease/request, owner and actual sagat_app, exact receipt/replay and real compensation;f026e928, evidence/legacy-inflight-ordinary-v1-20261018.
+- [ ] B1b.2c.1d.0Q10c.2: Prove ordinary E>limit drain-before-report with a still-live cancelled-requested lease and unchanged first stop/drain. Primary D1 reviewed None; evidence/legacy-ordinary-drain-first-decision-20261018; implementation draft in progress. Cancellation-first companion is deferred to its own reviewed increment.
 - [x] B1b.2c.1e: Prove real DETACH parent settlement followed by legitimate later child execution and original source replay.
 
-The bounded ordinary-child source decision is reviewed, with no test acceptance yet. Source
-certification already accepts this shaped context; current source evidence limits are not an
-implemented parent-context rejection. Parent flag writes do not advance the child revision/journal.
+The bounded ordinary-child source master remains open; its enumerated .1a/.1b/.1c/.1e
+preservation cases have their own acceptance above. Source certification already accepts this
+shaped context; current source evidence limits are not an implemented parent-context rejection. Parent flag writes do not advance the child revision/journal.
 Scoped Finish's parent refusal and default source/scoped INSERT denial remain in force.
 See leaf-child-source-preservation.md; general B1/B2/C0 and canonical tasks remain unchecked.
 
