@@ -1418,3 +1418,17 @@ families, and runtime-role execution. Native Darwin `/usr/bin/time -l` output wa
 at `/tmp/sagat-completion-perf-profile-smoke/process-resources.log`; logs/fragments share that
 directory. This smoke is parent6bf74f8d plus the measurement diff, not frozen-source capacity
 acceptance. No production limit or task checkbox changes.
+
+## 2026-10-17 — Python blocking chain-client parity
+
+Read-only acceptance audit found three missing blocking aliases: `update_chain`,
+`wait_for_chain_completion`, `rerun_as_new`. Their async implementations and wire contracts already
+exist; the synchronous facade now delegates through its existing private event loop. Three new
+HTTP tests first failed with the actual missing-method AttributeErrors (3failed/3passed,0.18s).
+After the three aliases, focused sync/client tests passed43/43,2.50s, strict mypy passed38source
+files and Ruff passed. The tests distinguish final-chain versus exact-segment waits, retain wait
+timeout errors, stable update keys/expected heads on retry and the rerun's new run ID. The first
+test invocation lacked pytest; installing the repository's hash-locked development requirements
+resolved that environment failure before the actual RED run. Logs:
+`/tmp/sagat-completion-python-sync-{dependencies,red,green,mypy,ruff}.log`.
+T014-038 awaits fresh all-five continuation/chain scenario evidence; no task checkbox changed.
