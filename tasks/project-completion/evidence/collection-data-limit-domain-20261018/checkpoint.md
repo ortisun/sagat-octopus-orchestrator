@@ -1,0 +1,3 @@
+## Q1a domain acceptance — 2026-10-18
+
+Four new pure domain cases pass with existing targets: collection reducer17/17, restore6/6, scoped compensation30/30 in one6.27 s invocation. Empty/all-checkpointed boundary failure invents no member, rejects wrong/missing code/reason and successful aggregate, restores the exact event-derived state, and waits for actual domain-harness compensation lease/completion. These are not gRPC/provider/restart tests. Clippy4.43 s, fmt4.57 s, architecture0.53 s/24 crates pass;1109 frozen inputs unchanged. See evidence/collection-data-limit-domain-20261018/manifest.json. Native producer remains unavailable; all PostgreSQL/real upgrade/report/fanout acceptance is still separate.

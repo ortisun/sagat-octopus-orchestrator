@@ -452,6 +452,166 @@ fn storage_quota_failure_drains_admitted_work_and_replays_without_an_iteration_c
 }
 
 #[test]
+fn run_data_limit_drains_an_empty_collection_without_inventing_an_iteration() {
+    let mut state = started(0, 1);
+    let code = FailureCode::run_data_limit();
+    state
+        .apply(&RunEvent::RunStopRequested {
+            reason: StopReason::Failed,
+            code: Some(code.clone()),
+        })
+        .expect("run stops at collection data limit");
+
+    let before_missing_reason = state.clone();
+    assert_eq!(
+        state.apply(&RunEvent::CollectionFinished {
+            node: node("items"),
+            outcome: CollectionOutcome::Failed(code.clone()),
+            result_digest: None,
+        }),
+        Err(ExecutionError::IllegalCollectionTransition {
+            collection: collection(),
+            event: "collection.finished",
+        })
+    );
+    assert_eq!(state, before_missing_reason);
+
+    let before_fictional_member = state.clone();
+    assert_eq!(
+        state.apply(&RunEvent::CollectionDrainStarted {
+            node: node("items"),
+            reason: CollectionDrainReason::Failed {
+                iteration: 0,
+                code: code.clone(),
+            },
+        }),
+        Err(ExecutionError::UnknownCollectionIteration {
+            collection: collection(),
+            index: 0,
+        })
+    );
+    assert_eq!(state, before_fictional_member);
+
+    state
+        .apply(&RunEvent::CollectionDrainStarted {
+            node: node("items"),
+            reason: CollectionDrainReason::RunDataLimit,
+        })
+        .expect("empty collection starts boundary drain");
+    let scope = state.collection(&collection()).expect("collection state");
+    assert_eq!(scope.phase(), CollectionPhase::Draining);
+    assert_eq!(scope.completed_count(), 0);
+    assert_eq!(
+        scope.drain_reason(),
+        Some(&CollectionDrainReason::RunDataLimit)
+    );
+
+    let before_result = state.clone();
+    assert_eq!(
+        state.apply(&RunEvent::CollectionFinished {
+            node: node("items"),
+            outcome: CollectionOutcome::Failed(code.clone()),
+            result_digest: Some(Digest::new([0x90; 32])),
+        }),
+        Err(ExecutionError::IllegalCollectionTransition {
+            collection: collection(),
+            event: "collection.finished",
+        })
+    );
+    assert_eq!(state, before_result);
+
+    state
+        .apply(&RunEvent::CollectionFinished {
+            node: node("items"),
+            outcome: CollectionOutcome::Failed(code.clone()),
+            result_digest: None,
+        })
+        .expect("empty data-limited collection fails without a result");
+    let scope = state.collection(&collection()).expect("collection state");
+    assert_eq!(scope.phase(), CollectionPhase::Failed);
+    assert_eq!(scope.result_digest(), None);
+    assert_eq!(
+        state
+            .step(&node("items"))
+            .map(|step| (step.status(), step.failure().cloned())),
+        Some((StepStatus::Failed, Some(code)))
+    );
+}
+
+#[test]
+fn run_data_limit_preserves_checkpointed_members_and_requires_its_exact_code() {
+    let mut state = started(1, 1);
+    admit(&mut state, 0);
+    return_and_checkpoint(&mut state, 0);
+    let code = FailureCode::run_data_limit();
+    state
+        .apply(&RunEvent::RunStopRequested {
+            reason: StopReason::Failed,
+            code: Some(code.clone()),
+        })
+        .expect("run stops at collection data limit");
+
+    let before_member_failure = state.clone();
+    assert_eq!(
+        state.apply(&RunEvent::CollectionDrainStarted {
+            node: node("items"),
+            reason: CollectionDrainReason::Failed {
+                iteration: 0,
+                code: code.clone(),
+            },
+        }),
+        Err(ExecutionError::IllegalCollectionTransition {
+            collection: collection(),
+            event: "collection.drain_started",
+        })
+    );
+    assert_eq!(state, before_member_failure);
+
+    state
+        .apply(&RunEvent::CollectionDrainStarted {
+            node: node("items"),
+            reason: CollectionDrainReason::RunDataLimit,
+        })
+        .expect("checkpointed collection starts boundary drain");
+    let scope = state.collection(&collection()).expect("collection state");
+    assert_eq!(scope.phase(), CollectionPhase::Draining);
+    assert_eq!(scope.active_count(), 0);
+    assert_eq!(scope.completed_count(), 1);
+    assert_eq!(scope.ordered_results().count(), 1);
+
+    let before_wrong_code = state.clone();
+    assert_eq!(
+        state.apply(&RunEvent::CollectionFinished {
+            node: node("items"),
+            outcome: CollectionOutcome::Failed(FailureCode::worker_error()),
+            result_digest: None,
+        }),
+        Err(ExecutionError::IllegalCollectionTransition {
+            collection: collection(),
+            event: "collection.finished",
+        })
+    );
+    assert_eq!(state, before_wrong_code);
+
+    state
+        .apply(&RunEvent::CollectionFinished {
+            node: node("items"),
+            outcome: CollectionOutcome::Failed(code.clone()),
+            result_digest: None,
+        })
+        .expect("checkpointed data-limited collection fails with exact code");
+    let scope = state.collection(&collection()).expect("collection state");
+    assert_eq!(scope.phase(), CollectionPhase::Failed);
+    assert_eq!(scope.result_digest(), None);
+    assert_eq!(scope.completed_count(), 1);
+    assert_eq!(scope.ordered_results().count(), 1);
+    assert_eq!(
+        state.step(&node("items")).and_then(|step| step.failure()),
+        Some(&code)
+    );
+}
+
+#[test]
 fn empty_collection_finishes_without_allocating_an_iteration() {
     let mut state = started(0, 1);
 

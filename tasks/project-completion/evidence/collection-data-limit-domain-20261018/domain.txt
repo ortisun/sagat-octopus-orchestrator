@@ -1,0 +1,73 @@
+   Compiling sagat-domain v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/domain)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.38s
+     Running tests/collection_reducer.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/collection_reducer-a6b907a10da44a42)
+
+running 17 tests
+test collection_finish_requires_a_digest_only_for_success ... ok
+test run_data_limit_drains_an_empty_collection_without_inventing_an_iteration ... ok
+test replay_rejects_a_return_without_its_admission_event ... ok
+test empty_collection_finishes_without_allocating_an_iteration ... ok
+test cancellation_drains_only_admitted_work_before_finishing ... ok
+test equal_body_nodes_at_separate_indices_have_distinct_instances ... ok
+test duplicate_admission_is_rejected_without_changing_state ... ok
+test permanent_failure_stops_admission_and_finishes_only_after_drain ... ok
+test concurrency_one_requires_a_durable_checkpoint_before_next_admission ... ok
+test drain_refuses_to_hide_an_attempt_that_is_still_in_flight ... ok
+test replay_uses_only_admitted_instances_and_recorded_checkpoints ... ok
+test checkpoint_results_remain_in_input_order_after_reverse_completion ... ok
+test run_data_limit_preserves_checkpointed_members_and_requires_its_exact_code ... ok
+test drain_refuses_to_hide_failed_derived_obligations ... ok
+test run_cancellation_leaves_the_collection_owner_for_transactional_drain ... ok
+test starting_a_collection_parks_the_owner_for_its_transactional_scheduler ... ok
+test storage_quota_failure_drains_admitted_work_and_replays_without_an_iteration_cause ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/collection_restore_state.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/collection_restore_state-d3c830da3163d679)
+
+running 6 tests
+test checkpointed_open_projection_equals_its_addressed_journal ... ok
+test cancelled_projection_equals_its_addressed_journal ... ok
+test draining_projection_equals_its_addressed_journal ... ok
+test succeeded_projection_equals_its_addressed_journal ... ok
+test failed_projection_equals_its_addressed_journal ... ok
+test checkpointed_run_data_limit_projection_equals_its_actual_event_state ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/scoped_compensation.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/scoped_compensation-9400452878fb9232)
+
+running 30 tests
+test a_cancellation_whose_completed_iterations_were_all_undone_ends_cancelled ... ok
+test a_scope_that_declares_nothing_to_compensate_plans_nothing ... ok
+test an_attempt_with_an_unknown_outcome_is_looked_up_before_anything_is_repeated ... ok
+test a_lookup_that_found_nothing_does_not_retry_a_stopping_scope_and_compensates_nothing ... ok
+test a_collection_stopped_by_the_storage_quota_still_undoes_its_completed_iterations ... ok
+test a_lookup_that_cannot_say_waits_for_a_person ... ok
+test a_lookup_that_found_the_effect_makes_the_step_compensable ... ok
+test a_stop_from_outside_never_gives_up_on_a_compensation_that_waits_for_a_person ... ok
+test a_data_limited_collection_waits_for_its_checkpointed_members_actual_refund ... ok
+test a_loop_that_timed_out_compensates_and_ends_timed_out_only_if_everything_was_undone ... ok
+test an_iteration_whose_member_is_being_looked_up_cannot_be_drained ... ok
+test an_unknown_outcome_is_compensated_defensively_when_the_scope_stops ... ok
+test an_operator_declaring_the_compensation_failed_ends_the_scope_compensation_failed ... ok
+test an_irreversible_effect_ends_the_scope_partial_after_the_rest_is_undone ... ok
+test a_compensation_that_keeps_failing_waits_for_a_person_and_is_never_assumed_done ... ok
+test a_collection_cannot_finish_while_its_compensation_is_open ... ok
+test an_operator_skip_leaves_the_scope_partial ... ok
+test a_cancellation_that_lands_during_compensation_changes_nothing ... ok
+test an_operator_retry_runs_the_same_compensation_again ... ok
+test a_bounded_path_derives_only_its_scope_compensation_authority_from_the_oracle ... ok
+test a_plan_must_name_real_completed_members_and_be_made_after_the_drain ... ok
+test a_failure_whose_completed_iterations_were_all_undone_ends_compensated ... ok
+test the_branches_of_a_parallel_node_inside_a_body_are_independent_in_the_order ... ok
+test compensation_fan_out_is_bounded_by_the_scope_concurrency ... ok
+test iterations_of_a_collection_are_independent_branches ... ok
+test bounded_operator_decisions_keep_failed_compensation_semantics ... ok
+test stopping_compensation_completion_retains_empty_routing_without_forward_work ... ok
+test compensation_in_one_iteration_runs_in_reverse_topological_order ... ok
+test bounded_derived_expiry_keeps_compensation_and_lookup_policy ... ok
+test completed_iterations_of_a_loop_compensate_in_reverse_iteration_order ... ok
+
+test result: ok. 30 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+

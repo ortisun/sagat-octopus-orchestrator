@@ -1,0 +1,28 @@
+{
+  "source_base": "dc504a75",
+  "local_unit": "B1b.2c.1d.0Q1a",
+  "targets": {
+    "collection_reducer": 17,
+    "collection_restore_state": 6,
+    "scoped_compensation": 30
+  },
+  "new_tests": 4,
+  "frozen_inputs": 1109,
+  "sources_unchanged": true,
+  "native_producer_available": false,
+  "execution_kind": "pure domain harness, not gRPC/provider or OS restart",
+  "files": {
+    "architecture.json": "070ed3b2f5f5bd2fb002f4987013242c9a3f9d74a681aac9d5fa76ed0495350a",
+    "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "checkpoint.md": "be50cfd375541c54904994afcbe6485b274f43a121fa8230d73cf725f85633df",
+    "clippy.json": "0baa29b43f0b0d23dc8d18e029cb4c6034939df1d2c986c6d72ea5c2747d9c5a",
+    "clippy.txt": "d870fbd4e372bf4cbb76e0d2560bcc8880b468cb65573090d98693666588a1d7",
+    "domain.json": "55339f2c5094fafd3357206a373c1390f4d4519e09e5a5cf5f5121e9b7122094",
+    "domain.txt": "9257f22db0fcead7c49b2ef368ee2eb27756427148b66af9281fe3711f896d78",
+    "fmt.json": "50e29b2a40a9380cf9086fbd8db90e40fc0181843b47daf7b319f6e6784d89fa",
+    "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "reproduce.md": "9401b1b75d993f679d7de90ae7f91e80c5cf35d8cdd7c1e00e4470ded7da3a74",
+    "source-after.json": "6ec64af7acd39a871e361b9e5d60f8770f0d5c0eee60f1838e56d5cfb6058408",
+    "source-before.json": "6ec64af7acd39a871e361b9e5d60f8770f0d5c0eee60f1838e56d5cfb6058408"
+  }
+}

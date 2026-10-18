@@ -1,0 +1,22 @@
+{
+  "command": [
+    "cargo",
+    "clippy",
+    "--locked",
+    "-p",
+    "sagat-domain",
+    "--test",
+    "collection_reducer",
+    "--test",
+    "collection_restore_state",
+    "--test",
+    "scoped_compensation",
+    "--",
+    "-D",
+    "warnings"
+  ],
+  "exit_code": 0,
+  "seconds": 4.43,
+  "started_utc": "2026-10-18T18:22:05.261217+00:00",
+  "log": "clippy.txt"
+}

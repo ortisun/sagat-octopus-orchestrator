@@ -1261,6 +1261,82 @@ fn a_collection_stopped_by_the_storage_quota_still_undoes_its_completed_iteratio
     );
 }
 
+#[test]
+fn a_data_limited_collection_waits_for_its_checkpointed_members_actual_refund() {
+    let mut scope = Scope::start(
+        collection_definition(vec![step("reserve", true, false)], 1),
+        "lines",
+    );
+    scope.enter_collection(1, 1);
+    scope.admit_collection(0, "reserve");
+    let reserve = scope.at(0, "reserve");
+    scope.complete(&reserve);
+    scope.checkpoint_collection(0);
+    let code = FailureCode::run_data_limit();
+    scope.event(RunEvent::RunStopRequested {
+        reason: StopReason::Failed,
+        code: Some(code.clone()),
+    });
+    scope.event(RunEvent::CollectionDrainStarted {
+        node: scope.owner.node().clone(),
+        reason: CollectionDrainReason::RunDataLimit,
+    });
+
+    let chosen = scope.advance();
+    let (cause, entries) = chosen
+        .iter()
+        .find_map(|event| match event.event() {
+            RunEvent::ScopeCompensationPlanned { cause, entries, .. } => {
+                Some((cause.clone(), entries.clone()))
+            }
+            _ => None,
+        })
+        .expect("checkpointed effect creates a compensation plan");
+    assert_eq!(cause, code);
+    assert_eq!(
+        entries
+            .iter()
+            .map(|entry| entry.instance.clone())
+            .collect::<Vec<_>>(),
+        vec![reserve]
+    );
+    let refund = scope.at(0, "reserve~c");
+    assert_eq!(scope.ready_compensation(), Some(refund.clone()));
+    assert_eq!(
+        scope
+            .state
+            .scope_saga(&scope.owner)
+            .map(|saga| saga.phase()),
+        Some(SagaPhase::Compensating)
+    );
+
+    let finish = RunEvent::CollectionFinished {
+        node: scope.owner.node().clone(),
+        outcome: sagat_domain::execution::CollectionOutcome::Failed(code.clone()),
+        result_digest: None,
+    };
+    assert!(
+        scope.state.clone().apply(&finish).is_err(),
+        "the collection cannot finish before its real refund"
+    );
+
+    scope.complete(&refund);
+    scope.advance();
+    let saga = scope.state.scope_saga(&scope.owner).expect("scope saga");
+    assert_eq!(saga.phase(), SagaPhase::Done);
+    assert_eq!(saga.outcome(), Some(Outcome::Compensated));
+    scope.event(finish);
+    assert_eq!(scope.step_status(&scope.owner), StepStatus::Failed);
+    assert_eq!(
+        scope
+            .state
+            .instance(&scope.owner)
+            .and_then(|step| step.failure()),
+        Some(&code)
+    );
+    scope.assert_replays();
+}
+
 // -------------------------------------------------------------------- scopes with no compensation
 
 #[test]
