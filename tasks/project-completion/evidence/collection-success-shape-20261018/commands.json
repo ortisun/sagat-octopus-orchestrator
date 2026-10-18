@@ -1,0 +1,87 @@
+[
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-domain",
+      "--test",
+      "collection_success_shape",
+      "--",
+      "--nocapture"
+    ],
+    "exit_code": 101,
+    "seconds": 0.69,
+    "log": "missing-api.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-domain",
+      "--test",
+      "collection_success_shape",
+      "--",
+      "--nocapture"
+    ],
+    "exit_code": 101,
+    "seconds": 4.68,
+    "log": "first.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-domain",
+      "--test",
+      "collection_success_shape",
+      "--",
+      "--nocapture"
+    ],
+    "exit_code": 0,
+    "seconds": 4.3,
+    "log": "second.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "clippy",
+      "--locked",
+      "-p",
+      "sagat-domain",
+      "--all-targets",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit_code": 0,
+    "seconds": 10.18,
+    "log": "clippy.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "fmt",
+      "--all",
+      "--",
+      "--check"
+    ],
+    "exit_code": 0,
+    "seconds": 4.11,
+    "log": "fmt.txt"
+  },
+  {
+    "command": [
+      "python3",
+      "scripts/check-architecture.py"
+    ],
+    "exit_code": 0,
+    "seconds": 0.32,
+    "log": "architecture.txt"
+  }
+]

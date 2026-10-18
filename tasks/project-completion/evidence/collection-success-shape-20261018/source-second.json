@@ -1,0 +1,5 @@
+{
+  "crates/domain/src/workflow.rs": "4334a0181a5fc5d2b0a97f5c0da25573851df8a03b9612876c2fb4650dda76e3",
+  "crates/domain/src/workflow/collection_shape.rs": "0b883bd651cc4aab7ca8193194f44d9c3f2b617b73e7cdce4eee4707b5f325eb",
+  "crates/domain/tests/collection_success_shape.rs": "4d183a18690aee2bffee5546edeff42c24901b198277c8a2df9e6f6f3ae60ecb"
+}

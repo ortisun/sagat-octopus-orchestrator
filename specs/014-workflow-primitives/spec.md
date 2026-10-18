@@ -512,3 +512,10 @@ increments its transition counter; receipt replay and uncertain acknowledgement 
 receipts remain authority and abandoned calls have no returned outcome. These are internal
 dormant observations, with no production caller or activation. Full B1/B2, scoped finality,
 retention/mixed writers, nested runtime and broader acceptance gates remain pending.
+
+
+The initial leaf-success source proof has a pure versioned definition-shape predicate: a selected
+ordinary activity-chain body with one to eight activities/return in a frozen root collection chain.
+This is definition metadata only, with owner/body-qualified IDs and no persisted version/run or
+settlement authority. Matching pinned source facts, immutable certification storage and actual
+producer race/restart evidence remain prerequisites before any scoped Finish.

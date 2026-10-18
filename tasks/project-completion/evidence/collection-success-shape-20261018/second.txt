@@ -1,0 +1,16 @@
+   Compiling sagat-domain v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/domain)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.05s
+     Running tests/collection_success_shape.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/collection_success_shape-6ea8a096348f7662)
+
+running 8 tests
+test scoped_or_noncollection_owner_cannot_alias_the_root_owner ... ok
+test a_root_activity_after_a_collection_is_outside_the_frozen_chain_shape ... ok
+test broader_body_controls_and_error_routes_fail_closed ... ok
+test equal_local_ids_and_another_scopes_effects_do_not_change_selected_body_qualification ... ok
+test ordinary_prefix_is_accepted_but_lowered_script_prefix_is_not ... ok
+test rejects_empty_and_over_eight_bodies ... ok
+test accepts_one_and_eight_in_actual_route_order_without_version_or_run_authority ... ok
+test activity_representation_does_not_hide_scripts_companions_or_effect_policy ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

@@ -1,0 +1,114 @@
+{
+  "base": "fbf66a0f",
+  "scope": "B1b.2a.1b static definition shape only",
+  "commands": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-domain",
+        "--test",
+        "collection_success_shape",
+        "--",
+        "--nocapture"
+      ],
+      "exit_code": 101,
+      "seconds": 0.69,
+      "log": "missing-api.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-domain",
+        "--test",
+        "collection_success_shape",
+        "--",
+        "--nocapture"
+      ],
+      "exit_code": 101,
+      "seconds": 4.68,
+      "log": "first.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-domain",
+        "--test",
+        "collection_success_shape",
+        "--",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "seconds": 4.3,
+      "log": "second.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "-p",
+        "sagat-domain",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "seconds": 10.18,
+      "log": "clippy.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "seconds": 4.11,
+      "log": "fmt.txt"
+    },
+    {
+      "command": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "exit_code": 0,
+      "seconds": 0.32,
+      "log": "architecture.txt"
+    }
+  ],
+  "final_tests": {
+    "passed": 8,
+    "failed": 0,
+    "command_seconds": 4.3
+  },
+  "source_final": "source-final.json",
+  "no_sql_or_runtime_authority": true,
+  "evidence_sha256": {
+    "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "clippy.txt": "249c538bdab413d6518faaec872335d44258b483a7e3d0745b0cadb02ebac078",
+    "commands.json": "4ecaa526b71a47824f18069581264e1df24b136d4d2a6446824a2dc7fefcdee9",
+    "first.txt": "632a5838e829c0c3c3f559c114c82bb5d3d09341e574ff70f52c7a7bad4d6225",
+    "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "implementation.diff": "1063295c84fae1cce219637b84058363a633bdef02db77477db65ab274655e8a",
+    "missing-api.txt": "4f098b1998f0b4048efba206e494b92a6473aea89dc366ca0e3520a6b7264d9a",
+    "reproduce.md": "878486aae4873ec69e6480e25e3bb60243b651fc8a086958ebebd2c55ff81680",
+    "review.md": "21e8192265c7108c3b33f3db411cf00f02a022f4b52eaf0d5a05b6d639bc45ac",
+    "second.txt": "795dc91a0c1c16b24a0d19e8440a7338ba3bfe329f5600ad3d889f190ce153c9",
+    "source-final.json": "6df5201f9d718b05c2476d898a5e51d27694f0e5f3dfbaf890fa4b1213e18d79",
+    "source-first.json": "a34227f7ba92c582ee730ed06c3b768942b3bfcf72097a1e1c9dadd7e41f5221",
+    "source-missing-api.json": "78e1eddf76ad402655e6fd60688c165ca2fdbf9d06e02647bd2225c9c2a9cc90",
+    "source-second.json": "6df5201f9d718b05c2476d898a5e51d27694f0e5f3dfbaf890fa4b1213e18d79"
+  }
+}

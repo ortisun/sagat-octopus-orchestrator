@@ -1,0 +1,9 @@
+   Compiling sagat-domain v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/domain)
+error[E0432]: unresolved import `sagat_domain::workflow::LeafCollectionSuccessShape`
+ --> crates/domain/tests/collection_success_shape.rs:9:47
+  |
+9 |     ActivityName, BodyDefinition, Expression, LeafCollectionSuccessShape, Node, NodeId, NodeKind,
+  |                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^ no `LeafCollectionSuccessShape` in `workflow`
+
+For more information about this error, try `rustc --explain E0432`.
+error: could not compile `sagat-domain` (test "collection_success_shape") due to 1 previous error

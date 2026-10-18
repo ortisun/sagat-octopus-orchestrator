@@ -20,6 +20,9 @@
 //! Wire formats (JSON) are an adapter concern: this module holds no serialization, and expressions
 //! are opaque text evaluated by an adapter (`FR-002-001`, ADR-0003).
 
+mod collection_shape;
+pub use collection_shape::{CollectionSuccessShapeError, LeafCollectionSuccessShape};
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::time::Duration;

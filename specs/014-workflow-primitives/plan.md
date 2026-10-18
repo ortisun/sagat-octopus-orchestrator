@@ -450,3 +450,10 @@ no aggregate/history hydration. Before SQL, add the versioned pure shape predica
 source-certification record/audit/retention/API, then prove actual producer preservation and restart.
 The reviewed source-writer choice is not current implementation evidence. See
 capacity-leaf-success-certification.md under tasks/project-completion.
+
+
+B1b.2a.1b now has the pure version1 LeafCollectionSuccessShape classifier and8focused tests.
+It follows actual root/body routes, qualifies local IDs and explicitly detects lowered scripts,
+derived producers and effect settings. It scans bounded static definition metadata, not runtime
+history, and proves no publication/version pin/source finality. API/record/source-writer and real
+producer/restart gates remain next; do not activate scoped capacity from this pure result.

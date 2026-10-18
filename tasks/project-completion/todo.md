@@ -77,7 +77,7 @@ not a SQL port or own-member authority. See evidence/capacity-header-restore-202
   later work creation and retain exact immutable source/obligation evidence before storage.
 - [x] B1b.2a.1a: Review a separate post-success certification transaction for one ordinary
   depth-1 leaf collection path; typed predicate, storage and writer proof remain pending.
-- [ ] B1b.2a.1b: Implement the pure versioned definition-shape predicate; no pin/source authority.
+- [x] B1b.2a.1b: Implement the pure versioned definition-shape predicate; no pin/source authority.
 - [ ] B1b.2a.1c: Review certification API/immutable record/receipt/audit/retention before source SQL.
 - [ ] B1b.2a.1d: Prove exact successful source certification and actual producer races/restart;
   failed/drained/effect-bearing paths need their own source-closure contract.

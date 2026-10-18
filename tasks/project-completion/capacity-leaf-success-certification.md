@@ -14,8 +14,7 @@ are not proof. It takes no G lock and changes no execution state or terminal jou
 The pinned definition must satisfy a versioned checked shape: the current public root collection
 chain, optionally its supported ordinary source prefix, and selected body with one to eight
 sequential ordinary activities then return. This first case excludes body branches/error edges,
-controllers/children, scripts/managed operations, compensation/reconciliation declarations and
-irreversible/high-risk policy. A missing or broader shape refuses certification. The implementation
+controllers/children, scripts/managed operations, compensation/reconciliation declarations and any effect-policy settings. A missing or broader shape refuses certification. The implementation
 must define the exact typed predicate before storage; a publisher capability flag is insufficient.
 The path has exactly one segment naming the actual root ForEach owner and admitted index.
 
@@ -84,3 +83,12 @@ Independent fresh Astra/xhigh bounded review cycle1 found no concrete issue afte
 routing/lifecycle/effect/drain/compensation producers. This is source review, not a writer proof.
 Root narrows the broader draft to successful ordinary leaf bodies; all drain/effect cases remain
 separate prerequisites. Existing user choice retains current review; no external review CLI.
+
+
+The pure LeafCollectionSuccessShape definition predicate is implemented as version1. It qualifies
+ordered activity/return IDs by root owner/body and checks the frozen surrounding collection graph.
+It rejects all selected-body EffectPolicy settings, including otherwise inert compensation budget
+metadata. Other referenced linear bodies may retain their own declared effects. This is static
+shape only: it deliberately carries no workflow-version/run/settled flag and gives no pin/source
+proof. Source certification/API/storage/actual producer barriers remain pending. Evidence:
+evidence/collection-success-shape-20261018.

@@ -2616,3 +2616,21 @@ canonical protobuf compilation, identity/schema/public IR contracts, not SDK cli
 HostNode26.11.1 differs from CI22/Linux; no exact environment parity. Npx transitive dependencies
 remain unpinned as in CI. T014-043 and broader release/runtime/SDK/resource gates stay open.
 Evidence: tasks/project-completion/evidence/canonical-contracts-20261018/manifest.json.
+
+
+## Pure successful collection shape — 2026-10-18
+
+Refs:T014-014/017/040. B1b.2a.1b introduces only a version1 pure definition classifier for a root
+collection owner and ordered selected ordinary activity body1..8→return. Frozen surrounding root/
+body checks fail closed; encoded scripts, declared companions/effects, body controls/error edges,
+nested/wrong owners and postcollection activities reject. Local IDs remain qualified by root
+owner/body, including another body's independent effects. No version pin, source facts, database,
+run state, capability or runtime activation is established.
+
+MissingAPI compile failure is retained, not behavioral RED. Initial7/8 had an invalid short-slug
+fixture; review also identified that managed DB+collection is already refused by the domain
+constructor. The unreachable predicate fixture was removed, not claimed as predicate DB coverage;
+the explicit defensive check remains. Final8/8 (4.30s command), strict domain/all-targetClippy10.18s,
+fmt4.11s and24-crate architecture pass. Fresh Astra/xhigh cycle1 found that fixture issue, cycle2
+found none. API/schema/source-writer/producer barrier/restart and broader B1/B2/runtime gates remain
+open. Evidence: tasks/project-completion/evidence/collection-success-shape-20261018/manifest.json.
