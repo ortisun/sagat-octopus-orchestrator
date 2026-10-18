@@ -62,7 +62,7 @@ tonic.workspace = true
 prost.workspace = true
 prost-types = "0.14"
 protox.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "net"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "net", "process"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 

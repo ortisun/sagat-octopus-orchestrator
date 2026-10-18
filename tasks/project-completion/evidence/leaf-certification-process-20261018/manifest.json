@@ -1,0 +1,104 @@
+{
+  "base": "758ab955",
+  "scope": "B1b.2a.1d.3c.2 native reconciliation-client OS process recovery only",
+  "commands": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "leaf_certification_native::process::killed_native",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 101,
+      "seconds": 33.02,
+      "log": "first.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "leaf_certification_native::process::killed_native",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 40.65,
+      "log": "green.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "log": "clippy.txt",
+      "exit_code": 0,
+      "seconds": 14.21
+    },
+    {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "log": "fmt.txt",
+      "exit_code": 0,
+      "seconds": 4.12
+    },
+    {
+      "command": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "log": "architecture.txt",
+      "exit_code": 0,
+      "seconds": 0.36
+    }
+  ],
+  "final_source": {
+    "tests/Cargo.toml": "d22f2cd4d670ad71377b944a0a4c347898e2d74e057e1ca3fb18371dcbbc71fa",
+    "tests/integration/workflow-primitives/leaf_certification_native.rs": "92a5b36b2061745884bbe531cb0db72fa1ca3e0ea23bffb44e35ce1a25db7b9d",
+    "tests/integration/workflow-primitives/leaf_certification_process.rs": "65e1222b205b288e2194249668c993b14f5400b61f3150448e85180b4c14fe33",
+    "tests/integration/workflow-primitives/leaf_certification_commit_loss.rs": "ab20f174accfc5d0db192ce64b2bc29b5fc81c572bfbfc2a5119a6155b4a2e8b",
+    "tests/integration/workflow-primitives/capacity_finish_proxy.rs": "98838f211342a30320300786c474e46f0cd87005a9d5674e1787d07a5b662b23",
+    "crates/infra-postgres/src/leaf_certification.rs": "caae3491985e749d84e3bd736fd3362aa8687526966f0d2694358c44aa259cde"
+  },
+  "fresh_review_cycles": 1,
+  "external_cli": false,
+  "files": {
+    "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "clippy.txt": "e0dcd061585a800d41df9214881361c497ac6c3668adca21253879f51ff7f254",
+    "commands.json": "d8f370dcb0bc66d0b16e2607dac53628528dff43b839196c78158b043e3cfa04",
+    "first.txt": "f2e79f4ed27b114c6ddfa73fcef9946b82bcf1a45b25e7ca29aaff8faef1d58b",
+    "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "gates.json": "2e7ee44217112ded309331328d1cb27bb3f5112e6bf033555c339e52a8caa52f",
+    "green.txt": "2bd981b2bb42b2afbc37cebcd7e144143d700d3890a91570e18402579a77e683",
+    "implementation.diff": "5067d5001a47a105eacea56cd5b87da46e39bf07d41c9983ba4318d705c8d50f",
+    "reproduce.md": "f1a531bc999b175cacfea31032a476005422accbe0a9658267b7e9b9829ac85d",
+    "review.md": "ad91cabec3b6f97b466a4db26af7fb20cbbb82ffe9117ba515c21ebd9e7a6e20",
+    "source-first.json": "7e74903800f7c86a68f768587ca13cac4aa57d3b0e289707e0d853e2c9c87deb",
+    "source-green.json": "51fb5f24fa5ce0f59c03c2f5700ce658c25a470b3df54f9450c6fbd755987c7e"
+  }
+}

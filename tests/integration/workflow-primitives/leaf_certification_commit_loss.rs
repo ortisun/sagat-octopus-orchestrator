@@ -8,7 +8,7 @@ use super::{
 use crate::support::eventually;
 use tokio::time::timeout;
 
-async fn install_commit_probe(f: &Flow, key: i64, resolution: CommitResolution) {
+pub(super) async fn install_commit_probe(f: &Flow, key: i64, resolution: CommitResolution) {
     let outcome = match resolution {
         CommitResolution::Committed => "RETURN NEW;",
         // The relay validates this exact synthetic constraint marker on its ErrorResponse.
@@ -26,7 +26,7 @@ async fn install_commit_probe(f: &Flow, key: i64, resolution: CommitResolution) 
         .expect("test-only deferred COMMIT probe");
 }
 
-async fn waiting_commit(f: &Flow, gate: i32) -> i32 {
+pub(super) async fn waiting_commit(f: &Flow, gate: i32) -> i32 {
     // Reuse the already reviewed one-shot wire relay; its test-only application name is retained.
     eventually("actual leaf COMMIT is executing behind the test gate", || async {
         sqlx::query_scalar::<_, i32>("SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND application_name='sagat-test-capacity-commit-loss' AND query='COMMIT' AND wait_event_type='Lock' AND $1=ANY(pg_blocking_pids(pid))")
@@ -34,7 +34,7 @@ async fn waiting_commit(f: &Flow, gate: i32) -> i32 {
     }).await
 }
 
-async fn own_guards_held(f: &Flow) {
+pub(super) async fn own_guards_held(f: &Flow) {
     let c = command(f).await;
     let run = sqlx::query(
         "SELECT id FROM runs WHERE tenant_id=$1 AND namespace_id=$2 AND id=$3 FOR KEY SHARE NOWAIT",

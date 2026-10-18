@@ -102,11 +102,11 @@ not a SQL port or own-member authority. See evidence/capacity-header-restore-202
   actual original-Run lock queue orders; no full producer-preservation acceptance follows.
 - [x] B1b.2a.1d.3b.2: Race actual successful collection closure from a scheduler checkpoint
   against certification in both observed flat Run queue orders; fresh CAS and producer replay.
-- [ ] B1b.2a.1d.3c: Test real uncertain-COMMIT outcomes, fresh same-identity reconciliation and
+- [x] B1b.2a.1d.3c: Test real uncertain-COMMIT outcomes, fresh same-identity reconciliation and
   reconstruction after restart; absence requires fresh CAS and complete source proof.
 - [x] B1b.2a.1d.3c.1: Lose actual dispatched COMMIT replies for committed/aborted outcomes and
   prove unresolved original-Run fencing and fresh direct reconstruction without assumed rollback.
-- [ ] B1b.2a.1d.3c.2: Kill and restart an actual native reconciliation process against retained
+- [x] B1b.2a.1d.3c.2: Kill and restart an actual native reconciliation process against retained
   identity/current authority; distinguish it from a control-plane or execution-engine restart.
 - [ ] B1b.2a.1d.3d: Add closed observations and actual export/count/redaction evidence, then
   consider a separate released INSERT migration only after all source-writer gates pass.
@@ -133,8 +133,16 @@ Unknown-COMMIT unit: actual leaf commit and23514abort replies lost, retained Run
 same-identity wait observed, explicit server resolution followed by new pool/cache/store and fresh
 revision/authority discovery; exact1fact/audit and unchanged source/run/journal. Both shared proxy
 consumers passed2/2, targeted Clippy/fmt/architecture passed, third fresh review found no issue.
-Object reconstruction only; native reconciliation-process restart remains open. See
+That increment proves object reconstruction only. See
 evidence/leaf-certification-commit-loss-20261018.
+
+Native process recovery unit: actual OS child observes original-Run wait, is killed/reaped while
+original COMMIT remains unresolved, and leaves no result. After confirmed commit/abort and natural
+backend cleanup, another OS process uses retained identity/new pool/cache and discovers a newly
+acquired scheduler generation. Both outcomes recover exactly1fact/audit without source/run/journal
+mutation.1matrix test contains2fresh flows and4actual child processes;1fresh review found no issue.
+This is native reconciliation-client restart, not original-writer/control-plane/engine restart.
+See evidence/leaf-certification-process-20261018. Other producer/observation/release gates stay open.
 - [ ] B1b.2b: Review scoped binding/fingerprint/receipt/retention extension and its actual queries.
 - [ ] B1b.2c: Review nested/child relationship closure and remaining quiescence/transition authority.
 

@@ -1,0 +1,8 @@
+{
+  "tests/Cargo.toml": "d22f2cd4d670ad71377b944a0a4c347898e2d74e057e1ca3fb18371dcbbc71fa",
+  "tests/integration/workflow-primitives/leaf_certification_native.rs": "92a5b36b2061745884bbe531cb0db72fa1ca3e0ea23bffb44e35ce1a25db7b9d",
+  "tests/integration/workflow-primitives/leaf_certification_process.rs": "578f69c748a611f3ed1f4d8c8aa941d4cc57d2ad427ebd1ae783803a7e01c463",
+  "tests/integration/workflow-primitives/leaf_certification_commit_loss.rs": "ab20f174accfc5d0db192ce64b2bc29b5fc81c572bfbfc2a5119a6155b4a2e8b",
+  "tests/integration/workflow-primitives/capacity_finish_proxy.rs": "98838f211342a30320300786c474e46f0cd87005a9d5674e1787d07a5b662b23",
+  "crates/infra-postgres/src/leaf_certification.rs": "caae3491985e749d84e3bd736fd3362aa8687526966f0d2694358c44aa259cde"
+}

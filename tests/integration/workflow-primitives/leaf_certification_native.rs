@@ -27,6 +27,8 @@ mod commit_loss;
 use crate::capacity_finish::commit_proxy;
 #[path = "leaf_certification_late_reports.rs"]
 mod late_reports;
+#[path = "leaf_certification_process.rs"]
+mod process;
 #[path = "leaf_certification_refusals.rs"]
 mod refusals;
 

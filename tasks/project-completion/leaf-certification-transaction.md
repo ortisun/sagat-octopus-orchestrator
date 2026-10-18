@@ -110,7 +110,14 @@ evidence/leaf-certification-closure-20261018. This does not close other producer
 Actual dispatched-COMMIT response loss and fresh direct pool/cache/store reconstruction are
 covered in evidence/leaf-certification-commit-loss-20261018 for both confirmed backend outcomes.
 The original qualified Run and shared scheduler fence remain held while the client sees Unknown;
-cancellation of a blocked reconciler proves no original rollback. This is not process restart.
+cancellation of a blocked reconciler proves no original rollback. That increment is not process restart.
+Separate evidence/leaf-certification-process-20261018 kills/reaps an actual OS reconciliation client
+while its native Run query waits on the unresolved original writer. After actual commit/abort,
+the old backend disappears naturally; a new process reads only retained qualified identity and
+discovers current revision/new scheduler owner and generation with a new pool/cache/store.
+Committed source replays the original audit ID; aborted source creates after fresh bounded proof.
+Exactly1fact/audit and unchanged source/run/journal are asserted. This covers reconciliation-client
+process restart only, not a crash of the original writer, control plane or execution engine.
 No source UPDATE immutability, old-writer/C0, scoped Finish or nesting acceptance follows.
 
 Fresh Astra/xhigh cycle1 found that row count did not bound steps.activity bytes; explicit SQL
