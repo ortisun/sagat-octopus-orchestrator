@@ -71,3 +71,15 @@ not a SQL port or own-member authority. See evidence/capacity-header-restore-202
   Two bounded source reviews; no SQL or complete B1b acceptance. See capacity-member-finality.md.
 - [ ] B1b.2: Define scoped-path settlement and remaining current-member quiescence/transition
   authority before any production Vacate/Acquire or path Finish.
+
+## B2 dormant Finish increments
+
+This restricted proof depends on A1+B0+B1a+B1b.1; it refines the full B2 dependency for this
+fixture-only slice, without closing B1/B2 or permitting any production caller/creation/activation.
+
+- [x] B2a: Freeze reviewed exact ChildRoot Finish schema/receipt/authority/recovery contract.
+- [ ] B2b: Add truthful audit/resource tags and closed canonical AsyncAPI hint vocabulary.
+- [ ] B2c: Add dormant schema/classification, real constraints/privileges/tombstones/downgrade tests.
+- [ ] B2d: Implement exact bounded native Finish with real current FINAL/fence and atomic replay.
+- [ ] B2e: Prove contention, expiry, duplicate/stale, confirmed rollback and unknown-COMMIT recovery.
+- [ ] B2f: Add closed observations and requirement/test/contract evidence; broader gates stay pending.

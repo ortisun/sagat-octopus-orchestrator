@@ -387,3 +387,10 @@ B1b.1 child-root Finish authority is reviewed: exact current own-chain/head/segm
 terminal outcome, guarded member binding and current own scheduler fence. Never infer finality
 from CONTINUED, historical run status or parent terminality. See capacity-member-finality.md in
 tasks/project-completion; bounded SQL schema/receipts/port and other B1 families remain pending.
+
+B2a scoped storage contract is reviewed (capacity-finish-storage.md). Refine the local B2 dependency:
+the dormant exact child-root Finish proof depends on A1+B0+B1a+B1b.1 only and cannot activate
+runtime, close full B1/B2, create/reserve groups or claim complete capacity accounting. All other
+B1 decisions still precede their corresponding persistence/runtime integrations. Implement
+vocabulary → schema → exact port → real barriers/recovery → observations in separate increments;
+retain B1a's actual retained-usage gate for a later command with a real delta.

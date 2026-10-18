@@ -609,3 +609,11 @@ fact for Held and no holder fact otherwise. Every malformed supplied header retu
 InconsistentSnapshot; exhausted but consistent headers restore without resetting. Facts must come
 from a future guarded adapter, not caller assertions. This is not a wire change, database proof,
 current-path authority or runtime eligibility; no nested capability is enabled.
+
+### Dormant ChildRoot Finish storage
+
+[Scoped native contract](../../../tasks/project-completion/capacity-finish-storage.md): one exact
+current own child-chain FINAL member, three metadata tables, current fence, whole-TX group Busy
+and same-command unknown-COMMIT reconciliation. No RLS claim, generic creator, usage projection,
+production caller or public runtime activation. New audit/hint vocabulary, schema constraints,
+actual runtime-role native port and recovery tests must precede any use. Full B1/B2 remain open.

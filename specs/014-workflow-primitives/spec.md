@@ -476,3 +476,9 @@ the source/catalog deadlock; nested groups and remaining B0/B1 work stay unaccep
 Capacity recovery has checked pure header restoration preserving revision/epoch and verifying
 count/possession/holder consistency. This does not establish database or own-member authority;
 SQL lifecycle, B1 completion and nested execution remain pending.
+
+The first dormant capacity storage proof is restricted to Finish of an existing ChildRoot member
+after exact current chain/head/segment FINAL under its own fence. Groups are fixture-seeded only;
+no production creator, caller, admission/accounting or execution capability is accepted. It leaves
+terminal run journals unchanged and requires an atomic group receipt/journal, truthful audit and
+reference hint. The scoped contract is tasks/project-completion/capacity-finish-storage.md.

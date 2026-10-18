@@ -244,3 +244,10 @@ Continue story by story: failing contract/invariant tests → pure domain → tr
 public APIs/SDKs → failure/security/observability evidence → documented happy/failure demo. Existing
 v1 workflows and their tests stay supported throughout. Roll back new publication/start first and
 keep compatible readers for in-flight runs. No runtime implementation task is checked solely because its specification exists.
+
+## Dormant capacity storage checkpoint — 2026-10-18
+
+T014-014..017/040 remain open. B2a defines the first fixture-only exact ChildRoot Finish storage
+proof after reviewed A1/B0/B1a/B1b.1. No production group creation/admission/accounting, scheduler
+caller or nesting is authorized by this contract. Vocabulary/schema/port/fault/observation evidence
+are still pending; follow tasks/project-completion/todo.md without checking canonical runtime tasks.

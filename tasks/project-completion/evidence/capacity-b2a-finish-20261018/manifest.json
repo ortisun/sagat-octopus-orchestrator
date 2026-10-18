@@ -1,0 +1,31 @@
+{
+  "source_base": "49ee19976036813b74a731534fe5e189e5decf3c",
+  "recorded_utc": "2026-10-18T07:30:54.718095+00:00",
+  "scope": "B2a dormant exact ChildRoot Finish storage contract only",
+  "reviews": {
+    "schema_cycles": 1,
+    "operation_cycles": 2,
+    "model": "gpt-6-astra/xhigh fresh-context read-only",
+    "final": "no remaining concrete issues",
+    "external_cli": false
+  },
+  "tests": "No code/runtime change or tests; all storage evidence pending",
+  "limits": [
+    "Fixture-only baseline, no production creator/caller/admission/accounting",
+    "No RLS or global deadlock/eligibility/old-writer/nesting guarantee",
+    "Protectedmetadata Finish has no retaineddelta; actual retainedusage gate stays pending"
+  ],
+  "source_sha256": {
+    "tasks/project-completion/capacity-finish-storage.md": "a9ec53f43f4ea0775d64cebab11f0f4b77da42920ba5e93260de5f415da8e56f",
+    "specs/014-workflow-primitives/spec.md": "5e9f2296538c00c404b333f3b02f011983a597407b5180003d717b377cd6265b",
+    "specs/014-workflow-primitives/plan.md": "cbbecce5202379e5ae637ab6b8de7dec632a536cabf7310dd3a873c676381264",
+    "specs/014-workflow-primitives/tasks.md": "1ab022ad98cd217035207004e4a396fb9f7975558632d16d66828db0ad8b2b4f",
+    "specs/014-workflow-primitives/contracts/README.md": "83273e27d87b67457b84c8bf884577f98271da13c5f688a0aa7099d916d32475",
+    "tasks/project-completion/todo.md": "cb63cdeab4d280acbf12a1d1447d5ffa958bcd8a05dcb59ee84740d2ab41c356"
+  },
+  "evidence_sha256": {
+    "artifact.md": "a9ec53f43f4ea0775d64cebab11f0f4b77da42920ba5e93260de5f415da8e56f",
+    "claim.md": "af196e79911fa13c7492d7354c6fcf3786c961b592755490bf87a8a916692e3b",
+    "review.md": "60fb947f71182a1892307d62e495d555db8e3bcfa1848f3441e93d36fec26b4c"
+  }
+}
