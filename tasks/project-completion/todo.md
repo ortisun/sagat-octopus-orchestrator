@@ -399,3 +399,15 @@ Source/evidence:5ad34370, `tasks/project-completion/evidence/legacy-cancellation
 This supersedes the earlier cancellation-first pending status only. Ordinary E>limit is accepted
 for these three orderings; under-limit increment, Applied, OS-process/uncertain-COMMIT recovery,
 output-dependent old compensation, full Q10c and all eight canonical014 tasks remain open.
+
+
+### Current canonical contracts — 2026-10-18
+
+Evidence commit e80c061a records gates on source23127c38. All four repository CI contract commands pass: OpenAPI3.75s, Protobuf0.14s,
+AsyncAPI4.54s (zero errors/warnings, one informational version notice), IR/example1.99s.
+One real Rust invocation passes classification18/18, platform30/30 and primitives47/47,
+zero ignored/failures,78.73s including compilation.1125 native input hashes match before/after.
+Local Node26 differs from CI22 and npx resolution remains as configured; no tooling update is
+claimed. Evidence: `tasks/project-completion/evidence/current-canonical-contracts-20261018/README.md`.
+This is partial T014-043 evidence only; workspace/Compose/final integration and activation gates
+remain separate and canonical checkboxes are unchanged.
