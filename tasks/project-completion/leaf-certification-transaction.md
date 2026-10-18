@@ -118,6 +118,13 @@ Run) and after proof/inserts during its actual deferred COMMIT (Run and shared s
 remain held). It expires exactly one later leased step and closes its session without waiting for
 Run; selected source, Run and journal stay unchanged. It is not a Run-serialized producer.
 Evidence: evidence/leaf-certification-binding-20261018. This does not cover other ambient writers.
+Actual effectful later scope planning is also covered for known completed charge/refund work,
+followed by permanent failure or READY cancellation. Deferred actual planning/certification COMMIT
+barriers establish both writer orders, including the planner's second Run acquisition after its
+preliminary restore. The later owner receives the real saga/header/entry/event and refund task;
+selected ordinary source/saga absence remains unchanged through COMPENSATED/CANCELLED termination.
+Evidence: evidence/leaf-certification-saga-20261018. Other producers/unknown-effect reconciliation,
+active-lease cancellation, chain/C0 and full release preservation remain independently open.
 Actual dispatched-COMMIT response loss and fresh direct pool/cache/store reconstruction are
 covered in evidence/leaf-certification-commit-loss-20261018 for both confirmed backend outcomes.
 The original qualified Run and shared scheduler fence remain held while the client sees Unknown;

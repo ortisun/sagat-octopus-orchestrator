@@ -37,6 +37,8 @@ mod observations;
 mod process;
 #[path = "leaf_certification_refusals.rs"]
 mod refusals;
+#[path = "leaf_certification_saga.rs"]
+mod saga;
 
 fn document(name: &str) -> Value {
     let mut d = collection_document(

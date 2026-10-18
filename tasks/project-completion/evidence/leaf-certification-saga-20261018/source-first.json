@@ -1,0 +1,8 @@
+{
+  "tests/integration/workflow-primitives/leaf_certification_native.rs": "09a671fe9fa26632664f180b251895ffd2379a804d6a713e1932ed39e2ffc2a6",
+  "tests/integration/workflow-primitives/leaf_certification_saga.rs": "9820c2981234614bcdd31cb935f0938242204fd71fb88b91dc47f87bb089a02f",
+  "tests/integration/workflow-primitives/leaf_certification_commit_loss.rs": "ab20f174accfc5d0db192ce64b2bc29b5fc81c572bfbfc2a5119a6155b4a2e8b",
+  "crates/infra-postgres/src/leaf_certification.rs": "6c866d2be5bbce07dbefc1aada3c904bc08e4d3d3c45c818960c8db4bde57b5b",
+  "crates/domain/src/execution/scoped_sagas.rs": "45cd7bf76463d7b72f318f8a77402e7182cb0a3082af8cccb13a00964fc22e2b",
+  "crates/scheduler/src/passes.rs": "31fb13e7ed8be8aaab7586cfe2c6d885252dd213cc9dd988ad0338155750717d"
+}

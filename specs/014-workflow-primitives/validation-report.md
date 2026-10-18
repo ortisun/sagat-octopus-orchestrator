@@ -2742,3 +2742,24 @@ executed by its parent in4OS processes;151.14s including compilation,86.61s harn
 Evidence:`tasks/project-completion/evidence/leaf-certification-observations-20261018/manifest.json`.
 Strict workspace/all-target Clippy passed89.00s; formatting and architecture results are retained
 in the same manifest. No production caller or released INSERT follows from these observations.
+
+## Later effectful saga planning preserves the selected leaf — 2026-10-18
+
+Refs:T014-014/017/040, local B1b.2a.1d.3b.5. A real public two-collection definition keeps `lines`
+ordinary and declares compensateWith/reconcileWith/highRisk on completed work in `later`. Permanent
+failure or cancellation with a READY successor reaches the actual drained preplanning boundary.
+Deferred COMMIT gates observe the real saga planning transaction and first certification in both
+orders. For certification first, the preliminary restore is explicitly queued before certification;
+only after it releases can certification reach gated COMMIT, where the planner's second Run
+acquisition must wait. This avoids mistaking the preliminary read for the writing transaction.
+Planner first changes the creation revision and requires fresh CAS. Both cases retain exact source.
+
+One matrix/4fresh real flows passes with actual later COMPENSATING header, COMPENSATE entry and
+planning event, real line.refund compensation delivery/completion, and terminal COMPENSATED or
+CANCELLED plus DONE/COMPENSATED later saga. Selected source and its exact saga absence stay fixed;
+original canonical record replays and exact1fact/audit remain. First test passed73.79s before the
+review's stronger stage oracle; final passed49.49s (compile34.51s; harness12.86s). Two fresh bounded
+reviews ended with no concrete remaining stage/order/oracle issue. No production behavior changed.
+Evidence:`tasks/project-completion/evidence/leaf-certification-saga-20261018/manifest.json`.
+This closes only the known-effect later compensation unit; unknown-effect reconciliation,
+active-lease cancellation, other producers/chain/C0 and released caller/INSERT remain open.
