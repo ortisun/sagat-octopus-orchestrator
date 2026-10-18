@@ -509,3 +509,14 @@ mutation guard before the exact run, including receipt replay. It does not forwa
 head. A continued earlier segment retains RUN_CONTINUED; existing finished-run errors and update
 keys/CAS/receipts are unchanged. Apply and replay each audit access, while only the first accepted
 mutation emits its state event/outbox. Chain-addressed resolution retains its existing protocol.
+
+
+### Scheduler expiry after a lock wait
+
+Chain handoff (legacy/evaluated) and finalization lock their own scheduler authority in the
+mutation transaction, then sample the database clock to validate expiry. A predicate evaluated
+before an unchanged-row wait is insufficient. Wrong own-shard authority remains SchedulerFenceLost;
+an oversized generation retains the chain port's existing storage conversion error. Evaluated
+continuation still samples its deadline/wait time after the incoming link lock. A stale attempt
+commits no chain/run/event/audit/outbox/retained-usage effects; fresh authority may retry. This
+adds no new wire contract and does not establish the other primitive adapters' missing barriers.

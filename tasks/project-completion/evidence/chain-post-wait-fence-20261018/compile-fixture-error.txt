@@ -1,0 +1,66 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+error[E0599]: no method named `verify_journal` found for struct `PgRunStore` in the current scope
+    --> tests/integration/workflow-primitives/chain_progress.rs:1395:10
+     |
+1392 | /     fixture
+1393 | |         .world
+1394 | |         .store
+1395 | |         .verify_journal(fixture.world.admin.tenant_id(), fixture.chain)
+     | |_________-^^^^^^^^^^^^^^
+     |
+help: there is a method `journal` with a similar name, but with different arguments
+    --> crates/application/src/runs.rs:267:5
+     |
+ 267 | /     fn journal(
+ 268 | |         &self,
+ 269 | |         tenant: TenantId,
+ 270 | |         run: RunId,
+ 271 | |         after: Option<u64>,
+ 272 | |         limit: u32,
+ 273 | |     ) -> impl Future<Output = Result<Option<Vec<JournalEntry>>, StoreError>> + Send;
+     | |____________________________________________________________________________________^
+
+error[E0599]: no method named `verify_journal` found for struct `PgRunStore` in the current scope
+    --> tests/integration/workflow-primitives/chain_progress.rs:1401:10
+     |
+1398 | /     fixture
+1399 | |         .world
+1400 | |         .store
+1401 | |         .verify_journal(fixture.world.admin.tenant_id(), next)
+     | |_________-^^^^^^^^^^^^^^
+     |
+help: there is a method `journal` with a similar name, but with different arguments
+    --> crates/application/src/runs.rs:267:5
+     |
+ 267 | /     fn journal(
+ 268 | |         &self,
+ 269 | |         tenant: TenantId,
+ 270 | |         run: RunId,
+ 271 | |         after: Option<u64>,
+ 272 | |         limit: u32,
+ 273 | |     ) -> impl Future<Output = Result<Option<Vec<JournalEntry>>, StoreError>> + Send;
+     | |____________________________________________________________________________________^
+
+error[E0599]: no method named `verify_journal` found for struct `PgRunStore` in the current scope
+    --> tests/integration/workflow-primitives/chain_progress.rs:1445:10
+     |
+1442 | /     fixture
+1443 | |         .world
+1444 | |         .store
+1445 | |         .verify_journal(fixture.world.admin.tenant_id(), fixture.chain)
+     | |_________-^^^^^^^^^^^^^^
+     |
+help: there is a method `journal` with a similar name, but with different arguments
+    --> crates/application/src/runs.rs:267:5
+     |
+ 267 | /     fn journal(
+ 268 | |         &self,
+ 269 | |         tenant: TenantId,
+ 270 | |         run: RunId,
+ 271 | |         after: Option<u64>,
+ 272 | |         limit: u32,
+ 273 | |     ) -> impl Future<Output = Result<Option<Vec<JournalEntry>>, StoreError>> + Send;
+     | |____________________________________________________________________________________^
+
+For more information about this error, try `rustc --explain E0599`.
+error: could not compile `sagat-tests` (test "integration_workflow_primitives") due to 3 previous errors

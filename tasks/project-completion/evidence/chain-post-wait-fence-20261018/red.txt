@@ -1,0 +1,36 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 30.29s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 4 tests
+test chain_progress::post_wait_fence_preserves_the_oversized_generation_storage_error ... ok
+
+thread 'chain_progress::post_wait_fence_rejects_expired_chain_finalization_without_effects' (81475468) panicked at tests/integration/workflow-primitives/chain_progress.rs:1419:5:
+assertion `left == right` failed
+  left: Ok(ChainFinalizationWrite { head: RunId(01a14d5c-4c9e-7577-84f1-13020c46862f), outcome: Succeeded, replayed: false })
+ right: Err(SchedulerFenceLost)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test chain_progress::post_wait_fence_rejects_expired_chain_finalization_without_effects ... FAILED
+
+thread 'chain_progress::post_wait_fence_rejects_an_expired_legacy_chain_handoff_without_effects' (81475467) panicked at tests/integration/workflow-primitives/chain_progress.rs:1362:5:
+assertion `left == right` failed
+  left: Ok(ChainHandoffWrite { predecessor: RunId(01a14d5c-4c9e-7577-84f1-130062bb3c46), successor: RunId(01a14d5c-4cd0-76ec-b62e-87b0598fb4d4), successor_index: 1, replayed: false })
+ right: Err(SchedulerFenceLost)
+test chain_progress::post_wait_fence_rejects_an_expired_legacy_chain_handoff_without_effects ... FAILED
+
+thread 'chains::post_wait_fence_rejects_an_expired_evaluated_handoff_without_effects' (81476486) panicked at tests/integration/workflow-primitives/chains.rs:1664:5:
+assertion `left == right` failed
+  left: Ok(ChainHandoffWrite { predecessor: RunId(01a14d5c-50e6-744d-9733-5ee0c086e0c9), successor: RunId(01a14d5c-5173-746f-b63c-a6e5e8b87a84), successor_index: 1, replayed: false })
+ right: Err(SchedulerFenceLost)
+test chains::post_wait_fence_rejects_an_expired_evaluated_handoff_without_effects ... FAILED
+
+failures:
+
+failures:
+    chain_progress::post_wait_fence_rejects_an_expired_legacy_chain_handoff_without_effects
+    chain_progress::post_wait_fence_rejects_expired_chain_finalization_without_effects
+    chains::post_wait_fence_rejects_an_expired_evaluated_handoff_without_effects
+
+test result: FAILED. 1 passed; 3 failed; 0 ignored; 0 measured; 385 filtered out; finished in 6.47s
+
+error: test failed, to rerun pass `-p sagat-tests --test integration_workflow_primitives`

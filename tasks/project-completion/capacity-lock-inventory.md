@@ -155,9 +155,9 @@ not accept the other primitive/direct-Update prefixes, group transactions or gen
   the Chain branch explicitly takes chain before its resolved run. A direct run-addressed Update
   of a chain member now has the narrow prefix correction below. Queries are reads;
   do not silently forward a run address while aligning mutation locks.
-- The collection, loop, approval and chain-specific `check_scheduler_fence/check_fence` helpers
-  still put `expires_at > clock_timestamp()` in the locking SELECT. Full/exact-path run entry uses
-  `execution::locked_scheduler_time` to sample expiry after acquiring SHARE. A predicate evaluated
+- The collection, loop and approval-specific `check_scheduler_fence` helpers still put
+  `expires_at > clock_timestamp()` in the locking SELECT. Chain ports now share the full/exact-path
+  transaction-typed `execution::locked_scheduler_time` post-lock check (evidence below). A predicate evaluated
   before an unchanged-row wait is not the same proof. Add real expiry-during-wait barriers for
   each primitive authority before claiming all runtime scheduler fences are equivalent.
 
@@ -186,3 +186,33 @@ found no production defect. The second suggested a stronger SHARE probe for the 
 guard; its final focused verification is recorded in the evidence manifest. Remaining primitive
 adapter prefixes, post-wait authority checks and complete B0/group ordering stay open. Exact
 source, failures and commands: tasks/project-completion/evidence/direct-update-chain-prefix-20261018/.
+
+
+## Chain scheduler expiry after row-lock wait — 2026-10-18
+
+Refs:T014-040, FR-014-014/015. The chain port's expiry WHERE predicate could accept an authority
+that expired while waiting for an unchanged scheduler_shards tuple. Three real PostgreSQL
+barriers now cover legacy handoff, evaluated continuation and finalization. Each observes the
+actual runtime-role wait while the lease is live, keeps the tuple unchanged until DB-clock
+expiry, then releases it. On unchanged production all three committed under expired authority
+(behavioral RED:1 pass for the overflow compatibility case,3 failures,6.47s). Earlier fixture API and
+slug setup failures are retained separately and do not count as three behavioral counterexamples.
+
+The shared execution::locked_scheduler_time helper remains transaction-typed and becomes
+crate-visible. Chain checks use its lock-then-clock validation, retain own-shard rejection and
+their existing oversized-generation Storage(Internal) conversion. Evaluated continuation keeps
+its separate transaction_now after the incoming link lock for deadline/wait timestamps. No
+lock order, wire capability, deadline policy, migration or external-effect guarantee changes.
+
+GREEN passed4/4 (6.70s). Failed authority leaves independent chain/segments/run/journal/outbox/
+audit/retained-usage snapshots unchanged. Fresh own authority succeeds, exact replay is detected
+and journal consistency holds. The private chain fixture now honors the runtime-role option via
+world.execution_pool. Its older owner-pool tests remain real results but did not prove runtime
+privileges merely because that environment option was set; the existing explicit least-privilege
+chain test was separate coverage. New wait barriers require sagat_app when the option is active.
+
+Two bounded reviews identified generation-error compatibility, transaction typing and fixture
+pool preconditions; the actual five-file review found no concrete defects. Reviewers ran no
+tests. Evidence: tasks/project-completion/evidence/chain-post-wait-fence-20261018/. Collection,
+loop and approval post-wait checks, their applicable chain prefixes and complete B0/group
+ordering remain open. No canonical checkbox closes from this chain correction.

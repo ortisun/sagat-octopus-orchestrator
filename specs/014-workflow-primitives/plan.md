@@ -35,6 +35,10 @@ keep snapshot CAS/time/bounded mutations and public shape restrictions unchanged
 Align direct run-addressed declared Updates with the same chain prefix, resolving membership
 by tenant/namespace/run rather than assuming run ID equals chain ID. Preserve pinned addressing,
 receipt replay and terminal errors; verify public successor updates and lock lifetime.
+Reuse the transaction-typed post-lock scheduler-time helper for chain handoff/finalization,
+preserving wrong-shard/oversized-generation errors and the later evaluated deadline clock.
+Use unchanged-tuple expiry barriers and the actual runtime pool; track other primitive ports
+separately rather than inferring equivalent authority from passing chain tests.
 
 ## Technical Context
 

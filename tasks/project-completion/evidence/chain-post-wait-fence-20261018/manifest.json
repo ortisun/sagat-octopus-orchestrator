@@ -1,0 +1,261 @@
+{
+  "source_base": "18dfcc661366c548d70a5f10817f6cd7cf29a988",
+  "recorded_utc": "2026-10-18T05:00:29.424081+00:00",
+  "scope": "Own chain authority expiry sampled after scheduler SHARE row-lock wait in same transaction; no new eligibility",
+  "environment": {
+    "runtime_role_requested": true,
+    "new_barriers_observe_sagat_app": true,
+    "external_db_url": false,
+    "postgres": "repository disposable fixture",
+    "system": "Darwin arm64"
+  },
+  "commands": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "post_wait_fence_",
+        "--",
+        "--nocapture",
+        "--test-threads=3"
+      ],
+      "exit_code": 101,
+      "seconds": 7.8,
+      "log": "compile-fixture-error.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "post_wait_fence_",
+        "--",
+        "--nocapture",
+        "--test-threads=3"
+      ],
+      "exit_code": 101,
+      "seconds": 40.12,
+      "log": "mixed-slug-fixture.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "post_wait_fence_",
+        "--",
+        "--nocapture",
+        "--test-threads=3"
+      ],
+      "exit_code": 101,
+      "seconds": 38.86,
+      "log": "red.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "post_wait_fence_",
+        "--",
+        "--nocapture",
+        "--test-threads=3"
+      ],
+      "exit_code": 0,
+      "seconds": 52.09,
+      "log": "green.txt"
+    }
+  ],
+  "regression_commands": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "chain",
+        "--",
+        "--test-threads=3"
+      ],
+      "exit_code": 0,
+      "seconds": 55.68,
+      "log": "workflow-chain.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "fault_workflow_primitives",
+        "--",
+        "--test-threads=3"
+      ],
+      "exit_code": 0,
+      "seconds": 133.27,
+      "log": "fault.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "bounded_fences",
+        "--",
+        "--test-threads=3"
+      ],
+      "exit_code": 0,
+      "seconds": 7.91,
+      "log": "bounded-fences.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "--workspace",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "seconds": 64.17,
+      "log": "clippy.txt"
+    }
+  ],
+  "results": {
+    "bounded-fences.txt": [
+      {
+        "passed": 8,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 7.27
+      }
+    ],
+    "workflow-chain.txt": [
+      {
+        "passed": 81,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 55.26
+      }
+    ],
+    "red.txt": [
+      {
+        "passed": 1,
+        "failed": 3,
+        "ignored": 0,
+        "seconds": 6.47
+      }
+    ],
+    "mixed-slug-fixture.txt": [
+      {
+        "passed": 0,
+        "failed": 3,
+        "ignored": 0,
+        "seconds": 5.06
+      }
+    ],
+    "green.txt": [
+      {
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 6.7
+      }
+    ],
+    "fault.txt": [
+      {
+        "passed": 92,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 93.86
+      }
+    ]
+  },
+  "review": {
+    "cycles": 2,
+    "model": "gpt-6-astra",
+    "reasoning": "xhigh",
+    "external_cli": false,
+    "first": "generation error, transaction precondition and owner-pool fixture gaps reconciled",
+    "second": "no concrete defects in actual five-file diff; no tests run by reviewer"
+  },
+  "limits": [
+    "Compile fixture API typo is not behavioral RED",
+    "Initial mixed run had two expired-authority commits plus one slug setup failure",
+    "Final RED 1 compatibility pass/3 actual stale-authority commits; GREEN4",
+    "Historical private chain fixtures used owner pool despite runtime option; now execution_pool honors option",
+    "Scope is expiry while waiting for authority lock, not continuous clock-until-commit guarantee",
+    "81-chain/92-fault/8-fence counts overlap; not full workspace execution",
+    "Other collection/loop/approval fences and chain prefixes remain B0 gaps",
+    "No general nesting, group persistence, mixed-version migration, SDK58/Compose/advisory/resource gate or canonical task closure"
+  ],
+  "source_sha256": {
+    ".gitattributes": "8270be81ab7f32ad3ded22b8838736cbf3ede1359356efdd017ba1514933bbab",
+    "crates/infra-postgres/src/chain_progress.rs": "0f25b60c6dd4db6ff78c25651f357f4df8dced94549d21878eeb9e4f58688439",
+    "crates/infra-postgres/src/execution.rs": "047b1a53398d1cb1f91a8398b095c30d9a24c11770ed90cf02592d2626d4ac5a",
+    "docs/runbooks/workflow-primitives.md": "7b0951baf58dcf6ab10868028273625ffefafb90409b3ea0afae628579a1d1f6",
+    "docs/traceability.md": "252b360e368829ea9a384527a3e41ae9386d4cbbbf73f62dcbb26b14ee3d39e0",
+    "specs/014-workflow-primitives/contracts/README.md": "632b17f90dc9d81e57407c3f72b66466561f506e117ddd30c8694200395eaad8",
+    "specs/014-workflow-primitives/data-model.md": "855d2069eb57921eeb0896d16b9db14e4d6a922231e7259301052892d13334b6",
+    "specs/014-workflow-primitives/plan.md": "7f50203fc52b9afdfd7af490ece2defcc5eb38625cbff41cf1d80eafd34e8c36",
+    "specs/014-workflow-primitives/spec.md": "4997cdd94bd908275ea11db379ca0b5e29fe70d47e90417b54405452f62da82b",
+    "specs/014-workflow-primitives/validation-report.md": "787e8c1c71f204a4efa27c7230280a4c336fcc4f1521370cc9c2679f0d6bd873",
+    "tasks/project-completion/capacity-lock-inventory.md": "8a5dc682e1269dc7753319b187a113a521a5d1035118355acde35f1105815fa3",
+    "tasks/project-completion/integration-notes.md": "ec9c2fe272a5f161e71a2a66b349b1827d4e916b06452da21e4a0e797fe838a3",
+    "tests/integration/workflow-primitives/bounded_fences.rs": "52d866f26be3f5307f2168ceac4de55dbe60d17a47cfff955c7513d235b14f35",
+    "tests/integration/workflow-primitives/chain_progress.rs": "e6cf449743f64fbc36c13b7b504cb52da301d851c91f358e012f6397a58dc9b0",
+    "tests/integration/workflow-primitives/chains.rs": "1e739bb15fcc3f0a995e3eaedf03092702f2e72734a06240b981e7a691514d4d"
+  },
+  "evidence_sha256": {
+    "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "bounded-fences.txt": "e82d1d87f698a839951b7c996ca77065b7b982fd30717947184e5ee18181728e",
+    "clippy.txt": "ae925411a00b2265bbab3b8477581279d986ff52e318c4d586e3e048c932d210",
+    "commands.json": "19f9e95f8fe5191c2b209a3482c4ddc9954cbc20b1d0f74d89d55ee8d3ae763f",
+    "compile-fixture-error.txt": "2c3085211e7d206c3376978eb742653959a90facac62afb70fb736de0ad7c450",
+    "diff-check.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "fault.txt": "f988f65a6ff1e583cd819eaf5ef46779ceb6f0945bb250e0edd1ee486bb776ca",
+    "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "gates.json": "4ce6940a07b8a44160a5713055ba82123d307818d794f35d3341166bc1914c0a",
+    "green.txt": "ece88b16db66f3e91b1658f7be2c931a43bcf0da90ef1b39945d839a4a78ec77",
+    "mixed-slug-fixture.txt": "ae803d227325ab3618da74dc8596ff6545801071ab1b854e6e4d3ff4423212e0",
+    "production.diff": "06a5969321bb59363df6ffb8f25988d02d5559e1d9262565c04575e4a8bfe912",
+    "red.txt": "0366de6f547843f62b23d20c7faccd23ed140de73c9d7702a810d73415f2efa9",
+    "regression-commands.json": "bc96e986b77c911ff2df256566990ded97df416eaa3b2193af9b17c4359f8a92",
+    "reproduce.md": "cf589ca02b469bdb0533c712798452680a3195deb11a3b1d3489a868dfeae7b6",
+    "review.md": "4ef6782e967c18a1a60ffbc028a4e768592f9b1e5abc1575b3f59e96610329a1",
+    "test-compile.diff": "73cf06841a73a7fce54a35ae510551b97a0d6f3088c43f4d3e83895953a11db7",
+    "test-mixed.diff": "e3fc3fe287239c59eb7a2b1dcfbe48e32ad4100c8243ccd6d3d15a57f9c9b877",
+    "test-red.diff": "6139f8e91fa37db5b994e7f147eb8e4537426605c94c0d151f50180109d53e38",
+    "tested-source.json": "e15d3c8e55cc0a9b43513fe8dd5bb27116f9fd801a07c6e0872bc8c9c8ad9af6",
+    "workflow-chain.txt": "6027f80745355303b9ac7c0014b67689e7d12cd7d77d57bc3a46b060031da349"
+  }
+}

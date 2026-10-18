@@ -57,6 +57,9 @@ Exact-path storage entry also retains an applicable chain lock before its own ru
 run entry. This storage invariant alone does not enable chain+collection graphs or new finality.
 Declared Updates addressed by run also acquire an applicable membership chain before the exact
 run; they keep their original address and never forward across continuation.
+Chain handoff/finalization validates scheduler expiry on the database clock after its SHARE
+lock wait, in the same transaction. Primitive-specific collection/loop/approval checks remain
+a separately tracked verification gap; chain evidence does not close those ports.
 
 Other collection and loop graphs and nested scopes remain closed for general publication. The
 remaining acceptance and release evidence is tracked

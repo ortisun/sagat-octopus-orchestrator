@@ -1,0 +1,33 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 32.98s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 3 tests
+
+thread 'chains::post_wait_fence_rejects_an_expired_evaluated_handoff_without_effects' (81426798) panicked at tests/integration/workflow-primitives/../../support/engine.rs:448:14:
+create workflow: Invalid(InvalidSlug(Length))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test chains::post_wait_fence_rejects_an_expired_evaluated_handoff_without_effects ... FAILED
+
+thread 'chain_progress::post_wait_fence_rejects_expired_chain_finalization_without_effects' (81426796) panicked at tests/integration/workflow-primitives/chain_progress.rs:1419:5:
+assertion `left == right` failed
+  left: Ok(ChainFinalizationWrite { head: RunId(01a14d5b-6288-713b-9d92-dafe22f35529), outcome: Succeeded, replayed: false })
+ right: Err(SchedulerFenceLost)
+test chain_progress::post_wait_fence_rejects_expired_chain_finalization_without_effects ... FAILED
+
+thread 'chain_progress::post_wait_fence_rejects_an_expired_legacy_chain_handoff_without_effects' (81426795) panicked at tests/integration/workflow-primitives/chain_progress.rs:1362:5:
+assertion `left == right` failed
+  left: Ok(ChainHandoffWrite { predecessor: RunId(01a14d5b-6288-713b-9d92-dafd47e0151b), successor: RunId(01a14d5b-62b7-7586-b64a-0e6dfee660f1), successor_index: 1, replayed: false })
+ right: Err(SchedulerFenceLost)
+test chain_progress::post_wait_fence_rejects_an_expired_legacy_chain_handoff_without_effects ... FAILED
+
+failures:
+
+failures:
+    chain_progress::post_wait_fence_rejects_an_expired_legacy_chain_handoff_without_effects
+    chain_progress::post_wait_fence_rejects_expired_chain_finalization_without_effects
+    chains::post_wait_fence_rejects_an_expired_evaluated_handoff_without_effects
+
+test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 385 filtered out; finished in 5.06s
+
+error: test failed, to rerun pass `-p sagat-tests --test integration_workflow_primitives`

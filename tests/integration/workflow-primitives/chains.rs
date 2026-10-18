@@ -185,6 +185,14 @@ impl Boundary {
         &self,
         claimed: ChainScope,
     ) -> Result<sagat_application::chain_progress::ChainHandoffWrite, ChainProgressError> {
+        let prepared = self.prepare_write_as(claimed).await;
+        self.world.store.continue_evaluated(&prepared).await
+    }
+
+    async fn prepare_write_as(
+        &self,
+        claimed: ChainScope,
+    ) -> sagat_application::chain_progress::EvaluatedChainHandoffCommand {
         let tenant = self.world.admin.tenant_id();
         let scope = claimed;
         let (revision, version): (i64, i64) = sqlx::query_as(
@@ -244,10 +252,7 @@ impl Boundary {
             Uuid::now_v7(),
             Uuid::now_v7(),
         );
-        self.world
-            .store
-            .continue_evaluated(&selection.into_command(handoff).expect("command"))
-            .await
+        selection.into_command(handoff).expect("command")
     }
 }
 
@@ -1639,4 +1644,48 @@ async fn request_cancel_makes_the_parent_wait_until_the_child_chain_has_settled(
     );
     assert_eq!(family.link().await.1.as_deref(), Some("CANCELLED"));
     family.world.assert_consistent(family.parent).await;
+}
+
+#[tokio::test]
+async fn post_wait_fence_rejects_an_expired_evaluated_handoff_without_effects() {
+    use crate::bounded_fences::{SchedulerExpiryBarrier, chain_checkpoint};
+    let boundary = Boundary::reach("postwait").await;
+    let scope = ChainScope::new(
+        boundary.world.admin.tenant_id(),
+        boundary.world.namespace.id(),
+    );
+    let prepared = boundary.prepare_write_as(scope).await;
+    let barrier = SchedulerExpiryBarrier::hold(&boundary.world.db.pool, boundary.chain).await;
+    let before = chain_checkpoint(&boundary.world, boundary.chain).await;
+    let (result, ()) = tokio::join!(
+        boundary.world.store.continue_evaluated(&prepared),
+        barrier.expire_after_wait()
+    );
+    assert_eq!(result, Err(ChainProgressError::SchedulerFenceLost));
+    assert_eq!(
+        chain_checkpoint(&boundary.world, boundary.chain).await,
+        before
+    );
+    let fresh = boundary.prepare_write_as(scope).await;
+    let committed = boundary
+        .world
+        .store
+        .continue_evaluated(&fresh)
+        .await
+        .expect("fresh evaluated handoff");
+    assert!(!committed.replayed());
+    assert!(
+        boundary
+            .world
+            .store
+            .continue_evaluated(&fresh)
+            .await
+            .expect("exact evaluated replay")
+            .replayed()
+    );
+    boundary.world.assert_consistent(boundary.chain).await;
+    boundary
+        .world
+        .assert_consistent(committed.successor())
+        .await;
 }

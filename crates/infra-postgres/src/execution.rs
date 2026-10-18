@@ -426,7 +426,7 @@ impl PgRunStore {
 
 /// Lock first, then observe expiry. A volatile WHERE predicate can be evaluated before a row-lock
 /// wait, and an unchanged row need not be rechecked when that wait ends.
-async fn locked_scheduler_time(
+pub(crate) async fn locked_scheduler_time(
     tx: &mut Transaction<'_, Postgres>,
     run: RunId,
     owner: &str,

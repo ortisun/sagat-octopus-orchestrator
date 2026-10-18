@@ -435,3 +435,10 @@ full lock ordering, persistence/crash recovery and mixed-version fencing remain 
 No table or public usage-counter reinterpretation follows from this model alone; general nested
 publication remains closed. See `tasks/project-completion/capacity-group-lifecycle.md` and its
 bounded review/evidence rather than the rejected whole-protocol drafts.
+
+
+Chain scheduler fencing uses a transaction-typed SHARE guard followed by a fresh database clock
+comparison. It must not accept an expiry predicate sampled before a row-lock wait or release the
+guard in autocommit between guard acquisition and comparison. The independent evaluated deadline
+clock remains after the incoming child link. Other primitive adapters are tracked separately in
+the B0 source inventory; this narrow chain correction is not a complete lock-graph acceptance.

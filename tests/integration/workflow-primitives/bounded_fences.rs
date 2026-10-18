@@ -378,3 +378,105 @@ async fn assert_chain_prefix(current: bool, skip: bool) {
     probe.rollback().await.expect("finish skip probe");
     guard.rollback().await.expect("release chain guard");
 }
+
+/// Holds an unchanged shard tuple while a real runtime transaction waits on its SHARE guard.
+/// The tuple is released only after its persisted expiry passes on the database clock.
+pub(super) struct SchedulerExpiryBarrier {
+    guard: sqlx::Transaction<'static, sqlx::Postgres>,
+    pool: sqlx::PgPool,
+    backend: i32,
+    expires_at: time::OffsetDateTime,
+}
+
+impl SchedulerExpiryBarrier {
+    pub(super) async fn hold(pool: &sqlx::PgPool, run: sagat_domain::execution::RunId) -> Self {
+        let expires_at = sqlx::query_scalar(
+            "UPDATE scheduler_shards SET expires_at=clock_timestamp()+interval '3 seconds' \
+             WHERE shard=run_shard($1) RETURNING expires_at",
+        )
+        .bind(run.as_uuid())
+        .fetch_one(pool)
+        .await
+        .expect("persist short current-authority expiry");
+        let mut guard = pool.begin().await.expect("unchanged shard guard");
+        let backend = sqlx::query_scalar("SELECT pg_backend_pid()")
+            .fetch_one(&mut *guard)
+            .await
+            .expect("shard guard backend");
+        sqlx::query("SELECT shard FROM scheduler_shards WHERE shard=run_shard($1) FOR UPDATE")
+            .bind(run.as_uuid())
+            .execute(&mut *guard)
+            .await
+            .expect("hold unchanged shard tuple");
+        Self {
+            guard,
+            pool: pool.clone(),
+            backend,
+            expires_at,
+        }
+    }
+
+    pub(super) async fn expire_after_wait(self) {
+        eventually(
+            "runtime authority waits on the unchanged shard tuple",
+            || async {
+                sqlx::query_scalar::<_, bool>(
+                    "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() \
+                 AND $1=ANY(pg_blocking_pids(pid)) AND query LIKE '%FROM scheduler_shards%' \
+                 AND (NOT $2 OR usename='sagat_app'))",
+                )
+                .bind(self.backend)
+                .bind(crate::support::as_runtime_role())
+                .fetch_one(&self.pool)
+                .await
+                .expect("actual scheduler guard wait")
+                .then_some(())
+            },
+        )
+        .await;
+        let still_live: bool = sqlx::query_scalar("SELECT clock_timestamp()<$1")
+            .bind(self.expires_at)
+            .fetch_one(&self.pool)
+            .await
+            .expect("authority was live when it began waiting");
+        assert!(still_live, "the wait must begin before expiry");
+        eventually(
+            "the persisted lease expires under the unchanged tuple guard",
+            || async {
+                sqlx::query_scalar::<_, bool>("SELECT clock_timestamp()>=$1")
+                    .bind(self.expires_at)
+                    .fetch_one(&self.pool)
+                    .await
+                    .expect("database expiry barrier")
+                    .then_some(())
+            },
+        )
+        .await;
+        self.guard
+            .rollback()
+            .await
+            .expect("release unchanged tuple after expiry");
+    }
+}
+
+/// Independent persisted effects, excluding the deliberately changed scheduler lease itself.
+pub(super) async fn chain_checkpoint(
+    world: &crate::support::engine::World,
+    chain: sagat_domain::execution::RunId,
+) -> serde_json::Value {
+    sqlx::query_scalar(
+        "SELECT jsonb_build_object( \
+         'chain',(SELECT to_jsonb(c) FROM execution_chains c WHERE c.tenant_id=$1 AND c.chain_id=$2), \
+         'segments',(SELECT jsonb_agg(to_jsonb(s) ORDER BY s.segment_index) FROM chain_segments s WHERE s.tenant_id=$1 AND s.chain_id=$2), \
+         'runs',(SELECT jsonb_agg(to_jsonb(r) ORDER BY r.id) FROM runs r WHERE r.tenant_id=$1), \
+         'events',(SELECT jsonb_agg(to_jsonb(e) ORDER BY e.run_id,e.seq) FROM run_events e WHERE e.tenant_id=$1), \
+         'outbox',(SELECT jsonb_agg(to_jsonb(o) ORDER BY o.id) FROM event_outbox o WHERE o.tenant_id=$1), \
+         'audit',(SELECT jsonb_agg(to_jsonb(a) ORDER BY a.id) FROM audit_records a WHERE a.tenant_id=$1), \
+         'usage',(SELECT to_jsonb(u) FROM tenant_retained_usage u WHERE u.tenant_id=$1))",
+    )
+    .bind(world.admin.tenant_id().as_uuid())
+    .bind(chain.as_uuid())
+    .fetch_one(&world.db.pool)
+    .await
+    .expect("independent chain effects checkpoint")
+}

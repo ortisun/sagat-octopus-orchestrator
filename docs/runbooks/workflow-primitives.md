@@ -476,3 +476,22 @@ A run-addressed declared Update remains pinned after continuation and acquires i
 chain before that run. Use the `operations_http` workflow integration filter to verify successor
 updates, RUN_CONTINUED, replay audits and rollback; an earlier run is never silently forwarded.
 Evidence: tasks/project-completion/evidence/direct-update-chain-prefix-20261018/.
+
+
+### Chain authority expiring behind a lock
+
+Handoff and finalization reject a scheduler lease that expires while waiting for its row lock,
+without durable chain/run/audit/outbox effects. The keeper supplies current authority on retry;
+do not treat the stale attempt as successful. Existing scheduler continuation counters classify
+SchedulerFenceLost as `scheduler_actions_total{kind="continuation",outcome="fenced"}` and
+`scheduler_fenced_total{kind="continuation"}`; the private port barriers do not assert telemetry.
+No payload or secret is added to those labels or diagnostics.
+
+```sh
+SAGAT_TEST_AS_RUNTIME_ROLE=1 cargo test --locked -p sagat-tests --test integration_workflow_primitives \
+  post_wait_fence_ -- --nocapture --test-threads=3
+```
+
+Unset SAGAT_TEST_DATABASE_URL to use repository disposable PostgreSQL. The barrier observes
+sagat_app when requested. Evidence includes setup failures separately from three reproduced
+expired-authority commits and the final passing controls. Other primitive fences remain pending.

@@ -520,3 +520,12 @@ before the exact run. HTTP successor barrier, transaction-lifetime probes, uncha
 one receipt/event/outbox plus two audited apply/replay calls are recorded in
 `tasks/project-completion/evidence/direct-update-chain-prefix-20261018/`. Existing terminal,
 permissions and tenant HTTP regressions remain; no canonical task closes from this narrow fix.
+
+
+FR-014-014/015, current scheduler authority: three unchanged-tuple barriers reproduced legacy
+handoff, evaluated continuation and finalization committing after authority expired during a
+row-lock wait. Shared transaction-typed post-lock validation makes all three reject with no
+persisted effects; fresh authority/replay and generation-error compatibility pass (4/4). Private
+chain fixtures now select execution_pool when runtime-role mode is requested. Historical owner
+fixture results do not imply runtime privilege coverage from the environment flag alone. Exact
+source/commands/reviews: tasks/project-completion/evidence/chain-post-wait-fence-20261018/.

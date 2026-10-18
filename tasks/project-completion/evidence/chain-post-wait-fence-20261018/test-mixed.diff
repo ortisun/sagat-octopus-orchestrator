@@ -1,0 +1,315 @@
+diff --git a/tests/integration/workflow-primitives/bounded_fences.rs b/tests/integration/workflow-primitives/bounded_fences.rs
+index 5c1240e9..b25d3579 100644
+--- a/tests/integration/workflow-primitives/bounded_fences.rs
++++ b/tests/integration/workflow-primitives/bounded_fences.rs
+@@ -378,3 +378,105 @@ async fn assert_chain_prefix(current: bool, skip: bool) {
+     probe.rollback().await.expect("finish skip probe");
+     guard.rollback().await.expect("release chain guard");
+ }
++
++/// Holds an unchanged shard tuple while a real runtime transaction waits on its SHARE guard.
++/// The tuple is released only after its persisted expiry passes on the database clock.
++pub(super) struct SchedulerExpiryBarrier {
++    guard: sqlx::Transaction<'static, sqlx::Postgres>,
++    pool: sqlx::PgPool,
++    backend: i32,
++    expires_at: time::OffsetDateTime,
++}
++
++impl SchedulerExpiryBarrier {
++    pub(super) async fn hold(pool: &sqlx::PgPool, run: sagat_domain::execution::RunId) -> Self {
++        let expires_at = sqlx::query_scalar(
++            "UPDATE scheduler_shards SET expires_at=clock_timestamp()+interval '3 seconds' \
++             WHERE shard=run_shard($1) RETURNING expires_at",
++        )
++        .bind(run.as_uuid())
++        .fetch_one(pool)
++        .await
++        .expect("persist short current-authority expiry");
++        let mut guard = pool.begin().await.expect("unchanged shard guard");
++        let backend = sqlx::query_scalar("SELECT pg_backend_pid()")
++            .fetch_one(&mut *guard)
++            .await
++            .expect("shard guard backend");
++        sqlx::query("SELECT shard FROM scheduler_shards WHERE shard=run_shard($1) FOR UPDATE")
++            .bind(run.as_uuid())
++            .execute(&mut *guard)
++            .await
++            .expect("hold unchanged shard tuple");
++        Self {
++            guard,
++            pool: pool.clone(),
++            backend,
++            expires_at,
++        }
++    }
++
++    pub(super) async fn expire_after_wait(self) {
++        eventually(
++            "runtime authority waits on the unchanged shard tuple",
++            || async {
++                sqlx::query_scalar::<_, bool>(
++                    "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() \
++                 AND $1=ANY(pg_blocking_pids(pid)) AND query LIKE '%FROM scheduler_shards%' \
++                 AND (NOT $2 OR usename='sagat_app'))",
++                )
++                .bind(self.backend)
++                .bind(crate::support::as_runtime_role())
++                .fetch_one(&self.pool)
++                .await
++                .expect("actual scheduler guard wait")
++                .then_some(())
++            },
++        )
++        .await;
++        let still_live: bool = sqlx::query_scalar("SELECT clock_timestamp()<$1")
++            .bind(self.expires_at)
++            .fetch_one(&self.pool)
++            .await
++            .expect("authority was live when it began waiting");
++        assert!(still_live, "the wait must begin before expiry");
++        eventually(
++            "the persisted lease expires under the unchanged tuple guard",
++            || async {
++                sqlx::query_scalar::<_, bool>("SELECT clock_timestamp()>=$1")
++                    .bind(self.expires_at)
++                    .fetch_one(&self.pool)
++                    .await
++                    .expect("database expiry barrier")
++                    .then_some(())
++            },
++        )
++        .await;
++        self.guard
++            .rollback()
++            .await
++            .expect("release unchanged tuple after expiry");
++    }
++}
++
++/// Independent persisted effects, excluding the deliberately changed scheduler lease itself.
++pub(super) async fn chain_checkpoint(
++    world: &crate::support::engine::World,
++    chain: sagat_domain::execution::RunId,
++) -> serde_json::Value {
++    sqlx::query_scalar(
++        "SELECT jsonb_build_object( \
++         'chain',(SELECT to_jsonb(c) FROM execution_chains c WHERE c.tenant_id=$1 AND c.chain_id=$2), \
++         'segments',(SELECT jsonb_agg(to_jsonb(s) ORDER BY s.segment_index) FROM chain_segments s WHERE s.tenant_id=$1 AND s.chain_id=$2), \
++         'runs',(SELECT jsonb_agg(to_jsonb(r) ORDER BY r.id) FROM runs r WHERE r.tenant_id=$1), \
++         'events',(SELECT jsonb_agg(to_jsonb(e) ORDER BY e.run_id,e.seq) FROM run_events e WHERE e.tenant_id=$1), \
++         'outbox',(SELECT jsonb_agg(to_jsonb(o) ORDER BY o.id) FROM event_outbox o WHERE o.tenant_id=$1), \
++         'audit',(SELECT jsonb_agg(to_jsonb(a) ORDER BY a.id) FROM audit_records a WHERE a.tenant_id=$1), \
++         'usage',(SELECT to_jsonb(u) FROM tenant_retained_usage u WHERE u.tenant_id=$1))",
++    )
++    .bind(world.admin.tenant_id().as_uuid())
++    .bind(chain.as_uuid())
++    .fetch_one(&world.db.pool)
++    .await
++    .expect("independent chain effects checkpoint")
++}
+diff --git a/tests/integration/workflow-primitives/chain_progress.rs b/tests/integration/workflow-primitives/chain_progress.rs
+index 79690066..fcde07df 100644
+--- a/tests/integration/workflow-primitives/chain_progress.rs
++++ b/tests/integration/workflow-primitives/chain_progress.rs
+@@ -153,7 +153,7 @@ pub(crate) async fn seed_quiescent_chain(name: &str, deadline_after: Duration) -
+             .expect("input digest");
+     let input = sagat_domain::workflow::Digest::new(input.try_into().expect("sha-256 digest"));
+     let authority = scheduler(&world.db.pool, chain).await;
+-    let store = PgChainProgressStore::new(world.db.pool.clone(), world.cache.clone());
++    let store = PgChainProgressStore::new(world.execution_pool.clone(), world.cache.clone());
+     ChainFixture {
+         world,
+         store,
+@@ -1337,3 +1337,112 @@ async fn chain_handoff_and_finalization_are_written_by_the_least_privilege_runti
+             .replayed()
+     );
+ }
++
++#[tokio::test]
++async fn post_wait_fence_rejects_an_expired_legacy_chain_handoff_without_effects() {
++    use crate::bounded_fences::{SchedulerExpiryBarrier, chain_checkpoint};
++    let fixture = seed_quiescent_chain("chain-handoff-post-wait-fence", Duration::hours(1)).await;
++    let next = RunId::generate();
++    let now = crate::support::now();
++    let prepared = command(
++        &fixture,
++        next,
++        fixture.authority.clone(),
++        now,
++        audit(&fixture, now),
++        Uuid::now_v7(),
++        Uuid::now_v7(),
++    );
++    let barrier = SchedulerExpiryBarrier::hold(&fixture.world.db.pool, fixture.chain).await;
++    let before = chain_checkpoint(&fixture.world, fixture.chain).await;
++    let (result, ()) = tokio::join!(
++        fixture.store.continue_as_new(&prepared),
++        barrier.expire_after_wait()
++    );
++    assert_eq!(result, Err(ChainProgressError::SchedulerFenceLost));
++    assert_eq!(
++        chain_checkpoint(&fixture.world, fixture.chain).await,
++        before
++    );
++    let fresh = scheduler(&fixture.world.db.pool, fixture.chain).await;
++    let now = crate::support::now();
++    let retry = command(
++        &fixture,
++        next,
++        fresh,
++        now,
++        audit(&fixture, now),
++        prepared.continuation_outbox_id(),
++        prepared.successor_outbox_id(),
++    );
++    let committed = fixture
++        .store
++        .continue_as_new(&retry)
++        .await
++        .expect("fresh own authority may hand off");
++    assert!(!committed.replayed());
++    assert!(
++        fixture
++            .store
++            .continue_as_new(&retry)
++            .await
++            .expect("exact handoff replay")
++            .replayed()
++    );
++    fixture
++        .world
++        .store
++        .verify_run(fixture.world.admin.tenant_id(), fixture.chain)
++        .await
++        .expect("predecessor consistent");
++    fixture
++        .world
++        .store
++        .verify_run(fixture.world.admin.tenant_id(), next)
++        .await
++        .expect("successor consistent");
++}
++
++#[tokio::test]
++async fn post_wait_fence_rejects_expired_chain_finalization_without_effects() {
++    use crate::bounded_fences::{SchedulerExpiryBarrier, chain_checkpoint};
++    let fixture = seed_quiescent_chain("chain-final-post-wait-fence", Duration::hours(1)).await;
++    let run_outbox = Uuid::now_v7();
++    let chain_outbox = Uuid::now_v7();
++    let prepared = finalization(&fixture, run_outbox, chain_outbox);
++    let barrier = SchedulerExpiryBarrier::hold(&fixture.world.db.pool, fixture.chain).await;
++    let before = chain_checkpoint(&fixture.world, fixture.chain).await;
++    let (result, ()) = tokio::join!(
++        fixture.store.finalize_chain(&prepared),
++        barrier.expire_after_wait()
++    );
++    assert_eq!(result, Err(ChainProgressError::SchedulerFenceLost));
++    assert_eq!(
++        chain_checkpoint(&fixture.world, fixture.chain).await,
++        before
++    );
++    let fresh = scheduler(&fixture.world.db.pool, fixture.chain).await;
++    let retry = finalization_with_authority(&fixture, fresh, run_outbox, chain_outbox);
++    assert!(
++        !fixture
++            .store
++            .finalize_chain(&retry)
++            .await
++            .expect("fresh finalization")
++            .replayed()
++    );
++    assert!(
++        fixture
++            .store
++            .finalize_chain(&retry)
++            .await
++            .expect("exact final replay")
++            .replayed()
++    );
++    fixture
++        .world
++        .store
++        .verify_run(fixture.world.admin.tenant_id(), fixture.chain)
++        .await
++        .expect("final run consistent");
++}
+diff --git a/tests/integration/workflow-primitives/chains.rs b/tests/integration/workflow-primitives/chains.rs
+index 652aab0a..be12d940 100644
+--- a/tests/integration/workflow-primitives/chains.rs
++++ b/tests/integration/workflow-primitives/chains.rs
+@@ -185,6 +185,14 @@ impl Boundary {
+         &self,
+         claimed: ChainScope,
+     ) -> Result<sagat_application::chain_progress::ChainHandoffWrite, ChainProgressError> {
++        let prepared = self.prepare_write_as(claimed).await;
++        self.world.store.continue_evaluated(&prepared).await
++    }
++
++    async fn prepare_write_as(
++        &self,
++        claimed: ChainScope,
++    ) -> sagat_application::chain_progress::EvaluatedChainHandoffCommand {
+         let tenant = self.world.admin.tenant_id();
+         let scope = claimed;
+         let (revision, version): (i64, i64) = sqlx::query_as(
+@@ -244,10 +252,7 @@ impl Boundary {
+             Uuid::now_v7(),
+             Uuid::now_v7(),
+         );
+-        self.world
+-            .store
+-            .continue_evaluated(&selection.into_command(handoff).expect("command"))
+-            .await
++        selection.into_command(handoff).expect("command")
+     }
+ }
+ 
+@@ -1640,3 +1645,47 @@ async fn request_cancel_makes_the_parent_wait_until_the_child_chain_has_settled(
+     assert_eq!(family.link().await.1.as_deref(), Some("CANCELLED"));
+     family.world.assert_consistent(family.parent).await;
+ }
++
++#[tokio::test]
++async fn post_wait_fence_rejects_an_expired_evaluated_handoff_without_effects() {
++    use crate::bounded_fences::{SchedulerExpiryBarrier, chain_checkpoint};
++    let boundary = Boundary::reach("evaluated-post-wait-fence").await;
++    let scope = ChainScope::new(
++        boundary.world.admin.tenant_id(),
++        boundary.world.namespace.id(),
++    );
++    let prepared = boundary.prepare_write_as(scope).await;
++    let barrier = SchedulerExpiryBarrier::hold(&boundary.world.db.pool, boundary.chain).await;
++    let before = chain_checkpoint(&boundary.world, boundary.chain).await;
++    let (result, ()) = tokio::join!(
++        boundary.world.store.continue_evaluated(&prepared),
++        barrier.expire_after_wait()
++    );
++    assert_eq!(result, Err(ChainProgressError::SchedulerFenceLost));
++    assert_eq!(
++        chain_checkpoint(&boundary.world, boundary.chain).await,
++        before
++    );
++    let fresh = boundary.prepare_write_as(scope).await;
++    let committed = boundary
++        .world
++        .store
++        .continue_evaluated(&fresh)
++        .await
++        .expect("fresh evaluated handoff");
++    assert!(!committed.replayed());
++    assert!(
++        boundary
++            .world
++            .store
++            .continue_evaluated(&fresh)
++            .await
++            .expect("exact evaluated replay")
++            .replayed()
++    );
++    boundary.world.assert_consistent(boundary.chain).await;
++    boundary
++        .world
++        .assert_consistent(committed.successor())
++        .await;
++}

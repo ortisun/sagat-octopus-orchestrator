@@ -1,0 +1,15 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.52s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 8 tests
+test bounded_fences::a_bounded_binding_read_holds_current_authority_until_commit ... ok
+test bounded_fences::an_existing_run_cannot_use_child_admission_authority ... ok
+test bounded_fences::chain_prefix_current_path_skips_before_locking_its_run ... ok
+test bounded_fences::a_bounded_scheduler_fence_rechecks_expiry_after_its_row_lock_wait ... ok
+test bounded_fences::a_full_scheduler_fence_rechecks_expiry_after_its_row_lock_wait ... ok
+test bounded_fences::chain_prefix_current_path_waits_without_holding_its_run ... ok
+test bounded_fences::chain_prefix_snapshot_path_skips_before_locking_its_run ... ok
+test bounded_fences::chain_prefix_snapshot_path_waits_without_holding_its_run ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 381 filtered out; finished in 7.27s
+

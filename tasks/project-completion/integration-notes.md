@@ -1754,3 +1754,39 @@ the strengthened exclusive-guard probe passed1/1 in2.23s. Strict locked workspac
 Clippy passed in1m34s before that one-line test-probe refinement; production did not change.
 Exact test-source variants and limits: evidence/direct-update-chain-prefix-20261018/manifest.json
 under tasks/project-completion/. Broader workspace/release/nesting gates remain open.
+
+
+## Chain scheduler expiry after row-lock wait — 2026-10-18
+
+Refs:T014-040, FR-014-014/015. The chain port's expiry WHERE predicate could accept an authority
+that expired while waiting for an unchanged scheduler_shards tuple. Three real PostgreSQL
+barriers now cover legacy handoff, evaluated continuation and finalization. Each observes the
+actual runtime-role wait while the lease is live, keeps the tuple unchanged until DB-clock
+expiry, then releases it. On unchanged production all three committed under expired authority
+(behavioral RED:1 pass for the overflow compatibility case,3 failures,6.47s). Earlier fixture API and
+slug setup failures are retained separately and do not count as three behavioral counterexamples.
+
+The shared execution::locked_scheduler_time helper remains transaction-typed and becomes
+crate-visible. Chain checks use its lock-then-clock validation, retain own-shard rejection and
+their existing oversized-generation Storage(Internal) conversion. Evaluated continuation keeps
+its separate transaction_now after the incoming link lock for deadline/wait timestamps. No
+lock order, wire capability, deadline policy, migration or external-effect guarantee changes.
+
+GREEN passed4/4 (6.70s). Failed authority leaves independent chain/segments/run/journal/outbox/
+audit/retained-usage snapshots unchanged. Fresh own authority succeeds, exact replay is detected
+and journal consistency holds. The private chain fixture now honors the runtime-role option via
+world.execution_pool. Its older owner-pool tests remain real results but did not prove runtime
+privileges merely because that environment option was set; the existing explicit least-privilege
+chain test was separate coverage. New wait barriers require sagat_app when the option is active.
+
+Two bounded reviews identified generation-error compatibility, transaction typing and fixture
+pool preconditions; the actual five-file review found no concrete defects. Reviewers ran no
+tests. Evidence: tasks/project-completion/evidence/chain-post-wait-fence-20261018/. Collection,
+loop and approval post-wait checks, their applicable chain prefixes and complete B0/group
+ordering remain open. No canonical checkbox closes from this chain correction.
+
+Final chain-expiry regression passed81 chain-filtered workflow cases (55.26s), all92 fault
+cases (93.86s), and all8 bounded fence cases. These counts overlap. Strict locked workspace/
+all-target Clippy, formatting, diff and24-crate architecture gates passed. No fresh full-workspace
+or all-five SDK matrix is claimed. Exact source/commands, mixed/setup failures and scope limits:
+tasks/project-completion/evidence/chain-post-wait-fence-20261018/manifest.json.
