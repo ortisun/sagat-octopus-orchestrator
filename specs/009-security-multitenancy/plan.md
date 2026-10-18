@@ -116,3 +116,16 @@ supersedes the earlier separate-revision allocation. Add the accepted built-in a
 This approves the described dependency for implementation, not a runtime guarantee. Canonical
 contracts, migration/replay, tenant/fault tests and applicable five-SDK evidence remain the
 feature-014 release gates; existing feature behavior stays supported.
+
+
+## Production incident serialization refinement (2026-10-18)
+
+ADR-0038 refines only ADR-0022's production lock prefix to applicable scoped member chain→
+exact own run→binding EXCLUSIVE→own step→audit deduplication, matching ordinary report entry.
+Both production attribution and actual report/heartbeat storage prefixes are exercised under
+real PostgreSQL runtime-role locks; the prior counterexample incremented PostgreSQL deadlocks
+0→1. A separate real public script+continuation fixture proves chain-before-run ordering.
+No incident wire, authorization/fence, category/redaction, test branch or commit-before-ACK
+guarantee changes. This is an existing 009 writer dependency of 014's B0 inventory, not a
+new security feature or acceptance of complete nested/group order. Source/tests/evidence:
+tasks/project-completion/evidence/incident-lock-order-20261018/.

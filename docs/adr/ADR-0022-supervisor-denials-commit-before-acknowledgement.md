@@ -26,9 +26,11 @@ denial to script code.
   actual run, step, namespace, script activity and artifact, attempt, generation, token hash,
   database-clock expiry, worker session and current binding. For tests it validates the locked test
   row, status, namespace, token hash and database-clock expiry.
-* Production serialization follows binding advisory lock → run row → step row → audit dedupe lock.
-  Test incidents lock their test-run row before audit deduplication. Thus binding revocation,
-  completion, timeout and lease reclamation have one database order with attribution.
+* Production serialization is refined by [ADR-0038](ADR-0038-production-incidents-follow-execution-lock-entry.md):
+  applicable member chain → exact own run → binding EXCLUSIVE → own step → audit dedupe.
+  The original binding-before-run order has a reproduced cycle with ordinary report entry.
+  Test incidents still lock their test-run row before audit deduplication. Current lease/binding
+  validation and the commit-before-ACK boundary remain as decided here.
 * The audit reason is the closed category. The resource key identifies the trusted attempt. The
   existing synchronous audit insert deduplicates the same category and bounds an attempt to seven
   rows without a new table or migration.

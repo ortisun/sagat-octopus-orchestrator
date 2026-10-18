@@ -320,3 +320,9 @@ atomically; live reparent/membership migration is not supported by this prefix. 
 wait/final-audit barriers accompany existing public successor Update and approval regressions.
 Collection entry/drain and loop helpers now use the shared transaction-typed prefix, with
 independent native wait/own-run-free barriers. Complete B0/group ordering remains pending.
+
+
+B0 includes the existing009 production incident writer. ADR-0038 refines ADR-0022's explicit
+serialization clause after a deterministic incident/report storage deadlock. Correct only
+chain→ownrun→binding→ownstep order; preserve attribution and after-commit ACK semantics.
+Require both native report-prefix counterexample and a real public leased script-chain barrier.

@@ -1,0 +1,197 @@
+{
+  "source_base": "b308aa47352b7dfb62e75e46f4c5d4093ce9bda7",
+  "recorded_utc": "2026-10-18T05:55:57.376861+00:00",
+  "scope": "ADR0038 production incident chain/run/binding/step order, preserving ADR0022 durability boundary",
+  "environment": {
+    "external_db_url": false,
+    "runtime_role_requested": true,
+    "world_runner_store_follow_runtime_pool": true,
+    "actual_waiters_observed_sagat_app": true,
+    "postgres": "repository disposable fixture"
+  },
+  "commands": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_security_multitenancy",
+        "incident_lock_order_",
+        "--",
+        "--nocapture",
+        "--test-threads=3"
+      ],
+      "exit_code": 101,
+      "seconds": 55.7,
+      "log": "red.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_security_multitenancy",
+        "incident_lock_order_",
+        "--",
+        "--nocapture",
+        "--test-threads=3"
+      ],
+      "exit_code": 0,
+      "seconds": 36.71,
+      "log": "green.txt"
+    }
+  ],
+  "regression_commands": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_security_multitenancy",
+        "--",
+        "--test-threads=3"
+      ],
+      "exit_code": 0,
+      "seconds": 61.67,
+      "log": "security-all.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "--workspace",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "seconds": 73.93,
+      "log": "clippy.txt"
+    }
+  ],
+  "gates": [
+    {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "seconds": 4.31,
+      "log": "fmt.txt"
+    },
+    {
+      "command": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "exit_code": 0,
+      "seconds": 0.77,
+      "log": "architecture.txt"
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit_code": 0,
+      "seconds": 0.11,
+      "log": "diff-check.txt"
+    }
+  ],
+  "results": {
+    "security-all.txt": [
+      {
+        "passed": 125,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 61.19
+      }
+    ],
+    "red.txt": [
+      {
+        "passed": 0,
+        "failed": 2,
+        "ignored": 0,
+        "seconds": 3.09
+      }
+    ],
+    "green.txt": [
+      {
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 2.12
+      }
+    ]
+  },
+  "review": {
+    "cycles": 3,
+    "model": "gpt-6-astra",
+    "reasoning": "xhigh",
+    "external_cli": false,
+    "final": "no concrete code/document defects; reviewers ran no tests"
+  },
+  "limits": [
+    "REDactualPGdeadlocks0to1 and scriptchain bypass0/2, not fixture failures or genericUnavailable inference",
+    "Controlled native report-storage prefix concurrent publicincident; publiccompletion afterwards separate positivecontrol",
+    "Public scriptchain fixture built/published/leased, not manuallyseeded, no usercode execution inline",
+    "Initialmembershipatomiccreation/laterimmutable; no live reparent protocol/headforward/secondrun authority",
+    "OnlyADR0022 productionserializationrefined; no lease/category/redaction/testbranch/ACK/wire/outbox change",
+    "Security125 includesfocused2; no fresh workflow399/fullworkspace execution/SDK58/Compose/advisory/resource gate",
+    "No telemetrycounter assertion; existingmetric/logaftercommitmapping inspected",
+    "CompleteB0/group and separateSessionrenewal/room/managedowner freshness source/test gaps remainopen; no canonicalclosure"
+  ],
+  "source_sha256": {
+    ".gitattributes": "6f8f387b5a83698ec7d2be7fa2331cef4f284e774e6a9131ff64dffce0920217",
+    "crates/infra-postgres/src/scripts/incident.rs": "8e2bdffdf666bbae2a23e0887fcebb33420b63b94de895d0dda0b95a54bee877",
+    "docs/adr/ADR-0022-supervisor-denials-commit-before-acknowledgement.md": "4c0fe1c509ae8a8031bdda3554b8298640b657960b22a1170743ab488107c24c",
+    "docs/runbooks/security-governance.md": "72b4c68080b706db1608e8e79607f2491c41d51bdd9b3df2b6e18e25bab05a9b",
+    "docs/runbooks/workflow-primitives.md": "7de66edf5030dce3795c5927f03d1cb6a49900f6f30ad6f71857d37b2bdc3f2a",
+    "docs/traceability.md": "1e0bc8b3c0e1477d6d2e13579ac07295fc9cec05c3462ae30de68a5b574e6c75",
+    "specs/009-security-multitenancy/contracts/incidents.md": "665e6f79003c349c0cb2adaeb66a686a2d34db07578f1dee48238140217ff337",
+    "specs/009-security-multitenancy/data-model.md": "da449aeee13bde908400e603bb4c8b660bcbdf1b7bda56ab62a4b7a8924ec991",
+    "specs/009-security-multitenancy/plan.md": "6d4da6934093d376da3ee8a8d4aabaa6609723f880b3dbeeaef8c28484017584",
+    "specs/009-security-multitenancy/spec.md": "c5bc80ceda8604ab54635c95ee7c5845fc9e3f8a88e9227bb73f5f5427224e30",
+    "specs/014-workflow-primitives/contracts/README.md": "65828ce52554ee5c2e6716f99ca64ff983ea74374f361e43ceefb7f371f0314e",
+    "specs/014-workflow-primitives/plan.md": "ad5b370a09f5a339fa1b590a37b27a7f93f88aeaded94b231cfba29355685003",
+    "specs/014-workflow-primitives/spec.md": "be198b25c67c426c287e55aab51f41311e8dd7f0a1d13123536176bdd2c16a54",
+    "specs/014-workflow-primitives/validation-report.md": "e03bad0ef2bbdc3fb6df34fb2c772586acb6708d886b49b9b696dfe4fa1b241f",
+    "tasks/project-completion/capacity-lock-inventory.md": "350df81fbde6c7c5c4e25daad1e566d31338e6314aec7d884f702003e495f2d0",
+    "tasks/project-completion/integration-notes.md": "e4656f281353a4192f82b8dc989eb9b39aca916ace67aa48dd8a08b2bff1fa1a",
+    "tests/integration/security-multitenancy/incidents.rs": "86606b494518d95c3ec400b241806f4c81923ec1fdbdc6cef196e73988b4cf32",
+    "docs/adr/ADR-0038-production-incidents-follow-execution-lock-entry.md": "6eb13d7cda441062474899871fe9f42eb1de77524789cd44ebbe4c7a1f3960d3"
+  },
+  "evidence_sha256": {
+    "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "clippy.txt": "8c5ed35875508d8e3da757ea5d05c726991844e1c3d37aab0fe9319f896a4398",
+    "commands.json": "b72e9ab2600ff12aec273d8273aa7b2937728077c0f6814762e9676983d921fd",
+    "diff-check.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "gates.json": "43be0ee0cd2f79462e8bf892460d1b4b832c5a5635afa751dede7066db4c8ccf",
+    "green.txt": "9ed485b723a925958cdfa568342c19a25d51b6e4154e04d4261923743b785681",
+    "production.diff": "4cba011865e5fb82429e012adfacf6d3fc2410fa869dc8fa2b185779ed71cd66",
+    "red-source.json": "ecafc776f27cd7704d7c6f54df3f5997bf326fbbbb784591b7f6aa159992b5c3",
+    "red.txt": "aa457b5d2b4db35f786ac71901250c375459e278cb44e780749a85c146610a8b",
+    "regression-commands.json": "97401a571db9b1f4725d59f7f8433f5f950002faeee19f1687f52bd25aa8b3bd",
+    "reproduce.md": "7c803dccaa280f983cd133f0cad10d7e2d38020d9d5df95e5b506f24eb007519",
+    "review.md": "ae2c4e94a6afc18078bdf3238651e68953fb8492dca1c7a64c6accc3328bf20d",
+    "security-all.txt": "0cb82ff3c480fbe1f31dd11e26e85959e0b6e92e40f8f9a179b1741dd3a4cddb",
+    "test-red.diff": "5786e2f8dcfa9d23d80c2c861b009fda3c26774210ec7d337223bf9f5697bc75",
+    "tested-source.json": "c6f908c3b39b600bc97b5c54b74d785d146848d100e44470670846b57fb9a446"
+  }
+}

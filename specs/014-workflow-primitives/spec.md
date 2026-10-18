@@ -445,3 +445,10 @@ runs. Publication checks enabled capabilities; the API version alone does not se
 - Automatic migration to a new definition, arbitrary procedural replay, external exactly-once effects,
   distributed/multi-region execution and automatic history deletion are out of scope. Explicit
   cross-version continuation requires a later approved contract and migration design.
+
+
+Production script incident attribution follows the same applicable chain/own-run entry under
+ADR-0038, then retains its existing binding EXCLUSIVE and own-step guards through audit commit.
+This refines ADR-0022's reproduced opposite binding/run edge. Incident wire, current fenced
+validation and audit-only semantics remain the existing feature009 dependency; no nested
+execution capability or complete group lock graph is accepted.

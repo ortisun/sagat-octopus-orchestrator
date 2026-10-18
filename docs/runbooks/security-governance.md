@@ -427,3 +427,19 @@ policies and require the matching binaries independently of these byte switches.
 to discard outstanding reservations or non-default new policies; `20261025000000` additionally
 refuses rollback while truncation/failure-code evidence exists. Restore or forward-fix according to
 the deployment's recovery plan rather than deleting evidence to bypass these guards.
+
+
+### Production incident lock prefix (ADR-0038,2026-10-18)
+
+Refs:T014-040, FR-009-004/005/008, FR-014-014. Production attribution now takes applicable
+member chain→exact own run→binding EXCLUSIVE→own step→audit deduplication, refining ADR-0022's
+reproduced opposite report/binding edge. Current tenant/namespace/fence/expiry/binding checks,
+redacted closed categories, deduplication and commit-before-ACK remain unchanged. No execution
+state/outbox or new capability is introduced; test-run attribution is unchanged. Native runtime
+barriers cover the actual report storage cycle (PostgreSQL deadlocks0→1 before correction) and
+a genuinely published/leased script chain. Completion/journal consistency are positive controls.
+Reproduce with runtime option and external DB unset:
+`cargo test --locked -p sagat-tests --test integration_security_multitenancy incident_lock_order_`.
+Existing script_incidents_total/log mappings remain after commit; port tests do not assert counters.
+Exact source, review and regression limits: tasks/project-completion/evidence/incident-lock-order-20261018/.
+Complete B0/group and release gates remain open.

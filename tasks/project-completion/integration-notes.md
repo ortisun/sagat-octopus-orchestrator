@@ -1923,3 +1923,37 @@ ran no tests. Exact tree/commands/limits: tasks/project-completion/evidence/scop
 This is not full-workspace execution or fresh production/nested100k resource acceptance; no
 canonical checkbox closes. Complete B0 includes the separately recorded incident/binding and
 worker-session source/test gaps, plus the remaining implicit/resource graph.
+
+## Production incident/report lock order — 2026-10-18
+
+Refs:T014-040/044, FR-009-004/005/008, FR-014-014. ADR-0038 explicitly refines ADR-0022's
+production binding-before-run clause. Attribution now uses applicable member chain UPDATE→
+exact own run UPDATE/namespace validation→existing binding EXCLUSIVE→own step UPDATE→audit
+deduplication. It never forwards, changes execution state, acquires a second run or emits outbox.
+Existing category/redaction/current fence/session/binding/expiry and commit-before-ACK rules
+remain intact; the test-run branch is untouched. Binding revocation/registration take no runs
+or chains, preserving the corrected source edge with ordinary report/heartbeat entry.
+
+Two runtime-role tests fail unchanged production: controlled native RunTx.bound_patterns plus
+public record_incident form a real cycle (PostgreSQL deadlocks0→1; incident Unavailable), and
+a public published/built/leased script+continuation workflow's incident bypasses its held chain.
+RED0/2,3.09s; GREEN2/2,2.12s. The first tests the exact report storage prefix, not controlled
+concurrency with the whole public completion call; public completion/journal verification are
+separate positive controls. The second observes actual app-role chain wait and ownrun NOWAIT
+free before release, followed by audit1/completion/journal verification. No fabricated source
+deadlock attribution from a generic typed error is used.
+
+Existing script_incidents_total{category} and the destination-free committed log retain their
+after-commit mapping; these native tests do not assert counters. Worker-session postwait
+freshness and remaining implicit/resource edges keep B0 unchecked. No nested/group persistence,
+public capability, migration or release/resource gate is inferred. Exact source/commands:
+tasks/project-completion/evidence/incident-lock-order-20261018/.
+
+Final incident-prefix GREEN passed2/2 (2.12s); the entire security integration suite passed
+125/125 (61.19s), including stale/revoked/expired/duplicate/tenant/rollback and prior incident
+concurrency cases. Strict locked workspace/all-target Clippy (73.93s), formatting/diff and
+24-crate architecture passed. Three bounded reviews reconciled the required real chain case
+and newADR refinement, then found no concrete code/document defects; reviewers ran no tests.
+Exact tree/commands/limits: tasks/project-completion/evidence/incident-lock-order-20261018/manifest.json.
+No new all-workspace/SDK58/Compose/advisory/resource gate is claimed. B0/group and remaining
+worker-session post-wait source/test gaps remain open; no canonical checkbox closes.

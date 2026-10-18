@@ -109,14 +109,7 @@ pub(super) async fn record(
             let tenant = principal.tenant_id();
             let subject = principal.subject().as_str();
 
-            // Binding mutation takes this lock first and then expires affected step leases. Taking
-            // the same lock before run and step rows gives revocation and incident attribution one
-            // serial order and preserves the established binding -> run -> step lock order.
-            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
-                .bind(format!("binding:{tenant}:{namespace_id}:{subject}"))
-                .execute(&mut *tx)
-                .await
-                .map_err(store_error)?;
+            crate::execution::lock_member_chain(&mut tx, tenant, *namespace_id, *run_id).await?;
 
             let run_namespace: Option<Uuid> = sqlx::query_scalar(
                 "SELECT namespace_id FROM runs WHERE tenant_id = $1 AND id = $2 FOR UPDATE",
@@ -129,6 +122,14 @@ pub(super) async fn record(
             if run_namespace != Some(namespace_id.as_uuid()) {
                 return Ok(false);
             }
+
+            // Match report/heartbeat entry: member chain, own run, binding, then own step.
+            // Binding revocation locks sessions/steps, but never acquires a run or chain.
+            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+                .bind(format!("binding:{tenant}:{namespace_id}:{subject}"))
+                .execute(&mut *tx)
+                .await
+                .map_err(store_error)?;
 
             // Every supplied fence field is checked against the actual current step. The expiry is
             // compared with PostgreSQL's clock so an application clock cannot extend authority.

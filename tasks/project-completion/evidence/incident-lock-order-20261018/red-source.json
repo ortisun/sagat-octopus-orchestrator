@@ -1,0 +1,4 @@
+{
+  "crates/infra-postgres/src/scripts/incident.rs": "ae59f9e35327a485609a16ef960ee4796e3af4aef175c70c2bf149a22a92b857",
+  "tests/integration/security-multitenancy/incidents.rs": "86606b494518d95c3ec400b241806f4c81923ec1fdbdc6cef196e73988b4cf32"
+}

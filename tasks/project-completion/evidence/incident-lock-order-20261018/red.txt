@@ -1,0 +1,24 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 50.21s
+     Running integration/security-multitenancy/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_security_multitenancy-22d3495e7a6da0c5)
+
+running 2 tests
+
+thread 'incidents::incident_lock_order_takes_public_script_chain_before_its_run' (84528723) panicked at tests/integration/security-multitenancy/incidents.rs:757:35:
+incident bypassed script chain: Ok(())
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test incidents::incident_lock_order_takes_public_script_chain_before_its_run ... FAILED
+
+thread 'incidents::incident_lock_order_matches_the_report_run_then_binding_prefix' (84528722) panicked at tests/integration/security-multitenancy/incidents.rs:706:9:
+ordered incident/report failed; PostgreSQL deadlocks 0->1; incident=Err(Unavailable), binding=Ok(["*"]), commit=Ok(())
+test incidents::incident_lock_order_matches_the_report_run_then_binding_prefix ... FAILED
+
+failures:
+
+failures:
+    incidents::incident_lock_order_matches_the_report_run_then_binding_prefix
+    incidents::incident_lock_order_takes_public_script_chain_before_its_run
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 123 filtered out; finished in 3.09s
+
+error: test failed, to rerun pass `-p sagat-tests --test integration_security_multitenancy`
