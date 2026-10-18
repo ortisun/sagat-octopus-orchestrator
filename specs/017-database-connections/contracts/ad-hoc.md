@@ -42,3 +42,9 @@ pagination and authorization. Run cancellation, attempts and result reads use ex
 Rerun requires the original initiating actor, current ad hoc permissions and a justification;
 it retains origin and resolves floating connection revisions at its new admission. A rerun starts
 with a fresh default five-minute deadline (30 seconds for a fixed probe).
+
+New rerun admission retains its exact tenant/source FK identity KEY SHARE after receipt lookup
+and before private-definition/catalog/active/payload admission (ADR-0039). No mutable source-state
+authority follows from this guard. Missing source retains MissingReference/NotFound. A concurrent
+terminal-pin cleanup skips the guarded source; its next batch may release it after commit.
+Current rerun writers create new roots, not children; mixed ancestry needs a separate review.

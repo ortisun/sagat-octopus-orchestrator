@@ -1,0 +1,14 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+error[E0533]: expected unit struct, unit variant or constant, found struct variant `StoreError::Unavailable`
+   --> tests/integration/database-connections/cleanup_retention.rs:441:61
+    |
+441 |     let cleanup_unavailable = matches!(&cleanup_result, Err(StoreError::Unavailable));
+    |                                                             ^^^^^^^^^^^^^^^^^^^^^^^ not a unit struct, unit variant or constant
+    |
+help: the struct variant's field is being ignored
+    |
+441 |     let cleanup_unavailable = matches!(&cleanup_result, Err(StoreError::Unavailable { detail: _ }));
+    |                                                                                     +++++++++++++
+
+For more information about this error, try `rustc --explain E0533`.
+error: could not compile `sagat-tests` (test "integration_database_connections") due to 1 previous error

@@ -2053,3 +2053,33 @@ current-review selection applies, no external CLI. Existing typed errors, databa
 metrics and committed audit mapping remain; these barriers do not assert counters.
 No fullworkspace/SDK58/Compose/advisory/resource/nested/group acceptance or task closure.
 Exact source/commands/limits: tasks/project-completion/evidence/managed-replay-prefix-20261018/manifest.json.
+
+
+## Rerun source identity admission — 2026-10-18
+
+Refs:T014-040/044, FR-014-012–015, T017-012/024. ADR-0039 advances exact tenant/source KEY SHARE
+after existing receipt replay and before retained definition, managed catalog, active-run and
+payload admission. Identity only; missing reference stays MissingReference/NotFound. Cleanup
+FOR UPDATE SKIP LOCKED is unchanged. Current reruns create unrelated roots and child writers
+have no rerun source: documented writer invariant, not a schema/type guarantee. No source-state
+or group authority, wire field, provider I/O or external-effect guarantee is added.
+
+The runtime-role real PostgreSQL/OpenBao barrier actually reproduced the old source/catalog
+cycle: deadlocks0→1; rerun succeeded and native pin cleanup returned Unavailable. Corrected
+full connections initially3/3 (27.30s). Missing source leaves atomic counts unchanged; cancelling
+the source-blocked request rolls back before same-key retry; cleanup skips guarded source and
+later full cleanup releases it. A real new rerun claims, resolves, completes and releases its pin;
+strengthened metadata control requires the current rotated credential and rejects source version.
+The first strengthened-control run hit an INT4/i64 fixture decode error, retained separately;
+only test SELECT casts changed. Final exact results are in the manifest below.
+
+Segment rerun/independent-chain regression1/1 (1.95s). Three fresh Astra/xhigh bounded plan/code
+reviews; actionable SKIP/error/runtime-role/writer-invariant and stale-credential-test findings
+incorporated, final no concrete issues. Sol/high read-only draft, root sole writer/test executor;
+owner's current review applies, no external CLI. Existing run.rerun trace/typed error and committed
+RunRerun audit/outbox/metrics mappings remain; native barriers do not assert metric counters.
+No fullworkspace tests/SDK58/100k/Compose/advisory/S3/nested/group acceptance or canonical closure.
+Evidence: tasks/project-completion/evidence/rerun-source-identity-20261018/manifest.json.
+
+Final stronger-control full connections3/3 (27.36s), strict locked all-target workspace Clippy
+passes2.87s, formatting4.11s, architecture24crates and diff check pass.

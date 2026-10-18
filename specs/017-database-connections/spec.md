@@ -194,3 +194,8 @@ audit and credential-pin counts. Reconnect and subsequent public polling remain 
 This is the existing017 writer dependency of014 B0, not a new capability or full graph proof.
 The ordered barrier does not claim a reproduced three-party deadlock. Evidence:
 tasks/project-completion/evidence/managed-replay-prefix-20261018/.
+
+Rerun creation follows ADR-0039: exact source identity guard before managed admission; preserve
+missing-reference errors and own-transaction rollback. Terminal cleanup skips a guarded source.
+The real PostgreSQL/OpenBao source/catalog race and subsequent credential retention are covered
+in tasks/project-completion/evidence/rerun-source-identity-20261018.

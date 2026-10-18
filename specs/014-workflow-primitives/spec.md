@@ -468,3 +468,7 @@ claim-room evidence; completion of those checks does not accept the full group l
 Existing017 managed report receipt replay retains binding before catalog/current-role guards.
 It preserves durable ownership and current authorization after session clearance; its focused
 ordering barrier contributes to B0 and does not prove general nested/group ordering.
+
+ADR-0039 advances the unrelated rerun source identity guard before creation admission without
+authorizing source business state. Its runtime-role PostgreSQL/OpenBao race reproduces and fixes
+the source/catalog deadlock; nested groups and remaining B0/B1 work stay unaccepted.

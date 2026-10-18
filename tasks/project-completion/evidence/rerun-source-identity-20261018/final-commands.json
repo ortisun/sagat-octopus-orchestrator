@@ -1,0 +1,63 @@
+[
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_database_connections",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 101,
+    "seconds": 33.45,
+    "log": "green-current-credential.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_database_connections",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "seconds": 51.44,
+    "log": "green-current-credential-fixed.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "fmt",
+      "--all",
+      "--",
+      "--check"
+    ],
+    "exit_code": 0,
+    "seconds": 4.11,
+    "log": "fmt-final.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "clippy",
+      "--workspace",
+      "--all-targets",
+      "--locked",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit_code": 0,
+    "seconds": 2.87,
+    "log": "clippy-final.txt"
+  }
+]

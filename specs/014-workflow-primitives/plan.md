@@ -369,3 +369,7 @@ audit and credential-pin counts. Reconnect and subsequent public polling remain 
 This is the existing017 writer dependency of014 B0, not a new capability or full graph proof.
 The ordered barrier does not claim a reproduced three-party deadlock. Evidence:
 tasks/project-completion/evidence/managed-replay-prefix-20261018/.
+
+Rerun source admission correction: ADR-0039, exact tenant/source identity KEY SHARE after replay
+and before admission. Evidence: tasks/project-completion/evidence/rerun-source-identity-20261018.
+Do not generalize this root-rerun writer exception to child ancestry or nested group eligibility.

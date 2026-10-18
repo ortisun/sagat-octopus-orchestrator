@@ -111,3 +111,8 @@ depth-two handoff (1/1, 2.85s). These new assertions are positive coverage, not 
 second review found no remaining concrete precondition, authority, ordering, wording or oracle
 defects. Neither reviewer ran tests. ADR-0030 and its dependents now reference this exception;
 all other B0/B/C and canonical runtime tasks stay open.
+
+## Related identity guards
+
+ADR-0039 separately covers the unrelated rerun source FK guard before creation admission.
+Its current root-rerun writer precondition does not extend this child-handoff exception.

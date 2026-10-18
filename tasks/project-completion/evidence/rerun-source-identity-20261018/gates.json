@@ -1,0 +1,56 @@
+[
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "rerun_as_new_of_a_segment_starts_an_unrelated_run_with_its_own_chain",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "seconds": 33.35,
+    "log": "rerun-segments.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "fmt",
+      "--all",
+      "--",
+      "--check"
+    ],
+    "exit_code": 0,
+    "seconds": 4.09,
+    "log": "fmt.txt"
+  },
+  {
+    "command": [
+      "python3",
+      "scripts/check-architecture.py"
+    ],
+    "exit_code": 0,
+    "seconds": 0.28,
+    "log": "architecture.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "clippy",
+      "--workspace",
+      "--all-targets",
+      "--locked",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit_code": 0,
+    "seconds": 54.48,
+    "log": "clippy.txt"
+  }
+]

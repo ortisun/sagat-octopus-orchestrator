@@ -589,3 +589,14 @@ Reproduce with runtime option and external DB unset:
 Existing script_incidents_total/log mappings remain after commit; port tests do not assert counters.
 Exact source, review and regression limits: tasks/project-completion/evidence/incident-lock-order-20261018/.
 Complete B0/group and release gates remain open.
+
+### Rerun source identity ordering (ADR-0039)
+
+New rerun creation checks existing receipt replay first, then retains exact tenant/source KEY SHARE
+before private-definition, managed catalog, active-run and payload admission. It selects identity
+only, keeps MissingReference for absence, and grants no source state/chain/group authority. Current
+rerun writers create unrelated roots; child writers have no rerun source. This is a writer invariant,
+not a database constraint. Terminal credential cleanup keeps FOR UPDATE SKIP LOCKED and skips the
+protected source. Existing journal/audit/outbox/quota rollback boundaries and replay authorization
+remain unchanged. Focused runtime-role real PostgreSQL/OpenBao barriers and positive retention
+controls are in evidence/rerun-source-identity-20261018 under tasks/project-completion.

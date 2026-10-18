@@ -1,0 +1,282 @@
+{
+  "source_base": "83010738ab5d21fe49a5622c9e722fb491829cb4",
+  "recorded_utc": "2026-10-18T06:59:10.588497+00:00",
+  "scope": "Early stable rerun source identity guard, no source state authority",
+  "commands": {
+    "commands.json": [
+      {
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "sagat-tests",
+          "--test",
+          "integration_database_connections",
+          "durable_provider_intents_reconcile_without_plaintext_or_duplicate_rotation",
+          "--",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "exit_code": 101,
+        "seconds": 2.57,
+        "log": "compile-error.txt"
+      },
+      {
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "sagat-tests",
+          "--test",
+          "integration_database_connections",
+          "durable_provider_intents_reconcile_without_plaintext_or_duplicate_rotation",
+          "--",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "exit_code": 101,
+        "seconds": 32.28,
+        "log": "red.txt"
+      },
+      {
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "sagat-tests",
+          "--test",
+          "integration_database_connections",
+          "--",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "exit_code": 0,
+        "seconds": 58.43,
+        "log": "green.txt"
+      }
+    ],
+    "gates.json": [
+      {
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "sagat-tests",
+          "--test",
+          "integration_workflow_primitives",
+          "rerun_as_new_of_a_segment_starts_an_unrelated_run_with_its_own_chain",
+          "--",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "exit_code": 0,
+        "seconds": 33.35,
+        "log": "rerun-segments.txt"
+      },
+      {
+        "command": [
+          "cargo",
+          "fmt",
+          "--all",
+          "--",
+          "--check"
+        ],
+        "exit_code": 0,
+        "seconds": 4.09,
+        "log": "fmt.txt"
+      },
+      {
+        "command": [
+          "python3",
+          "scripts/check-architecture.py"
+        ],
+        "exit_code": 0,
+        "seconds": 0.28,
+        "log": "architecture.txt"
+      },
+      {
+        "command": [
+          "cargo",
+          "clippy",
+          "--workspace",
+          "--all-targets",
+          "--locked",
+          "--",
+          "-D",
+          "warnings"
+        ],
+        "exit_code": 0,
+        "seconds": 54.48,
+        "log": "clippy.txt"
+      }
+    ],
+    "final-commands.json": [
+      {
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "sagat-tests",
+          "--test",
+          "integration_database_connections",
+          "--",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "exit_code": 101,
+        "seconds": 33.45,
+        "log": "green-current-credential.txt"
+      },
+      {
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "sagat-tests",
+          "--test",
+          "integration_database_connections",
+          "--",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "exit_code": 0,
+        "seconds": 51.44,
+        "log": "green-current-credential-fixed.txt"
+      },
+      {
+        "command": [
+          "cargo",
+          "fmt",
+          "--all",
+          "--",
+          "--check"
+        ],
+        "exit_code": 0,
+        "seconds": 4.11,
+        "log": "fmt-final.txt"
+      },
+      {
+        "command": [
+          "cargo",
+          "clippy",
+          "--workspace",
+          "--all-targets",
+          "--locked",
+          "--",
+          "-D",
+          "warnings"
+        ],
+        "exit_code": 0,
+        "seconds": 2.87,
+        "log": "clippy-final.txt"
+      }
+    ]
+  },
+  "results": {
+    "green-current-credential-fixed.txt": [
+      {
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 27.36
+      }
+    ],
+    "green-current-credential.txt": [
+      {
+        "passed": 2,
+        "failed": 1,
+        "ignored": 0,
+        "seconds": 9.0
+      }
+    ],
+    "rerun-segments.txt": [
+      {
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 1.95
+      }
+    ],
+    "red.txt": [
+      {
+        "passed": 0,
+        "failed": 1,
+        "ignored": 0,
+        "seconds": 8.47
+      }
+    ],
+    "green.txt": [
+      {
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 27.3
+      }
+    ]
+  },
+  "review": {
+    "cycles": 3,
+    "model": "gpt-6-astra/xhigh fresh read-only",
+    "final": "no concrete scoped issues",
+    "external_cli": false
+  },
+  "limits": [
+    "Actual native PG deadlock RED; compile/decode fixture failures retained separately",
+    "Current rerun-root/child-norerun writer invariant, not schema/type guarantee",
+    "Cleanup unchanged U SKIP LOCKED; full batch retained as later positive control",
+    "No workspace test/SDK58/100k/Compose/advisory/S3/group/old-writer acceptance or task closure"
+  ],
+  "source_sha256": {
+    ".gitattributes": "b10e44029ac55c276c74ea11832cd661bceef668fb1570db5f8a0f0943ec5c42",
+    "crates/infra-postgres/src/execution.rs": "07ddad116cd27f84ef66228cc61c82b4633ff9cf6e7cfbd69daf0997faf77cdf",
+    "docs/adr/ADR-0030-structured-instances-and-continuation-chains.md": "004bdbfdf8b1616852189cec826a0cfaecd68cd287c404cc210d5979cae6852f",
+    "docs/adr/ADR-0037-stable-parent-identity-guards-for-child-handoff.md": "bdb47e54619f261a92621b41878ba51dcf01c0ad42acfc45d441cc892edd5e6d",
+    "docs/traceability.md": "e88cbf71e816d88642e4521b06da470cd6c2bbb7ee73c399f405bb9b255e8308",
+    "specs/014-workflow-primitives/contracts/README.md": "3606e948f4979435c4db5ee1ceecdeddc463138ca7683f520c69f694bb7adc63",
+    "specs/014-workflow-primitives/plan.md": "23ab321013efd2d9c033b67d653977e2d9995ad4dcc2ddf571c5ffabdf66e6aa",
+    "specs/014-workflow-primitives/spec.md": "738dc49341d5fb3d2ada020eb857ea555f422ad03518d127144c8e64b981a675",
+    "specs/014-workflow-primitives/validation-report.md": "9b81fc12529c0547ea22c9e7a80f6533ad13282e4a4b96a4ea3f3da70fd3d085",
+    "specs/017-database-connections/contracts/ad-hoc.md": "1658145fb32f2b315e413ca673e82293ee3f0e75b80219789d6cadae5991ca6f",
+    "specs/017-database-connections/plan.md": "0aaa8a2277b537525fa7052d23f4cf5da31d68d8ae54718f69878dd8962bdac5",
+    "specs/017-database-connections/spec.md": "73f97456d4263d16c69cfa8dfa661689cb5406d80f0cbd0afcc1d60d852c6e59",
+    "tasks/project-completion/integration-notes.md": "2a2734eea649342caf0fb37b0e2398b41b6a834d76feedc409f0096062ad6e35",
+    "tests/integration/database-connections/cleanup_retention.rs": "da02869bee468e1ad0d832ab88daa05caed463169917e7f90a28c1df28bfd02b",
+    "docs/adr/ADR-0039-stable-rerun-source-identity-guards.md": "1fbabc051d07ede2372809299e55b2a71eb7289bc4333efaee747e0b4d576ff0"
+  },
+  "evidence_sha256": {
+    "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "clippy-final.txt": "20dd4f6e0e66665dd002e71e37f74b1d88959c5ce4522cc996d422c5f0006821",
+    "clippy.txt": "8a5e7ed774cb827b1eba1bbf6be543567e1f0757f48cbc985a4af64958ad94fe",
+    "commands.json": "1475e5eda10320f3bc2e16ab1982ba77eba1be010222c4ee4abced70bdc915e5",
+    "compile-error.txt": "8d15c092b707e776cefc08dec759644c041d2319d1cd5a59bf4c97451562cecf",
+    "compile-source.json": "b712091f628e0862cff9833b4fa0dc417e15141edde8655e25ff8443d6eae1af",
+    "compile-test.diff": "675700f0bf93ca11c182e1c27d067224a02a31b5beef9c719b182bf7f8c80e7e",
+    "credential-decode-failure-source.json": "22c88d0a601151cb77adceac6e369dc8eb39dbccc5a5c354fd75f4e62103aea9",
+    "credential-decode-failure.diff": "12b90df321e443ae5f63e82dd5620a5736cfee84522894ca8b0be18f7b21d61a",
+    "diff-check.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "final-commands.json": "8e46873a31ae50e4a384aedc8c31dfe62db7473e984f9338032e1d3187a39b89",
+    "final-tested-source.json": "b2b7a538a9790cbcb810f5028c0d5a1d60496d3a4704d5a729f3928b00a22679",
+    "fmt-final.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "gates.json": "4ada5ee1d94c137c7ce10351c41ffa8b60a886b98831dc8aa151a5c6cab652dc",
+    "green-current-credential-fixed.txt": "e95bcddd79d069c6cfbe665ff484589d75eeeefc27d73379e4b2296924661907",
+    "green-current-credential.txt": "b06a96c62de36b7422c8b033bd5314e4e851608fa004245c0d347cd20fb0f6e4",
+    "green.txt": "af6fe5ef27b636fd9943718f7fdc1d95611088b761d8f748fec71944ae74a10e",
+    "production.diff": "dda366321a56b50e71f1f7955c0ee3766030cc53fe5dc218e661469504798bce",
+    "red-source.json": "d53ec58a2c20db9fdfb57c83b917ffdcda8e88daacc647f3dbbb10ea1d99c86d",
+    "red.txt": "c646a579db91b3154751180b76216b5ed5a8989bd1467fe775b286e1b5dc4114",
+    "reproduce.md": "1bfa5ae9819b604176cfd7c4262a2c0021a4f24ca06c42fe521ec25e9df53346",
+    "rerun-segments.txt": "8a6caf3f17ab2749e1ab5d31b1cf5f6a95a1a23ce5cc26d894dbee259895262f",
+    "review.md": "e9d318de6e160e1de88864fa6e7f6425e3195d550d27e08a0a0a37729a252975",
+    "staged-diff-check-initial.txt": "2bcf7efec58205e1589a7f921c8551e760c4fe7bfa3960c5f5c2f1b451766cf6",
+    "test-final.diff": "c5beb1d9ed413676de8ad7700181946cdab00ca03c691ecb630d0a1c9b50d5c7",
+    "test-red.diff": "5fe503c7b4191da04da4a28c933fdad6f857d0972d8a1c63d7c79820e95ed4e4",
+    "tested-source.json": "ab510c9c396ce9c592b30628b9b4d4c4a6365c56f2e5b44132e3906a62ecd7da"
+  }
+}

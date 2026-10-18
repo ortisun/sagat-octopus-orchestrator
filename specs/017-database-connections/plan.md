@@ -237,3 +237,9 @@ audit and credential-pin counts. Reconnect and subsequent public polling remain 
 This is the existing017 writer dependency of014 B0, not a new capability or full graph proof.
 The ordered barrier does not claim a reproduced three-party deadlock. Evidence:
 tasks/project-completion/evidence/managed-replay-prefix-20261018/.
+
+Rerun admission takes source identity KEY SHARE after existing receipt replay but before retained
+definition/catalog/active/payload admission (ADR-0039). Keep cleanup U SKIP LOCKED unchanged.
+Current reruns are unrelated roots and children have no rerun source; this is a writer invariant.
+Focused actual deadlock RED, corrected barrier, cancel/rollback and credential retention evidence:
+tasks/project-completion/evidence/rerun-source-identity-20261018.

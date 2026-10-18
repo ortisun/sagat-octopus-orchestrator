@@ -1,0 +1,22 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 21.86s
+     Running integration/database-connections/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_database_connections-a1c81238e600ab23)
+
+running 1 test
+test durable_provider_intents_reconcile_without_plaintext_or_duplicate_rotation ... 
+thread 'managed-secret-lifecycle' (87528910) panicked at tests/integration/database-connections/cleanup_retention.rs:442:5:
+rerun source guard must precede catalog; secrets_free=false, deadlocks=0->1, rerun_ok=true, cleanup_ok=false, rerun_unavailable=false, cleanup_unavailable=true, rerun_backend=87, cleanup_backend=Some(90)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'durable_provider_intents_reconcile_without_plaintext_or_duplicate_rotation' (87528909) panicked at tests/integration/database-connections/main.rs:48:10:
+managed secret lifecycle thread: Any { .. }
+FAILED
+
+failures:
+
+failures:
+    durable_provider_intents_reconcile_without_plaintext_or_duplicate_rotation
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 8.47s
+
+error: test failed, to rerun pass `-p sagat-tests --test integration_database_connections`

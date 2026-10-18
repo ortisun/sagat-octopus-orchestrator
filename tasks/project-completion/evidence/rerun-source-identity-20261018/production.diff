@@ -1,0 +1,24 @@
+diff --git a/crates/infra-postgres/src/execution.rs b/crates/infra-postgres/src/execution.rs
+index c903c848..3f65e8e0 100644
+--- a/crates/infra-postgres/src/execution.rs
++++ b/crates/infra-postgres/src/execution.rs
+@@ -793,6 +793,19 @@ impl RunStore for PgRunStore {
+                     .await?;
+                 return Ok(Applied::Replayed(existing));
+             }
++            // Advance the rerun FK's stable identity guard before admission locks.
++            // This grants no authority over the source run's business state (ADR-0039).
++            if let Some(source) = new.info.rerun_of {
++                let exists: Option<Uuid> = sqlx::query_scalar(
++                    "SELECT id FROM runs WHERE tenant_id=$1 AND id=$2 FOR KEY SHARE",
++                )
++                .bind(tenant.as_uuid())
++                .bind(source.as_uuid())
++                .fetch_optional(&mut *tx)
++                .await
++                .map_err(store_error)?;
++                exists.ok_or(StoreError::MissingReference)?;
++            }
+             if let Some(retained) = &new.retained {
+                 ad_hoc::retain(&mut tx, &mut new.info, retained).await?;
+             } else if new.info.origin.is_some() {
