@@ -1,0 +1,156 @@
+# One immutable-old nonfinal Return frontier acceptance unit
+
+Design only, 2026-10-18. No tests, builds, formatting, SQL execution, containers, repository edits, or external writes were performed for this plan. Repository inspected: `/Users/marcelo/Documents/Projects/sagat-octopus-project-completion`, current production pin `f81a1285a4d26bb1897ef4f178bafbbb65c5ad5d`; immutable old production pin `6c44a0e49670cf19660792cd1518d241e6c99b3b`.
+
+## Selected outcome and boundary
+
+Accept only §11.4 frontier case **(b), a pending NONFINAL Return**: genuine old closed root collection owners make E exceed 4 MiB although the stored ledger L fits. Old c10 has one genuinely completed compensable work activity, its pending Return, and an unadmitted second item. One current normal `Scheduler::advance_collection` must return `DrainStarted` with `ExistingOutputs` evidence before checkpointing that Return or admitting item 1. Continue the resulting obligation through ordinary current compensation and finalization.
+
+This is an acceptance increment over the already present guard, with no anticipated production change. Free-admission, live-only Waiting, E==limit, competing stops, held-lock/CAS races, in-flight reports, Applied, uncertain COMMIT, rollout, and general nested capacity are separate work. In particular, the existing ce6560c5 live-worker case is not the selected pending-Return case. Q7c/Q8/Q9, master Q, and canonical 014 checkboxes remain open after this narrow evidence. Trace to FR-014-004/005/014, NFR-014-001/003, SC-014-005 and correction §11.3–11.4; no new product decision or capability is needed.
+
+## Source grounds
+
+- Current registered module is `tests/integration/workflow-primitives/legacy_collection_output_view.rs` (`main.rs:47`). Its companion runner is `scripts/test-legacy-collection-output-view.sh`; the actual overlay is `tests/fixtures/legacy-collection-output/producer.rs`. No new module registration is needed.
+- Existing overlay `document`, `finish_then_hold`, `assert_shape` currently makes **one-item** scopes and requires one later LEASED work step. The consumer `legacy_scheduler_case` (`:773`) checks a live c10 lease, starts discovery with `tick`, then waits for expiry. Neither helper is the new handoff contract. Keep the existing Q5 matrix path intact and add a separate producer/test/receipt variant in these same files.
+- Old `crates/infra-ir/src/convert.rs:701–792` permits root collection chains ending at End and multiple referenced bodies, each an activity chain ending at Return. The new two-body graph is within that old public shape.
+- Old `crates/application/src/worker/scoped_reports.rs:180–317` retains successful forward output and calls `complete_path_instance`; old `crates/domain/src/execution/command.rs:580` applies success and settles routing. Old `execution/plan.rs:166–237` routes the completed activity, creates its successor, and deliberately leaves a Return PENDING. Therefore **no old scheduler tick is needed or allowed after c10's first successful CompleteStep**.
+- Old `crates/infra-postgres/src/primitives.rs:1419` checkpoints actual Return payloads; `:2550` stores collection result/finish and routes the owner without the current owner-output logical charge. Current `collection_outputs.rs:285–300` adds each missing legacy owner output length separately, even for equal digests.
+- Current `crates/infra-postgres/src/scope_frontier.rs:45–105,251–384` takes a repeatable-read snapshot, reads E with the run revision/stop metadata, and hydrates only active member data. `application/scope_frontier.rs:62–78` recognizes an actual PENDING Return.
+- Current `crates/scheduler/src/passes.rs:647` is the normal public entry; `:1816–1837` first uses the frontier. Within OPEN, `:1940` selects ExistingOutputs before the pending Return loop; `:2000` distinguishes a last Return via `completed + 1 == item_count` and otherwise calls the checkpoint path.
+- Current `crates/infra-postgres/src/primitives.rs:888` independently requires E>limit with no existing stop for ExistingOutputs. `start_collection_drain` (`:2406`) checks native authority/revision, writes the first stop and truthful drain, audit, outbox and telemetry atomically. With no live attempt the first call has exactly two new events; pending Return cancellation belongs to later member drain.
+- Current `scheduler/passes.rs:1699–1810` resumes draining before full data hydration and plans compensation. `primitives.rs:3021` requires that saga to finish before finalization. Existing `byte_ceilings.rs:719–777` demonstrates the expected FAILED scope / COMPENSATED run / DONE-COMPENSATED saga combination.
+- **Version-specific role warning:** the inspected **immutable-old 6c44a0e4** `tests/support/scope_flow.rs::Flow::start` explicitly passes `Options { runtime_role: true, .. }`. Do not use that constructor to claim the new owner-mode producer. Use old `tests/support/worker.rs::platform_with` with an explicitly selected `Options.runtime_role`, plus its ordinary public worker protocol and a normal fenced scheduler. Use the existing membership bootstrap followed by the public exact worker-binding endpoint (as old Flow does); do not call `Platform::worker`/`bind_everything`, which inserts binding rows with fixture SQL. This observation makes no claim about current Flow or the actual roles of earlier evidence. The new phases must print/assert their own actual roles.
+- Current pinned `tests/support/mod.rs::attach_existing_db`, `tests/support/api.rs::start_on_db`, and `tests/support/worker.rs::Platform::connect` / `Worker::register_version` already support the current compensation process. They need no change and no unfinished P0b work. A fresh current worker session is legitimate: this fixture has no remaining old forward report to submit.
+
+## Owned implementation files: at most five
+
+1. `tests/fixtures/legacy-collection-output/producer.rs`: separate old nonfinal producer and optional isolated old RED entry; local public setup/finite driver and closed handoff writer.
+2. `tests/integration/workflow-primitives/legacy_collection_output_view.rs`: separate exact ignored consumer, receipt parser, pre/post witnesses and normal compensation driver.
+3. `scripts/test-legacy-collection-output-view.sh`: closed fixture selection, exact test names, manifests and finite process/cleanup contract for the new path.
+4. `tests/fixtures/legacy-collection-output/README.md` (new): document the new format, exact graph/arithmetic, commands, outcomes and limited claim; preserve the existing matrix's meaning.
+5. Optional one execution note `tasks/project-completion/legacy-nonfinal-return-frontier.md`: reviewed acceptance record and safe artifact-manifest pointer after root execution. Do not spend this slot on production code or registration. Root can choose to record the narrow result later instead.
+
+The four inflight files are forbidden for both implementation and design ownership: `scripts/test-legacy-collection-inflight-report-v1.sh`, `tests/fixtures/legacy-collection-inflight-report-v1/{README.md,producer.rs}`, `tests/integration/workflow-primitives/legacy_collection_inflight_report_v1.rs`. Their contents and temporary drafts were not consumed. Do not edit `main.rs`, shared test support, production code, migrations, grants, runtime flags/profiles, SDKs, contracts, or APIs for this unit.
+
+## Exact public graph and arithmetic
+
+Publish through the old HTTP API one root chain `c0 -> ... -> c10 -> done`. Every root uses `items: input.lines`, `maxItems: 2`, `maxConcurrency: 1`, `result: bodyResult`; input is `{"lines":[1,2]}`. Use distinct body node names so there is no dependence on cross-body duplicate-name acceptance:
+
+- c0…c9 reference `legacyLine`: `legacyWork` (ordinary `line.reserve`, no compensation) -> `legacyReturned` (`return steps.legacyWork.output`).
+- c10 references `targetLine`: `work` (`line.reserve`, `compensateWith: line.release`, existing retry policy) -> `returned` (`return steps.work.output`).
+- No source-prefix activity, root effect policy, nested collection or new public shape is added. Only c10 creates a compensation obligation in this selected run.
+
+Each of the twenty old historical successes completes through real gRPC with `Value::String("x".repeat(104_998))`. Assert canonical serialized length **105,000** before reporting. Both Return results are those same bytes; assert every retained aggregate is exactly the serialized ordered array `[large,large]`, length **210,003** (`2*105000 + '[' + ',' + ']'`). Assert all hashes from actual contents, all twenty checkpoints and the ten actual finish/routing pairs.
+
+At c10, complete its sole first work lease through old gRPC with JSON number **1**, exact bytes `b"1"`, length **1**. Require public StepAck SUCCEEDED and a non-stopping Run; then stop driving. The second source item already exists in captured membership but **no member for index 1 has been admitted**.
+
+| Quantity at handoff | Exact value and provenance |
+| --- | --- |
+| Historical scoped work output references | 20 × 105,000 = 2,100,000 |
+| c10 work output reference | 1 byte, actual committed JSON `1` |
+| Stored logical ledger L | **2,100,001** |
+| Ten missing legacy owner outputs V | 10 × 210,003 = **2,100,030** |
+| Effective total E = L + V | **4,200,031**, above **4,194,304** by **5,727** |
+| Largest retained individual value | 210,003, below **262,144** |
+
+Require L equals the sum over **step-output references** and V equals the sum over the ten **eligible owner references**, never distinct digests or physical payload rows. Existing payload deduplication is expected and must not change this arithmetic. Checkpoints are historical source records, not additional logical step-output charges. No ledger correction, output deletion, or SQL-created source is allowed.
+
+## Production order and private handoff
+
+1. Runner creates an owned private run directory, selects exact tests, archives the immutable old commit, overlays only the producer module and its old test-main registration, and records archive/source/migration/toolchain/lock/overlay hashes. Sequential old/current builds use the caller-coordinated private target outside the repository with disk preflight. No more than two heavy builds globally.
+2. Build current from the reviewed pinned tree plus only this test increment. Validate source manifests before/after. The old production archive must restore byte-for-byte after its test overlay is removed. Protect the frozen concurrent files from copying into this artifact's source diff; hash only the agreed source input list and record existing unrelated dirty paths as excluded, without reading their contents.
+3. In each mode, create a fresh disposable database through the existing harness against a repository-owned PostgreSQL fixture. Old APIs/workers/scheduler use owner in `owner`, sagat_app in `runtime`; assert `SELECT current_user,current_database()` on the actual API pool and same execution-store pool used by the scheduler. Inspection/migration connections remain the owner. Set iteration capacity through the existing public quota endpoint.
+4. Drive c0…c9 in order through normal old `advance_collection`/scheduler ticks and old public worker poll/complete, with finite action counts and exact task matching. Verify index 0 then index 1 succeeds and the owner finishes before advancing. Stop at c10's first completion; never call old tick/advance again on the accepted handoff run. Assert the complete shape below before atomically writing its receipt.
+5. Old process exits and is reaped before current process begins. Current validates the exact receipt format/commit/case/role/database, attaches the original database, and verifies the old full projection witness before and after native migration. Preserve source before reopening current API or registering a worker. Current uses existing `start_on_db` on that exact database and explicit selected role; `api.executions` is the current store. This starts no workflow and rewrites no old source.
+6. Resume the recorded scheduler owner with ordinary `Keeper::round`, assert the owned shard/generation, then build a normal `Scheduler` with that placement. Reusing the exact stable old owner follows the existing old-view coordinator; no scheduler-table mutation or expiry sleep is needed.
+7. Read a real current frontier, assert it exactly describes the nonfinal pending-Return case and E. Invoke **one** normal `advance_collection(tenant,run,root(c10))`. Do not call `advance_collection_from_run` or successfully call `start_collection_drain` directly. Verify the atomic first-step oracles before any second scheduler action.
+8. Continue ordinary `advance_collection`/ticks to drain the one admitted member and plan exactly one `work~c` compensation; use current public gRPC with the existing worker identity/binding and a newly registered protocol-1.5 session. Assert its target is the original successful `work`, `target_node` is `work`, `target_instance` is c10[0]/work, target idempotency key equals that old lease's key, and its actual input JSON has `/steps/work/output` equal to number 1. Assert the forward step's recorded activity is `line.reserve`; `TaskLease` has no target-activity-name field. Hold this real task unfinished while advancing once more and prove finalization cannot occur. Then complete the actual `line.release` task normally and settle within a finite transition budget. No missing-output or external-provider claim follows.
+9. Check final exact invariants, drop/reopen the current execution store, and verify the mixed old/current journal with `verify_run` without full output hydration or source repair. Coordinator retains safe manifests/logs, deletes private credentials and owned source/target artifacts, and drops only the database proven created by this phase.
+
+Use a separate closed receipt **`legacy-nonfinal-return-frontier-v1`**, not the existing Q5 14-field receipt and not an inflight format. Exact top-level field set:
+
+`format`, `source_commit`, `case`, `role`, `database_name`, `database_url`, `runtime_database_url`, `tenant`, `other_tenant`, `namespace`, `run`, `workflow_version`, `scope_id`, `scheduler_owner`, `handoff_run_version`, `closed_source_cutoff`, `forward_step_id`, `forward_target_key`, `producer_witness_sha256`, `closed_source_sha256`.
+
+All IDs/hashes are parsed/validated; `case` is exactly `nonfinal-return`; `role` is owner/runtime; DB name matches lowercase `t_[0-9a-f]{32}` and actual connection identity. The current process derives the admin URL from the coordinator's existing owned server environment instead of adding another credential. Unknown/missing fields fail closed. The producer records witness hashes from the actual committed DB, not a desired graph. The key witnesses include the actual selected work's idempotency key so the later compensation target is independently bound.
+
+Create run/role directories mode 0700, set umask 077, create the receipt temporary file mode 0600 exclusively, fsync then rename. Do not derive Debug for the credential-bearing receipt or print DSNs/tokens; publish only receipt SHA-256 and non-secret identity. There is **no original worker session/lease credential handoff**, because the old forward report has already committed and there is no live old attempt. Expiry of the old worker session has no bearing on this proof.
+
+## Exact oracles
+
+### Before migration, after migration, and before the first current action
+
+- One run with original tenant/namespace/workflow-version and no stop; no new run/version/chain/certificate is created. Ten root scopes c0…c9 SUCCEEDED; 20 CHECKPOINTED members; 20 checkpoints; 20 SUCCEEDED/routed historical work steps and 20 completed Return steps; ten SUCCEEDED/routed owner steps with **NULL owner output digests**. Verify one finished/routed pair per owner and exact aggregate content/digest/length. Source cutoff is the actual c9 root routing event.
+- c10 owner is root WAITING/COLLECTION with NULL output. Scope is OPEN with `item_count=2`, `max_concurrency=1`, `next_admission_index=1`, `admitted_count=1`, `completed_count=0`, `active_count=1`; no scope result or drain/finish metadata.
+- Captured c10 items are exactly indices 0 and 1, values 1 and 2. Only index 0 exists in `collection_iterations`; it is ADMITTED, slot held, no checkpoint/result. Index 1 has no iteration row and no steps or events.
+- c10[0]/work is FORWARD `line.reserve`, SUCCEEDED/routed from a real leased attempt with retained output `b"1"`, correct digest and old reported-lease/receipt. Exactly one actual completion/routing pair. c10[0]/returned is PENDING, unrouted, attempt/generation zero, no lease/output/failure; no Return completion/checkpoint event. No compensation/reconciliation exists yet. No live LEASED/RUNNING forward work exists anywhere in this selected run.
+- Current `collection_frontier` returns Some, phase Open, the same scope/run-version/counters, one active member index 0, exact local work output and pending Return, no active failure and both stop fields None. Explicitly assert **`completed + 1 = 1 < item_count = 2`**. Assert E=4,200,031 independently of the SQL L/V oracle. This prevents a final-Return/full-fallback fixture from being mislabeled.
+- Full projection witness is unchanged across process handoff and migration. Extend the existing canonical witness, for this new case only, with the exact selected source/lease/report receipt and ledger identities. No root data hydration is needed to prove E. Source witness is bounded to immutable c0…c9 history/owners/items/members/checkpoints/payloads, plus pinned published definition and captured c10 membership. Preserve c10 work completion/routing/receipt bytes separately because later derived compensation legitimately adds steps/events.
+
+### Immediately after the one current normal call
+
+- Return value is exactly `CollectionAdvance::DrainStarted`; Run CANCELLING with first `(FAILED,RUN_DATA_LIMIT)`; c10 DRAINING with `drain_kind=RUN_DATA_LIMIT`, failure code RUN_DATA_LIMIT, **NULL drain_iteration**, non-null exact drain sequence/outbox identity. Evidence is proved by the one new engine audit `run.data_limit_exceeded`, reason **`existing_outputs`**, matching tenant/resource/trace, and the native E predicate. There is no stopped-report/aggregate/storage-quota audit.
+- Journal suffix is exactly two events, in order: root `run.stop_requested` `{reason:FAILED,code:RUN_DATA_LIMIT}`, then c10 `collection.drain_started` `{reason:run_data_limit}`. `run_version = handoff_run_version + 2`, `drain_sequence = run_version`, telemetry pending head equals it. There are no live tasks to generate `step.cancel_requested` in this first transaction.
+- Exactly one new outbox row: `collection.drain.started`, routing key c10, scope/tenant/namespace/run/trace match, public reason FAILED, ID equals scope drain_outbox_id. No report receipt/report outbox or worker report is invented by the scheduler.
+- All c10 counters and its sole member row/reservations are unchanged. **The Return remains PENDING immediately after DrainStarted**, never SUCCEEDED/checkpointed. No checkpoint, result digest, owner output, End/done, item-1 admission, derived step, task hint or other forward event appears. Work's exact old success/output/fence/report receipt remain unchanged.
+- L/V/E remain exactly 2,100,001 / 2,100,030 / 4,200,031; full payload table digest/content/metadata witness is unchanged; all closed-source witnesses are identical. No virtual owner is materialized into steps and no ledger backfill occurs.
+
+### Through ordinary drain and real compensation
+
+- Member drain cancels only the previously unstarted Return, retains the work success/output, transitions index 0 to DRAINED and releases its active slot normally. Index 1 remains absent, next_admission stays 1, completed_count stays 0, no c10 checkpoint ever exists. Compensating the successful activity is distinct from executing its Return.
+- Exactly one target compensation, c10[0]/work~c, is planned/leased and completed via public protocol; no reconciliation or forward successor is added. Its target node/path/key and input JSON pointer `/steps/work/output == 1` match old work (the canonical TaskLease fields are `target_node`, `target_instance`, and `target_idempotency_key`; bind the original attempt from the raw successful-step witness). Before the compensation completes, c10 remains DRAINING and Run nonterminal; a normal extra advance returns Waiting rather than finishing it.
+- Final scope/owner FAILED with RUN_DATA_LIMIT, Run COMPENSATED while first stop remains FAILED/RUN_DATA_LIMIT, scope saga DONE/COMPENSATED, original member DRAINED, Return CANCELLED with no output, work SUCCEEDED with the same output. Run result, c10 owner output, c10 result all remain NULL; no done or item-1 steps exist. Exactly one c10 failed collection finish and one COMPENSATED run finish; corresponding native outbox identities and telemetry head agree. Final active slots/reservations are zero. The only newly materialized derived execution identity is the actual compensation.
+- Logical L/V/E and retained output/payload witnesses stay exact through compensation (normal compensation completion retains no output); old closed source and old work/report immutable witnesses stay equal. Whole journal prefix through the handoff version is byte-for-byte unchanged. Fresh `verify_run` succeeds and normal terminal advance returns AlreadyFinished without another durable effect.
+- Check new logs/audit/hints contain no output marker or private receipt fields. Do not interpret absence of a payload canary as proof of every disclosure boundary. No external-provider undo guarantee is claimed.
+
+## Closed selectors, RED and finite gates
+
+Prefer a test-only environment selector `SAGAT_Q5_CASE` with exactly `output-view` (default), `nonfinal-return`, and `nonfinal-return-red`; reject every other value before allocating resources. This is coordinator selection, not a production runtime flag.
+
+Proposed exact entries:
+
+- Old accepted producer: `legacy_collection_output_producer::frozen_old_nonfinal_return_frontier_producer`.
+- Current ignored consumer: `legacy_collection_output_view::current_frontier_drains_frozen_old_nonfinal_return_before_checkpoint`.
+- Optional old regression entry: `legacy_collection_output_producer::frozen_old_nonfinal_return_frontier_guard_red`.
+
+The selected production guard already exists at f81a1285. Do not manufacture a current failure. To meet the repository's observed-RED discipline, the optional isolated old entry builds **another fresh genuine old run**, asserts the entire handoff shape, then calls old normal advance_collection and asserts DrainStarted. Source predicts real failure **actual `Checkpointed { index: 0 }`, expected `DrainStarted`**. Preserve exit code/log and verify that exact failure; compilation failures, setup failures, timeouts, and a different transition are not a successful RED. This mutated RED database must be dropped and never consumed by current. Old production code is untouched. The accepted producer for the positive path never makes that extra old call. If root determines an existing observed RED already satisfies this branch, reference it precisely instead; this design claims no RED was executed.
+
+Future commands after review (all are intended, none executed here):
+
+```sh
+SAGAT_Q5_CASE=nonfinal-return-red bash scripts/test-legacy-collection-output-view.sh
+SAGAT_Q5_CASE=nonfinal-return bash scripts/test-legacy-collection-output-view.sh
+SAGAT_Q5_CASE=output-view bash scripts/test-legacy-collection-output-view.sh
+cargo clippy -p sagat-tests --test integration_workflow_primitives --locked -- -D warnings
+cargo fmt --check
+python3 scripts/check-architecture.py
+python3 scripts/check-agent-config.py
+```
+
+The coordinator's existing required `CARGO_TARGET_DIR`, `SAGAT_TEST_DATABASE_URL`, and `SAGAT_Q5_OWNED_POSTGRES=1` must refer to root's declared disposable fixture. The new `nonfinal-return` positive selector runs old+current separately for owner and runtime: **four separate passing one-test processes**, with actual role/database assertions in all four. Record exact commands, source pin, selector, each process exit status/test count/duration; no aggregated acceptance count obscuring a skipped phase. Existing output-view regression retains its existing matrix semantics and evidence scope.
+
+Bound the new case driver to at most 256 old scheduling transitions (checking each expected task/owner), 32 current drain/compensation transitions, 300 seconds per new process, and a whole-coordinator supervisor allowing sequential builds (e.g. 2400 seconds, TERM then KILL after 5 seconds). Bounds are liveness guards, never sleep-based race synchronization. Build failure is retained, not retried. A long build does not justify leaving an unbounded phase or cleanup child.
+
+The runner already has process-group termination and test-count validation, but its existing SQL cleanup calls are not a complete finite cleanup guarantee. For the new path, give psql connection/statement timeouts and supervise cleanup commands; terminate/reap the active phase and process group before deleting anything. Require the phase-started marker, a validated before-snapshot on the **dedicated owned server**, and exactly one new `t_<hex>` DB matching the receipt; drop that exact DB. Do not fall back to dropping arbitrary new databases on a shared server. If production fails before the receipt, the dedicated-server assertion plus the validated one-DB difference is the only fallback ownership proof. Cleanup failures are reported with surviving owned paths/DB identity; no prune, cargo clean, foreign directory deletion, or silent success.
+
+Manifest requirements: both production pins; exact selected entries; source/archive/overlay/main-diff/migration/toolchain/Cargo.lock and executable hashes; source manifests unchanged after restoration and execution; old/current process role and database identity; sanitized handoff/source witness hashes; exact L/V/E and all shape values; each command's outcome/duration; expected RED details separately; final cleanup result. Receipt bytes/tokens/URLs never enter evidence. Retain safe logs/manifests outside the checkout or in the root-selected evidence location; clean only this task's private build/source/credential files when finished.
+
+## Remaining implementation checks and stop conditions
+
+The old public two-body/two-item producer and current consumer are source-supported designs, not executed acceptance. If old publication or any exact precondition fails, keep the real failure and correct the fixture within these files; do not seed business state or call the native successful drain directly. A production defect discovered by the positive run is a separately reviewed increment, not permission to expand this five-file fixture patch. A failing final raw projection, retained-source, role, or journal oracle is material; do not loosen it to a count-only assertion. Root remains sole writer/executor and reruns final-tree gates.
+
+## Read-input fingerprints
+
+SHA-256 from the inspected pinned current files, for review drift detection:
+
+```text
+7e7f2b47bf8991b90b2433b28ac9fb130ec3bef7f32282b5a3c31bb4b9dbe5f2  scripts/test-legacy-collection-output-view.sh
+3b4851d6715129a7c823bc4c83dbcc5a5690517d366cf49bca4d0acafd3de10f  tests/fixtures/legacy-collection-output/producer.rs
+e420ad4e68fa8e371fa919866e22f73d7b0b7e30c8151555e4f29eafecf5d778  tests/integration/workflow-primitives/legacy_collection_output_view.rs
+7798c15380bdd10d43072316467cb990326090519fa1750c89da190ccb5d7d40  crates/scheduler/src/passes.rs
+b4071a160f0fbd361cf7402f7109d7f7489021a8a2d73dacf48052e4ca8bb323  crates/infra-postgres/src/scope_frontier.rs
+62e8cf169519fcdccaaf06597a29e8f0b6bdbb9eeb7f4ca3cd8c11e74735c1d7  crates/application/src/scope_frontier.rs
+14532a4fb34ae5a7cecd5c8ce8cef80b6f2cbfa8e2a824349b50bb2999921418  crates/infra-postgres/src/primitives.rs
+44cf5f54a88de87558f05bb9476766e3ea44a12e235f0a109ca4467c59e6a989  tests/support/api.rs
+13e601d63bf5b5b837bd3d9a9410d1a099b467604e37dcbfa8b900a07e3f3be5  tests/support/worker.rs
+77b0d2c05603bdb20c0cfeebf8553c0e415f6779ab704ba7be7ea2ebc080b0c1  tests/support/mod.rs
+```

@@ -1,0 +1,9 @@
+{
+  "source_at_design": "f81a1285",
+  "source_at_acceptance": "150e185e",
+  "immutable_old": "6c44a0e49670cf19660792cd1518d241e6c99b3b",
+  "plan_sha256": "da44b483749740913bd436a19b9c74be3e012cebeba7eb270b5642d2683e7c42",
+  "review_result": "None",
+  "implementation_or_execution_claimed": false,
+  "scope": "one genuine old pending nonfinal Return, E4200031, normal current frontier drain and real compensation"
+}
