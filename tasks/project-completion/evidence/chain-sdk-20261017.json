@@ -1,0 +1,220 @@
+{
+  "task": "T014-038",
+  "harness_pid": 85639,
+  "source_manifest": "/tmp/sagat-completion-sdk-final-matrix/manifest.json",
+  "log": "/tmp/sagat-completion-sdk-final-matrix/matrix.log",
+  "bless": false,
+  "languages": [
+    "typescript",
+    "go",
+    "python",
+    "dotnet",
+    "java"
+  ],
+  "method": "Each selected case is followed by a later scenario marker without FAIL for that case. Harness independently builds all five SDKs and compares canonical documents to the reviewed golden. All 35 runtime normalized artifacts were also independently parsed and compared to their exact reviewed golden.",
+  "limitations": "Only T014-038 evidence. Whole56-scenario matrix remains active; original blobs case failed an optional heartbeat race and has a separate corrected five-language pass. Does not close T014-041 or other feature release gates.",
+  "cases": [
+    {
+      "scenario": "continuation-builders",
+      "build_only": true,
+      "canonical_golden_sha256": "779a80a142817aa95c107119b8c44e79392fdab53fc5774d740e4887b0279770",
+      "runtime": []
+    },
+    {
+      "scenario": "chain-three-segments",
+      "build_only": false,
+      "canonical_golden_sha256": "5a6ea82178a31796dccb4da94f2ac3a18c480f11d5a607e9292d2352df67632e",
+      "runtime": [
+        {
+          "language": "typescript",
+          "normalized_sha256": "4d039b14aebd28e761c45b4f2d97a4c4418e402552ca0d94040065562a92902d"
+        },
+        {
+          "language": "go",
+          "normalized_sha256": "4d039b14aebd28e761c45b4f2d97a4c4418e402552ca0d94040065562a92902d"
+        },
+        {
+          "language": "python",
+          "normalized_sha256": "4d039b14aebd28e761c45b4f2d97a4c4418e402552ca0d94040065562a92902d"
+        },
+        {
+          "language": "dotnet",
+          "normalized_sha256": "4d039b14aebd28e761c45b4f2d97a4c4418e402552ca0d94040065562a92902d"
+        },
+        {
+          "language": "java",
+          "normalized_sha256": "4d039b14aebd28e761c45b4f2d97a4c4418e402552ca0d94040065562a92902d"
+        }
+      ],
+      "runtime_golden_sha256": "4d039b14aebd28e761c45b4f2d97a4c4418e402552ca0d94040065562a92902d"
+    },
+    {
+      "scenario": "chain-commands",
+      "build_only": false,
+      "canonical_golden_sha256": "489c5f7f15a36d450d5af4e6472ec63d99b0f7620770c47c11ca884ab8dc0176",
+      "runtime": [
+        {
+          "language": "typescript",
+          "normalized_sha256": "f63045906f56e81ac93e8e6a6706a933d52e883469d663233c51f447fbf395d6"
+        },
+        {
+          "language": "go",
+          "normalized_sha256": "f63045906f56e81ac93e8e6a6706a933d52e883469d663233c51f447fbf395d6"
+        },
+        {
+          "language": "python",
+          "normalized_sha256": "f63045906f56e81ac93e8e6a6706a933d52e883469d663233c51f447fbf395d6"
+        },
+        {
+          "language": "dotnet",
+          "normalized_sha256": "f63045906f56e81ac93e8e6a6706a933d52e883469d663233c51f447fbf395d6"
+        },
+        {
+          "language": "java",
+          "normalized_sha256": "f63045906f56e81ac93e8e6a6706a933d52e883469d663233c51f447fbf395d6"
+        }
+      ],
+      "runtime_golden_sha256": "f63045906f56e81ac93e8e6a6706a933d52e883469d663233c51f447fbf395d6"
+    },
+    {
+      "scenario": "chain-query-handoff",
+      "build_only": false,
+      "canonical_golden_sha256": "da48fc543b51697127b6d6c301df18d4615570ab82a22be9a238a48ea42c0b60",
+      "runtime": [
+        {
+          "language": "typescript",
+          "normalized_sha256": "655425a92e7959d4e0ca75b19bf386a621da9f309750965f611a56601fbd49e7"
+        },
+        {
+          "language": "go",
+          "normalized_sha256": "655425a92e7959d4e0ca75b19bf386a621da9f309750965f611a56601fbd49e7"
+        },
+        {
+          "language": "python",
+          "normalized_sha256": "655425a92e7959d4e0ca75b19bf386a621da9f309750965f611a56601fbd49e7"
+        },
+        {
+          "language": "dotnet",
+          "normalized_sha256": "655425a92e7959d4e0ca75b19bf386a621da9f309750965f611a56601fbd49e7"
+        },
+        {
+          "language": "java",
+          "normalized_sha256": "655425a92e7959d4e0ca75b19bf386a621da9f309750965f611a56601fbd49e7"
+        }
+      ],
+      "runtime_golden_sha256": "655425a92e7959d4e0ca75b19bf386a621da9f309750965f611a56601fbd49e7"
+    },
+    {
+      "scenario": "chain-child",
+      "build_only": false,
+      "canonical_golden_sha256": "2acba142de60d6a42bf289d78ee905b9e84d1d69057471ab0c1c4d111f1f52a8",
+      "runtime": [
+        {
+          "language": "typescript",
+          "normalized_sha256": "b8d4a2a1337d5a56c692a69b9643f87916e2317ce6df1398f38004d01f792147"
+        },
+        {
+          "language": "go",
+          "normalized_sha256": "b8d4a2a1337d5a56c692a69b9643f87916e2317ce6df1398f38004d01f792147"
+        },
+        {
+          "language": "python",
+          "normalized_sha256": "b8d4a2a1337d5a56c692a69b9643f87916e2317ce6df1398f38004d01f792147"
+        },
+        {
+          "language": "dotnet",
+          "normalized_sha256": "b8d4a2a1337d5a56c692a69b9643f87916e2317ce6df1398f38004d01f792147"
+        },
+        {
+          "language": "java",
+          "normalized_sha256": "b8d4a2a1337d5a56c692a69b9643f87916e2317ce6df1398f38004d01f792147"
+        }
+      ],
+      "runtime_golden_sha256": "b8d4a2a1337d5a56c692a69b9643f87916e2317ce6df1398f38004d01f792147"
+    },
+    {
+      "scenario": "chain-root-wait",
+      "build_only": false,
+      "canonical_golden_sha256": "ede15af48bc826e5d5bb477c90a7b8b4ba7f72373376103f2cac4fb65d9ab3e1",
+      "runtime": [
+        {
+          "language": "typescript",
+          "normalized_sha256": "1140e734232d64e1639c59dd98eace5a7248c6c8918a516ec249810e1716a682"
+        },
+        {
+          "language": "go",
+          "normalized_sha256": "1140e734232d64e1639c59dd98eace5a7248c6c8918a516ec249810e1716a682"
+        },
+        {
+          "language": "python",
+          "normalized_sha256": "1140e734232d64e1639c59dd98eace5a7248c6c8918a516ec249810e1716a682"
+        },
+        {
+          "language": "dotnet",
+          "normalized_sha256": "1140e734232d64e1639c59dd98eace5a7248c6c8918a516ec249810e1716a682"
+        },
+        {
+          "language": "java",
+          "normalized_sha256": "1140e734232d64e1639c59dd98eace5a7248c6c8918a516ec249810e1716a682"
+        }
+      ],
+      "runtime_golden_sha256": "1140e734232d64e1639c59dd98eace5a7248c6c8918a516ec249810e1716a682"
+    },
+    {
+      "scenario": "chain-cancel-parent",
+      "build_only": false,
+      "canonical_golden_sha256": "971dc8325c35318afcc11c4bb305ac3b6e4cdbea4b75a4208e8164dd4dd00bb6",
+      "runtime": [
+        {
+          "language": "typescript",
+          "normalized_sha256": "24290a9005760c74aa9327ec1c048968226cc380ba76c38b38975571cde494bd"
+        },
+        {
+          "language": "go",
+          "normalized_sha256": "24290a9005760c74aa9327ec1c048968226cc380ba76c38b38975571cde494bd"
+        },
+        {
+          "language": "python",
+          "normalized_sha256": "24290a9005760c74aa9327ec1c048968226cc380ba76c38b38975571cde494bd"
+        },
+        {
+          "language": "dotnet",
+          "normalized_sha256": "24290a9005760c74aa9327ec1c048968226cc380ba76c38b38975571cde494bd"
+        },
+        {
+          "language": "java",
+          "normalized_sha256": "24290a9005760c74aa9327ec1c048968226cc380ba76c38b38975571cde494bd"
+        }
+      ],
+      "runtime_golden_sha256": "24290a9005760c74aa9327ec1c048968226cc380ba76c38b38975571cde494bd"
+    },
+    {
+      "scenario": "chain-rerun",
+      "build_only": false,
+      "canonical_golden_sha256": "b02654bcc99743c8ddd5c2a7d11da447ddccc2b2d0089617560dfd34d4aca79e",
+      "runtime": [
+        {
+          "language": "typescript",
+          "normalized_sha256": "f450a6c07a6aaa34feba3ba26fbdd946e13f5af9072adac1ce36daafdb9bcfb9"
+        },
+        {
+          "language": "go",
+          "normalized_sha256": "f450a6c07a6aaa34feba3ba26fbdd946e13f5af9072adac1ce36daafdb9bcfb9"
+        },
+        {
+          "language": "python",
+          "normalized_sha256": "f450a6c07a6aaa34feba3ba26fbdd946e13f5af9072adac1ce36daafdb9bcfb9"
+        },
+        {
+          "language": "dotnet",
+          "normalized_sha256": "f450a6c07a6aaa34feba3ba26fbdd946e13f5af9072adac1ce36daafdb9bcfb9"
+        },
+        {
+          "language": "java",
+          "normalized_sha256": "f450a6c07a6aaa34feba3ba26fbdd946e13f5af9072adac1ce36daafdb9bcfb9"
+        }
+      ],
+      "runtime_golden_sha256": "f450a6c07a6aaa34feba3ba26fbdd946e13f5af9072adac1ce36daafdb9bcfb9"
+    }
+  ]
+}

@@ -1681,6 +1681,20 @@ Affected regressions passed on disposable repository fixtures: complete gRPC70/7
 real PostgreSQL/OpenBao aggregate3/3,45.24s. Strict workspace/all-target Clippy passed2m57s;
 their logs use the same prefix. The full all-five scenario matrix is separate and still pending.
 
+### Chain-client acceptance closure (T014-038)
+
+The current acceptance audit found missing Python synchronous `update_chain`,
+`wait_for_chain_completion`, `rerun_as_new`; the three aliases now share the existing async
+implementation/private loop. RED3/3 missing-method failures preceded focused43/43 and complete
+Python264/264 passing results, strict mypy and Ruff. Eight selected current scenarios completed
+in all five SDKs without bless: one continuation-authoring scenario and seven chain runtime
+scenarios. All35 normalized runtime artifacts were independently parsed against exact reviewed
+goldens, including final-chain versus exact-segment waits and parent cancellation. The retained
+manifest is `tasks/project-completion/evidence/chain-sdk-20261017.json`. T014-038 is closed;
+T014-041 and the other shared release gates remain open. The concurrent full56-scenario command
+has an original blob-heartbeat failure; its corrected all-five case passed separately, so this
+task-specific evidence is not an assertion of a wholly green aggregate command.
+
 Evidence:
 
 - The two new history-denial cases first failed **0/2** with `Internal`, because the old full-run

@@ -1494,3 +1494,18 @@ including40workerless waits, no worker sessions, exact8/64 admissions, zero sche
 all resource points inside the declared24-connection combined bound. Full-size corrected evidence
 is pending. Formatting passed and strict workspace/all-target Clippy passed1m06s before freezing
 the corrected large measurement source. Logs use `/tmp/sagat-completion-wait-profile-…`.
+
+## 2026-10-17 — T014-038 closed with fresh all-five chain evidence
+
+All eight audited acceptance scenarios completed in the current full SDK matrix without a failure
+for those cases: continuation-builders(authoring), chain-three-segments, chain-commands,
+chain-query-handoff, chain-child, chain-root-wait, chain-cancel-parent, chain-rerun. The harness
+compares every language's builder/canonical text to the reviewed golden. Independently parsed all35
+runtime normalized artifacts from harnessPID85639 and verified exact equality to their reviewed
+goldens; hashes/source/scope retained in `evidence/chain-sdk-20261017.json`. Together with the
+Python blocking-alias correction/264passing tests/types/lint, this closes literalT014-038.
+Bounding inspectChain(G375), a Studio screen(G376) and a new approval-first continuation(O441)
+are separate scopes and do not become new requirements for that task. Ten014tasks remain open.
+The aggregate56-scenario command is still running and retains its original optional blob-heartbeat
+failure; the corrected blob case passed separately. This closure does not relabel that whole
+command green or close shared release/capacity/compatibility gates.
