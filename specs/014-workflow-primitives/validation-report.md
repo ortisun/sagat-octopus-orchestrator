@@ -3426,3 +3426,21 @@ sagat_app; strict Clippy/fmt/architecture and1125 identical source inputs.
 Evidence: `tasks/project-completion/evidence/refusal-current-lease-20261018/README.md`.
 One fixture registration-order failure is preserved. This proves current lease expiry after path
 drop inside full restore, not a literal pre-begin/generation/terminal race or full Q7b closure.
+
+
+### Immutable-old public cancellation before success — 2026-10-18
+
+D2 passes four real old/current phases in198.77s, actual postgres/postgres and
+sagat_app/sagat_app pools. Public CANCEL owns the exact first CANCELLED/null stop and operation
+receipt before normal cancelled drain. Original live lease/reservations survive waiting; original
+success records SUCCEEDED without output/report outbox and remains genuinely compensation-eligible.
+Exact original report receipt/ACK and operation receipt replay preserve their separate semantics.
+Only one truthful successful-output-refusal audit is allowed; all other/NULL data-limit reasons
+are excluded after waiting/success/replays/finality. Real original-target/key compensation must
+complete before final CANCELLED, with DONE/COMPENSATED saga and unchanged first stop/drain.
+Shared default and drain-first regressions each pass four phases (173.73s/154.46s).
+Final strict Clippy33.54s, fmt7.03s, architecture0.97s; each execution pins1125 unchanged inputs.
+Source/evidence:5ad34370, `tasks/project-completion/evidence/legacy-cancellation-first-20261018/README.md`.
+This supersedes the earlier cancellation-first pending status only. Ordinary E>limit is accepted
+for these three orderings; under-limit increment, Applied, OS-process/uncertain-COMMIT recovery,
+output-dependent old compensation, full Q10c and all eight canonical014 tasks remain open.

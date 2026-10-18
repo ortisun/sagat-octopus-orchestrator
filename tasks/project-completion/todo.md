@@ -226,7 +226,8 @@ See evidence/leaf-certification-process-20261018. Other producer/observation/rel
 - [x] B1b.2c.1d.0Q7b.4: Prove actual native expiry of the original scanned inline lease while its activity stays bound; exact post-mutation execution and complete authority remain unchanged after STALE_ATTEMPT. Evidence/refusal-current-lease-20261018; generation/terminal/pre-begin controls remain separate.
 - [ ] B1b.2c.1d.0Q10c: Complete genuine old in-flight compatibility: both byte conditions/orderings, cancellation precedence, Applied, output-dependent old worker and post-ACK process/uncertain-COMMIT controls. No external-provider undo guarantee is inferred.
 - [x] B1b.2c.1d.0Q10c.1: Prove ordinary E>limit report-before-drain through separate immutable-old/current processes with original worker/session/lease/request, owner and actual sagat_app, exact receipt/replay and real compensation;f026e928, evidence/legacy-inflight-ordinary-v1-20261018.
-- [x] B1b.2c.1d.0Q10c.2: Prove ordinary E>limit drain-before-report with a still-live cancellation-requested lease and unchanged first stop/drain; four old/current phases pass, plus four default report-first regression phases. Evidence/legacy-inflight-drain-first-20261018; cancellation-first remains a separate pending companion.
+- [x] B1b.2c.1d.0Q10c.2: Prove ordinary E>limit drain-before-report with a still-live cancellation-requested lease and unchanged first stop/drain; four old/current phases pass, plus four default report-first regression phases. Evidence/legacy-inflight-drain-first-20261018; cancellation-first has separate evidence in .3.
+- [x] B1b.2c.1d.0Q10c.3: Prove public CANCEL precedence over genuine old E>limit success, original operation/report receipts and one permitted refusal audit, normal cancelled drain and real compensation;5ad34370, evidence/legacy-cancellation-first-20261018. Both shared ordering regressions pass; full Q10c stays open.
 - [x] B1b.2c.1e: Prove real DETACH parent settlement followed by legitimate later child execution and original source replay.
 
 The bounded ordinary-child source master remains open; its enumerated .1a/.1b/.1c/.1e
@@ -380,3 +381,21 @@ sagat_app; strict Clippy/fmt/architecture and1125 identical source inputs.
 Evidence: `tasks/project-completion/evidence/refusal-current-lease-20261018/README.md`.
 One fixture registration-order failure is preserved. This proves current lease expiry after path
 drop inside full restore, not a literal pre-begin/generation/terminal race or full Q7b closure.
+
+
+### Immutable-old public cancellation before success — 2026-10-18
+
+D2 passes four real old/current phases in198.77s, actual postgres/postgres and
+sagat_app/sagat_app pools. Public CANCEL owns the exact first CANCELLED/null stop and operation
+receipt before normal cancelled drain. Original live lease/reservations survive waiting; original
+success records SUCCEEDED without output/report outbox and remains genuinely compensation-eligible.
+Exact original report receipt/ACK and operation receipt replay preserve their separate semantics.
+Only one truthful successful-output-refusal audit is allowed; all other/NULL data-limit reasons
+are excluded after waiting/success/replays/finality. Real original-target/key compensation must
+complete before final CANCELLED, with DONE/COMPENSATED saga and unchanged first stop/drain.
+Shared default and drain-first regressions each pass four phases (173.73s/154.46s).
+Final strict Clippy33.54s, fmt7.03s, architecture0.97s; each execution pins1125 unchanged inputs.
+Source/evidence:5ad34370, `tasks/project-completion/evidence/legacy-cancellation-first-20261018/README.md`.
+This supersedes the earlier cancellation-first pending status only. Ordinary E>limit is accepted
+for these three orderings; under-limit increment, Applied, OS-process/uncertain-COMMIT recovery,
+output-dependent old compensation, full Q10c and all eight canonical014 tasks remain open.
