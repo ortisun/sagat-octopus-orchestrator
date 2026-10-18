@@ -378,3 +378,7 @@ B1a scoped entry decision is reviewed: one existing group NOWAIT after current c
 entry, whole transaction rollback on contention; unknown COMMIT outcome reconciles atomic
 receipt/state. See tasks/project-completion/capacity-transaction-entry.md. No SQL lifecycle,
 own-member transition authority, B1 completion or nested runtime activation is accepted.
+
+A1 storage prerequisite: pure checked CapacityGroup::restore with exact holder fact and bounded
+header, fixed-seed model round trips, invalid snapshot and exhausted-counter controls. No SQL
+port/eligibility/OTel acceptance follows from pure domain tests. See capacity-header-restore evidence.

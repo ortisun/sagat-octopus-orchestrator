@@ -2425,3 +2425,21 @@ Evidence: tasks/project-completion/evidence/rerun-source-identity-20261018/manif
 
 Final stronger-control full connections3/3 (27.36s), strict locked all-target workspace Clippy
 passes2.87s, formatting4.11s, architecture24crates and diff check pass.
+
+
+## Pure capacity header restoration — 2026-10-18
+
+Refs:T014-014/017/040. Checked CapacityGroup::restore preserves identities/revision/epoch/count/
+possession, validates nonzero/bounded counters and exact Active holder consistency, and rejects
+malformed snapshots with InconsistentSnapshot. Maximum counters restore without reset; mutation
+overflow is inert. No registry hydration or new infrastructure/domain dependency.
+
+Test-first missing API compilation is retained, not reported as behavioral RED. Focused model9/9
+(0.22s),1024histories seed3714 roundtrip after every accepted independent-registry transition,
+15invalid header/fact tuples, explicit maximum preservation; internal overflow2/2. Strict domain
+all-target Clippy1.00s, fmt4.05s, architecture24crates. Fresh adversarial Astra/xhigh code review
+found no substantive issues; only root ran tests. No external reviewCLI, owner's current selection.
+Supplied consistency is not actual database count/tenant/unique history/own-member authority. SQL
+port/atomic journal/audit/outbox/OTel, mixed writers, eligibility/resource/SDK/nested acceptance
+remain pending adapter/integration work; no canonical checkbox closure. Evidence:
+tasks/project-completion/evidence/capacity-header-restore-20261018/manifest.json.

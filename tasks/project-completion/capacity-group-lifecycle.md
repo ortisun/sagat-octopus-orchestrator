@@ -77,8 +77,17 @@ checking the bounded transition result against the true registry after every ope
 keeps ordinary command work independent of historical finished-member count; no SQL-bound or
 migration guarantee is inferred until B/C actually provide that port.
 
-Header restoration, before a persistence adapter is added, must validate nonzero revisions/epochs,
-active count versus Retired and holder membership consistency. A1 need not invent a public
-unchecked restoration API. Retired group IDs and finished member IDs remain non-reusable through
-the actual persisted registry/uniqueness/receipt protocol in B/C; reconstructing a fresh object with
-an already-used ID is not a second authorized allocation.
+Header restoration is now a checked, constant-size pure constructor. It preserves id/tenant,
+revision, epoch, active count and possession; counters must be nonzero, epoch<=revision and
+active_count<=revision. The inequalities follow from creation at1 and at most one count/epoch
+increment per successful revision. Retired requires count0 and no holder fact; Vacant requires a
+positive count and no holder fact; Held requires a positive count and the exact same-group,
+same-holder Active fact. Invalid supplied snapshots return InconsistentSnapshot; maximum/exhausted
+counters remain valid stored states and subsequent mutations fail unchanged rather than reset.
+
+These are supplied-consistency checks, not full history reachability or actual database count,
+tenant ownership, uniqueness, current own-member authority or execution eligibility proofs. The
+future adapter must obtain current exact facts under the owning group guard and persist changes
+atomically. Retired group/member identities stay non-reusable through the future registry/receipt
+protocol; restoring an already-used ID does not allocate it again. No SQL adapter or runtime
+activation is inferred. Evidence: evidence/capacity-header-restore-20261018/manifest.json.

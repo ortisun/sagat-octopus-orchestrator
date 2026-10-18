@@ -1,0 +1,198 @@
+{
+  "source_base": "b7c5b7d41af96ca266d53b4604df9e8f818795d5",
+  "recorded_utc": "2026-10-18T07:11:24.540474+00:00",
+  "scope": "Pure checked capacity header restoration only",
+  "commands": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-domain",
+        "--test",
+        "capacity_groups"
+      ],
+      "exit_code": 101,
+      "seconds": 3.61,
+      "log": "api-absence.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-domain",
+        "--test",
+        "capacity_groups"
+      ],
+      "exit_code": 0,
+      "seconds": 4.57,
+      "log": "model-green.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-domain",
+        "--lib",
+        "execution::capacity::tests"
+      ],
+      "exit_code": 0,
+      "seconds": 3.67,
+      "log": "overflow.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "-p",
+        "sagat-domain",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "seconds": 10.0,
+      "log": "clippy.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "seconds": 4.08,
+      "log": "fmt.txt"
+    },
+    {
+      "command": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "exit_code": 0,
+      "seconds": 0.31,
+      "log": "architecture.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-domain",
+        "--test",
+        "capacity_groups"
+      ],
+      "exit_code": 0,
+      "seconds": 1.98,
+      "log": "model-final.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "-p",
+        "sagat-domain",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "seconds": 1.0,
+      "log": "clippy-final.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "seconds": 4.05,
+      "log": "fmt-final.txt"
+    }
+  ],
+  "results": {
+    "overflow.txt": [
+      {
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.0
+      }
+    ],
+    "model-final.txt": [
+      {
+        "passed": 9,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.22
+      }
+    ],
+    "model-green.txt": [
+      {
+        "passed": 9,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.24
+      }
+    ]
+  },
+  "review": {
+    "cycles": 1,
+    "model": "gpt-6-astra/xhigh fresh-context read-only",
+    "final": "no substantive findings",
+    "external_cli": false
+  },
+  "limits": [
+    "Initial missing-method API compile failure, not behavioral RED",
+    "Supplied bounded consistency, not full reachable history or actual DB truth",
+    "No SQL/own-member authority/OTel/SDK/resource/group/nested acceptance or canonical closure"
+  ],
+  "source_sha256": {
+    ".gitattributes": "23f522a4d887311fb4e04bd6b6049c076c82697da6d4e171c472061e9d2e7aa5",
+    "crates/domain/src/execution/capacity.rs": "3d4329ae341da7ebfd355fb1a1a2b2c147474ace63f04e4a0b0e509394374fb9",
+    "crates/domain/tests/capacity_groups.rs": "02aed96798fe1bdabf77052dcf0760a3b7ce64dc9dd9381612b5debd08add4cc",
+    "docs/traceability.md": "b05dddebe717724c6bf65cacc7db1b34de3d5f316ab212c9d87f106476ee34e7",
+    "specs/014-workflow-primitives/contracts/README.md": "0fc78f64fa5210d1d93b3513295d719b6e2f7788342ce199b7fc7d21b04aa032",
+    "specs/014-workflow-primitives/plan.md": "0d9acee3a3f13f9827f7b022838cfdd0f58d495db6722ca091f1c9cf75c35a3d",
+    "specs/014-workflow-primitives/spec.md": "d50f6fa930afb98f2e67cc5b2f353698ed49c448f28b2d99930d614457a444f9",
+    "specs/014-workflow-primitives/validation-report.md": "461613ab0e5b9fa972e0f9939f3c09b410799f6b99d0e1d095935a6f6e6ca535",
+    "tasks/project-completion/capacity-group-lifecycle.md": "ac7f67585bda18324f50389b0ff751df3d244255827e0a0c62cb004d2a67f031",
+    "tasks/project-completion/integration-notes.md": "8b22cde95cdb0860c9b86ee61f5cb99055a69c7919ce7ed2b45ba7aba8f59262",
+    "tasks/project-completion/todo.md": "2214f84696078a39562c3a1fe751ba050095f4f16ac8d238e9fedccf06c7437c"
+  },
+  "evidence_sha256": {
+    "api-absence-source.json": "2ce78d3d0a7a8ab766aa30d9253c57f0ea462447d0d989176b87c83ae1763f8b",
+    "api-absence.txt": "64d8eb509280be2e9dfc5df7c6a8e600eec2eb4769f67a3e084bd29c54d0f9aa",
+    "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "clippy-final.txt": "16b8697d43d4ae3576d808f4cdcfc4553761d976822bec063313644371f06ffd",
+    "clippy.txt": "7f5385545b397f4f6df8b223fb30102196d390b26d809f3578b6e0d6bb5e499d",
+    "commands.json": "bd0a149f3e530192d93c462a2d13f8382a7ec05ead9407877ca06b9d83bf36b4",
+    "fmt-final.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "model-final.txt": "7b7e2b3a49d7c27e231db4e08948b2a66fa3ed6164a5cb7b02be8026551cce7e",
+    "model-green.txt": "183739256cb35a76a94cc06c78430909386e6a6ae4c292c442b67c3b141262d4",
+    "overflow.txt": "7dd79c366c4e2d56c246d19d6e0129bf15efb1883a3fdff2a277d1a7e376442a",
+    "production.diff": "8a9e89efad5a2e9e9feaeacb0d22a5b19cc445669bb2a2ad18d81bca94b10c71",
+    "reproduce.md": "ed778cd614da6d9bcf0e1b0cea16c2f1dd38cfddf32aa0621139c6862d6a64c5",
+    "review.md": "c47fe8dc1812ac632b6c37793206eb40e02ce7ddd232386981162243a193bd47",
+    "test-final.diff": "691e974bba801c49bac0762d5d8cf4f5caec19e40bcd94f529b0c94b8a56b4d3",
+    "test-first.diff": "2b625b3b78ac3eb19fc0f5217f2be0eaa7bf2785d17578248025505339826173",
+    "tested-source-final.json": "0dd743334749cdc998e9c60320f79b665f62de3f4b75115d28acd78f6eaae814",
+    "tested-source.json": "aee5399f3eac46d43436a41d2f686bb3a401bb07b27165b0e8f9ab4fe41dcbfa"
+  }
+}

@@ -90,7 +90,7 @@ pub enum CapacityGroupError {
     NotHolder,
     #[error("the group is already held")]
     Occupied,
-    #[error("the member fact contradicts the group header")]
+    #[error("the capacity snapshot is inconsistent")]
     InconsistentSnapshot,
     #[error("a capacity counter cannot advance")]
     CounterExhausted,
@@ -120,6 +120,51 @@ impl CapacityGroup {
             active_members: 1,
             possession: CapacityPossession::Held(initial),
         }
+    }
+
+    /// Restores a bounded persisted header without resetting its fencing counters.
+    ///
+    /// The adapter must supply the current exact holder fact under its group guard. These checks
+    /// validate supplied consistency, not database counts, tenant ownership, historical uniqueness
+    /// or permission to execute, vacate or finish. No registry is hydrated here.
+    ///
+    /// # Errors
+    /// Returns [`CapacityGroupError::InconsistentSnapshot`] for invalid counters/counts,
+    /// a missing or contradictory held-member fact, or a fact without a holder.
+    pub fn restore(
+        id: CapacityGroupId,
+        tenant: TenantId,
+        revision: u64,
+        epoch: u64,
+        active_members: u32,
+        possession: CapacityPossession,
+        holder_snapshot: Option<CapacityMemberSnapshot>,
+    ) -> Result<Self, CapacityGroupError> {
+        if revision == 0 || epoch == 0 || epoch > revision || u64::from(active_members) > revision {
+            return Err(CapacityGroupError::InconsistentSnapshot);
+        }
+        let consistent = match (possession, holder_snapshot) {
+            (CapacityPossession::Retired, None) => active_members == 0,
+            (CapacityPossession::Vacant, None) => active_members > 0,
+            (CapacityPossession::Held(holder), Some(member)) => {
+                active_members > 0
+                    && member.group == id
+                    && member.member == holder
+                    && member.state == CapacityMembership::Active
+            }
+            _ => false,
+        };
+        if !consistent {
+            return Err(CapacityGroupError::InconsistentSnapshot);
+        }
+        Ok(Self {
+            id,
+            tenant,
+            revision,
+            epoch,
+            active_members,
+            possession,
+        })
     }
 
     #[must_use]

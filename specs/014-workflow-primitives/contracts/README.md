@@ -600,3 +600,12 @@ not a database constraint. Terminal credential cleanup keeps FOR UPDATE SKIP LOC
 protected source. Existing journal/audit/outbox/quota rollback boundaries and replay authorization
 remain unchanged. Focused runtime-role real PostgreSQL/OpenBao barriers and positive retention
 controls are in evidence/rerun-source-identity-20261018 under tasks/project-completion.
+
+### Pure capacity recovery boundary
+
+Internal checked restoration preserves fencing counters and identities. Require nonzero revision/
+epoch, epoch<=revision, count<=revision, Retired count0, other states positive, exact Active holder
+fact for Held and no holder fact otherwise. Every malformed supplied header returns typed
+InconsistentSnapshot; exhausted but consistent headers restore without resetting. Facts must come
+from a future guarded adapter, not caller assertions. This is not a wire change, database proof,
+current-path authority or runtime eligibility; no nested capability is enabled.

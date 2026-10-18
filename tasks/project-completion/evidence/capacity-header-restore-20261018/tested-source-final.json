@@ -1,0 +1,4 @@
+{
+  "crates/domain/src/execution/capacity.rs": "3d4329ae341da7ebfd355fb1a1a2b2c147474ace63f04e4a0b0e509394374fb9",
+  "crates/domain/tests/capacity_groups.rs": "02aed96798fe1bdabf77052dcf0760a3b7ce64dc9dd9381612b5debd08add4cc"
+}

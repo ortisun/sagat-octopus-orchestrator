@@ -1,0 +1,10 @@
+   Compiling sagat-domain v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/domain)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.49s
+     Running unittests src/lib.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/sagat_domain-fe37909f4c075277)
+
+running 2 tests
+test execution::capacity::tests::exhausted_membership_count_does_not_advance_revision ... ok
+test execution::capacity::tests::exhausted_revision_or_epoch_does_not_partially_vacate ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 72 filtered out; finished in 0.00s
+

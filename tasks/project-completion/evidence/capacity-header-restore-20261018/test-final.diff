@@ -1,0 +1,165 @@
+diff --git a/crates/domain/tests/capacity_groups.rs b/crates/domain/tests/capacity_groups.rs
+index 205e5aa9..fa54b1ca 100644
+--- a/crates/domain/tests/capacity_groups.rs
++++ b/crates/domain/tests/capacity_groups.rs
+@@ -166,6 +166,149 @@ fn stale_and_foreign_commands_leave_the_header_unchanged() {
+     assert_eq!(g, before);
+ }
+ 
++fn restored(
++    g: &CapacityGroup,
++    holder: Option<CapacityMemberSnapshot>,
++) -> Result<CapacityGroup, CapacityGroupError> {
++    CapacityGroup::restore(
++        g.id(),
++        g.tenant_id(),
++        g.revision(),
++        g.epoch(),
++        g.active_members(),
++        g.possession(),
++        holder,
++    )
++}
++
++#[test]
++fn restoration_preserves_transition_produced_headers() {
++    let mut g = group();
++    let active = |g: &CapacityGroup, who| Some(fact(g, who, CapacityMembership::Active));
++    assert_eq!(restored(&g, active(&g, member(1))), Ok(g.clone()));
++    join(&mut g, member(2));
++    vacate(&mut g, member(1));
++    assert_eq!(restored(&g, None), Ok(g.clone()));
++    acquire(&mut g, member(2));
++    assert_eq!(restored(&g, active(&g, member(2))), Ok(g.clone()));
++    for who in [member(1), member(2)] {
++        g.finish(g.revision(), fact(&g, who, CapacityMembership::Active))
++            .expect("settled member");
++    }
++    assert_eq!(g.possession(), CapacityPossession::Retired);
++    assert_eq!(restored(&g, None), Ok(g));
++}
++
++#[test]
++fn restoration_rejects_inconsistent_scalars_and_holder_facts() {
++    use CapacityPossession::{Held, Retired, Vacant};
++    let g = group();
++    let active = Some(fact(&g, member(1), CapacityMembership::Active));
++    let foreign = Some(CapacityMemberSnapshot::new(
++        CapacityGroupId::new(Uuid::from_u128(999)),
++        member(1),
++        CapacityMembership::Active,
++    ));
++    let cases = [
++        (0, 0, 0, Retired, None),
++        (0, 1, 1, Held(member(1)), active),
++        (1, 0, 1, Held(member(1)), active),
++        (2, 3, 1, Held(member(1)), active),
++        (1, 1, 2, Held(member(1)), active),
++        (2, 2, 1, Retired, None),
++        (2, 2, 0, Vacant, None),
++        (1, 1, 0, Held(member(1)), active),
++        (1, 1, 1, Held(member(1)), None),
++        (1, 1, 1, Held(member(1)), foreign),
++        (
++            1,
++            1,
++            1,
++            Held(member(1)),
++            Some(fact(&g, member(2), CapacityMembership::Active)),
++        ),
++        (
++            1,
++            1,
++            1,
++            Held(member(1)),
++            Some(fact(&g, member(1), CapacityMembership::NeverSeen)),
++        ),
++        (
++            1,
++            1,
++            1,
++            Held(member(1)),
++            Some(fact(&g, member(1), CapacityMembership::Finished)),
++        ),
++        (2, 2, 1, Vacant, active),
++        (2, 2, 0, Retired, active),
++    ];
++    for (revision, epoch, count, possession, holder) in cases {
++        assert_eq!(
++            CapacityGroup::restore(
++                g.id(),
++                g.tenant_id(),
++                revision,
++                epoch,
++                count,
++                possession,
++                holder
++            ),
++            Err(CapacityGroupError::InconsistentSnapshot),
++        );
++    }
++}
++
++#[test]
++fn restoration_preserves_exhausted_counters_without_allocating_a_registry() {
++    let initial = group();
++    let active = fact(&initial, member(1), CapacityMembership::Active);
++    let mut g = CapacityGroup::restore(
++        initial.id(),
++        initial.tenant_id(),
++        u64::MAX,
++        u64::MAX,
++        1,
++        initial.possession(),
++        Some(active),
++    )
++    .expect("exhausted but consistent header");
++    assert_eq!(
++        (g.revision(), g.epoch(), g.active_members()),
++        (u64::MAX, u64::MAX, 1)
++    );
++    let before = g.clone();
++    assert_eq!(
++        g.vacate(g.revision(), g.epoch(), active),
++        Err(CapacityGroupError::CounterExhausted)
++    );
++    assert_eq!(g, before);
++    let mut g = CapacityGroup::restore(
++        initial.id(),
++        initial.tenant_id(),
++        u64::from(u32::MAX),
++        1,
++        u32::MAX,
++        initial.possession(),
++        Some(active),
++    )
++    .expect("bounded header for maximum retained count");
++    assert_eq!(
++        (g.revision(), g.epoch(), g.active_members()),
++        (u64::from(u32::MAX), 1, u32::MAX)
++    );
++    let before = g.clone();
++    assert_eq!(
++        g.join(
++            g.revision(),
++            fact(&g, member(2), CapacityMembership::NeverSeen)
++        ),
++        Err(CapacityGroupError::CounterExhausted),
++    );
++    assert_eq!(g, before);
++}
++
+ proptest! {
+     #![proptest_config(ProptestConfig { cases: 1024, rng_seed: RngSeed::Fixed(3714), ..ProptestConfig::default() })]
+     #[test]
+@@ -227,6 +370,10 @@ proptest! {
+             prop_assert_eq!(g.epoch(), epoch);
+             prop_assert_eq!(g.possession(), if retired { CapacityPossession::Retired } else { holder.map_or(CapacityPossession::Vacant, CapacityPossession::Held) });
+             if let Some(owner) = holder { prop_assert_eq!(registry.get(&owner), Some(&CapacityMembership::Active)); }
++            let holder_fact = holder.map(|owner| fact(&g, owner, *registry.get(&owner).expect("registered holder")));
++            let round_trip = restored(&g, holder_fact).expect("model header restores");
++            prop_assert_eq!(&round_trip, &g);
++            g = round_trip;
+         }
+     }
+ }

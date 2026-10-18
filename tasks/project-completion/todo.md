@@ -61,3 +61,7 @@ ancestry precondition and ordered-race control. B0 is source-inventoried; the ne
 - [ ] B1d: Define bounded durable discovery/offer/parking/fairness without foreign-run mutation.
 - [ ] B1e: Review creation/join, continuation and per-member cancellation/cleanup families before
   integrating them. B1 and canonical runtime tasks remain unchecked until all dependencies pass.
+
+A1 recovery prerequisite completed: checked constant-size header restoration,9modeltests including
+1024fixed-seed roundtrip histories,2overflow tests, strictdomainClippy/fmt/architecture. This is
+not a SQL port or own-member authority. See evidence/capacity-header-restore-20261018.

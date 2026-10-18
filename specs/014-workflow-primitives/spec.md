@@ -472,3 +472,7 @@ ordering barrier contributes to B0 and does not prove general nested/group order
 ADR-0039 advances the unrelated rerun source identity guard before creation admission without
 authorizing source business state. Its runtime-role PostgreSQL/OpenBao race reproduces and fixes
 the source/catalog deadlock; nested groups and remaining B0/B1 work stay unaccepted.
+
+Capacity recovery has checked pure header restoration preserving revision/epoch and verifying
+count/possession/holder consistency. This does not establish database or own-member authority;
+SQL lifecycle, B1 completion and nested execution remain pending.

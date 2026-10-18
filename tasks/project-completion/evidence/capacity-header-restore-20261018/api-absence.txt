@@ -1,0 +1,51 @@
+   Compiling sagat-domain v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/domain)
+error[E0599]: no associated function or constant named `restore` found for struct `CapacityGroup` in the current scope
+   --> crates/domain/tests/capacity_groups.rs:173:20
+    |
+173 |     CapacityGroup::restore(
+    |                    ^^^^^^^ associated function or constant not found in `CapacityGroup`
+    |
+note: if you're trying to build a new `CapacityGroup`, consider using `CapacityGroup::new` which returns `CapacityGroup`
+   --> crates/domain/src/execution/capacity.rs:114:5
+    |
+114 |     pub const fn new(id: CapacityGroupId, tenant: TenantId, initial: CapacityMemberId) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no associated function or constant named `restore` found for struct `CapacityGroup` in the current scope
+   --> crates/domain/tests/capacity_groups.rs:240:28
+    |
+240 |             CapacityGroup::restore(g.id(), g.tenant_id(), revision, epoch, count, possession, holder),
+    |                            ^^^^^^^ associated function or constant not found in `CapacityGroup`
+    |
+note: if you're trying to build a new `CapacityGroup`, consider using `CapacityGroup::new` which returns `CapacityGroup`
+   --> crates/domain/src/execution/capacity.rs:114:5
+    |
+114 |     pub const fn new(id: CapacityGroupId, tenant: TenantId, initial: CapacityMemberId) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no associated function or constant named `restore` found for struct `CapacityGroup` in the current scope
+   --> crates/domain/tests/capacity_groups.rs:250:32
+    |
+250 |     let mut g = CapacityGroup::restore(
+    |                                ^^^^^^^ associated function or constant not found in `CapacityGroup`
+    |
+note: if you're trying to build a new `CapacityGroup`, consider using `CapacityGroup::new` which returns `CapacityGroup`
+   --> crates/domain/src/execution/capacity.rs:114:5
+    |
+114 |     pub const fn new(id: CapacityGroupId, tenant: TenantId, initial: CapacityMemberId) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no associated function or constant named `restore` found for struct `CapacityGroup` in the current scope
+   --> crates/domain/tests/capacity_groups.rs:257:32
+    |
+257 |     let mut g = CapacityGroup::restore(
+    |                                ^^^^^^^ associated function or constant not found in `CapacityGroup`
+    |
+note: if you're trying to build a new `CapacityGroup`, consider using `CapacityGroup::new` which returns `CapacityGroup`
+   --> crates/domain/src/execution/capacity.rs:114:5
+    |
+114 |     pub const fn new(id: CapacityGroupId, tenant: TenantId, initial: CapacityMemberId) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+For more information about this error, try `rustc --explain E0599`.
+error: could not compile `sagat-domain` (test "capacity_groups") due to 4 previous errors

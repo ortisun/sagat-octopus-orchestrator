@@ -1,0 +1,17 @@
+   Compiling sagat-domain v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/domain)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.13s
+     Running tests/capacity_groups.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/capacity_groups-1dd52c9570aa5256)
+
+running 9 tests
+test final_holder_leaves_a_vacancy_for_surviving_detached_members ... ok
+test finished_membership_facts_cannot_be_rejoined ... ok
+test intermediate_nonholder_finality_preserves_the_childs_possession_epoch ... ok
+test a_parked_child_can_yield_before_logical_completion ... ok
+test restoration_preserves_exhausted_counters_without_allocating_a_registry ... ok
+test restoration_preserves_transition_produced_headers ... ok
+test stale_and_foreign_commands_leave_the_header_unchanged ... ok
+test restoration_rejects_inconsistent_scalars_and_holder_facts ... ok
+test bounded_commands_match_an_independent_registry ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.24s
+

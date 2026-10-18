@@ -1,0 +1,123 @@
+[
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-domain",
+      "--test",
+      "capacity_groups"
+    ],
+    "exit_code": 101,
+    "seconds": 3.61,
+    "log": "api-absence.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-domain",
+      "--test",
+      "capacity_groups"
+    ],
+    "exit_code": 0,
+    "seconds": 4.57,
+    "log": "model-green.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-domain",
+      "--lib",
+      "execution::capacity::tests"
+    ],
+    "exit_code": 0,
+    "seconds": 3.67,
+    "log": "overflow.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "clippy",
+      "--locked",
+      "-p",
+      "sagat-domain",
+      "--all-targets",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit_code": 0,
+    "seconds": 10.0,
+    "log": "clippy.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "fmt",
+      "--all",
+      "--",
+      "--check"
+    ],
+    "exit_code": 0,
+    "seconds": 4.08,
+    "log": "fmt.txt"
+  },
+  {
+    "command": [
+      "python3",
+      "scripts/check-architecture.py"
+    ],
+    "exit_code": 0,
+    "seconds": 0.31,
+    "log": "architecture.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-domain",
+      "--test",
+      "capacity_groups"
+    ],
+    "exit_code": 0,
+    "seconds": 1.98,
+    "log": "model-final.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "clippy",
+      "--locked",
+      "-p",
+      "sagat-domain",
+      "--all-targets",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit_code": 0,
+    "seconds": 1.0,
+    "log": "clippy-final.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "fmt",
+      "--all",
+      "--",
+      "--check"
+    ],
+    "exit_code": 0,
+    "seconds": 4.05,
+    "log": "fmt-final.txt"
+  }
+]
