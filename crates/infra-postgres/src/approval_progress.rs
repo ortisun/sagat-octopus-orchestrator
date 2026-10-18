@@ -180,6 +180,7 @@ async fn lock_run_whatever_its_state(
     namespace: sagat_domain::identity::NamespaceId,
     run: RunId,
 ) -> Result<LockedRun, ApprovalProgressError> {
+    crate::execution::lock_member_chain(tx, tenant, namespace, run).await?;
     let row = sqlx::query(
         "SELECT namespace_id, status, run_version, workflow_version_id FROM runs \
          WHERE tenant_id = $1 AND id = $2 FOR UPDATE",

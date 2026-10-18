@@ -1,0 +1,268 @@
+{
+  "source_base": "d413e5a89e7586f4ba76aec3ac53b33e28eaa7a6",
+  "recorded_utc": "2026-10-18T05:33:26.356360+00:00",
+  "scope": "Shared pinned-member chain guard and approval writer prefix, no new eligibility",
+  "environment": {
+    "external_db_url": false,
+    "runtime_role_requested": true,
+    "new_barrier_observes_sagat_app": true,
+    "postgres": "repository disposable fixture"
+  },
+  "commands": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "approval_chain_prefix_",
+        "--",
+        "--nocapture",
+        "--test-threads=3"
+      ],
+      "exit_code": 101,
+      "seconds": 7.29,
+      "log": "compile-fixture-error.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "approval_chain_prefix_",
+        "--",
+        "--nocapture",
+        "--test-threads=3"
+      ],
+      "exit_code": 101,
+      "seconds": 44.15,
+      "log": "red.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "approval_chain_prefix_",
+        "--",
+        "--nocapture",
+        "--test-threads=3"
+      ],
+      "exit_code": 0,
+      "seconds": 51.52,
+      "log": "green.txt"
+    }
+  ],
+  "regression_commands": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "approval",
+        "--",
+        "--skip",
+        "approval_post_wait_fence_rejects_due_expiry_without_effects",
+        "--test-threads=3"
+      ],
+      "exit_code": 0,
+      "seconds": 55.87,
+      "log": "workflow-approval.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "operation",
+        "--",
+        "--test-threads=3"
+      ],
+      "exit_code": 0,
+      "seconds": 20.9,
+      "log": "workflow-operations.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "fault_workflow_primitives",
+        "--",
+        "--test-threads=3"
+      ],
+      "exit_code": 0,
+      "seconds": 125.05,
+      "log": "fault.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "--workspace",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "seconds": 62.76,
+      "log": "clippy.txt"
+    }
+  ],
+  "gates": [
+    {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "seconds": 4.42,
+      "log": "fmt.txt"
+    },
+    {
+      "command": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "exit_code": 0,
+      "seconds": 0.39,
+      "log": "architecture.txt"
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit_code": 0,
+      "seconds": 0.04,
+      "log": "diff-check.txt"
+    }
+  ],
+  "results": {
+    "workflow-operations.txt": [
+      {
+        "passed": 28,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 13.88
+      }
+    ],
+    "workflow-approval.txt": [
+      {
+        "passed": 49,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 55.35
+      }
+    ],
+    "red.txt": [
+      {
+        "passed": 0,
+        "failed": 1,
+        "ignored": 0,
+        "seconds": 8.37
+      }
+    ],
+    "green.txt": [
+      {
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 2.58
+      }
+    ],
+    "fault.txt": [
+      {
+        "passed": 92,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 94.72
+      }
+    ]
+  },
+  "review": {
+    "cycles": 2,
+    "model": "gpt-6-astra",
+    "reasoning": "xhigh",
+    "external_cli": false,
+    "final": "no concrete four-file defects; reviewers ran no tests"
+  },
+  "limits": [
+    "Tuple compile error not behavioralRED",
+    "RED missing chain wait0/1 in8.37s, not reproduced SQL deadlock",
+    "Trusted native chain+approval fixture, no new public shape",
+    "Initial membership atomic with newrun commit; later immutable, not live reparent protocol",
+    "Final audit trigger immediatelybeforecommit; exclusive guard probe55P03 and ownrun free at initial wait",
+    "Exact decision+route journal events, receipt/outbox/audit once; native decision replay adds no new audit",
+    "Approval49 skips real60seconddue-expiry case whose latest result is previouscommitd413e5a8; not fresh currenttree due result",
+    "28operation/92fault counts overlap; no fullworkspace execution/SDK58/Compose/advisory/resource/nesting gate",
+    "Collection/loop chain prefixes, complete B0 and group persistence remain pending; no canonical closure"
+  ],
+  "source_sha256": {
+    ".gitattributes": "b64527efa8c0210c0f9715336d27f31e692daecea483262a114d89a93a40cd93",
+    "crates/infra-postgres/src/approval_progress.rs": "3aff9a3fe786f5fcc0ac13460e0f65a1988d7341aed1d4d532383b585e085db8",
+    "crates/infra-postgres/src/declared_operations.rs": "6e192692fb4ee8ef888cafa9e6df0f208c46c5854f40f758fcef90bc9544eed2",
+    "crates/infra-postgres/src/execution.rs": "292730f8a9f987b006c3ee0a880a38a9f2c27a4e5264994ce1c690f04c7c5d76",
+    "docs/runbooks/workflow-primitives.md": "90da53b8b646ea47239cb9d1e3c73b6ba39401aade470e7100e48dfdbf4aed54",
+    "docs/traceability.md": "8da77f7b8664f532f26b766ea07b0cc95ab2dfe3dd5637c3e3d0e424f8b988ac",
+    "specs/014-workflow-primitives/contracts/README.md": "b3c17cb510de20928561ea520d659c367b9d29f2bf60ff427e8bedc3e83b7832",
+    "specs/014-workflow-primitives/data-model.md": "89416574961d6696a2b35083eb00c5b5e8987bce0204d910e4b108c6a749dd8d",
+    "specs/014-workflow-primitives/plan.md": "9b0d8b812a0473e467e238ec2fe7044414f05f1ce75bcbc02b0e697d2ba28810",
+    "specs/014-workflow-primitives/spec.md": "014a3ef5f9e66a096f9e514d975612df9cff1644c14f4b95879a333a805affe0",
+    "specs/014-workflow-primitives/validation-report.md": "fefd496fc6b2f1e82dc1124c4ade8c39b5bf5b060cc0a5902d6fcbb912553b78",
+    "tasks/project-completion/capacity-lock-inventory.md": "ea668aad2ad6c5df1bb8e394f26da31bbfd94129612f8d22f54a92da1e144215",
+    "tasks/project-completion/integration-notes.md": "80f75cf1b62756d4c19ab97ac27c1abad02fedfee8dae40bea45f4949e0e6bcc",
+    "tests/integration/workflow-primitives/approval_progress.rs": "26167e96e1776b2e5ccef09cb5995ba6a9c8b5158717afd3851f50ec52f742ff"
+  },
+  "evidence_sha256": {
+    "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "clippy.txt": "bbcd5fdf726a4d8cda910a8f922cb9cc62adb8ea590ac4ca9976ad3523bf5401",
+    "commands.json": "80bfdcb2dd78e60a06194b88b153aec76c23c91918f1eb0f6c43e1f1a0208319",
+    "compile-fixture-error.txt": "5c3f44fe68bf4ed13cff637b682d63262145cdff34d575297851dc4f62f5c9cb",
+    "compile-source.json": "a983f5e67706de45b9d029209686a7a698555d1d842de3d995f9d2350712cbeb",
+    "diff-check.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "fault.txt": "bbe17c45106893c5ef3613d8e8afa6630c691ee279e043bda6bbf46391bab1d9",
+    "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "gates.json": "8092d1098c1c0e5745638ff3e955693be7d0df522232d8ab246c0300cffeb9ef",
+    "green.txt": "e0ac280079779dd58a5286a9ad02280a6470f7889301c5ce1aae11cac43a0321",
+    "production.diff": "ce215556d9144908a2d40b8230ec7ecedaccb05cee38aec9dd711ec3c74e3a69",
+    "red-source.json": "dc0e96556e0cf43d0c18aaaa281538fb32f60a089a6d75dce9cc688b8dc15acf",
+    "red.txt": "583ec9be1137ec83224e4f21012a148f9254d2cab7f2ea726c35037c29e6a319",
+    "regression-commands.json": "263c74ea2afe9bb323ff4482897ecb4cae85a1234510098befe6fc7c979df150",
+    "reproduce.md": "4b4373fc1e9a91b9b6074557c4efd63a06f974a7c75451903219db0710373b65",
+    "review.md": "20abe26a034a8da1bffd4ea70a08bf73ce3635086ca1a51498bbc61ec26c8c57",
+    "test-compile.diff": "3a95374a13eabf7efdd833f072fce78dd64f3a7ce6bdf9ddb86e6b5d1ecb2a95",
+    "test-red.diff": "f4b9515a43caea8b3d3a931a11f9a74d86bb2956aed3c2d44e74784d2238f306",
+    "tested-source.json": "02b92c97ab6016dc3b0ae96589b5932ed527759a6f703bcc75d5f14f461cf065",
+    "workflow-approval.txt": "a59f774d48321cd669774595cb1c13da7d0ac7775132064d46c4c4f703b038a7",
+    "workflow-operations.txt": "60c002306f504901dc81d13b0b2987b7d983a5f64a5b62d73d49fe81e2127414"
+  }
+}

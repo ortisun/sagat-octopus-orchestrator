@@ -147,10 +147,9 @@ not accept the other primitive/direct-Update prefixes, group transactions or gen
 
 ## Additional source gaps to resolve (not accepted new ordering)
 
-- `primitives::{lock_run,lock_drain_run}`, `loop_progress::lock_run` and
-  `approval_progress::{lock_run,lock_run_whatever_its_state}` take own-run UPDATE directly.
-  Current supported public shapes exclude their chain composition; their storage prefixes still
-  need alignment/proof before that composition can be enabled.
+- `primitives::{lock_run,lock_drain_run}` and `loop_progress::lock_run` still take own-run
+  UPDATE directly. Their applicable chain prefixes remain pending before general composition.
+  Approval now takes a membership chain first through the shared adapter guard (below).
 - `declared_operations::apply_update`, OperationAddress::Run, takes own-run UPDATE directly;
   the Chain branch explicitly takes chain before its resolved run. A direct run-addressed Update
   of a chain member now has the narrow prefix correction below. Queries are reads;
@@ -279,3 +278,36 @@ Clippy (61.64s), formatting, diff and24-crate architecture gates passed. Two bou
 ended with no concrete final defects; reviewers ran no tests. Exact source/commands/evidence:
 tasks/project-completion/evidence/approval-post-wait-fence-20261018/manifest.json. No canonical
 checkbox closes; complete B0, nested runtime and integrated release gates remain pending.
+
+## Approval chain-before-run writer prefix — 2026-10-18
+
+Refs:T014-040/044, FR-014-008/014, ADR-0030§18. Approval's common writer helper now takes its
+applicable tenant/namespace/run member chain UPDATE guard before exact own-run UPDATE. It covers
+open/expire/decide, including ended-outcome receipt reads, without forwarding the request or
+granting head/finality authority. The unchanged direct Run Update membership SQL moves to a
+transaction-typed shared execution helper; its old wrapper is removed and StoreError conversion
+stays at the calling boundary. No wire, migration, group or public-shape change.
+
+Initial membership commits with uncommitted new-run creation (execution.rs create/commit);
+subsequent member identity is immutable under SQL constraints/triggers. This is not a protocol
+for live reparenting or delayed external initialization. The trusted native fixture first opens
+an approval, then invokes the real chain initializer with a deadline: journal revisions are
+start1/open2/chain3/decision4/route5. General entrypoint/body shapes remain gated.
+
+The real runtime decision waits on chain before holding run, observed through pg_blocking_pids
+and independent NOWAIT. A test-only final-audit trigger, immediately before commit, exposes
+exclusive chain and own-run guard lifetime through two55P03 probes. Success has one receipt,
+one approval.decided and one step.routed, one decision outbox and one traced decision audit.
+Receipt replay preserves the21-table checkpoint and chain head. Initial test tuple compilation
+failure is retained separately; behavioral RED0/1 (8.37s) times out on the missing chain wait,
+not a reproduced deadlock. Collection/loop prefixes and complete B0 remain pending.
+Evidence: tasks/project-completion/evidence/approval-chain-prefix-20261018/.
+
+Final approval chain-prefix GREEN passed1/1 (2.58s). Regression passed49 approval workflow
+cases (55.35s, includes opening/overflow post-wait checks; skips the unchanged real60-second
+due-expiry case last run atd413e5a8),28 operation cases (13.88s, including public direct
+successor Update), and all92 fault cases (94.72s). Counts overlap. Strict locked workspace/
+all-target Clippy (62.76s), formatting/diff and24-crate architecture passed. Two bounded reviews
+ended with no concrete final defects. Exact source variants, commands and limits:
+tasks/project-completion/evidence/approval-chain-prefix-20261018/manifest.json. No canonical
+checkbox closes; remaining collection/loop prefixes and B0/group ordering stay pending.

@@ -311,3 +311,11 @@ live fencing before catalog access on misses, and exact receipt replay after exp
 must bind the persisted descriptor to its blob commit and roll back both with journal failures.
 Public native failure tests and the all-five `collection-blob-output` case cover this slice;
 derived/declared-secret blobs, broader bodies/nesting and full resource gates remain closed.
+
+
+Approval's own-run writer helper now shares the existing declared Run Update membership guard:
+chain before exact run, held through commit. The guard resolves immutable tenant/namespace/run
+membership and grants no head/finality authority. New-run creation commits initial membership
+atomically; live reparent/membership migration is not supported by this prefix. Native ordered
+wait/final-audit barriers accompany existing public successor Update and approval regressions.
+Collection/loop prefixes and the complete B0 graph remain pending.

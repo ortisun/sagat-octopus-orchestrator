@@ -424,6 +424,29 @@ impl PgRunStore {
     }
 }
 
+/// Serialize a pinned member mutation on its immutable, tenant-scoped chain before its own run.
+/// The guard remains in the caller's transaction; it neither forwards nor grants head authority.
+/// Initial membership is committed with new-run creation; later membership identity is immutable.
+pub(crate) async fn lock_member_chain(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: TenantId,
+    namespace: NamespaceId,
+    run: RunId,
+) -> Result<(), StoreError> {
+    sqlx::query(
+        "SELECT c.chain_id FROM chain_segments s JOIN execution_chains c \
+         ON c.tenant_id=s.tenant_id AND c.namespace_id=s.namespace_id AND c.chain_id=s.chain_id \
+         WHERE s.tenant_id=$1 AND s.namespace_id=$2 AND s.run_id=$3 FOR UPDATE OF c",
+    )
+    .bind(tenant.as_uuid())
+    .bind(namespace.as_uuid())
+    .bind(run.as_uuid())
+    .execute(&mut **tx)
+    .await
+    .map_err(store_error)?;
+    Ok(())
+}
+
 /// Lock first, then observe expiry. A volatile WHERE predicate can be evaluated before a row-lock
 /// wait, and an unchanged row need not be rechecked when that wait ends.
 pub(crate) async fn locked_scheduler_time(

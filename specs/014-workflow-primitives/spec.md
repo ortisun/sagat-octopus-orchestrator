@@ -57,6 +57,8 @@ Exact-path storage entry also retains an applicable chain lock before its own ru
 run entry. This storage invariant alone does not enable chain+collection graphs or new finality.
 Declared Updates addressed by run also acquire an applicable membership chain before the exact
 run; they keep their original address and never forward across continuation.
+Approval open/expire/decide also take an applicable member chain before their exact run.
+This preserves current-user authorization and never forwards a request to another segment.
 Chain handoff/finalization validates scheduler expiry on the database clock after its SHARE
 lock wait, in the same transaction. Collection and loop ports use that same transaction-typed check and preserve their existing
 wrong-shard and oversized-generation errors. Approval open/expire use the same post-lock check;

@@ -1,0 +1,36 @@
+    Blocking waiting for file lock on build directory
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.92s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 28 tests
+test chains_http::an_operation_on_a_continued_segment_of_a_finished_chain_is_a_conflict_not_an_internal_error ... ok
+test observability::a_failed_audit_write_fails_the_operation_closed_and_discloses_nothing ... ok
+test observability::declared_operations_emit_the_closed_span_and_metric_vocabulary ... ok
+test operations::a_declared_query_is_served_by_the_least_privilege_runtime_role ... ok
+test operations::activity_completion_serializes_after_the_snapshot_used_by_an_update ... ok
+test operations::canonical_chain_update_hash_is_stable_without_a_head_and_binds_an_explicit_cas ... ok
+test operations::canonical_update_hash_frames_operation_arguments_revision_and_run ... ok
+test operations::an_applied_update_is_committed_by_the_least_privilege_runtime_role ... ok
+test operations::applied_update_commits_state_receipt_journal_audit_and_outbox_together ... ok
+test operations::chain_query_waits_for_handoff_and_reads_only_the_committed_successor_snapshot ... ok
+test operations::concurrent_expected_revision_updates_apply_once_and_reject_once ... ok
+test operations::invalid_initial_state_refuses_start_without_a_run_or_retained_payload ... ok
+test operations::evaluator_applies_and_retains_schema_checked_state_and_result_in_one_transaction ... ok
+test operations::missing_declaration_fails_closed_without_an_audit_or_value ... ok
+test operations::outbox_failure_rolls_back_state_journal_receipt_and_audit ... ok
+test operations::publication_and_run_start_atomically_retain_declared_metadata_and_initial_state ... ok
+test operations::query_returns_one_committed_snapshot_and_only_adds_access_audit ... ok
+test operations::revision_rejection_is_durable_replays_once_and_checks_current_authorization ... ok
+test operations_http::a_run_addressed_update_locks_its_successors_chain_before_the_run_until_commit ... ok
+test operations_http::chain_query_resolves_one_head_and_enforces_tenant_and_expected_run ... ok
+test operations_http::current_permissions_and_tenant_boundary_guard_results_and_replays ... ok
+test operations_http::outbox_failure_rolls_back_the_http_update_and_the_same_key_can_retry ... ok
+test operations_http::chain_update_keeps_one_receipt_across_handoff_and_cas_protects_new_keys ... ok
+test operations_http::query_returns_only_the_declared_result_without_mutating_the_run ... ok
+test operations_http::update_to_a_continued_segment_is_run_continued ... ok
+test operations_http::update_commits_once_and_replays_the_durable_result ... ok
+test operations_http::update_to_a_finished_run_is_not_mutable ... ok
+test operations_http::validator_and_revision_rejections_are_stable_and_do_not_schedule_work ... ok
+
+test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 369 filtered out; finished in 13.88s
+

@@ -1,0 +1,56 @@
+[
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "approval_chain_prefix_",
+      "--",
+      "--nocapture",
+      "--test-threads=3"
+    ],
+    "exit_code": 101,
+    "seconds": 7.29,
+    "log": "compile-fixture-error.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "approval_chain_prefix_",
+      "--",
+      "--nocapture",
+      "--test-threads=3"
+    ],
+    "exit_code": 101,
+    "seconds": 44.15,
+    "log": "red.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "approval_chain_prefix_",
+      "--",
+      "--nocapture",
+      "--test-threads=3"
+    ],
+    "exit_code": 0,
+    "seconds": 51.52,
+    "log": "green.txt"
+  }
+]
