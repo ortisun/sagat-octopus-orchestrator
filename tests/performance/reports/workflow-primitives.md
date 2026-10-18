@@ -1362,3 +1362,15 @@ not a frozen 10k acceptance run; raw logs are under `/tmp/sagat-completion-perf-
 On Darwin the command was additionally wrapped with `/usr/bin/time -l -o process-resources.log`
 to retain native maximum-resident-set/peak-footprint fields for the entire process. Retain this
 native output alongside future per-width fragments; do not label sampled RSS an OS peak.
+
+### Runtime-role cross-tenant contention
+
+The first runtime-role execution failed at registration (`NotBound`): the synthetic second worker
+had a namespace binding but no persisted current tenant membership. The fixture now persists its
+ordinary Worker membership before registration, preserving production authorization. The corrected
+default workload passed1/1,46.10s: 6×40 bursting members versus1×40 quiet members, quota8 per tenant.
+Persisted holders and usage counters agreed in every round and both peaked at8. The quiet tenant
+finished in87 rounds alone and87 beside its neighbour (ratio1.00); the burst finished in279 rounds
+(32.9s measured workload wall). This proves the stated case, not an unmeasured throughput SLO.
+[Raw evidence and reproducible source](raw/workflow-primitives/20261017-runtime-fairness/manifest.json)
+retain the failed registration, successful output, fixture patch, settings and shared-load limitations.

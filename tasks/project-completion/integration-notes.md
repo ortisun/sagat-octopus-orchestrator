@@ -1445,6 +1445,24 @@ inline completion and full replay passed in the pipeline group5/5,8.01s. Scoped 
 remains explicitly unsupported. The first compiler field-name error and intermediate malformed
 forgery expectation (InvalidArgument correctly returned) are retained separately from behavioral
 RED/GREEN. Logs: `/tmp/sagat-completion-scoped-grpc-blob-…`.
-The real PostgreSQL/OpenBao aggregate passed3/3,45.24s; complete gRPC and strict workspace/all-target
-Clippy are running. The full Python package also passed264/264,24.96s after the blocking-alias fix.
+The real PostgreSQL/OpenBao aggregate passed3/3,45.24s; complete gRPC passed70/70,107.87s and strict
+workspace/all-target Clippy passed2m57s. The full Python package also passed264/264,24.96s after the blocking-alias fix.
 No task checkbox, grant, wire field, SDK golden or schema change.
+
+## 2026-10-17 — Runtime-role fairness fixture and reviewed nesting constraints
+
+The frozen b1855cbe cross-tenant benchmark failedNotBound before execution because its synthetic
+second worker had no current membership. Persisting the second tenant's ordinary Worker membership
+before its existing namespace binding fixes the fixture, without changing production access rules.
+The default real fairness case passed1/1,46.10s: both counters/actual holders peaked8, quiet tenant
+87rounds alone/87with burst, bursting tenant279rounds/32.9s workload wall. Raw RED/GREEN, exact fixture
+patch, source/binary identity and shared-host limitations are checked in under
+`tests/performance/reports/raw/workflow-primitives/20261017-runtime-fairness/`. A frozen b1855cbe
+32-iteration loop smoke also passed1/1,12.32s with real queue observations. The frozen source and
+copied executable for flat10k widths1/16/256 and10000approvals+10000timers remain separate active
+measurements; do not replace their artifact or infer results before completion.
+
+The independent nesting proposal review found five actionable protocol omissions; reconciliation,
+counterexamples and the pending correction are in `nested-capacity-review.md`. No new ADR or runtime
+guarantee is inferred. Nesting stays closed pending its durable protocol, quota-reduction and crash
+evidence. No remaining task checkbox changes.

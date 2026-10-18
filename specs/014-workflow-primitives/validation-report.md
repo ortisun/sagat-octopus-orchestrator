@@ -1677,6 +1677,9 @@ An intermediate test incorrectly expected a capability error for an internally i
 ID/generation; the server correctly returned `InvalidArgument`. The fixture now changes both and
 asserts `Aborted/STALE_ATTEMPT`. A prior field-name compiler error is also retained, not counted as
 behavioral RED. Logs: `/tmp/sagat-completion-scoped-grpc-blob-{red,red-runtime,green,green-fixed}.log`.
+Affected regressions passed on disposable repository fixtures: complete gRPC70/70,107.87s and
+real PostgreSQL/OpenBao aggregate3/3,45.24s. Strict workspace/all-target Clippy passed2m57s;
+their logs use the same prefix. The full all-five scenario matrix is separate and still pending.
 
 Evidence:
 

@@ -103,6 +103,15 @@ impl Platform {
             subject_of(&format!("perf-worker-b-{}", Uuid::now_v7())),
             Role::Worker,
         );
+        sagat_infra_postgres::PgIdentityStore::new(self.world.db.pool.clone())
+            .insert_membership(&sagat_domain::identity::Membership::restore(
+                principal.tenant_id(),
+                principal.subject().clone(),
+                Role::Worker,
+                time::OffsetDateTime::now_utc(),
+            ))
+            .await
+            .expect("persist the second tenant's current worker membership");
         self.world.bind_everything(&principal).await;
         principal
     }
