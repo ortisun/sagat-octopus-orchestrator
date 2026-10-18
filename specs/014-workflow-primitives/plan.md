@@ -441,3 +441,12 @@ explicit source-closure proof and all recorded obligation dispositions, then sep
 one leaf collection source writer, scoped schema/retention and broader closure/quiescence. Full
 B1b.2 stays open; the ChildRoot adapter/schema cannot be repurposed by changing a tag. See
 tasks/project-completion/capacity-path-settlement.md.
+
+
+B1b.2a.1a chooses a separate own-run certification transaction after successful CollectionFinished,
+restricted first to a depth-1 ordinary activity-chain body without derived/effect producers. Exact
+admission/checkpoint/return/reduction/finish references and terminal routed local rows are required;
+no aggregate/history hydration. Before SQL, add the versioned pure shape predicate and review
+source-certification record/audit/retention/API, then prove actual producer preservation and restart.
+The reviewed source-writer choice is not current implementation evidence. See
+capacity-leaf-success-certification.md under tasks/project-completion.

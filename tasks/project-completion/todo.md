@@ -75,6 +75,12 @@ not a SQL port or own-member authority. See evidence/capacity-header-restore-202
   compensation closure; no current source-writer/schema sufficiency or runtime acceptance.
 - [ ] B1b.2a.1: Choose and prove a source writer for one supported leaf collection path; prevent
   later work creation and retain exact immutable source/obligation evidence before storage.
+- [x] B1b.2a.1a: Review a separate post-success certification transaction for one ordinary
+  depth-1 leaf collection path; typed predicate, storage and writer proof remain pending.
+- [ ] B1b.2a.1b: Implement the pure versioned definition-shape predicate; no pin/source authority.
+- [ ] B1b.2a.1c: Review certification API/immutable record/receipt/audit/retention before source SQL.
+- [ ] B1b.2a.1d: Prove exact successful source certification and actual producer races/restart;
+  failed/drained/effect-bearing paths need their own source-closure contract.
 - [ ] B1b.2b: Review scoped binding/fingerprint/receipt/retention extension and its actual queries.
 - [ ] B1b.2c: Review nested/child relationship closure and remaining quiescence/transition authority.
 
