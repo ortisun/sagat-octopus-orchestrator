@@ -83,8 +83,8 @@ fixture-only slice, without closing B1/B2 or permitting any production caller/cr
 - [x] B2d: Implement exact bounded native Finish with real current FINAL/fence and atomic replay.
 - [x] B2d.1: Define exact application command/fingerprint/typed error/result port (API only).
 - [x] B2d.2: Implement PostgreSQL adapter and real current child FINAL evidence.
-- [ ] B2e: Prove contention, expiry, duplicate/stale, confirmed rollback and unknown-COMMIT recovery.
+- [x] B2e: Prove contention, expiry, duplicate/stale, confirmed rollback and unknown-COMMIT recovery.
 - [x] B2e.1: Prove native G Busy/prefix/duplicate/postwait fence and confirmed abort atomicity; explicit runtime pool works in both suite modes.
 - [x] B2e.2: Prove actual committed/aborted COMMIT acknowledgement loss and fresh same-command reconciliation; distinguish prefix wait from distinct-member Busy.
-- [ ] B2e.3: Prove actual handoff/discovery race and same-tenant multiple-namespace members in one G; integrate remaining native recovery counterexamples.
+- [x] B2e.3: Prove actual handoff/discovery race and same-tenant multiple-namespace members in one G; integrate remaining native recovery counterexamples.
 - [ ] B2f: Add closed observations and requirement/test/contract evidence; broader gates stay pending.

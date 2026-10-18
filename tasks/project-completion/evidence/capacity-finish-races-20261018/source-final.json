@@ -1,0 +1,5 @@
+{
+  "tests/integration/workflow-primitives/capacity_finish.rs": "845c65853b7f175fd4e07ab927ce534259900c5109b27f001e3c2ad71b06360e",
+  "tests/integration/workflow-primitives/capacity_finish_races.rs": "b6653733bfc1d75d494a1a4e7b3285940b4f2ac078cb7c27f2f0c462a282b05d",
+  "crates/infra-postgres/src/capacity_finish.rs": "0ce7c56a7c0c665a2deefde595fc1cd6dfb0f12f680186d1e36f1d25107f28c0"
+}

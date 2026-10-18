@@ -1,0 +1,76 @@
+[
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "capacity_finish::races::committed_handoff",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "seconds": 34.89,
+    "log": "handoff-first.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "capacity_finish::races::same_tenant",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "seconds": 36.62,
+    "log": "two-namespaces-first.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "capacity_finish::races::",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "mode": "default",
+    "exit_code": 0,
+    "seconds": 6.79,
+    "log": "races-default.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "capacity_finish::races::",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "mode": "runtime",
+    "exit_code": 0,
+    "seconds": 6.94,
+    "log": "races-runtime.txt"
+  }
+]

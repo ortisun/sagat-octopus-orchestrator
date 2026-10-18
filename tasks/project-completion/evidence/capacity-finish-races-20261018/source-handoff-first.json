@@ -1,0 +1,4 @@
+{
+  "tests/integration/workflow-primitives/capacity_finish_races.rs": "c1ecee14726aebe0309280a34697bd9e40a78229529ae3251402cb58154b3f9d",
+  "tests/integration/workflow-primitives/capacity_finish.rs": "845c65853b7f175fd4e07ab927ce534259900c5109b27f001e3c2ad71b06360e"
+}

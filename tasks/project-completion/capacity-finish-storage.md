@@ -176,3 +176,14 @@ B2e.2 actual COMMIT response loss/reconciliation is tested in both server outcom
 evidence/capacity-finish-commit-loss-20261018. B2e.3 authority-race/multiple-namespace and broader
 recovery/release gates remain open. The test caller retains the original command in memory only;
 a production caller still requires durable intent/reconstruction before use.
+
+
+B2e.3 native authority race and same-tenant multiple namespaces are tested in both suite modes;
+evidence/capacity-finish-races-20261018. The actual evaluated handoff queues before Finish on an
+unchanged chain gate; observed PostgreSQL queue dependencies establish ordering before own Run.
+Finish rejects the old head and cannot settle through CONTINUED history. Only actual successor
+worker completion permits current Finish. One owner-seeded G spans two namespaces, with the holder
+in either namespace; exact binding rejection, nonholder preservation, vacancy/retirement and
+historical replay retain correct receipt-linked audit/hint identities. These tests close local
+B2e only. B2f, full B1/B2, durable production caller intent, process restart, C0 retention/old-writer
+compatibility and runtime/SDK/resource/release gates remain open; nesting stays disabled.

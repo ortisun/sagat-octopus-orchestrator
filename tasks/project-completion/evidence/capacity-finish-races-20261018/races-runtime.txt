@@ -1,0 +1,9 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.23s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 2 tests
+test capacity_finish::races::committed_handoff_overtakes_discovered_old_owner_without_forwarding_finish ... ok
+test capacity_finish::races::same_tenant_members_in_two_namespaces_keep_exact_binding_and_receipt_identity ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 424 filtered out; finished in 6.65s
+

@@ -2542,3 +2542,24 @@ Cleanup cancellation is source reviewed, not fault injected. No production adapt
 intent implementation, process restart or quota proof. B2e.3 authority race/multi-namespace and
 broader B2/canonical/SDK/resource/rollout gates remain open. Evidence:
 tasks/project-completion/evidence/capacity-finish-commit-loss-20261018/manifest.json.
+
+
+## Native capacity authority race and namespace boundaries — 2026-10-18
+
+Refs:T014-014/017/040. B2e.3 test-only proof uses an actual evaluated chain handoff queued ahead of
+native Finish behind an unchanged chain lock. PostgreSQL blocker observations prove ordering and
+own Run remains free before the chain guard. After handoff commits, Finish rejects the old head
+without capacity effects; only current successor FINAL from real worker completion may settle.
+A separate test runs two same-tenant physical child chains in different namespaces in one dormant
+owner-seeded G, with each holder placement. Wrong namespace rejects; first Finish preserves its
+peer; last Finish retires; original replay returns its historical result after peer settlement.
+Execution/usage snapshots are unchanged and receipt-linked audit/outbox carry exact namespace and
+member identities, with actual canonical hint validation.
+
+Both tests pass in default2/2 (6.50s) and full runtime-role2/2 (6.65s). Native adapter pools explicitly
+authenticate as sagat_app in both modes. Separate fresh Astra/xhigh reviews of the handoff and
+namespace artifacts found no concrete issue. Strict locked workspace/all-target Clippy8.12s,
+fmt4.06s and24-crate architecture pass. Production source unchanged. Local B2e closes, while B2f,
+fullB1/B2, durable production caller intent/process restart, C0 retention and mixed writers,
+canonical runtime/SDK/resource/release gates remain pending. No nested activation. Evidence:
+tasks/project-completion/evidence/capacity-finish-races-20261018/manifest.json.

@@ -1035,3 +1035,6 @@ mod barriers;
 mod commit_loss;
 #[path = "capacity_finish_proxy.rs"]
 mod commit_proxy;
+
+#[path = "capacity_finish_races.rs"]
+mod races;

@@ -1,0 +1,150 @@
+{
+  "base": "e77e9497",
+  "scope": "B2e.3 dormant current ChildRoot Finish authority race and same-tenant two namespaces",
+  "production_source_changed": false,
+  "commands": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "capacity_finish::races::committed_handoff",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 34.89,
+      "log": "handoff-first.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "capacity_finish::races::same_tenant",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 36.62,
+      "log": "two-namespaces-first.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "capacity_finish::races::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "mode": "default",
+      "exit_code": 0,
+      "seconds": 6.79,
+      "log": "races-default.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "capacity_finish::races::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "mode": "runtime",
+      "exit_code": 0,
+      "seconds": 6.94,
+      "log": "races-runtime.txt"
+    }
+  ],
+  "gates": {
+    "clippy": {
+      "command": [
+        "cargo",
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "seconds": 8.12,
+      "log": "clippy.txt"
+    },
+    "fmt": {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "seconds": 4.06,
+      "log": "fmt.txt"
+    },
+    "architecture": {
+      "command": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "exit_code": 0,
+      "seconds": 0.3,
+      "log": "architecture.txt"
+    }
+  },
+  "final_results": {
+    "default": {
+      "passed": 2,
+      "failed": 0,
+      "seconds": 6.5
+    },
+    "runtime": {
+      "passed": 2,
+      "failed": 0,
+      "seconds": 6.65
+    }
+  },
+  "evidence_sha256": {
+    "architecture.json": "199083abc2b5eb36f781b41c17be60298feba3414b4858e970a1f14daa3fc9f0",
+    "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "clippy.json": "3b55df2573d585acf7d3d821bb3ed1e5feb82d6dfb1642afe720e55fa86f1d72",
+    "clippy.txt": "cf13a95ad366798f362a47bbd558941245e3b929675810dc94bafb6a51626a46",
+    "commands.json": "19b63e0b79c70b03b0384f1eaae8149f9419f2db1d19e3e656894e35b7157877",
+    "fmt.json": "127edb2d8007c9d58fae841b8bf82e09d095dd4c4f6efa6271e608833b627d47",
+    "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "handoff-first.txt": "284d21b0376aed2a855520c1e1112d5a08ca214a6d6aa4581a777d44d1323be2",
+    "implementation.diff": "39d1b621e73eae4e40515d8342b2e90d4edb2c7e5ac812d5c5b39625f5063b32",
+    "races-default.txt": "b253f33bf52520887b91293f9ef67e0f6548fe40005ca7f00c0202ee94d4b07f",
+    "races-runtime.txt": "4ad2e98b7420463b47a0ae72db3ecb455da11719c5164d1d7ca13a813dc71adc",
+    "reproduce.md": "a65be347b818d44ced6b5d640a1a92f443e5b965b7f15d604e26b5227b43757a",
+    "review.md": "6a991d30f9475512590589d03a712c119e8104c49a9046a54bdfa1f99d9671bc",
+    "source-final.json": "93c6016d12e875ee7be77ace210d4563f55b6737b0220144e943c232549f892a",
+    "source-handoff-first.json": "7a7e6a2ee03f94ddbdb28c6358e9d1643b0cd77b30851d34a3c683d86510dce0",
+    "source-two-namespaces-first.json": "93c6016d12e875ee7be77ace210d4563f55b6737b0220144e943c232549f892a",
+    "two-namespaces-first.txt": "4b880fd84ee4a4f378c2ebfdd93db9944c57e0aeacffd0a22c9091377b3a5300"
+  }
+}
