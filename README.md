@@ -669,14 +669,17 @@ infra/helm/                   Kubernetes chart and deployment values
 infra/observability/           Collector, Prometheus, Grafana and alert configuration
 infra/dr/                     Disaster-recovery drill and journal verification
 scripts/                      Repository validation and SDK packaging tools
-specs/001..012/                Feature specifications, plans, tasks, contracts and evidence
-docs/                         Architecture, ADRs, references, quickstarts and operational runbooks
+specs/NNN-slug/               Feature specifications, plans, tasks, contracts and evidence (Spec Kit)
+docs/                         Architecture, ADRs, engineering guide, references, quickstarts and runbooks
+.claude/                      Agent skills, read-only reviewer subagents, hooks and shared settings
+AGENTS.md, CLAUDE.md          Rules and commands for coding agents (CLAUDE.md imports AGENTS.md)
 .specify/memory/constitution.md Architecture and delivery principles
 ```
 
 | Script | Purpose and side effects |
 |---|---|
 | `scripts/check-architecture.py` | Checks crate dependency/layer rules; uses Cargo metadata |
+| `scripts/check-agent-config.py` | Checks the agent instruction files, skills, subagents, hooks and ADR headers for size, links and consistency; read-only |
 | `scripts/smoke-compose.sh` | Builds and tests an isolated Compose project; removes only its own project/volumes |
 | `scripts/package-sdks.sh` | Builds SDK distribution artifacts into `target/sdk-packages` by default; requires all packaging toolchains and an empty output directory; does not publish packages |
 | `tests/e2e/scalability-ha/kubernetes/run.sh` | Creates a disposable kind cluster and checks product/KEDA behavior |
@@ -712,4 +715,5 @@ Start with [architecture](docs/architecture/overview.md),
 bugfix branches from `develop`, never commit directly to `main`/`develop`, and include real validation
 evidence. Read the [constitution](.specify/memory/constitution.md) and the active feature's spec, plan
 and tasks before implementation. Spec Kit resolves the active feature through `.specify/feature.json`
-or `SPECIFY_FEATURE_DIRECTORY`; new features continue numbering from 013.
+or `SPECIFY_FEATURE_DIRECTORY`; feature numbers are shared by every branch, so check `git branch -a` before taking the next one.
+How the project uses specification-driven development, records architecture decisions and directs coding agents is in the [engineering guide](docs/engineering/README.md).
