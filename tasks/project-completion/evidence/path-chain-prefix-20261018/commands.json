@@ -1,0 +1,74 @@
+[
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "bounded_fences::chain_prefix_",
+      "--",
+      "--nocapture",
+      "--test-threads=2"
+    ],
+    "exit_code": 101,
+    "seconds": 79.63,
+    "log": "red.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "bounded_fences::chain_prefix_",
+      "--",
+      "--nocapture",
+      "--test-threads=2"
+    ],
+    "exit_code": 101,
+    "seconds": 11.17,
+    "log": "red-final-oracle.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "bounded_fences::chain_prefix_",
+      "--",
+      "--nocapture",
+      "--test-threads=2"
+    ],
+    "exit_code": 101,
+    "seconds": 38.82,
+    "log": "red-corrected-fixture.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "bounded_fences",
+      "--",
+      "--nocapture",
+      "--test-threads=3"
+    ],
+    "exit_code": 0,
+    "seconds": 51.55,
+    "log": "green-fences.txt"
+  }
+]

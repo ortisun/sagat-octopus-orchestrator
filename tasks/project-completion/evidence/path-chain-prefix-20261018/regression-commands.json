@@ -1,0 +1,33 @@
+[
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "--",
+      "--test-threads=3"
+    ],
+    "exit_code": 0,
+    "seconds": 261.19,
+    "log": "workflow.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "clippy",
+      "--locked",
+      "--workspace",
+      "--all-targets",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit_code": 0,
+    "seconds": 77.8,
+    "log": "clippy.txt"
+  }
+]

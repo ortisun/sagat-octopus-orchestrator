@@ -1,0 +1,34 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 31.92s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 4 tests
+
+thread 'bounded_fences::chain_prefix_current_path_skips_before_locking_its_run' (80629148) panicked at tests/integration/workflow-primitives/bounded_fences.rs:289:9:
+a contended chain skips before the run lock
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test bounded_fences::chain_prefix_current_path_skips_before_locking_its_run ... FAILED
+
+thread 'bounded_fences::chain_prefix_current_path_waits_without_holding_its_run' (80629149) panicked at tests/integration/workflow-primitives/bounded_fences.rs:292:13:
+the chain guard must block the path entry
+test bounded_fences::chain_prefix_current_path_waits_without_holding_its_run ... FAILED
+
+thread 'bounded_fences::chain_prefix_snapshot_path_skips_before_locking_its_run' (80631007) panicked at tests/integration/workflow-primitives/bounded_fences.rs:289:9:
+a contended chain skips before the run lock
+test bounded_fences::chain_prefix_snapshot_path_skips_before_locking_its_run ... FAILED
+
+thread 'bounded_fences::chain_prefix_snapshot_path_waits_without_holding_its_run' (80631008) panicked at tests/integration/workflow-primitives/bounded_fences.rs:292:13:
+the chain guard must block the path entry
+test bounded_fences::chain_prefix_snapshot_path_waits_without_holding_its_run ... FAILED
+
+failures:
+
+failures:
+    bounded_fences::chain_prefix_current_path_skips_before_locking_its_run
+    bounded_fences::chain_prefix_current_path_waits_without_holding_its_run
+    bounded_fences::chain_prefix_snapshot_path_skips_before_locking_its_run
+    bounded_fences::chain_prefix_snapshot_path_waits_without_holding_its_run
+
+test result: FAILED. 0 passed; 4 failed; 0 ignored; 0 measured; 380 filtered out; finished in 3.40s
+
+error: test failed, to rerun pass `-p sagat-tests --test integration_workflow_primitives`

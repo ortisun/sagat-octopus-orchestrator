@@ -1,0 +1,203 @@
+{
+  "source_base": "5679e94c32324cd4e7d3e1edb9846857d84905aa",
+  "recorded_utc": "2026-10-18T04:43:19.149933+00:00",
+  "scope": "Exact-path optional chain-before-own-run lock prefix; no public composition or chain finality activation",
+  "environment": {
+    "runtime_role": true,
+    "external_db_url": false,
+    "postgres": "repository disposable fixture",
+    "system": "Darwin arm64"
+  },
+  "commands": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "bounded_fences::chain_prefix_",
+        "--",
+        "--nocapture",
+        "--test-threads=2"
+      ],
+      "exit_code": 101,
+      "seconds": 79.63,
+      "log": "red.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "bounded_fences::chain_prefix_",
+        "--",
+        "--nocapture",
+        "--test-threads=2"
+      ],
+      "exit_code": 101,
+      "seconds": 11.17,
+      "log": "red-final-oracle.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "bounded_fences::chain_prefix_",
+        "--",
+        "--nocapture",
+        "--test-threads=2"
+      ],
+      "exit_code": 101,
+      "seconds": 38.82,
+      "log": "red-corrected-fixture.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "bounded_fences",
+        "--",
+        "--nocapture",
+        "--test-threads=3"
+      ],
+      "exit_code": 0,
+      "seconds": 51.55,
+      "log": "green-fences.txt"
+    }
+  ],
+  "regression_commands": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "--",
+        "--test-threads=3"
+      ],
+      "exit_code": 0,
+      "seconds": 261.19,
+      "log": "workflow.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "--workspace",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "seconds": 77.8,
+      "log": "clippy.txt"
+    }
+  ],
+  "results": {
+    "red-corrected-fixture.txt": [
+      {
+        "passed": 0,
+        "failed": 4,
+        "ignored": 0,
+        "seconds": 3.4
+      }
+    ],
+    "workflow.txt": [
+      {
+        "passed": 383,
+        "failed": 0,
+        "ignored": 1,
+        "seconds": 260.71
+      }
+    ],
+    "red.txt": [
+      {
+        "passed": 0,
+        "failed": 4,
+        "ignored": 0,
+        "seconds": 3.88
+      }
+    ],
+    "green-fences.txt": [
+      {
+        "passed": 8,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 6.51
+      }
+    ]
+  },
+  "review": {
+    "cycles": 2,
+    "model": "gpt-6-astra",
+    "reasoning": "xhigh",
+    "first": "initializer deadline/revision, Wait-order oracle, lock lifetime; reconciled",
+    "second": "no concrete issues in actual final diff; reviewer ran no tests",
+    "external_cli": false
+  },
+  "limits": [
+    "Original directly seeded fixture 0/4 retained separately",
+    "Import compile failure is not behavioral RED",
+    "Real initializer/final-oracle RED 0/4; GREEN eight includes same four cases",
+    "Skip proves no retained run lock; paired Wait barriers prove ordering",
+    "Trusted storage fixture is not public chain+collection runtime evidence",
+    "Existing exact-path event/finality bounds unchanged; B0 remains incomplete",
+    "Workflow383pass1ignored includes focused cases; not unique summed counts",
+    "No full workspace/SDK58/Compose/advisory/nesting/resource gate claim"
+  ],
+  "source_sha256": {
+    ".gitattributes": "ab4fd637f37aa9093aba235aa1469b69ddcc38c567f9f5b29168153d5273d64c",
+    "crates/infra-postgres/src/execution.rs": "2fa5ea64b133c827137c070310aa04d31c3e97d5a1487547bcf87ddea3a743e3",
+    "docs/runbooks/workflow-primitives.md": "9b6b39c0e6d3f5f86f65c646041545edbae7c12d0db06ba82c819774824e2e78",
+    "docs/traceability.md": "3c12dd1d77e8cbb2271f910c34b56e45ae01981b32b23d3aae0699ab5af196e5",
+    "specs/014-workflow-primitives/contracts/README.md": "b5f73db44b1071eacacfd39a97d84639c14dc69ad0bc2ab97f75c3061201f52c",
+    "specs/014-workflow-primitives/plan.md": "6473d3f3edb1b8fd849d05e5a9501cdae54ff414c0004dec28db3e2d0f80234e",
+    "specs/014-workflow-primitives/spec.md": "937e10bb67a10187cf40652b336c8ed1bfe7309acbb7a12e6b7aa7687641cc90",
+    "specs/014-workflow-primitives/validation-report.md": "e048814494946aa138fa178dd036ba3c4f2643c691fd2cf35fd361dd5f30a6a4",
+    "tasks/project-completion/capacity-lock-inventory.md": "a03d8aed3c4463e3c3540c5740e15ceda824212cd1a1d98f282dc77eaccf8e87",
+    "tasks/project-completion/integration-notes.md": "58bdfc8a751e83d82a62a77a486357a1cf01806126a8cf4dc517795df024a574",
+    "tests/integration/workflow-primitives/bounded_fences.rs": "0f435e69af74ef348c8b814e05bb8f852d264acd7c30bf3ac967d8f45f464e0d"
+  },
+  "evidence_sha256": {
+    "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "clippy.txt": "575c91256f2a4b3304485f73e5154e2bf4abb549386504b2c6f1c10c8df6f65c",
+    "commands.json": "88ac10dc271e9b3cd88770e5554a857c5654597ac267ef163cad260004c03a81",
+    "diff-check.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "gates.json": "8ee5290b26f41180b7dac9311919a916feb4a37500bb683a6105dda1151ccec0",
+    "green-fences.txt": "625db58fa36773d229bdc6f1b4c845438764b667d672e7f1766a82ea41ea431c",
+    "production.diff": "08d6fe3b2dff4c82750c69362f49d97a130375f9d85d1628f9cbe0a15f52b5ba",
+    "red-corrected-fixture.txt": "b2707956940220b47cbdb80adb6a8261f728d48218cbcb73b278d1e3185a7dc8",
+    "red-final-oracle.txt": "88ca44d513998979ea299326cfe02387f29617e0c7c2deed09db29b98bdc1f63",
+    "red.txt": "fa176e109b0bc5e9f57bc2c74d735f0b5351ca945a7bd8983dcb53ab61767bc9",
+    "regression-commands.json": "eb16bd502807e3835d2bec3e2e1fe8dbe3adcd736d42ccafc71c23a16609f2c4",
+    "reproduce.md": "2477e7c93fdfd9c6646e69136b122f9effae33ebaed37ccd160f13f790203773",
+    "review.md": "29e33596d412cd85a3824c1e38c9e5381f6d3cb7e689569c78356ef51aef79cf",
+    "test-final.diff": "fe0445df8a611a2221423f4ed3fa7f2173e111f0ac0efe25583fa08f6f98e372",
+    "test-prototype.diff": "b82ff77c85adca5947d3d2a7c6246aa9ac25cf7c097dc0fc3ad13d6abf02f4aa",
+    "tested-source.json": "3acc1e31049535fe4776848a34ce02bb2cca13338863f0920b503a3b41ad7358",
+    "workflow.txt": "2790b323da9ea2f391d9bd321382b2ccbce41c2b716a54d333dd3157ead84bde"
+  }
+}

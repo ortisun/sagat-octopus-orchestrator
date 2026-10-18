@@ -29,6 +29,9 @@ legacy-flag UPDATE of an already-linked child; retain existing ordered handoff r
 children, journal consistency and exact command audits. This does not accept the
 complete group transaction design. ADR-0037 separately accepts the existing early stable-parent
 identity guard under its immutable ancestry precondition; the remaining B0 inventory stays open.
+Align exact-path begin_current_path/begin_path with full-run optional chain-before-run entry.
+Prove both Wait/SkipLocked behaviors and same-transaction lock lifetime with PostgreSQL barriers;
+keep snapshot CAS/time/bounded mutations and public shape restrictions unchanged.
 
 ## Technical Context
 

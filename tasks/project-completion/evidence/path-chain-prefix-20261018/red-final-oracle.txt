@@ -1,0 +1,20 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+error[E0603]: struct `ChainScope` is private
+   --> tests/integration/workflow-primitives/bounded_fences.rs:242:48
+    |
+242 |             sagat_application::chain_progress::ChainScope::new(
+    |                                                ^^^^^^^^^^ private struct
+    |
+note: the struct `ChainScope` is defined here
+   --> crates/application/src/chain_progress.rs:12:55
+    |
+ 12 |     self, ChainError, ChainFinalOutcome, ChainPolicy, ChainScope, ContinuationTransfer,
+    |                                                       ^^^^^^^^^^
+help: import `ChainScope` directly
+    |
+242 -             sagat_application::chain_progress::ChainScope::new(
+242 +             sagat_domain::execution::continuation::ChainScope(
+    |
+
+For more information about this error, try `rustc --explain E0603`.
+error: could not compile `sagat-tests` (test "integration_workflow_primitives") due to 1 previous error

@@ -1,0 +1,33 @@
+[
+  {
+    "log": "fmt.txt",
+    "command": [
+      "cargo",
+      "fmt",
+      "--all",
+      "--",
+      "--check"
+    ],
+    "exit_code": 0,
+    "seconds": 6.15
+  },
+  {
+    "log": "architecture.txt",
+    "command": [
+      "python3",
+      "scripts/check-architecture.py"
+    ],
+    "exit_code": 0,
+    "seconds": 2.2
+  },
+  {
+    "log": "diff-check.txt",
+    "command": [
+      "git",
+      "diff",
+      "--check"
+    ],
+    "exit_code": 0,
+    "seconds": 0.3
+  }
+]

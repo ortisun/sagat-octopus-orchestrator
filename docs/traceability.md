@@ -503,3 +503,13 @@ no remaining concrete defects. This is a current-writer invariant, not a stronge
 Exact controls, hashes and review: tasks/project-completion/evidence/parent-fk-guard-20261018/.
 The complete B0 graph, B1/group persistence, compatibility fencing and production resource/release
 gates remain open. No canonical checkbox closes from this clarification.
+
+
+### Exact-path storage prefix — 2026-10-18
+
+FR-014-014/015, ADR-0030§18: begin_current_path/begin_path retain their applicable tenant chain
+guard before the own-run lock. Four storage barrier regressions fail before and pass after;
+eight bounded fence tests pass, with actual chain blocking, no premature run lock and guard
+lifetime through commit. This is a trusted internal composition fixture, not new public nesting
+or chain-finality support. Exact commands/source/review: tasks/project-completion/evidence/
+path-chain-prefix-20261018/. Remaining B0 and canonical runtime/release tasks stay unchecked.

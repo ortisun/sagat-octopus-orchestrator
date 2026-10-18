@@ -15,3 +15,6 @@
 /tasks/project-completion/evidence/parent-fk-guard-20261018/*.txt whitespace=-blank-at-eof
 /tasks/project-completion/evidence/parent-fk-guard-20261018/without-parent-guard.txt whitespace=-blank-at-eof,-blank-at-eol
 /tasks/project-completion/evidence/parent-fk-guard-20261018/without-parent-guard.diff whitespace=-blank-at-eol
+/tasks/project-completion/evidence/path-chain-prefix-20261018/*.txt whitespace=-blank-at-eof
+/tasks/project-completion/evidence/path-chain-prefix-20261018/*red*.txt whitespace=-blank-at-eof,-blank-at-eol
+/tasks/project-completion/evidence/path-chain-prefix-20261018/*.diff whitespace=-blank-at-eol

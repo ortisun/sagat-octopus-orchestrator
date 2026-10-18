@@ -1695,3 +1695,33 @@ no remaining concrete defects. This is a current-writer invariant, not a stronge
 Exact controls, hashes and review: tasks/project-completion/evidence/parent-fk-guard-20261018/.
 The complete B0 graph, B1/group persistence, compatibility fencing and production resource/release
 gates remain open. No canonical checkbox closes from this clarification.
+
+
+## Exact-path chain prefix — 2026-10-18
+
+The existing begin_current_path and begin_path helpers previously took only their own run lock.
+Both now invoke the same tenant-scoped optional chain guard as full RunStore::begin, in the same
+transaction before lock_path_revision. A contended chain returns None for SkipLocked; Wait keeps
+the chain guard until path commit. Snapshot CAS, database-time sampling and exact-path mutation
+bounds are unchanged. The additional membership lookup uses chain_segments_run_unique; it does
+not load historical members. Retaining the SQL guard grants no new chain finality authority.
+
+Four real storage-protocol tests use a trusted scoped fixture plus real singleton chain
+initialization before loading the snapshot. General public chain+collection composition remains
+closed. Both entry points fail the pre-fix SkipLocked and Wait oracles (0/4, 3.40s): contended chains
+were ignored. With the fix, all eight bounded fence tests pass (6.51s). Actual pg_blocking_pids
+barriers prove Wait blocks on chain before holding run; independent NOWAIT probes prove both
+locks last through commit and are then released. Skip tests prove None/nonblocking and no
+retained run lock, with ordering established by the corresponding Wait test.
+
+Two isolated reviews identified fixture deadline/revision and lock-lifetime oracle requirements,
+then found no concrete final defects. An earlier prototype RED and a fixture import compile
+failure are retained separately from the corrected-fixture behavioral RED. Exact records:
+tasks/project-completion/evidence/path-chain-prefix-20261018/. B0 remains incomplete; this does
+not accept the other primitive/direct-Update prefixes, group transactions or general nesting.
+
+Final regression for this increment: workflow383 passed,1 ignored in260.71s; the separate long
+10k-completion test remains ignored, not a fresh pass. Strict locked workspace/all-target Clippy
+passed in1m17s; formatting, diff and24-crate architecture gates passed. This is not a full
+workspace execution, five-SDK matrix, Compose/advisory or nested-capacity resource result.
+Exact source/results: tasks/project-completion/evidence/path-chain-prefix-20261018/manifest.json.

@@ -6,7 +6,7 @@ runtime eligibility remain unimplemented. Initial source at2455389e; expanded ag
 | Existing writer | Observed explicit prefix/resources | Source |
 | --- | --- | --- |
 | Root RunStore begin | optional execution_chains row→own runs row | execution.rs:lock_chain_for_run, RunStore::begin |
-| Exact-path begin_current_path/begin_path | own runs row via lock_path_revision; no chain lock in that helper | execution.rs:482,530,566 |
+| Exact-path begin_current_path/begin_path | optional execution_chains UPDATE→own runs UPDATE; contended chain skips before own-run acquisition under SkipLocked | execution.rs:lock_chain_for_run, lock_path_revision, PathExecutionStore impl |
 | Collection admission | run/fence before primitive-policy shared fence→tenant policy row→tenant_iteration_usage→run_instance_usage→iteration scope | primitives.rs:tenant_active_limit and collection admission around1212 |
 | Chain handoff | execution_chains row→hold_parent parent runs KEY SHARE→own head runs UPDATE→scheduler fence→child link | chain_progress.rs:lock_chain, hold_parent, continue_as_new |
 | Parent settle_child/release_child | own parent transaction→matching child_chain_links UPDATE; only a missing link falls back to legacy child runs UPDATE with exact own-parent predicate | execution.rs:update_child_chain_link, settle_child, release_child |
@@ -57,9 +57,10 @@ These reviews do not accept the complete B0 graph or the group transaction desig
 - The mixed legacy UPDATE/link path has the focused correction below. ADR-0037 separately
   accepts only the early stable-parent identity KEY SHARE under immutable initial/head/link
   ancestry; it does not grant foreign aggregate mutation authority or accept the complete graph.
-- Exact-path helpers directly lock a run. Map chain-capable scoped activity/public-operation call
-  paths before claiming their chain-before-run prefix; publication restrictions do not prove an
-  unsupported future composition safe.
+- Exact-path storage now takes the applicable chain guard in the same transaction before the
+  run (focused evidence below). Collection/loop/approval adapters still have separate direct
+  run-lock helpers, and declared Update by Run has a direct run prefix. Map each before claiming
+  general composition compliance; publication restrictions do not prove a future shape safe.
 - Complete the implicit-FK/trigger, root-versus-scoped worker, current-role/session/activity,
   managed database/script, and cancellation incoming/outgoing-link edges beyond the prefixes above.
   The current table is not a complete DAG and cannot yet justify inserting group locks.
@@ -119,3 +120,46 @@ no remaining concrete defects. This is a current-writer invariant, not a stronge
 Exact controls, hashes and review: tasks/project-completion/evidence/parent-fk-guard-20261018/.
 The complete B0 graph, B1/group persistence, compatibility fencing and production resource/release
 gates remain open. No canonical checkbox closes from this clarification.
+
+
+## Exact-path chain prefix — 2026-10-18
+
+The existing begin_current_path and begin_path helpers previously took only their own run lock.
+Both now invoke the same tenant-scoped optional chain guard as full RunStore::begin, in the same
+transaction before lock_path_revision. A contended chain returns None for SkipLocked; Wait keeps
+the chain guard until path commit. Snapshot CAS, database-time sampling and exact-path mutation
+bounds are unchanged. The additional membership lookup uses chain_segments_run_unique; it does
+not load historical members. Retaining the SQL guard grants no new chain finality authority.
+
+Four real storage-protocol tests use a trusted scoped fixture plus real singleton chain
+initialization before loading the snapshot. General public chain+collection composition remains
+closed. Both entry points fail the pre-fix SkipLocked and Wait oracles (0/4, 3.40s): contended chains
+were ignored. With the fix, all eight bounded fence tests pass (6.51s). Actual pg_blocking_pids
+barriers prove Wait blocks on chain before holding run; independent NOWAIT probes prove both
+locks last through commit and are then released. Skip tests prove None/nonblocking and no
+retained run lock, with ordering established by the corresponding Wait test.
+
+Two isolated reviews identified fixture deadline/revision and lock-lifetime oracle requirements,
+then found no concrete final defects. An earlier prototype RED and a fixture import compile
+failure are retained separately from the corrected-fixture behavioral RED. Exact records:
+tasks/project-completion/evidence/path-chain-prefix-20261018/. B0 remains incomplete; this does
+not accept the other primitive/direct-Update prefixes, group transactions or general nesting.
+
+## Additional source gaps to resolve (not accepted new ordering)
+
+- `primitives::{lock_run,lock_drain_run}`, `loop_progress::lock_run` and
+  `approval_progress::{lock_run,lock_run_whatever_its_state}` take own-run UPDATE directly.
+  Current supported public shapes exclude their chain composition; their storage prefixes still
+  need alignment/proof before that composition can be enabled.
+- `declared_operations::apply_update`, OperationAddress::Run, takes own-run UPDATE directly;
+  the Chain branch explicitly takes chain before its resolved run. A direct run-addressed Update
+  of a chain member therefore requires a separate narrow prefix correction. Queries are reads;
+  do not silently forward a run address while aligning mutation locks.
+- The collection, loop, approval and chain-specific `check_scheduler_fence/check_fence` helpers
+  still put `expires_at > clock_timestamp()` in the locking SELECT. Full/exact-path run entry uses
+  `execution::locked_scheduler_time` to sample expiry after acquiring SHARE. A predicate evaluated
+  before an unchanged-row wait is not the same proof. Add real expiry-during-wait barriers for
+  each primitive authority before claiming all runtime scheduler fences are equivalent.
+
+These are source observations and pending tests, not already reproduced public failures or a
+complete B0 graph. Existing suite passes do not settle these missing barriers.

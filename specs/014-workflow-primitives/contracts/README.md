@@ -492,3 +492,13 @@ application/rejection, continuation, cancel/manual decisions and quota/policy ch
 mutations and their audits are atomic; query/security-denial audits use the existing access/security
 audit path. A failed audit write fails the operation closed. Retain only subject ids, operation kind,
 resource refs, outcome/code, time and trace correlation under existing audit access policy.
+
+
+### Exact-path storage serialization
+
+For begin_current_path and begin_path, an existing chain membership requires its tenant-scoped
+chain guard before the own-run mutation lock. Both guards last through the same transaction.
+SkipLocked returns no transaction for a contended chain; Wait blocks before taking the run.
+This shares full-run entry's lock prefix while preserving snapshot CAS and exact-path event
+bounds. No public composition, chain finality transition, scheduler authority or wire contract
+is added by this storage alignment. Other primitive adapters remain separate B0 obligations.

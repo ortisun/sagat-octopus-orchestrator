@@ -1,0 +1,34 @@
+diff --git a/crates/infra-postgres/src/execution.rs b/crates/infra-postgres/src/execution.rs
+index 610aaf7e..25cceae1 100644
+--- a/crates/infra-postgres/src/execution.rs
++++ b/crates/infra-postgres/src/execution.rs
+@@ -540,6 +540,14 @@ impl PathExecutionStore for PgRunStore {
+             });
+         }
+         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
++        // Match full-run entry: serialize any chain before taking its member's mutation lock.
++        // The transaction retains this guard; it grants no extra execution or finality authority.
++        if matches!(
++            self.lock_chain_for_run(&mut tx, tenant, run, lock).await?,
++            RunChainLock::Contended
++        ) {
++            return Ok(None);
++        }
+         let Some(current) = lock_path_revision(&mut tx, tenant, run, lock).await? else {
+             return Ok(None);
+         };
+@@ -577,6 +585,14 @@ impl PathExecutionStore for PgRunStore {
+             });
+         }
+         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
++        // Match full-run entry: serialize any chain before taking its member's mutation lock.
++        // The transaction retains this guard; it grants no extra execution or finality authority.
++        if matches!(
++            self.lock_chain_for_run(&mut tx, tenant, run, lock).await?,
++            RunChainLock::Contended
++        ) {
++            return Ok(None);
++        }
+         let Some(current) = lock_path_revision(&mut tx, tenant, run, lock).await? else {
+             return Ok(None);
+         };

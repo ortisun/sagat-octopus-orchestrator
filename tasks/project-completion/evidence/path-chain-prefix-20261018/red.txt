@@ -1,0 +1,38 @@
+   Compiling sagat-infra-postgres v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-postgres)
+   Compiling sagat-control-plane v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/control-plane)
+   Compiling sagat-sandbox-runner v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/sandbox-runner)
+   Compiling sagat-execution-engine v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/execution-engine)
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 13s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 4 tests
+
+thread 'bounded_fences::chain_prefix_current_path_skips_before_locking_its_run' (80547368) panicked at tests/integration/workflow-primitives/bounded_fences.rs:290:9:
+a contended chain skips before the run lock
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test bounded_fences::chain_prefix_current_path_skips_before_locking_its_run ... FAILED
+
+thread 'bounded_fences::chain_prefix_current_path_waits_without_holding_its_run' (80547369) panicked at tests/integration/workflow-primitives/bounded_fences.rs:293:13:
+the chain guard must block the path entry
+test bounded_fences::chain_prefix_current_path_waits_without_holding_its_run ... FAILED
+
+thread 'bounded_fences::chain_prefix_snapshot_path_skips_before_locking_its_run' (80549270) panicked at tests/integration/workflow-primitives/bounded_fences.rs:290:9:
+a contended chain skips before the run lock
+test bounded_fences::chain_prefix_snapshot_path_skips_before_locking_its_run ... FAILED
+
+thread 'bounded_fences::chain_prefix_snapshot_path_waits_without_holding_its_run' (80549271) panicked at tests/integration/workflow-primitives/bounded_fences.rs:293:13:
+the chain guard must block the path entry
+test bounded_fences::chain_prefix_snapshot_path_waits_without_holding_its_run ... FAILED
+
+failures:
+
+failures:
+    bounded_fences::chain_prefix_current_path_skips_before_locking_its_run
+    bounded_fences::chain_prefix_current_path_waits_without_holding_its_run
+    bounded_fences::chain_prefix_snapshot_path_skips_before_locking_its_run
+    bounded_fences::chain_prefix_snapshot_path_waits_without_holding_its_run
+
+test result: FAILED. 0 passed; 4 failed; 0 ignored; 0 measured; 380 filtered out; finished in 3.88s
+
+error: test failed, to rerun pass `-p sagat-tests --test integration_workflow_primitives`

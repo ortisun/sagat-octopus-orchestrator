@@ -464,3 +464,9 @@ Use the repository disposable PostgreSQL fixture (unset SAGAT_TEST_DATABASE_URL)
 negative control failed with public Unavailable; that error alone does not diagnose a database
 deadlock. Inspect database diagnostics when investigating failures. Evidence and restoration
 hashes: tasks/project-completion/evidence/parent-fk-guard-20261018/. General nesting stays closed.
+
+
+Exact-path mutation entry now uses the applicable chain-before-run prefix. For lock regressions,
+run `SAGAT_TEST_AS_RUNTIME_ROLE=1 cargo test --locked -p sagat-tests --test integration_workflow_primitives bounded_fences -- --test-threads=3`
+with the external database URL unset. The storage fixture combines scope and chain metadata only
+to test locking; it does not open general publication or establish chain finality for scoped work.

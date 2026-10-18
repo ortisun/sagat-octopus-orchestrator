@@ -53,6 +53,8 @@ flag writes are restricted to children without a link and with the exact own-par
 ADR-0037 retains the existing early parent key-share guard solely for identity protection under
 immutable initial/head/link ancestry. It grants no parent mutation authority; the remaining
 lock graph and nested-capacity transactions are still pending.
+Exact-path storage entry also retains an applicable chain lock before its own run, matching full
+run entry. This storage invariant alone does not enable chain+collection graphs or new finality.
 
 Other collection and loop graphs and nested scopes remain closed for general publication. The
 remaining acceptance and release evidence is tracked
