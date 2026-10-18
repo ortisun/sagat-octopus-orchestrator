@@ -342,3 +342,22 @@ unchanged. Detailed qualification/corruption/metadata-only probes, complete cont
 wait/failure barriers, unknown-COMMIT/process recovery and returned observations remain pending
 units14..17. Instrumented code alone does not establish those guarantees or broader B1/B2/C0.
 Evidence: evidence/scoped-finish-native-first-20261018/manifest.json.
+
+
+## Canonical source ordering and denied-read metadata controls — 2026-10-18
+
+B1b.2b.14a adds3 actual PostgreSQL tests. After genuine native source certification and first
+Finish, owner-only schema-valid wrong pin/future revision and exact certificate removal refuse
+before matching/conflicting receipts; current stale authority refuses before missing source.
+Per-call snapshots precede repair, then exact restored-source replay/conflict controls pass.
+Only the named immutable certificate guard is temporarily disabled by the fixture owner and
+restored ALWAYS before native entry. No definition row/guard is modified.
+
+With certificate SELECT/no certificate INSERT and audit INSERT/no audit SELECT, native apply
+and replay succeed after actual42501 probes deny reads from11 source/history/definition/audit/
+payload/item tables. This is concrete denied-read evidence combined with the reviewed bounded
+queries, not a statement-level audit of every possible SECURITY DEFINER dependency. Three final
+tests pass, Clippy/fmt/architecture pass and1092 frozen inputs are unchanged. The earlier E0521
+helper compilation error and initial nine-table pass are retained separately. ReviewC1 added
+the omitted payload/item tables; freshC2 found no issue. Broader14b..d/15..17 gates remain open.
+Evidence: evidence/scoped-finish-source-controls-20261018/manifest.json.

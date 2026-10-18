@@ -1,0 +1,16 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+error[E0521]: borrowed data escapes outside of function
+   --> tests/integration/workflow-primitives/scoped_leaf_finish_source_controls.rs:170:17
+    |
+169 | async fn assert_select_denied(pool: &PgPool, table: &str, statement: &str) {
+    |                                                           ---------  - let's call the lifetime of this reference `'1`
+    |                                                           |
+    |                                                           `statement` is a reference that is only valid in the function body
+170 |     let error = sqlx::query(statement)
+    |                 ^^^^^^^^^^^^^^^^^^^^^^
+    |                 |
+    |                 `statement` escapes the function body here
+    |                 argument requires that `'1` must outlive `'static`
+
+For more information about this error, try `rustc --explain E0521`.
+error: could not compile `sagat-tests` (test "integration_workflow_primitives") due to 1 previous error

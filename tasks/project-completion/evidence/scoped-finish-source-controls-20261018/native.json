@@ -1,0 +1,19 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "integration_workflow_primitives",
+    "leaf_certification_native::scoped_finish::source_controls::",
+    "--",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "exit_code": 0,
+  "seconds": 39.89,
+  "started_utc": "2026-10-18T15:27:32.710412+00:00",
+  "log": "native.txt"
+}

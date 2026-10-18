@@ -1054,3 +1054,6 @@ async fn native_scoped_finish_refuses_signed_counter_overflow_atomically() {
     assert_header(&f, seeded.group, (i64::MAX, 1, 1, "HELD", Some(selected))).await;
     f.verify().await;
 }
+
+#[path = "scoped_leaf_finish_source_controls.rs"]
+mod source_controls;

@@ -3082,3 +3082,21 @@ or source activation is added. Source/receipt corruption and qualification, meta
 reads, full context matrix, real barriers/failures, unknown-COMMIT/process and observations
 remain subsequent units; no general nested/B1/B2/C0 or canonical task closes here.
 Evidence: tasks/project-completion/evidence/scoped-finish-native-first-20261018/manifest.json.
+
+
+## Scoped Finish source-before-receipt and metadata-only controls — 2026-10-18
+
+Local B1b.2b.14a, refs:T014-014..017/040. Three actual runtime-role PostgreSQL tests pass in
+39.89s (4.88s harness). Genuine applied receipts do not bypass a corrupted/missing canonical
+certificate; stale authority still precedes source absence. Labelled owner faults restore
+ALWAYS guards, compare snapshots before repair and finally recover the exact genuine row.
+Native apply/replay succeeds with actual42501 read denials on11 tables, including payloads
+and captured collection items, certificate SELECT/noINSERT and audit INSERT/noSELECT.
+No runtime is driven after denial; owner snapshots verify no source/execution mutation.
+
+Actual first compilationE0521 was fixed by declaring the literal-only SQL probe &'static str.
+Initial nine-table3/3 pass is retained separately; reviewC1 found missing payloads/items, added
+before the final run, and freshC2 found no issue. Strict integration Clippy14.80s, fmt4.28s and
+architecture0.40s pass. All1092 frozen inputs unchanged. No product implementation change,
+released privilege/caller, owner-corruption resistance or general decoder/fault guarantee.
+Evidence: tasks/project-completion/evidence/scoped-finish-source-controls-20261018/manifest.json.

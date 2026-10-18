@@ -1,0 +1,11 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 32.86s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 3 tests
+test leaf_certification_native::scoped_finish::source_controls::native_scoped_finish_applies_and_replays_from_certificate_metadata_only ... ok
+test leaf_certification_native::scoped_finish::source_controls::native_scoped_finish_requires_retained_certificate_before_receipt_and_after_fence ... ok
+test leaf_certification_native::scoped_finish::source_controls::native_scoped_finish_validates_certificate_pin_before_matching_receipt ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 469 filtered out; finished in 4.88s
+
