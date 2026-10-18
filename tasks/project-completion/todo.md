@@ -230,6 +230,7 @@ See evidence/leaf-certification-process-20261018. Other producer/observation/rel
 - [x] B1b.2c.1d.0Q10c.1: Prove ordinary E>limit report-before-drain through separate immutable-old/current processes with original worker/session/lease/request, owner and actual sagat_app, exact receipt/replay and real compensation;f026e928, evidence/legacy-inflight-ordinary-v1-20261018.
 - [x] B1b.2c.1d.0Q10c.2: Prove ordinary E>limit drain-before-report with a still-live cancellation-requested lease and unchanged first stop/drain; four old/current phases pass, plus four default report-first regression phases. Evidence/legacy-inflight-drain-first-20261018; cancellation-first has separate evidence in .3.
 - [x] B1b.2c.1d.0Q10c.3: Prove public CANCEL precedence over genuine old E>limit success, original operation/report receipts and one permitted refusal audit, normal cancelled drain and real compensation;5ad34370, evidence/legacy-cancellation-first-20261018. Both shared ordering regressions pass; full Q10c stays open.
+- [x] B1b.2c.1d.0Q10c.4: Prove genuine old E<=limit<E+candidate ordinary report-first, pre-report Waiting/native ExistingOutputs rejection, fresh StoppedForRunDataLimit discovery, exact receipt/replay and real compensation;8b8046e5, evidence/legacy-underlimit-increment-20261018. Three original ordering regressions pass; other byte/order/Applied/recovery controls remain open.
 - [x] B1b.2c.1e: Prove real DETACH parent settlement followed by legitimate later child execution and original source replay.
 
 The bounded ordinary-child source master remains open; its enumerated .1a/.1b/.1c/.1e
@@ -428,3 +429,21 @@ GNU timeout supervises the whole process at180s/TERM+5s/KILL, covering synchrono
 Evidence: `tasks/project-completion/evidence/public-pool-bootstrap-20261018/README.md`.
 This accepts P0 bootstrap only. Supplied-pool scoped rollback/full reopen and actual lost-COMMIT
 recovery remain separate; no Q7b/canonical task or production activation closes.
+
+
+### Immutable-old fitting total / refused increment — 2026-10-18
+
+8b8046e5 accepts only ordinary report-first E<=limit<E+candidate over genuine frozen6c44a0e4
+history: L2000000,V2000020,E4000020, actual250000-byte candidate makes4250020>4194304.
+Full production overlay fits without backfill; normal pre-report Waiting/candidate exclusion and
+valid native ExistingOutputs refusal preserve complete execution/telemetry/saga footprint.
+Original successful report stays SUCCEEDED/nooutput with exact canonical receipt/replay/zerooutbox;
+fresh owned scheduler starts StoppedForRunDataLimit with its own truthful audit/outbox. Real original
+target/key compensation and terminal original-ACK replay pass with retained sources/bytes unchanged.
+Newcase four phases156.91s; original default/drain/cancel regressions four phases each132.53/135.47/
+145.53s. All16separate phases pass with actual postgres/postgres or sagat_app/sagat_app pools,
+1125identicalinputs across all before/after pairs and8created DB/private-receipt cleanups verified.
+Strict Clippy42.33s/fmt5.74s/architecture0.76s/shellsyntax pass. Evidence:
+`tasks/project-completion/evidence/legacy-underlimit-increment-20261018/README.md`.
+Only this report-first byte condition closes locally. Under-limit prior cancellation/drain, Applied,
+post-ACK OS/uncertainCOMMIT, frontier/CAS/rollout/general nesting and full Q10c/canonical014 stay open.
