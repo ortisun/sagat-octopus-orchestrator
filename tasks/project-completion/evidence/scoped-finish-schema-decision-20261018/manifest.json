@@ -1,0 +1,9 @@
+{
+  "scope": "B1b.2b.2 bounded storage contract only",
+  "test_runs": 0,
+  "review_cycles": 1,
+  "files": {
+    "sources.json": "2397ff9c307cb6f622bc2654ab177e9e656b1cd4d77117da90ba31f88d5b21c9",
+    "review.md": "efbc6ea9bd74091428d0176762bae8d57be56db8f64534a3ecadff76081a395f"
+  }
+}

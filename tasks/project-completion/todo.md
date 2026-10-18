@@ -156,6 +156,10 @@ See evidence/leaf-certification-process-20261018. Other producer/observation/rel
 - [ ] B1b.2b: Review scoped binding/fingerprint/receipt/retention extension and its actual queries.
 - [x] B1b.2b.1: Review conditional originalRun/path binding, group-wide scoped receipt/fingerprint
   and retention/lock proposal only; no schema/query/port or executable source consumption.
+- [x] B1b.2b.2: Review dormant discriminated member/receipt schema, exact keys/FKs, original-column
+  ChildRoot INSERT compatibility, scoped INSERT denial and conditional downgrade requirements only.
+- [ ] B1b.2b.3: Implement dormant scoped binding schema/classification and actual constraints,
+  privileges/immutability/legacy native regression; verify downgrade in a separate bounded unit.
 - [ ] B1b.2c: Review nested/child relationship closure and remaining quiescence/transition authority.
 
 ## B2 dormant Finish increments

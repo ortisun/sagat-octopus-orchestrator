@@ -2841,3 +2841,16 @@ Evidence:`tasks/project-completion/evidence/sdk-expression-limits-20261018/manif
 
 Expression harness gates: targeted Clippy with warnings denied passed in 10.03 s; workspace
 format check passed in 4.31 s; 24-crate architecture check passed in 0.46 s.
+
+## Conditional scoped Finish schema contract — 2026-10-18
+
+Refs:T014-014..017/040; local B1b.2b.2 only. The bounded storage contract proposes complete
+ChildRoot/ScopedPath tuples, original Run FK and exact scoped member receipt binding, unchanged
+group-wide receipt uniqueness and permanent tombstones. Original-column-only receipt INSERT
+preserves the ChildRoot writer while new scoped discriminator/identity columns remain ungranted.
+Conditional down migration must refuse any scoped row and preserve legacy-only data/guards.
+One fresh bounded Astra review found no issue. No executable schema, test, source consumption,
+RLS, global lock safety, C0, caller or nested authority follows. Actual migration/constraint/
+privilege evidence and observed downgrade locks remain separate implementation units. See
+`tasks/project-completion/scoped-leaf-finish-schema.md` and
+`tasks/project-completion/evidence/scoped-finish-schema-decision-20261018/manifest.json`.
