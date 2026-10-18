@@ -1,0 +1,30 @@
+{
+  "commit": "f23c60af7bc7a8629151538f19c5d5d390ee5aea",
+  "dirty_paths": [
+    "crates/application/src/worker/database.rs",
+    "tests/integration/workflow-primitives/collection_pipeline.rs"
+  ],
+  "scenario_count": 56,
+  "languages": [
+    "typescript",
+    "go",
+    "python",
+    "dotnet",
+    "java"
+  ],
+  "command": [
+    "cargo",
+    "test",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "sdk_conformance",
+    "--locked",
+    "every_sdk_conforms_to_every_scenario",
+    "--",
+    "--exact",
+    "--ignored",
+    "--nocapture"
+  ],
+  "bless": false
+}

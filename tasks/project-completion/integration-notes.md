@@ -1518,3 +1518,15 @@ Frozen `60dfc824` passed the runtime-role10,000-approval plus10,000-timer worklo
 18 observed connections inside existing16+8 pool budgets, no idle transactions, exact8/64
 cross-run slot admissions. Raw logs, settings, native process resources and source manifest
 are retained in the performance report. Flat widths and nested100k evidence remain separate gates.
+
+
+### Complete 56-scenario SDK matrix and corrected fixture
+
+The fresh all-five SDK matrix (no reuse/bless) executed56 scenarios and ended55 passed/1 failed
+(1372.92s harness,1446.73s command). Only `blobs` failed: optional200ms heartbeat events produced
+`step.started` in TypeScript/Go before completion, unlike the reviewed observation. The original
+fixture and failed aggregate are retained under `evidence/sdk-matrix-20261017`; this is not a green
+aggregate. Commit41600aba changes only that fixture heartbeat to60s after its30s completion window;
+the focused all-five rerun passed1/1 in24.73s. No normalizer, golden or SDK runtime was changed.
+The later `collection-blob-output` case is additional and is not part of this56-scenario run.
+T014-038 uses its separately recorded exact chain subset; broader T014-041 remains open.
