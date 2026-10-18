@@ -224,6 +224,8 @@ See evidence/leaf-certification-process-20261018. Other producer/observation/rel
 - [x] B1b.2c.1d.0Q7b.2: Prove native binding revocation at actual full restoration rejects NOT_BOUND with exact binding quota/audit delta and only the mandatory traced denial audit;3a9f8c4f, evidence/refusal-fresh-binding-20261018.
 - [x] B1b.2c.1d.0Q7b.3: Prove actual OpenBao public version rotation rejects the stale scanned vector without execution effects; original-key/lease retry and replay pass with exact provider catalog/audit/quota oracles;8d07b0d3, evidence/refusal-secret-versions-20261018.
 - [x] B1b.2c.1d.0Q7b.4: Prove actual native expiry of the original scanned inline lease while its activity stays bound; exact post-mutation execution and complete authority remain unchanged after STALE_ATTEMPT. Evidence/refusal-current-lease-20261018; generation/terminal/pre-begin controls remain separate.
+- [ ] B1b.2c.1d.0Q7b.5: Prove public scoped refusal recovery across actual committed/aborted COMMIT response loss, preserving original capability and current authority; no public unknown-outcome enum is invented.
+- [x] B1b.2c.1d.0Q7b.5a: Prove supplied max1 runtime pool backs the full public API/Worker stack on the original owned DB with real250000-byte persistence and exact receipt replay; c7f62b4a, evidence/public-pool-bootstrap-20261018. Scoped rollback/full reopen and fault injection remain pending.
 - [ ] B1b.2c.1d.0Q10c: Complete genuine old in-flight compatibility: both byte conditions/orderings, cancellation precedence, Applied, output-dependent old worker and post-ACK process/uncertain-COMMIT controls. No external-provider undo guarantee is inferred.
 - [x] B1b.2c.1d.0Q10c.1: Prove ordinary E>limit report-before-drain through separate immutable-old/current processes with original worker/session/lease/request, owner and actual sagat_app, exact receipt/replay and real compensation;f026e928, evidence/legacy-inflight-ordinary-v1-20261018.
 - [x] B1b.2c.1d.0Q10c.2: Prove ordinary E>limit drain-before-report with a still-live cancellation-requested lease and unchanged first stop/drain; four old/current phases pass, plus four default report-first regression phases. Evidence/legacy-inflight-drain-first-20261018; cancellation-first has separate evidence in .3.
@@ -411,3 +413,18 @@ Local Node26 differs from CI22 and npx resolution remains as configured; no tool
 claimed. Evidence: `tasks/project-completion/evidence/current-canonical-contracts-20261018/README.md`.
 This is partial T014-043 evidence only; workspace/Compose/final integration and activation gates
 remain separate and canonical checkboxes are unchanged.
+
+
+### Supplied-pool public bootstrap prerequisite — 2026-10-18
+
+Source/evidence c7f62b4a adds only a test-support supplied PgPool constructor and genuine public
+Worker reopener. Original capability/current JWT survives exact owned-DB reconstruction; one
+sagat_app backend is observed at the exact public receipt gate. Actual250000-byte persisted output,
+session credential hash, independently canonical receipt digest and full replay identity pass.
+Final process-guarded api_reopen:: default2/2 (3.04s) and runtime2/2 (2.66s), both API pools sagat_app;
+strict Clippy18.07s/fmt4.91s/architecture1.02s and1125 unchanged inputs. Owner inspection confirms
+all four terminal fixtures and removed gates. The90s inner timeout is cooperative; required final
+GNU timeout supervises the whole process at180s/TERM+5s/KILL, covering synchronous lifecycle.
+Evidence: `tasks/project-completion/evidence/public-pool-bootstrap-20261018/README.md`.
+This accepts P0 bootstrap only. Supplied-pool scoped rollback/full reopen and actual lost-COMMIT
+recovery remain separate; no Q7b/canonical task or production activation closes.

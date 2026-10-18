@@ -430,3 +430,18 @@ Source/evidence:5ad34370, `tasks/project-completion/evidence/legacy-cancellation
 This supersedes the earlier cancellation-first pending status only. Ordinary E>limit is accepted
 for these three orderings; under-limit increment, Applied, OS-process/uncertain-COMMIT recovery,
 output-dependent old compensation, full Q10c and all eight canonical014 tasks remain open.
+
+
+### Supplied-pool public bootstrap prerequisite — 2026-10-18
+
+Source/evidence c7f62b4a adds only a test-support supplied PgPool constructor and genuine public
+Worker reopener. Original capability/current JWT survives exact owned-DB reconstruction; one
+sagat_app backend is observed at the exact public receipt gate. Actual250000-byte persisted output,
+session credential hash, independently canonical receipt digest and full replay identity pass.
+Final process-guarded api_reopen:: default2/2 (3.04s) and runtime2/2 (2.66s), both API pools sagat_app;
+strict Clippy18.07s/fmt4.91s/architecture1.02s and1125 unchanged inputs. Owner inspection confirms
+all four terminal fixtures and removed gates. The90s inner timeout is cooperative; required final
+GNU timeout supervises the whole process at180s/TERM+5s/KILL, covering synchronous lifecycle.
+Evidence: `tasks/project-completion/evidence/public-pool-bootstrap-20261018/README.md`.
+This accepts P0 bootstrap only. Supplied-pool scoped rollback/full reopen and actual lost-COMMIT
+recovery remain separate; no Q7b/canonical task or production activation closes.
