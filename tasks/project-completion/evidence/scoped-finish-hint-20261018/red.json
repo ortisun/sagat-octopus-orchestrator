@@ -1,0 +1,18 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "integration_workflow_primitives",
+    "capacity_scoped_finish_hint_",
+    "--",
+    "--nocapture"
+  ],
+  "exit_code": 101,
+  "seconds": 34.59,
+  "started_utc": "2026-10-18T14:50:57.151025+00:00",
+  "log": "red.txt"
+}

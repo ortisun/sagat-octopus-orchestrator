@@ -1,0 +1,20 @@
+{
+  "command": [
+    "cargo",
+    "clippy",
+    "--locked",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "integration_workflow_primitives",
+    "--test",
+    "contract_asyncapi_events_webhooks_messaging",
+    "--",
+    "-D",
+    "warnings"
+  ],
+  "exit_code": 0,
+  "seconds": 23.9,
+  "started_utc": "2026-10-18T14:53:47.263172+00:00",
+  "log": "clippy.txt"
+}

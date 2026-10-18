@@ -3027,3 +3027,20 @@ Clippy23.71s, fmt4.34s and architecture0.34s pass; both frozen input hashes unch
 Two fresh bounded reviews found no issue. No metadata reader grants authority or detects
 coherent arbitrary database-owner forgery; no new source producer, permission or caller.
 Evidence: tasks/project-completion/evidence/canonical-leaf-reader-20261018/manifest.json.
+
+
+## Scoped Finish canonical hint vocabulary — 2026-10-18
+
+Local B1b.2b.10, refs:T014-014..017/040. Canonical AsyncAPI adds only the distinct scoped
+channel/operation/closed message and one hand-authored baseline entry; all20 old entries are
+unchanged. The audit enum/string is unchanged; its comment now covers scoped membership. Two
+new tests were naturally RED on absent channel, then all3 hint tests pass in49.97s including
+compilation. Exact signed bounds and malformed/omitted/extra payload controls pass with UUID
+format validation enabled. AsyncAPI evolution/conformance4/4 passes in71.15s including build
+lock wait; pinned CLI3.6.0 validates in4.25s with0errors/0warnings and one existing-version info.
+Actual runtime-role existing capacity Finish regression33/33 passes in45.14s (44.61s harness),
+including actual old outbox schema checks, observations, COMMIT uncertainty and scoped schema/down/up
+permission guards. Strict targeted Clippy23.90s, fmt4.28s and architecture0.44s pass. Four frozen
+inputs unchanged. One fresh bounded implementation review found no issue. No scoped producer,
+caller, new runtime grant or production capacity eligibility is introduced.
+Evidence: tasks/project-completion/evidence/scoped-finish-hint-20261018/manifest.json.

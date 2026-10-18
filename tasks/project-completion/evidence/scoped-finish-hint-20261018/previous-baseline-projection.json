@@ -1,0 +1,1368 @@
+{
+  "ApprovalCancelled": {
+    "headers": {
+      "properties": {
+        "Nats-Msg-Id": {
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": []
+    },
+    "payload": {
+      "properties": {
+        "namespaceId": {
+          "type": [
+            "string"
+          ]
+        },
+        "outcomeSequence": {
+          "type": [
+            "integer"
+          ]
+        },
+        "requestId": {
+          "type": [
+            "string"
+          ]
+        },
+        "runId": {
+          "type": [
+            "string"
+          ]
+        },
+        "tenantId": {
+          "type": [
+            "string"
+          ]
+        },
+        "traceId": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "namespaceId",
+        "outcomeSequence",
+        "requestId",
+        "runId",
+        "tenantId"
+      ]
+    }
+  },
+  "ApprovalOpened": {
+    "headers": {
+      "properties": {
+        "Nats-Msg-Id": {
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": []
+    },
+    "payload": {
+      "properties": {
+        "deadline": {
+          "type": [
+            "integer"
+          ]
+        },
+        "namespaceId": {
+          "type": [
+            "string"
+          ]
+        },
+        "requestId": {
+          "type": [
+            "string"
+          ]
+        },
+        "runId": {
+          "type": [
+            "string"
+          ]
+        },
+        "tenantId": {
+          "type": [
+            "string"
+          ]
+        },
+        "traceId": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "deadline",
+        "namespaceId",
+        "requestId",
+        "runId",
+        "tenantId"
+      ]
+    }
+  },
+  "ApprovalSettled": {
+    "headers": {
+      "properties": {
+        "Nats-Msg-Id": {
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": []
+    },
+    "payload": {
+      "properties": {
+        "namespaceId": {
+          "type": [
+            "string"
+          ]
+        },
+        "outcomeSequence": {
+          "type": [
+            "integer"
+          ]
+        },
+        "requestId": {
+          "type": [
+            "string"
+          ]
+        },
+        "route": {
+          "type": [
+            "string"
+          ]
+        },
+        "runId": {
+          "type": [
+            "string"
+          ]
+        },
+        "status": {
+          "enum": [
+            "APPROVED",
+            "EXPIRED",
+            "REJECTED"
+          ],
+          "type": [
+            "string"
+          ]
+        },
+        "tenantId": {
+          "type": [
+            "string"
+          ]
+        },
+        "traceId": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "namespaceId",
+        "outcomeSequence",
+        "requestId",
+        "route",
+        "runId",
+        "status",
+        "tenantId"
+      ]
+    }
+  },
+  "BrokerMessage": {
+    "headers": {
+      "properties": {
+        "correlationKey": {
+          "type": [
+            "string"
+          ]
+        },
+        "eventId": {
+          "type": [
+            "string"
+          ]
+        },
+        "eventType": {
+          "type": [
+            "string"
+          ]
+        },
+        "occurredAt": {
+          "type": [
+            "string"
+          ]
+        },
+        "subject": {
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": []
+    },
+    "payload": {
+      "properties": {},
+      "required": []
+    }
+  },
+  "CapacityMemberFinished": {
+    "headers": {
+      "properties": {
+        "Nats-Msg-Id": {
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": []
+    },
+    "payload": {
+      "properties": {
+        "chainId": {
+          "type": [
+            "string"
+          ]
+        },
+        "epoch": {
+          "type": [
+            "integer"
+          ]
+        },
+        "groupId": {
+          "type": [
+            "string"
+          ]
+        },
+        "headRunId": {
+          "type": [
+            "string"
+          ]
+        },
+        "memberId": {
+          "type": [
+            "string"
+          ]
+        },
+        "namespaceId": {
+          "type": [
+            "string"
+          ]
+        },
+        "resultingRevision": {
+          "type": [
+            "integer"
+          ]
+        },
+        "retired": {
+          "type": [
+            "boolean"
+          ]
+        },
+        "tenantId": {
+          "type": [
+            "string"
+          ]
+        },
+        "traceId": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "chainId",
+        "epoch",
+        "groupId",
+        "headRunId",
+        "memberId",
+        "namespaceId",
+        "resultingRevision",
+        "retired",
+        "tenantId"
+      ]
+    }
+  },
+  "ChainFinished": {
+    "headers": {
+      "properties": {
+        "Nats-Msg-Id": {
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": []
+    },
+    "payload": {
+      "properties": {
+        "chainId": {
+          "type": [
+            "string"
+          ]
+        },
+        "headRunId": {
+          "type": [
+            "string"
+          ]
+        },
+        "namespaceId": {
+          "type": [
+            "string"
+          ]
+        },
+        "status": {
+          "enum": [
+            "CANCELLED",
+            "COMPENSATED",
+            "COMPENSATION_FAILED",
+            "FAILED",
+            "PARTIAL",
+            "SUCCEEDED",
+            "TIMED_OUT"
+          ],
+          "type": [
+            "string"
+          ]
+        },
+        "tenantId": {
+          "type": [
+            "string"
+          ]
+        },
+        "traceId": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "chainId",
+        "headRunId",
+        "namespaceId",
+        "status",
+        "tenantId"
+      ]
+    }
+  },
+  "CollectionDrainStarted": {
+    "headers": {
+      "properties": {
+        "Nats-Msg-Id": {
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": []
+    },
+    "payload": {
+      "properties": {
+        "namespaceId": {
+          "type": [
+            "string"
+          ]
+        },
+        "reason": {
+          "enum": [
+            "CANCELLED",
+            "FAILED",
+            "STORAGE_QUOTA"
+          ],
+          "type": [
+            "string"
+          ]
+        },
+        "runId": {
+          "type": [
+            "string"
+          ]
+        },
+        "scopeId": {
+          "type": [
+            "string"
+          ]
+        },
+        "tenantId": {
+          "type": [
+            "string"
+          ]
+        },
+        "traceId": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "namespaceId",
+        "reason",
+        "runId",
+        "scopeId",
+        "tenantId"
+      ]
+    }
+  },
+  "CollectionFinished": {
+    "headers": {
+      "properties": {
+        "Nats-Msg-Id": {
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": []
+    },
+    "payload": {
+      "properties": {
+        "namespaceId": {
+          "type": [
+            "string"
+          ]
+        },
+        "runId": {
+          "type": [
+            "string"
+          ]
+        },
+        "scopeId": {
+          "type": [
+            "string"
+          ]
+        },
+        "status": {
+          "enum": [
+            "CANCELLED",
+            "FAILED",
+            "SUCCEEDED"
+          ],
+          "type": [
+            "string"
+          ]
+        },
+        "tenantId": {
+          "type": [
+            "string"
+          ]
+        },
+        "traceId": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "namespaceId",
+        "runId",
+        "scopeId",
+        "status",
+        "tenantId"
+      ]
+    }
+  },
+  "CollectionIteration": {
+    "headers": {
+      "properties": {
+        "Nats-Msg-Id": {
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": []
+    },
+    "payload": {
+      "properties": {
+        "index": {
+          "type": [
+            "integer"
+          ]
+        },
+        "namespaceId": {
+          "type": [
+            "string"
+          ]
+        },
+        "runId": {
+          "type": [
+            "string"
+          ]
+        },
+        "scopeId": {
+          "type": [
+            "string"
+          ]
+        },
+        "tenantId": {
+          "type": [
+            "string"
+          ]
+        },
+        "traceId": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "index",
+        "namespaceId",
+        "runId",
+        "scopeId",
+        "tenantId"
+      ]
+    }
+  },
+  "EventDocument": {
+    "headers": {
+      "properties": {},
+      "required": []
+    },
+    "payload": {
+      "properties": {
+        "data": {
+          "type": [
+            "object"
+          ]
+        },
+        "event": {
+          "type": [
+            "object"
+          ]
+        },
+        "event.correlationKey": {
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "event.id": {
+          "type": [
+            "string"
+          ]
+        },
+        "event.occurredAt": {
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "event.receivedAt": {
+          "type": [
+            "string"
+          ]
+        },
+        "event.source": {
+          "type": [
+            "string"
+          ]
+        },
+        "event.subject": {
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "event.type": {
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "data",
+        "event",
+        "event.id",
+        "event.receivedAt",
+        "event.source",
+        "event.type"
+      ]
+    }
+  },
+  "LoopHint": {
+    "headers": {
+      "properties": {
+        "Nats-Msg-Id": {
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": []
+    },
+    "payload": {
+      "properties": {
+        "namespaceId": {
+          "type": [
+            "string"
+          ]
+        },
+        "node": {
+          "type": [
+            "string"
+          ]
+        },
+        "runId": {
+          "type": [
+            "string"
+          ]
+        },
+        "status": {
+          "enum": [
+            "CANCELLED",
+            "DRAINING",
+            "FAILED",
+            "SUCCEEDED"
+          ],
+          "type": [
+            "string"
+          ]
+        },
+        "tenantId": {
+          "type": [
+            "string"
+          ]
+        },
+        "traceId": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "namespaceId",
+        "node",
+        "runId",
+        "status",
+        "tenantId"
+      ]
+    }
+  },
+  "LoopTimerScheduled": {
+    "headers": {
+      "properties": {
+        "Nats-Msg-Id": {
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": []
+    },
+    "payload": {
+      "properties": {
+        "dueAtMicros": {
+          "type": [
+            "integer"
+          ]
+        },
+        "namespaceId": {
+          "type": [
+            "string"
+          ]
+        },
+        "runId": {
+          "type": [
+            "string"
+          ]
+        },
+        "tenantId": {
+          "type": [
+            "string"
+          ]
+        },
+        "timerId": {
+          "type": [
+            "string"
+          ]
+        },
+        "traceId": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "dueAtMicros",
+        "namespaceId",
+        "runId",
+        "tenantId",
+        "timerId"
+      ]
+    }
+  },
+  "OperationalAlertWebhook": {
+    "headers": {
+      "properties": {
+        "X-Octopus-Attempt": {
+          "type": [
+            "string"
+          ]
+        },
+        "X-Octopus-Delivery-Id": {
+          "type": [
+            "string"
+          ]
+        },
+        "X-Octopus-Event-Id": {
+          "type": [
+            "string"
+          ]
+        },
+        "X-Octopus-Event-Type": {
+          "enum": [
+            "ops.alert.fired",
+            "ops.alert.resolved"
+          ],
+          "type": [
+            "string"
+          ]
+        },
+        "X-Octopus-Schema-Version": {
+          "type": [
+            "string"
+          ]
+        },
+        "X-Octopus-Signature": {
+          "type": [
+            "string"
+          ]
+        },
+        "X-Octopus-Timestamp": {
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "X-Octopus-Attempt",
+        "X-Octopus-Delivery-Id",
+        "X-Octopus-Event-Id",
+        "X-Octopus-Event-Type",
+        "X-Octopus-Schema-Version",
+        "X-Octopus-Signature",
+        "X-Octopus-Timestamp"
+      ]
+    },
+    "payload": {
+      "properties": {
+        "data": {
+          "type": [
+            "object"
+          ]
+        },
+        "data.alertId": {
+          "type": [
+            "string"
+          ]
+        },
+        "data.firstSeenAt": {
+          "type": [
+            "string"
+          ]
+        },
+        "data.items": {
+          "type": [
+            "integer"
+          ]
+        },
+        "data.kind": {
+          "enum": [
+            "DEAD_ITEMS",
+            "LEASE_NOT_REAPED",
+            "OUTBOX_STUCK",
+            "REVIEW_PENDING",
+            "STEP_UNCLAIMED"
+          ],
+          "type": [
+            "string"
+          ]
+        },
+        "data.namespaceId": {
+          "type": [
+            "string"
+          ]
+        },
+        "data.oldestSeconds": {
+          "type": [
+            "number"
+          ]
+        },
+        "data.runbook": {
+          "type": [
+            "string"
+          ]
+        },
+        "data.severity": {
+          "enum": [
+            "critical",
+            "warning"
+          ],
+          "type": [
+            "string"
+          ]
+        },
+        "data.state": {
+          "enum": [
+            "FIRING",
+            "RESOLVED"
+          ],
+          "type": [
+            "string"
+          ]
+        },
+        "data.subject": {
+          "type": [
+            "string"
+          ]
+        },
+        "data.summary": {
+          "type": [
+            "string"
+          ]
+        },
+        "data.tenantId": {
+          "type": [
+            "string"
+          ]
+        },
+        "id": {
+          "type": [
+            "string"
+          ]
+        },
+        "time": {
+          "type": [
+            "string"
+          ]
+        },
+        "type": {
+          "enum": [
+            "ops.alert.fired",
+            "ops.alert.resolved"
+          ],
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "data",
+        "data.alertId",
+        "data.firstSeenAt",
+        "data.items",
+        "data.kind",
+        "data.namespaceId",
+        "data.oldestSeconds",
+        "data.runbook",
+        "data.severity",
+        "data.state",
+        "data.subject",
+        "data.summary",
+        "data.tenantId",
+        "id",
+        "time",
+        "type"
+      ]
+    }
+  },
+  "RunContinued": {
+    "headers": {
+      "properties": {
+        "Nats-Msg-Id": {
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": []
+    },
+    "payload": {
+      "properties": {
+        "chainId": {
+          "type": [
+            "string"
+          ]
+        },
+        "namespaceId": {
+          "type": [
+            "string"
+          ]
+        },
+        "predecessorRunId": {
+          "type": [
+            "string"
+          ]
+        },
+        "successorRunId": {
+          "type": [
+            "string"
+          ]
+        },
+        "tenantId": {
+          "type": [
+            "string"
+          ]
+        },
+        "traceId": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "chainId",
+        "namespaceId",
+        "predecessorRunId",
+        "successorRunId",
+        "tenantId"
+      ]
+    }
+  },
+  "RunFinished": {
+    "headers": {
+      "properties": {
+        "Nats-Msg-Id": {
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": []
+    },
+    "payload": {
+      "properties": {
+        "namespaceId": {
+          "type": [
+            "string"
+          ]
+        },
+        "runId": {
+          "type": [
+            "string"
+          ]
+        },
+        "status": {
+          "enum": [
+            "CANCELLED",
+            "COMPENSATED",
+            "COMPENSATION_FAILED",
+            "FAILED",
+            "PARTIAL",
+            "SUCCEEDED",
+            "TIMED_OUT"
+          ],
+          "type": [
+            "string"
+          ]
+        },
+        "tenantId": {
+          "type": [
+            "string"
+          ]
+        },
+        "traceId": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "namespaceId",
+        "runId",
+        "status",
+        "tenantId"
+      ]
+    }
+  },
+  "RunFinishedBroker": {
+    "headers": {
+      "properties": {
+        "Nats-Msg-Id": {
+          "type": [
+            "string"
+          ]
+        },
+        "attempt": {
+          "type": [
+            "string"
+          ]
+        },
+        "delivery-id": {
+          "type": [
+            "string"
+          ]
+        },
+        "event-id": {
+          "type": [
+            "string"
+          ]
+        },
+        "event-type": {
+          "enum": [
+            "run.finished"
+          ],
+          "type": [
+            "string"
+          ]
+        },
+        "schema-version": {
+          "type": [
+            "string"
+          ]
+        },
+        "traceparent": {
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "attempt",
+        "delivery-id",
+        "event-id",
+        "event-type",
+        "schema-version"
+      ]
+    },
+    "payload": {
+      "properties": {},
+      "required": []
+    }
+  },
+  "RunFinishedWebhook": {
+    "headers": {
+      "properties": {
+        "X-Octopus-Attempt": {
+          "type": [
+            "string"
+          ]
+        },
+        "X-Octopus-Delivery-Id": {
+          "type": [
+            "string"
+          ]
+        },
+        "X-Octopus-Event-Id": {
+          "type": [
+            "string"
+          ]
+        },
+        "X-Octopus-Event-Type": {
+          "enum": [
+            "run.finished"
+          ],
+          "type": [
+            "string"
+          ]
+        },
+        "X-Octopus-Schema-Version": {
+          "type": [
+            "string"
+          ]
+        },
+        "X-Octopus-Signature": {
+          "type": [
+            "string"
+          ]
+        },
+        "X-Octopus-Timestamp": {
+          "type": [
+            "string"
+          ]
+        },
+        "traceparent": {
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "X-Octopus-Attempt",
+        "X-Octopus-Delivery-Id",
+        "X-Octopus-Event-Id",
+        "X-Octopus-Event-Type",
+        "X-Octopus-Schema-Version",
+        "X-Octopus-Signature",
+        "X-Octopus-Timestamp"
+      ]
+    },
+    "payload": {
+      "properties": {
+        "data": {
+          "type": [
+            "object"
+          ]
+        },
+        "data.namespaceId": {
+          "type": [
+            "string"
+          ]
+        },
+        "data.runId": {
+          "type": [
+            "string"
+          ]
+        },
+        "data.status": {
+          "enum": [
+            "CANCELLED",
+            "COMPENSATED",
+            "COMPENSATION_FAILED",
+            "FAILED",
+            "PARTIAL",
+            "SUCCEEDED",
+            "TIMED_OUT"
+          ],
+          "type": [
+            "string"
+          ]
+        },
+        "data.tenantId": {
+          "type": [
+            "string"
+          ]
+        },
+        "data.traceId": {
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "data.workflow": {
+          "type": [
+            "string"
+          ]
+        },
+        "id": {
+          "type": [
+            "string"
+          ]
+        },
+        "time": {
+          "type": [
+            "string"
+          ]
+        },
+        "type": {
+          "enum": [
+            "run.finished"
+          ],
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "data",
+        "data.namespaceId",
+        "data.runId",
+        "data.status",
+        "data.tenantId",
+        "data.workflow",
+        "id",
+        "time",
+        "type"
+      ]
+    }
+  },
+  "RunStateUpdated": {
+    "headers": {
+      "properties": {
+        "Nats-Msg-Id": {
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": []
+    },
+    "payload": {
+      "properties": {
+        "namespaceId": {
+          "type": [
+            "string"
+          ]
+        },
+        "operation": {
+          "type": [
+            "string"
+          ]
+        },
+        "runId": {
+          "type": [
+            "string"
+          ]
+        },
+        "runVersion": {
+          "type": [
+            "integer"
+          ]
+        },
+        "stateRevision": {
+          "type": [
+            "integer"
+          ]
+        },
+        "tenantId": {
+          "type": [
+            "string"
+          ]
+        },
+        "traceId": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "namespaceId",
+        "operation",
+        "runId",
+        "runVersion",
+        "stateRevision",
+        "tenantId"
+      ]
+    }
+  },
+  "TaskReady": {
+    "headers": {
+      "properties": {
+        "Nats-Msg-Id": {
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": []
+    },
+    "payload": {
+      "properties": {
+        "activity": {
+          "type": [
+            "string"
+          ]
+        },
+        "instancePath": {
+          "type": [
+            "array"
+          ]
+        },
+        "instancePath[]": {
+          "type": [
+            "object"
+          ]
+        },
+        "instancePath[].index": {
+          "type": [
+            "integer"
+          ]
+        },
+        "instancePath[].scope": {
+          "type": [
+            "string"
+          ]
+        },
+        "namespaceId": {
+          "type": [
+            "string"
+          ]
+        },
+        "node": {
+          "type": [
+            "string"
+          ]
+        },
+        "runId": {
+          "type": [
+            "string"
+          ]
+        },
+        "tenantId": {
+          "type": [
+            "string"
+          ]
+        },
+        "traceId": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "activity",
+        "instancePath[].index",
+        "instancePath[].scope",
+        "namespaceId",
+        "node",
+        "runId",
+        "tenantId"
+      ]
+    }
+  },
+  "WebhookEvent": {
+    "headers": {
+      "properties": {
+        "X-Octopus-Correlation-Key": {
+          "type": [
+            "string"
+          ]
+        },
+        "X-Octopus-Event-Id": {
+          "type": [
+            "string"
+          ]
+        },
+        "X-Octopus-Event-Type": {
+          "type": [
+            "string"
+          ]
+        },
+        "X-Octopus-Signature": {
+          "type": [
+            "string"
+          ]
+        },
+        "X-Octopus-Subject": {
+          "type": [
+            "string"
+          ]
+        },
+        "X-Octopus-Timestamp": {
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "X-Octopus-Event-Id",
+        "X-Octopus-Signature",
+        "X-Octopus-Timestamp"
+      ]
+    },
+    "payload": {
+      "properties": {},
+      "required": []
+    }
+  }
+}

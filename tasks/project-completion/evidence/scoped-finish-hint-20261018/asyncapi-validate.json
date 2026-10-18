@@ -1,0 +1,14 @@
+{
+  "command": [
+    "npx",
+    "--yes",
+    "--ignore-scripts",
+    "@asyncapi/cli@3.6.0",
+    "validate",
+    "specs/001-platform-foundation/contracts/events.asyncapi.yaml"
+  ],
+  "exit_code": 0,
+  "seconds": 4.25,
+  "started_utc": "2026-10-18T14:52:09.995759+00:00",
+  "log": "asyncapi-validate.txt"
+}

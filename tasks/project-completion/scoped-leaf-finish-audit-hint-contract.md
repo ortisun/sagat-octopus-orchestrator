@@ -121,3 +121,18 @@ No necessary unresolved vocabulary choice identified; native authority and evide
 
 One fresh independent Astra/xhigh bounded read-only review found no actionable inconsistency or
 missing vocabulary choice. No tests, native producer, privilege or production caller are claimed.
+
+
+## Implemented vocabulary evidence — 2026-10-18
+
+The canonical channel/operation/message and hand-reviewed additive baseline entry are integrated.
+All20 old parsed baseline entries and the entire old ChildRoot message remain unchanged. New
+closed-schema tests first failed because the new channel was absent, then all3 hint tests passed.
+They enforce UUID formats, required fields, forbidden extras and exact owner/index/counter/trace
+bounds, including i64::MAX acceptance and its successor refusal. AsyncAPI4/4 tests and pinned
+CLI3.6.0 validation pass (0errors/0warnings, one pre-existing-version informational notice).
+The shared test validator now enables format checks; actual existing capacity Finish33/33 passes
+with its outbox, observation, uncertainty, schema/privilege and downgrade regressions. Strict
+Clippy/fmt/architecture pass. One fresh bounded implementation review found no issue.
+This adds no scoped producer, actual scoped outbox/audit evidence, permissions or caller.
+Evidence: evidence/scoped-finish-hint-20261018/manifest.json.

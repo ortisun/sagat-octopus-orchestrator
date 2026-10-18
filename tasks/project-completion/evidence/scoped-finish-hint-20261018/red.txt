@@ -1,0 +1,24 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 32.38s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 2 tests
+
+thread 'hint_contract::capacity_scoped_finish_hint_rejects_each_invalid_shape_independently' (111348645) panicked at tests/integration/workflow-primitives/hint_contract.rs:200:10:
+dormant scoped capacity Finish has a distinct canonical hint before any producer
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'hint_contract::capacity_scoped_finish_hint_accepts_the_closed_reference_payload' (111348644) panicked at tests/integration/workflow-primitives/hint_contract.rs:173:10:
+dormant scoped capacity Finish has a distinct canonical hint before any producer
+test hint_contract::capacity_scoped_finish_hint_accepts_the_closed_reference_payload ... FAILED
+test hint_contract::capacity_scoped_finish_hint_rejects_each_invalid_shape_independently ... FAILED
+
+failures:
+
+failures:
+    hint_contract::capacity_scoped_finish_hint_accepts_the_closed_reference_payload
+    hint_contract::capacity_scoped_finish_hint_rejects_each_invalid_shape_independently
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 463 filtered out; finished in 0.04s
+
+error: test failed, to rerun pass `-p sagat-tests --test integration_workflow_primitives`

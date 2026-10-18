@@ -1,0 +1,336 @@
+diff --git a/crates/domain/src/audit.rs b/crates/domain/src/audit.rs
+index f5526318..8623b5ea 100644
+--- a/crates/domain/src/audit.rs
++++ b/crates/domain/src/audit.rs
+@@ -31,7 +31,7 @@ pub enum AuditAction {
+     RunContinued,
+     /// A scheduler committed the terminal outcome of a run and its execution chain.
+     RunFinished,
+-    /// A current child-chain FINAL member settled its capacity membership.
++    /// A current member settled its capacity membership from the evidence required by its kind.
+     CapacityMemberFinished,
+     /// An immutable ordinary leaf-path success fact was certified from committed source evidence.
+     LeafCollectionSuccessCertified,
+diff --git a/specs/001-platform-foundation/contracts/events.asyncapi.yaml b/specs/001-platform-foundation/contracts/events.asyncapi.yaml
+index e5488b77..20f90852 100644
+--- a/specs/001-platform-foundation/contracts/events.asyncapi.yaml
++++ b/specs/001-platform-foundation/contracts/events.asyncapi.yaml
+@@ -73,6 +73,15 @@ channels:
+     messages:
+       capacityMemberFinished:
+         $ref: '#/components/messages/CapacityMemberFinished'
++  capacityScopedMemberFinished:
++    address: sagat.v1.capacity.scoped_member.finished.{tenant}
++    description: A dormant scoped-path capacity member settled from retained OrdinaryLeafV1 source evidence. Reference-only discovery hint, not execution or foreign-run scheduling authority; no production caller is enabled by this vocabulary.
++    parameters:
++      tenant:
++        description: Tenant id (UUID).
++    messages:
++      capacityScopedMemberFinished:
++        $ref: '#/components/messages/CapacityScopedMemberFinished'
+   loopFinished:
+     address: sagat.v1.loop.finished.{tenant}
+     description: A loop node finished (the run may continue past it).
+@@ -261,6 +270,10 @@ operations:
+     action: send
+     channel: {$ref: '#/channels/capacityMemberFinished'}
+     messages: [{$ref: '#/channels/capacityMemberFinished/messages/capacityMemberFinished'}]
++  publishCapacityScopedMemberFinished:
++    action: send
++    channel: {$ref: '#/channels/capacityScopedMemberFinished'}
++    messages: [{$ref: '#/channels/capacityScopedMemberFinished/messages/capacityScopedMemberFinished'}]
+   publishLoopFinished:
+     action: send
+     channel: {$ref: '#/channels/loopFinished'}
+@@ -435,6 +448,30 @@ components:
+           epoch: {type: integer, minimum: 1, maximum: 9223372036854775807}
+           retired: {type: boolean}
+           traceId: {type: [string, 'null'], description: 'W3C trace id (32 hex) of the owning run.'}
++    CapacityScopedMemberFinished:
++      name: CapacityScopedMemberFinished
++      contentType: application/json
++      description: Reference-only scoped capacity settlement metadata. Read qualified durable state before acting; revisions here describe the committed receipt, not current execution authority.
++      headers:
++        type: object
++        properties:
++          Nats-Msg-Id: {type: string, description: 'The outbox row id; stable across redeliveries.'}
++      payload:
++        type: object
++        additionalProperties: false
++        required: [tenantId, namespaceId, groupId, memberId, originalRunId, rootOwnerNode, iterationIndex, resultingRevision, epoch, retired]
++        properties:
++          tenantId: {type: string, format: uuid}
++          namespaceId: {type: string, format: uuid}
++          groupId: {type: string, format: uuid}
++          memberId: {type: string, format: uuid}
++          originalRunId: {type: string, format: uuid}
++          rootOwnerNode: {type: string, minLength: 1, maxLength: 64, pattern: '^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$'}
++          iterationIndex: {type: integer, minimum: 0, maximum: 9999}
++          resultingRevision: {type: integer, minimum: 2, maximum: 9223372036854775807}
++          epoch: {type: integer, minimum: 1, maximum: 9223372036854775807}
++          retired: {type: boolean}
++          traceId: {type: [string, 'null'], pattern: '^[0-9a-f]{32}$', description: 'W3C trace id (32 lowercase hex) of the guarded original run.'}
+     LoopHint:
+       name: LoopHint
+       contentType: application/json
+diff --git a/specs/001-platform-foundation/contracts/events.baseline.json b/specs/001-platform-foundation/contracts/events.baseline.json
+index 940758e8..1d9ed95c 100644
+--- a/specs/001-platform-foundation/contracts/events.baseline.json
++++ b/specs/001-platform-foundation/contracts/events.baseline.json
+@@ -292,6 +292,90 @@
+       ]
+     }
+   },
++  "CapacityScopedMemberFinished": {
++    "headers": {
++      "properties": {
++        "Nats-Msg-Id": {
++          "type": [
++            "string"
++          ]
++        }
++      },
++      "required": []
++    },
++    "payload": {
++      "properties": {
++        "epoch": {
++          "type": [
++            "integer"
++          ]
++        },
++        "groupId": {
++          "type": [
++            "string"
++          ]
++        },
++        "iterationIndex": {
++          "type": [
++            "integer"
++          ]
++        },
++        "memberId": {
++          "type": [
++            "string"
++          ]
++        },
++        "namespaceId": {
++          "type": [
++            "string"
++          ]
++        },
++        "originalRunId": {
++          "type": [
++            "string"
++          ]
++        },
++        "resultingRevision": {
++          "type": [
++            "integer"
++          ]
++        },
++        "retired": {
++          "type": [
++            "boolean"
++          ]
++        },
++        "rootOwnerNode": {
++          "type": [
++            "string"
++          ]
++        },
++        "tenantId": {
++          "type": [
++            "string"
++          ]
++        },
++        "traceId": {
++          "type": [
++            "null",
++            "string"
++          ]
++        }
++      },
++      "required": [
++        "epoch",
++        "groupId",
++        "iterationIndex",
++        "memberId",
++        "namespaceId",
++        "originalRunId",
++        "resultingRevision",
++        "retired",
++        "rootOwnerNode",
++        "tenantId"
++      ]
++    }
++  },
+   "ChainFinished": {
+     "headers": {
+       "properties": {
+diff --git a/tests/integration/workflow-primitives/hint_contract.rs b/tests/integration/workflow-primitives/hint_contract.rs
+index 0c2d6877..028baa2c 100644
+--- a/tests/integration/workflow-primitives/hint_contract.rs
++++ b/tests/integration/workflow-primitives/hint_contract.rs
+@@ -40,6 +40,7 @@ fn hints() -> &'static BTreeMap<String, Hint> {
+             let name = reference.rsplit('/').next().expect("a component reference");
+             let schema = document["components"]["messages"][name]["payload"].clone();
+             let validator = jsonschema::options()
++                .should_validate_formats(true)
+                 .build(&schema)
+                 .expect("the hint payload schema compiles");
+             hints.insert(event_type, Hint { schema, validator });
+@@ -148,3 +149,153 @@ fn capacity_finish_hint_is_closed_control_metadata() {
+     traced["traceId"] = Value::Null;
+     assert!(hint.validator.is_valid(&traced));
+ }
++
++fn scoped_capacity_finish_payload() -> Value {
++    serde_json::json!({
++        "tenantId": uuid::Uuid::from_u128(1).to_string(),
++        "namespaceId": uuid::Uuid::from_u128(2).to_string(),
++        "groupId": uuid::Uuid::from_u128(3).to_string(),
++        "memberId": uuid::Uuid::from_u128(4).to_string(),
++        "originalRunId": uuid::Uuid::from_u128(5).to_string(),
++        "rootOwnerNode": "a",
++        "iterationIndex": 0,
++        "resultingRevision": 2,
++        "epoch": 1,
++        "retired": false,
++        "traceId": "0123456789abcdef0123456789abcdef",
++    })
++}
++
++#[test]
++fn capacity_scoped_finish_hint_accepts_the_closed_reference_payload() {
++    let hint = hints()
++        .get("capacity.scoped_member.finished")
++        .expect("dormant scoped capacity Finish has a distinct canonical hint before any producer");
++    let payload = scoped_capacity_finish_payload();
++    assert!(hint.validator.is_valid(&payload));
++
++    let mut maxima = payload.clone();
++    maxima["rootOwnerNode"] = serde_json::json!("a".repeat(64));
++    maxima["iterationIndex"] = serde_json::json!(9_999);
++    maxima["resultingRevision"] = serde_json::json!(9_223_372_036_854_775_807_i64);
++    maxima["epoch"] = serde_json::json!(9_223_372_036_854_775_807_i64);
++    assert!(hint.validator.is_valid(&maxima));
++
++    let mut null_trace = payload.clone();
++    null_trace["traceId"] = Value::Null;
++    assert!(hint.validator.is_valid(&null_trace));
++
++    let mut absent_trace = payload;
++    absent_trace
++        .as_object_mut()
++        .expect("reference object")
++        .remove("traceId");
++    assert!(hint.validator.is_valid(&absent_trace));
++}
++
++#[test]
++fn capacity_scoped_finish_hint_rejects_each_invalid_shape_independently() {
++    let hint = hints()
++        .get("capacity.scoped_member.finished")
++        .expect("dormant scoped capacity Finish has a distinct canonical hint before any producer");
++    let payload = scoped_capacity_finish_payload();
++
++    for key in [
++        "tenantId",
++        "namespaceId",
++        "groupId",
++        "memberId",
++        "originalRunId",
++        "rootOwnerNode",
++        "iterationIndex",
++        "resultingRevision",
++        "epoch",
++        "retired",
++    ] {
++        let mut invalid = payload.clone();
++        invalid
++            .as_object_mut()
++            .expect("reference object")
++            .remove(key);
++        assert!(!hint.validator.is_valid(&invalid), "required {key}");
++    }
++
++    for (key, value) in [
++        ("tenantId", serde_json::json!(1)),
++        ("namespaceId", serde_json::json!(false)),
++        ("groupId", serde_json::json!([])),
++        ("memberId", serde_json::json!({})),
++        ("originalRunId", Value::Null),
++        ("rootOwnerNode", serde_json::json!(1)),
++        ("iterationIndex", serde_json::json!("0")),
++        ("resultingRevision", serde_json::json!("2")),
++        ("epoch", serde_json::json!(true)),
++        ("retired", serde_json::json!("false")),
++        ("traceId", serde_json::json!(1)),
++    ] {
++        let mut invalid = payload.clone();
++        invalid[key] = value;
++        assert!(!hint.validator.is_valid(&invalid), "wrong type for {key}");
++    }
++
++    for key in [
++        "tenantId",
++        "namespaceId",
++        "groupId",
++        "memberId",
++        "originalRunId",
++    ] {
++        let mut invalid = payload.clone();
++        invalid[key] = serde_json::json!("not-a-uuid");
++        assert!(!hint.validator.is_valid(&invalid), "UUID format for {key}");
++    }
++
++    for owner in ["", "_owner", "owner/child"] {
++        let mut invalid = payload.clone();
++        invalid["rootOwnerNode"] = serde_json::json!(owner);
++        assert!(!hint.validator.is_valid(&invalid), "owner {owner:?}");
++    }
++    let mut owner_too_long = payload.clone();
++    owner_too_long["rootOwnerNode"] = serde_json::json!("a".repeat(65));
++    assert!(!hint.validator.is_valid(&owner_too_long), "owner maxLength");
++
++    for (key, value) in [
++        ("iterationIndex", serde_json::json!(-1)),
++        ("iterationIndex", serde_json::json!(10_000)),
++        ("resultingRevision", serde_json::json!(1)),
++        (
++            "resultingRevision",
++            serde_json::json!(9_223_372_036_854_775_808_u64),
++        ),
++        ("epoch", serde_json::json!(0)),
++        ("epoch", serde_json::json!(9_223_372_036_854_775_808_u64)),
++    ] {
++        let mut invalid = payload.clone();
++        invalid[key] = value;
++        assert!(!hint.validator.is_valid(&invalid), "bound for {key}");
++    }
++
++    for trace in [
++        "0123456789abcdef0123456789abcde",
++        "0123456789abcdef0123456789abcdef0",
++        "0123456789abcdef0123456789abcdeg",
++        "0123456789abcdef0123456789abcdeF",
++    ] {
++        let mut invalid = payload.clone();
++        invalid["traceId"] = serde_json::json!(trace);
++        assert!(!hint.validator.is_valid(&invalid), "trace {trace:?}");
++    }
++
++    for key in [
++        "secret",
++        "credentials",
++        "payload",
++        "chainId",
++        "headRunId",
++        "unexpected",
++    ] {
++        let mut invalid = payload.clone();
++        invalid[key] = serde_json::json!("forbidden");
++        assert!(!hint.validator.is_valid(&invalid), "extra {key}");
++    }
++}

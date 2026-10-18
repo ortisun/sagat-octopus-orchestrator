@@ -1,0 +1,6 @@
+{
+  "specs/001-platform-foundation/contracts/events.asyncapi.yaml": "594c84e99a13da4fa5d8318d9cc8448dce4845c34eeb466d7a61fd7ea3b75008",
+  "specs/001-platform-foundation/contracts/events.baseline.json": "d2a735387c012d87d15e3bf4a34513c62bb7824cf36cb1b98dd9ede49abeb59f",
+  "crates/domain/src/audit.rs": "c8cab1ac89edc03466422468c7b80463d7c974cd68ddac50b560543f486593e7",
+  "tests/integration/workflow-primitives/hint_contract.rs": "42cbf89a68b7f4dc112645c56748faeeebc29473a0dbcae2fd0c28b446719b6b"
+}

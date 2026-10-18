@@ -173,7 +173,7 @@ See evidence/leaf-certification-process-20261018. Other producer/observation/rel
   concrete missing metadata controls before the future native scoped Finish consumer.
 - [x] B1b.2b.9: Review truthful scoped Finish audit, distinct closed reference hint and existing
   closed operational observations while preserving ChildRoot wire/metric semantics.
-- [ ] B1b.2b.10: Add canonical scoped hint vocabulary/schema/baseline tests and truthful audit
+- [x] B1b.2b.10: Add canonical scoped hint vocabulary/schema/baseline tests and truthful audit
   wording before the native scoped Finish producer; no producer or release permission inferred.
 - [x] B1b.2b.11: Review the initial flat original-Run context gate and distinct typed refusal;
   parent/chain source closure remains unproved, with actual native context tests pending.

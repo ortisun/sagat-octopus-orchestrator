@@ -292,6 +292,90 @@
       ]
     }
   },
+  "CapacityScopedMemberFinished": {
+    "headers": {
+      "properties": {
+        "Nats-Msg-Id": {
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": []
+    },
+    "payload": {
+      "properties": {
+        "epoch": {
+          "type": [
+            "integer"
+          ]
+        },
+        "groupId": {
+          "type": [
+            "string"
+          ]
+        },
+        "iterationIndex": {
+          "type": [
+            "integer"
+          ]
+        },
+        "memberId": {
+          "type": [
+            "string"
+          ]
+        },
+        "namespaceId": {
+          "type": [
+            "string"
+          ]
+        },
+        "originalRunId": {
+          "type": [
+            "string"
+          ]
+        },
+        "resultingRevision": {
+          "type": [
+            "integer"
+          ]
+        },
+        "retired": {
+          "type": [
+            "boolean"
+          ]
+        },
+        "rootOwnerNode": {
+          "type": [
+            "string"
+          ]
+        },
+        "tenantId": {
+          "type": [
+            "string"
+          ]
+        },
+        "traceId": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "epoch",
+        "groupId",
+        "iterationIndex",
+        "memberId",
+        "namespaceId",
+        "originalRunId",
+        "resultingRevision",
+        "retired",
+        "rootOwnerNode",
+        "tenantId"
+      ]
+    }
+  },
   "ChainFinished": {
     "headers": {
       "properties": {

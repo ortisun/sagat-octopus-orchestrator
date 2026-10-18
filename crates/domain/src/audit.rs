@@ -31,7 +31,7 @@ pub enum AuditAction {
     RunContinued,
     /// A scheduler committed the terminal outcome of a run and its execution chain.
     RunFinished,
-    /// A current child-chain FINAL member settled its capacity membership.
+    /// A current member settled its capacity membership from the evidence required by its kind.
     CapacityMemberFinished,
     /// An immutable ordinary leaf-path success fact was certified from committed source evidence.
     LeafCollectionSuccessCertified,
