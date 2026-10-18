@@ -481,11 +481,15 @@ pub(super) async fn chain_checkpoint(
     .expect("independent chain effects checkpoint")
 }
 
-/// One independent snapshot of the persisted effects owned by collection/loop transitions.
+/// One independent snapshot of the persisted effects owned by collection/loop/approval transitions.
 pub(super) async fn scope_checkpoint(pool: &sqlx::PgPool, tenant: uuid::Uuid) -> serde_json::Value {
     sqlx::query_scalar(
         "SELECT jsonb_build_object( \
          'runs',(SELECT jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text) FROM runs t WHERE t.tenant_id=$1), \
+         'telemetry_pending',(SELECT jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text) FROM telemetry_pending t WHERE t.tenant_id=$1), \
+         'approval_requests',(SELECT jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text) FROM approval_requests t WHERE t.tenant_id=$1), \
+         'approval_decision_receipts',(SELECT jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text) FROM approval_decision_receipts t WHERE t.tenant_id=$1), \
+         'approval_timers',(SELECT jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text) FROM approval_timers t WHERE t.tenant_id=$1), \
          'steps',(SELECT jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text) FROM steps t WHERE t.tenant_id=$1), \
          'run_events',(SELECT jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text) FROM run_events t WHERE t.tenant_id=$1), \
          'event_outbox',(SELECT jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text) FROM event_outbox t WHERE t.tenant_id=$1), \

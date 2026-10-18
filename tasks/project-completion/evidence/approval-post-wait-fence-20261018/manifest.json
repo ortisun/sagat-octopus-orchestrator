@@ -1,0 +1,224 @@
+{
+  "source_base": "ca6d2ba6487bfad159f5843ac1331e490c1b4d01",
+  "recorded_utc": "2026-10-18T05:25:13.063816+00:00",
+  "scope": "Approval open/expire scheduler authority post-row-lock clock; no business-time or authorization changes",
+  "environment": {
+    "external_db_url": false,
+    "runtime_role_requested": true,
+    "new_barriers_observe_sagat_app": true,
+    "postgres": "repository disposable fixture"
+  },
+  "commands": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "approval_post_wait_fence_",
+        "--",
+        "--nocapture",
+        "--test-threads=3"
+      ],
+      "exit_code": 101,
+      "seconds": 99.43,
+      "log": "red.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "approval_post_wait_fence_",
+        "--",
+        "--nocapture",
+        "--test-threads=3"
+      ],
+      "exit_code": 0,
+      "seconds": 111.34,
+      "log": "green.txt"
+    }
+  ],
+  "regression_commands": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "approval",
+        "--",
+        "--skip",
+        "approval_post_wait_fence_",
+        "--test-threads=3"
+      ],
+      "exit_code": 0,
+      "seconds": 36.01,
+      "log": "workflow-approval.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "fault_workflow_primitives",
+        "approval",
+        "--",
+        "--skip",
+        "approval_post_wait_fence_",
+        "--test-threads=3"
+      ],
+      "exit_code": 0,
+      "seconds": 82.52,
+      "log": "fault-approval.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "--workspace",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "seconds": 61.64,
+      "log": "clippy.txt"
+    }
+  ],
+  "gates": [
+    {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "seconds": 4.63,
+      "log": "fmt.txt"
+    },
+    {
+      "command": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "exit_code": 0,
+      "seconds": 0.39,
+      "log": "architecture.txt"
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit_code": 0,
+      "seconds": 0.03,
+      "log": "diff-check.txt"
+    }
+  ],
+  "results": {
+    "workflow-approval.txt": [
+      {
+        "passed": 46,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 35.54
+      }
+    ],
+    "red.txt": [
+      {
+        "passed": 1,
+        "failed": 2,
+        "ignored": 0,
+        "seconds": 65.16
+      }
+    ],
+    "green.txt": [
+      {
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 67.95
+      }
+    ],
+    "fault-approval.txt": [
+      {
+        "passed": 21,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 29.07
+      }
+    ]
+  },
+  "review": {
+    "cycles": 2,
+    "model": "gpt-6-astra",
+    "reasoning": "xhigh",
+    "external_cli": false,
+    "final": "no concrete three-file defects; read-only reviewers ran no tests"
+  },
+  "limits": [
+    "RED1 compatibility pass/two actual expired-authority commits65.16s, no fixture failures",
+    "Expiry case waits actual60-second business deadline before scheduler expiry barrier; no future occurred_at shortcut",
+    "Snapshot21tables includes telemetry_pending and3approval tables; deliberately changed lease excluded",
+    "Opening replay remains RuntimeUnavailable with unchanged state, not a newly idempotent port",
+    "No continuous wall-clock-until-commit guarantee; human decide authorization unchanged",
+    "New stores explicit runtime pool; other private historical fixtures may be owner",
+    "Workflow46/fault21 skip3focused tests alreadyGREEN; counts overlap earlier suites",
+    "Existing fenced metric mapping inspected; private ports do not assert counters",
+    "No new chain prefix/group eligibility/migration/wire/public shape; complete B0 and nested runtime pending",
+    "No full-workspace execution/SDK58/Compose/advisory/resource gate/canonical task closure"
+  ],
+  "source_sha256": {
+    ".gitattributes": "de5a9039fcdca0d0a6e31a7fb262068f35bb00a8262f5b4796a774c15db770fb",
+    "crates/infra-postgres/src/approval_progress.rs": "e4673c9df76e8f0432aa36d3af2a442381a2d07fe3f45c2ac1de924d3d32d2e4",
+    "docs/runbooks/workflow-primitives.md": "cdfdba94a82dab5749d05402619ad28d39bd4b217f023256ec0e366c4be09ccc",
+    "docs/traceability.md": "d0e8f813e197f6c78c4e843c6286f1c2104155877d703f1164fb3800b51b15fa",
+    "specs/014-workflow-primitives/contracts/README.md": "15e80bea3d01879ef543570020031ceefc50601ce41fc9066228a90038e110eb",
+    "specs/014-workflow-primitives/data-model.md": "bc7e3a384a1037e285e05ce6e25b1d6375bffd43c08c9a2eb2f0475552491c49",
+    "specs/014-workflow-primitives/plan.md": "a713a31f479fb03985e5a05c7f29d55654e2c54bbede4fec292347f13513fb09",
+    "specs/014-workflow-primitives/spec.md": "071315f3b99439ae5ef1e85a836a86ae057355588ae604d420d45044c61edffa",
+    "specs/014-workflow-primitives/validation-report.md": "57ba1b42dd81b6a739249b5971499ad652e216370b394d309c1168b5b7cc08fc",
+    "tasks/project-completion/capacity-lock-inventory.md": "e23cba6f4afb5b41b69d46f3384994de93d644c984301cc8f1b641b60ba07cd5",
+    "tasks/project-completion/integration-notes.md": "1ab03ddaad482b890f97d9c563cc1a50fdfa05178553a61132e37add701544e5",
+    "tests/integration/workflow-primitives/approval_progress.rs": "7cb6ef6602af2697633ee71f1ebee7970b27f103dd02e9ab11ee3a4c83d168ae",
+    "tests/integration/workflow-primitives/bounded_fences.rs": "7dbe952d8fee4680be0e13a4258259ff0221af533b0ab29a7fcbcc27b9f573b4"
+  },
+  "evidence_sha256": {
+    "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "clippy.txt": "98ada2283b8369575da077c7c066e7835532ea4400f8035d4339a488ea1436d4",
+    "commands.json": "ae8d24d7306ea231a81b7f99262f450cb08cd7f4b0ad54bc25adb6a68021a34c",
+    "diff-check.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "fault-approval.txt": "ceb688cce3885b875783dbe30decc8dc5a7e0df2a47134ef8003aef847376326",
+    "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "gates.json": "ef4e54b960b57bc3f5a77d21ff3255b61ee986ca4b9849845b9ebb20eb4d24a1",
+    "green.txt": "b7c36c9b7ac3f379c3daa63b6fb132949bb08a0189a8e36dffdd19e9e07888b8",
+    "production.diff": "d39b3f726f778ac2b6848837de0f6c2da4379a6ae4345ffd5d28dd0a7d170568",
+    "red-source.json": "766f8b6fc617f3c72f7db2c823d53194107a8e15e744cf0ff44f94aee983f262",
+    "red.txt": "a9359dec98a386af527bd4bb227d6d1f716442210e3a8279781bf289f0e095f7",
+    "regression-commands.json": "3dc023f984828f626cf6b7801e915da071478aaddf2d31cb79dd580e25e530ba",
+    "reproduce.md": "cd82af4bbd27e16305cfeff6fd5584cf4dc7ef6ae8155ee84332dd2bb022dd63",
+    "review.md": "e40230bf6c785d1eca21199d84f43e69c40556229461a37a57671a80299dd0cf",
+    "test-red.diff": "975838e59d5caa0f59494b2f431243af7f3108e422dfb4a5970d0a5a96dd643f",
+    "tested-source.json": "3b5f960ba08c859bc94104517dfc0b3790be6e1827db1506bf89b30cca82455c",
+    "workflow-approval.txt": "844980c996feded82dfe187a4dfcd067852a625772f2d5d79b8061ab7ea523bb"
+  }
+}

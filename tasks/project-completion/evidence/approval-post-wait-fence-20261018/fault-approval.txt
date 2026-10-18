@@ -1,0 +1,30 @@
+    Blocking waiting for file lock on build directory
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 51.41s
+     Running fault/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/fault_workflow_primitives-69bdcc40cb8c1b06)
+
+running 21 tests
+test approval_combinations::a_decision_and_a_run_cancel_racing_leave_one_consistent_outcome ... ok
+test approval_combinations::a_decision_and_a_declared_update_racing_both_commit_in_one_journal ... ok
+test approval_combinations::a_decision_and_the_chain_cancel_latch_racing_never_leave_a_successor ... ok
+test approval_combinations::a_decision_racing_the_scheduler_hand_off_creates_exactly_one_successor ... ok
+test approval_combinations::the_same_decision_sent_twice_at_once_commits_once_and_replays_the_receipt ... ok
+test approval_combinations::a_decision_racing_the_approvals_own_expiry_routes_exactly_one_branch ... ok
+test approval_combinations::two_deciders_at_once_leave_one_outcome_and_one_receipt ... ok
+test approvals::a_revoked_approver_cannot_replay_a_receipt_it_committed ... ok
+test approvals::a_used_decision_key_with_another_body_is_refused_after_restart_and_changes_nothing ... ok
+test approvals::a_raw_signal_never_settles_an_approval_before_during_or_after_its_outcome ... ok
+test approvals::an_audit_failure_rolls_back_a_decision_and_the_retry_commits_it_once ... ok
+test approvals::an_audit_failure_rolls_back_an_expiry_and_the_retry_expires_it_once ... ok
+test approvals::an_audit_failure_rolls_back_opening_and_the_retry_opens_one_request ... ok
+test approvals::current_membership_and_tenant_boundary_are_checked_before_receipt_replay ... ok
+test approvals::decision_and_expiry_race_has_one_first_commit_winner ... ok
+test approvals::outbox_failure_rolls_back_request_timer_journal_projection_and_audit ... ok
+test approvals::expiry_then_decision_and_decision_then_expiry_keep_the_first_outcome ... ok
+test approvals::restart_and_identical_replay_return_the_original_authorized_receipt ... ok
+test approvals::stale_scheduler_fence_cannot_open_or_expire_an_approval ... ok
+test approvals::settlement_outbox_failures_roll_back_decision_and_expiry ... ok
+test approval_combinations::a_decision_racing_the_chains_original_deadline_has_one_outcome_and_no_open_request ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 71 filtered out; finished in 29.07s
+

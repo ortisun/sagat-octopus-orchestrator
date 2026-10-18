@@ -1,0 +1,26 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 31.94s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 3 tests
+test approval_progress::approval_post_wait_fence_preserves_generation_storage_error ... ok
+
+thread 'approval_progress::approval_post_wait_fence_rejects_opening_after_expiry_without_effects' (82912814) panicked at tests/integration/workflow-primitives/approval_progress.rs:936:24:
+invalid authority must refuse approval opening: ApprovalRequest { id: ApprovalRequestId(01a14d74-541e-71a0-8528-e3f0c3516be3), tenant_id: TenantId(01a14d74-5353-7240-939a-2d13421bc333), namespace_id: NamespaceId(01a14d74-5384-7453-b877-551629a67aa2), run_id: RunId(01a14d74-5413-708b-a559-8036c9091b96), owner: ExecutionInstanceId { path: InstancePath([]), node: NodeId("approval") }, policy: ApprovalPolicy { subjects: [], roles: [Operator], exclude_initiator: true }, initiator: Subject("alice"), opened_sequence: 2, deadline: 2026-10-18 5:21:31.774055 +00:00:00, status: Pending, winning_receipt: None, outcome_sequence: None, settled_at: None }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test approval_progress::approval_post_wait_fence_rejects_opening_after_expiry_without_effects ... FAILED
+test approval_progress::approval_post_wait_fence_rejects_due_expiry_without_effects has been running for over 60 seconds
+
+thread 'approval_progress::approval_post_wait_fence_rejects_due_expiry_without_effects' (82912813) panicked at tests/integration/workflow-primitives/approval_progress.rs:1027:16:
+expired scheduler cannot settle due approval: ApprovalTransition { status: Expired, changed: true }
+test approval_progress::approval_post_wait_fence_rejects_due_expiry_without_effects ... FAILED
+
+failures:
+
+failures:
+    approval_progress::approval_post_wait_fence_rejects_due_expiry_without_effects
+    approval_progress::approval_post_wait_fence_rejects_opening_after_expiry_without_effects
+
+test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 393 filtered out; finished in 65.16s
+
+error: test failed, to rerun pass `-p sagat-tests --test integration_workflow_primitives`

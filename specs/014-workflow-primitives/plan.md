@@ -40,7 +40,8 @@ preserving wrong-shard/oversized-generation errors and the later evaluated deadl
 Use unchanged-tuple expiry barriers and the actual runtime pool. Collection and loop now have
 independent entry barriers, atomic unchanged-state checks, fresh-authority/replay controls and
 generation-error compatibility. Collection entry retains one supplied audit via finish_version.
-Approval remains a separate verification gap.
+Approval open and genuinely due expiry now have independent unchanged-row barriers; preserve
+current-user decision authorization and the non-idempotent opening port behavior.
 
 ## Technical Context
 

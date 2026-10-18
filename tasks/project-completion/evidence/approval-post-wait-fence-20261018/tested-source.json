@@ -1,0 +1,5 @@
+{
+  "crates/infra-postgres/src/approval_progress.rs": "e4673c9df76e8f0432aa36d3af2a442381a2d07fe3f45c2ac1de924d3d32d2e4",
+  "tests/integration/workflow-primitives/approval_progress.rs": "7cb6ef6602af2697633ee71f1ebee7970b27f103dd02e9ab11ee3a4c83d168ae",
+  "tests/integration/workflow-primitives/bounded_fences.rs": "7dbe952d8fee4680be0e13a4258259ff0221af533b0ab29a7fcbcc27b9f573b4"
+}

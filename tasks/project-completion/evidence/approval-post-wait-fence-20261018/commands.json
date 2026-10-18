@@ -1,0 +1,38 @@
+[
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "approval_post_wait_fence_",
+      "--",
+      "--nocapture",
+      "--test-threads=3"
+    ],
+    "exit_code": 101,
+    "seconds": 99.43,
+    "log": "red.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "approval_post_wait_fence_",
+      "--",
+      "--nocapture",
+      "--test-threads=3"
+    ],
+    "exit_code": 0,
+    "seconds": 111.34,
+    "log": "green.txt"
+  }
+]

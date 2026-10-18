@@ -543,3 +543,17 @@ authority and replay. This is not a continuous wall-clock-until-commit guarantee
 of nested scopes. Approval's separate check and B0 ordering remain pending. Existing fenced
 metrics use kind=collection/loop without tenant/run labels; the port tests do not test counters.
 Evidence: tasks/project-completion/evidence/scope-post-wait-fence-20261018/.
+
+
+### Approval scheduler authority after lock waits (2026-10-18)
+
+Refs:T014-040, FR-014-008/014. Open/expire retain a scheduler SHARE guard in their owning
+transaction and validate authority against a database clock sampled after acquiring it. An
+expired authority returns the existing typed fence error before request/timer/projection, journal,
+outbox, audit or telemetry queue effects. Oversized-generation storage errors keep precedence;
+decide uses its current-user authorization. No business-deadline clock or opening replay contract
+changes. Real runtime-role barriers cover both opening and genuinely due expiry; the atomic
+checkpoint includes the telemetry queue and approval tables. Existing fenced metrics use
+approval_open/approval_expire kinds without tenant/run labels; these port tests do not assert
+counters. This does not enable nested scopes or complete B0.
+Evidence: tasks/project-completion/evidence/approval-post-wait-fence-20261018/.

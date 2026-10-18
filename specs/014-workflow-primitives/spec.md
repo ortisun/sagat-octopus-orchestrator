@@ -59,8 +59,9 @@ Declared Updates addressed by run also acquire an applicable membership chain be
 run; they keep their original address and never forward across continuation.
 Chain handoff/finalization validates scheduler expiry on the database clock after its SHARE
 lock wait, in the same transaction. Collection and loop ports use that same transaction-typed check and preserve their existing
-wrong-shard and oversized-generation errors. Approval remains a separately tracked verification
-gap. Collection entry writes a supplied audit once through its atomic version commit.
+wrong-shard and oversized-generation errors. Approval open/expire use the same post-lock check;
+a human decision continues to use its separate current-user authorization. Collection entry
+writes a supplied audit once through its atomic version commit.
 
 Other collection and loop graphs and nested scopes remain closed for general publication. The
 remaining acceptance and release evidence is tracked

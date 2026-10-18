@@ -1821,3 +1821,36 @@ and all92 fault cases (82.63s). Counts overlap the focused barriers. Strict lock
 all-target Clippy (91.92s), formatting, diff and24-crate architecture gates passed. Exact tested
 source, commands and staged evidence hashes are recorded in the scope-post-wait manifest.
 No canonical task closes from this adapter correction.
+
+## Approval scheduler expiry after row-lock wait — 2026-10-18
+
+Refs:T014-040, FR-014-008/014. Approval open/expire now use the existing transaction-typed
+lock-then-clock scheduler check. Own-shard rejection and stored_i64 generation conversion
+retain their existing error precedence; user decide authorization and all business clocks stay
+unchanged. The shared scope snapshot now includes telemetry_pending and all three approval
+tables (21 tenant tables in one atomic SELECT).
+
+Three new private tests use explicit runtime stores and the actual sagat_app wait oracle.
+Opening and genuinely due expiry both committed after authority expiry before correction:
+RED1 compatibility pass/2 failures (65.16s). The expiry fixture waits for its real60-second
+business deadline using bounded75-second asynchronous PostgreSQL-clock polling, then waits
+for scheduler expiry under an unchanged tuple. Its actual due timestamp supplies audit and
+occurred_at together. It does not pretend a future occurred_at is a real due-time barrier.
+Fresh authority opens/expires; opening success has one traced audit and expiry has one traced
+audit/event/outbox plus a FIRED timer. Opening replay retains RuntimeUnavailable with no
+persisted changes, matching its existing revision contract rather than inventing replay success.
+
+The plan review required telemetry_pending coverage, correct opening replay and a deadline
+wait longer than the normal five-second eventually helper. These are implemented. This bounded
+correction adds no chain prefix, nested eligibility, migration, wire or public capability.
+Existing scheduler_actions_total/scheduler_fenced_total map these errors to kind=approval_open
+or approval_expire; the private port barriers do not test counters. Complete B0 and all nested
+capacity and release gates remain open. Evidence: tasks/project-completion/evidence/approval-post-wait-fence-20261018/.
+
+Final approval-expiry GREEN passed3/3 (67.95s, including the genuine60-second deadline).
+Regression passed46 approval-filtered workflow cases (35.54s) and21 approval fault cases
+(29.07s), skipping the3 already-run focused barriers. Strict locked workspace/all-target
+Clippy (61.64s), formatting, diff and24-crate architecture gates passed. Two bounded reviews
+ended with no concrete final defects; reviewers ran no tests. Exact source/commands/evidence:
+tasks/project-completion/evidence/approval-post-wait-fence-20261018/manifest.json. No canonical
+checkbox closes; complete B0, nested runtime and integrated release gates remain pending.

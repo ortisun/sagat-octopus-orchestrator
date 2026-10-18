@@ -1,0 +1,56 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.42s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 46 tests
+test approval_combinations::a_stale_expected_revision_conflicts_while_the_approval_stays_open ... ok
+test approval_combinations::a_chain_cancelled_between_the_decision_and_the_hand_off_never_hands_off ... ok
+test approval_combinations::a_chain_segment_waits_for_its_approval_and_the_decision_rolls_it_over ... ok
+test approval_combinations::an_approval_inside_a_collection_body_is_refused_naming_scoped_compensation ... ok
+test approval_combinations::a_viewer_reads_the_state_but_cannot_decide_a_stateful_approval ... ok
+test approval_combinations::an_approval_inside_a_loop_body_is_refused_naming_scoped_compensation ... ok
+test approval_combinations::an_approval_with_declared_state_publishes_and_the_decision_routes_the_run ... ok
+test approval_combinations::an_update_after_the_decision_but_before_the_route_runs_is_one_journal ... ok
+test approval_combinations::an_expired_approval_keeps_the_state_and_takes_the_expire_route ... ok
+test approval_combinations::cancelling_the_chain_settles_the_open_approval_and_no_decision_can_revive_it ... ok
+test approval_combinations::an_approved_boundary_past_the_chains_deadline_is_ended_by_the_deadline_not_failed ... ok
+test approval_combinations::the_state_an_update_wrote_during_the_approval_is_what_the_next_segment_starts_with ... ok
+test approval_combinations::the_chains_original_deadline_settles_an_open_approval ... ok
+test approval_progress::a_decision_cut_off_at_any_await_commits_whole_or_not_at_all ... ok
+test approval_progress::a_decision_is_committed_by_the_least_privilege_runtime_role ... ok
+test approval_progress::current_membership_and_tenant_boundary_are_checked_before_receipt_replay ... ok
+test approval_progress::decision_and_expiry_race_has_one_first_commit_winner ... ok
+test approval_progress::outbox_failure_rolls_back_request_timer_journal_projection_and_audit ... ok
+test approval_progress::restart_and_identical_replay_return_the_original_authorized_receipt ... ok
+test approval_progress::expiry_then_decision_and_decision_then_expiry_keep_the_first_outcome ... ok
+test approval_progress::stale_scheduler_fence_cannot_open_or_expire_an_approval ... ok
+test approval_progress::settlement_outbox_failures_roll_back_decision_and_expiry ... ok
+test approval_scheduler::a_decision_sent_after_the_run_ended_replays_or_names_the_settled_outcome ... ok
+test approval_scheduler::cancelling_the_run_cancels_the_request_timer_and_audits_one_atomic_outcome ... ok
+test approval_scheduler::cancellation_outbox_and_audit_failures_roll_back_the_whole_run_transition ... ok
+test approval_scheduler::public_approval_can_be_cancelled_before_the_scheduler_opens_a_request ... ok
+test approval_scheduler::public_native_approval_can_be_published_and_started ... ok
+test approval_scheduler::decision_expiry_and_cancel_races_keep_exactly_one_approval_outcome ... ok
+test approval_scheduler::raw_signal_cannot_settle_or_route_a_pending_approval ... ok
+test approval_scheduler::scheduler_opens_then_expires_and_routes_an_approval_after_restart ... ok
+test approval_scheduler::scheduler_opened_approval_routes_approved_and_rejected_decisions_after_restart ... ok
+test approval_telemetry::a_decision_and_an_expiry_project_one_span_each_under_the_runs_trace ... ok
+test approval_telemetry::a_request_settled_by_a_cancel_or_a_stop_records_its_wait_as_cancelled ... ok
+test approval_scheduler::the_scheduler_releases_the_route_of_every_settled_approval_exactly_once ... ok
+test approval_telemetry::refused_decisions_count_in_the_closed_rejection_series_and_nothing_else_is_invented ... ok
+test approval_telemetry::a_successor_segments_approval_is_projected_under_its_own_run ... ok
+test approvals_http::decision_commits_once_and_exact_replay_returns_the_receipt ... ok
+test approvals_http::opaque_approval_lookup_has_a_request_id_index ... ok
+test approvals_http::expired_approval_rejects_a_late_http_decision ... ok
+test approvals_http::out_of_bound_decision_keys_and_reason_codes_are_refused_without_a_decision ... ok
+test approvals_http::permission_eligibility_initiator_and_tenant_boundaries_are_opaque_and_audited ... ok
+test approvals_http::run_approvals_are_tenant_scoped_bounded_and_do_not_disclose_eligibility ... ok
+test chains::a_boundary_with_an_open_approval_waits_until_the_decision_settles_the_request ... ok
+test chains::the_store_proves_an_open_approval_again_under_the_locks ... ok
+test projection::approval_routes_and_the_recorded_decision_are_projected_over_http ... ok
+test security::approval_state_is_tenant_bound_and_foreign_decisions_look_missing ... ok
+
+test result: ok. 46 passed; 0 failed; 0 ignored; 0 measured; 350 filtered out; finished in 35.54s
+

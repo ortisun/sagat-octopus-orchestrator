@@ -1,0 +1,55 @@
+[
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "approval",
+      "--",
+      "--skip",
+      "approval_post_wait_fence_",
+      "--test-threads=3"
+    ],
+    "exit_code": 0,
+    "seconds": 36.01,
+    "log": "workflow-approval.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "fault_workflow_primitives",
+      "approval",
+      "--",
+      "--skip",
+      "approval_post_wait_fence_",
+      "--test-threads=3"
+    ],
+    "exit_code": 0,
+    "seconds": 82.52,
+    "log": "fault-approval.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "clippy",
+      "--locked",
+      "--workspace",
+      "--all-targets",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit_code": 0,
+    "seconds": 61.64,
+    "log": "clippy.txt"
+  }
+]
