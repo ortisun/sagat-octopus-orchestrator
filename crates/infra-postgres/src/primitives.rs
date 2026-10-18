@@ -7,12 +7,14 @@
 
 use sagat_application::collection_source::{SourceManifest, items_digest as source_items_digest};
 use sagat_application::error::StoreError;
-use sagat_application::execution::{DefinitionCache, MAX_PAYLOAD_BYTES, instance_step_id};
+use sagat_application::execution::{
+    DefinitionCache, MAX_PAYLOAD_BYTES, MAX_RUN_OUTPUT_BYTES, instance_step_id,
+};
 use sagat_application::primitives::{
-    CollectionAdmission, CollectionCheckpoint, CollectionDrain, CollectionDrainFinish,
-    CollectionEntry, CollectionFinish, CollectionIterationDrain, CollectionProgress,
-    CollectionScopeId, CollectionScopeRef, CollectionStore, CollectionTransition,
-    PrimitiveStoreError, PrimitiveWrite,
+    CollectionAdmission, CollectionCheckpoint, CollectionDataLimitEvidence, CollectionDrain,
+    CollectionDrainFinish, CollectionEntry, CollectionFinish, CollectionIterationDrain,
+    CollectionProgress, CollectionScopeId, CollectionScopeRef, CollectionStore,
+    CollectionTransition, PrimitiveStoreError, PrimitiveWrite,
 };
 use sagat_domain::audit::{AuditAction, ResourceType};
 use sagat_domain::definition::WorkflowVersionId;
@@ -22,13 +24,15 @@ use sagat_domain::execution::{
 use sagat_domain::identity::{NamespaceId, Subject, TenantId};
 use sagat_domain::outbound::OutboundKind;
 use sagat_domain::sharding::Shard;
-use sagat_domain::workflow::{NodeId, NodeKind, WorkflowDefinition};
+use sagat_domain::workflow::{Digest, NodeId, NodeKind, WorkflowDefinition};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
+use sqlx::postgres::PgRow;
 use sqlx::{PgConnection, PgPool, Postgres, Row, Transaction};
 use uuid::Uuid;
 
-use crate::execution::PgRunStore;
+use crate::collection_outputs;
+use crate::execution::{PgRunStore, RUN_SNAPSHOT, run_record};
 use crate::identity::{insert_audit, store_error};
 use crate::pool::BeginSafely;
 
@@ -362,6 +366,258 @@ fn check_audit(transition: &CollectionTransition) -> Result<(), PrimitiveStoreEr
         return Err(PrimitiveStoreError::AuditTenantMismatch);
     }
     Ok(())
+}
+
+fn checked_data_limit_evidence(
+    drain: &CollectionDrain,
+) -> Result<Option<&CollectionDataLimitEvidence>, PrimitiveStoreError> {
+    let evidence = drain.data_limit_evidence();
+    if !matches!(drain.reason, CollectionDrainReason::RunDataLimit) {
+        return if evidence.is_none() {
+            Ok(None)
+        } else {
+            Err(PrimitiveStoreError::InvalidTransition)
+        };
+    }
+    let evidence = evidence.ok_or(PrimitiveStoreError::InvalidTransition)?;
+    let valid_audit = drain.transition.audit().is_some_and(|audit| {
+        audit.tenant_id() == drain.transition.tenant_id()
+            && audit.actor() == drain.transition.actor()
+            && audit.actor() == &Subject::engine()
+            && audit.action() == AuditAction::RunDataLimitExceeded
+            && audit.resource_type() == ResourceType::Run
+            && audit.resource_id() == drain.transition.run_id().to_string()
+            && audit.reason() == Some(evidence.required_audit_reason().as_str())
+            && audit.trace_id() == drain.transition.trace_id()
+            && audit.created_at() == drain.transition.occurred_at()
+    });
+    if !valid_audit {
+        return Err(PrimitiveStoreError::InvalidTransition);
+    }
+    Ok(Some(evidence))
+}
+
+async fn data_limit_definition(
+    store: &PgCollectionStore,
+    conn: &mut PgConnection,
+    transition: &CollectionTransition,
+    version: WorkflowVersionId,
+) -> Result<std::sync::Arc<WorkflowDefinition>, PrimitiveStoreError> {
+    let cache = store
+        .definitions
+        .as_ref()
+        .ok_or(PrimitiveStoreError::RuntimeNotIntegrated)?;
+    PgRunStore::new(store.pool.clone(), cache.clone())
+        .definition(&mut *conn, transition.tenant_id(), version)
+        .await
+        .map_err(PrimitiveStoreError::from)
+}
+
+async fn effective_output_snapshot(
+    store: &PgCollectionStore,
+    conn: &mut PgConnection,
+    transition: &CollectionTransition,
+    locked: LockedRun,
+) -> Result<collection_outputs::EffectiveOutputBytes, PrimitiveStoreError> {
+    let row = sqlx::query(RUN_SNAPSHOT)
+        .bind(transition.tenant_id().as_uuid())
+        .bind(transition.run_id().as_uuid())
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(store_error)?;
+    let info = run_record(&row)?.info;
+    if info.namespace_id != transition.namespace_id() || info.version_id != locked.version_id {
+        return Err(PrimitiveStoreError::InvalidTransition);
+    }
+    let definition = data_limit_definition(store, conn, transition, locked.version_id).await?;
+    collection_outputs::inspect(&mut *conn, &info, &definition)
+        .await
+        .map_err(PrimitiveStoreError::from)
+}
+
+#[allow(clippy::too_many_lines)]
+async fn validate_data_limit_evidence(
+    store: &PgCollectionStore,
+    conn: &mut PgConnection,
+    drain: &CollectionDrain,
+    locked: &LockedDrainRun,
+    scope: &PgRow,
+    evidence: &CollectionDataLimitEvidence,
+) -> Result<bool, PrimitiveStoreError> {
+    if !drain.transition.owner().path().is_root()
+        || scope.get::<String, _>("kind") != "COLLECTION"
+        || scope.get::<Option<Vec<u8>>, _>("result_digest").is_some()
+    {
+        return Err(PrimitiveStoreError::InvalidTransition);
+    }
+    let (owner_nodes, owner_indices) = path_parts(drain.transition.owner());
+    let owner = sqlx::query(
+        "SELECT kind,node_kind,status,waiting_kind,output_digest FROM steps \
+         WHERE tenant_id=$1 AND namespace_id=$2 AND run_id=$3 \
+           AND instance_path_nodes=$4 AND instance_path_indices=$5 AND node=$6",
+    )
+    .bind(drain.transition.tenant_id().as_uuid())
+    .bind(drain.transition.namespace_id().as_uuid())
+    .bind(drain.transition.run_id().as_uuid())
+    .bind(&owner_nodes)
+    .bind(&owner_indices)
+    .bind(drain.transition.owner().node().as_str())
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(store_error)?
+    .ok_or(PrimitiveStoreError::InvalidTransition)?;
+    if owner.get::<String, _>("kind") != "FORWARD"
+        || owner.get::<String, _>("node_kind") != "forEach"
+        || owner.get::<String, _>("status") != "WAITING"
+        || owner.get::<Option<String>, _>("waiting_kind").as_deref() != Some("COLLECTION")
+        || owner.get::<Option<Vec<u8>>, _>("output_digest").is_some()
+    {
+        return Err(PrimitiveStoreError::InvalidTransition);
+    }
+
+    // Stored step metadata does not prove the kind of the immutable pinned definition.
+    // This applies to every fresh reason; durable replay returns before this validation.
+    let definition =
+        data_limit_definition(store, conn, &drain.transition, locked.run.version_id).await?;
+    if !definition
+        .node(drain.transition.owner().node())
+        .is_some_and(|owner| matches!(owner.kind(), NodeKind::ForEach { .. }))
+    {
+        return Err(PrimitiveStoreError::InvalidTransition);
+    }
+    let run_limit =
+        u64::try_from(MAX_RUN_OUTPUT_BYTES).map_err(|_| invalid_storage("run output limit"))?;
+    match evidence {
+        CollectionDataLimitEvidence::StoppedForRunDataLimit => {
+            let run_data_limit = FailureCode::run_data_limit();
+            if locked.status != "CANCELLING"
+                || locked.stop_reason.as_deref() != Some("FAILED")
+                || locked.stop_code.as_deref() != Some(run_data_limit.as_str())
+            {
+                return Err(PrimitiveStoreError::InvalidTransition);
+            }
+            Ok(false)
+        }
+        CollectionDataLimitEvidence::ExistingOutputs => {
+            if !matches!(locked.status.as_str(), "RUNNING" | "WAITING")
+                || locked.stop_reason.is_some()
+                || locked.stop_code.is_some()
+            {
+                return Err(PrimitiveStoreError::InvalidTransition);
+            }
+            let effective =
+                effective_output_snapshot(store, conn, &drain.transition, locked.run).await?;
+            if effective.total() <= run_limit {
+                return Err(PrimitiveStoreError::InvalidTransition);
+            }
+            Ok(true)
+        }
+        CollectionDataLimitEvidence::Aggregate(aggregate) => {
+            if !matches!(locked.status.as_str(), "RUNNING" | "WAITING")
+                || locked.stop_reason.is_some()
+                || locked.stop_code.is_some()
+            {
+                return Err(PrimitiveStoreError::InvalidTransition);
+            }
+            let stored_item_count = scope.get::<i32, _>("item_count");
+            let item_count = u32::try_from(stored_item_count)
+                .map_err(|_| invalid_storage("collection item count"))?;
+            if scope.get::<i32, _>("next_admission_index") != stored_item_count
+                || scope.get::<i32, _>("admitted_count") != stored_item_count
+                || scope.get::<i32, _>("completed_count") != stored_item_count
+                || scope.get::<i32, _>("active_count") != 0
+            {
+                return Err(PrimitiveStoreError::InvalidTransition);
+            }
+            let rows = sqlx::query(
+                "SELECT member.iteration_index,member.lifecycle,member.slot_held, \
+                        checkpoint.result_digest, \
+                        (member.return_path_nodes IS NOT NULL \
+                         AND member.return_path_indices IS NOT NULL \
+                         AND member.return_node IS NOT NULL \
+                         AND member.return_instance_id IS NOT NULL \
+                         AND member.result_digest IS NOT NULL \
+                         AND member.checkpoint_sequence IS NOT NULL \
+                         AND member.checkpoint_sequence > 0 \
+                         AND member.return_instance_id=checkpoint.return_instance_id \
+                         AND member.result_digest=checkpoint.result_digest \
+                         AND member.checkpoint_sequence=checkpoint.journal_sequence \
+                         AND member.return_instance_id=returned.step_id \
+                         AND member.remaining_reservations >= 0 \
+                         AND member.drained_sequence IS NULL \
+                         AND member.drain_outbox_id IS NULL) IS TRUE AS complete_checkpoint \
+                 FROM collection_iterations member \
+                 LEFT JOIN iteration_checkpoints checkpoint \
+                   ON checkpoint.tenant_id=member.tenant_id \
+                  AND checkpoint.run_id=member.run_id \
+                  AND checkpoint.scope_id=member.scope_id \
+                  AND checkpoint.iteration_index=member.iteration_index \
+                 LEFT JOIN steps returned \
+                   ON returned.tenant_id=member.tenant_id AND returned.run_id=member.run_id \
+                  AND returned.namespace_id=$4 \
+                  AND returned.instance_path_nodes=member.return_path_nodes \
+                  AND returned.instance_path_indices=member.return_path_indices \
+                  AND returned.node=member.return_node \
+                 WHERE member.tenant_id=$1 AND member.run_id=$2 AND member.scope_id=$3 \
+                 ORDER BY member.iteration_index",
+            )
+            .bind(drain.transition.tenant_id().as_uuid())
+            .bind(drain.transition.run_id().as_uuid())
+            .bind(drain.scope_id.as_uuid())
+            .bind(drain.transition.namespace_id().as_uuid())
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(store_error)?;
+            if rows.len() != usize::try_from(item_count).unwrap_or(usize::MAX)
+                || rows.len() != aggregate.source_digests().len()
+            {
+                return Err(PrimitiveStoreError::InvalidTransition);
+            }
+            for (position, (row, (expected_index, expected_digest))) in
+                rows.iter().zip(aggregate.source_digests()).enumerate()
+            {
+                let index = u32::try_from(row.get::<i32, _>("iteration_index"))
+                    .map_err(|_| invalid_storage("collection result index"))?;
+                let stored = row
+                    .get::<Option<Vec<u8>>, _>("result_digest")
+                    .ok_or(PrimitiveStoreError::InvalidTransition)?;
+                let stored = <[u8; 32]>::try_from(stored)
+                    .map(Digest::new)
+                    .map_err(|_| invalid_storage("collection result digest"))?;
+                if usize::try_from(index).ok() != Some(position)
+                    || row.get::<String, _>("lifecycle") != "CHECKPOINTED"
+                    || row.get::<bool, _>("slot_held")
+                    || !row.get::<bool, _>("complete_checkpoint")
+                    || index != *expected_index
+                    || stored != *expected_digest
+                {
+                    return Err(PrimitiveStoreError::InvalidTransition);
+                }
+            }
+            if item_count == 0 {
+                let empty_digest = Digest::new(Sha256::digest(b"[]").into());
+                if aggregate.byte_len() != 2
+                    || !aggregate.source_digests().is_empty()
+                    || aggregate.result_digest() != empty_digest
+                {
+                    return Err(PrimitiveStoreError::InvalidTransition);
+                }
+            }
+            let effective =
+                effective_output_snapshot(store, conn, &drain.transition, locked.run).await?;
+            let exceeds_run = match effective.total().checked_add(aggregate.byte_len()) {
+                Some(total) => total > run_limit,
+                None => true,
+            };
+            if aggregate.byte_len()
+                <= u64::try_from(MAX_PAYLOAD_BYTES).map_err(|_| invalid_storage("payload limit"))?
+                && !exceeds_run
+            {
+                return Err(PrimitiveStoreError::InvalidTransition);
+            }
+            Ok(true)
+        }
+    }
 }
 
 async fn append_event(
@@ -1764,20 +2020,17 @@ impl CollectionStore for PgCollectionStore {
         &self,
         drain: &CollectionDrain,
     ) -> Result<PrimitiveWrite, PrimitiveStoreError> {
-        // The evidence, audit and schema contract required to produce this reason is not integrated
-        // yet. Refuse before opening a transaction so this vocabulary cannot become an unguarded
-        // writer.
-        if matches!(&drain.reason, CollectionDrainReason::RunDataLimit) {
-            return Err(PrimitiveStoreError::RuntimeNotIntegrated);
-        }
         check_audit(&drain.transition)?;
+        let data_limit_evidence = checked_data_limit_evidence(drain)?;
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         let locked = lock_drain_run(&mut tx, &drain.transition).await?;
         check_scheduler_fence(&mut tx, &drain.transition).await?;
         let (owner_nodes, owner_indices) = path_parts(drain.transition.owner());
         let scope = sqlx::query(
-            "SELECT namespace_id,owner_path_nodes,owner_path_indices,owner_node,lifecycle, \
-                    drain_kind,drain_iteration,drain_failure_code,drain_sequence,drain_outbox_id \
+            "SELECT namespace_id,owner_path_nodes,owner_path_indices,owner_node,kind,lifecycle, \
+                    item_count,next_admission_index,admitted_count,completed_count,active_count, \
+                    result_digest,drain_kind,drain_iteration,drain_failure_code,drain_sequence, \
+                    drain_outbox_id \
              FROM iteration_scopes WHERE tenant_id=$1 AND run_id=$2 AND scope_id=$3 FOR UPDATE",
         )
         .bind(drain.transition.tenant_id().as_uuid())
@@ -1795,6 +2048,7 @@ impl CollectionStore for PgCollectionStore {
             return Err(PrimitiveStoreError::InvalidTransition);
         }
         let storage_quota_code = FailureCode::storage_quota_exceeded();
+        let run_data_limit_code = FailureCode::run_data_limit();
         let (kind, iteration, code) = match &drain.reason {
             CollectionDrainReason::Failed { iteration, code } => (
                 "FAILED",
@@ -1805,7 +2059,7 @@ impl CollectionStore for PgCollectionStore {
                 Some(code.as_str()),
             ),
             CollectionDrainReason::RunDataLimit => {
-                return Err(PrimitiveStoreError::RuntimeNotIntegrated);
+                ("RUN_DATA_LIMIT", None, Some(run_data_limit_code.as_str()))
             }
             CollectionDrainReason::StorageQuotaExceeded => {
                 ("STORAGE_QUOTA", None, Some(storage_quota_code.as_str()))
@@ -1855,7 +2109,36 @@ impl CollectionStore for PgCollectionStore {
         let mut sequence = locked.run.run_version;
         match &drain.reason {
             CollectionDrainReason::RunDataLimit => {
-                return Err(PrimitiveStoreError::RuntimeNotIntegrated);
+                let evidence = data_limit_evidence.ok_or(PrimitiveStoreError::InvalidTransition)?;
+                if validate_data_limit_evidence(self, &mut tx, drain, &locked, &scope, evidence)
+                    .await?
+                {
+                    sequence = sequence
+                        .checked_add(1)
+                        .ok_or_else(|| invalid_storage("journal sequence"))?;
+                    append_run_event(
+                        &mut tx,
+                        &drain.transition,
+                        sequence,
+                        "run.stop_requested",
+                        json!({"reason":"FAILED","code":run_data_limit_code.as_str()}),
+                    )
+                    .await?;
+                    let updated = sqlx::query(
+                        "UPDATE runs SET status='CANCELLING',stop_reason='FAILED',stop_code=$3 \
+                         WHERE tenant_id=$1 AND id=$2 AND status IN ('RUNNING','WAITING') \
+                           AND stop_reason IS NULL AND stop_code IS NULL",
+                    )
+                    .bind(drain.transition.tenant_id().as_uuid())
+                    .bind(drain.transition.run_id().as_uuid())
+                    .bind(run_data_limit_code.as_str())
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(store_error)?;
+                    if updated.rows_affected() != 1 {
+                        return Err(PrimitiveStoreError::InvalidTransition);
+                    }
+                }
             }
             CollectionDrainReason::Cancelled => {
                 if locked.status != "CANCELLING"
@@ -2019,9 +2302,7 @@ impl CollectionStore for PgCollectionStore {
             CollectionDrainReason::Failed { iteration, code } => {
                 json!({"reason":"failed","iteration":iteration,"code":code.as_str()})
             }
-            CollectionDrainReason::RunDataLimit => {
-                return Err(PrimitiveStoreError::RuntimeNotIntegrated);
-            }
+            CollectionDrainReason::RunDataLimit => json!({"reason":"run_data_limit"}),
             CollectionDrainReason::StorageQuotaExceeded => {
                 json!({"reason":"storage_quota_exceeded"})
             }
@@ -2086,7 +2367,11 @@ impl CollectionStore for PgCollectionStore {
             "namespaceId":drain.transition.namespace_id().to_string(),
             "runId":drain.transition.run_id().to_string(),
             "scopeId":drain.scope_id.as_uuid().to_string(),
-            "reason":kind,
+            "reason":if matches!(drain.reason, CollectionDrainReason::RunDataLimit) {
+                "FAILED"
+            } else {
+                kind
+            },
             "traceId":drain.transition.trace_id(),
         }))
         .execute(&mut *tx)
