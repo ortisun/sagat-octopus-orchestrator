@@ -375,3 +375,14 @@ publish/execute; 33 fail public builder validation. Focused aggregate passed in 
 unchanged complete runtime golden and reviewed canonical/error fixtures. Evidence:
 [switch case boundary](../tasks/project-completion/evidence/sdk-switch-case-boundary-20261018/reproduce.md).
 The previously recorded full aggregate remains its own earlier snapshot; WP-13 gaps stay open.
+
+### Expression limits focused refresh
+
+The new `expression-limits` scenario passed in all five SDKs in 28.46 s (harness 28.13 s), with
+reviewed canonical/runtime goldens and no blessing. It separates shared HTTP publication refusals
+from public SDK query execution: exact 1,024 UTF-8 bytes, literals at 64/excess 65, constructed
+lists at 4,096/excess 4,097 and unsupported object literals. Refused publication leaves no version;
+a refused query preserves Run/state revisions. The ordinary `state-operations` regression also
+passed in all five in 19.05 s with its unchanged complete golden. Registry preflight passed.
+Evidence: [expression limits](../tasks/project-completion/evidence/sdk-expression-limits-20261018/reproduce.md).
+This is focused evidence for the 59th registered case, not a new full 59-case aggregate.

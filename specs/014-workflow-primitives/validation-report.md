@@ -2816,3 +2816,28 @@ scenario/canonical/error expectations change. Fresh focused review found no issu
 reuse/language/source filter, server semantic change or optional workspace gate rerun. This closes
 the concrete shared case-count gap, not T014-041 or broader limit/nested/resource acceptance.
 Evidence:`tasks/project-completion/evidence/sdk-switch-case-boundary-20261018/manifest.json`.
+
+## Shared expression limits and server publication refusals — 2026-10-18
+
+Refs:T014-041, WP-13, FR-014-016. New reviewed shared `expression-limits` canonical/runtime goldens
+were authored before execution. Actual RED failed at the missing server publication-refusal phase
+in 27.66 s: the server correctly returned 422/EXPRESSION for 1,025 bytes while the old harness
+required publication success. First implementation compile failed because Uuid lacks Serialize;
+only the optional evidence ID projection was changed to String, with no dependency flag added.
+
+Final registry preflight passed 1/1 in 28.08 s. Expression case passed all five SDKs, 1 aggregate
+in 28.46 s (harness 28.13 s); unchanged ordinary state-operations case passed all five, 1 aggregate
+in 19.05 s (harness 18.75 s). Exact 1,024 UTF-8-byte evaluation includes non-ASCII content; literal
+64 and constructed 4,096 succeed. Constructed 4,097 fails with the existing typed evaluation
+reason, and a subsequent query sees unchanged Run/state revisions. Shared HTTP staging rejects
+1,025 bytes, literal 65 and unsupported object literal documents authored by the five builders,
+with independently observed zero versions/no active version. Compile-time refusals never execute.
+
+All ten complete normalized artifacts independently equal the pre-authored reviewed goldens;
+all 1,241 tracked inputs stayed unchanged throughout testing. One fresh bounded contract/fixture/
+harness review found no issue. No SDK runner/API/server semantics or blessing changes. These
+focused results do not claim a fresh full 59-case run or close broader nested/C0/resource gates.
+Evidence:`tasks/project-completion/evidence/sdk-expression-limits-20261018/manifest.json`.
+
+Expression harness gates: targeted Clippy with warnings denied passed in 10.03 s; workspace
+format check passed in 4.31 s; 24-crate architecture check passed in 0.46 s.

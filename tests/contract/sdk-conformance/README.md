@@ -626,3 +626,21 @@ The shared `switch-builders` fixture has 32 ordered cases and an otherwise valid
 All five public builders must retain the exact canonical boundary document and return
 `VALIDATION_FAILED` for excess. Actual publication and first-match/default/predicate-error execution
 use that 32-case document; added cases are false. Existing normalized runtime golden is unchanged.
+
+### Expression limits and expected publication refusals
+
+`expression-limits` uses existing public query operations in all five SDKs. It evaluates exactly
+1,024 UTF-8 bytes (including non-ASCII characters), a 64-item literal and a constructed 4,096-item
+list. Constructing 4,097 items fails with `VALIDATION_FAILED` and
+`details.reason=OPERATION_EVALUATION_FAILED`; the following successful query retains the same Run
+and state revisions.
+
+A scenario may declare `publicationRejections: {"workflow-key": "EXPRESSION"}`. These keys must
+name SDK-built workflows in its reviewed canonical document. The shared server HTTP staging phase
+saves each draft, attempts publication, requires 422/VALIDATION_FAILED/non-retryable/exact reason,
+and independently checks no active version and zero published versions. Refused workflows never
+enter the runtime runner's configuration. Closed `publicationEvidence` is retained in the complete
+normalized golden. SDKs expose no publisher; this phase is explicitly HTTP server evidence for
+the documents authored by all five builders. The expression fixture covers 1,025-byte source,
+65-item literal and unsupported object literal refusals here, before execution. Scenarios without
+the optional declaration retain their existing staging and normalized output.

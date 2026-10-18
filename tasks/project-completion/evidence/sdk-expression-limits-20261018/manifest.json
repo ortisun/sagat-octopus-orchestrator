@@ -1,0 +1,162 @@
+{
+  "base": "2a1f4365eb457bc6c5163ac1e475341d1201af89",
+  "scope": "Shared WP13 expression/query and expected HTTP publication phases only",
+  "commands": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "sdk_conformance",
+        "every_scenario_declares_phases_with_reviewed_expected_documents",
+        "--",
+        "--exact"
+      ],
+      "scenario": null,
+      "log": "registry.txt",
+      "exit_code": 0,
+      "seconds": 28.08
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "sdk_conformance",
+        "every_sdk_conforms_to_every_scenario",
+        "--",
+        "--exact",
+        "--ignored",
+        "--nocapture"
+      ],
+      "scenario": "expression-limits",
+      "log": "green.txt",
+      "exit_code": 0,
+      "seconds": 28.46
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "sdk_conformance",
+        "every_sdk_conforms_to_every_scenario",
+        "--",
+        "--exact",
+        "--ignored",
+        "--nocapture"
+      ],
+      "scenario": "state-operations",
+      "log": "state-operations-regression.txt",
+      "exit_code": 0,
+      "seconds": 19.05
+    }
+  ],
+  "gates": [
+    {
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "sdk_conformance",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "log": "clippy.txt",
+      "exit_code": 0,
+      "seconds": 10.03
+    },
+    {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "log": "fmt.txt",
+      "exit_code": 0,
+      "seconds": 4.31
+    },
+    {
+      "command": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "log": "architecture.txt",
+      "exit_code": 0,
+      "seconds": 0.46
+    }
+  ],
+  "red": {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "sdk_conformance",
+      "every_sdk_conforms_to_every_scenario",
+      "--",
+      "--exact",
+      "--ignored",
+      "--nocapture"
+    ],
+    "scenario": "expression-limits",
+    "exit_code": 101,
+    "seconds": 27.66,
+    "log": "red.txt"
+  },
+  "fresh_review_cycles": 1,
+  "full_59_case_aggregate": false,
+  "files": {
+    "architecture-command.json": "283e1db97d579b8dda84239a0f64a08f3cfbea871c574bc2705384500f65e180",
+    "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "clippy-command.json": "30644238785660941ee95412288f2359dd1ec87971d3a6816bd340d10b60141a",
+    "clippy.txt": "38d4983d1e567ea6dcb47511400615c6a9389aa723e9bbcae569b1a1afc96d5e",
+    "commands.json": "b64e56d530d1e82b58cdcdc9be66a5285ed2eb925f80c0a955e9108c786129d4",
+    "compile-first-commands.json": "4806cb53d3c929e2e5f8e9eec92649aa70bdd9660a40b82c9943ae9930b23da2",
+    "compile-first-registry.txt": "ced7ca84a02ffc4bc39040b420140ca5596eea014866e97d6bb62cd0f68d3c37",
+    "compile-first-source-green.json": "1d59bc6a673cab490adc3a56bbb39acd3e3533f92d40ccde76f8b14920c5ed7c",
+    "contract.md": "20f353fbd3f691b6d1a5b452deb7e79fc9fd83872b6f45589bd1e2c7abcebd5a",
+    "documentary-delta-after-tests.json": "ce5cd1da8397781a69d8629db85c1c6a85a0023c1f01ed06a30c8296affe3fec",
+    "fmt-command.json": "2cfcb6ba63696f19229c364f22ff4b880f0df139503c71ee5c0b5de9c179deb9",
+    "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "green.txt": "7e6abd3abeb8379aa6b04bf8f635fb9f45ee934d44be7a86179a8a41b7a57b56",
+    "implementation.diff": "d963ddf447775e94c6b2883b615a132bf2d3843bfdf10963a693245c0a37c230",
+    "inspection.json": "84ed33ec01ccdee4a78546efe916ab08511131af544516ec642438b024f5f311",
+    "normalized/expression-limits/dotnet.json": "ae8d29fa9e3b9ba1d736e0a57eba7c425ad74b12ea512aae3334c41c6e955468",
+    "normalized/expression-limits/go.json": "ae8d29fa9e3b9ba1d736e0a57eba7c425ad74b12ea512aae3334c41c6e955468",
+    "normalized/expression-limits/java.json": "ae8d29fa9e3b9ba1d736e0a57eba7c425ad74b12ea512aae3334c41c6e955468",
+    "normalized/expression-limits/python.json": "ae8d29fa9e3b9ba1d736e0a57eba7c425ad74b12ea512aae3334c41c6e955468",
+    "normalized/expression-limits/typescript.json": "ae8d29fa9e3b9ba1d736e0a57eba7c425ad74b12ea512aae3334c41c6e955468",
+    "normalized/state-operations/dotnet.json": "6dc0f0a3f99672cc78d16b4464a20030a22a7788206bb1036c5d356e673753be",
+    "normalized/state-operations/go.json": "6dc0f0a3f99672cc78d16b4464a20030a22a7788206bb1036c5d356e673753be",
+    "normalized/state-operations/java.json": "6dc0f0a3f99672cc78d16b4464a20030a22a7788206bb1036c5d356e673753be",
+    "normalized/state-operations/python.json": "6dc0f0a3f99672cc78d16b4464a20030a22a7788206bb1036c5d356e673753be",
+    "normalized/state-operations/typescript.json": "6dc0f0a3f99672cc78d16b4464a20030a22a7788206bb1036c5d356e673753be",
+    "red-command.json": "81a3a2909ad6753fc556d954493fa89eac64d6dcc74b4549a96a3f5e052f45c4",
+    "red.txt": "6e3ba2a5d76114658c57eb48c8fd8968a16da55f59518be488ba0e3f1f31900a",
+    "registry.txt": "6ef15dc9083e54328f713ca319c82572df3469f715d44b1546af685e1f9b7e23",
+    "reproduce.md": "11b8f88da4c85ea0138104ce3a91b7212c05a58bd4b75c09c4e56e182ada0dc3",
+    "review.md": "c4487d90b5f630291ac2b1fbd757deea1ccf9765503cee4b955bd3a3d3b276e1",
+    "source-after-tests.json": "0de6737a3844aea4a69e95aee1998049414195632bae54c95dda35720ede1a17",
+    "source-green.json": "0de6737a3844aea4a69e95aee1998049414195632bae54c95dda35720ede1a17",
+    "source-red.json": "127e8e79994c5f87cfee25a9edb9cac987eb6fc91e1e0619cfd62c34d2653a68",
+    "state-operations-regression.txt": "664b183713b6ce25d9d7052a2bf5e567dddabadbd5399b9842a9417cb7e30deb"
+  }
+}

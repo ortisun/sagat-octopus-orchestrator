@@ -1,0 +1,10 @@
+{
+  "specs/014-workflow-primitives/contracts/conformance.md": {
+    "tested": "1ac5e8948495a165920597b382e8ab8ae7c66099b23e555cefd076f555791cf4",
+    "current": "8dace67866c94f1faac0fcd0faba255fee3371c23e8acdb93d3d519cc750836d"
+  },
+  "tests/contract/sdk-conformance/README.md": {
+    "tested": "1182954e51e266c0f6be6afc8aae65b9371fd73e519ca8d6970a249dad44f0e4",
+    "current": "ce5695ea225e282efd3bfe74b73fd84478605660d070769abbb0884cc9cae932"
+  }
+}

@@ -1,0 +1,21 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.91s
+     Running contract/sdk-conformance/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/sdk_conformance-b2617ec528303b0c)
+
+running 1 test
+--- expression-limits (5 languages)
+
+thread 'every_sdk_conforms_to_every_scenario' (105998749) panicked at tests/contract/sdk-conformance/harness.rs:435:5:
+assertion `left == right` failed: publishing expression-bytes-excess: {"code":"VALIDATION_FAILED","details":{"limit":1024,"node":"taxes","reason":"EXPRESSION"},"message":"node 'taxes': expression exceeds the supported limit of 1024 UTF-8 bytes","remediation":"Correct what `details` names (a problem, a path) and send the request again.","requestId":"c5807d32afd941829e406bc802bbf9a5","retryable":false,"traceId":"b4ad2a37e4d345ebb43f24364b8c5a89"}
+  left: 422
+ right: 201
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test every_sdk_conforms_to_every_scenario ... FAILED
+
+failures:
+
+failures:
+    every_sdk_conforms_to_every_scenario
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 26.66s
+
+error: test failed, to rerun pass `-p sagat-tests --test sdk_conformance`

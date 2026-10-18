@@ -1,0 +1,20 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "sdk_conformance",
+    "every_sdk_conforms_to_every_scenario",
+    "--",
+    "--exact",
+    "--ignored",
+    "--nocapture"
+  ],
+  "scenario": "expression-limits",
+  "exit_code": 101,
+  "seconds": 27.66,
+  "log": "red.txt"
+}

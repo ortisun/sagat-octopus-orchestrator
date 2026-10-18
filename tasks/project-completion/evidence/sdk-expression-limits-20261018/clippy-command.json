@@ -1,0 +1,17 @@
+{
+  "command": [
+    "cargo",
+    "clippy",
+    "--locked",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "sdk_conformance",
+    "--",
+    "-D",
+    "warnings"
+  ],
+  "log": "clippy.txt",
+  "exit_code": 0,
+  "seconds": 10.03
+}

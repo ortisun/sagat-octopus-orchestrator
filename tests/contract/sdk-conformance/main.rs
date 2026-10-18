@@ -40,6 +40,25 @@ fn every_scenario_declares_phases_with_reviewed_expected_documents() {
             .get("buildOnly")
             .map(|value| value.as_bool().expect("buildOnly must be a boolean"))
             .unwrap_or(false);
+        if let Some(rejections) = scenario.get("publicationRejections") {
+            assert!(
+                !build_only,
+                "{name}: publication refusals require the server phase"
+            );
+            for (workflow, reason) in rejections
+                .as_object()
+                .expect("publicationRejections object")
+            {
+                assert!(
+                    scenario["workflows"].get(workflow).is_some(),
+                    "{name}: unknown rejected workflow {workflow}"
+                );
+                assert!(
+                    reason.as_str().is_some_and(|reason| !reason.is_empty()),
+                    "{name}: invalid publication reason"
+                );
+            }
+        }
         let mut expected = vec![format!("{name}.workflows.json")];
         if !build_only {
             expected.push(format!("{name}.json"));

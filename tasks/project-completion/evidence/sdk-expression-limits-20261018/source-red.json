@@ -1,0 +1,10 @@
+{
+  "tests/contract/sdk-conformance/control.rs": "4ddb80cea2ca08b579c30f67fe86695519cb2f2be1622bcdcd7d0bf1d2eeab4a",
+  "tests/contract/sdk-conformance/database.rs": "d8625abd76c4eeaad5925cf69a404a020df75223c7c275d5753b74d8fe6704fa",
+  "tests/contract/sdk-conformance/normalize.rs": "29b61fc971900f3054fe6bdf68cf28dfc24a70e65d72a428d8a5efa40ff93a45",
+  "tests/contract/sdk-conformance/harness.rs": "661c0fc731a93524014f9115dce7948ae7b439387be6b3ed497d1b9e575031fa",
+  "tests/contract/sdk-conformance/main.rs": "205a70d1432fb4145c1d7f827b57458846c04357c6283102347546dc43830389",
+  "tests/contract/sdk-conformance/expected/expression-limits.workflows.json": "4c3e90b3f5a270a7f0ca200cc60bf0effa3e59d5affaffefa9e884caaf58b7dd",
+  "tests/contract/sdk-conformance/expected/expression-limits.json": "e021c7d1eccdfb1b7969ddcb8e3347ed9741e65dc12dc4b25187c954d00aaceb",
+  "tests/contract/sdk-conformance/scenarios/expression-limits.json": "bc14991936ab3a7cccf2de8efdba690e295b1ac6aa9d56d9127b4c68c3a5c03b"
+}

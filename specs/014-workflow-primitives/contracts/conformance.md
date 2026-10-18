@@ -214,3 +214,13 @@ valid 33-case fixture must fail through every public builder with `VALIDATION_FA
 Canonical expectations preserve every case and ordering; live first-match/default/predicate-error
 observations retain the pre-existing complete golden. This covers the WP-12 case-count boundary;
 it does not replace the other limit observations.
+
+### Shared expression limit phases
+
+`expression-limits` executes exact 1,024 UTF-8 source bytes, a 64-item literal and a constructed
+4,096-item list through all five public query clients. Constructing 4,097 fails with the existing
+`VALIDATION_FAILED`/`OPERATION_EVALUATION_FAILED`, followed by a successful query with unchanged
+Run/state revisions. The same five builders author reviewed documents containing 1,025-byte
+source, a 65-item literal and an unsupported object literal; shared HTTP publication rejects each
+with `EXPRESSION`, leaving no active or published version. Those compile-time refusals never run.
+Complete normalized `publicationEvidence` distinguishes this server phase from SDK query results.
