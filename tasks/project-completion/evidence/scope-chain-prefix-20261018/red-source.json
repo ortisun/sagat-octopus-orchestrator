@@ -1,0 +1,7 @@
+{
+  "crates/infra-postgres/src/primitives.rs": "91e644857d5d7997235cd789255f17bc64189f33651b4ab297482b3b9411412b",
+  "crates/infra-postgres/src/loop_progress.rs": "1d3f4e6ae479d687a245dff79ad2917ee5c44d1383b2b3b3bccd026bc12944b7",
+  "tests/integration/workflow-primitives/bounded_fences.rs": "c9e6f3ef5f558b55aa4d04200735a81917fb5b68629038c764e4ba05b38caa16",
+  "tests/integration/workflow-primitives/scoped_worker.rs": "6c5a2eaa2803f101b53671693c9a1d4496efe74019bd8e55ceace37350fad87a",
+  "tests/integration/workflow-primitives/loop_progress.rs": "dee1d35475e423083b9f3cab8ae0cae082ce4bdb6a13859437c710413c519e13"
+}

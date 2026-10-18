@@ -1,0 +1,219 @@
+{
+  "source_base": "c65e3354c531630ceb94d8515b0e3fa4bcee25a7",
+  "recorded_utc": "2026-10-18T05:45:31.276399+00:00",
+  "scope": "Transaction-typed collection entry/drain and loop memberchain-before-ownrun helpers",
+  "environment": {
+    "external_db_url": false,
+    "runtime_role_requested": true,
+    "new_barriers_observe_sagat_app": true,
+    "postgres": "repository disposable fixture"
+  },
+  "commands": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "scope_chain_prefix_",
+        "--",
+        "--nocapture",
+        "--test-threads=3"
+      ],
+      "exit_code": 101,
+      "seconds": 41.65,
+      "log": "red.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "scope_chain_prefix_",
+        "--",
+        "--nocapture",
+        "--test-threads=3"
+      ],
+      "exit_code": 0,
+      "seconds": 49.53,
+      "log": "green.txt"
+    }
+  ],
+  "regression_commands": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "--",
+        "--test-threads=3"
+      ],
+      "exit_code": 0,
+      "seconds": 300.53,
+      "log": "workflow-all.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "fault_workflow_primitives",
+        "--",
+        "--test-threads=3"
+      ],
+      "exit_code": 0,
+      "seconds": 126.73,
+      "log": "fault.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "--workspace",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "seconds": 62.56,
+      "log": "clippy.txt"
+    }
+  ],
+  "gates": [
+    {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "seconds": 4.42,
+      "log": "fmt.txt"
+    },
+    {
+      "command": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "exit_code": 0,
+      "seconds": 0.38,
+      "log": "architecture.txt"
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit_code": 0,
+      "seconds": 0.04,
+      "log": "diff-check.txt"
+    }
+  ],
+  "results": {
+    "red.txt": [
+      {
+        "passed": 0,
+        "failed": 3,
+        "ignored": 0,
+        "seconds": 3.12
+      }
+    ],
+    "green.txt": [
+      {
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 3.04
+      }
+    ],
+    "fault.txt": [
+      {
+        "passed": 92,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 93.23
+      }
+    ],
+    "workflow-all.txt": [
+      {
+        "passed": 399,
+        "failed": 0,
+        "ignored": 1,
+        "seconds": 300.14
+      }
+    ]
+  },
+  "review": {
+    "cycles": 2,
+    "model": "gpt-6-astra",
+    "reasoning": "xhigh",
+    "external_cli": false,
+    "final": "no concrete five-file defects; reviewers ran no tests"
+  },
+  "limits": [
+    "RED3 actual committed writes under heldchain, not compile/fixture failures or SQLdeadlock",
+    "Three native trusted compositions, not public shape acceptance",
+    "Barrier proves prefix only; shared guard lifetime separately covered by approval finalaudit atc65e3354",
+    "Fresh success/replay/eventoutbox controls; no independently asserted telemetry counters",
+    "All13 callers owntransaction, no forwarding/headrights/group eligibility/migration/wire changes",
+    "Full workflow399pass1ignored includes genuine dueexpiry and10kreference materialization; distinctlong10kcompletion remainsignored",
+    "Not fullworkspace execution or new production/nested100k resource measurement; extra membership lookup not covered by old perfcounts",
+    "No SDK58/Compose/advisory/release gate or canonicaltaskclosure",
+    "Complete B0 remainsopen: scriptincident BindingX\u2192Run opposite reportedge, workerSession postwait source/test gaps, remaining implicit graph"
+  ],
+  "source_sha256": {
+    ".gitattributes": "43f9ebd0d7e6edc61c1826f0e4060ebca758457a6c3110e71308b7f544950951",
+    "crates/infra-postgres/src/loop_progress.rs": "e13765e62d40a378f6068a777af499d414b54526c7b3d7e21f9ab9593ca6a6e8",
+    "crates/infra-postgres/src/primitives.rs": "0c84e9a5e622e5b70135340de75c69e6e04c3e79ee1caf04cdd704c0eb027b75",
+    "docs/runbooks/workflow-primitives.md": "4a83e76ba9626ef5c35961a0accef7df7c5aa213f2d9915a437bbb2776d861f3",
+    "docs/traceability.md": "947c49000407e3075b45ccd629fd4f3a1ed66c5cc1870cc60bd46e39e1b05fb6",
+    "specs/014-workflow-primitives/contracts/README.md": "9660eb32f07012013bcee6f5b54df2e956e753436debb82a620237bef7b0e75e",
+    "specs/014-workflow-primitives/data-model.md": "a155f3d4de2b2b453c50fc6991c9aecfaf908b196648caef87186aa136caf2b3",
+    "specs/014-workflow-primitives/plan.md": "a0a43c3020c5047de318f8fdebd67f998de7bbc8aa15b1150288939fa70ddc59",
+    "specs/014-workflow-primitives/spec.md": "dbfc457c6eae5c90ade2377961591ced6c0e9e2c3c819a9c0f1e4b854b7a585c",
+    "specs/014-workflow-primitives/validation-report.md": "f1b8ec2bea9370b327019eb1e3ff2247cf6bf38efd8e7da5591c91fd933e4e41",
+    "tasks/project-completion/capacity-lock-inventory.md": "6cad3751ccd745e539f769176c3e221c4909ab11567a4ee1bc4f16117446b90b",
+    "tasks/project-completion/integration-notes.md": "91355453a0f729e6d9f65e95fbada096cd18a7c907c21ef008b09066ed8a5f09",
+    "tests/integration/workflow-primitives/bounded_fences.rs": "c9e6f3ef5f558b55aa4d04200735a81917fb5b68629038c764e4ba05b38caa16",
+    "tests/integration/workflow-primitives/loop_progress.rs": "dee1d35475e423083b9f3cab8ae0cae082ce4bdb6a13859437c710413c519e13",
+    "tests/integration/workflow-primitives/scoped_worker.rs": "6c5a2eaa2803f101b53671693c9a1d4496efe74019bd8e55ceace37350fad87a"
+  },
+  "evidence_sha256": {
+    "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "clippy.txt": "47806e6ed38981d5362b82070da15533b1ae57ccf068d14c8bd4584bf6841a55",
+    "commands.json": "7a5dea289c65a599f7e811a2ac132c8b8af225b3f7c61896d14f3423f4462d9d",
+    "diff-check.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "fault.txt": "9a9f660be9f9a8972b3be7c1306d5e34bfa8db241c82c920a1b0ed987c6cd010",
+    "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "gates.json": "2365f4551cfaa0089e885ad3413d4afa9bd606694b7e27179aaca426a2254d78",
+    "green.txt": "6ecfec600102b7b06dd8b4414129351dd026da746e203938f221f2e9937bec3a",
+    "production.diff": "524da8039d90f2c8f5416a9e0e0f6d78d8e1285472952a53b1cb3002e88fc162",
+    "red-source.json": "aa6688ac270cecf4977ecb1ede828b7b13a7c4c9301d2119264bded841c15669",
+    "red.txt": "c018bbe2ccfa7700880977ea2c6bf81e3e5952b4cb08194e4f2ce746238ac6ad",
+    "regression-commands.json": "bb5e377ee09f881d95694324688a4b6be0fdee08f076feb3d102f40999c7d13c",
+    "reproduce.md": "e3542d8b439a37555d2e295e69bc7c234c102c0042438fdb8b4c8b67ef256770",
+    "review.md": "b4bf5ec5c97e6db7bcaabd8215bdd6b8deec119023144d4010c8ae4eaf15658e",
+    "test-red.diff": "6e1e4bd20b07d8d8ffb57872e90d48cc06ca1bc09ae3cb3e517fe7d411ee846e",
+    "tested-source.json": "96eeebe82dd619b71cf28f6e780b45a8c4f232a4282a9959abf624ce3f13f348",
+    "workflow-all.txt": "5689082f5ac639070173b42d5e6af1032bbc4862d1d6b11d625b0e8a63925300"
+  }
+}

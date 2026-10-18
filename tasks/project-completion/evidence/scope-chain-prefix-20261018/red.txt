@@ -1,0 +1,29 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 36.11s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 3 tests
+
+thread 'loop_progress::scope_chain_prefix_loop_entry_precedes_own_run_and_replays' (83930660) panicked at tests/integration/workflow-primitives/bounded_fences.rs:561:35:
+primitive bypassed its member chain: Ok(LoopWrite { applied: true, run_version: 5 })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test loop_progress::scope_chain_prefix_loop_entry_precedes_own_run_and_replays ... FAILED
+
+thread 'scoped_worker::scope_chain_prefix_collection_entry_precedes_own_run_and_replays' (83930662) panicked at tests/integration/workflow-primitives/bounded_fences.rs:561:35:
+primitive bypassed its member chain: Ok(PrimitiveWrite { applied: true, run_version: 3 })
+test scoped_worker::scope_chain_prefix_collection_entry_precedes_own_run_and_replays ... FAILED
+
+thread 'scoped_worker::scope_chain_prefix_collection_drain_precedes_own_run_and_replays' (83930661) panicked at tests/integration/workflow-primitives/bounded_fences.rs:561:35:
+primitive bypassed its member chain: Ok(PrimitiveWrite { applied: true, run_version: 9 })
+test scoped_worker::scope_chain_prefix_collection_drain_precedes_own_run_and_replays ... FAILED
+
+failures:
+
+failures:
+    loop_progress::scope_chain_prefix_loop_entry_precedes_own_run_and_replays
+    scoped_worker::scope_chain_prefix_collection_drain_precedes_own_run_and_replays
+    scoped_worker::scope_chain_prefix_collection_entry_precedes_own_run_and_replays
+
+test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 397 filtered out; finished in 3.12s
+
+error: test failed, to rerun pass `-p sagat-tests --test integration_workflow_primitives`

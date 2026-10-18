@@ -1,0 +1,87 @@
+diff --git a/crates/infra-postgres/src/loop_progress.rs b/crates/infra-postgres/src/loop_progress.rs
+index b34bcec6..56ecbbd2 100644
+--- a/crates/infra-postgres/src/loop_progress.rs
++++ b/crates/infra-postgres/src/loop_progress.rs
+@@ -174,9 +174,16 @@ fn payload_matches(content: &[u8], digest: sagat_domain::workflow::Digest) -> bo
+ }
+ 
+ async fn lock_run(
+-    conn: &mut PgConnection,
++    tx: &mut Transaction<'_, Postgres>,
+     transition: &LoopTransition,
+ ) -> Result<LockedRun, LoopProgressError> {
++    crate::execution::lock_member_chain(
++        tx,
++        transition.tenant_id(),
++        transition.namespace_id(),
++        transition.run_id(),
++    )
++    .await?;
+     let row = sqlx::query(
+         "SELECT namespace_id, workflow_version_id, run_version, status,stop_reason,stop_code \
+          FROM runs \
+@@ -184,7 +191,7 @@ async fn lock_run(
+     )
+     .bind(transition.tenant_id().as_uuid())
+     .bind(transition.run_id().as_uuid())
+-    .fetch_optional(&mut *conn)
++    .fetch_optional(&mut **tx)
+     .await
+     .map_err(store_error)?
+     .ok_or(LoopProgressError::Missing)?;
+diff --git a/crates/infra-postgres/src/primitives.rs b/crates/infra-postgres/src/primitives.rs
+index 84bf6271..bb9828f9 100644
+--- a/crates/infra-postgres/src/primitives.rs
++++ b/crates/infra-postgres/src/primitives.rs
+@@ -260,16 +260,23 @@ fn invalid_storage(detail: &'static str) -> PrimitiveStoreError {
+ }
+ 
+ async fn lock_run(
+-    conn: &mut PgConnection,
++    tx: &mut Transaction<'_, Postgres>,
+     transition: &CollectionTransition,
+ ) -> Result<LockedRun, PrimitiveStoreError> {
++    crate::execution::lock_member_chain(
++        tx,
++        transition.tenant_id(),
++        transition.namespace_id(),
++        transition.run_id(),
++    )
++    .await?;
+     let row = sqlx::query(
+         "SELECT namespace_id, workflow_version_id, run_version, status FROM runs \
+          WHERE tenant_id = $1 AND id = $2 FOR UPDATE",
+     )
+     .bind(transition.tenant_id().as_uuid())
+     .bind(transition.run_id().as_uuid())
+-    .fetch_optional(&mut *conn)
++    .fetch_optional(&mut **tx)
+     .await
+     .map_err(store_error)?
+     .ok_or(PrimitiveStoreError::Missing)?;
+@@ -298,16 +305,23 @@ struct LockedDrainRun {
+ }
+ 
+ async fn lock_drain_run(
+-    conn: &mut PgConnection,
++    tx: &mut Transaction<'_, Postgres>,
+     transition: &CollectionTransition,
+ ) -> Result<LockedDrainRun, PrimitiveStoreError> {
++    crate::execution::lock_member_chain(
++        tx,
++        transition.tenant_id(),
++        transition.namespace_id(),
++        transition.run_id(),
++    )
++    .await?;
+     let row = sqlx::query(
+         "SELECT namespace_id,workflow_version_id,run_version,status,stop_reason,stop_code \
+          FROM runs WHERE tenant_id=$1 AND id=$2 FOR UPDATE",
+     )
+     .bind(transition.tenant_id().as_uuid())
+     .bind(transition.run_id().as_uuid())
+-    .fetch_optional(&mut *conn)
++    .fetch_optional(&mut **tx)
+     .await
+     .map_err(store_error)?
+     .ok_or(PrimitiveStoreError::Missing)?;

@@ -2608,3 +2608,138 @@ async fn aggregate_retention_quota_atomically_drains_and_replays_the_open_scope(
         1
     );
 }
+
+#[tokio::test]
+async fn scope_chain_prefix_collection_entry_precedes_own_run_and_replays() {
+    use crate::bounded_fences::{initialize_member_chain, scope_checkpoint, through_member_chain};
+    let fixture = fixture_with_progress("collection-entry-chain-prefix", false).await;
+    let tenant = fixture.world.admin.tenant_id();
+    let pool = &fixture.world.db.pool;
+    initialize_member_chain(pool, tenant, fixture.world.namespace.id(), fixture.run).await;
+    let snapshot =
+        serde_json::to_vec(&json!([{"sku":"first"},{"sku":"second"}])).expect("snapshot");
+    let snapshot_digest = digest(&snapshot);
+    sqlx::query(
+        "INSERT INTO payloads(tenant_id,digest,content) VALUES($1,$2,$3) ON CONFLICT DO NOTHING",
+    )
+    .bind(tenant.as_uuid())
+    .bind(snapshot_digest.as_bytes().as_slice())
+    .bind(snapshot)
+    .execute(pool)
+    .await
+    .expect("captured collection source");
+    let lease = fixture
+        .placement
+        .snapshot()
+        .lease_of(Shard::of(fixture.run.as_uuid()), std::time::Instant::now())
+        .expect("own shard lease");
+    let command = CollectionEntry::new(
+        collection_transition(
+            &fixture.world,
+            fixture.run,
+            2,
+            ExecutionInstanceId::root(NodeId::parse("items").expect("owner")),
+            lease,
+        ),
+        CollectionScopeId::generate(),
+        2,
+        snapshot_digest,
+        CollectionLimits::new(2, 2, 20, 2).expect("limits"),
+    )
+    .expect("collection entry after chain initialization");
+    let store = PgCollectionStore::with_definition_cache(
+        fixture.world.db.runtime_pool().await,
+        DefinitionCache::new(Arc::new(StructuredJsonIrCodec), 8),
+    );
+    let write = through_member_chain(
+        pool,
+        tenant.as_uuid(),
+        fixture.run,
+        store.enter_collection(&command),
+    )
+    .await
+    .expect("entry under member chain");
+    assert!(write.applied);
+    assert_eq!(write.run_version, 3);
+    let events: i64 = sqlx::query_scalar("SELECT count(*) FROM run_events WHERE tenant_id=$1 AND run_id=$2 AND event_type='collection.entered'")
+        .bind(tenant.as_uuid()).bind(fixture.run.as_uuid()).fetch_one(pool).await.expect("entry once");
+    assert_eq!(events, 1);
+    let committed = scope_checkpoint(pool, tenant.as_uuid()).await;
+    assert!(
+        !store
+            .enter_collection(&command)
+            .await
+            .expect("entry replay")
+            .applied
+    );
+    assert_eq!(scope_checkpoint(pool, tenant.as_uuid()).await, committed);
+}
+
+#[tokio::test]
+async fn scope_chain_prefix_collection_drain_precedes_own_run_and_replays() {
+    use crate::bounded_fences::{initialize_member_chain, scope_checkpoint, through_member_chain};
+    let fixture = fixture("collection-drain-chain-prefix").await;
+    let tenant = fixture.world.admin.tenant_id();
+    let pool = &fixture.world.db.pool;
+    initialize_member_chain(pool, tenant, fixture.world.namespace.id(), fixture.run).await;
+    cancel(&fixture, "chain-prefix-cancel").await;
+    let (scope, version): (Uuid, i64) = sqlx::query_as(
+        "SELECT s.scope_id,r.run_version FROM iteration_scopes s JOIN runs r \
+         ON r.tenant_id=s.tenant_id AND r.id=s.run_id WHERE s.tenant_id=$1 AND s.run_id=$2",
+    )
+    .bind(tenant.as_uuid())
+    .bind(fixture.run.as_uuid())
+    .fetch_one(pool)
+    .await
+    .expect("cancelled scope");
+    let lease = fixture
+        .placement
+        .snapshot()
+        .lease_of(Shard::of(fixture.run.as_uuid()), std::time::Instant::now())
+        .expect("own shard lease");
+    let outbox = Uuid::now_v7();
+    let command = CollectionDrain::new(
+        collection_transition(
+            &fixture.world,
+            fixture.run,
+            u64::try_from(version).expect("revision"),
+            ExecutionInstanceId::root(NodeId::parse("items").expect("owner")),
+            lease,
+        ),
+        CollectionScopeId::new(scope),
+        CollectionDrainReason::Cancelled,
+        outbox,
+    );
+    let store = PgCollectionStore::with_definition_cache(
+        fixture.world.db.runtime_pool().await,
+        DefinitionCache::new(Arc::new(StructuredJsonIrCodec), 8),
+    );
+    assert!(
+        through_member_chain(
+            pool,
+            tenant.as_uuid(),
+            fixture.run,
+            store.start_collection_drain(&command)
+        )
+        .await
+        .expect("start cancelled scope drain")
+        .applied
+    );
+    let effects: (String,i64,i64) = sqlx::query_as(
+        "SELECT lifecycle, \
+         (SELECT count(*) FROM run_events WHERE tenant_id=$1 AND run_id=$2 AND event_type='collection.drain_started'), \
+         (SELECT count(*) FROM event_outbox WHERE tenant_id=$1 AND id=$3) \
+         FROM iteration_scopes WHERE tenant_id=$1 AND run_id=$2 AND scope_id=$4",
+    ).bind(tenant.as_uuid()).bind(fixture.run.as_uuid()).bind(outbox).bind(scope)
+    .fetch_one(pool).await.expect("drain once");
+    assert_eq!(effects, ("DRAINING".into(), 1, 1));
+    let committed = scope_checkpoint(pool, tenant.as_uuid()).await;
+    assert!(
+        !store
+            .start_collection_drain(&command)
+            .await
+            .expect("drain replay")
+            .applied
+    );
+    assert_eq!(scope_checkpoint(pool, tenant.as_uuid()).await, committed);
+}

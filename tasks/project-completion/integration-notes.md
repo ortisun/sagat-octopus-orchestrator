@@ -1887,3 +1887,39 @@ all-target Clippy (62.76s), formatting/diff and24-crate architecture passed. Two
 ended with no concrete final defects. Exact source variants, commands and limits:
 tasks/project-completion/evidence/approval-chain-prefix-20261018/manifest.json. No canonical
 checkbox closes; remaining collection/loop prefixes and B0/group ordering stay pending.
+
+## Collection/loop member-chain writer prefixes — 2026-10-18
+
+Refs:T014-040/044, FR-014-004/006/014, ADR-0030§18. Collection lock_run/lock_drain_run and
+loop lock_run now require their owning Transaction and acquire the existing scoped member-chain
+guard before own-run UPDATE. All seven collection and six loop callers already own begin_safely
+transactions. Their run validation, errors, revision, scheduler fence, business clocks, quotas
+and drain rules are unchanged. No new group, head authority, forwarding, migration or capability.
+
+Three trusted native runtime tests cover collection entry, start-drain following real cancellation,
+and loop entry. Setup supplies the required deadline and invokes the real chain initializer;
+commands use its updated revision. Before correction all three actually committed while an
+independent chain UPDATE guard was held (RED0/3,3.12s), not fixture errors or SQL deadlocks.
+Each barrier polls the actual mutation concurrently, observes its sagat_app chain wait and proves
+its own run remains free with NOWAIT before releasing the chain. Fresh mutation and exact replay
+have persisted event/outbox/state controls. This is a prefix oracle, not an independently repeated
+near-commit lifetime barrier for each primitive; the shared helper's lifetime is separately
+covered by approval's final-audit barrier. Transaction typing keeps the guard in the owning TX.
+
+These are explicitly trusted storage compositions; general public chain+collection/loop shapes
+remain gated. Initial membership commits with new-run creation and later identity is immutable;
+no live reparent/delayed-initialization protocol is inferred. Prior performance counts are not a
+fresh measurement of the extra membership lookup. Complete B0 graph, group persistence/eligibility,
+nested execution and release/resource gates remain pending. Existing typed errors, outcome metrics
+and sensitive-data-free logs remain mapped as before; port barriers do not assert telemetry.
+Evidence: tasks/project-completion/evidence/scope-chain-prefix-20261018/.
+
+Final scope-prefix GREEN passed3/3 (3.04s). Full workflow-primitives regression passed399
+tests with1 long10k completion test ignored (300.14s), including fresh10k reference-source
+materialization and the genuine60-second approval expiry barrier. All92 fault cases passed
+(93.23s). Strict locked workspace/all-target Clippy (62.56s), formatting/diff and24-crate
+architecture gates passed. Two bounded reviews ended with no concrete final defects; reviewers
+ran no tests. Exact tree/commands/limits: tasks/project-completion/evidence/scope-chain-prefix-20261018/manifest.json.
+This is not full-workspace execution or fresh production/nested100k resource acceptance; no
+canonical checkbox closes. Complete B0 includes the separately recorded incident/binding and
+worker-session source/test gaps, plus the remaining implicit/resource graph.

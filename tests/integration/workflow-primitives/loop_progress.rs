@@ -4092,3 +4092,62 @@ async fn assert_loop_entry_post_wait(overflow: bool) {
         );
     }
 }
+
+#[tokio::test]
+async fn scope_chain_prefix_loop_entry_precedes_own_run_and_replays() {
+    use crate::bounded_fences::{initialize_member_chain, scope_checkpoint, through_member_chain};
+    let fixture = seed_pending_loop("loop-entry-chain-prefix").await;
+    let tenant = sagat_domain::identity::TenantId::new(fixture.tenant);
+    initialize_member_chain(&fixture.db.pool, tenant, fixture.namespace, fixture.run).await;
+    let version = run_version(&fixture).await;
+    assert_eq!(version, 2);
+    let occurred_at = crate::support::now();
+    let outbox = Uuid::now_v7();
+    let command = LoopEntryCommand::from_carry(
+        transition(
+            &fixture,
+            version,
+            fixture.authority.clone(),
+            audit(&fixture),
+            occurred_at,
+        ),
+        LoopKind::While,
+        3,
+        occurred_at + Duration::minutes(1),
+        b"1".to_vec(),
+        Some(true),
+        Some(next_activity(&fixture, 0)),
+        outbox,
+    )
+    .expect("entry after chain initialization");
+    let store =
+        PgLoopProgressStore::new(fixture.db.runtime_pool().await, fixture.definitions.clone());
+    let entered = through_member_chain(
+        &fixture.db.pool,
+        fixture.tenant,
+        fixture.run,
+        store.enter_loop(&command),
+    )
+    .await
+    .expect("loop entry under member chain");
+    assert!(entered.applied);
+    let effects: (i64,i64) = sqlx::query_as(
+        "SELECT \
+         (SELECT count(*) FROM run_events WHERE tenant_id=$1 AND run_id=$2 AND event_type='loop.entered'), \
+         (SELECT count(*) FROM event_outbox WHERE tenant_id=$1 AND id=$3)",
+    ).bind(fixture.tenant).bind(fixture.run.as_uuid()).bind(outbox)
+    .fetch_one(&fixture.db.pool).await.expect("loop entered once");
+    assert_eq!(effects, (1, 1));
+    let committed = scope_checkpoint(&fixture.db.pool, fixture.tenant).await;
+    assert!(
+        !store
+            .enter_loop(&command)
+            .await
+            .expect("loop entry replay")
+            .applied
+    );
+    assert_eq!(
+        scope_checkpoint(&fixture.db.pool, fixture.tenant).await,
+        committed
+    );
+}

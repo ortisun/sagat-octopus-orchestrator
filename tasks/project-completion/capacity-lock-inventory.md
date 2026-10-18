@@ -7,7 +7,7 @@ runtime eligibility remain unimplemented. Initial source at2455389e; expanded ag
 | --- | --- | --- |
 | Root RunStore begin | optional execution_chains row→own runs row | execution.rs:lock_chain_for_run, RunStore::begin |
 | Exact-path begin_current_path/begin_path | optional execution_chains UPDATE→own runs UPDATE; contended chain skips before own-run acquisition under SkipLocked | execution.rs:lock_chain_for_run, lock_path_revision, PathExecutionStore impl |
-| Collection admission | run/fence before primitive-policy shared fence→tenant policy row→tenant_iteration_usage→run_instance_usage→iteration scope | primitives.rs:tenant_active_limit and collection admission around1212 |
+| Collection admission | applicable member chain→own run/fence before primitive-policy shared fence→tenant policy row→tenant_iteration_usage→run_instance_usage→iteration scope | primitives.rs:tenant_active_limit and collection admission around1212 |
 | Chain handoff | execution_chains row→hold_parent parent runs KEY SHARE→own head runs UPDATE→scheduler fence→child link | chain_progress.rs:lock_chain, hold_parent, continue_as_new |
 | Parent settle_child/release_child | own parent transaction→matching child_chain_links UPDATE; only a missing link falls back to legacy child runs UPDATE with exact own-parent predicate | execution.rs:update_child_chain_link, settle_child, release_child |
 | Initial child creation, before correction | payload input/initial-state INSERT→parent runs UPDATE→tree advisory→managed database admission if applicable→namespace active-run quota→tenant active-run quota→child INSERT | execution.rs:RunStore::create, claim_reservation; quotas.rs:ensure_room_for_run |
@@ -58,12 +58,21 @@ These reviews do not accept the complete B0 graph or the group transaction desig
   accepts only the early stable-parent identity KEY SHARE under immutable initial/head/link
   ancestry; it does not grant foreign aggregate mutation authority or accept the complete graph.
 - Exact-path storage now takes the applicable chain guard in the same transaction before the
-  run (focused evidence below). Collection/loop/approval adapters still have separate direct
-  run-lock helpers, and declared Update by Run now takes the membership chain first (below). Map each before claiming
-  general composition compliance; publication restrictions do not prove a future shape safe.
+  run (focused evidence below). Collection/loop/approval writer helpers and declared Run Update
+  now also take the applicable membership chain first (bounded evidence below). This prefix
+  alignment does not establish general composition compliance or complete group ordering.
 - Complete the implicit-FK/trigger, root-versus-scoped worker, current-role/session/activity,
   managed database/script, and cancellation incoming/outgoing-link edges beyond the prefixes above.
   The current table is not a complete DAG and cannot yet justify inserting group locks.
+- Production script incident attribution (`scripts/incident.rs::record`) currently takes Binding
+  EXCLUSIVE→own-run UPDATE→step UPDATE, whereas ordinary reports/heartbeats take own run before
+  binding SHARED through ensure_bound. It also bypasses the optional member-chain guard. This
+  opposite source edge needs its own ordered PostgreSQL test and correction before B1 can rely
+  on a complete run/binding prefix. A plain Unavailable result would not by itself prove deadlock.
+- Full/exact-path worker_session_room and managed database_owner still have volatile session
+  expiry predicates in locking SELECTs. Scheduler post-wait evidence does not prove current
+  worker-session freshness after an unchanged-row wait. These are separate source/test gaps;
+  no expired-session acceptance is claimed without a counterexample.
 - New group eligibility/settlement may not lock a second existing run or assume source terminal
   rows can be reopened under scheduler authority. Group/member CAS is subordinate to the verified
   current owning authority; exact link/group/counter ordering is still pending B1.
@@ -147,9 +156,9 @@ not accept the other primitive/direct-Update prefixes, group transactions or gen
 
 ## Additional source gaps to resolve (not accepted new ordering)
 
-- `primitives::{lock_run,lock_drain_run}` and `loop_progress::lock_run` still take own-run
-  UPDATE directly. Their applicable chain prefixes remain pending before general composition.
-  Approval now takes a membership chain first through the shared adapter guard (below).
+- `primitives::{lock_run,lock_drain_run}`, `loop_progress::lock_run` and approval now take
+  an applicable membership chain first through the shared transaction-typed guard. Separate
+  native collection-entry/drain and loop-entry barriers cover the corrected prefix (below).
 - `declared_operations::apply_update`, OperationAddress::Run, takes own-run UPDATE directly;
   the Chain branch explicitly takes chain before its resolved run. A direct run-addressed Update
   of a chain member now has the narrow prefix correction below. Queries are reads;
@@ -311,3 +320,39 @@ all-target Clippy (62.76s), formatting/diff and24-crate architecture passed. Two
 ended with no concrete final defects. Exact source variants, commands and limits:
 tasks/project-completion/evidence/approval-chain-prefix-20261018/manifest.json. No canonical
 checkbox closes; remaining collection/loop prefixes and B0/group ordering stay pending.
+
+## Collection/loop member-chain writer prefixes — 2026-10-18
+
+Refs:T014-040/044, FR-014-004/006/014, ADR-0030§18. Collection lock_run/lock_drain_run and
+loop lock_run now require their owning Transaction and acquire the existing scoped member-chain
+guard before own-run UPDATE. All seven collection and six loop callers already own begin_safely
+transactions. Their run validation, errors, revision, scheduler fence, business clocks, quotas
+and drain rules are unchanged. No new group, head authority, forwarding, migration or capability.
+
+Three trusted native runtime tests cover collection entry, start-drain following real cancellation,
+and loop entry. Setup supplies the required deadline and invokes the real chain initializer;
+commands use its updated revision. Before correction all three actually committed while an
+independent chain UPDATE guard was held (RED0/3,3.12s), not fixture errors or SQL deadlocks.
+Each barrier polls the actual mutation concurrently, observes its sagat_app chain wait and proves
+its own run remains free with NOWAIT before releasing the chain. Fresh mutation and exact replay
+have persisted event/outbox/state controls. This is a prefix oracle, not an independently repeated
+near-commit lifetime barrier for each primitive; the shared helper's lifetime is separately
+covered by approval's final-audit barrier. Transaction typing keeps the guard in the owning TX.
+
+These are explicitly trusted storage compositions; general public chain+collection/loop shapes
+remain gated. Initial membership commits with new-run creation and later identity is immutable;
+no live reparent/delayed-initialization protocol is inferred. Prior performance counts are not a
+fresh measurement of the extra membership lookup. Complete B0 graph, group persistence/eligibility,
+nested execution and release/resource gates remain pending. Existing typed errors, outcome metrics
+and sensitive-data-free logs remain mapped as before; port barriers do not assert telemetry.
+Evidence: tasks/project-completion/evidence/scope-chain-prefix-20261018/.
+
+Final scope-prefix GREEN passed3/3 (3.04s). Full workflow-primitives regression passed399
+tests with1 long10k completion test ignored (300.14s), including fresh10k reference-source
+materialization and the genuine60-second approval expiry barrier. All92 fault cases passed
+(93.23s). Strict locked workspace/all-target Clippy (62.56s), formatting/diff and24-crate
+architecture gates passed. Two bounded reviews ended with no concrete final defects; reviewers
+ran no tests. Exact tree/commands/limits: tasks/project-completion/evidence/scope-chain-prefix-20261018/manifest.json.
+This is not full-workspace execution or fresh production/nested100k resource acceptance; no
+canonical checkbox closes. Complete B0 includes the separately recorded incident/binding and
+worker-session source/test gaps, plus the remaining implicit/resource graph.

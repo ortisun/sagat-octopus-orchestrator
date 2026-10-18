@@ -1,0 +1,285 @@
+diff --git a/tests/integration/workflow-primitives/bounded_fences.rs b/tests/integration/workflow-primitives/bounded_fences.rs
+index 0a1c8aa3..70b2c627 100644
+--- a/tests/integration/workflow-primitives/bounded_fences.rs
++++ b/tests/integration/workflow-primitives/bounded_fences.rs
+@@ -512,3 +512,70 @@ pub(super) async fn scope_checkpoint(pool: &sqlx::PgPool, tenant: uuid::Uuid) ->
+     .await
+     .expect("independent scope effects checkpoint")
+ }
++
++/// Storage-only setup; supported public compositions are not changed by these tests.
++pub(super) async fn initialize_member_chain(
++    pool: &sqlx::PgPool,
++    tenant: sagat_domain::identity::TenantId,
++    namespace: sagat_domain::identity::NamespaceId,
++    run: sagat_domain::execution::RunId,
++) {
++    let mut tx = pool.begin().await.expect("member chain setup");
++    sqlx::query("UPDATE runs SET deadline_at=clock_timestamp()+interval '1 hour' WHERE tenant_id=$1 AND id=$2")
++        .bind(tenant.as_uuid()).bind(run.as_uuid()).execute(&mut *tx).await.expect("chain deadline");
++    sagat_infra_postgres::initialize_chain_in_transaction(
++        &mut tx,
++        &sagat_application::chain_progress::ChainInitialization::new(
++            sagat_domain::execution::ChainScope::new(tenant, namespace),
++            run,
++            sagat_domain::execution::ChainPolicy::new(2).expect("chain policy"),
++        ),
++    )
++    .await
++    .expect("initialize real member chain");
++    tx.commit().await.expect("atomic chain initialization");
++}
++
++/// Proves the prefix, not an independent near-commit lifetime oracle for every primitive.
++pub(super) async fn through_member_chain<T: std::fmt::Debug>(
++    pool: &sqlx::PgPool,
++    tenant: uuid::Uuid,
++    run: sagat_domain::execution::RunId,
++    mutation: impl std::future::Future<Output = T>,
++) -> T {
++    let mut guard = pool.begin().await.expect("member chain guard");
++    let backend: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
++        .fetch_one(&mut *guard)
++        .await
++        .expect("chain guard backend");
++    sqlx::query(
++        "SELECT chain_id FROM execution_chains WHERE tenant_id=$1 AND chain_id=$2 FOR UPDATE",
++    )
++    .bind(tenant)
++    .bind(run.as_uuid())
++    .execute(&mut *guard)
++    .await
++    .expect("hold member chain");
++    let mut mutation = Box::pin(mutation);
++    tokio::select! {
++        result = &mut mutation => panic!("primitive bypassed its member chain: {result:?}"),
++        () = eventually("primitive waits on chain before own run", || async {
++            sqlx::query_scalar::<_, bool>(
++                "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() \
++                 AND $1=ANY(pg_blocking_pids(pid)) AND query LIKE '%execution_chains%' \
++                 AND (NOT $2 OR usename='sagat_app'))",
++            ).bind(backend).bind(crate::support::as_runtime_role()).fetch_one(pool).await
++            .expect("actual primitive chain wait").then_some(())
++        }) => {}
++    }
++    let mut probe = pool.acquire().await.expect("primitive early run probe");
++    sqlx::query("SELECT id FROM runs WHERE tenant_id=$1 AND id=$2 FOR UPDATE NOWAIT")
++        .bind(tenant)
++        .bind(run.as_uuid())
++        .execute(&mut *probe)
++        .await
++        .expect("primitive waits on chain without retaining its own run");
++    drop(probe);
++    guard.rollback().await.expect("release member chain");
++    mutation.await
++}
+diff --git a/tests/integration/workflow-primitives/loop_progress.rs b/tests/integration/workflow-primitives/loop_progress.rs
+index 3f66d00c..8b80fe81 100644
+--- a/tests/integration/workflow-primitives/loop_progress.rs
++++ b/tests/integration/workflow-primitives/loop_progress.rs
+@@ -4092,3 +4092,62 @@ async fn assert_loop_entry_post_wait(overflow: bool) {
+         );
+     }
+ }
++
++#[tokio::test]
++async fn scope_chain_prefix_loop_entry_precedes_own_run_and_replays() {
++    use crate::bounded_fences::{initialize_member_chain, scope_checkpoint, through_member_chain};
++    let fixture = seed_pending_loop("loop-entry-chain-prefix").await;
++    let tenant = sagat_domain::identity::TenantId::new(fixture.tenant);
++    initialize_member_chain(&fixture.db.pool, tenant, fixture.namespace, fixture.run).await;
++    let version = run_version(&fixture).await;
++    assert_eq!(version, 2);
++    let occurred_at = crate::support::now();
++    let outbox = Uuid::now_v7();
++    let command = LoopEntryCommand::from_carry(
++        transition(
++            &fixture,
++            version,
++            fixture.authority.clone(),
++            audit(&fixture),
++            occurred_at,
++        ),
++        LoopKind::While,
++        3,
++        occurred_at + Duration::minutes(1),
++        b"1".to_vec(),
++        Some(true),
++        Some(next_activity(&fixture, 0)),
++        outbox,
++    )
++    .expect("entry after chain initialization");
++    let store =
++        PgLoopProgressStore::new(fixture.db.runtime_pool().await, fixture.definitions.clone());
++    let entered = through_member_chain(
++        &fixture.db.pool,
++        fixture.tenant,
++        fixture.run,
++        store.enter_loop(&command),
++    )
++    .await
++    .expect("loop entry under member chain");
++    assert!(entered.applied);
++    let effects: (i64,i64) = sqlx::query_as(
++        "SELECT \
++         (SELECT count(*) FROM run_events WHERE tenant_id=$1 AND run_id=$2 AND event_type='loop.entered'), \
++         (SELECT count(*) FROM event_outbox WHERE tenant_id=$1 AND id=$3)",
++    ).bind(fixture.tenant).bind(fixture.run.as_uuid()).bind(outbox)
++    .fetch_one(&fixture.db.pool).await.expect("loop entered once");
++    assert_eq!(effects, (1, 1));
++    let committed = scope_checkpoint(&fixture.db.pool, fixture.tenant).await;
++    assert!(
++        !store
++            .enter_loop(&command)
++            .await
++            .expect("loop entry replay")
++            .applied
++    );
++    assert_eq!(
++        scope_checkpoint(&fixture.db.pool, fixture.tenant).await,
++        committed
++    );
++}
+diff --git a/tests/integration/workflow-primitives/scoped_worker.rs b/tests/integration/workflow-primitives/scoped_worker.rs
+index bb585806..e0177973 100644
+--- a/tests/integration/workflow-primitives/scoped_worker.rs
++++ b/tests/integration/workflow-primitives/scoped_worker.rs
+@@ -2608,3 +2608,138 @@ async fn aggregate_retention_quota_atomically_drains_and_replays_the_open_scope(
+         1
+     );
+ }
++
++#[tokio::test]
++async fn scope_chain_prefix_collection_entry_precedes_own_run_and_replays() {
++    use crate::bounded_fences::{initialize_member_chain, scope_checkpoint, through_member_chain};
++    let fixture = fixture_with_progress("collection-entry-chain-prefix", false).await;
++    let tenant = fixture.world.admin.tenant_id();
++    let pool = &fixture.world.db.pool;
++    initialize_member_chain(pool, tenant, fixture.world.namespace.id(), fixture.run).await;
++    let snapshot =
++        serde_json::to_vec(&json!([{"sku":"first"},{"sku":"second"}])).expect("snapshot");
++    let snapshot_digest = digest(&snapshot);
++    sqlx::query(
++        "INSERT INTO payloads(tenant_id,digest,content) VALUES($1,$2,$3) ON CONFLICT DO NOTHING",
++    )
++    .bind(tenant.as_uuid())
++    .bind(snapshot_digest.as_bytes().as_slice())
++    .bind(snapshot)
++    .execute(pool)
++    .await
++    .expect("captured collection source");
++    let lease = fixture
++        .placement
++        .snapshot()
++        .lease_of(Shard::of(fixture.run.as_uuid()), std::time::Instant::now())
++        .expect("own shard lease");
++    let command = CollectionEntry::new(
++        collection_transition(
++            &fixture.world,
++            fixture.run,
++            2,
++            ExecutionInstanceId::root(NodeId::parse("items").expect("owner")),
++            lease,
++        ),
++        CollectionScopeId::generate(),
++        2,
++        snapshot_digest,
++        CollectionLimits::new(2, 2, 20, 2).expect("limits"),
++    )
++    .expect("collection entry after chain initialization");
++    let store = PgCollectionStore::with_definition_cache(
++        fixture.world.db.runtime_pool().await,
++        DefinitionCache::new(Arc::new(StructuredJsonIrCodec), 8),
++    );
++    let write = through_member_chain(
++        pool,
++        tenant.as_uuid(),
++        fixture.run,
++        store.enter_collection(&command),
++    )
++    .await
++    .expect("entry under member chain");
++    assert!(write.applied);
++    assert_eq!(write.run_version, 3);
++    let events: i64 = sqlx::query_scalar("SELECT count(*) FROM run_events WHERE tenant_id=$1 AND run_id=$2 AND event_type='collection.entered'")
++        .bind(tenant.as_uuid()).bind(fixture.run.as_uuid()).fetch_one(pool).await.expect("entry once");
++    assert_eq!(events, 1);
++    let committed = scope_checkpoint(pool, tenant.as_uuid()).await;
++    assert!(
++        !store
++            .enter_collection(&command)
++            .await
++            .expect("entry replay")
++            .applied
++    );
++    assert_eq!(scope_checkpoint(pool, tenant.as_uuid()).await, committed);
++}
++
++#[tokio::test]
++async fn scope_chain_prefix_collection_drain_precedes_own_run_and_replays() {
++    use crate::bounded_fences::{initialize_member_chain, scope_checkpoint, through_member_chain};
++    let fixture = fixture("collection-drain-chain-prefix").await;
++    let tenant = fixture.world.admin.tenant_id();
++    let pool = &fixture.world.db.pool;
++    initialize_member_chain(pool, tenant, fixture.world.namespace.id(), fixture.run).await;
++    cancel(&fixture, "chain-prefix-cancel").await;
++    let (scope, version): (Uuid, i64) = sqlx::query_as(
++        "SELECT s.scope_id,r.run_version FROM iteration_scopes s JOIN runs r \
++         ON r.tenant_id=s.tenant_id AND r.id=s.run_id WHERE s.tenant_id=$1 AND s.run_id=$2",
++    )
++    .bind(tenant.as_uuid())
++    .bind(fixture.run.as_uuid())
++    .fetch_one(pool)
++    .await
++    .expect("cancelled scope");
++    let lease = fixture
++        .placement
++        .snapshot()
++        .lease_of(Shard::of(fixture.run.as_uuid()), std::time::Instant::now())
++        .expect("own shard lease");
++    let outbox = Uuid::now_v7();
++    let command = CollectionDrain::new(
++        collection_transition(
++            &fixture.world,
++            fixture.run,
++            u64::try_from(version).expect("revision"),
++            ExecutionInstanceId::root(NodeId::parse("items").expect("owner")),
++            lease,
++        ),
++        CollectionScopeId::new(scope),
++        CollectionDrainReason::Cancelled,
++        outbox,
++    );
++    let store = PgCollectionStore::with_definition_cache(
++        fixture.world.db.runtime_pool().await,
++        DefinitionCache::new(Arc::new(StructuredJsonIrCodec), 8),
++    );
++    assert!(
++        through_member_chain(
++            pool,
++            tenant.as_uuid(),
++            fixture.run,
++            store.start_collection_drain(&command)
++        )
++        .await
++        .expect("start cancelled scope drain")
++        .applied
++    );
++    let effects: (String,i64,i64) = sqlx::query_as(
++        "SELECT lifecycle, \
++         (SELECT count(*) FROM run_events WHERE tenant_id=$1 AND run_id=$2 AND event_type='collection.drain_started'), \
++         (SELECT count(*) FROM event_outbox WHERE tenant_id=$1 AND id=$3) \
++         FROM iteration_scopes WHERE tenant_id=$1 AND run_id=$2 AND scope_id=$4",
++    ).bind(tenant.as_uuid()).bind(fixture.run.as_uuid()).bind(outbox).bind(scope)
++    .fetch_one(pool).await.expect("drain once");
++    assert_eq!(effects, ("DRAINING".into(), 1, 1));
++    let committed = scope_checkpoint(pool, tenant.as_uuid()).await;
++    assert!(
++        !store
++            .start_collection_drain(&command)
++            .await
++            .expect("drain replay")
++            .applied
++    );
++    assert_eq!(scope_checkpoint(pool, tenant.as_uuid()).await, committed);
++}

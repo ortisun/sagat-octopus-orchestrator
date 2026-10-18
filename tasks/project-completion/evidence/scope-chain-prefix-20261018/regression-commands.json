@@ -1,0 +1,49 @@
+[
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "--",
+      "--test-threads=3"
+    ],
+    "exit_code": 0,
+    "seconds": 300.53,
+    "log": "workflow-all.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "fault_workflow_primitives",
+      "--",
+      "--test-threads=3"
+    ],
+    "exit_code": 0,
+    "seconds": 126.73,
+    "log": "fault.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "clippy",
+      "--locked",
+      "--workspace",
+      "--all-targets",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit_code": 0,
+    "seconds": 62.56,
+    "log": "clippy.txt"
+  }
+]

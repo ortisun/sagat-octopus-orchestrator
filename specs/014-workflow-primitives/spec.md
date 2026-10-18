@@ -59,6 +59,8 @@ Declared Updates addressed by run also acquire an applicable membership chain be
 run; they keep their original address and never forward across continuation.
 Approval open/expire/decide also take an applicable member chain before their exact run.
 This preserves current-user authorization and never forwards a request to another segment.
+Collection and loop own-run writer helpers also acquire the applicable chain first, including
+collection drain. This storage prefix grants no new publication or nested execution capability.
 Chain handoff/finalization validates scheduler expiry on the database clock after its SHARE
 lock wait, in the same transaction. Collection and loop ports use that same transaction-typed check and preserve their existing
 wrong-shard and oversized-generation errors. Approval open/expire use the same post-lock check;

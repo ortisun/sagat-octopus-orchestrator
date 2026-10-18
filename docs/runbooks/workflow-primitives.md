@@ -536,3 +536,15 @@ errors, terminal/replay and audit/outbox boundaries remain unchanged. Native wai
 barriers verify ordering and guard lifetime; no new public composition or B0 completion is
 inferred. Existing outcome metrics and sensitive-data-free logs keep their current mapping.
 Evidence: tasks/project-completion/evidence/approval-chain-prefix-20261018/.
+
+
+### Collection/loop member-chain serialization (2026-10-18)
+
+Refs:T014-040, FR-014-004/006/014. Collection entry/drain and loop writer helpers retain an
+applicable scoped membership chain before own-run UPDATE in their owning transaction. Existing
+CAS, fences, quota/deadline/drain rules, typed errors, audit/outbox and telemetry mapping stay
+unchanged. Native app-role barriers prove chain wait precedes own-run acquisition; fresh/replay
+controls cover persisted writes. Shared guard lifetime is separately proven by the approval
+final-audit barrier. These trusted storage fixtures grant no new public composition, head
+authority or nested eligibility; complete B0/group and resource gates remain pending.
+Evidence: tasks/project-completion/evidence/scope-chain-prefix-20261018/.

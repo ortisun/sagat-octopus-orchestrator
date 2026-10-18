@@ -512,3 +512,70 @@ pub(super) async fn scope_checkpoint(pool: &sqlx::PgPool, tenant: uuid::Uuid) ->
     .await
     .expect("independent scope effects checkpoint")
 }
+
+/// Storage-only setup; supported public compositions are not changed by these tests.
+pub(super) async fn initialize_member_chain(
+    pool: &sqlx::PgPool,
+    tenant: sagat_domain::identity::TenantId,
+    namespace: sagat_domain::identity::NamespaceId,
+    run: sagat_domain::execution::RunId,
+) {
+    let mut tx = pool.begin().await.expect("member chain setup");
+    sqlx::query("UPDATE runs SET deadline_at=clock_timestamp()+interval '1 hour' WHERE tenant_id=$1 AND id=$2")
+        .bind(tenant.as_uuid()).bind(run.as_uuid()).execute(&mut *tx).await.expect("chain deadline");
+    sagat_infra_postgres::initialize_chain_in_transaction(
+        &mut tx,
+        &sagat_application::chain_progress::ChainInitialization::new(
+            sagat_domain::execution::ChainScope::new(tenant, namespace),
+            run,
+            sagat_domain::execution::ChainPolicy::new(2).expect("chain policy"),
+        ),
+    )
+    .await
+    .expect("initialize real member chain");
+    tx.commit().await.expect("atomic chain initialization");
+}
+
+/// Proves the prefix, not an independent near-commit lifetime oracle for every primitive.
+pub(super) async fn through_member_chain<T: std::fmt::Debug>(
+    pool: &sqlx::PgPool,
+    tenant: uuid::Uuid,
+    run: sagat_domain::execution::RunId,
+    mutation: impl std::future::Future<Output = T>,
+) -> T {
+    let mut guard = pool.begin().await.expect("member chain guard");
+    let backend: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *guard)
+        .await
+        .expect("chain guard backend");
+    sqlx::query(
+        "SELECT chain_id FROM execution_chains WHERE tenant_id=$1 AND chain_id=$2 FOR UPDATE",
+    )
+    .bind(tenant)
+    .bind(run.as_uuid())
+    .execute(&mut *guard)
+    .await
+    .expect("hold member chain");
+    let mut mutation = Box::pin(mutation);
+    tokio::select! {
+        result = &mut mutation => panic!("primitive bypassed its member chain: {result:?}"),
+        () = eventually("primitive waits on chain before own run", || async {
+            sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() \
+                 AND $1=ANY(pg_blocking_pids(pid)) AND query LIKE '%execution_chains%' \
+                 AND (NOT $2 OR usename='sagat_app'))",
+            ).bind(backend).bind(crate::support::as_runtime_role()).fetch_one(pool).await
+            .expect("actual primitive chain wait").then_some(())
+        }) => {}
+    }
+    let mut probe = pool.acquire().await.expect("primitive early run probe");
+    sqlx::query("SELECT id FROM runs WHERE tenant_id=$1 AND id=$2 FOR UPDATE NOWAIT")
+        .bind(tenant)
+        .bind(run.as_uuid())
+        .execute(&mut *probe)
+        .await
+        .expect("primitive waits on chain without retaining its own run");
+    drop(probe);
+    guard.rollback().await.expect("release member chain");
+    mutation.await
+}

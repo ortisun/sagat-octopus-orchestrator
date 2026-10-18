@@ -174,9 +174,16 @@ fn payload_matches(content: &[u8], digest: sagat_domain::workflow::Digest) -> bo
 }
 
 async fn lock_run(
-    conn: &mut PgConnection,
+    tx: &mut Transaction<'_, Postgres>,
     transition: &LoopTransition,
 ) -> Result<LockedRun, LoopProgressError> {
+    crate::execution::lock_member_chain(
+        tx,
+        transition.tenant_id(),
+        transition.namespace_id(),
+        transition.run_id(),
+    )
+    .await?;
     let row = sqlx::query(
         "SELECT namespace_id, workflow_version_id, run_version, status,stop_reason,stop_code \
          FROM runs \
@@ -184,7 +191,7 @@ async fn lock_run(
     )
     .bind(transition.tenant_id().as_uuid())
     .bind(transition.run_id().as_uuid())
-    .fetch_optional(&mut *conn)
+    .fetch_optional(&mut **tx)
     .await
     .map_err(store_error)?
     .ok_or(LoopProgressError::Missing)?;
