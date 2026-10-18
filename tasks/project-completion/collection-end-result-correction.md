@@ -212,3 +212,19 @@ Four new pure domain cases pass with existing targets: collection reducer17/17, 
 Native C1 found paused finish without consecutive routing and omitted-output INSTANCE_LIMIT replay mismatch. Amended native patch28a798893ddb1bcd70bf20fa697b0b4ba6ef49788b14c6f54fb537b69ccb6dc8 adds scheduler/locked-store pause gates, explicit consecutive owner routing, declaration-independent recorded refusal replay, bounded exact-instance source/terminal reads, and normal owner/output persistence before scope success. Fresh bounded native C2 returned None; patch is not installed or executed. Earlier601f6a8... is preserved. Mandatory quota implementation still blocks activation.
 
 Quota decision2983c9b5... has fresh bounded C2 None; [the selected correction](collection-result-quota-correction.md) includes exact known-effect refusal and production-frontier ordering, separate root/scoped persists inside one transaction, no mixed-writer widening. Its implementation and genuine legacy/report/upgrade cases remain pending. No fourth whole nested protocol review or general capability activation.
+## Coupled result and fault checkpoint — 2026-10-18
+
+The actual native collection/ordinary End integration is in `109908be`; its worker refusal
+dependency is `3710a5b7`. The following bounded composition in `54b9a066` has
+[real default/runtime evidence](evidence/collection-result-composition-20261018/reproduce.md):
+both persisted collection owner outputs, child End/Run scalar17 propagated by ordinary parent
+fanout, selected source/certificate preservation, HTTP classification under pinned outputSchema,
+late post-persist Finish failure/visibility/rollback/retry, and fresh-store bodyless replay
+retaining exact checkpoint bindings. A contradictory source is refused without mutation.
+The internal metadata constructor conveys no source authority or new production caller/grant.
+
+The old-source reader and normal waiting-worker discovery separately pass with immutable old
+production. This does not close .1d.0 or .1d.0Q: explicit prior-owner expression consumption,
+failure/pre-evaluation replay, remaining End Run-byte boundary, report transaction races and
+old compensable in-flight upgrade acceptance remain. No full fanout race matrix or general
+nested eligibility is inferred from the one public scalar child composition.

@@ -217,7 +217,7 @@ See evidence/leaf-certification-process-20261018. Other producer/observation/rel
 - [x] B1b.2c.1d.0Q5: Verified read-only legacy aggregate overlay/effective scalar/full writer guard, including actual frozen6c44a0e4 old producer and current owner/runtime five-case matrices; sourcece0cb786, evidence/legacy-output-view-20261018. Full process rollout and native drain producers remain separate.
 - [x] B1b.2c.1d.0Q6b: Use the authoritative effective scalar in existing full preflights after the PG override, preserving typed outcomes. Source012d746f; existing result gRPC5/5 each mode, legacy signal-specific acceptance separate.
 - [ ] B1b.2c.1d.0Q7c: Accept effective path/frontier accounting and same-snapshot stop/E behavior. Sourceb0a7ea5e, existing runtime byte_ceilings19/19; actual legacy E>L/CAS acceptance pending.
-- [ ] B1b.2c.1d.0Q8: Accept guarded native new-reason writer. Source9fd9405f, bounded C2 None and strict static gates; zero native behavioral tests yet.
+- [ ] B1b.2c.1d.0Q8: Accept guarded native new-reason writer. Source9fd9405f/109908be; four native behavioral cases pass, plus genuine empty/checkpointed guards and stopped-report compensation. ExistingOutputs live-worker discovery passes in ce6560c5; remaining evidence controls/upgrade gates stay open.
 - [x] B1b.2c.1d.0Q7bD: Correct unconditional report-outbox assumption to existing durable collection discovery, reviewed source/constitution/ADR mapping; scoped-output-refusal-discovery.md. Cold discovery and application acceptance remain pending.
 - [x] B1b.2c.1e: Prove real DETACH parent settlement followed by legitimate later child execution and original source replay.
 
@@ -243,3 +243,13 @@ fixture-only slice, without closing B1/B2 or permitting any production caller/cr
 - [x] B2e.2: Prove actual committed/aborted COMMIT acknowledgement loss and fresh same-command reconciliation; distinguish prefix wait from distinct-member Busy.
 - [x] B2e.3: Prove actual handoff/discovery race and same-tenant multiple-namespace members in one G; integrate remaining native recovery counterexamples.
 - [x] B2f: Add closed observations and requirement/test/contract evidence; broader gates stay pending.
+
+## Result composition checkpoint — 2026-10-18
+
+Native End results, owner outputs, successful-effect refusal and ordinary stopped-scope drain
+have focused default/runtime evidence. Actual old/current dormant-worker discovery also passes
+in both pool modes; sourcece6560c5. Source54b9a066 adds real child-to-parent scalar propagation,
+late Finish rollback/retry and fresh-store bodyless source-bound replay. Classification adds a
+collection-specific public HTTP disclosure case. See evidence/collection-result-composition-20261018.
+These close their described bounded observations only; .1d.0/.0Q, Q7c/Q8/Q9/Q10 and the eight
+canonical014 tasks remain open for the explicitly listed remaining controls and delivery gates.

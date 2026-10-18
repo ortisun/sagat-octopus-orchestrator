@@ -357,3 +357,196 @@ async fn collection_end_preserves_optional_null_and_typed_evaluation_semantics()
         f.verify().await;
     }
 }
+
+#[tokio::test]
+async fn collection_result_uses_pinned_output_schema_for_http_disclosure() {
+    const PUBLIC_ANSWER: &str = "collection-public-answer-7f4c";
+    const INTERNAL_MARKER: &str = "collection-internal-marker-7f4c";
+    const PII_MARKER: &str = "collection-pii-marker-7f4c";
+    const UNMARKED_KEY: &str = "collection-unmarked-key-7f4c";
+    const UNMARKED_MARKER: &str = "collection-unmarked-marker-7f4c";
+    const SECRET_MARKER: &str = "collection-secret-marker-7f4c";
+
+    let name = "collection-result-classification";
+    let mut document = collection_document(
+        name,
+        vec![
+            json!({"id":"work","type":"activity","activity":"line.reserve","next":"returned"}),
+            json!({"id":"returned","type":"return","result":"steps.work.output"}),
+        ],
+        1,
+    );
+    document["nodes"][1]["outputExpr"] = json!("steps.lines.output[0]");
+    document["outputSchema"] = json!({
+        "type":"object",
+        "additionalProperties":true,
+        "x-sagat-classification":"public",
+        "properties":{
+            "publicAnswer":{"type":"string","x-sagat-classification":"public"},
+            "internalMarker":{"type":"string","x-sagat-classification":"internal"},
+            "piiMarker":{"type":"string","x-sagat-classification":"pii"},
+            "secretMarker":{"type":"string","x-sagat-classification":"secret"}
+        }
+    });
+    let f = Flow::start(name, document, json!([{"id":1}])).await;
+    let (_log_guard, logs) = crate::support::logs::capture_at(tracing::Level::TRACE);
+
+    f.drive().await;
+    let tasks = f.poll().await;
+    assert_eq!(tasks.len(), 1);
+    f.complete(
+        &tasks[0],
+        json!({
+            "publicAnswer":PUBLIC_ANSWER,
+            "internalMarker":INTERNAL_MARKER,
+            "piiMarker":PII_MARKER,
+            (UNMARKED_KEY):UNMARKED_MARKER,
+            "secretMarker":SECRET_MARKER
+        }),
+    )
+    .await;
+    f.drive().await;
+    assert_eq!(f.run_status().await, "SUCCEEDED");
+
+    let ordinary = f
+        .api
+        .as_user(
+            reqwest::Method::GET,
+            &format!("/runs/{}", f.run),
+            "alice",
+            "acme",
+        )
+        .send()
+        .await
+        .expect("read ordinary run resource");
+    assert_eq!(ordinary.status(), reqwest::StatusCode::OK);
+    let ordinary_wire = ordinary.text().await.expect("ordinary run body");
+    for marker in [
+        PUBLIC_ANSWER,
+        INTERNAL_MARKER,
+        PII_MARKER,
+        UNMARKED_KEY,
+        UNMARKED_MARKER,
+        SECRET_MARKER,
+    ] {
+        assert!(
+            !ordinary_wire.contains(marker),
+            "ordinary run response exposed collection result marker {marker}"
+        );
+    }
+
+    let response = f
+        .api
+        .as_user(
+            reqwest::Method::POST,
+            &format!("/runs/{}/payload-disclosures", f.run),
+            "alice",
+            "acme",
+        )
+        .json(&json!({"source":"result"}))
+        .send()
+        .await
+        .expect("disclose actual collection Run result");
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get("cache-control")
+            .and_then(|value| value.to_str().ok()),
+        Some("private, no-store")
+    );
+    let disclosure_wire = response.text().await.expect("result disclosure body");
+    let disclosure: Value =
+        serde_json::from_str(&disclosure_wire).expect("classified result response");
+    assert_eq!(disclosure["selection"]["source"], "result");
+    assert_eq!(disclosure["policy"], "classified-v1");
+    assert_eq!(disclosure["caller"]["revealPii"], "not_granted");
+    assert_eq!(disclosure["caller"]["revealed"], false);
+    assert_eq!(disclosure["kind"], "disclosed");
+    assert_eq!(disclosure["schema"]["carrier"], "outputSchema");
+    assert_eq!(disclosure["schema"]["versionNumber"], 1);
+    assert_eq!(disclosure["schema"]["rules"], 1);
+
+    let children = disclosure["tree"]["children"]
+        .as_array()
+        .expect("classified result children");
+    let child = |name: &str| {
+        children
+            .iter()
+            .find(|entry| entry["name"] == name)
+            .unwrap_or_else(|| panic!("classified result child {name}"))
+    };
+    assert_eq!(child("publicAnswer")["node"]["kind"], "value");
+    assert_eq!(child("publicAnswer")["node"]["level"], "public");
+    assert_eq!(child("publicAnswer")["node"]["value"], PUBLIC_ANSWER);
+    assert_eq!(child("internalMarker")["node"]["kind"], "value");
+    assert_eq!(child("internalMarker")["node"]["value"], INTERNAL_MARKER);
+    assert_eq!(child("piiMarker")["node"]["kind"], "withheld");
+    assert_eq!(child("piiMarker")["node"]["reason"], "LEVEL_NOT_PERMITTED");
+    assert_eq!(child("secretMarker")["node"]["kind"], "withheld");
+    assert_eq!(child("secretMarker")["node"]["reason"], "SECRET");
+    for marker in [PII_MARKER, UNMARKED_KEY, UNMARKED_MARKER, SECRET_MARKER] {
+        assert!(
+            !disclosure_wire.contains(marker),
+            "classified result response exposed private marker {marker}"
+        );
+    }
+
+    let audit = f
+        .api
+        .as_user(
+            reqwest::Method::GET,
+            &format!(
+                "/audit?action=payload.disclosed&resourceId={}&actor=alice&limit=20",
+                f.run
+            ),
+            "alice",
+            "acme",
+        )
+        .send()
+        .await
+        .expect("read disclosure audit through current tenant authorization");
+    assert_eq!(audit.status(), reqwest::StatusCode::OK);
+    let audit_wire = audit.text().await.expect("audit response body");
+    let audit: Value = serde_json::from_str(&audit_wire).expect("audit page");
+    let record = audit["items"]
+        .as_array()
+        .expect("audit items")
+        .iter()
+        .find(|record| {
+            record["action"] == "payload.disclosed"
+                && record["resourceId"] == f.run.to_string()
+                && record["reason"] == "classified-v1:result"
+        })
+        .expect("classified collection result disclosure audit");
+    assert_eq!(record["actor"], "alice");
+    assert_eq!(record["resourceType"], "run");
+    assert!(
+        record["traceId"]
+            .as_str()
+            .is_some_and(|trace| !trace.is_empty()),
+        "disclosure audit retains trace correlation"
+    );
+    for marker in [
+        PUBLIC_ANSWER,
+        "publicAnswer",
+        "internalMarker",
+        "piiMarker",
+        "secretMarker",
+        INTERNAL_MARKER,
+        PII_MARKER,
+        UNMARKED_KEY,
+        UNMARKED_MARKER,
+        SECRET_MARKER,
+    ] {
+        assert!(
+            !audit_wire.contains(marker),
+            "audit response exposed payload marker {marker}"
+        );
+        assert!(
+            !logs.text().contains(marker),
+            "structured logs exposed payload marker {marker}"
+        );
+    }
+    f.verify().await;
+}

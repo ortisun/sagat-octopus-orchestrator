@@ -3281,3 +3281,18 @@ producer composition, native End/scheduler activation, full old-binary rollout, 
 nested capacity and final release gates remain open. No canonical runtime task is closed by Q5.
 Evidence: `tasks/project-completion/evidence/legacy-output-view-20261018/reproduce.md` and
 `scoped-output-refusal-red-20261018/reproduce.md`.
+## Collection result correction checkpoint — 2026-10-18
+
+The focused [composition evidence](../../tasks/project-completion/evidence/collection-result-composition-20261018/reproduce.md)
+adds owner/End/Run result retention, actual scalar child-to-parent fanout, pinned classified HTTP
+result disclosure, post-persist Finish rollback/retry and fresh-store source-bound bodyless replay.
+Default/runtime selections pass, as do strict Clippy, formatting and architecture on 1,121 pinned
+native inputs. Public Flow producers use sagat_app in both invocations. No production source or
+scoped Finish INSERT grant/caller is introduced.
+
+The [separate old/current gate](../../tasks/project-completion/evidence/collection-discovery-integration-20261018/reproduce.md)
+passes both current store roles with unchanged old production: an effective-over-limit OPEN
+collection is discovered with a live RUNNING worker, records its audited drain/stop, respects
+the real worker lease and finishes without rewriting closed source. This is not old in-flight
+report acceptance, mixed-writer rollout, OS restart or uncertain COMMIT. The local correction
+and all eight canonical open feature014 tasks remain open for their remaining required gates.
