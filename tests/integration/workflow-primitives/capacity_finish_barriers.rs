@@ -4,7 +4,7 @@ use crate::support::eventually;
 use tokio::time::{Duration, timeout};
 
 // The adapter under test always uses the runtime role, independently of the wider suite mode.
-async fn runtime_fixture() -> NativeFixture {
+pub(super) async fn runtime_fixture() -> NativeFixture {
     let mut fixture = native_fixture(false).await;
     fixture.f.w.execution_pool = fixture.f.w.db.runtime_pool_with(16).await;
     let role: String = sqlx::query_scalar("SELECT current_user")

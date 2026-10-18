@@ -1,0 +1,623 @@
+diff --git a/tests/integration/workflow-primitives/capacity_finish.rs b/tests/integration/workflow-primitives/capacity_finish.rs
+index 8188c18f..4fe71272 100644
+--- a/tests/integration/workflow-primitives/capacity_finish.rs
++++ b/tests/integration/workflow-primitives/capacity_finish.rs
+@@ -1030,3 +1030,8 @@ async fn contradictory_final_outcome_refuses_finish_and_root_binding_grants_no_a
+ 
+ #[path = "capacity_finish_barriers.rs"]
+ mod barriers;
++
++#[path = "capacity_finish_commit_loss.rs"]
++mod commit_loss;
++#[path = "capacity_finish_proxy.rs"]
++mod commit_proxy;
+diff --git a/tests/integration/workflow-primitives/capacity_finish_barriers.rs b/tests/integration/workflow-primitives/capacity_finish_barriers.rs
+index d4705dc8..57fd46c1 100644
+--- a/tests/integration/workflow-primitives/capacity_finish_barriers.rs
++++ b/tests/integration/workflow-primitives/capacity_finish_barriers.rs
+@@ -4,7 +4,7 @@ use crate::support::eventually;
+ use tokio::time::{Duration, timeout};
+ 
+ // The adapter under test always uses the runtime role, independently of the wider suite mode.
+-async fn runtime_fixture() -> NativeFixture {
++pub(super) async fn runtime_fixture() -> NativeFixture {
+     let mut fixture = native_fixture(false).await;
+     fixture.f.w.execution_pool = fixture.f.w.db.runtime_pool_with(16).await;
+     let role: String = sqlx::query_scalar("SELECT current_user")
+diff --git a/tests/integration/workflow-primitives/capacity_finish_proxy.rs b/tests/integration/workflow-primitives/capacity_finish_proxy.rs
+new file mode 100644
+index 00000000..6ac1f18f
+--- /dev/null
++++ b/tests/integration/workflow-primitives/capacity_finish_proxy.rs
+@@ -0,0 +1,329 @@
++//! One-shot local PostgreSQL wire relay for losing an actual dispatched COMMIT response.
++//! Coupled to pinned SQLx0.9's Q/COMMIT path. No TLS/COPY/pipelining/cancel proxy support.
++//! Never logs frame bodies; authentication passes transparently to the disposable test server.
++
++use sqlx::{
++    PgPool,
++    postgres::{PgConnectOptions, PgPoolOptions, PgSslMode},
++};
++use std::{
++    io,
++    sync::{
++        Arc,
++        atomic::{AtomicU8, Ordering},
++    },
++};
++use tokio::{
++    io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
++    net::{TcpListener, TcpStream},
++    sync::oneshot,
++    task::JoinHandle,
++    time::{Duration, timeout},
++};
++
++const FORWARDING: u8 = 0;
++const ARMED: u8 = 1;
++const COMMIT_SENT: u8 = 2;
++const MAX_FRAME: usize = 1024 * 1024;
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(super) enum CommitResolution {
++    Committed,
++    Aborted23514,
++}
++
++pub(super) struct CommitAckLossProxy {
++    pub pool: PgPool,
++    state: Arc<AtomicU8>,
++    sent: Option<oneshot::Receiver<()>>,
++    lose_ack: Option<oneshot::Sender<()>>,
++    disconnected: Option<oneshot::Receiver<()>>,
++    resolved: Option<oneshot::Receiver<CommitResolution>>,
++    task: Option<JoinHandle<io::Result<()>>>,
++}
++impl CommitAckLossProxy {
++    pub async fn start(db: &crate::support::TestDb, expected: CommitResolution) -> Self {
++        let upstream: PgConnectOptions = db
++            .url_for(
++                crate::support::RUNTIME_ROLE,
++                crate::support::RUNTIME_ROLE_PASSWORD,
++            )
++            .parse()
++            .expect("runtime PostgreSQL options");
++        assert!(
++            upstream.get_socket().is_none(),
++            "test relay requires local TCP"
++        );
++        let host = upstream.get_host().to_owned();
++        let port = upstream.get_port();
++        let listener = TcpListener::bind(("127.0.0.1", 0))
++            .await
++            .expect("local one-shot listener");
++        let proxy_port = listener.local_addr().expect("listener address").port();
++        let state = Arc::new(AtomicU8::new(FORWARDING));
++        let (sent_tx, sent) = oneshot::channel();
++        let (lose_ack, lose_rx) = oneshot::channel();
++        let (closed_tx, disconnected) = oneshot::channel();
++        let (resolved_tx, resolved) = oneshot::channel();
++        let task = tokio::spawn(relay(
++            listener,
++            host,
++            port,
++            expected,
++            Arc::clone(&state),
++            Controls {
++                sent: sent_tx,
++                lose: lose_rx,
++                closed: closed_tx,
++                resolved: resolved_tx,
++            },
++        ));
++        let options = upstream
++            .host("127.0.0.1")
++            .port(proxy_port)
++            .ssl_mode(PgSslMode::Disable)
++            .application_name("sagat-test-capacity-commit-loss");
++        let pool = PgPoolOptions::new()
++            .min_connections(0)
++            .max_connections(1)
++            .test_before_acquire(false)
++            .connect_lazy_with(options);
++        // Own the abort-on-drop proxy before the first startup await. Cancellation during
++        // connect/authentication drops Self and aborts the already-spawned relay as well.
++        let proxy = Self {
++            pool,
++            state,
++            sent: Some(sent),
++            lose_ack: Some(lose_ack),
++            disconnected: Some(disconnected),
++            resolved: Some(resolved),
++            task: Some(task),
++        };
++        match timeout(Duration::from_secs(5), proxy.pool.acquire()).await {
++            Ok(Ok(connection)) => drop(connection),
++            _ => panic!("authenticated single proxied runtime connection failed"),
++        }
++        proxy
++    }
++    pub fn arm(&self) {
++        assert_eq!(
++            self.state
++                .compare_exchange(FORWARDING, ARMED, Ordering::AcqRel, Ordering::Acquire),
++            Ok(FORWARDING)
++        );
++    }
++    pub async fn wait_sent(&mut self) {
++        timeout(
++            Duration::from_secs(5),
++            self.sent.take().expect("one commit observation"),
++        )
++        .await
++        .expect("COMMIT dispatch deadline")
++        .expect("relay forwarded COMMIT");
++    }
++    /// Close only the client reply direction, retaining the upstream transaction until resolved.
++    pub async fn lose_reply(&mut self) {
++        self.lose_ack
++            .take()
++            .expect("one response loss")
++            .send(())
++            .expect("live relay");
++        timeout(
++            Duration::from_secs(5),
++            self.disconnected.take().expect("disconnect observation"),
++        )
++        .await
++        .expect("client EOF deadline")
++        .expect("reply socket closed");
++    }
++    pub async fn resolution(&mut self) -> CommitResolution {
++        timeout(
++            Duration::from_secs(5),
++            self.resolved.take().expect("one server resolution"),
++        )
++        .await
++        .expect("server resolution deadline")
++        .expect("observed backend idle after result")
++    }
++    pub async fn close(mut self) {
++        timeout(Duration::from_secs(5), self.pool.close())
++            .await
++            .expect("proxy pool closes");
++        timeout(
++            Duration::from_secs(5),
++            self.task.as_mut().expect("relay task"),
++        )
++        .await
++        .expect("relay ends")
++        .expect("relay task joins")
++        .expect("valid protocol resolution");
++        self.task = None; // Only clear ownership after the task has actually joined.
++    }
++}
++impl Drop for CommitAckLossProxy {
++    fn drop(&mut self) {
++        if let Some(task) = self.task.take() {
++            task.abort();
++        }
++    }
++}
++struct Controls {
++    sent: oneshot::Sender<()>,
++    lose: oneshot::Receiver<()>,
++    closed: oneshot::Sender<()>,
++    resolved: oneshot::Sender<CommitResolution>,
++}
++struct Frame {
++    tag: u8,
++    wire: Vec<u8>,
++}
++impl Frame {
++    fn body(&self) -> &[u8] {
++        &self.wire[5..]
++    }
++}
++fn invalid(message: &'static str) -> io::Error {
++    io::Error::new(io::ErrorKind::InvalidData, message)
++}
++async fn startup<R: AsyncRead + Unpin>(reader: &mut R) -> io::Result<Vec<u8>> {
++    let mut header = [0_u8; 4];
++    reader.read_exact(&mut header).await?;
++    let length =
++        usize::try_from(u32::from_be_bytes(header)).map_err(|_| invalid("startup length"))?;
++    if !(8..=MAX_FRAME).contains(&length) {
++        return Err(invalid("startup frame bound"));
++    }
++    let mut wire = vec![0; length];
++    wire[..4].copy_from_slice(&header);
++    reader.read_exact(&mut wire[4..]).await?;
++    if wire[4..8] != 196608_u32.to_be_bytes() {
++        return Err(invalid("only protocol3 without TLS negotiation"));
++    }
++    Ok(wire)
++}
++async fn frame<R: AsyncRead + Unpin>(reader: &mut R) -> io::Result<Frame> {
++    let mut header = [0_u8; 5];
++    reader.read_exact(&mut header).await?;
++    let length = usize::try_from(u32::from_be_bytes(
++        header[1..].try_into().expect("four-byte length"),
++    ))
++    .map_err(|_| invalid("frame length"))?;
++    if !(4..=MAX_FRAME).contains(&length) {
++        return Err(invalid("tagged frame bound"));
++    }
++    let mut wire = vec![0; length + 1];
++    wire[..5].copy_from_slice(&header);
++    reader.read_exact(&mut wire[5..]).await?;
++    Ok(Frame {
++        tag: header[0],
++        wire,
++    })
++}
++fn error_field(mut body: &[u8], field: u8) -> Option<&[u8]> {
++    while let Some((&tag, rest)) = body.split_first() {
++        if tag == 0 {
++            return None;
++        }
++        let end = rest.iter().position(|byte| *byte == 0)?;
++        if tag == field {
++            return Some(&rest[..end]);
++        }
++        body = rest.get(end + 1..)?;
++    }
++    None
++}
++async fn relay(
++    listener: TcpListener,
++    host: String,
++    port: u16,
++    expected: CommitResolution,
++    state: Arc<AtomicU8>,
++    control: Controls,
++) -> io::Result<()> {
++    let (mut client, _) = listener.accept().await?;
++    let mut upstream = TcpStream::connect((host.as_str(), port)).await?;
++    upstream.write_all(&startup(&mut client).await?).await?;
++    let (mut client_read, mut client_write) = client.into_split();
++    let (mut server_read, mut server_write) = upstream.into_split();
++    let client_state = Arc::clone(&state);
++    let Controls {
++        sent,
++        mut lose,
++        closed,
++        resolved,
++    } = control;
++    let frontend = async move {
++        loop {
++            let request = frame(&mut client_read).await?;
++            if request.tag == b'Q'
++                && request.body() == b"COMMIT\0"
++                && client_state
++                    .compare_exchange(ARMED, COMMIT_SENT, Ordering::AcqRel, Ordering::Acquire)
++                    .is_ok()
++            {
++                server_write.write_all(&request.wire).await?;
++                server_write.flush().await?;
++                let _ = sent.send(());
++                // Ignore later client-side rollback cleanup; only this dispatched COMMIT is tested.
++                return std::future::pending::<io::Result<()>>().await;
++            }
++            server_write.write_all(&request.wire).await?;
++        }
++    };
++    let backend = async move {
++        let mut closed = Some(closed);
++        let mut resolved = Some(resolved);
++        let mut disconnected = false;
++        let mut outcome = None;
++        let mut withheld = 0;
++        loop {
++            // Keep this read future pinned when the control signal wins. No partially read
++            // protocol header/body is discarded by cancellation of read_exact.
++            let response = {
++                let next = frame(&mut server_read);
++                tokio::pin!(next);
++                loop {
++                    tokio::select! {
++                        result=&mut next=>break result?,
++                        request=&mut lose,if !disconnected=>{
++                            request.map_err(|_|invalid("missing disconnect request"))?;
++                            if state.load(Ordering::Acquire)!=COMMIT_SENT{return Err(invalid("disconnect before COMMIT dispatch"));}
++                            client_write.shutdown().await?;disconnected=true;
++                            let _=closed.take().expect("one reply shutdown").send(());
++                        }
++                    }
++                }
++            };
++            if state.load(Ordering::Acquire) != COMMIT_SENT {
++                client_write.write_all(&response.wire).await?;
++                continue;
++            }
++            withheld += 1;
++            if withheld > 8 {
++                return Err(invalid("post-COMMIT frame bound"));
++            }
++            match response.tag {
++                b'C' if response.body() == b"COMMIT\0" && outcome.is_none() => {
++                    outcome = Some(CommitResolution::Committed)
++                }
++                b'E' if outcome.is_none()
++                    && error_field(response.body(), b'C') == Some(b"23514".as_slice())
++                    && error_field(response.body(), b'n')
++                        == Some(b"capacity_finish_proxy_forced_abort".as_slice()) =>
++                {
++                    outcome = Some(CommitResolution::Aborted23514)
++                }
++                b'Z' if response.body() == b"I" && outcome == Some(expected) && disconnected => {
++                    let _ = resolved
++                        .take()
++                        .expect("one outcome")
++                        .send(outcome.expect("validated backend resolution"));
++                    return Ok(());
++                }
++                b'N' => {}
++                _ => return Err(invalid("unexpected post-COMMIT resolution frame")),
++            }
++        }
++    };
++    tokio::select! { result=frontend=>result,result=backend=>result }
++}
+diff --git a/tests/integration/workflow-primitives/capacity_finish_commit_loss.rs b/tests/integration/workflow-primitives/capacity_finish_commit_loss.rs
+new file mode 100644
+index 00000000..01f45a0b
+--- /dev/null
++++ b/tests/integration/workflow-primitives/capacity_finish_commit_loss.rs
+@@ -0,0 +1,256 @@
++//! Actual unresolved COMMIT with a lost client reply. No production proxy or quota delta.
++use super::commit_proxy::{CommitAckLossProxy, CommitResolution};
++use super::*;
++use crate::support::eventually;
++use tokio::time::{Duration, timeout};
++
++async fn peer(n: &NativeFixture) -> (Uuid, RunId) {
++    let (_, chain) = spawn_native_child(&n.f.w, false).await;
++    let report = n.scheduler.tick().await;
++    assert_eq!(report.children_started, 1, "{report:?}");
++    assert_eq!(report.failed, 0);
++    assert_eq!(complete_native_activity(n).await, chain);
++    let member = Uuid::new_v4();
++    let mut tx =
++        n.f.w
++            .db
++            .pool
++            .begin()
++            .await
++            .expect("owner-only two-member baseline");
++    sqlx::query("INSERT INTO capacity_group_members(tenant_id,group_id,member_id,namespace_id,member_kind,chain_id,state) VALUES($1,$2,$3,$4,'CHILD_ROOT',$5,'ACTIVE')")
++        .bind(n.f.w.admin.tenant_id().as_uuid()).bind(n.f.group).bind(member).bind(n.f.w.namespace.id().as_uuid()).bind(chain.as_uuid()).execute(&mut *tx).await.expect("actual second child binding");
++    sqlx::query(
++        "UPDATE capacity_groups SET revision=2,active_members=2 WHERE tenant_id=$1 AND group_id=$2",
++    )
++    .bind(n.f.w.admin.tenant_id().as_uuid())
++    .bind(n.f.group)
++    .execute(&mut *tx)
++    .await
++    .expect("fixture group count");
++    tx.commit().await.expect("two actual child members");
++    (member, chain)
++}
++
++async fn install_commit_probe(f: &Fixture, key: i64, resolution: CommitResolution) {
++    let outcome = match resolution {
++        CommitResolution::Committed => "RETURN NEW;",
++        CommitResolution::Aborted23514 => {
++            "RAISE EXCEPTION USING ERRCODE='23514',CONSTRAINT='capacity_finish_proxy_forced_abort',MESSAGE='test-only forced capacity Finish commit abort';"
++        }
++    };
++    // Only a generated positive integer and the two fixed clauses above enter this test DDL.
++    let ddl = format!(
++        "CREATE FUNCTION capacity_finish_proxy_commit_probe() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_advisory_xact_lock({key}); {outcome} END $$; CREATE CONSTRAINT TRIGGER capacity_finish_proxy_commit_gate AFTER INSERT ON capacity_group_finish_receipts DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION capacity_finish_proxy_commit_probe();"
++    );
++    sqlx::raw_sql(sqlx::AssertSqlSafe(ddl))
++        .execute(&f.w.db.pool)
++        .await
++        .expect("labelled test-only deferred COMMIT probe");
++}
++async fn waiting_commit(f: &Fixture, gate: i32) -> i32 {
++    eventually("server is executing actual COMMIT deferred trigger behind the test gate",||async {
++        sqlx::query_scalar::<_,i32>("SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND application_name='sagat-test-capacity-commit-loss' AND query='COMMIT' AND wait_event_type='Lock' AND $1=ANY(pg_blocking_pids(pid))")
++            .bind(gate).fetch_optional(&f.w.db.pool).await.expect("actual COMMIT and blocker observation")
++    }).await
++}
++async fn own_guards_remain_held(f: &Fixture, head: RunId) {
++    for statement in [
++        "SELECT chain_id FROM execution_chains WHERE tenant_id=$1 AND namespace_id=$2 AND chain_id=$3 FOR UPDATE NOWAIT",
++        "SELECT id FROM runs WHERE tenant_id=$1 AND namespace_id=$2 AND id=$3 FOR UPDATE NOWAIT",
++    ] {
++        error_is(
++            sqlx::query(statement)
++                .bind(f.w.admin.tenant_id().as_uuid())
++                .bind(f.w.namespace.id().as_uuid())
++                .bind(head.as_uuid())
++                .execute(&f.w.db.pool)
++                .await
++                .expect_err("own execution guard retained through actual COMMIT"),
++            "55P03",
++            None,
++        );
++    }
++    error_is(sqlx::query("SELECT group_id FROM capacity_groups WHERE tenant_id=$1 AND group_id=$2 FOR UPDATE NOWAIT")
++        .bind(f.w.admin.tenant_id().as_uuid()).bind(f.group).execute(&f.w.db.pool).await.expect_err("G retained through actual COMMIT"),"55P03",None);
++    error_is(
++        sqlx::query(
++            "SELECT shard FROM scheduler_shards WHERE shard=run_shard($1) FOR UPDATE NOWAIT",
++        )
++        .bind(head.as_uuid())
++        .execute(&f.w.db.pool)
++        .await
++        .expect_err("own shard SHARE retained through actual COMMIT"),
++        "55P03",
++        None,
++    );
++}
++
++#[tokio::test]
++async fn unknown_commit_reconciles_actual_commit_and_abort_without_inventing_a_new_key() {
++    for resolution in [CommitResolution::Committed, CommitResolution::Aborted23514] {
++        let n = super::barriers::runtime_fixture().await;
++        let head = complete_native_activity(&n).await;
++        let (peer_member, peer_head) = peer(&n).await;
++        let command = native_command(&n, head).await;
++        let peer_command = native_member_command(&n.f, peer_member, peer_head, peer_head).await;
++        let before = execution_snapshot(&n.f).await;
++        let key = i64::try_from(
++            u64::from_be_bytes(
++                Uuid::new_v4().as_bytes()[..8]
++                    .try_into()
++                    .expect("eight random bytes"),
++            ) >> 1,
++        )
++        .expect("positive advisory key");
++        install_commit_probe(&n.f, key, resolution).await;
++        let mut gate =
++            n.f.w
++                .db
++                .pool
++                .begin()
++                .await
++                .expect("test-only COMMIT advisory gate");
++        sqlx::query("SELECT pg_advisory_xact_lock($1)")
++            .bind(key)
++            .execute(&mut *gate)
++            .await
++            .expect("test gate held");
++        let gate_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
++            .fetch_one(&mut *gate)
++            .await
++            .expect("gate pid");
++        let mut proxy = CommitAckLossProxy::start(&n.f.w.db, resolution).await;
++        let user: String = sqlx::query_scalar("SELECT current_user")
++            .fetch_one(&proxy.pool)
++            .await
++            .expect("proxied native role");
++        assert_eq!(user, "sagat_app");
++        proxy.arm();
++        let pool = proxy.pool.clone();
++        let pending_command = command.clone();
++        let original = tokio::spawn(async move {
++            PgCapacityFinishStore::new(pool)
++                .finish_current_child_root(&pending_command)
++                .await
++        });
++        proxy.wait_sent().await;
++        let committing_pid = waiting_commit(&n.f, gate_pid).await;
++        own_guards_remain_held(&n.f, head).await;
++        assert_eq!(
++            finish_counts(&n.f).await,
++            (0, 0, 0),
++            "uncommitted writes remain invisible"
++        );
++        // Close only the reply socket while upstream COMMIT is still executing. SQLx observes
++        // EOF, while PostgreSQL still holds the original chain/run/G/shard and unresolved writes.
++        proxy.lose_reply().await;
++        let unknown = timeout(Duration::from_secs(5), original)
++            .await
++            .expect("native unknown outcome deadline")
++            .expect("original task")
++            .expect_err("COMMIT response was lost");
++        assert_eq!(
++            unknown,
++            CapacityFinishError::CommitOutcomeUnknown {
++                operation_key: command.operation_key
++            }
++        );
++        assert_eq!(waiting_commit(&n.f, gate_pid).await, committing_pid);
++
++        let direct = PgCapacityFinishStore::new(n.f.w.execution_pool.clone());
++        assert_eq!(
++            timeout(
++                Duration::from_secs(2),
++                direct.finish_current_child_root(&peer_command)
++            )
++            .await
++            .expect("distinct member reaches G NOWAIT"),
++            Err(CapacityFinishError::Busy)
++        );
++        // Different own-chain/run guards must have been released even though the original G is held.
++        sqlx::query("SELECT chain_id FROM execution_chains WHERE tenant_id=$1 AND namespace_id=$2 AND chain_id=$3 FOR UPDATE NOWAIT")
++            .bind(n.f.w.admin.tenant_id().as_uuid()).bind(n.f.w.namespace.id().as_uuid()).bind(peer_head.as_uuid()).execute(&n.f.w.db.pool).await.expect("Busy peer releases own chain");
++        sqlx::query("SELECT id FROM runs WHERE tenant_id=$1 AND namespace_id=$2 AND id=$3 FOR UPDATE NOWAIT")
++            .bind(n.f.w.admin.tenant_id().as_uuid()).bind(n.f.w.namespace.id().as_uuid()).bind(peer_head.as_uuid()).execute(&n.f.w.db.pool).await.expect("Busy peer releases own run");
++
++        let peer_state:(String,Option<time::OffsetDateTime>)=sqlx::query_as("SELECT state,finished_at FROM capacity_group_members WHERE tenant_id=$1 AND group_id=$2 AND member_id=$3")
++            .bind(n.f.w.admin.tenant_id().as_uuid()).bind(n.f.group).bind(peer_member).fetch_one(&n.f.w.db.pool).await.expect("Busy peer membership unchanged");
++        assert_eq!(peer_state, ("ACTIVE".into(), None));
++
++        let pool = n.f.w.execution_pool.clone();
++        let same = command.clone();
++        let mut reconciling = tokio::spawn(async move {
++            PgCapacityFinishStore::new(pool)
++                .finish_current_child_root(&same)
++                .await
++        });
++        eventually("same-command reconciliation waits on unresolved original own chain, before G",||async {
++            sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND usename='sagat_app' AND position('FROM execution_chains' in query)>0 AND wait_event_type='Lock' AND $1=ANY(pg_blocking_pids(pid)))")
++                .bind(committing_pid).fetch_one(&n.f.w.db.pool).await.expect("same-command prefix wait").then_some(())
++        }).await;
++        assert!(
++            timeout(Duration::from_millis(100), &mut reconciling)
++                .await
++                .is_err(),
++            "prefix timeout cannot establish original rollback"
++        );
++        reconciling.abort();
++        assert!(
++            reconciling
++                .await
++                .expect_err("reconciliation was cancelled")
++                .is_cancelled()
++        );
++        assert_eq!(waiting_commit(&n.f, gate_pid).await, committing_pid);
++        assert_eq!(finish_counts(&n.f).await, (0, 0, 0));
++        own_guards_remain_held(&n.f, head).await;
++        gate.rollback()
++            .await
++            .expect("release test-only COMMIT gate");
++        assert_eq!(
++            proxy.resolution().await,
++            resolution,
++            "actual C/E plus ReadyForQuery idle, never delivered to client"
++        );
++        proxy.close().await;
++        match resolution {
++            CommitResolution::Committed => {
++                assert_eq!(finish_counts(&n.f).await, (1, 1, 1));
++                assert_eq!(
++                    state(&n.f.w.db.pool, &n.f).await,
++                    (3, 2, 1, "VACANT".into(), "FINISHED".into())
++                );
++            }
++            CommitResolution::Aborted23514 => {
++                assert_eq!(finish_counts(&n.f).await, (0, 0, 0));
++                assert_eq!(
++                    state(&n.f.w.db.pool, &n.f).await,
++                    (2, 1, 2, "HELD".into(), "ACTIVE".into())
++                );
++            }
++        }
++        assert_eq!(execution_snapshot(&n.f).await, before);
++        sqlx::raw_sql("DROP TRIGGER capacity_finish_proxy_commit_gate ON capacity_group_finish_receipts; DROP FUNCTION capacity_finish_proxy_commit_probe();")
++            .execute(&n.f.w.db.pool).await.expect("remove labelled probe");
++        let recovered = direct
++            .finish_current_child_root(&command)
++            .await
++            .expect("same original command after confirmed server resolution");
++        assert_eq!(
++            recovered.replayed,
++            resolution == CommitResolution::Committed
++        );
++        assert_eq!(
++            (
++                recovered.revision,
++                recovered.epoch,
++                recovered.active_members
++            ),
++            (3, 2, 1)
++        );
++        assert_eq!(finish_counts(&n.f).await, (1, 1, 1));
++        assert_eq!(execution_snapshot(&n.f).await, before);
++        crate::hint_contract::assert_outbox_matches_the_contract(&n.f.w.db.pool).await;
++    }
++}

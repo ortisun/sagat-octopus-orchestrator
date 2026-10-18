@@ -1030,3 +1030,8 @@ async fn contradictory_final_outcome_refuses_finish_and_root_binding_grants_no_a
 
 #[path = "capacity_finish_barriers.rs"]
 mod barriers;
+
+#[path = "capacity_finish_commit_loss.rs"]
+mod commit_loss;
+#[path = "capacity_finish_proxy.rs"]
+mod commit_proxy;

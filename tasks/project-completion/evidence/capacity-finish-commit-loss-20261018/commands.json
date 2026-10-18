@@ -1,0 +1,114 @@
+[
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "capacity_finish::commit_loss::",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 101,
+    "seconds": 7.47,
+    "log": "commit-loss-first.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "capacity_finish::commit_loss::",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "seconds": 37.24,
+    "log": "commit-loss-second.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "capacity_finish::commit_loss::",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "runtime_mode": false,
+    "exit_code": 0,
+    "seconds": 36.57,
+    "log": "commit-loss-default.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "capacity_finish::commit_loss::",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "runtime_mode": true,
+    "exit_code": 0,
+    "seconds": 5.04,
+    "log": "commit-loss-runtime.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "capacity_finish::commit_loss::",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "runtime_mode": false,
+    "exit_code": 0,
+    "seconds": 36.7,
+    "log": "commit-loss-final-default.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "capacity_finish::commit_loss::",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "runtime_mode": true,
+    "exit_code": 0,
+    "seconds": 5.02,
+    "log": "commit-loss-final-runtime.txt"
+  }
+]

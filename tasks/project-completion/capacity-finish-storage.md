@@ -170,3 +170,9 @@ no native finality, receipt replay or production execution guarantee follows fro
 B2e.1 native barriers/confirmed aborts are tested; evidence/capacity-finish-barriers-20261018.
 B2e.2/3 unknown-COMMIT/reconciliation and remaining authority-race evidence stay pending. All
 native adapter tests in that barrier unit explicitly connect as sagat_app even in default mode.
+
+
+B2e.2 actual COMMIT response loss/reconciliation is tested in both server outcome branches;
+evidence/capacity-finish-commit-loss-20261018. B2e.3 authority-race/multiple-namespace and broader
+recovery/release gates remain open. The test caller retains the original command in memory only;
+a production caller still requires durable intent/reconstruction before use.

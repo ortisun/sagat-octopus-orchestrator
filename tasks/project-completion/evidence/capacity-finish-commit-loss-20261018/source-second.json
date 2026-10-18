@@ -1,0 +1,4 @@
+{
+  "tests/integration/workflow-primitives/capacity_finish_proxy.rs": "d91f52b93d44aa6f9aafee2a44a4de264e6f24c76ab2fc6c7b826a07f01ec198",
+  "tests/integration/workflow-primitives/capacity_finish_commit_loss.rs": "a238f421ac760d073c3fedd342d498140825bac10061ea3931a0159b1810308b"
+}

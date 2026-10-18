@@ -2187,3 +2187,26 @@ Clippy8.01s, final fmt and24-crate architecture pass. No production adapter chan
 COMMIT acknowledgement loss/reconciliation and B2e.3 handoff/multiple-namespace counterexamples
 remain open, as do B2f observations/fullB1/B2/canonical runtime/SDK/resource/rollout gates. Evidence:
 tasks/project-completion/evidence/capacity-finish-barriers-20261018/manifest.json.
+
+
+## Native capacity unresolved COMMIT recovery — 2026-10-18
+
+Refs:T014-014/017/040. B2e.2 test-only local wire relay loses the reply while the real PG server
+still executes native COMMIT behind a labelled deferred receipt advisory gate. Actual query/lock
+observations prove dispatch and retained own chain/run/G/shard. Native caller returns Unknown
+with the original key while the server remains unresolved. A distinct current FINAL member gets
+G Busy and releases its own locks while preserving membership; same-command reconciliation blocks on the
+original own-chain prefix, times out/cancels without establishing original rollback.
+
+After gate release, the relay withholds actual committed C/COMMIT or labelled23514 abort plus Z/I.
+A fresh direct runtime transaction using the unchanged original command replays commitment or
+applies after confirmed abort; receipt/audit/hint end at1each, execution/usage unchanged, actual
+hint canonical validation passes. This is actual native response loss, not discarded success.
+One automated test executes both actual outcomes: final default1/1 (4.49s), full-runtime1/1 (4.71s).
+Strict locked workspace/all-target Clippy8.06s, final fmt and24-crate architecture pass. Initial
+compile-only nested import error retained. Three bounded harness reviews fixed close/startup
+cancellation task ownership; final review and independent sequence review found no concrete issue.
+Cleanup cancellation is source reviewed, not fault injected. No production adapter change, caller
+intent implementation, process restart or quota proof. B2e.3 authority race/multi-namespace and
+broader B2/canonical/SDK/resource/rollout gates remain open. Evidence:
+tasks/project-completion/evidence/capacity-finish-commit-loss-20261018/manifest.json.

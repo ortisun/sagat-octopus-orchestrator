@@ -1,0 +1,19 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+error[E0433]: cannot find `hint_contract` in `super`
+   --> tests/integration/workflow-primitives/capacity_finish_commit_loss.rs:250:16
+    |
+250 |         super::hint_contract::assert_outbox_matches_the_contract(&n.f.w.db.pool).await;
+    |                ^^^^^^^^^^^^^ could not find `hint_contract` in `super`
+    |
+help: consider importing this module
+    |
+  2 + use crate::hint_contract;
+    |
+help: if you import `hint_contract`, refer to it directly
+    |
+250 -         super::hint_contract::assert_outbox_matches_the_contract(&n.f.w.db.pool).await;
+250 +         hint_contract::assert_outbox_matches_the_contract(&n.f.w.db.pool).await;
+    |
+
+For more information about this error, try `rustc --explain E0433`.
+error: could not compile `sagat-tests` (test "integration_workflow_primitives") due to 1 previous error

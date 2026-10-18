@@ -1,0 +1,168 @@
+{
+  "source_base": "a8f07235",
+  "recorded_utc": "2026-10-18T08:45:40.647345+00:00",
+  "scope": "B2e.2 test-only actual unresolved COMMIT response loss and same-command recovery",
+  "commands": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "capacity_finish::commit_loss::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 101,
+      "seconds": 7.47,
+      "log": "commit-loss-first.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "capacity_finish::commit_loss::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 37.24,
+      "log": "commit-loss-second.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "capacity_finish::commit_loss::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "runtime_mode": false,
+      "exit_code": 0,
+      "seconds": 36.57,
+      "log": "commit-loss-default.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "capacity_finish::commit_loss::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "runtime_mode": true,
+      "exit_code": 0,
+      "seconds": 5.04,
+      "log": "commit-loss-runtime.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "capacity_finish::commit_loss::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "runtime_mode": false,
+      "exit_code": 0,
+      "seconds": 36.7,
+      "log": "commit-loss-final-default.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "capacity_finish::commit_loss::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "runtime_mode": true,
+      "exit_code": 0,
+      "seconds": 5.02,
+      "log": "commit-loss-final-runtime.txt"
+    }
+  ],
+  "clippy": {
+    "command": [
+      "cargo",
+      "clippy",
+      "--workspace",
+      "--all-targets",
+      "--locked",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit_code": 0,
+    "seconds": 8.06
+  },
+  "results": {
+    "final_default": {
+      "passed": 1,
+      "failed": 0,
+      "seconds": 4.49,
+      "server_outcome_branches": 2
+    },
+    "final_runtime": {
+      "passed": 1,
+      "failed": 0,
+      "seconds": 4.71,
+      "server_outcome_branches": 2
+    }
+  },
+  "evidence_sha256": {
+    "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "clippy.json": "88727a456136f73c93fce31bd899429aaec7ea0db31b04021f96dc5c3b7e975f",
+    "clippy.txt": "5f49df787859eab3b488ca03cbbd14fe634b8193bc8ea5ed5db405be1f851978",
+    "commands.json": "7a33cd23c51f5660d6625f289784ba3ea2d3ba9bd9cb87aaf0819faada40554e",
+    "commit-loss-default.txt": "a68a682ecdb130bdedd64f86bd53cc139148342b37638dc5eeb5c3b15a4cb795",
+    "commit-loss-final-default.txt": "aa8f6ca9ac82c5c579dc92282020813a6ef7bc93213f8f8e76f517312052634a",
+    "commit-loss-final-runtime.txt": "0fe360f86ca8139f8a668c61863e4a5cf04b17a3355f2a6ab6ede173d8c8d3fa",
+    "commit-loss-first.txt": "42193baf790629c4a39c4b65035f178c9bfefb6e8d52817a1a13da08578f82e0",
+    "commit-loss-runtime.txt": "85c62ccbfb729598a908330eed6df8fd416e577258f9d02d8a278d3ca0f16b4d",
+    "commit-loss-second.txt": "a1ab0bcef385c52976fc5864b209e6af172a5966b0dbb06f65c84f3897cc7da3",
+    "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "implementation.diff": "d0fa74c6ad236bbd1c067d3a8e3df909aa1113da3092d705a43ab12b14e8f34f",
+    "reproduce.md": "2c651bada06aa290a9384af85a9bcc61666d785ba63b4d6cbbfcc2aa40a232cd",
+    "review.md": "373765f2984f0b087980e2357cde62fd8c84b836f6631395a3bf3a2bce465992",
+    "source-final-reviewed.json": "d25a3e98843a76962a90aceba841fc4ec204d64f7501e69aaee3b19ed8fd41ef",
+    "source-final.json": "2e780196b5736d1754b44c1b19a816b4f5f048a4cda873f85dbe80917a090f23",
+    "source-first.json": "21c2c146f653d843dc17f3f5dfd6fa4eef1cf094abd04b6f20d71a3379dbcd83",
+    "source-second.json": "bfb689b6fb5b8e64765653a2f033b86970e4495eb037cca9fa0671725391661f",
+    "sources.md": "13a8cab90468959db23e0a0ef2f23bbceb8a0ba6bc15068910e42aa33ff7ac1c"
+  }
+}

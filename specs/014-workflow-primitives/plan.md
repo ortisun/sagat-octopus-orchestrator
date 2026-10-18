@@ -419,3 +419,9 @@ B2e.1 native G/prefix/fence and confirmed abort barriers have focused real PG ev
 suite modes, with explicit runtime-role adapters. Keep B2e open for actual unknown-COMMIT outcomes,
 same-command prefix reconciliation versus distinct-member G Busy, handoff/discovery race and
 same-tenant multiple-namespace membership; no production activation or quota proof follows.
+
+
+B2e.2 actual unresolved COMMIT response-loss evidence covers committed and aborted outcomes,
+same-command prefix timeout versus distinct-member G Busy, and same-key fresh transaction recovery.
+Production adapter unchanged; no durable caller/process restart or quota acceptance. B2e.3 still
+must cover real handoff/discovery and same-tenant multiple namespace membership; B2f remains open.

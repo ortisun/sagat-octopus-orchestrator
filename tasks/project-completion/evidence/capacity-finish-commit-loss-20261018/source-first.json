@@ -1,0 +1,10 @@
+{
+  "base": "a8f0723539c7b990a104671fb533761b5bbc6c5c",
+  "files": {
+    "tests/integration/workflow-primitives/capacity_finish_proxy.rs": "d91f52b93d44aa6f9aafee2a44a4de264e6f24c76ab2fc6c7b826a07f01ec198",
+    "tests/integration/workflow-primitives/capacity_finish_commit_loss.rs": "05b5a503608c705331b0d33f298bcd149be48cde4e6ef459f872709dd80bb6f9",
+    "tests/integration/workflow-primitives/capacity_finish_barriers.rs": "285f073e0dec5e4b512be4542b297b8f7f1b6a1cb0697017a6e70c40dc1adc31",
+    "tests/integration/workflow-primitives/capacity_finish.rs": "35288f9cbdf2179d45eb658e61af27311a56dddf9d111f2c23bf8d7ea894e793",
+    "crates/infra-postgres/src/capacity_finish.rs": "0ce7c56a7c0c665a2deefde595fc1cd6dfb0f12f680186d1e36f1d25107f28c0"
+  }
+}
