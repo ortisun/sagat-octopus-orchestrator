@@ -1,0 +1,15 @@
+
+running 1 test
+
+thread 'tenants::measure_cross_run_tenant_slot_bounds_with_a_bursting_neighbour' (70068809) panicked at tests/performance/workflow-primitives/common.rs:126:14:
+register the protocol 1.5 worker: NotBound
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test tenants::measure_cross_run_tenant_slot_bounds_with_a_bursting_neighbour ... FAILED
+
+failures:
+
+failures:
+    tenants::measure_cross_run_tenant_slot_bounds_with_a_bursting_neighbour
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 6.82s
+
