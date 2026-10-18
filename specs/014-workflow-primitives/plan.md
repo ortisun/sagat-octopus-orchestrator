@@ -401,3 +401,9 @@ schema probes. No production creator/caller is introduced. Preserve permanent me
 chain references until C0 defines compatible tombstone/replay/history retention; current schema
 pins chain/run cleanup. B2d exact native Finish remains the next implementation unit, followed by
 B2e barriers/recovery and B2f observations. See capacity-finish-schema-20261018 evidence.
+
+
+B2d.1 application contract is defined with exact identity/revision groups, renewable own scheduler
+fence, versioned fixed-width fingerprint, typed outcomes and immutable receipt result. Cancellation
+can leave a COMMIT outcome unknown; callers retain the entire original command and future production
+callers require durable intent. This API-only increment enables no runtime caller or SQL operation.

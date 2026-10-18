@@ -1,0 +1,190 @@
+--- a/tests/integration/workflow-primitives/capacity_finish.rs
++++ b/tests/integration/workflow-primitives/capacity_finish.rs
+@@ -51,6 +51,10 @@
+ async fn fixture() -> Fixture {
+     let w = world().await;
+     let run = seed_chain(&w, "capacity-schema").await;
++    seed_capacity(w, run).await
++}
++
++async fn seed_capacity(w: World, run: RunId) -> Fixture {
+     let group = Uuid::new_v4();
+     let member = Uuid::new_v4();
+     let mut tx = w.db.pool.begin().await.expect("owner capacity fixture");
+@@ -536,3 +540,176 @@
+         .expect("committed tombstone survives");
+     assert_eq!(count, 1);
+ }
++
++// Native-operation fixtures below use real child creation and worker completion. Only the dormant
++// capacity membership is owner-seeded; finality/continuation is never fabricated with UPDATEs.
++struct NativeFixture {
++    f: Fixture,
++    parent: RunId,
++    scheduler: crate::support::engine::Sched,
++}
++
++async fn native_fixture(continue_first: bool) -> NativeFixture {
++    use crate::support::engine::{activity, child_node, document};
++    use sagat_application::execution::child_run_id;
++    use sagat_domain::workflow::NodeId;
++    let w = world().await;
++    let child_name = format!("capacity-child-{}", Uuid::new_v4());
++    w.publish(serde_json::json!({
++        "apiVersion":"sagat-octopus-orchestrator.io/v1", "kind":"Workflow",
++        "metadata":{"name":child_name}, "entrypoint":"work",
++        "nodes":[
++            {"id":"work","type":"activity","activity":"capacity.work","next":"again"},
++            {"id":"again","type":"condition","expression":"input.continue","ifTrue":"rollover","ifFalse":"done"},
++            {"id":"rollover","type":"continueAsNew","input":"input.next"},
++            {"id":"done","type":"end"}
++        ], "chainPolicy":{"maxSegments":3,"timeoutMs":3600000}
++    })).await;
++    let (workflow, _) = w
++        .publish(document(
++            "capacity-parent",
++            "kid",
++            vec![
++                child_node("kid", &child_name, Some("after")),
++                activity("after"),
++            ],
++        ))
++        .await;
++    let parent = w
++        .start(
++            workflow,
++            &serde_json::json!({"continue":continue_first,"next":{"continue":false}}),
++        )
++        .await;
++    let child = child_run_id(parent, &NodeId::parse("kid").expect("node"));
++    let scheduler = super::chains::scheduler(&w, "capacity-native").await;
++    let report = scheduler.tick().await;
++    assert_eq!(report.children_started, 1, "{report:?}");
++    assert_eq!(report.failed, 0, "{report:?}");
++    let f = seed_capacity(w, child).await;
++    NativeFixture {
++        f,
++        parent,
++        scheduler,
++    }
++}
++
++async fn complete_native_activity(n: &NativeFixture) -> RunId {
++    let session = n.f.w.session(&["capacity.work"]).await;
++    let task = n.f.w.one_task_of(&session, "capacity.work").await;
++    n.f.w
++        .complete(&session, &task, &serde_json::json!({}))
++        .await
++        .expect("real child activity completes");
++    task.run_id
++}
++
++#[tokio::test]
++async fn native_fixture_reaches_current_child_final_through_real_runtime_writers() {
++    let n = native_fixture(false).await;
++    let run = complete_native_activity(&n).await;
++    assert_eq!(run.as_uuid(), n.f.chain);
++    let finality: (Uuid,String,String,bool,bool,Option<Uuid>)=sqlx::query_as("SELECT c.current_run_id,c.final_outcome,s.completion_kind,r.finished_at IS NOT NULL,s.completed_at IS NOT NULL,s.successor_run_id FROM execution_chains c JOIN chain_segments s USING(tenant_id,namespace_id,chain_id) JOIN runs r ON r.tenant_id=s.tenant_id AND r.id=s.run_id WHERE c.tenant_id=$1 AND c.namespace_id=$2 AND c.chain_id=$3 AND s.run_id=$3")
++        .bind(n.f.w.admin.tenant_id().as_uuid()).bind(n.f.w.namespace.id().as_uuid()).bind(n.f.chain).fetch_one(&n.f.w.execution_pool).await.expect("real child final projection");
++    assert_eq!(
++        finality,
++        (
++            n.f.chain,
++            "SUCCEEDED".into(),
++            "FINAL".into(),
++            true,
++            true,
++            None
++        )
++    );
++    let parent:Uuid=sqlx::query_scalar("SELECT parent_run_id FROM child_chain_links WHERE tenant_id=$1 AND namespace_id=$2 AND child_chain_id=$3")
++        .bind(n.f.w.admin.tenant_id().as_uuid()).bind(n.f.w.namespace.id().as_uuid()).bind(n.f.chain).fetch_one(&n.f.w.execution_pool).await.expect("actual child association");
++    assert_eq!(parent, n.parent.as_uuid());
++    assert_eq!(n.scheduler.tick().await.failed, 0);
++}
++
++use sagat_application::capacity_finish::{
++    CapacityFinishCommand, CapacityFinishExpectations, CapacityFinishIdentity,
++    CurrentChildRootFinishStore,
++};
++use sagat_application::primitives::SchedulerAuthority;
++use sagat_domain::execution::{CapacityGroupId, CapacityMemberId, CapacityPossession, ChainScope};
++use sagat_infra_postgres::PgCapacityFinishStore;
++
++async fn native_command(n: &NativeFixture, head: RunId) -> CapacityFinishCommand {
++    let f = &n.f;
++    let (chain_revision,run_revision): (i64,i64)=sqlx::query_as("SELECT c.revision,r.run_version FROM execution_chains c JOIN runs r ON r.tenant_id=c.tenant_id AND r.id=$4 WHERE c.tenant_id=$1 AND c.namespace_id=$2 AND c.chain_id=$3")
++        .bind(f.w.admin.tenant_id().as_uuid()).bind(f.w.namespace.id().as_uuid()).bind(f.chain).bind(head.as_uuid()).fetch_one(&f.w.db.pool).await.expect("observed exact command revisions");
++    let (owner, generation): (String, i64) =
++        sqlx::query_as("SELECT owner,generation FROM scheduler_shards WHERE shard=run_shard($1)")
++            .bind(head.as_uuid())
++            .fetch_one(&f.w.db.pool)
++            .await
++            .expect("current scheduler lease");
++    CapacityFinishCommand::new(
++        Uuid::new_v4(),
++        CapacityFinishIdentity::new(
++            ChainScope::new(f.w.admin.tenant_id(), f.w.namespace.id()),
++            CapacityGroupId::new(f.group),
++            CapacityMemberId::new(f.member),
++            RunId::new(f.chain),
++            head,
++        ),
++        CapacityFinishExpectations::new(
++            1,
++            1,
++            u64::try_from(chain_revision).expect("chain revision"),
++            u64::try_from(run_revision).expect("run revision"),
++        ),
++        SchedulerAuthority::for_run(owner, head, u64::try_from(generation).expect("generation")),
++    )
++}
++
++async fn execution_snapshot(f: &Fixture) -> Vec<(String, String)> {
++    sqlx::query_as("SELECT 'runs',md5(coalesce(jsonb_agg(to_jsonb(r) ORDER BY id)::text,'null')) FROM runs r WHERE tenant_id=$1 UNION ALL SELECT 'events',md5(coalesce(jsonb_agg(to_jsonb(e) ORDER BY run_id,seq)::text,'null')) FROM run_events e WHERE tenant_id=$1 UNION ALL SELECT 'steps',md5(coalesce(jsonb_agg(to_jsonb(s) ORDER BY run_id,node)::text,'null')) FROM steps s WHERE tenant_id=$1 UNION ALL SELECT 'chains',md5(coalesce(jsonb_agg(to_jsonb(c) ORDER BY chain_id)::text,'null')) FROM execution_chains c WHERE tenant_id=$1 UNION ALL SELECT 'segments',md5(coalesce(jsonb_agg(to_jsonb(s) ORDER BY chain_id,segment_index)::text,'null')) FROM chain_segments s WHERE tenant_id=$1 UNION ALL SELECT 'telemetry',md5(coalesce(jsonb_agg(to_jsonb(t) ORDER BY run_id)::text,'null')) FROM telemetry_pending t WHERE tenant_id=$1 UNION ALL SELECT 'usage',md5(coalesce(jsonb_agg(to_jsonb(u))::text,'null')) FROM tenant_retained_usage u WHERE tenant_id=$1")
++        .bind(f.w.admin.tenant_id().as_uuid()).fetch_all(&f.w.db.pool).await.expect("independent immutable execution snapshot")
++}
++
++async fn finish_counts(f: &Fixture) -> (i64, i64, i64) {
++    sqlx::query_as("SELECT (SELECT count(*) FROM capacity_group_finish_receipts WHERE tenant_id=$1 AND group_id=$2),(SELECT count(*) FROM audit_records WHERE tenant_id=$1 AND action='capacity.member.finished' AND resource_id=$3),(SELECT count(*) FROM event_outbox WHERE tenant_id=$1 AND aggregate_id=$2 AND event_type='capacity.member.finished')")
++        .bind(f.w.admin.tenant_id().as_uuid()).bind(f.group).bind(f.group.to_string()).fetch_one(&f.w.db.pool).await.expect("capacity side effect counts")
++}
++
++#[tokio::test]
++async fn current_child_final_finishes_once_without_rewriting_execution() {
++    let n = native_fixture(false).await;
++    let head = complete_native_activity(&n).await;
++    let command = native_command(&n, head).await;
++    let before = execution_snapshot(&n.f).await;
++    assert_eq!(finish_counts(&n.f).await, (0, 0, 0));
++    let store = PgCapacityFinishStore::new(n.f.w.execution_pool.clone());
++    let applied = store
++        .finish_current_child_root(&command)
++        .await
++        .expect("current real child FINAL");
++    assert!(!applied.replayed);
++    assert_eq!(
++        (
++            applied.revision,
++            applied.epoch,
++            applied.active_members,
++            applied.possession
++        ),
++        (2, 2, 0, CapacityPossession::Retired)
++    );
++    assert_eq!(
++        state(&n.f.w.db.pool, &n.f).await,
++        (2, 2, 0, "RETIRED".into(), "FINISHED".into())
++    );
++    assert_eq!(finish_counts(&n.f).await, (1, 1, 1));
++    let mut replay = store
++        .finish_current_child_root(&command)
++        .await
++        .expect("same command replays even after retirement");
++    assert!(replay.replayed);
++    replay.replayed = false;
++    assert_eq!(replay, applied, "original immutable receipt result");
++    assert_eq!(finish_counts(&n.f).await, (1, 1, 1));
++    assert_eq!(execution_snapshot(&n.f).await, before);
++    super::hint_contract::assert_outbox_matches_the_contract(&n.f.w.db.pool).await;
++}

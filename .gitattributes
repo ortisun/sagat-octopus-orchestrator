@@ -69,3 +69,5 @@
 /tasks/project-completion/evidence/capacity-finish-schema-20261018/schema-absence.txt whitespace=-blank-at-eof,-blank-at-eol
 /tasks/project-completion/evidence/capacity-finish-schema-20261018/schema-tests-first.txt whitespace=-blank-at-eof,-blank-at-eol
 /tasks/project-completion/evidence/capacity-finish-schema-20261018/schema-tests-second.txt whitespace=-blank-at-eof,-blank-at-eol
+/tasks/project-completion/evidence/capacity-finish-port-api-20261018/*.txt whitespace=-blank-at-eof
+/tasks/project-completion/evidence/capacity-finish-port-api-20261018/*.diff whitespace=-blank-at-eol

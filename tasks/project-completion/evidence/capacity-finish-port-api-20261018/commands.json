@@ -1,0 +1,15 @@
+[
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-application",
+      "capacity_finish::tests::"
+    ],
+    "exit_code": 0,
+    "seconds": 39.24,
+    "log": "fingerprint.txt"
+  }
+]

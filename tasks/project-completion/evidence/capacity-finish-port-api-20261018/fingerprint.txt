@@ -1,0 +1,85 @@
+   Compiling hyper-rustls v0.27.10
+   Compiling sagat-domain v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/domain)
+   Compiling reqwest v0.13.5
+   Compiling sagat-telemetry v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/telemetry)
+   Compiling sagat-application v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/application)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 17.29s
+     Running unittests src/lib.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/sagat_application-633d03fb4b3fd743)
+
+running 1 test
+test capacity_finish::tests::canonical_fingerprint_vector_survives_scheduler_renewal ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 67 filtered out; finished in 0.00s
+
+     Running tests/blobs.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/blobs-c99bd747604dd939)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 22 filtered out; finished in 0.00s
+
+     Running tests/chain_handoff_preparation.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/chain_handoff_preparation-cf9e6fe64cd9b12b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/clock.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/clock-d921384b3e65077e)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/definition_service.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/definition_service-13de20636247ca89)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 39 filtered out; finished in 0.00s
+
+     Running tests/event_payloads.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/event_payloads-76eb6910fb8b4dcd)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+     Running tests/identity_service.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/identity_service-204b5fc27ff3d1a7)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 34 filtered out; finished in 0.00s
+
+     Running tests/instance_identity.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/instance_identity-a845ce79478d28fd)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+     Running tests/payload_disclosure.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/payload_disclosure-01b3627f610390d1)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.00s
+
+     Running tests/payloads.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/payloads-043051b5ebb24546)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+     Running tests/primitive_telemetry.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/primitive_telemetry-96474bbd2a024912)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s
+
+     Running tests/reveal_grants.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/reveal_grants-aedfed3ec3407aaf)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+     Running tests/telemetry_derive.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/telemetry_derive-51a4fd95a971c57f)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 20 filtered out; finished in 0.00s
+

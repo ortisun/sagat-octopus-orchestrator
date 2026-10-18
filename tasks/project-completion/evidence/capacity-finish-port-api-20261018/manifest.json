@@ -1,0 +1,53 @@
+{
+  "source_base": "31c43f76",
+  "recorded_utc": "2026-10-18T08:13:20.770725+00:00",
+  "scope": "B2d.1 application API only",
+  "commands": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-application",
+        "capacity_finish::tests::"
+      ],
+      "exit_code": 0,
+      "seconds": 39.24,
+      "log": "fingerprint.txt"
+    }
+  ],
+  "clippy": {
+    "command": [
+      "cargo",
+      "clippy",
+      "--workspace",
+      "--all-targets",
+      "--locked",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit_code": 0,
+    "seconds": 76.92,
+    "log": "clippy.txt"
+  },
+  "fingerprint_tests": {
+    "passed": 1,
+    "failed": 0
+  },
+  "evidence_sha256": {
+    "api-absence-test.diff": "8ce829d8fad95ed681ac5559f863d9fb46fad21d50c25a59eaad1729d9dbf38f",
+    "api-absence.txt": "6eff854b2ebbd9eeac7cd6eb5d33cd4612ead5bd0098f9f956cb68ebb5efe6cc",
+    "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "clippy.json": "6154c0e6d45f1ebba644bb4da3f1beed284650d1cd844bce1143a48247486d0b",
+    "clippy.txt": "013706fb2cea34e1399f6f7d907d17bbdfac47c6e7573a1c10743975b31b2202",
+    "commands.json": "39f98b927ee5ee679050a4cc8d5c530613d8a47788ee1801edc6f8a84880d47e",
+    "fingerprint.txt": "b7b4e301cc4709747071bc8114aa617b01e27a273462bb320c08795d8fe65418",
+    "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "implementation.diff": "652b0ad07a1082b0bcfb949503da348655e24cfd618e9a51dfb2e3d042f91712",
+    "reproduce.md": "a4c9c899a21cebdb5316a4d227cd7c53a868069d377e25e472aae902668e96c1",
+    "review.md": "4e237c6277b35b5d2bdad4948e07fcf4fe5467963b22e10691de342e9593ad94",
+    "source.json": "a67610248aa03855aab4de01f46e38a41214fe98510af708906b1b0f31bc818a"
+  }
+}
