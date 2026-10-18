@@ -65,3 +65,9 @@ ancestry precondition and ordered-race control. B0 is source-inventoried; the ne
 A1 recovery prerequisite completed: checked constant-size header restoration,9modeltests including
 1024fixed-seed roundtrip histories,2overflow tests, strictdomainClippy/fmt/architecture. This is
 not a SQL port or own-member authority. See evidence/capacity-header-restore-20261018.
+
+- [x] B1b.1: Review child-chain root member Finish after committed current own chain/head/segment
+  FINAL, exact binding and current fence. CONTINUED/history/parent terminality are insufficient.
+  Two bounded source reviews; no SQL or complete B1b acceptance. See capacity-member-finality.md.
+- [ ] B1b.2: Define scoped-path settlement and remaining current-member quiescence/transition
+  authority before any production Vacate/Acquire or path Finish.

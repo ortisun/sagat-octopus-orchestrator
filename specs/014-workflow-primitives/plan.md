@@ -382,3 +382,8 @@ own-member transition authority, B1 completion or nested runtime activation is a
 A1 storage prerequisite: pure checked CapacityGroup::restore with exact holder fact and bounded
 header, fixed-seed model round trips, invalid snapshot and exhausted-counter controls. No SQL
 port/eligibility/OTel acceptance follows from pure domain tests. See capacity-header-restore evidence.
+
+B1b.1 child-root Finish authority is reviewed: exact current own-chain/head/segment FINAL, matching
+terminal outcome, guarded member binding and current own scheduler fence. Never infer finality
+from CONTINUED, historical run status or parent terminality. See capacity-member-finality.md in
+tasks/project-completion; bounded SQL schema/receipts/port and other B1 families remain pending.

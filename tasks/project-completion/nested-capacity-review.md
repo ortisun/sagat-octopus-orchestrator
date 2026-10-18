@@ -84,3 +84,11 @@ The doubt-driven-development three-cycle bound has been reached and escalated to
 No fourth whole-proposal review is authorized by that skill. The drafts remain unaccepted and
 nesting stays closed while the user chooses decomposition or deferral. Existing independent
 blob, SDK and measurement work continues; no task is checked for this design history.
+
+## Owner's decomposition choice — 2026-10-18
+
+The owner chose to split the protocol into smaller implementable/verifiable decisions. The
+whole-protocol drafts above remain rejected. Current progress: A0/A1 and checked pure recovery,
+B0 source inventory, B1a single-existing-group entry and B1b.1 child-root FINAL authority. Each
+scoped review's limits remain explicit; B1/B2/C and runtime activation are incomplete. Continue
+from tasks/project-completion/todo.md under standing all-open-tasks authorization.

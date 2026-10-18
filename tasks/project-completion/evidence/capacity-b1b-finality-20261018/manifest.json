@@ -1,0 +1,27 @@
+{
+  "source_base": "baaf2d26e5f4fecbdbc3e83cd9342edc3bc897c6",
+  "recorded_utc": "2026-10-18T07:16:32.841983+00:00",
+  "scope": "B1b.1 current child-chain root member FINAL authority only",
+  "reviews": {
+    "cycles": 2,
+    "model": "gpt-6-astra/xhigh fresh-context read-only",
+    "final": "no remaining concrete issues",
+    "external_cli": false
+  },
+  "tests": "No runtime/code change; exact future adapter evidence remains pending",
+  "limits": [
+    "No scoped-path/Vacate/Acquire eligibility",
+    "No SQL/receipt/old-writer/nested/B1 completion acceptance"
+  ],
+  "source_sha256": {
+    "tasks/project-completion/capacity-member-finality.md": "e75eae8a7c53eb57b30589d5711bb7530660132ae56a9a1256e69914cce48a0b",
+    "tasks/project-completion/todo.md": "63c98b0ebd4bf702e8d78898a637996d7814e57acb50f6bc231375edecb3a2f8",
+    "specs/014-workflow-primitives/plan.md": "00bc43304e41a7d3251141713f3d40ece3a71a9fdf8123efeb345001fd4ea6a0",
+    "tasks/project-completion/nested-capacity-review.md": "8eac76a12963a6a50dc3d929fb6c4cdb4e036431d687a29af98d12af2533032d"
+  },
+  "evidence_sha256": {
+    "artifact.md": "e75eae8a7c53eb57b30589d5711bb7530660132ae56a9a1256e69914cce48a0b",
+    "claim.md": "0e449bdaa067bfb7a49f139312ac9a70d566660a77b191668bd02ce8ce947516",
+    "review.md": "9fa503a619be11cf3e9e68f142d6c809049143dffcdf2dfdf314ef4b16d66beb"
+  }
+}
