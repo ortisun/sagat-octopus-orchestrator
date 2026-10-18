@@ -1,0 +1,436 @@
+--- a/tests/integration/workflow-primitives/byte_ceilings.rs
++++ b/tests/integration/workflow-primitives/byte_ceilings.rs
+@@ -132,6 +132,17 @@
+     name: &str,
+     reconciliation: bool,
+ ) -> (Flow, TaskLease, Value) {
++    collection_at_seventeenth_member_with_output(name, reconciliation, |_| {
++        refused_member_output()
++    })
++    .await
++}
++
++async fn collection_at_seventeenth_member_with_output(
++    name: &str,
++    reconciliation: bool,
++    output_for: impl Fn(u32) -> Value,
++) -> (Flow, TaskLease, Value) {
+     let lines: Vec<u32> = (0..17).collect();
+     let flow = Flow::start(
+         name,
+@@ -139,8 +150,8 @@
+         json!(lines),
+     )
+     .await;
+-    let output = refused_member_output();
+     for index in 0..16 {
++        let output = output_for(index);
+         flow.drive().await;
+         let tasks = flow.poll().await;
+         assert_eq!(
+@@ -164,6 +175,7 @@
+     .await
+     .expect("first sixteen member checkpoints");
+     assert_eq!(checkpoints, 16);
++    let output = output_for(16);
+     (flow, tasks[0].clone(), output)
+ }
+ 
+@@ -438,7 +450,7 @@
+     );
+ }
+ 
+-async fn drain_and_compensate_every_reservation(flow: &Flow) {
++async fn start_stopped_limit_drain(flow: &Flow) {
+     let draining = flow.scheduler.tick().await;
+     assert_eq!(draining.failed, 0, "{draining:?}");
+     assert_eq!(draining.collections_advanced, 1, "{draining:?}");
+@@ -462,6 +474,10 @@
+             1,
+         )
+     );
++}
++
++async fn drain_and_compensate_every_reservation(flow: &Flow) {
++    start_stopped_limit_drain(flow).await;
+ 
+     let mut released = Vec::new();
+     for _ in 0..17 {
+@@ -567,6 +583,377 @@
+     assert_eq!(refusal_identity(&flow, &key).await, first_identity);
+ 
+     drain_and_compensate_every_reservation(&flow).await;
++}
++
++mod refused_output_compensation {
++    use std::collections::BTreeSet;
++
++    use super::*;
++
++    const MISSING_OUTPUT_CODE: &str = "FIXTURE_RESERVATION_OUTPUT_REQUIRED";
++    const RESOLUTION_REASON: &str = "missing reservation output prevents fixture release";
++
++    struct ReservationOutput {
++        reservation_id: String,
++    }
++
++    struct ForwardOutput {
++        output: ReservationOutput,
++    }
++
++    struct CompensationSteps {
++        reserve: ForwardOutput,
++    }
++
++    struct ReleaseTaskInput {
++        steps: CompensationSteps,
++    }
++
++    #[derive(Debug, PartialEq, Eq)]
++    enum ReleaseError {
++        RequiredReservationOutputMissing,
++        MalformedTaskInput,
++        UnknownReservation(String),
++    }
++
++    impl ReleaseTaskInput {
++        fn parse(input_json: &str) -> Result<Self, ReleaseError> {
++            let document: Value = serde_json::from_str(input_json)
++                .map_err(|_| ReleaseError::MalformedTaskInput)?;
++            let steps = document["steps"]
++                .as_object()
++                .ok_or(ReleaseError::MalformedTaskInput)?;
++            let reserve = steps
++                .get("reserve")
++                .ok_or(ReleaseError::RequiredReservationOutputMissing)?;
++            let reservation_id = reserve["output"]["reservationId"]
++                .as_str()
++                .ok_or(ReleaseError::MalformedTaskInput)?;
++            Ok(Self {
++                steps: CompensationSteps {
++                    reserve: ForwardOutput {
++                        output: ReservationOutput {
++                            reservation_id: reservation_id.to_owned(),
++                        },
++                    },
++                },
++            })
++        }
++    }
++
++    fn reservation_id(index: u32) -> String {
++        format!("reservation-{index:02}")
++    }
++
++    fn reservation_output(index: u32) -> Value {
++        let mut output = json!({
++            "reservationId": reservation_id(index),
++            "padding": "",
++        });
++        let padding = 250_000_usize
++            .checked_sub(output.to_string().len())
++            .expect("the reservation envelope fits below the report ceiling");
++        output["padding"] = Value::String("x".repeat(padding));
++        assert_eq!(
++            output.to_string().len(),
++            250_000,
++            "the real reservation result contributes the intended retained bytes"
++        );
++        output
++    }
++
++    fn release_reservation(
++        input_json: &str,
++        reservations: &mut BTreeSet<String>,
++    ) -> Result<String, ReleaseError> {
++        let input = ReleaseTaskInput::parse(input_json)?;
++        let reservation = input.steps.reserve.output.reservation_id;
++        if reservations.remove(&reservation) {
++            Ok(reservation)
++        } else {
++            Err(ReleaseError::UnknownReservation(reservation))
++        }
++    }
++
++    async fn run_available_compensations(
++        flow: &Flow,
++        reservations: &mut BTreeSet<String>,
++        released: &mut BTreeSet<String>,
++        missing: &mut Option<TaskLease>,
++    ) {
++        for _ in 0..17 {
++            flow.drive().await;
++            let tasks = flow.poll().await;
++            if tasks.is_empty() {
++                break;
++            }
++            assert_eq!(tasks.len(), 1, "{:?}", summary(&tasks));
++            let task = &tasks[0];
++            assert_eq!(
++                summary(&tasks),
++                vec![row(
++                    iteration(task),
++                    "reserve~c",
++                    "COMPENSATION",
++                    "line.release"
++                )]
++            );
++            match release_reservation(&task.input_json, reservations) {
++                Ok(reservation) => {
++                    assert_eq!(reservation, reservation_id(iteration(task)));
++                    assert!(released.insert(reservation.clone()), "released twice");
++                    flow.complete(task, json!({"releasedReservationId": reservation}))
++                        .await;
++                }
++                Err(ReleaseError::RequiredReservationOutputMissing) => {
++                    assert!(missing.is_none(), "the refused compensation was leased twice");
++                    assert_eq!(iteration(task), 16);
++                    let document: Value =
++                        serde_json::from_str(&task.input_json).expect("valid task input document");
++                    assert!(
++                        document.pointer("/steps/reserve").is_none(),
++                        "the refused forward output must not be defaulted or synthesized"
++                    );
++                    assert_eq!(task.target_node, "reserve");
++                    assert!(task.idempotency_key.starts_with("compensation:"));
++                    let instance = task.instance.as_ref().expect("compensation instance");
++                    let target = task.target_instance.as_ref().expect("target instance");
++                    assert_eq!(target.definition_node_id, "reserve");
++                    assert_eq!(target.instance_path, instance.instance_path);
++                    assert!(reservations.contains(&reservation_id(16)));
++                    flow.fail(task, MISSING_OUTPUT_CODE, false).await;
++                    *missing = Some(task.clone());
++                }
++                Err(other) => panic!("unexpected release handler failure: {other:?}"),
++            }
++        }
++    }
++
++    #[tokio::test]
++    async fn a_refused_required_output_keeps_its_compensation_open_until_audited_resolution() {
++        let name = format!("required-refused-output-{}", uuid::Uuid::now_v7());
++        let (flow, forward, output) =
++            collection_at_seventeenth_member_with_output(&name, false, reservation_output).await;
++        let mut reservations = (0..17).map(reservation_id).collect::<BTreeSet<_>>();
++        let outboxes_before = run_outboxes(&flow).await;
++        let key = format!("required-refused-output-{}", uuid::Uuid::now_v7());
++
++        let accepted = flow
++            .try_complete(&forward, output, &key)
++            .await
++            .expect("record the known forward success without its oversized result");
++        assert!(!accepted.already_applied);
++        assert_eq!(accepted.step_status, "SUCCEEDED");
++        assert_eq!(accepted.run_status, "CANCELLING");
++        assert_successful_refusal(&flow, &forward, &key, outboxes_before).await;
++        let retained: (i64, i64) = sqlx::query_as(
++            "SELECT count(*),coalesce(sum(octet_length(payload.content)),0)::bigint \
++               FROM steps step JOIN payloads payload \
++                 ON payload.tenant_id=step.tenant_id AND payload.digest=step.output_digest \
++              WHERE step.tenant_id=$1 AND step.run_id=$2 \
++                AND step.instance_path_nodes=ARRAY['lines']::text[] \
++                AND step.node='reserve'",
++        )
++        .bind(flow.tenant.as_uuid())
++        .bind(flow.run.as_uuid())
++        .fetch_one(&flow.api.db.pool)
++        .await
++        .expect("retained reservation results");
++        assert_eq!(retained, (16, 4_000_000));
++
++        start_stopped_limit_drain(&flow).await;
++        let mut released = BTreeSet::new();
++        let mut missing = None;
++        run_available_compensations(
++            &flow,
++            &mut reservations,
++            &mut released,
++            &mut missing,
++        )
++        .await;
++        let missing = missing.expect("the refused member's compensation reported its input error");
++        assert_eq!(missing.target_idempotency_key, forward.idempotency_key);
++        assert_eq!(missing.target_instance, forward.instance);
++        flow.drive().await;
++
++        let open: (
++            String,
++            Option<String>,
++            Option<String>,
++            String,
++            String,
++            Option<String>,
++            String,
++            bool,
++            i64,
++            i64,
++            i64,
++        ) = sqlx::query_as(
++            "SELECT compensation.status,compensation.waiting_kind,compensation.failure_code, \
++                    run.status,saga.phase,saga.outcome,forward.status, \
++                    forward.output_digest IS NULL, \
++                    (SELECT count(*) FROM scope_saga_entries entry \
++                      WHERE entry.tenant_id=run.tenant_id AND entry.run_id=run.id \
++                        AND entry.iteration_index=16 AND entry.node='reserve' \
++                        AND entry.kind='COMPENSATE'), \
++                    (SELECT count(*) FROM run_events event \
++                      WHERE event.tenant_id=run.tenant_id AND event.run_id=run.id \
++                        AND event.instance_path_nodes=ARRAY['lines']::text[] \
++                        AND event.instance_path_indices=ARRAY[16]::integer[] \
++                        AND event.node='reserve~c' \
++                        AND event.event_type IN ('step.completed','step.skipped')), \
++                    (SELECT count(*) FROM run_events event \
++                      WHERE event.tenant_id=run.tenant_id AND event.run_id=run.id \
++                        AND event.instance_path_nodes=ARRAY['lines']::text[] \
++                        AND event.instance_path_indices=ARRAY[16]::integer[] \
++                        AND event.node='reserve~c' \
++                        AND event.event_type='step.needs_review') \
++               FROM runs run JOIN steps compensation \
++                 ON compensation.tenant_id=run.tenant_id AND compensation.run_id=run.id \
++                AND compensation.instance_path_nodes=ARRAY['lines']::text[] \
++                AND compensation.instance_path_indices=ARRAY[16]::integer[] \
++                AND compensation.node='reserve~c' \
++               JOIN steps forward \
++                 ON forward.tenant_id=run.tenant_id AND forward.run_id=run.id \
++                AND forward.instance_path_nodes=ARRAY['lines']::text[] \
++                AND forward.instance_path_indices=ARRAY[16]::integer[] \
++                AND forward.node='reserve' \
++               JOIN scope_sagas saga ON saga.tenant_id=run.tenant_id AND saga.run_id=run.id \
++              WHERE run.tenant_id=$1 AND run.id=$2",
++        )
++        .bind(flow.tenant.as_uuid())
++        .bind(flow.run.as_uuid())
++        .fetch_one(&flow.api.db.pool)
++        .await
++        .expect("open missing-output obligation");
++        assert_eq!(open.0, "WAITING");
++        assert_eq!(open.1.as_deref(), Some("OPERATOR"));
++        assert_eq!(open.2.as_deref(), Some(MISSING_OUTPUT_CODE));
++        assert_eq!(open.3, "MANUAL_REVIEW");
++        assert_eq!(open.4, "COMPENSATING");
++        assert_eq!(open.5, None);
++        assert_eq!(open.6, "SUCCEEDED");
++        assert!(open.7, "the refused forward output stays absent");
++        assert_eq!(open.8, 1, "the saga retains the exact compensation entry");
++        assert_eq!(open.9, 0, "no completion or skip was manufactured");
++        assert_eq!(open.10, 1, "one typed failure waits for the operator");
++        assert_eq!(flow.drive().await, 0, "the open obligation cannot self-settle");
++        assert!(flow.poll().await.is_empty());
++        assert_eq!(flow.run_status().await, "MANUAL_REVIEW");
++        let finished_before_resolution: i64 = sqlx::query_scalar(
++            "SELECT count(*) FROM run_events \
++              WHERE tenant_id=$1 AND run_id=$2 AND event_type='run.finished'",
++        )
++        .bind(flow.tenant.as_uuid())
++        .bind(flow.run.as_uuid())
++        .fetch_one(&flow.api.db.pool)
++        .await
++        .expect("unfinished run evidence");
++        assert_eq!(finished_before_resolution, 0);
++        flow.verify().await;
++
++        let (status, body) = flow
++            .operate(json!({
++                "action": "RESOLVE_STEP",
++                "stepId": "reserve~c",
++                "outcome": "FAILED",
++                "errorCode": MISSING_OUTPUT_CODE,
++                "instancePath": [{"scopeNodeId": "lines", "iterationIndex": 16}],
++                "reason": RESOLUTION_REASON,
++            }))
++            .await;
++        assert_eq!(status, reqwest::StatusCode::ACCEPTED, "{body}");
++        assert_ne!(body["runStatus"], "COMPENSATED");
++        let audit: Vec<(String, String, String, Option<String>)> = sqlx::query_as(
++            "SELECT actor,resource_type,resource_id,reason FROM audit_records \
++              WHERE tenant_id=$1 AND action='saga.step_resolved' AND resource_id=$2",
++        )
++        .bind(flow.tenant.as_uuid())
++        .bind(format!("{}/lines[16]/reserve~c", flow.run))
++        .fetch_all(&flow.api.db.pool)
++        .await
++        .expect("audited exact compensation resolution");
++        assert_eq!(
++            audit,
++            vec![(
++                "alice".into(),
++                "run".into(),
++                format!("{}/lines[16]/reserve~c", flow.run),
++                Some(format!(
++                    "declared FAILED({MISSING_OUTPUT_CODE}): {RESOLUTION_REASON}"
++                )),
++            )]
++        );
++        let resolution_events: (i64, i64) = sqlx::query_as(
++            "SELECT \
++                count(*) FILTER (WHERE event_type='step.resolved'), \
++                count(*) FILTER (WHERE event_type IN ('step.completed','step.skipped')) \
++               FROM run_events WHERE tenant_id=$1 AND run_id=$2 \
++                 AND instance_path_nodes=ARRAY['lines']::text[] \
++                 AND instance_path_indices=ARRAY[16]::integer[] AND node='reserve~c'",
++        )
++        .bind(flow.tenant.as_uuid())
++        .bind(flow.run.as_uuid())
++        .fetch_one(&flow.api.db.pool)
++        .await
++        .expect("resolved missing-output journal events");
++        assert_eq!(resolution_events, (1, 0));
++
++        let mut missing_after_resolution = Some(missing);
++        run_available_compensations(
++            &flow,
++            &mut reservations,
++            &mut released,
++            &mut missing_after_resolution,
++        )
++        .await;
++        flow.drive().await;
++        assert_eq!(released.len(), 16, "every retained result reached the same handler");
++        assert_eq!(reservations, BTreeSet::from([reservation_id(16)]));
++
++        let final_state: (
++            String,
++            Option<String>,
++            String,
++            bool,
++            String,
++            Option<String>,
++            Option<String>,
++            String,
++            Option<String>,
++        ) = sqlx::query_as(
++            "SELECT compensation.status,compensation.failure_code,forward.status, \
++                    forward.output_digest IS NULL,run.status,run.stop_reason,run.stop_code, \
++                    saga.phase,saga.outcome \
++               FROM runs run JOIN steps compensation \
++                 ON compensation.tenant_id=run.tenant_id AND compensation.run_id=run.id \
++                AND compensation.instance_path_nodes=ARRAY['lines']::text[] \
++                AND compensation.instance_path_indices=ARRAY[16]::integer[] \
++                AND compensation.node='reserve~c' \
++               JOIN steps forward \
++                 ON forward.tenant_id=run.tenant_id AND forward.run_id=run.id \
++                AND forward.instance_path_nodes=ARRAY['lines']::text[] \
++                AND forward.instance_path_indices=ARRAY[16]::integer[] \
++                AND forward.node='reserve' \
++               JOIN scope_sagas saga ON saga.tenant_id=run.tenant_id AND saga.run_id=run.id \
++              WHERE run.tenant_id=$1 AND run.id=$2",
++        )
++        .bind(flow.tenant.as_uuid())
++        .bind(flow.run.as_uuid())
++        .fetch_one(&flow.api.db.pool)
++        .await
++        .expect("final failed compensation state");
++        assert_eq!(final_state.0, "FAILED");
++        assert_eq!(final_state.1.as_deref(), Some(MISSING_OUTPUT_CODE));
++        assert_eq!(final_state.2, "SUCCEEDED");
++        assert!(final_state.3);
++        assert_eq!(final_state.4, "COMPENSATION_FAILED");
++        assert_eq!(final_state.5.as_deref(), Some("FAILED"));
++        assert_eq!(final_state.6.as_deref(), Some("RUN_DATA_LIMIT"));
++        assert_eq!(final_state.7, "DONE");
++        assert_eq!(final_state.8.as_deref(), Some("COMPENSATION_FAILED"));
++        flow.verify().await;
++    }
+ }
+ 
+ #[tokio::test(flavor = "current_thread")]

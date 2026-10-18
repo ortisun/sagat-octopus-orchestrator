@@ -272,3 +272,11 @@ Real C1 RED was HTTP401 on a newly allocated base; C2 GREEN1/1, nearby collectio
 strict integration Clippy/fmt/architecture pass with1122 matching native source hashes.
 See evidence/api-retained-db-bootstrap-20261018. This is not an OS restart or old/current
 compatibility acceptance; Q10c and all canonical014 pending tasks remain open.
+
+
+Current-version output-dependent compensation case passes: a strict handler uses real lease
+input, releases 16 retained reservations and reports the missing refused result through FailStep.
+The obligation remains WAITING/OPERATOR/MANUAL_REVIEW until audited failed resolution, then
+finishes COMPENSATION_FAILED truthfully. Final-source focused 1/1 in both invocations, strict
+Clippy/fmt/architecture; prior query-model revision passed full byte 23/23. Evidence:
+evidence/refused-output-worker-20261018. No provider, old-binary or OS restart guarantee.

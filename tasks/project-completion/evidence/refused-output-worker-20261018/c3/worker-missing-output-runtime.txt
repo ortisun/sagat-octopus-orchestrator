@@ -1,0 +1,8 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.96s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 1 test
+test byte_ceilings::refused_output_compensation::a_refused_required_output_keeps_its_compensation_open_until_audited_resolution ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 531 filtered out; finished in 8.33s
+

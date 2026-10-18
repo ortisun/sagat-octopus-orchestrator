@@ -1,0 +1,19 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "integration_workflow_primitives",
+    "byte_ceilings::refused_output_compensation::a_refused_required_output_keeps_its_compensation_open_until_audited_resolution",
+    "--",
+    "--exact",
+    "--nocapture"
+  ],
+  "exit_code": 0,
+  "seconds": 60.45,
+  "started_utc": "2026-10-18T21:24:25.232556+00:00",
+  "log": "worker-missing-output.txt"
+}

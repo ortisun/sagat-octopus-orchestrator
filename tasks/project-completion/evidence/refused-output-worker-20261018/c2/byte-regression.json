@@ -1,0 +1,18 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "integration_workflow_primitives",
+    "byte_ceilings::",
+    "--",
+    "--nocapture"
+  ],
+  "exit_code": 0,
+  "seconds": 18.48,
+  "started_utc": "2026-10-18T21:21:49.647428+00:00",
+  "log": "byte-regression.txt"
+}

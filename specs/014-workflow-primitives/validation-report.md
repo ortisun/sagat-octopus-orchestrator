@@ -3305,3 +3305,15 @@ crossing the remaining Run-byte budget. Scope success and owner output remain du
 Run fails; the final oracle checks physical payload absence, terminal hints, audit and head.
 Current-version default/runtime results are separate from old in-flight upgrade acceptance.
 All canonical open tasks remain unchecked; the later merged Clippy and release gates still apply.
+
+
+### Current worker compensation requiring a refused output — 2026-10-18
+
+Actual strict handler over real compensation lease input succeeds for 16 retained results and
+fails honestly for the refused result. Public FailStep retains operator review; exact authorized
+failed resolution is audited and ends COMPENSATION_FAILED. Final-source focused test passes
+in default/runtime invocations (both Flow sagat_app), strict integration Clippy/fmt/architecture
+pass. Full byte 23/23 passed before the named SQL result-model-only lint correction.
+See `tasks/project-completion/evidence/refused-output-worker-20261018/README.md`.
+This is current worker/engine behavior with fixture in-memory state, not external provider undo,
+old-process upgrade or canonical task closure.

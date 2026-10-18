@@ -328,3 +328,16 @@ Q7c/Q8/Q9/Q10 and the master Q remain open for their unexecuted controls and acc
 In particular, section11.4's old compensable in-flight reports, both orders, prior-stop/current
 secret races, cold report recovery, unknown COMMIT, output-dependent compensation and rollout
 are not replaced by this waiting-worker discovery case. Canonical task checkboxes stay unchanged.
+
+
+## Current worker missing-output acceptance — 2026-10-18
+
+The section 11.2 worker-defined missing-output limitation now has actual current-version
+[evidence](evidence/refused-output-worker-20261018/README.md): all 16 retained compensation
+inputs pass the same strict handler; refused input causes genuine typed FailStep, preserved
+WAITING/OPERATOR and MANUAL_REVIEW, then authorized audited failed resolution produces
+COMPENSATION_FAILED without claiming release. Final-source focused test passes in both
+invocations under actual sagat_app; strict integration Clippy/fmt/architecture pass.
+This does not substitute for old in-flight compatibility or external provider evidence.
+The earlier checkpoint's pending statement is superseded only for this current worker case;
+Q10c/master Q and canonical 014 checkboxes remain open.
