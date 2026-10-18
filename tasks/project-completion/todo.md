@@ -89,6 +89,11 @@ not a SQL port or own-member authority. See evidence/capacity-header-restore-202
 - [x] B1b.2a.1c.3b: Add truthful audit/resource vocabulary before the native source transaction.
 - [ ] B1b.2a.1d: Prove exact successful source certification and actual producer races/restart;
   failed/drained/effect-bearing paths need their own source-closure contract.
+- [x] B1b.2a.1d.1: Freeze bounded native proof/replay/error/metadata projection transaction.
+- [ ] B1b.2a.1d.2: Implement dormant native certifier and actual public-source happy/refusal/atomic
+  write tests with disposable test-only INSERT grant; no released INSERT or caller.
+- [ ] B1b.2a.1d.3: Prove every actual producer's preservation barriers, bounded failures/recovery,
+  uncertain-COMMIT/restart and closed observations before permitting release INSERT.
 - [ ] B1b.2b: Review scoped binding/fingerprint/receipt/retention extension and its actual queries.
 - [ ] B1b.2c: Review nested/child relationship closure and remaining quiescence/transition authority.
 

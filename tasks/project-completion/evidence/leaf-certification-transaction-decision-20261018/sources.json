@@ -1,0 +1,11 @@
+{
+  "base": "5a8731c5",
+  "scope": "B1b.2a.1d.1 contract only",
+  "sha256": {
+    "tasks/project-completion/leaf-certification-transaction.md": "25544b7bd2bc3b2c96170979ea23a51355f5dde4bea0639186ba7e92ade04b9a",
+    "tasks/project-completion/leaf-certification-port.md": "3278073124f8e35611ead0f94b4524ef7e7d39509725e71572453c1e80f91770",
+    "tasks/project-completion/leaf-certification-storage.md": "34f895d43452c235834fd5bf7a1254544574b09bc0fc1f1648e262af154239e1",
+    "crates/application/src/leaf_certification.rs": "f2e2d087a1820bc4a34264b37e7868e90561c51bcd0d4dcf890c80011a7349a5",
+    "crates/domain/src/workflow/collection_shape.rs": "0b883bd651cc4aab7ca8193194f44d9c3f2b617b73e7cdce4eee4707b5f325eb"
+  }
+}
