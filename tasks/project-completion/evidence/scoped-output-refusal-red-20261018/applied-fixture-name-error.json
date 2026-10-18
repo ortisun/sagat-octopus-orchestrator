@@ -1,0 +1,20 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "integration_workflow_primitives",
+    "byte_ceilings::an_applied_lookup_preserves_both_real_successes_without_the_substitute_output",
+    "--",
+    "--exact",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "exit_code": 101,
+  "seconds": 1.03,
+  "started_utc": "2026-10-18T19:30:47.156323+00:00",
+  "log": "applied-fixture-name-error.txt"
+}

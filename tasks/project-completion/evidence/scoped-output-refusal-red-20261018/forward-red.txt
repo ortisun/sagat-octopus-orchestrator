@@ -1,0 +1,25 @@
+   Compiling sagat-infra-postgres v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-postgres)
+   Compiling sagat-control-plane v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/control-plane)
+   Compiling sagat-execution-engine v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/execution-engine)
+   Compiling sagat-sandbox-runner v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/sandbox-runner)
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 55.70s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 1 test
+test byte_ceilings::a_known_successful_seventeenth_member_is_preserved_without_its_refused_output ... 
+thread 'byte_ceilings::a_known_successful_seventeenth_member_is_preserved_without_its_refused_output' (125135819) panicked at tests/integration/workflow-primitives/byte_ceilings.rs:426:5:
+assertion `left == right` failed
+  left: "FAILED"
+ right: "SUCCEEDED"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    byte_ceilings::a_known_successful_seventeenth_member_is_preserved_without_its_refused_output
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 518 filtered out; finished in 3.53s
+
+error: test failed, to rerun pass `-p sagat-tests --test integration_workflow_primitives`

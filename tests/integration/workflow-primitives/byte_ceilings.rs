@@ -4,6 +4,7 @@
 
 use std::time::Duration;
 
+use sagat_api_grpc::pb::TaskLease;
 use sagat_application::clock::SystemClock;
 use sagat_application::definitions::Idempotency;
 use sagat_application::entropy::SystemEntropy;
@@ -12,6 +13,7 @@ use sagat_application::execution::{
     Actor, Effects, LeaseGrant, MAX_PAYLOAD_BYTES, MAX_RUN_OUTPUT_BYTES, PathExecutionStore,
     PathExecutionTx, ReportedLease, ScopeInput,
 };
+use sagat_application::maintenance::{MaintenanceStore, Window};
 use sagat_application::runs::Lock;
 use sagat_application::worker::{MAX_TASK_INPUT_BYTES, WorkerService};
 use sagat_domain::execution::{
@@ -29,6 +31,9 @@ use crate::limits::{
 };
 use crate::support::engine::ctx;
 use crate::support::engine::{World, activity, document, end_node, task_ref, with, world};
+use crate::support::scope_flow::{
+    Flow, activity as scoped_activity, collection_document, iteration, node, retry, row, summary,
+};
 
 type Workers = WorkerService<PgRunStore, SystemClock, JsonEvaluator, SystemEntropy>;
 
@@ -95,6 +100,427 @@ async fn set_script_retention(world: &World, days: u64) {
         )
         .await
         .expect("set script retention policy");
+}
+
+fn successful_refusal_collection(name: &str, reconciliation: bool) -> Value {
+    let mut reserve = json!({
+        "compensateWith": "line.release",
+        "compensationRetry": retry()
+    });
+    if reconciliation {
+        reserve["reconcileWith"] = json!("line.lookup");
+    }
+    let mut document = collection_document(
+        name,
+        vec![
+            scoped_activity("reserve", "line.reserve", "returned", reserve),
+            json!({"id": "returned", "type": "return", "result": "1"}),
+        ],
+        1,
+    );
+    document["nodes"][0]["maxItems"] = json!(17);
+    document
+}
+
+fn refused_member_output() -> Value {
+    let output = Value::String("x".repeat(249_998));
+    assert_eq!(output.to_string().len(), 250_000);
+    output
+}
+
+async fn collection_at_seventeenth_member(
+    name: &str,
+    reconciliation: bool,
+) -> (Flow, TaskLease, Value) {
+    let lines: Vec<u32> = (0..17).collect();
+    let flow = Flow::start(
+        name,
+        successful_refusal_collection(name, reconciliation),
+        json!(lines),
+    )
+    .await;
+    let output = refused_member_output();
+    for index in 0..16 {
+        flow.drive().await;
+        let tasks = flow.poll().await;
+        assert_eq!(
+            summary(&tasks),
+            vec![row(index, "reserve", "FORWARD", "line.reserve")]
+        );
+        flow.complete(&tasks[0], output.clone()).await;
+    }
+    flow.drive().await;
+    let tasks = flow.poll().await;
+    assert_eq!(
+        summary(&tasks),
+        vec![row(16, "reserve", "FORWARD", "line.reserve")]
+    );
+    let checkpoints: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM iteration_checkpoints WHERE tenant_id=$1 AND run_id=$2",
+    )
+    .bind(flow.tenant.as_uuid())
+    .bind(flow.run.as_uuid())
+    .fetch_one(&flow.api.db.pool)
+    .await
+    .expect("first sixteen member checkpoints");
+    assert_eq!(checkpoints, 16);
+    (flow, tasks[0].clone(), output)
+}
+
+async fn run_outboxes(flow: &Flow) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM event_outbox WHERE tenant_id=$1 AND aggregate_id=$2")
+        .bind(flow.tenant.as_uuid())
+        .bind(flow.run.as_uuid())
+        .fetch_one(&flow.api.db.pool)
+        .await
+        .expect("run outbox count")
+}
+
+async fn refusal_identity(flow: &Flow, key: &str) -> (i64, i64, i64, i64, i64) {
+    sqlx::query_as(
+        "SELECT \
+           (SELECT count(*) FROM audit_records WHERE tenant_id=$1 \
+             AND resource_type='run' AND resource_id=$2::text \
+             AND action='run.data_limit_exceeded' \
+             AND reason='successful scoped output refused by run data limit'), \
+           (SELECT count(*) FROM command_dedupe WHERE tenant_id=$1 AND idempotency_key=$3), \
+           (SELECT count(*) FROM event_outbox WHERE tenant_id=$1 AND aggregate_id=$2), \
+           (SELECT count(*) FROM run_events WHERE tenant_id=$1 AND run_id=$2), \
+           (SELECT run_version FROM runs WHERE tenant_id=$1 AND id=$2)",
+    )
+    .bind(flow.tenant.as_uuid())
+    .bind(flow.run.as_uuid())
+    .bind(key)
+    .fetch_one(&flow.api.db.pool)
+    .await
+    .expect("refusal identity")
+}
+
+#[allow(clippy::type_complexity)] // One query captures the atomic public report projection.
+async fn assert_successful_refusal(
+    flow: &Flow,
+    reported: &TaskLease,
+    key: &str,
+    outboxes_before: i64,
+) {
+    let state: (
+        String,
+        Option<String>,
+        Option<String>,
+        String,
+        String,
+        bool,
+        bool,
+        bool,
+        i64,
+        i64,
+        i64,
+    ) = sqlx::query_as(
+        "SELECT run.status,run.stop_reason,run.stop_code,scope.lifecycle,step.status, \
+                step.output_digest IS NULL,step.reported_lease_token_hash IS NOT NULL, \
+                step.attempt=$4 AND step.generation=$5 \
+                  AND step.reported_lease_token_hash=$6, \
+                usage.logical_output_bytes,telemetry.head_seq,run.run_version \
+           FROM runs run JOIN iteration_scopes scope \
+             ON scope.tenant_id=run.tenant_id AND scope.run_id=run.id \
+           JOIN steps step ON step.tenant_id=run.tenant_id AND step.run_id=run.id \
+           JOIN run_instance_usage usage \
+             ON usage.tenant_id=run.tenant_id AND usage.run_id=run.id \
+           JOIN telemetry_pending telemetry \
+             ON telemetry.tenant_id=run.tenant_id AND telemetry.run_id=run.id \
+          WHERE run.tenant_id=$1 AND run.id=$2 \
+            AND step.instance_path_nodes=ARRAY['lines']::text[] \
+            AND step.instance_path_indices=ARRAY[16]::integer[] AND step.node=$3",
+    )
+    .bind(flow.tenant.as_uuid())
+    .bind(flow.run.as_uuid())
+    .bind(node(reported))
+    .bind(reported.attempt)
+    .bind(reported.generation)
+    .bind(Token::hash_of(&reported.lease_token))
+    .fetch_one(&flow.api.db.pool)
+    .await
+    .expect("successful refusal projection");
+    assert_eq!(state.0, "CANCELLING");
+    assert_eq!(state.1.as_deref(), Some("FAILED"));
+    assert_eq!(state.2.as_deref(), Some("RUN_DATA_LIMIT"));
+    assert_eq!(state.3, "OPEN");
+    assert_eq!(state.4, "SUCCEEDED");
+    assert!(state.5, "the refused successful output was not retained");
+    assert!(state.6, "the actual reported lease was persisted");
+    assert!(
+        state.7,
+        "reported lease identity differs from the public lease"
+    );
+    assert_eq!(state.8, 4_000_000);
+    assert_eq!(
+        state.9, state.10,
+        "the report leaves the final telemetry head"
+    );
+
+    let successors: (i64, i64) = sqlx::query_as(
+        "SELECT \
+           (SELECT count(*) FROM steps WHERE tenant_id=$1 AND run_id=$2 \
+             AND instance_path_nodes=ARRAY['lines']::text[] \
+             AND instance_path_indices=ARRAY[16]::integer[] AND node='returned'), \
+           (SELECT count(*) FROM steps WHERE tenant_id=$1 AND run_id=$2 \
+             AND cardinality(instance_path_nodes)=0 AND node='done')",
+    )
+    .bind(flow.tenant.as_uuid())
+    .bind(flow.run.as_uuid())
+    .fetch_one(&flow.api.db.pool)
+    .await
+    .expect("refused successors");
+    assert_eq!(successors, (0, 0), "no forward successor was released");
+
+    let audit: (String, String, bool) = sqlx::query_as(
+        "SELECT audit.actor,audit.reason, \
+                audit.trace_id IS NOT DISTINCT FROM run.trace_id \
+           FROM audit_records audit JOIN runs run \
+             ON run.tenant_id=audit.tenant_id AND run.id=$2 \
+          WHERE audit.tenant_id=$1 AND audit.resource_type='run' \
+            AND audit.resource_id=$2::text AND audit.action='run.data_limit_exceeded' \
+            AND audit.reason='successful scoped output refused by run data limit'",
+    )
+    .bind(flow.tenant.as_uuid())
+    .bind(flow.run.as_uuid())
+    .fetch_one(&flow.api.db.pool)
+    .await
+    .expect("run data-limit audit");
+    assert_eq!(
+        audit,
+        (
+            "system:engine".into(),
+            "successful scoped output refused by run data limit".into(),
+            true,
+        )
+    );
+
+    let receipt: (String, i32) = sqlx::query_as(
+        "SELECT resource_id,octet_length(request_hash) FROM command_dedupe \
+          WHERE tenant_id=$1 AND idempotency_key=$2",
+    )
+    .bind(flow.tenant.as_uuid())
+    .bind(key)
+    .fetch_one(&flow.api.db.pool)
+    .await
+    .expect("original report receipt");
+    assert_eq!(receipt.1, 32);
+    assert!(
+        receipt.0.starts_with("SUCCEEDED|CANCELLING|"),
+        "{receipt:?}"
+    );
+    assert_eq!(
+        run_outboxes(flow).await,
+        outboxes_before,
+        "the report itself emits no outbox message"
+    );
+
+    let candidates = flow
+        .api
+        .executions
+        .collection_candidates(&Window::everything(8))
+        .await
+        .expect("discover the stopped open collection");
+    assert!(
+        candidates
+            .iter()
+            .any(|candidate| candidate.run_id == flow.run && candidate.node.as_str() == "lines"),
+        "the durable CANCELLING/OPEN scope remains discoverable: {candidates:?}"
+    );
+}
+
+async fn drain_and_compensate_every_reservation(flow: &Flow) {
+    let draining = flow.scheduler.tick().await;
+    assert_eq!(draining.failed, 0, "{draining:?}");
+    assert_eq!(draining.collections_advanced, 1, "{draining:?}");
+    let drain: (String, String, Option<String>, i64) = sqlx::query_as(
+        "SELECT lifecycle,drain_kind,drain_failure_code, \
+                (SELECT count(*) FROM event_outbox WHERE tenant_id=scope.tenant_id \
+                  AND aggregate_id=scope.run_id AND event_type='collection.drain.started') \
+           FROM iteration_scopes scope WHERE tenant_id=$1 AND run_id=$2",
+    )
+    .bind(flow.tenant.as_uuid())
+    .bind(flow.run.as_uuid())
+    .fetch_one(&flow.api.db.pool)
+    .await
+    .expect("native stopped-limit drain");
+    assert_eq!(
+        drain,
+        (
+            "DRAINING".into(),
+            "RUN_DATA_LIMIT".into(),
+            Some("RUN_DATA_LIMIT".into()),
+            1,
+        )
+    );
+
+    let mut released = Vec::new();
+    for _ in 0..17 {
+        flow.drive().await;
+        let tasks = flow.poll().await;
+        assert_eq!(tasks.len(), 1, "{:?}", summary(&tasks));
+        assert_eq!(
+            summary(&tasks),
+            vec![row(
+                iteration(&tasks[0]),
+                "reserve~c",
+                "COMPENSATION",
+                "line.release"
+            )]
+        );
+        released.push(iteration(&tasks[0]));
+        flow.complete(&tasks[0], json!({"released": true})).await;
+    }
+    assert_eq!(released, (0..17).rev().collect::<Vec<_>>());
+    flow.drive().await;
+    assert_eq!(flow.run_status().await, "COMPENSATED");
+
+    let final_state: (
+        String,
+        String,
+        Option<String>,
+        String,
+        Option<String>,
+        i64,
+        i64,
+    ) = sqlx::query_as(
+        "SELECT scope.lifecycle,scope.drain_kind,scope.drain_failure_code, \
+                    saga.phase,saga.outcome,telemetry.head_seq,run.run_version \
+               FROM iteration_scopes scope JOIN scope_sagas saga \
+                 ON saga.tenant_id=scope.tenant_id AND saga.run_id=scope.run_id \
+                AND saga.owner_path_nodes=scope.owner_path_nodes \
+                AND saga.owner_path_indices=scope.owner_path_indices \
+                AND saga.owner_node=scope.owner_node \
+               JOIN runs run ON run.tenant_id=scope.tenant_id AND run.id=scope.run_id \
+               JOIN telemetry_pending telemetry \
+                 ON telemetry.tenant_id=run.tenant_id AND telemetry.run_id=run.id \
+              WHERE scope.tenant_id=$1 AND scope.run_id=$2",
+    )
+    .bind(flow.tenant.as_uuid())
+    .bind(flow.run.as_uuid())
+    .fetch_one(&flow.api.db.pool)
+    .await
+    .expect("finished refused-output compensation");
+    assert_eq!(final_state.0, "FAILED");
+    assert_eq!(final_state.1, "RUN_DATA_LIMIT");
+    assert_eq!(final_state.2.as_deref(), Some("RUN_DATA_LIMIT"));
+    assert_eq!(final_state.3, "DONE");
+    assert_eq!(final_state.4.as_deref(), Some("COMPENSATED"));
+    assert_eq!(final_state.5, final_state.6);
+    flow.verify().await;
+}
+
+#[tokio::test]
+async fn a_known_successful_seventeenth_member_is_preserved_without_its_refused_output() {
+    let name = format!("scoped-output-refusal-{}", uuid::Uuid::now_v7());
+    let (flow, task, output) = collection_at_seventeenth_member(&name, false).await;
+    let outboxes_before = run_outboxes(&flow).await;
+    let key = format!("refused-success-{}", uuid::Uuid::now_v7());
+
+    let accepted = flow
+        .try_complete(&task, output.clone(), &key)
+        .await
+        .expect("preserve the real successful effect while refusing its output");
+    assert!(!accepted.already_applied);
+    assert_eq!(accepted.step_status, "SUCCEEDED");
+    assert_eq!(accepted.run_status, "CANCELLING");
+    assert_successful_refusal(&flow, &task, &key, outboxes_before).await;
+
+    // Rebuild from the journal before exercising the public receipt path.
+    flow.verify().await;
+    let first_identity = refusal_identity(&flow, &key).await;
+    let replay = flow
+        .try_complete(&task, output.clone(), &key)
+        .await
+        .expect("replay the original completion receipt");
+    assert!(replay.already_applied);
+    assert_eq!(replay.command_id, accepted.command_id);
+    assert_eq!(replay.step_status, "SUCCEEDED");
+    assert_eq!(replay.run_status, "CANCELLING");
+    assert_eq!(refusal_identity(&flow, &key).await, first_identity);
+
+    let wrong_fingerprint = flow
+        .try_complete(&task, json!({"different": true}), &key)
+        .await
+        .expect_err("the receipt is bound to the original successful report");
+    assert_eq!(wrong_fingerprint.code(), tonic::Code::Aborted);
+    let stale = flow
+        .try_complete(
+            &task,
+            output,
+            &format!("stale-refusal-{}", uuid::Uuid::now_v7()),
+        )
+        .await
+        .expect_err("a new command cannot reuse the completed lease fence");
+    assert_eq!(stale.code(), tonic::Code::Aborted);
+    assert_eq!(refusal_identity(&flow, &key).await, first_identity);
+
+    drain_and_compensate_every_reservation(&flow).await;
+}
+
+#[tokio::test]
+async fn an_applied_lookup_preserves_both_real_successes_without_the_substitute_output() {
+    let name = format!("output-refusal-applied-{}", uuid::Uuid::now_v7());
+    let (flow, forward, output) = collection_at_seventeenth_member(&name, true).await;
+    flow.fail(&forward, "OUTCOME_UNKNOWN", false).await;
+    flow.drive().await;
+    let tasks = flow.poll().await;
+    assert_eq!(
+        summary(&tasks),
+        vec![row(16, "reserve~r", "RECONCILIATION", "line.lookup")]
+    );
+    let lookup = &tasks[0];
+    let applied = json!({"effect": "applied", "output": output});
+    assert!(
+        applied.to_string().len() <= MAX_PAYLOAD_BYTES,
+        "the genuine Applied wrapper must pass the per-report ceiling"
+    );
+    let outboxes_before = run_outboxes(&flow).await;
+    let key = format!("refused-applied-{}", uuid::Uuid::now_v7());
+
+    let accepted = flow
+        .try_complete(lookup, applied.clone(), &key)
+        .await
+        .expect("preserve the real Applied verdict while refusing its substitute output");
+    assert!(!accepted.already_applied);
+    assert_eq!(accepted.step_status, "SUCCEEDED");
+    assert_eq!(accepted.run_status, "CANCELLING");
+    assert_successful_refusal(&flow, lookup, &key, outboxes_before).await;
+
+    let effects: Vec<(String, String, bool)> = sqlx::query_as(
+        "SELECT node,status,output_digest IS NULL FROM steps \
+          WHERE tenant_id=$1 AND run_id=$2 \
+            AND instance_path_nodes=ARRAY['lines']::text[] \
+            AND instance_path_indices=ARRAY[16]::integer[] \
+            AND node IN ('reserve','reserve~r') ORDER BY node",
+    )
+    .bind(flow.tenant.as_uuid())
+    .bind(flow.run.as_uuid())
+    .fetch_all(&flow.api.db.pool)
+    .await
+    .expect("forward and lookup effects");
+    assert_eq!(
+        effects,
+        vec![
+            ("reserve".into(), "SUCCEEDED".into(), true),
+            ("reserve~r".into(), "SUCCEEDED".into(), true),
+        ]
+    );
+
+    flow.verify().await;
+    let first_identity = refusal_identity(&flow, &key).await;
+    let replay = flow
+        .try_complete(lookup, applied, &key)
+        .await
+        .expect("replay the original Applied receipt");
+    assert!(replay.already_applied);
+    assert_eq!(replay.command_id, accepted.command_id);
+    assert_eq!(replay.step_status, "SUCCEEDED");
+    assert_eq!(replay.run_status, "CANCELLING");
+    assert_eq!(refusal_identity(&flow, &key).await, first_identity);
+
+    drain_and_compensate_every_reservation(&flow).await;
 }
 
 fn script_collection(name: &str) -> Value {
