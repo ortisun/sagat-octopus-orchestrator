@@ -1,0 +1,19 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "integration_workflow_primitives",
+    "own_cancel::parent_propagate_child_stop_commits_before_first_source_certification",
+    "--",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "exit_code": 101,
+  "seconds": 40.77,
+  "started_utc": "2026-10-18T18:03:59.362420+00:00",
+  "log": "diagnose-suffix-default.txt"
+}

@@ -70,14 +70,15 @@ fn terminal_document(name: &str) -> Value {
     })
 }
 
-async fn start_public_parent_with_policy(
+async fn start_public_parent_with_policy_and_document(
     f: &Flow,
     label: &str,
     cancel_policy: CancelPolicy,
+    child_document: fn(&str) -> Value,
 ) -> (RunId, RunId) {
     let suffix = Uuid::now_v7();
     let child_name = format!("ocs-c-{label}-{suffix}");
-    crate::support::scope_flow::publish(&f.api, &child_name, document(&child_name))
+    crate::support::scope_flow::publish(&f.api, &child_name, child_document(&child_name))
         .await
         .expect("the ordinary two-collection child publishes through the public API");
 
@@ -309,9 +310,10 @@ async fn assert_later_task_pending(f: &Flow, later: &TaskLease) {
     );
 }
 
-pub(super) async fn ordinary_child_source_boundary_with_policy(
+pub(super) async fn ordinary_child_source_boundary_with_document(
     label: &str,
     cancel_policy: CancelPolicy,
+    child_document: fn(&str) -> Value,
 ) -> OrdinaryChildSourceBoundary {
     let bootstrap_name = format!("ocs-b-{label}-{}", Uuid::now_v7());
     let mut flow = Flow::start(
@@ -329,7 +331,9 @@ pub(super) async fn ordinary_child_source_boundary_with_policy(
     flow.scheduler = flow
         .scheduler
         .with_children(DefinitionCache::new(Arc::new(JsonIrCodec), 8));
-    let (parent, child) = start_public_parent_with_policy(&flow, label, cancel_policy).await;
+    let (parent, child) =
+        start_public_parent_with_policy_and_document(&flow, label, cancel_policy, child_document)
+            .await;
     flow.drive().await;
     assert_ordinary_child_context(&flow, parent, child, cancel_policy).await;
 
@@ -383,6 +387,13 @@ pub(super) async fn ordinary_child_source_boundary_with_policy(
         later,
         source,
     }
+}
+
+pub(super) async fn ordinary_child_source_boundary_with_policy(
+    label: &str,
+    cancel_policy: CancelPolicy,
+) -> OrdinaryChildSourceBoundary {
+    ordinary_child_source_boundary_with_document(label, cancel_policy, document).await
 }
 
 pub(super) async fn ordinary_child_source_boundary(label: &str) -> OrdinaryChildSourceBoundary {
@@ -1230,3 +1241,6 @@ mod parent_flags;
 
 #[path = "leaf_certification_child_detach.rs"]
 mod detached_progress;
+
+#[path = "leaf_certification_child_own_cancel.rs"]
+mod own_cancel;

@@ -1,0 +1,117 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+error[E0369]: binary operation `==` cannot be applied to type `std::result::Result<CollectionAdvance, CollectionAdvanceError>`
+    --> tests/integration/workflow-primitives/leaf_certification_child_own_cancel.rs:1226:5
+     |
+1226 | /     assert_eq!(
+1227 | |         f.scheduler.advance_collection(f.tenant, f.run, &owner).await,
+1228 | |         Ok(CollectionAdvance::DrainStarted)
+1229 | |     );
+     | |     ^
+     | |     |
+     | |_____std::result::Result<CollectionAdvance, CollectionAdvanceError>
+     |       std::result::Result<CollectionAdvance, CollectionAdvanceError>
+     |
+note: `CollectionAdvanceError` does not implement `PartialEq`
+    --> crates/scheduler/src/passes.rs:176:1
+     |
+ 176 | pub enum CollectionAdvanceError {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `CollectionAdvanceError` is defined in another crate
+
+error[E0369]: binary operation `==` cannot be applied to type `std::result::Result<CollectionAdvance, CollectionAdvanceError>`
+    --> tests/integration/workflow-primitives/leaf_certification_child_own_cancel.rs:1275:5
+     |
+1275 | /     assert_eq!(
+1276 | |         f.scheduler.advance_collection(f.tenant, f.run, &owner).await,
+1277 | |         Ok(CollectionAdvance::Waiting)
+1278 | |     );
+     | |     ^
+     | |     |
+     | |_____std::result::Result<CollectionAdvance, CollectionAdvanceError>
+     |       std::result::Result<CollectionAdvance, CollectionAdvanceError>
+     |
+note: `CollectionAdvanceError` does not implement `PartialEq`
+    --> crates/scheduler/src/passes.rs:176:1
+     |
+ 176 | pub enum CollectionAdvanceError {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `CollectionAdvanceError` is defined in another crate
+
+error[E0369]: binary operation `==` cannot be applied to type `std::result::Result<CollectionAdvance, CollectionAdvanceError>`
+    --> tests/integration/workflow-primitives/leaf_certification_child_own_cancel.rs:1300:5
+     |
+1300 | /     assert_eq!(
+1301 | |         f.scheduler.advance_collection(f.tenant, f.run, &owner).await,
+1302 | |         Ok(CollectionAdvance::Drained { index: 0 })
+1303 | |     );
+     | |     ^
+     | |     |
+     | |_____std::result::Result<CollectionAdvance, CollectionAdvanceError>
+     |       std::result::Result<CollectionAdvance, CollectionAdvanceError>
+     |
+note: `CollectionAdvanceError` does not implement `PartialEq`
+    --> crates/scheduler/src/passes.rs:176:1
+     |
+ 176 | pub enum CollectionAdvanceError {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `CollectionAdvanceError` is defined in another crate
+
+error[E0369]: binary operation `==` cannot be applied to type `std::result::Result<CollectionAdvance, CollectionAdvanceError>`
+    --> tests/integration/workflow-primitives/leaf_certification_child_own_cancel.rs:1349:5
+     |
+1349 | /     assert_eq!(
+1350 | |         f.scheduler
+1351 | |             .advance_collection_from_run(f.tenant, f.run, &owner)
+1352 | |             .await,
+1353 | |         Ok(CollectionAdvance::Compensated)
+1354 | |     );
+     | |     ^
+     | |     |
+     | |_____std::result::Result<CollectionAdvance, CollectionAdvanceError>
+     |       std::result::Result<CollectionAdvance, CollectionAdvanceError>
+     |
+note: `CollectionAdvanceError` does not implement `PartialEq`
+    --> crates/scheduler/src/passes.rs:176:1
+     |
+ 176 | pub enum CollectionAdvanceError {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `CollectionAdvanceError` is defined in another crate
+
+error[E0369]: binary operation `==` cannot be applied to type `std::result::Result<CollectionAdvance, CollectionAdvanceError>`
+    --> tests/integration/workflow-primitives/leaf_certification_child_own_cancel.rs:1426:5
+     |
+1426 | /     assert_eq!(
+1427 | |         f.scheduler
+1428 | |             .advance_collection_from_run(f.tenant, f.run, &owner)
+1429 | |             .await,
+1430 | |         Ok(CollectionAdvance::Compensated)
+1431 | |     );
+     | |     ^
+     | |     |
+     | |_____std::result::Result<CollectionAdvance, CollectionAdvanceError>
+     |       std::result::Result<CollectionAdvance, CollectionAdvanceError>
+     |
+note: `CollectionAdvanceError` does not implement `PartialEq`
+    --> crates/scheduler/src/passes.rs:176:1
+     |
+ 176 | pub enum CollectionAdvanceError {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `CollectionAdvanceError` is defined in another crate
+
+error[E0369]: binary operation `==` cannot be applied to type `std::result::Result<CollectionAdvance, CollectionAdvanceError>`
+    --> tests/integration/workflow-primitives/leaf_certification_child_own_cancel.rs:1508:9
+     |
+1508 | /         assert_eq!(
+1509 | |             f.scheduler
+1510 | |                 .advance_collection_from_run(f.tenant, f.run, &owner)
+1511 | |                 .await,
+1512 | |             Ok(CollectionAdvance::Compensated)
+1513 | |         );
+     | |         ^
+     | |         |
+     | |_________std::result::Result<CollectionAdvance, CollectionAdvanceError>
+     |           std::result::Result<CollectionAdvance, CollectionAdvanceError>
+     |
+note: `CollectionAdvanceError` does not implement `PartialEq`
+    --> crates/scheduler/src/passes.rs:176:1
+     |
+ 176 | pub enum CollectionAdvanceError {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `CollectionAdvanceError` is defined in another crate
+
+For more information about this error, try `rustc --explain E0369`.
+error: could not compile `sagat-tests` (test "integration_workflow_primitives") due to 6 previous errors

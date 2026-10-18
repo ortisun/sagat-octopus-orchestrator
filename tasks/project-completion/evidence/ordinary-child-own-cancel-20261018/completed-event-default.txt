@@ -1,0 +1,30 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 35.67s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 2 tests
+test leaf_certification_native::child_source::own_cancel::first_child_source_certification_commits_before_parent_propagate_child_stop ... {"scenario":"certification-before-stop","sessions":[{"datname":"t_01a1502e7c107729a350cc2dced78e5b","pg_blocking_pids":[],"pid":130448,"query":"SELECT pg_advisory_xact_lock($1)","role":"gate","state":"idle in transaction","usename":"postgres","wait_event":"ClientRead","wait_event_type":"Client"},{"datname":"t_01a1502e7c107729a350cc2dced78e5b","pg_blocking_pids":[130448],"pid":130455,"query":"COMMIT","role":"certifier","state":"active","usename":"sagat_app","wait_event":"advisory","wait_event_type":"Lock"},{"datname":"t_01a1502e7c107729a350cc2dced78e5b","pg_blocking_pids":[130455],"pid":130440,"query":"SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, status, run_version, stop_reason, stop_code, paused, input_digest, correlation_id, started_by, trace_id, deadline_at, created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, cancel_policy, depth, trace_parent_span, rerun_of, origin, clock_timestamp() AS db_now FROM runs WHERE tenant_id = $1 AND id = $2 FOR UPDATE","role":"child_stop","state":"active","usename":"sagat_app","wait_event":"transactionid","wait_event_type":"Lock"}],"witness":"ordinary_child_own_cancel_commit_order"}
+
+thread 'leaf_certification_native::child_source::own_cancel::first_child_source_certification_commits_before_parent_propagate_child_stop' (120647425) panicked at tests/integration/workflow-primitives/leaf_certification_child_own_cancel.rs:1210:5:
+assertion `left == right` failed
+  left: 2
+ right: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test leaf_certification_native::child_source::own_cancel::parent_propagate_child_stop_commits_before_first_source_certification ... {"scenario":"stop-before-certification","sessions":[{"datname":"t_01a1502e849e71778b0f84be1442b487","pg_blocking_pids":[],"pid":130474,"query":"SELECT pg_advisory_xact_lock($1)","role":"gate","state":"idle in transaction","usename":"postgres","wait_event":"ClientRead","wait_event_type":"Client"},{"datname":"t_01a1502e849e71778b0f84be1442b487","pg_blocking_pids":[130474],"pid":130467,"query":"COMMIT","role":"child_stop","state":"active","usename":"sagat_app","wait_event":"advisory","wait_event_type":"Lock"},{"datname":"t_01a1502e849e71778b0f84be1442b487","pg_blocking_pids":[130467],"pid":130468,"query":"SELECT workflow_version_id,run_version,trace_id FROM runs WHERE tenant_id=$1 AND namespace_id=$2 AND id=$3 FOR UPDATE","role":"certifier","state":"active","usename":"sagat_app","wait_event":"transactionid","wait_event_type":"Lock"}],"witness":"ordinary_child_own_cancel_commit_order"}
+
+thread 'leaf_certification_native::child_source::own_cancel::parent_propagate_child_stop_commits_before_first_source_certification' (120649198) panicked at tests/integration/workflow-primitives/leaf_certification_child_own_cancel.rs:1210:5:
+assertion `left == right` failed
+  left: 2
+ right: 1
+FAILED
+
+failures:
+
+failures:
+    leaf_certification_native::child_source::own_cancel::first_child_source_certification_commits_before_parent_propagate_child_stop
+    leaf_certification_native::child_source::own_cancel::parent_propagate_child_stop_commits_before_first_source_certification
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 503 filtered out; finished in 4.35s
+
+error: test failed, to rerun pass `-p sagat-tests --test integration_workflow_primitives`

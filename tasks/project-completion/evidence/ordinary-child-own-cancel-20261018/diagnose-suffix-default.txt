@@ -1,0 +1,86 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 35.95s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 1 test
+test leaf_certification_native::child_source::own_cancel::parent_propagate_child_stop_commits_before_first_source_certification ... {"scenario":"stop-before-certification","sessions":[{"datname":"t_01a1502fe0e1759e9ac5b8cd1fffed18","pg_blocking_pids":[],"pid":131291,"query":"SELECT pg_advisory_xact_lock($1)","role":"gate","state":"idle in transaction","usename":"postgres","wait_event":"ClientRead","wait_event_type":"Client"},{"datname":"t_01a1502fe0e1759e9ac5b8cd1fffed18","pg_blocking_pids":[131291],"pid":131284,"query":"COMMIT","role":"child_stop","state":"active","usename":"sagat_app","wait_event":"advisory","wait_event_type":"Lock"},{"datname":"t_01a1502fe0e1759e9ac5b8cd1fffed18","pg_blocking_pids":[131284],"pid":131285,"query":"SELECT workflow_version_id,run_version,trace_id FROM runs WHERE tenant_id=$1 AND namespace_id=$2 AND id=$3 FOR UPDATE","role":"certifier","state":"active","usename":"sagat_app","wait_event":"transactionid","wait_event_type":"Lock"}],"witness":"ordinary_child_own_cancel_commit_order"}
+
+thread 'leaf_certification_native::child_source::own_cancel::parent_propagate_child_stop_commits_before_first_source_certification' (120719890) panicked at tests/integration/workflow-primitives/leaf_certification_child_own_cancel.rs:1210:5:
+assertion `left == right` failed: actual addressed event types after 24: ["scope.compensation_planned", "step.released"]
+  left: 2
+ right: 1
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/std/src/panicking.rs:679:5
+   1: core::panicking::panic_fmt
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panicking.rs:80:14
+   2: core::panicking::assert_failed_inner
+   3: core::panicking::assert_failed::<usize, usize>
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panicking.rs:394:5
+   4: integration_workflow_primitives::leaf_certification_native::child_source::own_cancel::assert_suffix::{closure#0}
+             at ./integration/workflow-primitives/leaf_certification_child_own_cancel.rs:1210:5
+   5: integration_workflow_primitives::leaf_certification_native::child_source::own_cancel::continue_through_refund::{closure#0}
+             at ./integration/workflow-primitives/leaf_certification_child_own_cancel.rs:1483:6
+   6: integration_workflow_primitives::leaf_certification_native::child_source::own_cancel::parent_propagate_child_stop_commits_before_first_source_certification::{closure#0}
+             at ./integration/workflow-primitives/leaf_certification_child_own_cancel.rs:1743:52
+   7: <core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>> as core::future::future::Future>::poll
+             at /Users/marcelo/.rustup/toolchains/1.98.0-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/future/future.rs:133:9
+   8: <core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>> as core::future::future::Future>::poll
+             at /Users/marcelo/.rustup/toolchains/1.98.0-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/future/future.rs:133:9
+   9: <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on::<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}::{closure#0}::{closure#0}
+             at /Users/marcelo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.2/src/runtime/scheduler/current_thread/mod.rs:830:70
+  10: tokio::task::coop::with_budget::<core::task::poll::Poll<()>, <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}::{closure#0}::{closure#0}>
+             at /Users/marcelo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.2/src/task/coop/mod.rs:167:5
+  11: tokio::task::coop::budget::<core::task::poll::Poll<()>, <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}::{closure#0}::{closure#0}>
+             at /Users/marcelo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.2/src/task/coop/mod.rs:133:5
+  12: <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on::<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}::{closure#0}
+             at /Users/marcelo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.2/src/runtime/scheduler/current_thread/mod.rs:830:25
+  13: <tokio::runtime::scheduler::current_thread::Context>::enter::<core::task::poll::Poll<()>, <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}::{closure#0}>
+             at /Users/marcelo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.2/src/runtime/scheduler/current_thread/mod.rs:488:19
+  14: <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on::<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}
+             at /Users/marcelo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.2/src/runtime/scheduler/current_thread/mod.rs:829:44
+  15: <tokio::runtime::scheduler::current_thread::CoreGuard>::enter::<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>::{closure#0}
+             at /Users/marcelo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.2/src/runtime/scheduler/current_thread/mod.rs:906:68
+  16: <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<<tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>::{closure#0}, (alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>)>
+             at /Users/marcelo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.2/src/runtime/context/scoped.rs:40:9
+  17: tokio::runtime::context::set_scheduler::<(alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>), <tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>::{closure#0}>::{closure#0}
+             at /Users/marcelo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.2/src/runtime/context.rs:187:38
+  18: <std::thread::local::LocalKey<tokio::runtime::context::Context>>::try_with::<tokio::runtime::context::set_scheduler<(alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>), <tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>::{closure#0}>::{closure#0}, (alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>)>
+             at /Users/marcelo/.rustup/toolchains/1.98.0-aarch64-apple-darwin/lib/rustlib/src/rust/library/std/src/thread/local.rs:463:12
+  19: <std::thread::local::LocalKey<tokio::runtime::context::Context>>::with::<tokio::runtime::context::set_scheduler<(alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>), <tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>::{closure#0}>::{closure#0}, (alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>)>
+             at /Users/marcelo/.rustup/toolchains/1.98.0-aarch64-apple-darwin/lib/rustlib/src/rust/library/std/src/thread/local.rs:427:20
+  20: tokio::runtime::context::set_scheduler::<(alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>), <tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>::{closure#0}>
+             at /Users/marcelo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.2/src/runtime/context.rs:187:17
+  21: <tokio::runtime::scheduler::current_thread::CoreGuard>::enter::<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>
+             at /Users/marcelo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.2/src/runtime/scheduler/current_thread/mod.rs:906:27
+  22: <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on::<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>
+             at /Users/marcelo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.2/src/runtime/scheduler/current_thread/mod.rs:817:24
+  23: <tokio::runtime::scheduler::current_thread::CurrentThread>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}
+             at /Users/marcelo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.2/src/runtime/scheduler/current_thread/mod.rs:218:33
+  24: tokio::runtime::context::runtime::enter_runtime::<<tokio::runtime::scheduler::current_thread::CurrentThread>::block_on<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}, ()>
+             at /Users/marcelo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.2/src/runtime/context/runtime.rs:65:16
+  25: <tokio::runtime::scheduler::current_thread::CurrentThread>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>
+             at /Users/marcelo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.2/src/runtime/scheduler/current_thread/mod.rs:206:9
+  26: <tokio::runtime::runtime::Runtime>::block_on_inner::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>
+             at /Users/marcelo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.2/src/runtime/runtime.rs:374:52
+  27: <tokio::runtime::runtime::Runtime>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>
+             at /Users/marcelo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.2/src/runtime/runtime.rs:343:18
+  28: integration_workflow_primitives::leaf_certification_native::child_source::own_cancel::parent_propagate_child_stop_commits_before_first_source_certification
+             at ./integration/workflow-primitives/leaf_certification_child_own_cancel.rs:1743:57
+  29: integration_workflow_primitives::leaf_certification_native::child_source::own_cancel::parent_propagate_child_stop_commits_before_first_source_certification::{closure#0}
+             at ./integration/workflow-primitives/leaf_certification_child_own_cancel.rs:1740:81
+  30: <integration_workflow_primitives::leaf_certification_native::child_source::own_cancel::parent_propagate_child_stop_commits_before_first_source_certification::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /Users/marcelo/.rustup/toolchains/1.98.0-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/ops/function.rs:250:5
+  31: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+FAILED
+
+failures:
+
+failures:
+    leaf_certification_native::child_source::own_cancel::parent_propagate_child_stop_commits_before_first_source_certification
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 504 filtered out; finished in 2.67s
+
+error: test failed, to rerun pass `-p sagat-tests --test integration_workflow_primitives`

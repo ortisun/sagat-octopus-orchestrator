@@ -1,0 +1,5 @@
+# Bounded .1c review
+
+Original draft C1 split fixture, actual-lock, continuation reviews found five required issues; all were amended, fresh C2 None on `34ea5a779b59269d9348f650ee51afb409514e1e5c5213192b20e447bf8e09d9`. Root compilation found six Result equality assertions on a non-PartialEq error; fixed with expect and the same exact outcome. First real execution found nonexistent step.succeeded event; corrected to current step.completed. Actual continuation then showed scope.compensation_planned and step.released in the same commit. Domain command advance_scope_compensation loops until Idle; root corrected the exact suffix, READY projection and removed the invented second advance. Contract updated together. C3 reviewed only these amendments on `9b94a1946fcd8eabb368d1eab47d9a469861b82b4fff67491ea223aa32c2f82b`, returned None. No fourth review, no optional external review requested again.
+
+No product code changes; existing source permissions, capability profile and Scoped Finish child refusal remain. These two tests stop with the later saga DONE/COMPENSATED and unfinished child, before scope drain finish, End/result or parent fanout.

@@ -201,7 +201,7 @@ See evidence/leaf-certification-process-20261018. Other producer/observation/rel
 - [ ] B1b.2c.1: Prove the enumerated current incoming-parent preservation for one ordinary unchained child source.
 - [x] B1b.2c.1a: Characterize genuine public child source, closure/fence/qualification/refusal and cold replay controls.
 - [x] B1b.2c.1b: Prove actual PROPAGATE/DETACH/REQUEST_CANCEL parent flag writers in both child-row queue orders. Evidence: [contract](leaf-child-parent-flags.md), ordinary-child-parent-flags-20261018/manifest.json.
-- [ ] B1b.2c.1c: Prove actual own-child cancellation/drain consequences and later compensation preserve selected source. Reviewed [contract](leaf-child-own-cancel.md); integrate after .1b acceptance.
+- [x] B1b.2c.1c: Prove actual own-child cancellation/drain consequences and later compensation preserve selected source. [Contract](leaf-child-own-cancel.md), ordinary-child-own-cancel-20261018/manifest.json; two COMMIT orders, real refund, cold original-record replay.
 - [ ] B1b.2c.1d: Prove genuine terminal outcome fanout/parent settlement once in both observable orders. Conditional [contract](leaf-child-terminal-fanout.md); .1d.0 prerequisite remains unresolved.
 - [ ] B1b.2c.1d.0: Reproduce dropped collection→End.outputExpr→Run result with genuine RED, review/correct atomic result retention and prove actual child result fanout before .1d. See [bounded correction](collection-end-result-correction.md).
 - [ ] B1b.2c.1d.0b: Extract shared bounded End evaluation and typed finish answer, without activating the native path.

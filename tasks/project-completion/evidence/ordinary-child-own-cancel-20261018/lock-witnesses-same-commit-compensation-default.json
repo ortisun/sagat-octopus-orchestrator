@@ -1,0 +1,88 @@
+[
+  {
+    "scenario": "certification-before-stop",
+    "sessions": [
+      {
+        "datname": "t_01a1503116b873a19edb35095c58128a",
+        "pg_blocking_pids": [],
+        "pid": 132017,
+        "query": "SELECT pg_advisory_xact_lock($1)",
+        "role": "gate",
+        "state": "idle in transaction",
+        "usename": "postgres",
+        "wait_event": "ClientRead",
+        "wait_event_type": "Client"
+      },
+      {
+        "datname": "t_01a1503116b873a19edb35095c58128a",
+        "pg_blocking_pids": [
+          132017
+        ],
+        "pid": 132024,
+        "query": "COMMIT",
+        "role": "certifier",
+        "state": "active",
+        "usename": "sagat_app",
+        "wait_event": "advisory",
+        "wait_event_type": "Lock"
+      },
+      {
+        "datname": "t_01a1503116b873a19edb35095c58128a",
+        "pg_blocking_pids": [
+          132024
+        ],
+        "pid": 132009,
+        "query": "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, status, run_version, stop_reason, stop_code, paused, input_digest, correlation_id, started_by, trace_id, deadline_at, created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, cancel_policy, depth, trace_parent_span, rerun_of, origin, clock_timestamp() AS db_now FROM runs WHERE tenant_id = $1 AND id = $2 FOR UPDATE",
+        "role": "child_stop",
+        "state": "active",
+        "usename": "sagat_app",
+        "wait_event": "transactionid",
+        "wait_event_type": "Lock"
+      }
+    ],
+    "witness": "ordinary_child_own_cancel_commit_order"
+  },
+  {
+    "scenario": "stop-before-certification",
+    "sessions": [
+      {
+        "datname": "t_01a150312013720e81f557bce7e7e9af",
+        "pg_blocking_pids": [],
+        "pid": 132047,
+        "query": "SELECT pg_advisory_xact_lock($1)",
+        "role": "gate",
+        "state": "idle in transaction",
+        "usename": "postgres",
+        "wait_event": "ClientRead",
+        "wait_event_type": "Client"
+      },
+      {
+        "datname": "t_01a150312013720e81f557bce7e7e9af",
+        "pg_blocking_pids": [
+          132047
+        ],
+        "pid": 132040,
+        "query": "COMMIT",
+        "role": "child_stop",
+        "state": "active",
+        "usename": "sagat_app",
+        "wait_event": "advisory",
+        "wait_event_type": "Lock"
+      },
+      {
+        "datname": "t_01a150312013720e81f557bce7e7e9af",
+        "pg_blocking_pids": [
+          132040
+        ],
+        "pid": 132041,
+        "query": "SELECT workflow_version_id,run_version,trace_id FROM runs WHERE tenant_id=$1 AND namespace_id=$2 AND id=$3 FOR UPDATE",
+        "role": "certifier",
+        "state": "active",
+        "usename": "sagat_app",
+        "wait_event": "transactionid",
+        "wait_event_type": "Lock"
+      }
+    ],
+    "witness": "ordinary_child_own_cancel_commit_order"
+  }
+]

@@ -1,0 +1,27 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.59s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 2 tests
+test leaf_certification_native::child_source::own_cancel::first_child_source_certification_commits_before_parent_propagate_child_stop ... 
+thread 'leaf_certification_native::child_source::own_cancel::first_child_source_certification_commits_before_parent_propagate_child_stop' (120553773) panicked at tests/integration/workflow-primitives/leaf_certification_child_own_cancel.rs:452:5:
+assertion `left == right` failed
+  left: (0, 1)
+ right: (1, 1)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test leaf_certification_native::child_source::own_cancel::parent_propagate_child_stop_commits_before_first_source_certification ... 
+thread 'leaf_certification_native::child_source::own_cancel::parent_propagate_child_stop_commits_before_first_source_certification' (120555123) panicked at tests/integration/workflow-primitives/leaf_certification_child_own_cancel.rs:452:5:
+assertion `left == right` failed
+  left: (0, 1)
+ right: (1, 1)
+FAILED
+
+failures:
+
+failures:
+    leaf_certification_native::child_source::own_cancel::first_child_source_certification_commits_before_parent_propagate_child_stop
+    leaf_certification_native::child_source::own_cancel::parent_propagate_child_stop_commits_before_first_source_certification
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 503 filtered out; finished in 3.60s
+
+error: test failed, to rerun pass `-p sagat-tests --test integration_workflow_primitives`
