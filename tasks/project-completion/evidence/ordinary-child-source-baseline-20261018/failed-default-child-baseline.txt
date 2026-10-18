@@ -1,0 +1,28 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 34.76s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 2 tests
+test leaf_certification_native::child_source::genuine_ordinary_child_certificate_still_cannot_authorize_scoped_finish ... 
+thread 'leaf_certification_native::child_source::genuine_ordinary_child_certificate_still_cannot_authorize_scoped_finish' (117523160) panicked at tests/integration/workflow-primitives/../../support/scope_flow.rs:127:5:
+assertion `left == right` failed
+  left: 422
+ right: 201
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test leaf_certification_native::child_source::native_certifier_characterizes_a_real_ordinary_unchained_child_source ... 
+thread 'leaf_certification_native::child_source::native_certifier_characterizes_a_real_ordinary_unchained_child_source' (117524079) panicked at tests/integration/workflow-primitives/../../support/scope_flow.rs:127:5:
+assertion `left == right` failed
+  left: 422
+ right: 201
+FAILED
+
+failures:
+
+failures:
+    leaf_certification_native::child_source::genuine_ordinary_child_certificate_still_cannot_authorize_scoped_finish
+    leaf_certification_native::child_source::native_certifier_characterizes_a_real_ordinary_unchained_child_source
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 496 filtered out; finished in 1.46s
+
+error: test failed, to rerun pass `-p sagat-tests --test integration_workflow_primitives`

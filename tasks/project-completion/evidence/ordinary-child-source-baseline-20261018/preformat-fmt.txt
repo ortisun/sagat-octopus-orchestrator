@@ -1,0 +1,9 @@
+Diff in /Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests/integration/workflow-primitives/leaf_certification_child.rs:377:
+         body: record.body.as_str().to_owned(),
+         return_path_nodes: vec![segment.scope_node().as_str().to_owned()],
+         return_path_indices: vec![
+-            i32::try_from(segment.iteration_index()).expect("bounded return index")
++            i32::try_from(segment.iteration_index()).expect("bounded return index"),
+         ],
+         return_node: record.return_instance.node().as_str().to_owned(),
+         checkpoint_result_digest: record.checkpoint_result_digest.as_bytes().to_vec(),

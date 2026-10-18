@@ -350,3 +350,6 @@ async fn native_certification_is_metadata_only_and_replays_after_later_scope_fai
     assert_eq!(counts, (1, 1));
     f.verify().await;
 }
+
+#[path = "leaf_certification_child.rs"]
+mod child_source;

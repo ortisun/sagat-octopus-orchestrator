@@ -1,0 +1,9 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.05s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 2 tests
+test leaf_certification_native::child_source::genuine_ordinary_child_certificate_still_cannot_authorize_scoped_finish ... ok
+test leaf_certification_native::child_source::native_certifier_characterizes_a_real_ordinary_unchained_child_source ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 496 filtered out; finished in 3.80s
+

@@ -199,7 +199,7 @@ See evidence/leaf-certification-process-20261018. Other producer/observation/rel
 - [x] B1b.2b.17: Prove all scoped returned outcomes/OTLP/redaction/filtered span/cancellation counts.
 - [ ] B1b.2c: Review nested/child relationship closure and remaining quiescence/transition authority.
 - [ ] B1b.2c.1: Prove the enumerated current incoming-parent preservation for one ordinary unchained child source.
-- [ ] B1b.2c.1a: Characterize genuine public child source, closure/fence/qualification/refusal and cold replay controls.
+- [x] B1b.2c.1a: Characterize genuine public child source, closure/fence/qualification/refusal and cold replay controls.
 - [ ] B1b.2c.1b: Prove actual PROPAGATE/DETACH/REQUEST_CANCEL parent flag writers in both child-row queue orders.
 - [ ] B1b.2c.1c: Prove actual own-child cancellation/drain consequences and later compensation preserve selected source.
 - [ ] B1b.2c.1d: Prove genuine terminal outcome fanout/parent settlement once in both observable orders.

@@ -542,7 +542,8 @@ any parent/chain context, including a genuine child certificate.
 The reviewed contract is [leaf-child-source-preservation.md](../../tasks/project-completion/leaf-child-source-preservation.md).
 The first baseline requires genuine public creation/closure, metadata-only exact certification,
 missing-closure/current-fence/qualified-identity controls, cold original-record replay and a genuine
-certificate that still cannot authorize Scoped Finish. It is pending execution. Actual parent flags
+certificate that still cannot authorize Scoped Finish. The baseline passes both focused tests in
+default and runtime-role modes; exact evidence is in ordinary-child-source-baseline-20261018. Actual parent flags
 (PROPAGATE/DETACH/REQUEST_CANCEL), own-child cancellation/drain and terminal fanout are separate
 subsequent proofs. Nonjournaled parent flag changes do not imply a stale child Run revision.
 General nesting, current-member authority, C0/mixed writers, resource ceilings and release gates

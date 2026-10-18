@@ -1,6 +1,6 @@
 # B1b.2c.1 — Ordinary leaf source in a legacy unchained child
 
-Status: bounded decision reviewed at f7c0ef59; fresh independent Astra/xhigh review found no substantive issue. Root inspected the proposal against current code. No child baseline tests have run. First implementation: **baseline characterization only**, followed by separately reviewed incoming-parent preservation units. No tests/builds/formatters, agents, commits, repository edits or external writes were performed by this design task. Only this `/tmp` artifact was written.
+Status: bounded decision reviewed at f7c0ef59; fresh independent Astra/xhigh review found no substantive issue. Root inspected the proposal against current code. Baseline characterization now has actual focused default/runtime-role evidence (checkpoint below); incoming-parent preservation units remain separate. No tests/builds/formatters, agents, commits, repository edits or external writes were performed by this design task. Only this `/tmp` artifact was written.
 
 Initial repository HEAD: `753152f6663ba57af68c1b592661011e5370ab3d`. Final read: `f7c0ef59e972b61dfed93c4e3f98914a77f9e51b`, clean worktree, `/Users/marcelo/Documents/Projects/sagat-octopus-project-completion`, branch `feature/016-project-completion`. Root's new 16b/17 results are its evidence, not tests executed here. `.specify/feature.json` is absent; the assigned active feature is 014. Existing branches/worktrees were inventoried before design.
 
@@ -172,3 +172,13 @@ not an unexecuted child-source guarantee. The first test module may keep its sma
 capacity registry helper local to avoid widening sibling-private harness interfaces; the genuine
 certificate/refusal/denied-read control remains required. Baseline code and evidence are pending.
 The earlier external second review was declined by the user; no external model CLI was run.
+
+
+## Genuine ordinary-child baseline — 2026-10-18
+
+A genuine publicly started parent creates an ordinary unchained child through the production scheduler. Before source closure the native certifier refuses SourceNotClosed; actual worker completion/checkpoint/collection closure creates the source while later child work remains LEASED and unfinished. First native certification retains exact qualified source identity, pinned definition, scope/body/Return/digests/five actual event references and one truthful audit. Cold runtime pool/cache/store replay returns the complete original record. Stale own authority precedes replay; foreign tenant/namespace, missing index and parent identity cannot reuse the child evidence. Actual later work finishes child and parent while selected source/certificate stay unchanged; terminal replay preserves the entire observed snapshot. A second genuine certificate fixture still receives UnsupportedRunContext from Scoped Finish before denied source/receipt reads (actual42501 probes), with no source/execution/capacity effects. Both use explicit sagat_app and a disposable test-only source INSERT grant that is revoked before replay. No production implementation changed.
+
+Actual focused child baseline: 2/2 default (40.1s wall) and 2/2 runtime-role (6.58s wall), the same two tests in separate invocations. Strict integration Clippy 39.21s, formatting 4.49s and architecture 0.41s/24 crates passed. All 1104 frozen executable/contract inputs match.
+
+This closes local B1b.2c.1a only. It characterizes existing source acceptance, not new child support or complete parent-writer preservation. Cold reconstruction is not an OS restart. Parent CANCEL races, child cancellation/drain/later compensation and terminal fanout remain separately pending. All parent/chain Scoped Finish refusals remain. Broader B1/B2/C0, production source/scoped INSERT grants/callers, nested runtime, resource ceilings and canonical T014-014/015/016/017/040/042/043/044 remain open. Earlier compilation is compilation only. Initial runtime0/2 failed at public workflow creation422; shortened test fixture prefixes fixed the public Slug63 mismatch. The retained preformat run passed2/2 in each mode and Clippy/architecture, but formatting rejected one edition2024 trailing comma. Final results above are from the corrected final source, not a combined aggregate.
+Evidence: tasks/project-completion/evidence/ordinary-child-source-baseline-20261018/manifest.json.

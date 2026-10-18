@@ -1,0 +1,8 @@
+{
+  "distinct_tests": [
+    "leaf_certification_native::child_source::genuine_ordinary_child_certificate_still_cannot_authorize_scoped_finish",
+    "leaf_certification_native::child_source::native_certifier_characterizes_a_real_ordinary_unchained_child_source"
+  ],
+  "default_passed": 2,
+  "runtime_role_passed": 2
+}
