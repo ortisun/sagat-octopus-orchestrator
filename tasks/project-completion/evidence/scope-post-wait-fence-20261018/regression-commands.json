@@ -1,0 +1,67 @@
+[
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "primitive_transactions",
+      "--",
+      "--test-threads=3"
+    ],
+    "exit_code": 0,
+    "seconds": 14.04,
+    "log": "primitive-transactions.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "loop_progress",
+      "--",
+      "--test-threads=3"
+    ],
+    "exit_code": 0,
+    "seconds": 100.17,
+    "log": "loop-progress.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "fault_workflow_primitives",
+      "--",
+      "--test-threads=3"
+    ],
+    "exit_code": 0,
+    "seconds": 119.22,
+    "log": "fault.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "clippy",
+      "--locked",
+      "--workspace",
+      "--all-targets",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit_code": 0,
+    "seconds": 91.92,
+    "log": "clippy.txt"
+  }
+]

@@ -3998,3 +3998,97 @@ async fn loop_entry_and_checkpoint_are_written_by_the_least_privilege_runtime_ro
         .expect("and replays the checkpoint");
     assert!(!replay.applied);
 }
+
+#[tokio::test]
+async fn scope_post_wait_fence_rejects_loop_entry_after_expiry_without_effects() {
+    assert_loop_entry_post_wait(false).await;
+}
+
+#[tokio::test]
+async fn scope_post_wait_fence_preserves_loop_generation_storage_error() {
+    assert_loop_entry_post_wait(true).await;
+}
+
+async fn assert_loop_entry_post_wait(overflow: bool) {
+    use crate::bounded_fences::{SchedulerExpiryBarrier, scope_checkpoint};
+    let fixture = seed_pending_loop("loop-postwait").await;
+    let store =
+        PgLoopProgressStore::new(fixture.db.runtime_pool().await, fixture.definitions.clone());
+    let authority = if overflow {
+        SchedulerAuthority::for_run(fixture.authority.owner(), fixture.run, u64::MAX)
+    } else {
+        fixture.authority.clone()
+    };
+    let outbox = Uuid::now_v7();
+    let carry_digest = digest(b"1");
+    let retained: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM payloads WHERE tenant_id=$1 AND digest=$2)",
+    )
+    .bind(fixture.tenant)
+    .bind(carry_digest.as_bytes().as_slice())
+    .fetch_one(&fixture.db.pool)
+    .await
+    .expect("novel carry check");
+    assert!(
+        !retained,
+        "the failed entry must not retain a new carry payload"
+    );
+    let command = |authority| {
+        let occurred_at = crate::support::now();
+        LoopEntryCommand::from_carry(
+            transition(&fixture, 1, authority, audit(&fixture), occurred_at),
+            LoopKind::While,
+            3,
+            occurred_at + Duration::minutes(1),
+            b"1".to_vec(),
+            Some(true),
+            Some(next_activity(&fixture, 0)),
+            outbox,
+        )
+        .expect("entry with new carry")
+    };
+    let prepared = command(authority);
+    let before = scope_checkpoint(&fixture.db.pool, fixture.tenant).await;
+    let result = if overflow {
+        store.enter_loop(&prepared).await
+    } else {
+        let barrier = SchedulerExpiryBarrier::hold(&fixture.db.pool, fixture.run).await;
+        let (result, ()) = tokio::join!(store.enter_loop(&prepared), barrier.expire_after_wait());
+        result
+    };
+    let error = result.expect_err("invalid scheduler authority must refuse loop entry");
+    if overflow {
+        assert!(matches!(
+            error,
+            LoopProgressError::Storage(StoreError::Internal { .. })
+        ));
+    } else {
+        assert_eq!(error, LoopProgressError::SchedulerFenceLost);
+    }
+    assert_eq!(
+        scope_checkpoint(&fixture.db.pool, fixture.tenant).await,
+        before
+    );
+    if !overflow {
+        let fresh = command(scheduler(&fixture.db.pool, fixture.run).await);
+        assert!(
+            store
+                .enter_loop(&fresh)
+                .await
+                .expect("fresh loop entry")
+                .applied
+        );
+        let committed = scope_checkpoint(&fixture.db.pool, fixture.tenant).await;
+        assert!(
+            !store
+                .enter_loop(&fresh)
+                .await
+                .expect("exact loop replay")
+                .applied
+        );
+        assert_eq!(
+            scope_checkpoint(&fixture.db.pool, fixture.tenant).await,
+            committed
+        );
+    }
+}

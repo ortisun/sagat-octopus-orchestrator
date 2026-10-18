@@ -2355,3 +2355,105 @@ async fn persisted_tenant_capacity_serializes_admission_across_runs() {
     .expect("tenant contention result");
     assert_eq!(persisted, (1, 1));
 }
+
+#[tokio::test]
+async fn scope_post_wait_fence_rejects_collection_entry_after_expiry_without_effects() {
+    assert_collection_entry_post_wait(false).await;
+}
+
+#[tokio::test]
+async fn scope_post_wait_fence_preserves_collection_generation_storage_error() {
+    assert_collection_entry_post_wait(true).await;
+}
+
+async fn assert_collection_entry_post_wait(overflow: bool) {
+    use crate::bounded_fences::{SchedulerExpiryBarrier, scope_checkpoint};
+    let w = world().await;
+    let owner = ExecutionInstanceId::root(NodeId::parse("items").expect("scope owner"));
+    let (workflow, version, definitions) =
+        publish_collection_fixture(&w, "collection-postwait", "items").await;
+    let run = journaled_collection_run(&w, workflow, version, &owner).await;
+    let tenant = w.admin.tenant_id().as_uuid();
+    let authority = scheduler_authority(&w.db.pool, run).await;
+    set_tenant_collection_capacity(&w.db.pool, tenant, 1).await;
+    let snapshot = retain_payload(&w.db.pool, tenant, b"[1]").await;
+    let scope = CollectionScopeId::generate();
+    let store = PgCollectionStore::with_definition_cache(w.db.runtime_pool().await, definitions);
+    let command = |authority| {
+        CollectionEntry::new(
+            transition_with_audit(
+                &w,
+                run,
+                1,
+                owner.clone(),
+                authority,
+                AuditRecord::engine(
+                    w.admin.tenant_id(),
+                    AuditAction::RunUpdated,
+                    ResourceType::Run,
+                    run.to_string(),
+                    "collection entry fence",
+                    Some("0af7651916cd43dd8448eb211c80319c".into()),
+                    crate::support::now(),
+                ),
+            ),
+            scope,
+            1,
+            snapshot,
+            CollectionLimits::new(1, 1, 100_000, 8).expect("limits"),
+        )
+        .expect("collection entry")
+    };
+    let claimed = if overflow {
+        SchedulerAuthority::for_run(authority.owner(), run, u64::MAX)
+    } else {
+        authority
+    };
+    let prepared = command(claimed);
+    let before = scope_checkpoint(&w.db.pool, tenant).await;
+    let result = if overflow {
+        store.enter_collection(&prepared).await
+    } else {
+        let barrier = SchedulerExpiryBarrier::hold(&w.db.pool, run).await;
+        let (result, ()) = tokio::join!(
+            store.enter_collection(&prepared),
+            barrier.expire_after_wait()
+        );
+        result
+    };
+    let error = result.expect_err("invalid scheduler authority must refuse collection entry");
+    if overflow {
+        assert!(matches!(
+            error,
+            PrimitiveStoreError::Storage(sagat_application::error::StoreError::Internal { .. })
+        ));
+    } else {
+        assert_eq!(error, PrimitiveStoreError::SchedulerFenceLost);
+    }
+    assert_eq!(scope_checkpoint(&w.db.pool, tenant).await, before);
+    if !overflow {
+        let fresh = command(scheduler_authority(&w.db.pool, run).await);
+        assert!(
+            store
+                .enter_collection(&fresh)
+                .await
+                .expect("fresh entry")
+                .applied
+        );
+        let audits: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM audit_records WHERE tenant_id=$1 AND resource_id=$2 \
+             AND action='run.updated' AND reason='collection entry fence' AND trace_id ~ '^[0-9a-f]{32}$'",
+        )
+        .bind(tenant).bind(run.to_string()).fetch_one(&w.db.pool).await.expect("entry audit count");
+        assert_eq!(audits, 1, "entry commits its supplied audit exactly once");
+        let committed = scope_checkpoint(&w.db.pool, tenant).await;
+        assert!(
+            !store
+                .enter_collection(&fresh)
+                .await
+                .expect("exact entry replay")
+                .applied
+        );
+        assert_eq!(scope_checkpoint(&w.db.pool, tenant).await, committed);
+    }
+}

@@ -1,0 +1,46 @@
+    Blocking waiting for file lock on build directory
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 17s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 38 tests
+test loop_progress::a_cancelled_run_surfaces_its_loop_while_it_waits ... ok
+test loop_progress::a_run_finished_by_its_loop_is_delivered_to_run_finished_subscribers ... ok
+test loop_progress::a_loop_that_hit_its_iteration_limit_ends_the_run_failed_through_the_scheduler ... ok
+test loop_progress::a_stale_scheduler_fence_stops_every_routed_drain_step ... ok
+test loop_progress::cancel_during_a_failure_drain_finishes_the_run_cancelled_without_routing ... ok
+test loop_progress::cancellation_drains_the_active_iteration_and_finishes_after_restart ... ok
+test loop_progress::cancellation_with_an_error_edge_still_cancels_the_run ... ok
+test loop_progress::deadline_cancels_a_suspended_timer_and_fences_the_stale_fire ... ok
+test loop_progress::complete_checkpoint_routes_the_terminal_successor_atomically ... ok
+test loop_progress::delay_checkpoint_restart_and_duplicate_timer_fire_are_atomic ... ok
+test loop_progress::drain_outbox_failure_rolls_back_stop_projection_audit_and_journal ... ok
+test loop_progress::error_edge_outbox_failure_rolls_back_the_whole_finish_and_a_retry_completes_it ... ok
+test loop_progress::error_edge_to_an_end_rolls_back_when_the_terminal_hint_cannot_be_stored ... ok
+test loop_progress::expired_failed_and_draining_loops_surface_for_the_scheduler ... ok
+test loop_progress::expression_error_with_an_error_edge_routes_the_recovery_activity_and_the_run_completes ... ok
+test loop_progress::false_while_finishes_without_admitting_a_body_and_replays_exactly ... ok
+test loop_progress::expression_failure_drains_once_restarts_and_finishes_from_the_journal ... ok
+test loop_progress::iteration_ceiling_coexists_with_database_policies_and_rollback_preserves_configuration ... ok
+test loop_progress::iteration_limit_stops_the_run_without_routing_a_successor ... ok
+test loop_progress::iteration_limit_with_an_error_edge_routes_instead_of_stopping_the_run ... ok
+test loop_progress::leased_member_observes_cancellation_and_drain_resumes_after_restart ... ok
+test loop_progress::loop_discovery_filters_unrelated_pending_roots_before_pagination ... ok
+test loop_progress::loop_entry_is_atomic_restart_safe_and_exactly_idempotent ... ok
+test loop_progress::loop_failure_with_an_error_edge_to_an_end_finishes_the_run_through_the_terminal_path ... ok
+test loop_progress::loop_entry_and_checkpoint_are_written_by_the_least_privilege_runtime_role ... ok
+test loop_progress::loop_timeout_before_the_body_starts_cancels_it_and_takes_the_error_edge ... ok
+test loop_progress::outbox_and_audit_failures_roll_back_the_whole_checkpoint ... ok
+test loop_progress::loop_timeout_with_an_error_edge_routes_the_recovery_activity ... ok
+test loop_progress::permanent_body_failure_with_an_error_edge_routes_the_recovery_activity ... ok
+test loop_progress::permanent_body_failure_without_an_error_edge_still_fails_the_run ... ok
+test loop_progress::populated_loop_schema_upgrades_and_backfills_the_initial_decision ... ok
+test loop_progress::repeat_until_always_admits_its_first_body_before_checking ... ok
+test loop_progress::scope_post_wait_fence_preserves_loop_generation_storage_error ... ok
+test loop_progress::running_member_observes_timeout_and_releases_capacity_after_restart ... ok
+test loop_progress::stale_fence_and_outbox_failure_leave_entry_unchanged ... ok
+test loop_progress::stale_fence_capacity_and_instance_budget_fail_without_timer_side_effects ... ok
+test loop_progress::terminal_outbox_failure_rolls_back_checkpoint_routing_and_slot_release ... ok
+test loop_progress::scope_post_wait_fence_rejects_loop_entry_after_expiry_without_effects ... ok
+
+test result: ok. 38 passed; 0 failed; 0 ignored; 0 measured; 355 filtered out; finished in 22.18s
+

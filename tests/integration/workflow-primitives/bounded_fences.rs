@@ -480,3 +480,31 @@ pub(super) async fn chain_checkpoint(
     .await
     .expect("independent chain effects checkpoint")
 }
+
+/// One independent snapshot of the persisted effects owned by collection/loop transitions.
+pub(super) async fn scope_checkpoint(pool: &sqlx::PgPool, tenant: uuid::Uuid) -> serde_json::Value {
+    sqlx::query_scalar(
+        "SELECT jsonb_build_object( \
+         'runs',(SELECT jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text) FROM runs t WHERE t.tenant_id=$1), \
+         'steps',(SELECT jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text) FROM steps t WHERE t.tenant_id=$1), \
+         'run_events',(SELECT jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text) FROM run_events t WHERE t.tenant_id=$1), \
+         'event_outbox',(SELECT jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text) FROM event_outbox t WHERE t.tenant_id=$1), \
+         'audit_records',(SELECT jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text) FROM audit_records t WHERE t.tenant_id=$1), \
+         'payloads',(SELECT jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text) FROM payloads t WHERE t.tenant_id=$1), \
+         'iteration_scopes',(SELECT jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text) FROM iteration_scopes t WHERE t.tenant_id=$1), \
+         'collection_scope_items',(SELECT jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text) FROM collection_scope_items t WHERE t.tenant_id=$1), \
+         'collection_iterations',(SELECT jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text) FROM collection_iterations t WHERE t.tenant_id=$1), \
+         'iteration_checkpoints',(SELECT jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text) FROM iteration_checkpoints t WHERE t.tenant_id=$1), \
+         'loop_scopes',(SELECT jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text) FROM loop_scopes t WHERE t.tenant_id=$1), \
+         'loop_iterations',(SELECT jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text) FROM loop_iterations t WHERE t.tenant_id=$1), \
+         'loop_checkpoints',(SELECT jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text) FROM loop_checkpoints t WHERE t.tenant_id=$1), \
+         'loop_timers',(SELECT jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text) FROM loop_timers t WHERE t.tenant_id=$1), \
+         'run_instance_usage',(SELECT jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text) FROM run_instance_usage t WHERE t.tenant_id=$1), \
+         'tenant_iteration_usage',(SELECT jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text) FROM tenant_iteration_usage t WHERE t.tenant_id=$1), \
+         'tenant_retained_usage',(SELECT jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text) FROM tenant_retained_usage t WHERE t.tenant_id=$1))",
+    )
+    .bind(tenant)
+    .fetch_one(pool)
+    .await
+    .expect("independent scope effects checkpoint")
+}

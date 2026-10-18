@@ -1,0 +1,4 @@
+{
+  "crates/infra-postgres/src/primitives.rs": "1d00777d0961e148d79678d1557ea0df73282d7f85b2df09afb009ce6409019b",
+  "crates/infra-postgres/src/loop_progress.rs": "bcef2ebaf682e170050875f6f48c7c4d2f5afad11b929372f5d7b77080ebd61d"
+}

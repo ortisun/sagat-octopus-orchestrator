@@ -37,8 +37,10 @@ by tenant/namespace/run rather than assuming run ID equals chain ID. Preserve pi
 receipt replay and terminal errors; verify public successor updates and lock lifetime.
 Reuse the transaction-typed post-lock scheduler-time helper for chain handoff/finalization,
 preserving wrong-shard/oversized-generation errors and the later evaluated deadline clock.
-Use unchanged-tuple expiry barriers and the actual runtime pool; track other primitive ports
-separately rather than inferring equivalent authority from passing chain tests.
+Use unchanged-tuple expiry barriers and the actual runtime pool. Collection and loop now have
+independent entry barriers, atomic unchanged-state checks, fresh-authority/replay controls and
+generation-error compatibility. Collection entry retains one supplied audit via finish_version.
+Approval remains a separate verification gap.
 
 ## Technical Context
 

@@ -155,11 +155,10 @@ not accept the other primitive/direct-Update prefixes, group transactions or gen
   the Chain branch explicitly takes chain before its resolved run. A direct run-addressed Update
   of a chain member now has the narrow prefix correction below. Queries are reads;
   do not silently forward a run address while aligning mutation locks.
-- The collection, loop and approval-specific `check_scheduler_fence` helpers still put
-  `expires_at > clock_timestamp()` in the locking SELECT. Chain ports now share the full/exact-path
-  transaction-typed `execution::locked_scheduler_time` post-lock check (evidence below). A predicate evaluated
-  before an unchanged-row wait is not the same proof. Add real expiry-during-wait barriers for
-  each primitive authority before claiming all runtime scheduler fences are equivalent.
+- The approval-specific `check_scheduler_fence` still puts expiry in the locking SELECT.
+  Collection and loop now share the transaction-typed `execution::locked_scheduler_time`
+  post-lock check, with their own entry expiry barriers (evidence below). Approval requires its
+  independent correction/proof before claiming equivalent runtime scheduler fencing.
 
 These are source observations and pending tests, not already reproduced public failures or a
 complete B0 graph. Existing suite passes do not settle these missing barriers.
@@ -216,3 +215,34 @@ pool preconditions; the actual five-file review found no concrete defects. Revie
 tests. Evidence: tasks/project-completion/evidence/chain-post-wait-fence-20261018/. Collection,
 loop and approval post-wait checks, their applicable chain prefixes and complete B0/group
 ordering remain open. No canonical checkbox closes from this chain correction.
+
+## Collection and loop scheduler expiry after row-lock wait — 2026-10-18
+
+Refs:T014-040, FR-014-014/015. Both private scheduler checks now use the owning transaction's
+locked_scheduler_time helper after preserving wrong-shard rejection and oversized-generation
+Storage(Internal). All seven collection and six loop callers own their transaction. No new lock
+prefix, deadline clock, capability, migration or nested execution eligibility is introduced.
+
+Two runtime-role PostgreSQL entry barriers reproduced expired-authority commits after an
+unchanged scheduler row wait. Clean RED was2 compatibility passes/2 failures (6.54s); GREEN
+was4/4 (6.16s). Rejection leaves an atomic snapshot of17 tenant tables unchanged. The loop carry
+is newly retained data, explicitly absent before entry. Fresh authority succeeds and exact
+replay leaves persisted state unchanged. Collection success requires exactly one traced audit.
+The initial collection attempt instead exposed a duplicate audit INSERT: enter_collection and
+finish_version wrote the same record. Removing the entry INSERT retains the single atomic
+finish_version audit. That audit-only correction preceded the clean RED; the earlier masked
+audit failure and a SQLx static-SQL compile failure are recorded separately.
+
+Two bounded reviews required non-vacuous new payload/audit oracles, then found no concrete
+defects. New stores explicitly use runtime pools; historical owner fixtures do not acquire
+least-privilege evidence from an environment flag. Existing scheduler mapping reports fenced
+collection/loop outcomes with scheduler_actions_total and scheduler_fenced_total; these private
+port barriers do not assert telemetry counters. Approval fencing, primitive chain prefixes,
+complete B0 and all nested-capacity runtime/release gates remain open. Exact source variants,
+commands and limits: tasks/project-completion/evidence/scope-post-wait-fence-20261018/.
+
+Final focused regression passed15 collection transaction cases (10.64s),38 loop cases (22.18s)
+and all92 fault cases (82.63s). Counts overlap the focused barriers. Strict locked workspace/
+all-target Clippy (91.92s), formatting, diff and24-crate architecture gates passed. Exact tested
+source, commands and staged evidence hashes are recorded in the scope-post-wait manifest.
+No canonical task closes from this adapter correction.

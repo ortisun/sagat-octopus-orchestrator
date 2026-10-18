@@ -25,7 +25,7 @@ use sagat_domain::sharding::Shard;
 use sagat_domain::workflow::{NodeId, NodeKind, WorkflowDefinition};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
-use sqlx::{PgConnection, PgPool, Row};
+use sqlx::{PgConnection, PgPool, Postgres, Row, Transaction};
 use uuid::Uuid;
 
 use crate::execution::PgRunStore;
@@ -618,7 +618,7 @@ async fn shared_policy_fence(
 }
 
 async fn check_scheduler_fence(
-    conn: &mut PgConnection,
+    tx: &mut Transaction<'_, Postgres>,
     transition: &CollectionTransition,
 ) -> Result<(), PrimitiveStoreError> {
     let authority = transition.scheduler();
@@ -626,18 +626,12 @@ async fn check_scheduler_fence(
     if lease.shard != Shard::of(transition.run_id().as_uuid()) {
         return Err(PrimitiveStoreError::SchedulerFenceLost);
     }
-    let held: Option<i16> = sqlx::query_scalar(
-        "SELECT shard FROM scheduler_shards \
-         WHERE shard = $1 AND generation = $2 AND owner = $3 \
-           AND expires_at > clock_timestamp() FOR SHARE",
-    )
-    .bind(i16::from(lease.shard.index()))
-    .bind(number(lease.generation, "scheduler generation")?)
-    .bind(authority.owner())
-    .fetch_optional(&mut *conn)
-    .await
-    .map_err(store_error)?;
-    if held.is_none() {
+    // Keep this port's existing conversion error for an oversized generation.
+    number(lease.generation, "scheduler generation")?;
+    if crate::execution::locked_scheduler_time(tx, transition.run_id(), authority.owner(), lease)
+        .await?
+        .is_none()
+    {
         return Err(PrimitiveStoreError::SchedulerFenceLost);
     }
     Ok(())
@@ -1066,9 +1060,6 @@ impl CollectionStore for PgCollectionStore {
         .execute(&mut *tx)
         .await
         .map_err(store_error)?;
-        if let Some(audit) = entry.transition.audit() {
-            insert_audit(&mut tx, audit).await?;
-        }
         if !item_digests.is_empty() {
             let indices = (0..item_digests.len())
                 .map(|index| i32::try_from(index).unwrap_or(i32::MAX))

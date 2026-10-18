@@ -1,0 +1,74 @@
+[
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "scope_post_wait_fence_",
+      "--",
+      "--nocapture",
+      "--test-threads=3"
+    ],
+    "exit_code": 101,
+    "seconds": 14.75,
+    "log": "compile-static-sql-error.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "scope_post_wait_fence_",
+      "--",
+      "--nocapture",
+      "--test-threads=3"
+    ],
+    "exit_code": 101,
+    "seconds": 74.59,
+    "log": "audit-masked-red.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "scope_post_wait_fence_",
+      "--",
+      "--nocapture",
+      "--test-threads=3"
+    ],
+    "exit_code": 101,
+    "seconds": 50.45,
+    "log": "red.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "scope_post_wait_fence_",
+      "--",
+      "--nocapture",
+      "--test-threads=3"
+    ],
+    "exit_code": 0,
+    "seconds": 52.53,
+    "log": "green.txt"
+  }
+]

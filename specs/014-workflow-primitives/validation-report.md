@@ -2132,3 +2132,34 @@ cases (93.86s), and all8 bounded fence cases. These counts overlap. Strict locke
 all-target Clippy, formatting, diff and24-crate architecture gates passed. No fresh full-workspace
 or all-five SDK matrix is claimed. Exact source/commands, mixed/setup failures and scope limits:
 tasks/project-completion/evidence/chain-post-wait-fence-20261018/manifest.json.
+
+## Collection and loop scheduler expiry after row-lock wait — 2026-10-18
+
+Refs:T014-040, FR-014-014/015. Both private scheduler checks now use the owning transaction's
+locked_scheduler_time helper after preserving wrong-shard rejection and oversized-generation
+Storage(Internal). All seven collection and six loop callers own their transaction. No new lock
+prefix, deadline clock, capability, migration or nested execution eligibility is introduced.
+
+Two runtime-role PostgreSQL entry barriers reproduced expired-authority commits after an
+unchanged scheduler row wait. Clean RED was2 compatibility passes/2 failures (6.54s); GREEN
+was4/4 (6.16s). Rejection leaves an atomic snapshot of17 tenant tables unchanged. The loop carry
+is newly retained data, explicitly absent before entry. Fresh authority succeeds and exact
+replay leaves persisted state unchanged. Collection success requires exactly one traced audit.
+The initial collection attempt instead exposed a duplicate audit INSERT: enter_collection and
+finish_version wrote the same record. Removing the entry INSERT retains the single atomic
+finish_version audit. That audit-only correction preceded the clean RED; the earlier masked
+audit failure and a SQLx static-SQL compile failure are recorded separately.
+
+Two bounded reviews required non-vacuous new payload/audit oracles, then found no concrete
+defects. New stores explicitly use runtime pools; historical owner fixtures do not acquire
+least-privilege evidence from an environment flag. Existing scheduler mapping reports fenced
+collection/loop outcomes with scheduler_actions_total and scheduler_fenced_total; these private
+port barriers do not assert telemetry counters. Approval fencing, primitive chain prefixes,
+complete B0 and all nested-capacity runtime/release gates remain open. Exact source variants,
+commands and limits: tasks/project-completion/evidence/scope-post-wait-fence-20261018/.
+
+Final focused regression passed15 collection transaction cases (10.64s),38 loop cases (22.18s)
+and all92 fault cases (82.63s). Counts overlap the focused barriers. Strict locked workspace/
+all-target Clippy (91.92s), formatting, diff and24-crate architecture gates passed. Exact tested
+source, commands and staged evidence hashes are recorded in the scope-post-wait manifest.
+No canonical task closes from this adapter correction.

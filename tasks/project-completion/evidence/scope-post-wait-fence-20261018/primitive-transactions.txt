@@ -1,0 +1,25 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.25s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 15 tests
+test primitive_transactions::admission_owner_must_match_the_stored_scope_owner ... ok
+test primitive_transactions::a_collection_entered_once_keeps_its_membership_against_any_later_entry ... ok
+test primitive_transactions::checkpoint_and_finish_are_atomic_replayable_and_restart_safe ... ok
+test primitive_transactions::collection_admission_writes_expected_journal_projection_and_usage_atomically ... ok
+test primitive_transactions::collection_payloads_require_same_tenant_and_matching_content_digests ... ok
+test primitive_transactions::collection_admission_and_checkpoint_are_written_by_the_least_privilege_runtime_role ... ok
+test primitive_transactions::empty_collection_finishes_without_admission_or_capacity_charge ... ok
+test primitive_transactions::failed_outbox_insert_rolls_back_admission_and_every_counter ... ok
+test primitive_transactions::missing_tenant_policy_fails_closed ... ok
+test primitive_transactions::persisted_tenant_capacity_serializes_admission_across_runs ... ok
+test primitive_transactions::populated_scope_prevents_destructive_migration_rollback ... ok
+test primitive_transactions::populated_schema_upgrades_and_backfills_root_usage ... ok
+test primitive_transactions::scope_post_wait_fence_preserves_collection_generation_storage_error ... ok
+test primitive_transactions::stale_scheduler_fence_rejects_entry_and_admission ... ok
+test primitive_transactions::scope_post_wait_fence_rejects_collection_entry_after_expiry_without_effects ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 378 filtered out; finished in 10.64s
+
