@@ -1,0 +1,18 @@
+{
+  "base": "c94d957e",
+  "scope": "B1b.2a.1c.3 decision only; no new SQL/test evidence",
+  "sha256": {
+    "tasks/project-completion/leaf-certification-storage.md": "2810c20f775e5f6ada058624a961abbdba98f11a2150bc3630909e5b181e58cb",
+    "tasks/project-completion/leaf-source-retention-inventory.md": "81ce099662e07b2236d953f015b969ff2f47f2a08115aa0bd0353f3c6da3cad4",
+    "tasks/project-completion/leaf-certification-port.md": "68006371a312e9b4a70c50a7d2f490b1869b37817aeed3f8725124ab6c511df1",
+    "crates/infra-postgres/src/privilege.rs": "2ab6d6b43d3277a7d0f7048a8b10ce04498c0e12f726e7a178c24d643f439641",
+    "crates/infra-postgres/src/execution.rs": "07ddad116cd27f84ef66228cc61c82b4633ff9cf6e7cfbd69daf0997faf77cdf",
+    "crates/infra-postgres/src/execution/path.rs": "012044db467dc12d378889c889bcc197dbe56c204f790016325057573d2716d7",
+    "crates/infra-postgres/src/primitives.rs": "0c84e9a5e622e5b70135340de75c69e6e04c3e79ee1caf04cdd704c0eb027b75",
+    "crates/infra-postgres/migrations/20261009000100_execution.up.sql": "d51cf9fd30c804fc87b0f3463114addd1dff6cf2edfcbc9d759f84a592126aca",
+    "crates/infra-postgres/migrations/20261029000000_collection_progress.up.sql": "a3a38ffbab2bb1cfe609b20290f4cb7616f907347c84095a9af9eeaf3673a38e",
+    "crates/infra-postgres/migrations/20261102000000_execution_chains.up.sql": "53fed0c8fd1a7c22f4e77b958a086579c57849cbe59293a0aa1754147978f648",
+    "crates/infra-postgres/migrations/20261112000000_scope_compensation.up.sql": "21e08fead6f38323480f6399e12b2b1c000dc6e4ab53a6c653964e8f58ac4aa3",
+    "crates/infra-postgres/migrations/20261125000000_database_ad_hoc.up.sql": "68d3aea391d658f3dc42f8178c3425070e89b246af2bb75ac49d7f75d38cc2ac"
+  }
+}

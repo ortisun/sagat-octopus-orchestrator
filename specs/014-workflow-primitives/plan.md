@@ -470,3 +470,11 @@ B1b.2a.1c.2 adds application::leaf_certification command/identity/profile/record
 store port, with7focused structural/privacy tests. Depth1, qualified return-path binding and
 positive signed-journal sequence relationships are checked; actual version/source/fence/CAS
 proof remains the future adapter's responsibility. No schema, adapter or production caller exists.
+
+B1b.2a.1c.3 freezes a dormant immutable canonical snapshot, exact namespace/run FK, no expiry under
+D298, unconditional source deletion guards and original-run identity preservation including FK
+replication-role bypass. Source UPDATE closure remains a producer proof. A dedicated noncollapsing
+audit action and injective natural resource identity commit with first certification only. No hint
+or execution journal event is introduced. Guarded down takes runs before the certificate table and
+refuses retained rows. Schema/audit implementation and real tests are next; see
+tasks/project-completion/leaf-certification-storage.md and leaf-source-retention-inventory.md.

@@ -82,8 +82,11 @@ not a SQL port or own-member authority. See evidence/capacity-header-restore-202
 - [x] B1b.2a.1c.1: Review fixed V1 certification API and canonical identity-as-receipt;
   current fence precedes replay, replay precedes creation CAS. No source/schema guarantee.
 - [x] B1b.2a.1c.2: Add the exact application port/types and structural checks only.
-- [ ] B1b.2a.1c.3: Review canonical certification schema/immutability/retention/implicit locks and
+- [x] B1b.2a.1c.3: Review canonical certification schema/immutability/retention/implicit locks and
   truthful audit/resource vocabulary before implementing the source writer.
+- [ ] B1b.2a.1c.3a: Implement dormant schema/retention guards/classification and real constraint,
+  privilege/replication-role/downgrade evidence; no source writer or production caller.
+- [ ] B1b.2a.1c.3b: Add truthful audit/resource vocabulary before the native source transaction.
 - [ ] B1b.2a.1d: Prove exact successful source certification and actual producer races/restart;
   failed/drained/effect-bearing paths need their own source-closure contract.
 - [ ] B1b.2b: Review scoped binding/fingerprint/receipt/retention extension and its actual queries.
