@@ -100,8 +100,13 @@ reachability. Every producer's both-order barrier, real unknown-COMMIT/reconcili
 restart and closed observations remain required before release INSERT or a production caller.
 One bounded late-report unit is implemented: new-key stale completion/failure versus first
 certification in both observed flat original-Run lock queue directions. It does not prove an
-in-flight successful writer, chain-member source, closure or other producer families. Evidence:
+in-flight successful writer, chain-member source or other producer families. Evidence:
 evidence/leaf-certification-late-reports-20261018.
+A separate actual successful closure writer starts from a production scheduler checkpoint and
+races certification in both observed flat Run queue orders. Certification first refuses OPEN;
+closure first makes the queued creation CAS stale. Fresh CAS certifies, and the original closure
+descriptor replays without changing the certified source. Evidence:
+evidence/leaf-certification-closure-20261018. This does not close other producer families.
 Actual dispatched-COMMIT response loss and fresh direct pool/cache/store reconstruction are
 covered in evidence/leaf-certification-commit-loss-20261018 for both confirmed backend outcomes.
 The original qualified Run and shared scheduler fence remain held while the client sees Unknown;

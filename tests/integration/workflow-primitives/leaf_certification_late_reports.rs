@@ -53,14 +53,18 @@ async fn ordered_waiters(pool: &sqlx::PgPool, first: &str, second: &str) {
     }
 }
 
-async fn observe_first<F: Future>(operation: Pin<&mut F>, pool: &sqlx::PgPool, fragment: &str) {
+pub(super) async fn observe_first<F: Future>(
+    operation: Pin<&mut F>,
+    pool: &sqlx::PgPool,
+    fragment: &str,
+) {
     tokio::select! {
         _ = operation => panic!("operation bypassed the held original Run"),
         waited = timeout(WAIT, first_waiter(pool, fragment)) => waited.expect("first waiter deadline"),
     }
 }
 
-async fn observe_order<A: Future, B: Future>(
+pub(super) async fn observe_order<A: Future, B: Future>(
     a: Pin<&mut A>,
     b: Pin<&mut B>,
     pool: &sqlx::PgPool,

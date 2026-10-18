@@ -20,6 +20,8 @@ use sqlx::Row;
 use std::{sync::Arc, time::Duration};
 use uuid::Uuid;
 
+#[path = "leaf_certification_closure.rs"]
+mod closure;
 #[path = "leaf_certification_commit_loss.rs"]
 mod commit_loss;
 use crate::capacity_finish::commit_proxy;

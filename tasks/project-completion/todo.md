@@ -100,6 +100,8 @@ not a SQL port or own-member authority. See evidence/capacity-header-restore-202
   saga planning and ambient writers with both transaction orders where applicable.
 - [x] B1b.2a.1d.3b.1: Race new-key stale completion/failure against first certification in both
   actual original-Run lock queue orders; no full producer-preservation acceptance follows.
+- [x] B1b.2a.1d.3b.2: Race actual successful collection closure from a scheduler checkpoint
+  against certification in both observed flat Run queue orders; fresh CAS and producer replay.
 - [ ] B1b.2a.1d.3c: Test real uncertain-COMMIT outcomes, fresh same-identity reconciliation and
   reconstruction after restart; absence requires fresh CAS and complete source proof.
 - [x] B1b.2a.1d.3c.1: Lose actual dispatched COMMIT replies for committed/aborted outcomes and
