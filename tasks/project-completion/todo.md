@@ -98,10 +98,14 @@ not a SQL port or own-member authority. See evidence/capacity-header-restore-202
   creation CAS and current authority before replay; owner corruption fixtures are refusal only.
 - [ ] B1b.2a.1d.3b: Prove preservation against actual late reports, closure, later work/cancel,
   saga planning and ambient writers with both transaction orders where applicable.
-- [ ] B1b.2a.1d.3b.1: Race new-key stale completion/failure against first certification in both
+- [x] B1b.2a.1d.3b.1: Race new-key stale completion/failure against first certification in both
   actual original-Run lock queue orders; no full producer-preservation acceptance follows.
 - [ ] B1b.2a.1d.3c: Test real uncertain-COMMIT outcomes, fresh same-identity reconciliation and
   reconstruction after restart; absence requires fresh CAS and complete source proof.
+- [ ] B1b.2a.1d.3c.1: Lose actual dispatched COMMIT replies for committed/aborted outcomes and
+  prove unresolved original-Run fencing and fresh direct reconstruction without assumed rollback.
+- [ ] B1b.2a.1d.3c.2: Kill and restart an actual native reconciliation process against retained
+  identity/current authority; distinguish it from a control-plane or execution-engine restart.
 - [ ] B1b.2a.1d.3d: Add closed observations and actual export/count/redaction evidence, then
   consider a separate released INSERT migration only after all source-writer gates pass.
 
@@ -116,6 +120,12 @@ Source refusals:6tests including schema-valid owner corruption cases, exact type
 unchanged run/journal/source/metadata witnesses passed; targeted integration Clippy/fmt/architecture
 passed.3fresh review cycles corrected test oracles and ended without remaining bounded findings.
 See evidence/leaf-certification-refusals-20261018. Production certifier/privileges remain unchanged.
+
+Late report unit:1matrix test/4fresh real public scenarios passed, proving the observed Run queue
+directions for already stale completion/failure versus first certification. Source/run/journal
+fingerprints unchanged, exactly1fact/audit and original-record replay.1fresh review, targeted
+Clippy/fmt/architecture passed. No chain-member or other producer proof follows. See
+evidence/leaf-certification-late-reports-20261018.
 - [ ] B1b.2b: Review scoped binding/fingerprint/receipt/retention extension and its actual queries.
 - [ ] B1b.2c: Review nested/child relationship closure and remaining quiescence/transition authority.
 

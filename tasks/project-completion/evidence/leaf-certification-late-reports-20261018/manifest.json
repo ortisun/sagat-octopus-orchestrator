@@ -1,0 +1,82 @@
+{
+  "base": "aab93b70",
+  "scope": "B1b.2a.1d.3b.1 flat already-stale reports, actual Run queue orders only",
+  "commands": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "leaf_certification_native::late_reports::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 80.15,
+      "log": "first.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "seconds": 15.45,
+      "log": "clippy.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "seconds": 4.77,
+      "log": "fmt.txt"
+    },
+    {
+      "command": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "exit_code": 0,
+      "seconds": 0.66,
+      "log": "architecture.txt"
+    }
+  ],
+  "files": {
+    "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "clippy.txt": "019118ead6b680fc6de25d85c38992baaf5c01fd47a7caf09ee63b08fa809f87",
+    "commands.json": "b2ee2ea4d54474762274024e68dc1ccdcd692d82ca89e5c0c273cb33354d15af",
+    "first.txt": "1a2d2446b72219dfeac73758d554e3160a14ca4dc9c2b3693878daef8131428b",
+    "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "implementation.diff": "46179070cb90f404b5d4728aa73b63f8f4d4d275a1d3f7b7074fe3431a133b55",
+    "reproduce.md": "6ce46da1478e358190568efd806a33a565ea189c73be153551c0ef97ec2fa44a",
+    "review.md": "ab26a5d0989610c921d2ac079f39f69319dcfbc38d5eb45b1defce21b5a298f2",
+    "source-first.json": "72da04af7bf84e2a72550d73707156ef877483dab7821b675acdd34d5cc71d92"
+  },
+  "final_source": {
+    "tests/integration/workflow-primitives/leaf_certification_native.rs": "7fb901a68084b608265fd4fe692f4843ab599c57617f1ecc3493c5e4259ee43f",
+    "tests/integration/workflow-primitives/leaf_certification_refusals.rs": "d9fd41fc1575148351a920eb9ae854d2a279c0eab60dc142670dfa287224acbb",
+    "tests/integration/workflow-primitives/leaf_certification_late_reports.rs": "277f2bf5e6f09499c9e2c8f07d322892464961b95ea4c934d51af7f40aa0a9cf",
+    "crates/infra-postgres/src/leaf_certification.rs": "caae3491985e749d84e3bd736fd3362aa8687526966f0d2694358c44aa259cde",
+    "crates/infra-postgres/src/execution.rs": "fccef861b6c07b963a22c8e15d1f01401fc063870dd77d1ed414638cc186f22f"
+  },
+  "fresh_review_cycles": 1,
+  "external_cli": false
+}

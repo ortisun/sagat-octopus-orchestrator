@@ -29,12 +29,12 @@ async fn closed(
     (f, store, c)
 }
 
-async fn counts(f: &Flow) -> (i64, i64) {
+pub(super) async fn counts(f: &Flow) -> (i64, i64) {
     sqlx::query_as("SELECT (SELECT count(*) FROM leaf_collection_success_certifications WHERE tenant_id=$1 AND run_id=$2),(SELECT count(*) FROM audit_records WHERE tenant_id=$1 AND action='collection.leaf_success_certified')")
         .bind(f.tenant.as_uuid()).bind(f.run.as_uuid()).fetch_one(&f.api.db.pool).await.expect("exact fact and dedicated audit counts")
 }
 
-async fn refusal_state(f: &Flow) -> (String, String) {
+pub(super) async fn refusal_state(f: &Flow) -> (String, String) {
     // Journal UPDATE/DELETE is guarded; count/max detects appended rows without loading detail.
     // Keep this separate from the selected-prefix oracle, which permits later legitimate work.
     let execution: String = sqlx::query_scalar("SELECT md5(jsonb_build_object('run',(SELECT to_jsonb(r) FROM runs r WHERE tenant_id=$1 AND id=$2),'journal',(SELECT jsonb_build_object('count',count(*),'max',max(seq)) FROM run_events WHERE tenant_id=$1 AND run_id=$2))::text)")

@@ -98,6 +98,10 @@ identity/CAS/current-authority and run/journal nonmutation evidence is recorded 
 evidence/leaf-certification-refusals-20261018. Owner corruption fixtures do not prove producer
 reachability. Every producer's both-order barrier, real unknown-COMMIT/reconciliation/
 restart and closed observations remain required before release INSERT or a production caller.
+One bounded late-report unit is implemented: new-key stale completion/failure versus first
+certification in both observed flat original-Run lock queue directions. It does not prove an
+in-flight successful writer, chain-member source, closure or other producer families. Evidence:
+evidence/leaf-certification-late-reports-20261018.
 No source UPDATE immutability, old-writer/C0, scoped Finish or nesting acceptance follows.
 
 Fresh Astra/xhigh cycle1 found that row count did not bound steps.activity bytes; explicit SQL
