@@ -1,0 +1,12 @@
+{
+  "command": [
+    "cargo",
+    "audit",
+    "--deny",
+    "warnings"
+  ],
+  "exit_code": 0,
+  "seconds": 2.22,
+  "started_utc": "2026-10-18T22:27:22.461551+00:00",
+  "log": "cargo-audit.txt"
+}

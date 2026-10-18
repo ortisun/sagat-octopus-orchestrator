@@ -3392,3 +3392,10 @@ under runtime invocation in41.49s,1125 identical source hashes. This combines th
 report/drain faults, compensation and binding controls with the byte/End suite. Evidence:
 `tasks/project-completion/evidence/collection-current-merged-regression-20261018/README.md`.
 OpenBao/old-current tests retain separate evidence; full014/nesting/release tasks remain open.
+
+
+Current dependency advisory observation: exact CI `cargo audit --deny warnings` passes
+on25a197df with existing policy, cargo-audit0.22.2,627 dependencies/1338 advisories.
+No new exception or dependency change. See
+`tasks/project-completion/evidence/current-dependency-advisories-20261018/README.md`.
+This is not complete T014-043 acceptance.
