@@ -1,0 +1,18 @@
+   Compiling sagat-domain v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/domain)
+error[E0432]: unresolved imports `sagat_domain::execution::CapacityGroup`, `sagat_domain::execution::CapacityGroupError`, `sagat_domain::execution::CapacityGroupId`, `sagat_domain::execution::CapacityMemberId`, `sagat_domain::execution::CapacityMemberSnapshot`, `sagat_domain::execution::CapacityMembership`, `sagat_domain::execution::CapacityPossession`
+  --> crates/domain/tests/capacity_groups.rs:9:5
+   |
+ 9 |     CapacityGroup, CapacityGroupError, CapacityGroupId, CapacityMemberId, CapacityMemberSnapshot,
+   |     ^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^ no `CapacityMemberSnapshot` in `execution`
+   |     |              |                   |                |
+   |     |              |                   |                no `CapacityMemberId` in `execution`
+   |     |              |                   no `CapacityGroupId` in `execution`
+   |     |              no `CapacityGroupError` in `execution`
+   |     no `CapacityGroup` in `execution`
+10 |     CapacityMembership, CapacityPossession,
+   |     ^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^ no `CapacityPossession` in `execution`
+   |     |
+   |     no `CapacityMembership` in `execution`
+
+For more information about this error, try `rustc --explain E0432`.
+error: could not compile `sagat-domain` (test "capacity_groups") due to 1 previous error

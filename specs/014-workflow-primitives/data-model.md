@@ -396,3 +396,24 @@ by the existing bounded source port. A body may also name its activity `fetch`; 
 in its return resolves its own path's output. Root and scoped outputs, binding checks, step UUIDs
 and task contexts retain their separate identities. Prefix error/effect/managed-database policies
 and activity successors remain unsupported. No persistence schema or worker minor changes.
+
+
+## Pure capacity lifecycle prerequisite — 2026-10-18
+
+The isolated A1 domain model adds `CapacityGroup` without changing persisted schema or enabling
+nesting. Its constant-size header contains immutable group/tenant identity, revision, possession
+epoch, active-member count and Vacant/Held(member)/Retired possession. Each command consumes only
+the selected member's group-bound NeverSeen/Active/Finished snapshot, provided consistently by a
+future own-authorized transaction. The complete logical registry is not loaded on every command.
+Joining/finishing advances revision; only changing possession/retirement advances its epoch.
+Finishing a holder leaves a recoverable vacancy; finishing a non-holder preserves the current
+holder epoch. Last-member settlement retires once. Failed/stale/foreign operations are inert,
+including integer exhaustion. Child CONTINUED does not settle its logical membership.
+
+`crates/domain/tests/capacity_groups.rs` compares these bounded transitions with a full-map registry
+oracle over1024 fixed-seed histories. This model supplies no execution permission or authority
+proof: actual registry uniqueness/restoration, caller quiescence/settlement, quota projections,
+full lock ordering, persistence/crash recovery and mixed-version fencing remain B/C prerequisites.
+No table or public usage-counter reinterpretation follows from this model alone; general nested
+publication remains closed. See `tasks/project-completion/capacity-group-lifecycle.md` and its
+bounded review/evidence rather than the rejected whole-protocol drafts.

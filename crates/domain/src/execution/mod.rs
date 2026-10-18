@@ -5,6 +5,7 @@
 //! returned as journal events (`FR-002-001`, `FR-002-002`; `docs/architecture/execution-semantics.md`).
 
 mod approval;
+mod capacity;
 mod command;
 mod continuation;
 mod error;
@@ -22,6 +23,10 @@ pub use approval::{
     ApprovalError, ApprovalPolicy, ApprovalReasonCode, ApprovalReceiptId, ApprovalRequest,
     ApprovalRequestId, ApprovalStatus, ApprovalTransition, DecisionKey,
     MAX_APPROVAL_POLICY_ENTRIES, MAX_APPROVAL_REASON_CODE_BYTES, MAX_DECISION_KEY_BYTES,
+};
+pub use capacity::{
+    CapacityGroup, CapacityGroupError, CapacityGroupId, CapacityMemberId, CapacityMemberSnapshot,
+    CapacityMembership, CapacityPossession,
 };
 pub use command::{
     AddressedProgress, Expiry, Failure, Heartbeat, InstanceHeartbeat, Progress, Resolution,

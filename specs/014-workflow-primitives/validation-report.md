@@ -1868,3 +1868,29 @@ Final static gates for this increment: `cargo fmt --all -- --check` and `git dif
 `python3 scripts/check-architecture.py` passed for24 crates with respected layers/no cycles.
 These are recorded with the same focused source hashes, not claimed as the complete T014-043
 release gate (Compose, full locked workspace execution and advisories still require their named gates).
+
+
+## 2026-10-18 — Isolated capacity-group lifecycle A1
+
+After the three-cycle whole-protocol escalation, work was decomposed into pure lifecycle A,
+transaction/eligibility B and rollout/composition C. Three independent component reviews (abstract
+invariants, bounded representation, implementation) found no substantive violations under the
+exact current member-fact and caller proof preconditions. This was a deliberate smaller unit,
+not a fourth whole-protocol review; the whole nested protocol remains unaccepted.
+
+`cargo test --locked -p sagat-domain --test capacity_groups` first failed to compile with E0432
+because the new typed API did not exist. That is API-absence RED, not a reproduced runtime bug.
+After implementation it passed6/6 in0.23s, including1024 deterministic histories(seed3714) checked
+against an independent full registry. Named cases cover intermediate holder FINAL with surviving
+A/C, non-holder finality preserving the child epoch, yielding before child completion, finished
+member facts refusing join and stale/foreign operations leaving the header unchanged.
+`cargo test --locked -p sagat-domain --lib execution::capacity::tests::` passed2/2 for overflow
+without partial mutation. Locked domain/all-target Clippy with warnings denied passed10.63s;
+formatting and the24-crate architecture check passed. [Exact evidence](../../tasks/project-completion/evidence/capacity-a1-20261018/manifest.json)
+contains the missing-API failure, results and source hashes.
+
+The model keeps a constant-size header plus one selected member fact, not a historical registry
+scan. No PostgreSQL store, scheduler/worker gate, new quota projection or public nesting is
+implemented by A1. Authority, quiescence, exact fact freshness, atomic header/member persistence,
+compatible restore and actual low-quota/100k behavior remain unproved B/C dependencies; canonical
+T014-014..017 and the broader release tasks remain unchecked.

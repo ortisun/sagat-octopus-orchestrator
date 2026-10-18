@@ -1,0 +1,50 @@
+{
+  "scope": "A1 pure bounded capacity lifecycle, not nested runtime or persistence acceptance",
+  "date": "2026-10-18",
+  "source_base": "3d877438",
+  "review": {
+    "component_cycles": 3,
+    "findings": "none under consistent exact member snapshot and caller proof preconditions",
+    "external": "user chose current review; no external CLI"
+  },
+  "red": "missing newly specified typed API; compiler E0432, not a behavioral bug reproduction",
+  "results": {
+    "model_tests": {
+      "passed": 6,
+      "seconds": 0.23,
+      "property_histories": 1024,
+      "fixed_seed": 3714
+    },
+    "overflow_unit_tests": {
+      "passed": 2,
+      "seconds": 0.0
+    },
+    "clippy": {
+      "locked": true,
+      "package": "sagat-domain",
+      "all_targets": true,
+      "warnings_denied": true,
+      "passed": true,
+      "seconds": 10.63
+    },
+    "architecture": {
+      "passed": true,
+      "crates": 24
+    },
+    "formatting": {
+      "passed": true
+    }
+  },
+  "production_source_sha256": {
+    "crates/domain/src/execution/capacity.rs": "888a22b762c55446c97e171c798d2d3fdd2c873da86842587cde63cf321f6784",
+    "crates/domain/src/execution/mod.rs": "4194905efc3ba6ff3b95d5ccd036db5cba6caab4b2440234ebdc6cf0c8faf215"
+  },
+  "hashes": {
+    "api-absence-red.txt": "883ca71e11a19fe662521f6b3cb637d6276a78b94de0d84d3cc8d8ed81a9379e",
+    "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "clippy.txt": "c1651a98af59e56ffde7428f9a5db8d6c0e961e977e9d3480bd29f9fe14f2756",
+    "formatting.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "model-green.txt": "6c5cf4011ce719a2eaa89150576f499a4070b974ca12b66021ab11e5c95b9432",
+    "overflow-unit.txt": "acdc312ea7be86ceaf7c9780a5bfffc240b910011d58a55a9f5c3297f34c4b30"
+  }
+}

@@ -25,3 +25,21 @@ canonical ledger. Scoped forward blob completion and runtime flat10k widths1/16/
 have new focused evidence; nested capacity/body planning and final integration/release gates
 remain open. The nested protocol reached its bounded three-review escalation and remains
 unaccepted; see nested-capacity-review.md. No PR, merge or deployment is claimed.
+
+
+## Nested capacity work units
+
+- [x] A0: Review the small group lifecycle contract (`capacity-group-lifecycle.md`); no execution eligibility or SQL guarantee inferred.
+- [x] A1: Add pure state/property tests for duplicate/stale acquisition, terminal-owner vacancy, detached memberships and final retirement; implement only those transitions. Verify focused domain tests and domain dependency check. Dependencies:A0; likely2–3 files.
+- [ ] B0: Inventory complete existing lock prefixes at real writer entry points and record directed lock edges. Verify against chain/direct-run/cancel/handoff/claim paths. Dependencies:A0; likely1–2 docs.
+- [ ] B1: Specify eligibility/offer/reduction/drain transactions consuming A; review each bounded transaction family, preserving ADR-0030. Dependencies:A1+B0; no runtime activation.
+- [ ] B2: Implement a real PostgreSQL lifecycle slice with source finality and vacant acquisition under separate own-run fences; prove rollback/CAS/barrier/restart. Dependencies:B1; max5 owned files per increment.
+- [ ] C0: Specify flat backfill and old-writer fencing without assuming old binaries honor a new check; update canonical quota contracts before implementation. Dependencies:A1+B1.
+- [ ] C1: Test mixed-version migration/rollback and current flat behavior, then low-capacity nested progress in one accepted public shape. Dependencies:B2+C0.
+- [ ] C2: Integrate every prior cancellation/wake/continuation/reduction counterexample, all-five SDK results and100k resource measurement before opening general nesting. Dependencies:C1.
+
+
+A0/A1 evidence: three isolated component reviews found no substantive issues under their exact-fact
+preconditions. A1 passed6 model tests (1024 histories, seed3714) plus2 overflow tests, strict domain
+Clippy, architecture and formatting. This is not a fourth whole-protocol review, not a SQL port and
+not runtime activation. B0's source inventory is incomplete and has explicit current-prefix gaps.

@@ -53,3 +53,32 @@ upgrade baseline: its SQLx version identities collide with 014. Preserve its ref
 and backup; do not edit a deployed migration ledger or claim an untested bridge. Production
 rollout, owner-only visual acceptance and unrelated uncommitted 013/015 draft specifications
 are outside this implementation request.
+
+
+## Nested capacity: decomposition after the bounded review
+
+The whole-protocol proposal completed three review cycles with unresolved substantive findings;
+its drafts remain rejected/unaccepted. The owner selected the current review, declining the
+optional external review. After offering decomposition or deferral, continue with the recommended
+decomposition under the standing all-open-tasks authorization; a later preference still steers it.
+This is not a fourth whole-protocol review or permission to enable nesting.
+
+1. **A — Group lifecycle, pure model.** Define retained membership, vacant possession, fenced
+   compare-and-swap epochs and terminal settlement. Review only this small state machine, then
+   test/implement its pure transitions. It does not grant execution permission, choose tenant
+   enable policy, or claim persistence/recovery guarantees by itself.
+2. **B — Execution eligibility and transactions.** First inventory actual chain/run/tree/link/
+   quota/session/activity locks. Specify complete lock order, offer/consume/parking/fairness,
+   reduction-aware forward eligibility and already-reserved drain behavior. Consume A's transitions
+   under each owning run's actual fence, never two existing runs. Prove real barriers/crashes before
+   the scheduler can gate claims on it. This unit is separately decomposed if larger than one review.
+3. **C — Rollout, quota projection and composition.** Specify current flat accounting versus
+   nested group usage, compatible migrations/backfill, old-writer capability fencing and rollback;
+   test actual mixed versions. Enable one nested shape only after A+B+C integrate and all original
+   counterexamples pass. Then expand body/control shapes, all-five SDK cases and100k measurements.
+
+The group model cannot be accepted as evidence that B/C or nested execution works. All prior
+counterexamples remain mandatory integration tests, including B FINAL with detached C, wake X
+while child waits for Y, reduction2→1, continuation and policy0 mandatory drain. Canonical feature
+checkboxes remain open until the corresponding complete slice passes. Use existing project plan/
+todo locations rather than replacing other task plans.
