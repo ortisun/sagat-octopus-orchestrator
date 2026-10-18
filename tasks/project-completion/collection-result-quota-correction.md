@@ -298,3 +298,23 @@ RunTx now declares logical_output_bytes before staging, with checked complete-Ru
 ## Report discovery wording correction — 2026-10-18
 
 The bounded [discovery amendment](../../tasks/project-completion/scoped-output-refusal-discovery.md) corrects unconditional report-outbox wording under Constitution I/VII and ADR-0002/0017. Q7b uses existing durable collection discovery and adds no report-specific message. No actual outgoing obligation loses atomicity. Activation still requires Q8/Q9 and cold-discovery evidence. The original2983 design is retained; this reviewed correction supersedes only its report-outbox requirement. Fresh bounded C1 on amendmentbd5ff35f52ef12bc8d0cd406d7ac81e97d2007409aef9e317a023f93ae295395 found no required issue. No runtime acceptance follows.
+## Coupled implementation and dormant-worker discovery — 2026-10-18
+
+The PostgreSQL/scheduler increment `109908be` and successful-report increment `3710a5b7`
+have [combined focused evidence](evidence/collection-finalization-integration-20261018/reproduce.md).
+This includes actual successful forward/Applied reports, durable stopped-run discovery and
+17 real compensations in each case, without retaining refused output or creating report outbox rows.
+Existing result, byte, drain, compensation and native source/scoped Finish regressions pass.
+
+The separately reviewed Q9a candidate hint now has
+[genuine old/current acceptance](evidence/collection-discovery-integration-20261018/reproduce.md):
+both current pool modes discover E>L while full-concurrency work is still RUNNING, start the
+truthful ExistingOutputs drain, respect its real lease and complete normally without rewriting
+the closed old source. The hint precedes existing shard-local/global queue limits and uses
+metadata/lengths only; the shared snapshot verifier/native guarded command retain authority.
+No total database-work bound is inferred from the bounded result window.
+
+Q7c/Q8/Q9/Q10 and the master Q remain open for their unexecuted controls and acceptance cases.
+In particular, section11.4's old compensable in-flight reports, both orders, prior-stop/current
+secret races, cold report recovery, unknown COMMIT, output-dependent compensation and rollout
+are not replaced by this waiting-worker discovery case. Canonical task checkboxes stay unchanged.

@@ -6,15 +6,21 @@
 #![allow(clippy::expect_used, clippy::panic)]
 
 use std::sync::Arc;
+use std::time::Duration;
 
+use sagat_application::entropy::SystemEntropy;
 use sagat_application::error::StoreError;
-use sagat_application::execution::{Actor, DefinitionCache, Effects, MAX_RUN_OUTPUT_BYTES, RunTx};
+use sagat_application::execution::{
+    Actor, DefinitionCache, Effects, Engine, MAX_RUN_OUTPUT_BYTES, RunTx,
+};
 use sagat_application::runs::{Lock, RunStore};
 use sagat_domain::execution::{AddressedRunEvent, ExecutionInstanceId, RunEvent, RunId};
 use sagat_domain::identity::TenantId;
+use sagat_domain::sharding::{SHARDS, Shard};
 use sagat_domain::workflow::NodeId;
-use sagat_infra_ir::JsonIrCodec;
+use sagat_infra_ir::{JsonEvaluator, JsonIrCodec};
 use sagat_infra_postgres::{PgPool, PgRunStore, PoolConfig, connect, migrate};
+use sagat_scheduler::{Keeper, KeeperSettings, Placement, Scheduler, SchedulerSettings};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 use sqlx::{Acquire as _, Row as _};
@@ -73,6 +79,65 @@ const PROJECTION_WITNESS_SQL: &str = r#"WITH selected_runs AS (
   'outbox',(SELECT COALESCE(jsonb_agg(to_jsonb(row_data) ORDER BY row_data.id),'[]'::jsonb)
     FROM event_outbox row_data JOIN selected_runs selected ON selected.id=row_data.aggregate_id
     WHERE row_data.tenant_id=$1))"#;
+
+const CLOSED_COLLECTION_SOURCE_SQL: &str = r#"WITH selected_scopes AS (
+  SELECT scope.* FROM iteration_scopes scope
+   WHERE scope.tenant_id=$1 AND scope.run_id=$2
+     AND scope.owner_path_nodes='{}'::text[]
+     AND scope.owner_path_indices='{}'::integer[]
+     AND scope.owner_node=ANY($3::text[])
+), selected_events AS (
+  SELECT event.* FROM run_events event
+   WHERE event.tenant_id=$1 AND event.run_id=$2 AND event.seq <= $4
+) SELECT jsonb_build_object(
+  'scopes',(SELECT jsonb_agg(to_jsonb(row_data) ORDER BY row_data.owner_node)
+    FROM selected_scopes row_data),
+  'steps',(SELECT jsonb_agg(to_jsonb(row_data)
+      ORDER BY row_data.instance_path_nodes,row_data.instance_path_indices,row_data.node)
+    FROM steps row_data WHERE row_data.tenant_id=$1 AND row_data.run_id=$2
+      AND ((cardinality(row_data.instance_path_nodes)=0 AND row_data.node=ANY($3::text[]))
+        OR row_data.instance_path_nodes[1]=ANY($3::text[]))),
+  'item_sources',(SELECT jsonb_agg(to_jsonb(row_data)
+      ORDER BY row_data.scope_id,row_data.iteration_index)
+    FROM collection_scope_items row_data JOIN selected_scopes scope
+      ON scope.tenant_id=row_data.tenant_id AND scope.run_id=row_data.run_id
+     AND scope.scope_id=row_data.scope_id),
+  'iterations',(SELECT jsonb_agg(to_jsonb(row_data)
+      ORDER BY row_data.scope_id,row_data.iteration_index)
+    FROM collection_iterations row_data JOIN selected_scopes scope
+      ON scope.tenant_id=row_data.tenant_id AND scope.run_id=row_data.run_id
+     AND scope.scope_id=row_data.scope_id),
+  'checkpoints',(SELECT jsonb_agg(to_jsonb(row_data)
+      ORDER BY row_data.scope_id,row_data.iteration_index)
+    FROM iteration_checkpoints row_data JOIN selected_scopes scope
+      ON scope.tenant_id=row_data.tenant_id AND scope.run_id=row_data.run_id
+     AND scope.scope_id=row_data.scope_id),
+  'events',(SELECT jsonb_agg(to_jsonb(row_data) ORDER BY row_data.seq)
+    FROM selected_events row_data),
+  'payloads',(SELECT jsonb_agg(to_jsonb(row_data) ORDER BY encode(row_data.digest,'hex'))
+    FROM payloads row_data WHERE row_data.tenant_id=$1 AND row_data.digest IN (
+      SELECT scope.snapshot_digest FROM selected_scopes scope
+      UNION SELECT scope.result_digest FROM selected_scopes scope
+      UNION SELECT step.output_digest FROM steps step
+        WHERE step.tenant_id=$1 AND step.run_id=$2
+          AND ((cardinality(step.instance_path_nodes)=0 AND step.node=ANY($3::text[]))
+            OR step.instance_path_nodes[1]=ANY($3::text[]))
+      UNION SELECT item.item_digest FROM collection_scope_items item JOIN selected_scopes scope
+        ON scope.tenant_id=item.tenant_id AND scope.run_id=item.run_id
+       AND scope.scope_id=item.scope_id
+      UNION SELECT member.result_digest FROM collection_iterations member JOIN selected_scopes scope
+        ON scope.tenant_id=member.tenant_id AND scope.run_id=member.run_id
+       AND scope.scope_id=member.scope_id
+      UNION SELECT checkpoint.result_digest FROM iteration_checkpoints checkpoint
+        JOIN selected_scopes scope ON scope.tenant_id=checkpoint.tenant_id
+         AND scope.run_id=checkpoint.run_id AND scope.scope_id=checkpoint.scope_id
+      UNION SELECT event.payload_digest FROM selected_events event)),
+  'certifications',(SELECT COALESCE(jsonb_agg(to_jsonb(row_data)
+      ORDER BY row_data.owner_node,row_data.iteration_index),'[]'::jsonb)
+    FROM leaf_collection_success_certifications row_data
+    WHERE row_data.tenant_id=$1 AND row_data.run_id=$2
+      AND row_data.owner_node=ANY($3::text[]))
+)"#;
 
 #[derive(Debug)]
 struct Receipt {
@@ -262,6 +327,84 @@ async fn aggregate(p: &Phase, run: RunId, owner: &str) -> Vec<u8> {
     .fetch_one(&p.pool)
     .await
     .expect("legacy aggregate")
+}
+
+fn closed_collection_nodes() -> Vec<String> {
+    (0..10).map(|index| format!("c{index}")).collect()
+}
+
+async fn closed_collection_source_witness(p: &Phase, run: RunId) -> String {
+    let nodes = closed_collection_nodes();
+    let cutoff: Option<i64> = sqlx::query_scalar(
+        "SELECT max(seq) FROM run_events WHERE tenant_id=$1 AND run_id=$2
+           AND event_type='step.routed' AND node='c9'
+           AND cardinality(instance_path_nodes)=0",
+    )
+    .bind(p.tenant.as_uuid())
+    .bind(run.as_uuid())
+    .fetch_one(&p.pool)
+    .await
+    .expect("closed source journal boundary");
+    let value: Value = sqlx::query_scalar(CLOSED_COLLECTION_SOURCE_SQL)
+        .bind(p.tenant.as_uuid())
+        .bind(run.as_uuid())
+        .bind(nodes)
+        .bind(cutoff.expect("c9 owner routing event"))
+        .fetch_one(&p.pool)
+        .await
+        .expect("closed collection source witness");
+    let digest = Sha256::digest(serde_json::to_vec(&value).expect("canonical source witness JSON"));
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+async fn assert_closed_collection_source_shape(p: &Phase, run: RunId) {
+    let nodes = closed_collection_nodes();
+    let row = sqlx::query(
+        "SELECT
+           (SELECT count(*) FROM iteration_scopes scope
+             WHERE scope.tenant_id=$1 AND scope.run_id=$2
+               AND scope.owner_path_nodes='{}'::text[]
+               AND scope.owner_path_indices='{}'::integer[]
+               AND scope.owner_node=ANY($3::text[]) AND scope.lifecycle='SUCCEEDED') AS scopes,
+           (SELECT count(*) FROM collection_iterations member JOIN iteration_scopes scope
+             ON scope.tenant_id=member.tenant_id AND scope.run_id=member.run_id
+            AND scope.scope_id=member.scope_id
+             WHERE scope.tenant_id=$1 AND scope.run_id=$2
+               AND scope.owner_path_nodes='{}'::text[]
+               AND scope.owner_path_indices='{}'::integer[]
+               AND scope.owner_node=ANY($3::text[]) AND member.lifecycle='CHECKPOINTED') AS members,
+           (SELECT count(*) FROM iteration_checkpoints checkpoint JOIN iteration_scopes scope
+             ON scope.tenant_id=checkpoint.tenant_id AND scope.run_id=checkpoint.run_id
+            AND scope.scope_id=checkpoint.scope_id
+             WHERE scope.tenant_id=$1 AND scope.run_id=$2
+               AND scope.owner_path_nodes='{}'::text[]
+               AND scope.owner_path_indices='{}'::integer[]
+               AND scope.owner_node=ANY($3::text[])) AS checkpoints,
+           (SELECT count(*) FROM steps owner WHERE owner.tenant_id=$1 AND owner.run_id=$2
+               AND owner.instance_path_nodes='{}'::text[]
+               AND owner.instance_path_indices='{}'::integer[]
+               AND owner.node=ANY($3::text[]) AND owner.status='SUCCEEDED'
+               AND owner.output_digest IS NULL) AS legacy_owners,
+           (SELECT count(*) FROM leaf_collection_success_certifications certificate
+             WHERE certificate.tenant_id=$1 AND certificate.run_id=$2) AS certifications",
+    )
+    .bind(p.tenant.as_uuid())
+    .bind(run.as_uuid())
+    .bind(nodes)
+    .fetch_one(&p.pool)
+    .await
+    .expect("closed collection source shape");
+    assert_eq!(
+        (
+            row.get::<i64, _>("scopes"),
+            row.get::<i64, _>("members"),
+            row.get::<i64, _>("checkpoints"),
+            row.get::<i64, _>("legacy_owners"),
+            row.get::<i64, _>("certifications"),
+        ),
+        (10, 10, 10, 10, 0),
+        "the frozen producer made ten successful legacy collection sources and no certificates"
+    );
 }
 
 async fn overlay_case(p: &Phase) {
@@ -627,13 +770,318 @@ async fn over_budget_case(p: &Phase) {
     assert_eq!(row.get::<String, _>("status"), "RUNNING");
 }
 
+async fn legacy_scheduler_case(p: &Phase) {
+    let run = p.run(&p.receipt.over_budget);
+    let (ledger, legacy) = ledger_and_legacy(p, run).await;
+    assert_eq!((ledger, legacy), (2_100_000, 2_100_020));
+    assert!(ledger + legacy > MAX_RUN_OUTPUT_BYTES as u64);
+    assert_closed_collection_source_shape(p, run).await;
+    let source_before = closed_collection_source_witness(p, run).await;
+
+    let authority = sqlx::query(
+        "SELECT count(*) FILTER (WHERE owner IS NOT NULL)::bigint AS assigned,
+                count(DISTINCT owner) FILTER (WHERE owner IS NOT NULL)::bigint AS owners,
+                min(owner) AS first_owner,max(owner) AS last_owner
+           FROM scheduler_shards",
+    )
+    .fetch_one(&p.pool)
+    .await
+    .expect("frozen producer scheduler authority");
+    let old_owner = authority
+        .get::<Option<String>, _>("first_owner")
+        .expect("recorded old scheduler owner");
+    assert_eq!(
+        authority.get::<Option<String>, _>("last_owner").as_deref(),
+        Some(old_owner.as_str())
+    );
+    assert_eq!(old_owner, "scope-compensation-q5-frozen-legacy-output");
+    assert_eq!(authority.get::<i64, _>("assigned"), i64::from(SHARDS));
+    assert_eq!(authority.get::<i64, _>("owners"), 1);
+    // The coordinator waits for the old process to exit. Its stable owner may renew
+    // still-valid database leases; process exit itself does not expire those leases.
+
+    let placement = Placement::new(old_owner);
+    let keeper = Keeper::new(
+        p.store.clone(),
+        placement.clone(),
+        KeeperSettings {
+            ttl: Duration::from_secs(3_600),
+        },
+    );
+    let round = keeper
+        .round()
+        .await
+        .expect("resume the old scheduler owner through the normal keeper");
+    assert_eq!(round.replicas, 1);
+    assert_eq!(round.held, usize::from(SHARDS));
+    assert!(placement.owned().contains(Shard::of(run.as_uuid())));
+
+    let scheduler = Scheduler::new(
+        p.store.clone(),
+        Engine::new(JsonEvaluator),
+        SystemEntropy,
+        SchedulerSettings {
+            discovery_rest: Duration::ZERO,
+            ..SchedulerSettings::default()
+        },
+    )
+    .with_placement(placement);
+    let lease_remaining_ms: i64 = sqlx::query_scalar(
+        "SELECT ceil(extract(epoch FROM (work.lease_expires_at-clock_timestamp()))*1000)::bigint
+           FROM steps work WHERE work.tenant_id=$1 AND work.run_id=$2 AND work.node='work'
+             AND work.instance_path_nodes=ARRAY['c10']::text[]
+             AND work.instance_path_indices=ARRAY[0]::integer[]",
+    )
+    .bind(p.tenant.as_uuid())
+    .bind(run.as_uuid())
+    .fetch_one(&p.pool)
+    .await
+    .expect("the genuine old worker lease deadline");
+    assert!(
+        lease_remaining_ms > 0,
+        "the discovery proof requires a still-live worker lease"
+    );
+    let started = scheduler.tick().await;
+    assert_eq!(
+        started.failed, 0,
+        "normal existing-output drain: {started:?}"
+    );
+    let draining: (String, Option<String>, Option<String>, bool, String) = sqlx::query_as(
+        "SELECT scope.lifecycle,scope.drain_kind,run.stop_code,work.cancel_requested,work.status
+           FROM iteration_scopes scope JOIN runs run
+             ON run.tenant_id=scope.tenant_id AND run.id=scope.run_id
+           JOIN steps work ON work.tenant_id=scope.tenant_id AND work.run_id=scope.run_id
+             AND work.node='work' AND work.instance_path_nodes=ARRAY['c10']::text[]
+             AND work.instance_path_indices=ARRAY[0]::integer[]
+          WHERE scope.tenant_id=$1 AND scope.run_id=$2 AND scope.owner_node='c10'
+            AND scope.owner_path_nodes='{}'::text[] AND scope.owner_path_indices='{}'::integer[]",
+    )
+    .bind(p.tenant.as_uuid())
+    .bind(run.as_uuid())
+    .fetch_one(&p.pool)
+    .await
+    .expect("actual discovery starts a drain before worker expiry");
+    assert_eq!(
+        draining,
+        (
+            "DRAINING".to_owned(),
+            Some("RUN_DATA_LIMIT".to_owned()),
+            Some("RUN_DATA_LIMIT".to_owned()),
+            true,
+            "RUNNING".to_owned()
+        )
+    );
+    // The old worker process exited, but its real lease remains authoritative until expiry.
+    // Observe the recorded deadline; normal scheduler maintenance then settles the lost worker.
+    tokio::time::sleep(Duration::from_millis(
+        u64::try_from(lease_remaining_ms).expect("positive lease remainder") + 25,
+    ))
+    .await;
+    let mut finished = false;
+    for _ in 0..16 {
+        let report = scheduler.tick().await;
+        assert_eq!(
+            report.failed, 0,
+            "all scheduler fixtures are valid at this point"
+        );
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM runs WHERE tenant_id=$1 AND id=$2")
+                .bind(p.tenant.as_uuid())
+                .bind(run.as_uuid())
+                .fetch_one(&p.pool)
+                .await
+                .expect("target run status");
+        if status == "FAILED" {
+            finished = true;
+            break;
+        }
+    }
+    assert!(
+        finished,
+        "the bounded scheduler did not finish the target run"
+    );
+
+    let row = sqlx::query(
+        "SELECT run.status AS run_status,run.stop_reason,run.stop_code,
+                run.result_digest IS NULL AS no_run_result,
+                scope.lifecycle,scope.drain_kind,scope.drain_failure_code,
+                scope.result_digest IS NULL AS no_scope_result,
+                scope.finish_sequence,scope.finish_outbox_id,
+                owner.status AS owner_status,owner.failure_code AS owner_failure,
+                owner.output_digest IS NULL AS no_owner_output,
+                member.lifecycle AS member_lifecycle,
+                work.status AS work_status,work.output_digest IS NULL AS no_work_output,
+                (SELECT count(*) FROM steps scoped WHERE scoped.tenant_id=run.tenant_id
+                  AND scoped.run_id=run.id AND scoped.instance_path_nodes[1]='c10') AS scoped_steps,
+                (SELECT count(*) FROM steps root_owner WHERE root_owner.tenant_id=run.tenant_id
+                  AND root_owner.run_id=run.id AND root_owner.instance_path_nodes='{}'::text[]
+                  AND root_owner.node=ANY($3::text[]) AND root_owner.output_digest IS NOT NULL)
+                  AS closed_owner_outputs,
+                usage.logical_output_bytes
+           FROM runs run JOIN run_instance_usage usage
+             ON usage.tenant_id=run.tenant_id AND usage.run_id=run.id
+           JOIN iteration_scopes scope ON scope.tenant_id=run.tenant_id AND scope.run_id=run.id
+             AND scope.owner_path_nodes='{}'::text[]
+             AND scope.owner_path_indices='{}'::integer[] AND scope.owner_node='c10'
+           JOIN steps owner ON owner.tenant_id=run.tenant_id AND owner.run_id=run.id
+             AND owner.instance_path_nodes='{}'::text[]
+             AND owner.instance_path_indices='{}'::integer[] AND owner.node='c10'
+           JOIN collection_iterations member ON member.tenant_id=scope.tenant_id
+             AND member.run_id=scope.run_id AND member.scope_id=scope.scope_id
+             AND member.iteration_index=0
+           JOIN steps work ON work.tenant_id=run.tenant_id AND work.run_id=run.id
+             AND work.instance_path_nodes=member.entry_path_nodes
+             AND work.instance_path_indices=member.entry_path_indices AND work.node='work'
+          WHERE run.tenant_id=$1 AND run.id=$2",
+    )
+    .bind(p.tenant.as_uuid())
+    .bind(run.as_uuid())
+    .bind(closed_collection_nodes())
+    .fetch_one(&p.pool)
+    .await
+    .expect("native existing-output drain projections");
+    assert_eq!(row.get::<String, _>("run_status"), "FAILED");
+    assert_eq!(
+        row.get::<Option<String>, _>("stop_reason").as_deref(),
+        Some("FAILED")
+    );
+    assert_eq!(
+        row.get::<Option<String>, _>("stop_code").as_deref(),
+        Some("RUN_DATA_LIMIT")
+    );
+    assert!(row.get::<bool, _>("no_run_result"));
+    assert_eq!(row.get::<String, _>("lifecycle"), "FAILED");
+    assert_eq!(
+        row.get::<Option<String>, _>("drain_kind").as_deref(),
+        Some("RUN_DATA_LIMIT")
+    );
+    assert_eq!(
+        row.get::<Option<String>, _>("drain_failure_code")
+            .as_deref(),
+        Some("RUN_DATA_LIMIT")
+    );
+    assert!(row.get::<bool, _>("no_scope_result"));
+    assert!(row.get::<i64, _>("finish_sequence") > 0);
+    assert_ne!(row.get::<Uuid, _>("finish_outbox_id"), Uuid::nil());
+    assert_eq!(row.get::<String, _>("owner_status"), "FAILED");
+    assert_eq!(
+        row.get::<Option<String>, _>("owner_failure").as_deref(),
+        Some("RUN_DATA_LIMIT")
+    );
+    assert!(row.get::<bool, _>("no_owner_output"));
+    assert_eq!(row.get::<String, _>("member_lifecycle"), "DRAINED");
+    assert_eq!(row.get::<String, _>("work_status"), "CANCELLED");
+    assert!(row.get::<bool, _>("no_work_output"));
+    assert_eq!(
+        row.get::<i64, _>("scoped_steps"),
+        1,
+        "no body successor was released"
+    );
+    assert_eq!(row.get::<i64, _>("closed_owner_outputs"), 0);
+    assert_eq!(row.get::<i64, _>("logical_output_bytes"), ledger as i64);
+    assert_eq!(ledger_and_legacy(p, run).await, (ledger, legacy));
+
+    let journal = sqlx::query(
+        "SELECT
+           count(*) FILTER (WHERE event_type='run.stop_requested'
+             AND detail->>'reason'='FAILED' AND detail->>'code'='RUN_DATA_LIMIT') AS stops,
+           count(*) FILTER (WHERE event_type='collection.drain_started' AND node='c10'
+             AND detail->>'reason'='run_data_limit') AS drains,
+           count(*) FILTER (WHERE event_type='collection.iteration_drained' AND node='c10') AS members,
+           count(*) FILTER (WHERE event_type='collection.finished' AND node='c10'
+             AND detail->>'outcome'='failed' AND detail->>'code'='RUN_DATA_LIMIT') AS finishes,
+           count(*) FILTER (WHERE event_type='run.finished'
+             AND detail->>'status'='FAILED') AS run_finishes
+         FROM run_events WHERE tenant_id=$1 AND run_id=$2",
+    )
+    .bind(p.tenant.as_uuid())
+    .bind(run.as_uuid())
+    .fetch_one(&p.pool)
+    .await
+    .expect("truthful data-limit journal");
+    assert_eq!(
+        (
+            journal.get::<i64, _>("stops"),
+            journal.get::<i64, _>("drains"),
+            journal.get::<i64, _>("members"),
+            journal.get::<i64, _>("finishes"),
+            journal.get::<i64, _>("run_finishes"),
+        ),
+        (1, 1, 1, 1, 1)
+    );
+
+    let outbox = sqlx::query(
+        "SELECT
+           count(*) FILTER (WHERE event_type='collection.drain.started'
+             AND routing_key='c10' AND payload->>'reason'='FAILED') AS drains,
+           count(*) FILTER (WHERE event_type='collection.finished'
+             AND routing_key='c10' AND payload->>'status'='FAILED') AS finishes,
+           count(*) FILTER (WHERE event_type='run.finished'
+             AND payload->>'status'='FAILED') AS run_finishes
+         FROM event_outbox WHERE tenant_id=$1 AND aggregate_id=$2",
+    )
+    .bind(p.tenant.as_uuid())
+    .bind(run.as_uuid())
+    .fetch_one(&p.pool)
+    .await
+    .expect("public failure hints");
+    assert_eq!(
+        (
+            outbox.get::<i64, _>("drains"),
+            outbox.get::<i64, _>("finishes"),
+            outbox.get::<i64, _>("run_finishes"),
+        ),
+        (1, 1, 1)
+    );
+
+    let audit = sqlx::query(
+        "SELECT count(*) AS records,max(audit.actor) AS actor,max(audit.reason) AS reason,
+                bool_and(audit.trace_id IS NOT DISTINCT FROM run.trace_id) AS matching_trace
+           FROM audit_records audit JOIN runs run
+             ON run.tenant_id=audit.tenant_id AND run.id=$2
+          WHERE audit.tenant_id=$1 AND audit.resource_type='run'
+            AND audit.resource_id=$2::text AND audit.action='run.data_limit_exceeded'",
+    )
+    .bind(p.tenant.as_uuid())
+    .bind(run.as_uuid())
+    .fetch_one(&p.pool)
+    .await
+    .expect("private fixed-vocabulary refusal audit");
+    assert_eq!(audit.get::<i64, _>("records"), 1);
+    assert_eq!(
+        audit.get::<Option<String>, _>("actor").as_deref(),
+        Some("system:engine")
+    );
+    assert_eq!(
+        audit.get::<Option<String>, _>("reason").as_deref(),
+        Some("existing_outputs")
+    );
+    assert!(
+        audit
+            .get::<Option<bool>, _>("matching_trace")
+            .unwrap_or(false)
+    );
+
+    assert_closed_collection_source_shape(p, run).await;
+    assert_eq!(
+        closed_collection_source_witness(p, run).await,
+        source_before,
+        "the native drain preserves the old closed source prefix and its payloads"
+    );
+    p.store
+        .verify_run(p.tenant, run)
+        .await
+        .expect("the mixed old-source/current-drain history replays");
+}
+
 #[tokio::test]
 #[ignore = "requires the frozen 6c44a0e4 producer phase; see companion notes"]
 async fn a_current_full_run_transaction_reads_frozen_legacy_collection_outputs() {
     let p = phase().await;
     overlay_case(&p).await;
+    over_budget_case(&p).await;
+    fitting_delta_case(&p).await;
+    legacy_scheduler_case(&p).await;
     metadata_corruption_case(&p).await;
     payload_corruption_case(&p).await;
-    fitting_delta_case(&p).await;
-    over_budget_case(&p).await;
 }

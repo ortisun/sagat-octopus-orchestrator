@@ -1,0 +1,10 @@
+{
+  "command": [
+    "bash",
+    "scripts/test-legacy-collection-output-view.sh"
+  ],
+  "exit_code": 0,
+  "seconds": 225.7,
+  "started_utc": "2026-10-18T20:42:47.015603+00:00",
+  "log": "old-current-discovery.txt"
+}
