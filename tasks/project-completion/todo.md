@@ -214,7 +214,7 @@ See evidence/leaf-certification-process-20261018. Other producer/observation/rel
 - [x] B1b.2c.1d.0Q3: Add closed typed audit and transient evidence; audit9/9 and constructor3/3, no native authority. ffec26d5.
 - [x] B1b.2c.1d.0Q7a: Add root-only known-success preparation and genuine ordinary/Applied phase composition; pure domain34/34, no application/native activation. c04b786d.
 - [x] B1b.2c.1d.0Q6a: Declare effective RunTx output-byte scalar with complete-data compatibility default; port compile/static gates; PG override source preparation now a7dc19b3, actual legacy acceptance/consumer activation remain pending.
-- [ ] B1b.2c.1d.0Q5: Implement verified read-only legacy aggregate overlay, metadata-only effective total and full writer guard. Source a7dc19b3 landed; actual frozen old-producer positive/corruption/guard acceptance remains pending.
+- [x] B1b.2c.1d.0Q5: Verified read-only legacy aggregate overlay/effective scalar/full writer guard, including actual frozen6c44a0e4 old producer and current owner/runtime five-case matrices; sourcece0cb786, evidence/legacy-output-view-20261018. Full process rollout and native drain producers remain separate.
 - [x] B1b.2c.1d.0Q6b: Use the authoritative effective scalar in existing full preflights after the PG override, preserving typed outcomes. Source012d746f; existing result gRPC5/5 each mode, legacy signal-specific acceptance separate.
 - [ ] B1b.2c.1d.0Q7c: Accept effective path/frontier accounting and same-snapshot stop/E behavior. Sourceb0a7ea5e, existing runtime byte_ceilings19/19; actual legacy E>L/CAS acceptance pending.
 - [ ] B1b.2c.1d.0Q8: Accept guarded native new-reason writer. Source9fd9405f, bounded C2 None and strict static gates; zero native behavioral tests yet.

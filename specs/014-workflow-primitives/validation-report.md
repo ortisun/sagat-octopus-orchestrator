@@ -3260,3 +3260,24 @@ Q1 closed RunDataLimit vocabulary/domain/codec preparation and Q1a four new pure
 `9fd9405f` adds the guarded internal native drain writer. C1 owner/checkpoint gaps were corrected; fresh bounded C2 on e0928f4f found no required issue. Strict PostgreSQL library Clippy/fmt/architecture pass with1117 unchanged inputs; executed native behavior tests are zero. The old unconditional RuntimeNotIntegrated refusal has been replaced by checked audit/evidence plus locked source/budget/stop predicates; normal scheduler/report producers remain absent. Native positive/replay/corruption/fault/runtime acceptance and End correction remain pending. This intermediate source is not a deployable bridge.
 
 `46d3824f` corrects Q7b's unconditional report-outbox assumption to existing durable collection discovery. Report refusal creates no outgoing obligation or task release; its expected new outbox count is zero, with journal/projection/audit/receipt/telemetry atomic. The actual later drain retains its own outbox. Fresh bounded amendment review found no issue under Constitution I/VII and ADR-0002/0017. Cold normal-tick discovery without hints remains a required unexecuted gate. No public message, grant or shape, ADR divergence or canonical task closure follows.
+
+
+## Actual legacy-output compatibility acceptance — 2026-10-18
+
+Q5 is accepted with source `ce0cb786` and immutable old producer `6c44a0e4`: the complete
+old/current coordinator passed in133.91s. Each of the two independent role passes contains one
+real public old-producer test and one current matrix test with five ordered cases, not five tests.
+The old producer always uses the runtime role; only the current native store pool varies between
+owner and `sagat_app`. Read-only overlay/per-owner accounting, exact migration/read-only witnesses,
+isolated corruption refusals, unclamped E>L, fitting L-only charge, zero-delta access above the
+limit and positive-delta rollback passed. Stored `legacyControl` discovery metadata is allowed
+only with the unchanged pinned rootForEach/full source qualification; no old source/result is
+rewritten. Strict Clippy/fmt/architecture passed with1117 unchanged native inputs.
+
+Known-success report baseline tests in `03a0043a` independently reproduce actual FAILED acknowledgements
+for a real successful forward effect and a genuine Applied reconciliation; their correction and
+later compensation assertions remain pending. Q8 second-owner discovery compatibility and actual
+producer composition, native End/scheduler activation, full old-binary rollout, source/fanout,
+nested capacity and final release gates remain open. No canonical runtime task is closed by Q5.
+Evidence: `tasks/project-completion/evidence/legacy-output-view-20261018/reproduce.md` and
+`scoped-output-refusal-red-20261018/reproduce.md`.
