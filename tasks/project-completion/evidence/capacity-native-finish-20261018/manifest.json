@@ -1,0 +1,167 @@
+{
+  "source_base": "31c43f76",
+  "application_api_commit": "d67d773d",
+  "recorded_utc": "2026-10-18T08:14:31.151288+00:00",
+  "scope": "B2d.2 dormant exact PG Finish only; native faults/observations pending",
+  "commands": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "capacity_finish::current_child_final_finishes_once_without_rewriting_execution",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 101,
+      "seconds": 7.77,
+      "log": "api-absence.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "capacity_finish::current_child_final_finishes_once_without_rewriting_execution",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 47.47,
+      "log": "native-first.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "capacity_finish::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 67.86,
+      "log": "native-authority.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "capacity_finish::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 101,
+      "seconds": 78.91,
+      "log": "native-authority-final.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "capacity_finish::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 68.94,
+      "log": "native-green.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_security_multitenancy",
+        "manifest_covers_every_variable_size_column",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 29.01,
+      "log": "classification.txt"
+    }
+  ],
+  "clippy": {
+    "command": [
+      "cargo",
+      "clippy",
+      "--workspace",
+      "--all-targets",
+      "--locked",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit_code": 0,
+    "seconds": 76.92,
+    "log": "clippy.txt"
+  },
+  "results": {
+    "schema_and_native": {
+      "passed": 16,
+      "failed": 0,
+      "seconds": 36.29
+    },
+    "classification": {
+      "passed": 1,
+      "failed": 0,
+      "seconds": 1.79
+    }
+  },
+  "evidence_sha256": {
+    "api-absence.txt": "6eff854b2ebbd9eeac7cd6eb5d33cd4612ead5bd0098f9f956cb68ebb5efe6cc",
+    "architecture-final.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "authority-final-source.json": "7e400584e065d085fffed944a0bbf112c0d1b4c108a8b5b693ce21f047682074",
+    "classification.txt": "4969f03d7f9beca8b9f762b81f24651bc637bf082f37a38e2c368a2267f2fcd4",
+    "clippy.json": "6154c0e6d45f1ebba644bb4da3f1beed284650d1cd844bce1143a48247486d0b",
+    "clippy.txt": "013706fb2cea34e1399f6f7d907d17bbdfac47c6e7573a1c10743975b31b2202",
+    "commands.json": "a84d4940f7fdc28316401958ab8ca3e9a3f1b8f7860754a5452338c007ee4f99",
+    "first-source.json": "2e1cbd3c92cc62f8d8df3a8686d64c69ba8db66d39d5142ab8dce0809b6949d0",
+    "fmt-final.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "implementation.diff": "442cc798a40bbd64b5c53a1889921647faece6f6ee6fbc2947c94bae4b354b8c",
+    "native-authority-final.txt": "b83f9ba82a5dfa8ad19ed5c5d04e36a59299b00aac36958ccf94501f7e3bbfd3",
+    "native-authority.txt": "988b585dc72400f69fbc924640c196524f56298f1adee272c83f59d1ce774aba",
+    "native-first.txt": "075221fb6da7afdc6339b4ed9cafaa4fbd67606a9d7530ce9cde178e3b6ffb16",
+    "native-green.txt": "3e54fe2dc1d422509492d5f60f226059a50ea783846618a6735289bf5cd76d0a",
+    "real-fixture.txt": "e67bce586cdc5a1aa9febda5eb7c1019c1c53216c53b4423d252b28a454efb43",
+    "reproduce.md": "6880f8058a661a1d8133fdba33ffc56cbb4eec3bdca58411f242958b1f1b0357",
+    "review.md": "0f7afaf89018e93b3a8836f44389022c20d646bb05341eedd673258ba1b06164",
+    "test-first-source.json": "836d2b6c909c1834bd19cf3b509f3d482694ab9fe42c63a97a020e77f517782c",
+    "test-first.rs": "f4cddeef43f373d947d8bc73f45cf7f9d9e915766412bd635b0dbc8bc522991b",
+    "tested-source-final.json": "7381aa1153f05325e95dda157bda4496bf7cdd5768cf2becd1125f3f244e49f4"
+  }
+}

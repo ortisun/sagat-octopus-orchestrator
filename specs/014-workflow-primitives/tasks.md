@@ -250,5 +250,6 @@ keep compatible readers for in-flight runs. No runtime implementation task is ch
 T014-014..017/040 remain open. B2a defines the first fixture-only exact ChildRoot Finish storage
 proof after reviewed A1/B0/B1a/B1b.1. No production group creation/admission/accounting, scheduler
 caller or nesting is authorized by this contract. Vocabulary and dormant schema have focused
-evidence; native port/fault/observation evidence remains pending. Follow
+evidence; the dormant exact native port also has focused tests. Native fault/recovery and
+observation evidence remains pending. Follow
 tasks/project-completion/todo.md without checking canonical runtime tasks.

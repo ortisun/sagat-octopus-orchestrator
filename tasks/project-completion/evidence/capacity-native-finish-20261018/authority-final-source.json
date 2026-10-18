@@ -1,0 +1,8 @@
+{
+  "crates/application/src/capacity_finish.rs": "320e8eec2661947198251d3b88c699abac66b546af1a3550a578fe33a90cebc2",
+  "crates/application/src/lib.rs": "2442c716cc4c0377a60a2a138a6cea1daf7177113ea577a1889dd44fe7963075",
+  "crates/infra-postgres/src/capacity_finish.rs": "0ce7c56a7c0c665a2deefde595fc1cd6dfb0f12f680186d1e36f1d25107f28c0",
+  "crates/infra-postgres/src/lib.rs": "eee9f9abdd256553b5b66c5976106e3bc5f72c4ca9f17fb404adb7162bfe2ec3",
+  "crates/infra-postgres/storage-classification.json": "1026b852ad7e22f53a9268712d1fafd2cfb24fbdb848bf2d9ad5ef76b59c0e46",
+  "tests/integration/workflow-primitives/capacity_finish.rs": "1b56979d50c3a48bc0e1c61d5cd267feb6c7dfcfda71049780c99b5d7c42a1ba"
+}

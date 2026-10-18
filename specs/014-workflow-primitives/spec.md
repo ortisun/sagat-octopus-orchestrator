@@ -492,3 +492,12 @@ retained row prevents downgrade under table locks. This is no native Finish or n
 capability. Permanent chain FKs currently pin chain/run history; C0 must resolve retention/replay
 compatibility before production activation. Evidence: tasks/project-completion/evidence/
 capacity-finish-schema-20261018. T014-014..017/040 and broader acceptance remain open.
+
+### Dormant native capacity Finish checkpoint — 2026-10-18
+
+An exact internal ChildRoot Finish adapter is implemented without a production call site. It
+proves current own child-chain/head/segment FINAL under current scheduler fencing, then atomically
+finishes one membership with receipt/audit/outbox. Replay returns the original receipt under renewed
+current authority. It never changes the terminal execution journal or other members' business
+state. Native contention/fault/unknown-COMMIT evidence and observations remain separate B2e/f work;
+no creation/admission/eligibility, retention rollout or nested runtime is enabled.

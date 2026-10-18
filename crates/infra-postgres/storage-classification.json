@@ -568,7 +568,8 @@
         "evidence": "Database CHECK requires exactly 32 bytes for the command fingerprint. Dormant fixture-only metadata; no retained content/log delta."
       },
       "owner_paths": [
-        "crates/infra-postgres/migrations/20261210000000_capacity_finish_storage.up.sql"
+        "crates/infra-postgres/migrations/20261210000000_capacity_finish_storage.up.sql",
+        "crates/infra-postgres/src/capacity_finish.rs"
       ]
     },
     {
@@ -586,7 +587,8 @@
         "evidence": "Database CHECK limits resulting_possession to HELD, VACANT or RETIRED (at most 7 ASCII bytes). Dormant fixture-only metadata; no retained content/log delta."
       },
       "owner_paths": [
-        "crates/infra-postgres/migrations/20261210000000_capacity_finish_storage.up.sql"
+        "crates/infra-postgres/migrations/20261210000000_capacity_finish_storage.up.sql",
+        "crates/infra-postgres/src/capacity_finish.rs"
       ]
     },
     {
@@ -604,7 +606,8 @@
         "evidence": "Database CHECK limits member_kind to CHILD_ROOT (10 ASCII bytes). Dormant fixture-only metadata; no retained content/log delta."
       },
       "owner_paths": [
-        "crates/infra-postgres/migrations/20261210000000_capacity_finish_storage.up.sql"
+        "crates/infra-postgres/migrations/20261210000000_capacity_finish_storage.up.sql",
+        "crates/infra-postgres/src/capacity_finish.rs"
       ]
     },
     {
@@ -622,7 +625,8 @@
         "evidence": "Database CHECK limits state to ACTIVE or FINISHED (at most 8 ASCII bytes). Dormant fixture-only metadata; no retained content/log delta."
       },
       "owner_paths": [
-        "crates/infra-postgres/migrations/20261210000000_capacity_finish_storage.up.sql"
+        "crates/infra-postgres/migrations/20261210000000_capacity_finish_storage.up.sql",
+        "crates/infra-postgres/src/capacity_finish.rs"
       ]
     },
     {
@@ -640,7 +644,8 @@
         "evidence": "Generated column is NULL or ACTIVE (6 ASCII bytes), never caller text. Dormant fixture-only metadata; no retained content/log delta."
       },
       "owner_paths": [
-        "crates/infra-postgres/migrations/20261210000000_capacity_finish_storage.up.sql"
+        "crates/infra-postgres/migrations/20261210000000_capacity_finish_storage.up.sql",
+        "crates/infra-postgres/src/capacity_finish.rs"
       ]
     },
     {
@@ -658,7 +663,8 @@
         "evidence": "Database CHECK limits possession to HELD, VACANT or RETIRED (at most 7 ASCII bytes). Dormant fixture-only metadata; no retained content/log delta."
       },
       "owner_paths": [
-        "crates/infra-postgres/migrations/20261210000000_capacity_finish_storage.up.sql"
+        "crates/infra-postgres/migrations/20261210000000_capacity_finish_storage.up.sql",
+        "crates/infra-postgres/src/capacity_finish.rs"
       ]
     },
     {

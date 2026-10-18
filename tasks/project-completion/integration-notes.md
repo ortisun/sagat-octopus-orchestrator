@@ -2143,3 +2143,28 @@ child FINAL/fence/replay/producer/unknown-COMMIT evidence follows from these fix
 chain FKs pin cleanup until C0 retention/replay compatibility is resolved. B2c only closes locally;
 canonical014, fullB1/B2, SDK58/fullworkspace/resource/old-writer/nested/release gates remain open.
 Evidence: tasks/project-completion/evidence/capacity-finish-schema-20261018/manifest.json.
+
+
+## Dormant native ChildRoot Finish — 2026-10-18
+
+Refs:T014-014/017/040. Exact internal application/PG port, no production caller or group creator.
+Direct exact own chain → commanded current head → one G NOWAIT → current postwait scheduler
+fence; physical child lineage comes from own parent identity plus immutable link, never parent
+business state. Own committed FINAL/no successor and matching terminal outcome authorize A1
+Finish. Same-key canonical fingerprint replay precedes changed group/member checks and requires
+current own fence; result is original receipt, not current authority. New header/member/audit/
+closed outbox/receipt writes share actual commit. Server-confirmed23xxx/40001/40P01 aborts are
+storage failures; other commit errors are conservatively unknown, and cancellation after dispatch
+requires retained-command reconciliation. No native fault/recovery proof is inferred yet.
+
+Actual runtime-role schema/native16/16 (36.29s), classification1/1 (1.79s), strict locked workspace/
+all-target Clippy76.92s, final fmt and24-crate architecture pass. Application fingerprint vector1/1.
+Independent API/adapter Astra/xhigh reviews found no concrete issue. Expanded peer test initially
+failed because its helper leased/discarded a second task; corrected to poll1 without service change.
+Real runtime child creation/completion/continuation drives FINAL tests. Holder/nonholder survival,
+last retirement and original historical replay pass for three independent child chains (not nested
+A→B→C activation). Execution journals/versions/steps/chain projection/telemetry/usage stay unchanged;
+actual outbox validates canonical hints. B2e concurrency/fault/unknown-COMMIT evidence and B2f
+observations remain pending, as do C0 retention compatibility, fullB1/B2 and canonical runtime/
+SDK/resource/release gates. Evidence: capacity-native-finish-20261018/manifest.json under
+ tasks/project-completion/evidence.

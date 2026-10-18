@@ -51,6 +51,10 @@ async fn seed_chain(w: &World, name: &str) -> RunId {
 async fn fixture() -> Fixture {
     let w = world().await;
     let run = seed_chain(&w, "capacity-schema").await;
+    seed_capacity(w, run).await
+}
+
+async fn seed_capacity(w: World, run: RunId) -> Fixture {
     let group = Uuid::new_v4();
     let member = Uuid::new_v4();
     let mut tx = w.db.pool.begin().await.expect("owner capacity fixture");
@@ -535,4 +539,491 @@ async fn downgrade_waits_for_writer_before_deciding_whether_storage_is_empty() {
         .await
         .expect("committed tombstone survives");
     assert_eq!(count, 1);
+}
+
+// Native-operation fixtures below use real child creation and worker completion. Only the dormant
+// capacity membership is owner-seeded; finality/continuation is never fabricated with UPDATEs.
+struct NativeFixture {
+    f: Fixture,
+    parent: RunId,
+    scheduler: crate::support::engine::Sched,
+}
+
+async fn spawn_native_child(w: &World, continue_first: bool) -> (RunId, RunId) {
+    use crate::support::engine::{activity, child_node, document};
+    use sagat_application::execution::child_run_id;
+    use sagat_domain::workflow::NodeId;
+    let child_name = format!("capacity-child-{}", Uuid::new_v4());
+    w.publish(serde_json::json!({
+        "apiVersion":"sagat-octopus-orchestrator.io/v1", "kind":"Workflow",
+        "metadata":{"name":child_name}, "entrypoint":"work",
+        "nodes":[
+            {"id":"work","type":"activity","activity":"capacity.work","next":"again"},
+            {"id":"again","type":"condition","expression":"input.continue","ifTrue":"rollover","ifFalse":"done"},
+            {"id":"rollover","type":"continueAsNew","input":"input.next"},
+            {"id":"done","type":"end"}
+        ], "chainPolicy":{"maxSegments":3,"timeoutMs":3600000}
+    })).await;
+    let (workflow, _) = w
+        .publish(document(
+            &format!("capacity-parent-{}", Uuid::new_v4()),
+            "kid",
+            vec![
+                child_node("kid", &child_name, Some("after")),
+                activity("after"),
+            ],
+        ))
+        .await;
+    let parent = w
+        .start(
+            workflow,
+            &serde_json::json!({"continue":continue_first,"next":{"continue":false}}),
+        )
+        .await;
+    let child = child_run_id(parent, &NodeId::parse("kid").expect("node"));
+    (parent, child)
+}
+
+async fn native_fixture(continue_first: bool) -> NativeFixture {
+    let w = world().await;
+    let (parent, child) = spawn_native_child(&w, continue_first).await;
+    let scheduler = super::chains::scheduler(&w, "capacity-native").await;
+    let report = scheduler.tick().await;
+    assert_eq!(report.children_started, 1, "{report:?}");
+    assert_eq!(report.failed, 0, "{report:?}");
+    let f = seed_capacity(w, child).await;
+    NativeFixture {
+        f,
+        parent,
+        scheduler,
+    }
+}
+
+async fn complete_native_activity(n: &NativeFixture) -> RunId {
+    let session = n.f.w.session(&["capacity.work"]).await;
+    // Request one task: the general one_task_of helper leases up to eight and would
+    // discard another ready peer, leaving that peer leased to a different test session.
+    let mut tasks = n.f.w.poll(&session, 1).await;
+    assert_eq!(tasks.len(), 1, "one current child activity");
+    let task = tasks.remove(0);
+    assert_eq!(task.activity.as_str(), "capacity.work");
+    n.f.w
+        .complete(&session, &task, &serde_json::json!({}))
+        .await
+        .expect("real child activity completes");
+    task.run_id
+}
+
+#[tokio::test]
+async fn native_fixture_reaches_current_child_final_through_real_runtime_writers() {
+    let n = native_fixture(false).await;
+    let run = complete_native_activity(&n).await;
+    assert_eq!(run.as_uuid(), n.f.chain);
+    let finality: (Uuid,String,String,bool,bool,Option<Uuid>)=sqlx::query_as("SELECT c.current_run_id,c.final_outcome,s.completion_kind,r.finished_at IS NOT NULL,s.completed_at IS NOT NULL,s.successor_run_id FROM execution_chains c JOIN chain_segments s USING(tenant_id,namespace_id,chain_id) JOIN runs r ON r.tenant_id=s.tenant_id AND r.id=s.run_id WHERE c.tenant_id=$1 AND c.namespace_id=$2 AND c.chain_id=$3 AND s.run_id=$3")
+        .bind(n.f.w.admin.tenant_id().as_uuid()).bind(n.f.w.namespace.id().as_uuid()).bind(n.f.chain).fetch_one(&n.f.w.execution_pool).await.expect("real child final projection");
+    assert_eq!(
+        finality,
+        (
+            n.f.chain,
+            "SUCCEEDED".into(),
+            "FINAL".into(),
+            true,
+            true,
+            None
+        )
+    );
+    let parent:Uuid=sqlx::query_scalar("SELECT parent_run_id FROM child_chain_links WHERE tenant_id=$1 AND namespace_id=$2 AND child_chain_id=$3")
+        .bind(n.f.w.admin.tenant_id().as_uuid()).bind(n.f.w.namespace.id().as_uuid()).bind(n.f.chain).fetch_one(&n.f.w.execution_pool).await.expect("actual child association");
+    assert_eq!(parent, n.parent.as_uuid());
+    assert_eq!(n.scheduler.tick().await.failed, 0);
+}
+
+use sagat_application::capacity_finish::{
+    CapacityFinishCommand, CapacityFinishExpectations, CapacityFinishIdentity,
+    CurrentChildRootFinishStore,
+};
+use sagat_application::primitives::SchedulerAuthority;
+use sagat_domain::execution::{CapacityGroupId, CapacityMemberId, CapacityPossession, ChainScope};
+use sagat_infra_postgres::PgCapacityFinishStore;
+
+async fn native_command(n: &NativeFixture, head: RunId) -> CapacityFinishCommand {
+    native_member_command(&n.f, n.f.member, RunId::new(n.f.chain), head).await
+}
+
+async fn native_member_command(
+    f: &Fixture,
+    member: Uuid,
+    chain: RunId,
+    head: RunId,
+) -> CapacityFinishCommand {
+    let (chain_revision,run_revision): (i64,i64)=sqlx::query_as("SELECT c.revision,r.run_version FROM execution_chains c JOIN runs r ON r.tenant_id=c.tenant_id AND r.id=$4 WHERE c.tenant_id=$1 AND c.namespace_id=$2 AND c.chain_id=$3")
+        .bind(f.w.admin.tenant_id().as_uuid()).bind(f.w.namespace.id().as_uuid()).bind(chain.as_uuid()).bind(head.as_uuid()).fetch_one(&f.w.db.pool).await.expect("observed exact command revisions");
+    let (group_revision, group_epoch): (i64, i64) = sqlx::query_as(
+        "SELECT revision,epoch FROM capacity_groups WHERE tenant_id=$1 AND group_id=$2",
+    )
+    .bind(f.w.admin.tenant_id().as_uuid())
+    .bind(f.group)
+    .fetch_one(&f.w.db.pool)
+    .await
+    .expect("observed group counters");
+    let (owner, generation): (String, i64) =
+        sqlx::query_as("SELECT owner,generation FROM scheduler_shards WHERE shard=run_shard($1)")
+            .bind(head.as_uuid())
+            .fetch_one(&f.w.db.pool)
+            .await
+            .expect("current scheduler lease");
+    CapacityFinishCommand::new(
+        Uuid::new_v4(),
+        CapacityFinishIdentity::new(
+            ChainScope::new(f.w.admin.tenant_id(), f.w.namespace.id()),
+            CapacityGroupId::new(f.group),
+            CapacityMemberId::new(member),
+            chain,
+            head,
+        ),
+        CapacityFinishExpectations::new(
+            u64::try_from(group_revision).expect("group revision"),
+            u64::try_from(group_epoch).expect("group epoch"),
+            u64::try_from(chain_revision).expect("chain revision"),
+            u64::try_from(run_revision).expect("run revision"),
+        ),
+        SchedulerAuthority::for_run(owner, head, u64::try_from(generation).expect("generation")),
+    )
+}
+
+async fn execution_snapshot(f: &Fixture) -> Vec<(String, String)> {
+    sqlx::query_as("SELECT 'runs',md5(coalesce(jsonb_agg(to_jsonb(r) ORDER BY id)::text,'null')) FROM runs r WHERE tenant_id=$1 UNION ALL SELECT 'events',md5(coalesce(jsonb_agg(to_jsonb(e) ORDER BY run_id,seq)::text,'null')) FROM run_events e WHERE tenant_id=$1 UNION ALL SELECT 'steps',md5(coalesce(jsonb_agg(to_jsonb(s) ORDER BY run_id,node)::text,'null')) FROM steps s WHERE tenant_id=$1 UNION ALL SELECT 'chains',md5(coalesce(jsonb_agg(to_jsonb(c) ORDER BY chain_id)::text,'null')) FROM execution_chains c WHERE tenant_id=$1 UNION ALL SELECT 'segments',md5(coalesce(jsonb_agg(to_jsonb(s) ORDER BY chain_id,segment_index)::text,'null')) FROM chain_segments s WHERE tenant_id=$1 UNION ALL SELECT 'telemetry',md5(coalesce(jsonb_agg(to_jsonb(t) ORDER BY run_id)::text,'null')) FROM telemetry_pending t WHERE tenant_id=$1 UNION ALL SELECT 'usage',md5(coalesce(jsonb_agg(to_jsonb(u))::text,'null')) FROM tenant_retained_usage u WHERE tenant_id=$1")
+        .bind(f.w.admin.tenant_id().as_uuid()).fetch_all(&f.w.db.pool).await.expect("independent immutable execution snapshot")
+}
+
+async fn finish_counts(f: &Fixture) -> (i64, i64, i64) {
+    sqlx::query_as("SELECT (SELECT count(*) FROM capacity_group_finish_receipts WHERE tenant_id=$1 AND group_id=$2),(SELECT count(*) FROM audit_records WHERE tenant_id=$1 AND action='capacity.member.finished' AND resource_id=$3),(SELECT count(*) FROM event_outbox WHERE tenant_id=$1 AND aggregate_id=$2 AND event_type='capacity.member.finished')")
+        .bind(f.w.admin.tenant_id().as_uuid()).bind(f.group).bind(f.group.to_string()).fetch_one(&f.w.db.pool).await.expect("capacity side effect counts")
+}
+
+#[tokio::test]
+async fn current_child_final_finishes_once_without_rewriting_execution() {
+    let n = native_fixture(false).await;
+    let head = complete_native_activity(&n).await;
+    let command = native_command(&n, head).await;
+    let before = execution_snapshot(&n.f).await;
+    assert_eq!(finish_counts(&n.f).await, (0, 0, 0));
+    let store = PgCapacityFinishStore::new(n.f.w.execution_pool.clone());
+    let applied = store
+        .finish_current_child_root(&command)
+        .await
+        .expect("current real child FINAL");
+    assert!(!applied.replayed);
+    assert_eq!(
+        (
+            applied.revision,
+            applied.epoch,
+            applied.active_members,
+            applied.possession
+        ),
+        (2, 2, 0, CapacityPossession::Retired)
+    );
+    assert_eq!(
+        state(&n.f.w.db.pool, &n.f).await,
+        (2, 2, 0, "RETIRED".into(), "FINISHED".into())
+    );
+    assert_eq!(finish_counts(&n.f).await, (1, 1, 1));
+    let mut replay = store
+        .finish_current_child_root(&command)
+        .await
+        .expect("same command replays even after retirement");
+    assert!(replay.replayed);
+    replay.replayed = false;
+    assert_eq!(replay, applied, "original immutable receipt result");
+    assert_eq!(finish_counts(&n.f).await, (1, 1, 1));
+    assert_eq!(execution_snapshot(&n.f).await, before);
+    super::hint_contract::assert_outbox_matches_the_contract(&n.f.w.db.pool).await;
+}
+
+use sagat_application::capacity_finish::CapacityFinishError;
+
+#[tokio::test]
+async fn native_finish_rejects_live_wrong_scope_stale_fence_and_conflicting_replay() {
+    let n = native_fixture(false).await;
+    let live = native_command(&n, RunId::new(n.f.chain)).await;
+    let store = PgCapacityFinishStore::new(n.f.w.execution_pool.clone());
+    assert_eq!(
+        store.finish_current_child_root(&live).await,
+        Err(CapacityFinishError::NotFinal)
+    );
+    assert_eq!(finish_counts(&n.f).await, (0, 0, 0));
+    let head = complete_native_activity(&n).await;
+    let command = native_command(&n, head).await;
+    let before = execution_snapshot(&n.f).await;
+    let mut variants = Vec::new();
+    let mut c = command.clone();
+    c.identity.scope = ChainScope::new(n.f.w.other_admin.tenant_id(), n.f.w.other_namespace.id());
+    variants.push((c, CapacityFinishError::Missing));
+    let mut c = command.clone();
+    c.identity.scope = ChainScope::new(n.f.w.admin.tenant_id(), n.f.w.other_namespace.id());
+    variants.push((c, CapacityFinishError::BindingMismatch));
+    let mut c = command.clone();
+    c.identity.member_id = CapacityMemberId::generate();
+    variants.push((c, CapacityFinishError::Missing));
+    let mut c = command.clone();
+    c.identity.group_id = CapacityGroupId::generate();
+    variants.push((c, CapacityFinishError::Missing));
+    let mut c = command.clone();
+    c.identity.chain_id = RunId::generate();
+    variants.push((c, CapacityFinishError::BindingMismatch));
+    let mut c = command.clone();
+    c.identity.head_run_id = n.parent;
+    variants.push((c, CapacityFinishError::StaleHead { current: head }));
+    let mut c = command.clone();
+    c.scheduler = SchedulerAuthority::for_run("wrong-owner", head, 1);
+    variants.push((c, CapacityFinishError::SchedulerFenceLost));
+    let mut c = command.clone();
+    c.expected.group_revision += 1;
+    variants.push((c, CapacityFinishError::StaleGroupRevision { current: 1 }));
+    let mut c = command.clone();
+    c.expected.group_epoch += 1;
+    variants.push((c, CapacityFinishError::StaleGroupEpoch { current: 1 }));
+    let mut c = command.clone();
+    c.expected.chain_revision += 1;
+    variants.push((
+        c,
+        CapacityFinishError::StaleChainRevision {
+            current: command.expected.chain_revision,
+        },
+    ));
+    let mut c = command.clone();
+    c.expected.run_revision += 1;
+    variants.push((
+        c,
+        CapacityFinishError::StaleRunRevision {
+            current: command.expected.run_revision,
+        },
+    ));
+    let mut c = command.clone();
+    c.expected.run_revision = u64::MAX;
+    variants.push((c, CapacityFinishError::CounterExhausted));
+    for (c, expected) in variants {
+        assert_eq!(store.finish_current_child_root(&c).await, Err(expected));
+        assert_eq!(finish_counts(&n.f).await, (0, 0, 0));
+        assert_eq!(
+            state(&n.f.w.db.pool, &n.f).await,
+            (1, 1, 1, "HELD".into(), "ACTIVE".into())
+        );
+    }
+    let applied = store
+        .finish_current_child_root(&command)
+        .await
+        .expect("fresh valid command");
+    let mut conflict = command.clone();
+    conflict.expected.group_revision += 1;
+    assert_eq!(
+        store.finish_current_child_root(&conflict).await,
+        Err(CapacityFinishError::FingerprintConflict)
+    );
+    let generation:i64=sqlx::query_scalar("UPDATE scheduler_shards SET generation=generation+1,owner='capacity-replay-renewed',expires_at=clock_timestamp()+interval '1 hour' WHERE shard=run_shard($1) RETURNING generation")
+        .bind(head.as_uuid()).fetch_one(&n.f.w.db.pool).await.expect("renew scheduler authority");
+    assert_eq!(
+        store.finish_current_child_root(&command).await,
+        Err(CapacityFinishError::SchedulerFenceLost),
+        "replay is fenced too"
+    );
+    let mut renewed = command.clone();
+    renewed.scheduler = SchedulerAuthority::for_run(
+        "capacity-replay-renewed",
+        head,
+        u64::try_from(generation).expect("generation"),
+    );
+    assert_eq!(renewed.fingerprint(), command.fingerprint());
+    let mut replay = store
+        .finish_current_child_root(&renewed)
+        .await
+        .expect("renewed authority replays same logical command");
+    assert!(replay.replayed);
+    replay.replayed = false;
+    assert_eq!(replay, applied);
+    assert_eq!(finish_counts(&n.f).await, (1, 1, 1));
+    assert_eq!(execution_snapshot(&n.f).await, before);
+}
+
+#[tokio::test]
+async fn continued_history_never_finishes_logical_member_even_after_successor_final() {
+    let n = native_fixture(true).await;
+    let initial = complete_native_activity(&n).await;
+    let old = native_command(&n, initial).await;
+    let store = PgCapacityFinishStore::new(n.f.w.execution_pool.clone());
+    assert_eq!(
+        store.finish_current_child_root(&old).await,
+        Err(CapacityFinishError::NotFinal)
+    );
+    let report = n.scheduler.tick().await;
+    assert_eq!(report.continuations_advanced, 1, "{report:?}");
+    assert_eq!(report.failed, 0);
+    let successor:Uuid=sqlx::query_scalar("SELECT current_run_id FROM execution_chains WHERE tenant_id=$1 AND namespace_id=$2 AND chain_id=$3")
+        .bind(n.f.w.admin.tenant_id().as_uuid()).bind(n.f.w.namespace.id().as_uuid()).bind(n.f.chain).fetch_one(&n.f.w.db.pool).await.expect("new head");
+    let successor = RunId::new(successor);
+    assert_ne!(initial, successor);
+    assert_eq!(
+        store.finish_current_child_root(&old).await,
+        Err(CapacityFinishError::StaleHead { current: successor })
+    );
+    let last = complete_native_activity(&n).await;
+    assert_eq!(last, successor);
+    assert_eq!(
+        store.finish_current_child_root(&old).await,
+        Err(CapacityFinishError::StaleHead { current: successor })
+    );
+    assert_eq!(finish_counts(&n.f).await, (0, 0, 0));
+    let before = execution_snapshot(&n.f).await;
+    store
+        .finish_current_child_root(&native_command(&n, successor).await)
+        .await
+        .expect("current successor FINAL settles retained logical membership");
+    assert_eq!(finish_counts(&n.f).await, (1, 1, 1));
+    assert_eq!(execution_snapshot(&n.f).await, before);
+}
+
+#[tokio::test]
+async fn exhausted_sql_revision_leaves_no_partial_finish() {
+    let n = native_fixture(false).await;
+    let head = complete_native_activity(&n).await;
+    sqlx::query("UPDATE capacity_groups SET revision=$3 WHERE tenant_id=$1 AND group_id=$2")
+        .bind(n.f.w.admin.tenant_id().as_uuid())
+        .bind(n.f.group)
+        .bind(i64::MAX)
+        .execute(&n.f.w.db.pool)
+        .await
+        .expect("maximum persisted revision fixture");
+    let mut command = native_command(&n, head).await;
+    command.expected.group_revision = u64::try_from(i64::MAX).expect("positive maximum");
+    let before = execution_snapshot(&n.f).await;
+    let store = PgCapacityFinishStore::new(n.f.w.execution_pool.clone());
+    assert_eq!(
+        store.finish_current_child_root(&command).await,
+        Err(CapacityFinishError::CounterExhausted)
+    );
+    assert_eq!(finish_counts(&n.f).await, (0, 0, 0));
+    assert_eq!(
+        state(&n.f.w.db.pool, &n.f).await,
+        (i64::MAX, 1, 1, "HELD".into(), "ACTIVE".into())
+    );
+    assert_eq!(execution_snapshot(&n.f).await, before);
+}
+
+#[tokio::test]
+async fn finishing_selected_child_preserves_other_members_and_historical_receipt() {
+    for selected_holds in [true, false] {
+        let n = native_fixture(false).await;
+        let selected_head = complete_native_activity(&n).await;
+        let (_, a) = spawn_native_child(&n.f.w, false).await;
+        let (_, c) = spawn_native_child(&n.f.w, false).await;
+        let report = n.scheduler.tick().await;
+        assert_eq!(report.children_started, 2, "{report:?}");
+        assert_eq!(report.failed, 0);
+        let a_member = Uuid::new_v4();
+        let c_member = Uuid::new_v4();
+        let mut tx =
+            n.f.w
+                .db
+                .pool
+                .begin()
+                .await
+                .expect("three-member owner fixture");
+        for (member, chain) in [(a_member, a), (c_member, c)] {
+            sqlx::query("INSERT INTO capacity_group_members(tenant_id,group_id,member_id,namespace_id,member_kind,chain_id,state) VALUES($1,$2,$3,$4,'CHILD_ROOT',$5,'ACTIVE')")
+                .bind(n.f.w.admin.tenant_id().as_uuid()).bind(n.f.group).bind(member).bind(n.f.w.namespace.id().as_uuid()).bind(chain.as_uuid()).execute(&mut *tx).await.expect("real child member fixture");
+        }
+        sqlx::query("UPDATE capacity_groups SET revision=3,active_members=3,holder_member_id=$3 WHERE tenant_id=$1 AND group_id=$2")
+            .bind(n.f.w.admin.tenant_id().as_uuid()).bind(n.f.group).bind(if selected_holds{n.f.member}else{c_member}).execute(&mut *tx).await.expect("fixture header");
+        tx.commit().await.expect("bounded group baseline");
+        let before = execution_snapshot(&n.f).await;
+        let command = native_command(&n, selected_head).await;
+        let store = PgCapacityFinishStore::new(n.f.w.execution_pool.clone());
+        let original = store
+            .finish_current_child_root(&command)
+            .await
+            .expect("selected FINAL only");
+        let expected = if selected_holds {
+            CapacityPossession::Vacant
+        } else {
+            CapacityPossession::Held(CapacityMemberId::new(c_member))
+        };
+        assert_eq!(
+            (
+                original.revision,
+                original.epoch,
+                original.active_members,
+                original.possession
+            ),
+            (4, if selected_holds { 2 } else { 1 }, 2, expected)
+        );
+        let survivors:Vec<(Uuid,String)>=sqlx::query_as("SELECT member_id,state FROM capacity_group_members WHERE tenant_id=$1 AND group_id=$2 AND member_id<>$3 ORDER BY member_id")
+            .bind(n.f.w.admin.tenant_id().as_uuid()).bind(n.f.group).bind(n.f.member).fetch_all(&n.f.w.db.pool).await.expect("independent survivors");
+        assert_eq!(survivors.len(), 2);
+        assert!(survivors.iter().all(|(_, state)| state == "ACTIVE"));
+        assert_eq!(
+            execution_snapshot(&n.f).await,
+            before,
+            "no other run/chain business state changes"
+        );
+        for _ in 0..2 {
+            let head = complete_native_activity(&n).await;
+            let member = if head == a {
+                a_member
+            } else {
+                assert_eq!(head, c);
+                c_member
+            };
+            let command = native_member_command(&n.f, member, head, head).await;
+            store
+                .finish_current_child_root(&command)
+                .await
+                .expect("each peer's own current FINAL");
+        }
+        let final_state = state(&n.f.w.db.pool, &n.f).await;
+        assert_eq!(final_state.0, 6);
+        assert_eq!(final_state.2, 0);
+        assert_eq!(final_state.3, "RETIRED");
+        assert_eq!(finish_counts(&n.f).await, (3, 3, 3));
+        let mut replay = store
+            .finish_current_child_root(&command)
+            .await
+            .expect("original historical result after every survivor finishes");
+        assert!(replay.replayed);
+        replay.replayed = false;
+        assert_eq!(replay, original);
+        assert_eq!(finish_counts(&n.f).await, (3, 3, 3));
+    }
+}
+
+#[tokio::test]
+async fn contradictory_final_outcome_refuses_finish_and_root_binding_grants_no_authority() {
+    let n = native_fixture(false).await;
+    let head = complete_native_activity(&n).await;
+    // Explicit persisted-fault injection after genuine runtime FINAL, not a finality fixture.
+    sqlx::query("UPDATE execution_chains SET final_outcome='FAILED' WHERE tenant_id=$1 AND namespace_id=$2 AND chain_id=$3")
+        .bind(n.f.w.admin.tenant_id().as_uuid()).bind(n.f.w.namespace.id().as_uuid()).bind(n.f.chain).execute(&n.f.w.db.pool).await.expect("contradictory outcome fault");
+    let before = execution_snapshot(&n.f).await;
+    let store = PgCapacityFinishStore::new(n.f.w.execution_pool.clone());
+    assert_eq!(
+        store
+            .finish_current_child_root(&native_command(&n, head).await)
+            .await,
+        Err(CapacityFinishError::ContradictoryProjection)
+    );
+    assert_eq!(execution_snapshot(&n.f).await, before);
+    assert_eq!(finish_counts(&n.f).await, (0, 0, 0));
+
+    let f = fixture().await;
+    let _scheduler = super::chains::scheduler(&f.w, "capacity-root-refusal").await;
+    let before = execution_snapshot(&f).await;
+    let command =
+        native_member_command(&f, f.member, RunId::new(f.chain), RunId::new(f.chain)).await;
+    let store = PgCapacityFinishStore::new(f.w.execution_pool.clone());
+    assert_eq!(
+        store.finish_current_child_root(&command).await,
+        Err(CapacityFinishError::BindingMismatch),
+        "CHILD_ROOT text in a registry row never proves physical child lineage"
+    );
+    assert_eq!(execution_snapshot(&f).await, before);
+    assert_eq!(finish_counts(&f).await, (0, 0, 0));
 }

@@ -1,6 +1,6 @@
 # Dormant ChildRoot Finish storage — B2a
 
-Status: reviewed scoped contract; vocabulary, dormant schema and application port defined; PostgreSQL operation pending.
+Status: reviewed scoped contract; vocabulary, dormant schema and exact native operation implemented; fault/recovery and observations pending.
 Baseline49ee1997; consumes A1, checked restoration, B1a and
 B1b.1. One native method, existing groups populated only in explicit owner fixtures, no scheduler
 call site, public endpoint, production seed, admission API, usage projection or nested activation.

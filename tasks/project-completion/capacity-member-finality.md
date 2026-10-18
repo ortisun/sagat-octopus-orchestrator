@@ -1,6 +1,6 @@
 # Capacity member finality — B1b.1 candidate
 
-Status: reviewed scoped decision, unimplemented. One existing child-chain root member Finish only. Refs:T014-014..017/040,
+Status: reviewed scoped decision; dormant exact ChildRoot Finish port implemented, broader authority pending. One existing child-chain root member Finish only. Refs:T014-014..017/040,
 ADR-0030, A0/A1, B0 and reviewed B1a. No scoped-path settlement or nested runtime authorization.
 
 ## Artifact

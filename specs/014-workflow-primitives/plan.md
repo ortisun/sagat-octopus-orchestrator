@@ -407,3 +407,9 @@ B2d.1 application contract is defined with exact identity/revision groups, renew
 fence, versioned fixed-width fingerprint, typed outcomes and immutable receipt result. Cancellation
 can leave a COMMIT outcome unknown; callers retain the entire original command and future production
 callers require durable intent. This API-only increment enables no runtime caller or SQL operation.
+
+
+B2d.2 exact PG adapter and real current child FINAL/refusal/replay evidence are implemented.
+B2e must now test actual contention, postwait expiry, confirmed failure atomicity and both unknown
+COMMIT outcomes; B2f adds closed observations. These checkpoints cannot enable a production caller
+before durable intent, C0 retention/old-writer compatibility and remaining lifecycle decisions.

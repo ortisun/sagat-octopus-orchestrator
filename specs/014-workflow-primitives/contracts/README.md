@@ -631,3 +631,10 @@ Dormant schema constraints/privileges/tombstones/downgrade are tested (B2c), wit
 operation or production caller. Permanent member/receipt chain references currently pin history
 retention; C0 must define compatible replay/tombstone cleanup before activation. See
 capacity-finish-schema-20261018 evidence. Runtime finality/replay/fault observations remain B2d/e/f.
+
+
+Dormant exact native Finish is implemented, with application identity/expectation/receipt types,
+versioned fingerprint and typed Busy/refusal/storage/unknown outcomes. Actual current child FINAL,
+continuation-history rejection, renewed-fence replay and independent member survival have focused
+PG evidence. Ordinary chain/run entry can wait; only exact G NOWAIT55P03 is Busy. Native fault/
+contention/unknown-COMMIT and observations remain B2e/f; no production caller or wire API exists.
