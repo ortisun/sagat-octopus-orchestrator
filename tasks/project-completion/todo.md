@@ -194,6 +194,8 @@ See evidence/leaf-certification-process-20261018. Other producer/observation/rel
 - [x] B1b.2b.15d: Prove source-certifier/source-writer ordering and preserved source facts.
 - [x] B1b.2b.15e: Prove atomic audit/outbox/receipt and deferred commit failures.
 - [ ] B1b.2b.16: Prove lost COMMIT/reconciliation and actual process recovery for scoped Finish.
+- [x] B1b.2b.16a: Prove actual lost COMMIT replies, retained guards and cold exact-command reconciliation.
+- [ ] B1b.2b.16b: Prove actual reconciliation process death/restart with durable complete command.
 - [ ] B1b.2b.17: Prove all scoped returned outcomes/OTLP/redaction/filtered span/cancellation counts.
 - [ ] B1b.2c: Review nested/child relationship closure and remaining quiescence/transition authority.
 

@@ -1077,3 +1077,6 @@ mod atomic_failures;
 
 #[path = "scoped_leaf_finish_contexts.rs"]
 mod contexts;
+
+#[path = "scoped_leaf_finish_commit_loss.rs"]
+mod commit_loss;

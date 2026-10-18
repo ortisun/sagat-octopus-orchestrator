@@ -1,0 +1,31 @@
+{
+  "source_base": "80fc3917",
+  "local_units": [
+    "B1b.2b.16a"
+  ],
+  "test_scope": "focused COMMIT loss test with both actual server resolutions",
+  "tests_passed": 1,
+  "frozen_inputs": 1101,
+  "sources_unchanged": true,
+  "product_implementation_changed": false,
+  "files": {
+    "architecture.json": "762eab6ee30ee0c1dcba73b9749e7bb29c95492e7461063ae94ac96c9372f825",
+    "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "clippy.json": "e85854da48f6661a4592201d9c2bfaddf260b6f844046eff88eb8115fb6c4a30",
+    "clippy.txt": "320e9ba2b2d6b507469baa8c2282f9a6048284589c619c8b7d599b7f40f91493",
+    "commit-loss.json": "d7741fd40be698ba7f3dac29edfad873f633eda521948e2334e3576b62f99a6f",
+    "commit-loss.txt": "2a2d36a1474319344523f6c64db107de9010c1ccef3644455a502a86d695397d",
+    "draft-notes.md": "4ecfebb1e824737a82fac83a169e443e55240d783f4ea925cafe0d96eecad3ee",
+    "fmt.json": "2dac9a1e7aa6a63f82f189baba2ce06399ac109e2a26a634f078357b95a0b268",
+    "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "pre-original-result-control-commit-loss.json": "8719e9ca0a6f8d89a822f3781aa2a56647488cb3b74ced3e23770c8523d8b41a",
+    "pre-original-result-control-commit-loss.txt": "3cb42c7d304961d3d580dfdce1c448d2c9d059696f53019d62c7a974699872f7",
+    "pre-original-result-control-source-after.json": "ca7b9ac42665cbbc8b84693400f51e6a6d14e9b874b00a6efb3c9d03bc1fbe06",
+    "pre-original-result-control-source-before.json": "ca7b9ac42665cbbc8b84693400f51e6a6d14e9b874b00a6efb3c9d03bc1fbe06",
+    "reproduce.md": "6e8836c61a0faaabf222943d1efd66591d70e72259ddcb12b85ae4367c291bbd",
+    "review.md": "aa7385cc2c355e2c36759a3544a55e5a8f1e8558d9c65eec55719ed0974d2f29",
+    "source-after.json": "5e8d60a68c69409d79841edd382c6e30a2ffcfc384b30bcd1f01a6c0f9c17a99",
+    "source-before.json": "5e8d60a68c69409d79841edd382c6e30a2ffcfc384b30bcd1f01a6c0f9c17a99",
+    "test-index.json": "404de5bcbc4e787540ddcf8b4f468038271af3f7e32c59cbdd444e56d9e56fd5"
+  }
+}
