@@ -1,0 +1,19 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "integration_workflow_primitives",
+    "scope_compensation_http",
+    "--",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "exit_code": 0,
+  "seconds": 68.14,
+  "started_utc": "2026-10-18T20:14:58.969931+00:00",
+  "log": "compensation-runtime.txt"
+}

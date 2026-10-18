@@ -8,7 +8,8 @@
 use sagat_application::collection_source::{SourceManifest, items_digest as source_items_digest};
 use sagat_application::error::StoreError;
 use sagat_application::execution::{
-    DefinitionCache, MAX_PAYLOAD_BYTES, MAX_RUN_OUTPUT_BYTES, instance_step_id,
+    Actor, DefinitionCache, Effects, EndOutputAnswer, MAX_PAYLOAD_BYTES, MAX_RUN_OUTPUT_BYTES,
+    RunTx, instance_step_id,
 };
 use sagat_application::primitives::{
     CollectionAdmission, CollectionCheckpoint, CollectionDataLimitEvidence, CollectionDrain,
@@ -16,15 +17,17 @@ use sagat_application::primitives::{
     CollectionProgress, CollectionScopeId, CollectionScopeRef, CollectionStore,
     CollectionTransition, PrimitiveStoreError, PrimitiveWrite,
 };
+use sagat_application::runs::Lock;
 use sagat_domain::audit::{AuditAction, ResourceType};
 use sagat_domain::definition::WorkflowVersionId;
 use sagat_domain::execution::{
-    CollectionDrainReason, ExecutionInstanceId, FailureCode, InstancePath,
+    CollectionDrainReason, CollectionOutcome, Evaluation, ExecutionInstanceId, FailureCode,
+    InstancePath, Resolution, RunEvent,
 };
 use sagat_domain::identity::{NamespaceId, Subject, TenantId};
 use sagat_domain::outbound::OutboundKind;
 use sagat_domain::sharding::Shard;
-use sagat_domain::workflow::{Digest, NodeId, NodeKind, WorkflowDefinition};
+use sagat_domain::workflow::{Digest, Node, NodeId, NodeKind, WorkflowDefinition};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use sqlx::postgres::PgRow;
@@ -188,6 +191,339 @@ async fn retain_payload_in_transaction(
     Ok(retained)
 }
 
+#[derive(Debug)]
+struct ReplayAddress {
+    instance_id: Option<Uuid>,
+    path_nodes: Option<Vec<String>>,
+    path_indices: Option<Vec<i32>>,
+}
+
+impl ReplayAddress {
+    fn matches(&self, instance: Option<&ExecutionInstanceId>, step_id: Option<Uuid>) -> bool {
+        match instance {
+            Some(instance) => {
+                let (nodes, indices) = path_parts(instance);
+                self.instance_id == step_id
+                    && self.path_nodes.as_ref() == Some(&nodes)
+                    && self.path_indices.as_ref() == Some(&indices)
+            }
+            None => {
+                self.instance_id.is_none()
+                    && self.path_nodes.is_none()
+                    && self.path_indices.is_none()
+            }
+        }
+    }
+}
+
+async fn validate_finish_replay(
+    tx: &mut Transaction<'_, Postgres>,
+    finish: &CollectionFinish,
+    definition: &WorkflowDefinition,
+    version: WorkflowVersionId,
+    finish_sequence: u64,
+) -> Result<(), PrimitiveStoreError> {
+    let tenant = finish.transition.tenant_id().as_uuid();
+    let run = finish.transition.run_id().as_uuid();
+    if let Some(sources) = finish.source_digests() {
+        let rows = sqlx::query(
+            "SELECT iteration_index,result_digest FROM iteration_checkpoints \
+             WHERE tenant_id=$1 AND run_id=$2 AND scope_id=$3 ORDER BY iteration_index",
+        )
+        .bind(tenant)
+        .bind(run)
+        .bind(finish.scope_id.as_uuid())
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(store_error)?;
+        if rows.len() != sources.len()
+            || !rows.iter().zip(sources).all(|(row, (index, digest))| {
+                u32::try_from(row.get::<i32, _>("iteration_index")) == Ok(*index)
+                    && row.get::<Vec<u8>, _>("result_digest") == digest.as_bytes().as_slice()
+            })
+        {
+            return Err(PrimitiveStoreError::DuplicateMismatch);
+        }
+    }
+    let (owner_nodes, owner_indices) = path_parts(finish.transition.owner());
+    let owner = sqlx::query(
+        "SELECT step_id,output_digest FROM steps WHERE tenant_id=$1 AND run_id=$2 \
+           AND instance_path_nodes=$3 AND instance_path_indices=$4 AND node=$5 \
+           AND status='SUCCEEDED' AND routed",
+    )
+    .bind(tenant)
+    .bind(run)
+    .bind(&owner_nodes)
+    .bind(&owner_indices)
+    .bind(finish.transition.owner().node().as_str())
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(store_error)?
+    .ok_or(PrimitiveStoreError::DuplicateMismatch)?;
+    let owner_step_id = instance_step_id(
+        version,
+        finish.transition.run_id(),
+        finish.transition.owner(),
+    );
+    if owner.get::<Uuid, _>("step_id") != owner_step_id {
+        return Err(PrimitiveStoreError::DuplicateMismatch);
+    }
+    let owner_digest = owner.get::<Option<Vec<u8>>, _>("output_digest");
+    if owner_digest
+        .as_deref()
+        .is_some_and(|digest| digest != finish.result_digest.as_bytes().as_slice())
+    {
+        return Err(PrimitiveStoreError::DuplicateMismatch);
+    }
+    let successor = definition
+        .node_for_instance(finish.transition.owner())
+        .and_then(Node::next)
+        .cloned()
+        .ok_or(PrimitiveStoreError::DuplicateMismatch)?;
+    let successor =
+        ExecutionInstanceId::in_path(finish.transition.owner().path().clone(), successor);
+    let end_output = match definition.node_for_instance(&successor).map(Node::kind) {
+        Some(NodeKind::End { output }) => Some(output),
+        Some(_) => None,
+        None => return Err(PrimitiveStoreError::DuplicateMismatch),
+    };
+    let inspect_end = owner_digest.is_some() && end_output.is_some();
+    let prefix_last_sequence = finish_sequence
+        .checked_add(if inspect_end { 2 } else { 1 })
+        .ok_or_else(|| invalid_storage("finish replay prefix sequence"))?;
+    let mut rows = sqlx::query(
+        "SELECT seq,event_type,node,detail,payload_digest,instance_id, \
+                instance_path_nodes,instance_path_indices \
+         FROM run_events WHERE tenant_id=$1 AND run_id=$2 AND seq BETWEEN $3 AND $4 \
+         ORDER BY seq",
+    )
+    .bind(tenant)
+    .bind(run)
+    .bind(number(finish_sequence, "finish sequence")?)
+    .bind(number(
+        prefix_last_sequence,
+        "finish replay prefix sequence",
+    )?)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(store_error)?;
+    if inspect_end {
+        let tail_count = match rows.get(2).map(|row| row.get::<String, _>("event_type")) {
+            Some(event_type) if event_type == "end.reached" => 1,
+            Some(event_type)
+                if matches!(event_type.as_str(), "step.failed" | "run.stop_requested") =>
+            {
+                2
+            }
+            _ => return Err(PrimitiveStoreError::DuplicateMismatch),
+        };
+        let tail_first_sequence = finish_sequence
+            .checked_add(3)
+            .ok_or_else(|| invalid_storage("finish replay tail sequence"))?;
+        let tail_last_sequence = prefix_last_sequence
+            .checked_add(tail_count)
+            .ok_or_else(|| invalid_storage("finish replay tail sequence"))?;
+        let tail = sqlx::query(
+            "SELECT seq,event_type,node,detail,payload_digest,instance_id, \
+                    instance_path_nodes,instance_path_indices \
+             FROM run_events WHERE tenant_id=$1 AND run_id=$2 AND seq BETWEEN $3 AND $4 \
+             ORDER BY seq",
+        )
+        .bind(tenant)
+        .bind(run)
+        .bind(number(tail_first_sequence, "finish replay tail sequence")?)
+        .bind(number(tail_last_sequence, "finish replay tail sequence")?)
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(store_error)?;
+        rows.extend(tail);
+    }
+    let events = rows
+        .iter()
+        .map(|row| {
+            let event_type = row.get::<String, _>("event_type");
+            let node = row.get::<Option<String>, _>("node");
+            crate::event_codec::decode(&event_type, node.as_deref(), &row.get::<Value, _>("detail"))
+                .ok_or(PrimitiveStoreError::DuplicateMismatch)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let addresses = rows
+        .iter()
+        .map(|row| ReplayAddress {
+            instance_id: row.get("instance_id"),
+            path_nodes: row.get("instance_path_nodes"),
+            path_indices: row.get("instance_path_indices"),
+        })
+        .collect::<Vec<_>>();
+    let payloads = rows
+        .iter()
+        .map(|row| row.get::<Option<Vec<u8>>, _>("payload_digest"))
+        .collect::<Vec<_>>();
+    let consecutive = rows.iter().enumerate().all(|(offset, row)| {
+        u64::try_from(row.get::<i64, _>("seq")).ok()
+            == u64::try_from(offset)
+                .ok()
+                .and_then(|offset| finish_sequence.checked_add(offset))
+    });
+    let consecutive_prefix = rows.len() >= 2
+        && consecutive
+        && matches!(events.first(), Some(RunEvent::CollectionFinished {
+            node, outcome: CollectionOutcome::Succeeded, result_digest: Some(digest),
+        }) if node == finish.transition.owner().node() && digest == &finish.result_digest)
+        && matches!(events.get(1), Some(RunEvent::StepRouted { node, activated })
+            if node == finish.transition.owner().node()
+                && activated == std::slice::from_ref(successor.node()))
+        && addresses[0].matches(Some(finish.transition.owner()), Some(owner_step_id))
+        && addresses[1].matches(Some(finish.transition.owner()), Some(owner_step_id));
+    if !consecutive_prefix {
+        return Err(PrimitiveStoreError::DuplicateMismatch);
+    }
+    // Historical writers have the same immutable source prefix but no owner output. Preserve their
+    // original no-answer result without interpreting the later journal or repairing projections.
+    if owner_digest.is_none() {
+        return if finish.end_answer().is_none() {
+            Ok(())
+        } else {
+            Err(PrimitiveStoreError::DuplicateMismatch)
+        };
+    }
+    let Some(output) = end_output else {
+        return if rows.len() == 2 && finish.end_answer().is_none() {
+            Ok(())
+        } else {
+            Err(PrimitiveStoreError::DuplicateMismatch)
+        };
+    };
+    validate_replayed_end(
+        tx,
+        finish,
+        &successor,
+        version,
+        output,
+        &events[2..],
+        &addresses[2..],
+        &payloads[2..],
+    )
+    .await
+}
+
+enum ReplayEnd {
+    Success(Option<Vec<u8>>),
+    Failure(FailureCode),
+}
+
+#[allow(clippy::too_many_arguments)] // Events, addresses and payloads describe the same replay suffix.
+async fn validate_replayed_end(
+    tx: &mut Transaction<'_, Postgres>,
+    finish: &CollectionFinish,
+    end: &ExecutionInstanceId,
+    version: WorkflowVersionId,
+    output_expression: &Option<sagat_domain::workflow::Expression>,
+    events: &[RunEvent],
+    addresses: &[ReplayAddress],
+    payloads: &[Option<Vec<u8>>],
+) -> Result<(), PrimitiveStoreError> {
+    let (nodes, indices) = path_parts(end);
+    let row = sqlx::query(
+        "SELECT s.step_id,s.status,s.failure_code,s.output_digest,r.status AS run_status, \
+                r.stop_code,r.result_digest \
+         FROM steps s JOIN runs r ON r.tenant_id=s.tenant_id AND r.id=s.run_id \
+         WHERE s.tenant_id=$1 AND s.run_id=$2 AND s.instance_path_nodes=$3 \
+           AND s.instance_path_indices=$4 AND s.node=$5",
+    )
+    .bind(finish.transition.tenant_id().as_uuid())
+    .bind(finish.transition.run_id().as_uuid())
+    .bind(&nodes)
+    .bind(&indices)
+    .bind(end.node().as_str())
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(store_error)?
+    .ok_or(PrimitiveStoreError::DuplicateMismatch)?;
+    let step_id = instance_step_id(version, finish.transition.run_id(), end);
+    if row.get::<Uuid, _>("step_id") != step_id {
+        return Err(PrimitiveStoreError::DuplicateMismatch);
+    }
+    let status = row.get::<String, _>("status");
+    let failure = row.get::<Option<String>, _>("failure_code");
+    let output = row.get::<Option<Vec<u8>>, _>("output_digest");
+    let run_status = row.get::<String, _>("run_status");
+    let stop = row.get::<Option<String>, _>("stop_code");
+    let result = row.get::<Option<Vec<u8>>, _>("result_digest");
+
+    let pre_evaluation_limit = matches!(events, [
+        RunEvent::RunStopRequested { code: Some(code), .. },
+        RunEvent::StepCancelled { node },
+        RunEvent::RunFinished { .. },
+    ] if code == &FailureCode::instance_limit() && node == end.node())
+        && addresses.len() == 3
+        && addresses[0].matches(None, None)
+        && addresses[1].matches(Some(end), Some(step_id))
+        && addresses[2].matches(None, None)
+        && payloads.iter().all(Option::is_none)
+        && finish.end_answer().is_none()
+        && status == "CANCELLED"
+        && run_status == "FAILED"
+        && stop.as_deref() == Some(FailureCode::instance_limit().as_str())
+        && output.is_none()
+        && result.is_none();
+    if pre_evaluation_limit {
+        return Ok(());
+    }
+
+    let expected = match (output_expression, finish.end_answer()) {
+        (None, None) => ReplayEnd::Success(None),
+        (Some(_), Some(EndOutputAnswer::Succeeded(bytes))) => {
+            ReplayEnd::Success(Some(Sha256::digest(bytes).to_vec()))
+        }
+        (Some(_), Some(EndOutputAnswer::ExpressionError)) => {
+            ReplayEnd::Failure(FailureCode::expression_error())
+        }
+        (Some(_), Some(EndOutputAnswer::RunDataLimit)) => {
+            ReplayEnd::Failure(FailureCode::run_data_limit())
+        }
+        _ => return Err(PrimitiveStoreError::DuplicateMismatch),
+    };
+    let matches = match expected {
+        ReplayEnd::Success(digest) => {
+            matches!(events, [RunEvent::EndReached { node }, RunEvent::RunFinished { .. }]
+                if node == end.node())
+                && addresses.len() == 2
+                && addresses[0].matches(Some(end), Some(step_id))
+                && addresses[1].matches(None, None)
+                && payloads.first().and_then(Option::as_ref) == digest.as_ref()
+                && payloads.get(1).is_some_and(Option::is_none)
+                && status == "SUCCEEDED"
+                && run_status == "SUCCEEDED"
+                && output.as_ref() == digest.as_ref()
+                && result.as_ref() == digest.as_ref()
+        }
+        ReplayEnd::Failure(code) => {
+            matches!(events, [
+                RunEvent::StepFailed { node, code: failed, .. },
+                RunEvent::RunStopRequested { code: Some(stopped), .. },
+                RunEvent::RunFinished { .. },
+            ] if node == end.node() && failed == &code && stopped == &code)
+                && addresses.len() == 3
+                && addresses[0].matches(Some(end), Some(step_id))
+                && addresses[1].matches(None, None)
+                && addresses[2].matches(None, None)
+                && payloads.iter().all(Option::is_none)
+                && status == "FAILED"
+                && run_status == "FAILED"
+                && failure.as_deref() == Some(code.as_str())
+                && stop.as_deref() == Some(code.as_str())
+                && output.is_none()
+                && result.is_none()
+        }
+    };
+    if matches {
+        Ok(())
+    } else {
+        Err(PrimitiveStoreError::DuplicateMismatch)
+    }
+}
+
 /// How the run ends when the compensating scope `owner` finishes: the stop of the run, worsened by
 /// how the compensations of the scope ended. The scope's compensation must be over.
 async fn run_status_after_compensation(
@@ -306,6 +642,7 @@ struct LockedDrainRun {
     status: String,
     stop_reason: Option<String>,
     stop_code: Option<String>,
+    paused: bool,
 }
 
 async fn lock_drain_run(
@@ -320,7 +657,7 @@ async fn lock_drain_run(
     )
     .await?;
     let row = sqlx::query(
-        "SELECT namespace_id,workflow_version_id,run_version,status,stop_reason,stop_code \
+        "SELECT namespace_id,workflow_version_id,run_version,status,stop_reason,stop_code,paused \
          FROM runs WHERE tenant_id=$1 AND id=$2 FOR UPDATE",
     )
     .bind(transition.tenant_id().as_uuid())
@@ -343,6 +680,7 @@ async fn lock_drain_run(
         status: row.get("status"),
         stop_reason: row.get("stop_reason"),
         stop_code: row.get("stop_code"),
+        paused: row.get("paused"),
     })
 }
 
@@ -435,6 +773,52 @@ async fn effective_output_snapshot(
         .map_err(PrimitiveStoreError::from)
 }
 
+async fn fresh_collection_aggregate_preflight(
+    store: &PgCollectionStore,
+    conn: &mut PgConnection,
+    finish: &CollectionFinish,
+    locked: LockedRun,
+) -> Result<(usize, Option<collection_outputs::EffectiveOutputBytes>), PrimitiveStoreError> {
+    let bytes = if let Some(content) = finish.result_content() {
+        if !payload_matches(content, finish.result_digest) {
+            return Err(PrimitiveStoreError::InvalidTransition);
+        }
+        content.len()
+    } else {
+        let stored: Option<i64> = sqlx::query_scalar(
+            "SELECT octet_length(content)::bigint FROM payloads WHERE tenant_id=$1 AND digest=$2",
+        )
+        .bind(finish.transition.tenant_id().as_uuid())
+        .bind(finish.result_digest.as_bytes().as_slice())
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(store_error)?;
+        usize::try_from(stored.ok_or(PrimitiveStoreError::InvalidTransition)?)
+            .map_err(|_| invalid_storage("collection aggregate payload length"))?
+    };
+    if bytes > MAX_PAYLOAD_BYTES {
+        return Err(PrimitiveStoreError::InvalidTransition);
+    }
+    if !finish.transition.owner().path().is_root() {
+        return Ok((bytes, None));
+    }
+    let effective = effective_output_snapshot(store, conn, &finish.transition, locked).await?;
+    let charge =
+        u64::try_from(bytes).map_err(|_| invalid_storage("collection aggregate payload length"))?;
+    let limit =
+        u64::try_from(MAX_RUN_OUTPUT_BYTES).map_err(|_| invalid_storage("run output limit"))?;
+    let exceeds = effective
+        .total()
+        .checked_add(charge)
+        .is_none_or(|total| total > limit);
+    if exceeds {
+        return Err(PrimitiveStoreError::Storage(StoreError::QuotaExceeded {
+            what: "output retained by one run",
+        }));
+    }
+    Ok((bytes, Some(effective)))
+}
+
 #[allow(clippy::too_many_lines)]
 async fn validate_data_limit_evidence(
     store: &PgCollectionStore,
@@ -467,7 +851,10 @@ async fn validate_data_limit_evidence(
     .map_err(store_error)?
     .ok_or(PrimitiveStoreError::InvalidTransition)?;
     if owner.get::<String, _>("kind") != "FORWARD"
-        || owner.get::<String, _>("node_kind") != "forEach"
+        || !matches!(
+            owner.get::<String, _>("node_kind").as_str(),
+            "forEach" | "legacyControl"
+        )
         || owner.get::<String, _>("status") != "WAITING"
         || owner.get::<Option<String>, _>("waiting_kind").as_deref() != Some("COLLECTION")
         || owner.get::<Option<Vec<u8>>, _>("output_digest").is_some()
@@ -2862,12 +3249,6 @@ impl CollectionStore for PgCollectionStore {
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         let locked_run = lock_drain_run(&mut tx, &finish.transition).await?;
         check_scheduler_fence(&mut tx, &finish.transition).await?;
-        if !matches!(
-            locked_run.status.as_str(),
-            "RUNNING" | "WAITING" | "SUCCEEDED"
-        ) {
-            return Err(PrimitiveStoreError::InvalidTransition);
-        }
         let run = locked_run.run;
         let _: i32 = sqlx::query_scalar(
             "SELECT active_iterations FROM tenant_iteration_usage \
@@ -2917,20 +3298,30 @@ impl CollectionStore for PgCollectionStore {
             )
             .await?;
         if scope.get::<String, _>("lifecycle") == "SUCCEEDED" {
+            let finish_sequence = scope.get::<Option<i64>, _>("finish_sequence");
             let matches = scope.get::<Option<Vec<u8>>, _>("result_digest")
                 == Some(finish.result_digest.as_bytes().to_vec())
                 && scope.get::<Option<Uuid>, _>("finish_outbox_id") == Some(finish.outbox_id)
-                && scope.get::<Option<i64>, _>("finish_sequence").is_some();
+                && finish_sequence.is_some();
             if !matches {
                 return Err(PrimitiveStoreError::DuplicateMismatch);
             }
+            validate_finish_replay(
+                &mut tx,
+                finish,
+                &definition,
+                run.version_id,
+                u64::try_from(finish_sequence.unwrap_or_default())
+                    .map_err(|_| invalid_storage("finish sequence"))?,
+            )
+            .await?;
             tx.rollback().await.map_err(store_error)?;
             return Ok(PrimitiveWrite {
                 applied: false,
                 run_version: run.run_version,
             });
         }
-        if locked_run.status == "SUCCEEDED" {
+        if locked_run.paused || !matches!(locked_run.status.as_str(), "RUNNING" | "WAITING") {
             return Err(PrimitiveStoreError::InvalidTransition);
         }
 
@@ -2968,13 +3359,47 @@ impl CollectionStore for PgCollectionStore {
         if unsettled != 0 || checkpoint_count != i64::from(item_count) {
             return Err(PrimitiveStoreError::InvalidTransition);
         }
-        let aggregate_content = retain_payload_in_transaction(
-            &mut tx,
-            finish.transition.tenant_id(),
-            finish.result_digest,
-            finish.result_content(),
-        )
-        .await?;
+        let Some(owner_definition) = definition.node_for_instance(finish.transition.owner()) else {
+            return Err(PrimitiveStoreError::InvalidTransition);
+        };
+        let NodeKind::ForEach { result, .. } = owner_definition.kind() else {
+            return Err(PrimitiveStoreError::InvalidTransition);
+        };
+        let successor_node = owner_definition
+            .next()
+            .cloned()
+            .ok_or(PrimitiveStoreError::RuntimeNotIntegrated)?;
+        let successor =
+            ExecutionInstanceId::in_path(finish.transition.owner().path().clone(), successor_node);
+        let (successor_activity, successor_is_end) = match definition
+            .node_for_instance(&successor)
+            .map(sagat_domain::workflow::Node::kind)
+        {
+            Some(NodeKind::Activity { activity, .. }) => (Some(activity.clone()), false),
+            Some(NodeKind::ForEach { .. }) => (None, false),
+            Some(NodeKind::End { .. }) => (None, true),
+            Some(_) => return Err(PrimitiveStoreError::RuntimeNotIntegrated),
+            None => return Err(PrimitiveStoreError::InvalidTransition),
+        };
+        if !successor_is_end && finish.end_answer().is_some() {
+            return Err(PrimitiveStoreError::InvalidTransition);
+        }
+        let (aggregate_bytes, effective_output) =
+            fresh_collection_aggregate_preflight(self, &mut tx, finish, run).await?;
+        let aggregate_content = if successor_is_end
+            && finish.transition.owner().path().is_root()
+            && let Some(content) = finish.result_content()
+        {
+            content.to_vec()
+        } else {
+            retain_payload_in_transaction(
+                &mut tx,
+                finish.transition.tenant_id(),
+                finish.result_digest,
+                finish.result_content(),
+            )
+            .await?
+        };
         let result_rows = sqlx::query(
             "SELECT c.iteration_index, c.result_digest, p.content FROM iteration_checkpoints c \
              JOIN payloads p ON p.tenant_id = c.tenant_id AND p.digest = c.result_digest \
@@ -3001,12 +3426,6 @@ impl CollectionStore for PgCollectionStore {
             .collect::<Result<Vec<Value>, PrimitiveStoreError>>()?;
         let aggregate: Value = serde_json::from_slice(&aggregate_content)
             .map_err(|_| invalid_storage("collection aggregate payload"))?;
-        let Some(owner_definition) = definition.node_for_instance(finish.transition.owner()) else {
-            return Err(PrimitiveStoreError::InvalidTransition);
-        };
-        let NodeKind::ForEach { result, .. } = owner_definition.kind() else {
-            return Err(PrimitiveStoreError::InvalidTransition);
-        };
         if aggregate.as_array().map(Vec::len) != Some(result_rows.len()) {
             return Err(PrimitiveStoreError::InvalidTransition);
         }
@@ -3030,25 +3449,126 @@ impl CollectionStore for PgCollectionStore {
         if result.as_str() == "bodyResult" && aggregate != Value::Array(ordered_results) {
             return Err(PrimitiveStoreError::InvalidTransition);
         }
-        let successor_node = owner_definition
-            .next()
-            .cloned()
-            .ok_or(PrimitiveStoreError::RuntimeNotIntegrated)?;
-        let successor =
-            ExecutionInstanceId::in_path(finish.transition.owner().path().clone(), successor_node);
-        let (successor_activity, successor_is_end) = match definition
-            .node_for_instance(&successor)
-            .map(sagat_domain::workflow::Node::kind)
-        {
-            Some(NodeKind::Activity { activity, .. }) => (Some(activity.clone()), false),
-            Some(NodeKind::ForEach { .. }) => (None, false),
-            Some(NodeKind::End { .. }) => (None, true),
-            Some(_) => return Err(PrimitiveStoreError::RuntimeNotIntegrated),
-            None => return Err(PrimitiveStoreError::InvalidTransition),
-        };
+        if successor_is_end && finish.transition.owner().path().is_root() {
+            let run_store = PgRunStore::new(
+                self.pool.clone(),
+                self.definitions
+                    .clone()
+                    .ok_or(PrimitiveStoreError::RuntimeNotIntegrated)?,
+            );
+            let mut run_tx = run_store
+                .begin_in_transaction(
+                    tx,
+                    finish.transition.tenant_id(),
+                    finish.transition.run_id(),
+                    Lock::Wait,
+                    None,
+                )
+                .await?
+                .ok_or(PrimitiveStoreError::Missing)?;
+            let finish_sequence = run_tx.parts().1.version() + 1;
+            let finished = RunEvent::CollectionFinished {
+                node: finish.transition.owner().node().clone(),
+                outcome: CollectionOutcome::Succeeded,
+                result_digest: Some(finish.result_digest),
+            };
+            run_tx
+                .parts()
+                .1
+                .apply(&finished)
+                .map_err(|_| PrimitiveStoreError::InvalidTransition)?;
+            let now = run_tx.now();
+            let mut progress = {
+                let (definition, state) = run_tx.parts();
+                sagat_domain::execution::release_pending(definition, state, now)
+                    .map_err(|_| PrimitiveStoreError::InvalidTransition)?
+            };
+            if !matches!(
+                progress.events.first(),
+                Some(RunEvent::StepRouted { node, activated })
+                    if node == finish.transition.owner().node()
+                        && activated == std::slice::from_ref(successor.node())
+            ) {
+                return Err(PrimitiveStoreError::InvalidTransition);
+            }
+            let mut events = vec![finished];
+            events.append(&mut progress.events);
+            let mut effects = Effects::by(
+                Actor::System("engine"),
+                finish.transition.trace_id().map(str::to_owned),
+            );
+            effects.outputs.push((
+                finish.transition.owner().node().clone(),
+                aggregate_content.clone(),
+            ));
+            effects.audit = finish.transition.audit().cloned();
+            match progress.pending.take() {
+                Some(Evaluation::Output { node, .. }) if node == *successor.node() => {
+                    let (outcome, output) = match finish.end_answer() {
+                        Some(EndOutputAnswer::Succeeded(bytes)) => (Ok(()), Some(bytes.clone())),
+                        Some(EndOutputAnswer::ExpressionError) => {
+                            (Err(FailureCode::expression_error()), None)
+                        }
+                        Some(EndOutputAnswer::RunDataLimit) => {
+                            (Err(FailureCode::run_data_limit()), None)
+                        }
+                        None => return Err(PrimitiveStoreError::InvalidTransition),
+                    };
+                    if let Some(output) = output {
+                        effects.outputs.push((node.clone(), output));
+                    }
+                    let now = run_tx.now();
+                    progress = {
+                        let (definition, state) = run_tx.parts();
+                        sagat_domain::execution::resolve(
+                            definition,
+                            state,
+                            Resolution::Output { node, outcome },
+                            now,
+                        )
+                        .map_err(|_| PrimitiveStoreError::InvalidTransition)?
+                    };
+                    events.append(&mut progress.events);
+                    if progress.pending.is_some() {
+                        return Err(PrimitiveStoreError::InvalidTransition);
+                    }
+                }
+                None if finish.end_answer().is_none() => {}
+                Some(_) | None => return Err(PrimitiveStoreError::InvalidTransition),
+            }
+            run_tx.persist(&events, effects).await?;
+            run_tx
+                .project_collection_finish(finish, finish_sequence)
+                .await?;
+            let final_version = run_tx.parts().1.version();
+            run_tx.commit().await?;
+            return Ok(PrimitiveWrite {
+                applied: true,
+                run_version: final_version,
+            });
+        }
+        let owner_output = finish
+            .transition
+            .owner()
+            .path()
+            .is_root()
+            .then_some(finish.result_digest.as_bytes().as_slice());
+        if owner_output.is_some() {
+            crate::execution::charge_collection_owner_output(
+                &mut tx,
+                finish.transition.tenant_id(),
+                finish.transition.run_id(),
+                finish.transition.owner(),
+                effective_output
+                    .as_ref()
+                    .ok_or_else(|| invalid_storage("root collection output snapshot"))?,
+                aggregate_bytes,
+            )
+            .await?;
+        }
         let owner_finished = sqlx::query(
             "UPDATE steps SET status = 'SUCCEEDED', waiting_kind = NULL, routed = true, \
-                    updated_at = $6 \
+                    updated_at = $6, output_digest = COALESCE($7, output_digest) \
              WHERE tenant_id = $1 AND run_id = $2 AND instance_path_nodes = $3 \
                AND instance_path_indices = $4 AND node = $5 \
                AND status = 'WAITING' AND waiting_kind = 'COLLECTION' AND NOT routed",
@@ -3059,6 +3579,7 @@ impl CollectionStore for PgCollectionStore {
         .bind(&owner_indices)
         .bind(finish.transition.owner().node().as_str())
         .bind(finish.transition.occurred_at())
+        .bind(owner_output)
         .execute(&mut *tx)
         .await
         .map_err(store_error)?;

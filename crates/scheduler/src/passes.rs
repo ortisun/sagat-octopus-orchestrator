@@ -35,10 +35,10 @@ use sagat_application::maintenance::{
     Window,
 };
 use sagat_application::primitives::{
-    CollectionAdmission, CollectionCheckpoint, CollectionDrain, CollectionDrainFinish,
-    CollectionEntry, CollectionFinish, CollectionIterationDrain, CollectionLimits,
-    CollectionScopeId, CollectionStore, CollectionTransition, PrimitiveInputError,
-    PrimitiveStoreError, SchedulerAuthority,
+    CollectionAdmission, CollectionCheckpoint, CollectionDataLimitEvidence, CollectionDrain,
+    CollectionDrainFinish, CollectionEntry, CollectionFinish, CollectionIterationDrain,
+    CollectionLimits, CollectionScopeId, CollectionStore, CollectionTransition,
+    PrimitiveInputError, PrimitiveStoreError, SchedulerAuthority,
 };
 use sagat_application::quotas::RunLimits;
 use sagat_application::runs::{Lock, NewRun, RunStore};
@@ -49,9 +49,9 @@ use sagat_application::shards::Lease;
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::execution::RunId;
 use sagat_domain::execution::{
-    self, AddressedProgress, ChildOutcome, ExecutionError, ExecutionInstanceId, Expiry,
-    FailureCode, LoopContinuation, LoopKind, LoopPhase, PathExecutionState, Progress, RunStatus,
-    StopReason,
+    self, AddressedProgress, ChildOutcome, CollectionOutcome, ExecutionError, ExecutionInstanceId,
+    Expiry, FailureCode, LoopContinuation, LoopKind, LoopPhase, PathExecutionState, Progress,
+    RunEvent, RunStatus, StopReason,
 };
 use sagat_domain::identity::{NamespaceId, Subject, TenantId};
 use sagat_domain::sharding::{Shard, ShardSet};
@@ -346,9 +346,8 @@ impl Condition<'_> {
                     }))
             }
             Self::RetainedFits { bytes } => {
-                let retained: usize = tx.data().await?.outputs.values().map(Vec::len).sum();
-                Ok(retained.saturating_add(*bytes)
-                    <= sagat_application::execution::MAX_RUN_OUTPUT_BYTES)
+                let retained = tx.logical_output_bytes().await?;
+                Ok(!output_increment_exceeds_limit(retained, *bytes))
             }
         }
     }
@@ -397,6 +396,25 @@ fn content_store_quota(error: &StoreError) -> bool {
 
 fn collection_content_quota(error: &PrimitiveStoreError) -> bool {
     matches!(error, PrimitiveStoreError::Storage(error) if content_store_quota(error))
+}
+
+fn retained_outputs_exceed_limit(retained: u64) -> bool {
+    let Ok(limit) = u64::try_from(MAX_RUN_OUTPUT_BYTES) else {
+        return true;
+    };
+    retained > limit
+}
+
+fn output_increment_exceeds_limit(retained: u64, additional: usize) -> bool {
+    let Ok(additional) = u64::try_from(additional) else {
+        return true;
+    };
+    let Ok(limit) = u64::try_from(MAX_RUN_OUTPUT_BYTES) else {
+        return true;
+    };
+    retained
+        .checked_add(additional)
+        .is_none_or(|total| total > limit)
 }
 
 fn loop_content_quota(error: &LoopProgressError) -> bool {
@@ -1008,11 +1026,9 @@ where
             .ok_or(CollectionAdvanceError::MissingRun)?;
         let info = tx.info().clone();
         let occurred_at = tx.now();
-        let mut data = tx.data().await?.clone();
         let (definition, state) = tx.parts();
         let definition = definition.clone();
         let state = state.clone();
-        drop(tx);
 
         let collection_node = definition
             .node_for_instance(owner)
@@ -1048,6 +1064,23 @@ where
         let transition = |expected_run_version| audited(expected_run_version, None);
 
         let Some(collection) = state.collection(owner) else {
+            let effective_output_bytes = tx.logical_output_bytes().await?;
+            if retained_outputs_exceed_limit(effective_output_bytes) {
+                let version = state.version();
+                drop(tx);
+                return self
+                    .stop_collection_for_limit(
+                        view,
+                        &hold,
+                        tenant,
+                        run,
+                        version,
+                        FailureCode::run_data_limit(),
+                    )
+                    .await;
+            }
+            let data = tx.data().await?.clone();
+            drop(tx);
             let limits = CollectionLimits::new(
                 *max_items,
                 *max_concurrency,
@@ -1244,156 +1277,153 @@ where
                 | execution::CollectionPhase::Failed
                 | execution::CollectionPhase::Cancelled
         ) {
+            drop(tx);
             return Ok(CollectionAdvance::AlreadyFinished);
         }
-        if collection.phase() == execution::CollectionPhase::Open {
-            let reason = if state.stop_reason() == Some(StopReason::Cancelled) {
-                Some(execution::CollectionDrainReason::Cancelled)
-            } else {
-                // One pass over the run's instances finds every failed step with a code, by the
-                // path of its iteration (the first in instance order, as a scan per iteration
-                // would); looking each active iteration up in it keeps a transition linear in the
-                // size of the run instead of quadratic in the iterations it has admitted.
-                let mut failed: std::collections::HashMap<
-                    &sagat_domain::execution::InstancePath,
-                    &FailureCode,
-                > = std::collections::HashMap::new();
-                for (instance, step) in state.instances() {
-                    if step.status() == execution::StepStatus::Failed
-                        && let Some(code) = step.failure()
-                    {
-                        failed.entry(instance.path()).or_insert(code);
-                    }
-                }
-                collection.active_iterations().find_map(|index| {
-                    let path = collection.entry_instance(index)?.path();
-                    failed
-                        .get(path)
-                        .map(|code| execution::CollectionDrainReason::Failed {
-                            iteration: index,
-                            code: (*code).clone(),
-                        })
-                })
-            };
-            if let Some(reason) = reason {
-                self.store
-                    .start_collection_drain(&CollectionDrain::new(
-                        transition(state.version()),
-                        self.store
-                            .collection_scope(tenant, run, owner)
-                            .await?
-                            .ok_or(CollectionAdvanceError::InvalidProgress)?
-                            .scope_id,
-                        reason,
-                        uuid::Uuid::now_v7(),
-                    ))
-                    .await?;
-                return Ok(CollectionAdvance::DrainStarted);
+        if collection.phase() == execution::CollectionPhase::Draining {
+            let transition = transition(state.version());
+            drop(tx);
+            return self
+                .advance_draining_collection_from_run(
+                    view,
+                    tenant,
+                    run,
+                    owner,
+                    transition,
+                    &definition,
+                    &state,
+                    collection,
+                )
+                .await;
+        }
+        if collection.phase() != execution::CollectionPhase::Open {
+            return Err(CollectionAdvanceError::InvalidProgress);
+        }
+
+        // Find the first failed active member once. A durable Run stop is considered before this
+        // failure and may only reuse it when the stored code is the same.
+        let mut failed: std::collections::HashMap<
+            &sagat_domain::execution::InstancePath,
+            &FailureCode,
+        > = std::collections::HashMap::new();
+        for (instance, step) in state.instances() {
+            if step.status() == execution::StepStatus::Failed
+                && let Some(code) = step.failure()
+            {
+                failed.entry(instance.path()).or_insert(code);
             }
-        } else if collection.phase() == execution::CollectionPhase::Draining {
-            let progress = self
+        }
+        let active_failure = collection.active_iterations().find_map(|index| {
+            let path = collection.entry_instance(index)?.path();
+            failed.get(path).map(|code| (index, (*code).clone()))
+        });
+
+        if state.stop_reason() == Some(StopReason::Cancelled) {
+            let version = state.version();
+            drop(tx);
+            let scope_id = self
                 .store
                 .collection_scope(tenant, run, owner)
                 .await?
-                .ok_or(CollectionAdvanceError::InvalidProgress)?;
-            if let Some(index) = collection.active_iterations().next() {
-                let path = collection
-                    .entry_instance(index)
-                    .ok_or(CollectionAdvanceError::InvalidProgress)?
-                    .path();
-                let safe = state
-                    .instances()
-                    .filter(|(instance, _)| instance.path() == path)
-                    .all(|(instance, step)| {
-                        let settled_derived = instance.node().is_derived()
-                            && matches!(
-                                step.status(),
-                                execution::StepStatus::Succeeded | execution::StepStatus::Skipped
-                            );
-                        // Nothing is in flight: a step that has not started, or that waits to
-                        // retry (or is ready to) in a run that is stopping and cannot lease it.
-                        let safe_unstarted = (step.attempt() == 0
-                            && matches!(
-                                step.status(),
-                                execution::StepStatus::Pending | execution::StepStatus::Ready
-                            ))
-                            || matches!(
-                                step.status(),
-                                execution::StepStatus::Ready | execution::StepStatus::RetryWait
-                            );
-                        step.status().is_terminal() && !instance.node().is_derived()
-                            || settled_derived
-                            || safe_unstarted
-                    });
-                if !safe {
-                    return Ok(CollectionAdvance::Waiting);
-                }
-                self.store
-                    .drain_collection_iteration(&CollectionIterationDrain::new(
-                        transition(state.version()),
-                        progress.scope_id,
-                        index,
-                        uuid::Uuid::now_v7(),
-                    ))
-                    .await?;
-                return Ok(CollectionAdvance::Drained { index });
-            }
-            if state.instances().any(|(instance, step)| {
-                instance != owner && instance.path().is_root() && !step.status().is_terminal()
-            }) {
-                return Ok(CollectionAdvance::Waiting);
-            }
-            // A scope that can be compensated undoes what its iterations completed before it ends
-            // (D380): the pure planner says what is next, and the commit is the scheduler's own,
-            // under its fence, like every other transition of the run.
-            if definition.scope_compensates(owner) {
-                let finished = state
-                    .scope_saga(owner)
-                    .is_some_and(|saga| saga.phase() == execution::SagaPhase::Done);
-                if !finished {
-                    if !matches!(
-                        execution::plan_scope_compensation(&definition, &state)?,
-                        execution::AddressedPlan::Emit(_)
-                    ) {
-                        return Ok(CollectionAdvance::Waiting);
-                    }
-                    return match self
-                        .apply_addressed(
-                            view,
-                            tenant,
-                            run,
-                            "scope_compensation",
-                            self.effects(),
-                            |def, state, _| {
-                                Ok(((), execution::advance_scope_compensation(def, state)?))
-                            },
-                        )
-                        .await
-                    {
-                        Outcome::Done => Ok(CollectionAdvance::Compensated),
-                        Outcome::Skipped | Outcome::DoesNotFit => Ok(CollectionAdvance::Waiting),
-                        Outcome::Fenced => Err(CollectionAdvanceError::FenceUnavailable),
-                        Outcome::Failed | Outcome::QuotaStopped => {
-                            Err(CollectionAdvanceError::Engine(EngineError::Store(
-                                StoreError::Internal {
-                                    detail: "scope compensation could not be committed".to_owned(),
-                                },
-                            )))
-                        }
-                    };
-                }
-            }
+                .ok_or(CollectionAdvanceError::InvalidProgress)?
+                .scope_id;
             self.store
-                .finish_collection_drain(&CollectionDrainFinish::new(
-                    transition(state.version()),
-                    progress.scope_id,
+                .start_collection_drain(&CollectionDrain::new(
+                    transition(version),
+                    scope_id,
+                    execution::CollectionDrainReason::Cancelled,
                     uuid::Uuid::now_v7(),
                 ))
                 .await?;
-            return Ok(CollectionAdvance::DrainFinished);
-        } else {
-            return Err(CollectionAdvanceError::InvalidProgress);
+            return Ok(CollectionAdvance::DrainStarted);
         }
+        if state.stop_reason() == Some(StopReason::Failed)
+            && state
+                .stop_code()
+                .is_some_and(|code| code == &FailureCode::run_data_limit())
+        {
+            let version = state.version();
+            drop(tx);
+            let scope_id = self
+                .store
+                .collection_scope(tenant, run, owner)
+                .await?
+                .ok_or(CollectionAdvanceError::InvalidProgress)?
+                .scope_id;
+            return self
+                .drain_collection_for_data_limit(
+                    transition(version),
+                    scope_id,
+                    CollectionDataLimitEvidence::stopped_for_run_data_limit(),
+                )
+                .await;
+        }
+        if state.stop_reason().is_some() {
+            if state.stop_reason() != Some(StopReason::Failed) {
+                drop(tx);
+                return Err(CollectionAdvanceError::InvalidProgress);
+            }
+            let Some((index, code)) = active_failure
+                .as_ref()
+                .filter(|(_, code)| state.stop_code() == Some(code))
+            else {
+                drop(tx);
+                return Err(CollectionAdvanceError::InvalidProgress);
+            };
+            let version = state.version();
+            let index = *index;
+            let code = code.clone();
+            drop(tx);
+            let scope_id = self
+                .store
+                .collection_scope(tenant, run, owner)
+                .await?
+                .ok_or(CollectionAdvanceError::InvalidProgress)?
+                .scope_id;
+            return self
+                .fail_collection_iteration(transition(version), scope_id, index, code)
+                .await;
+        }
+        if let Some((index, code)) = active_failure {
+            let version = state.version();
+            drop(tx);
+            let scope_id = self
+                .store
+                .collection_scope(tenant, run, owner)
+                .await?
+                .ok_or(CollectionAdvanceError::InvalidProgress)?
+                .scope_id;
+            return self
+                .fail_collection_iteration(transition(version), scope_id, index, code)
+                .await;
+        }
+
+        let effective_output_bytes = tx.logical_output_bytes().await?;
+        if retained_outputs_exceed_limit(effective_output_bytes) {
+            let version = state.version();
+            drop(tx);
+            let scope_id = self
+                .store
+                .collection_scope(tenant, run, owner)
+                .await?
+                .ok_or(CollectionAdvanceError::InvalidProgress)?
+                .scope_id;
+            return self
+                .drain_collection_for_data_limit(
+                    transition(version),
+                    scope_id,
+                    CollectionDataLimitEvidence::existing_outputs(),
+                )
+                .await;
+        }
+        let terminal_ready = collection.next_admission() == collection.item_count()
+            && collection.active_count() == 0;
+        if terminal_ready && state.is_paused() {
+            drop(tx);
+            return Ok(CollectionAdvance::Waiting);
+        }
+        let mut data = tx.data().await?.clone();
+        drop(tx);
         // Only the identity of the scope is read for every transition; the content of one item is
         // read to admit it and the content of all of them only to produce the aggregate, so a large
         // collection does not pay for its whole membership at each step.
@@ -1480,6 +1510,7 @@ where
                 self.aggregate_refusal(
                     result,
                     &data,
+                    effective_output_bytes,
                     &everything.items,
                     collection
                         .ordered_results()
@@ -1526,8 +1557,7 @@ where
                 .await;
         }
 
-        if collection.next_admission() == collection.item_count() && collection.active_count() == 0
-        {
+        if terminal_ready {
             let progress = self
                 .store
                 .collection_progress(tenant, run, owner)
@@ -1581,13 +1611,71 @@ where
             }
             let aggregate =
                 serde_json::to_vec(&mapped).map_err(|_| CollectionAdvanceError::Expression)?;
-            let finish = CollectionFinish::from_evaluated_result(
+            if aggregate.len() > MAX_PAYLOAD_BYTES
+                || output_increment_exceeds_limit(effective_output_bytes, aggregate.len())
+            {
+                let evidence =
+                    CollectionDataLimitEvidence::aggregate(&aggregate, &progress.results)?;
+                return self
+                    .drain_collection_for_data_limit(
+                        transition(state.version()),
+                        progress.scope_id,
+                        evidence,
+                    )
+                    .await;
+            }
+            let mut finish = CollectionFinish::from_evaluated_result(
                 transition(state.version()),
                 progress.scope_id,
-                aggregate,
+                aggregate.clone(),
                 &progress.results,
                 uuid::Uuid::now_v7(),
             );
+            if owner.path().is_root() {
+                let successor = collection_node
+                    .next()
+                    .cloned()
+                    .ok_or(CollectionAdvanceError::InvalidProgress)?;
+                let successor = ExecutionInstanceId::root(successor);
+                if matches!(
+                    definition
+                        .node_for_instance(&successor)
+                        .map(|node| node.kind()),
+                    Some(NodeKind::End { .. })
+                ) {
+                    let finished = RunEvent::CollectionFinished {
+                        node: owner.node().clone(),
+                        outcome: CollectionOutcome::Succeeded,
+                        result_digest: Some(finish.result_digest),
+                    };
+                    let mut prepared = state.clone();
+                    prepared.apply(&finished)?;
+                    data.insert_output(owner.clone(), aggregate);
+                    let reduction =
+                        execution::release_pending(&definition, &mut prepared, occurred_at)?;
+                    if !matches!(
+                        reduction.events.first(),
+                        Some(RunEvent::StepRouted { node, activated })
+                            if node == owner.node()
+                                && activated == std::slice::from_ref(successor.node())
+                    ) {
+                        return Err(CollectionAdvanceError::InvalidProgress);
+                    }
+                    match reduction.pending {
+                        Some(execution::Evaluation::Output { node, expression })
+                            if node == *successor.node() =>
+                        {
+                            finish = finish.with_end_answer(self.engine.evaluate_run_result(
+                                &node,
+                                &expression,
+                                &data,
+                            ));
+                        }
+                        None => {}
+                        Some(_) => return Err(CollectionAdvanceError::InvalidProgress),
+                    }
+                }
+            }
             match self.store.finish_collection(&finish).await {
                 Ok(_) => {}
                 Err(error) if collection_content_quota(&error) => {
@@ -1604,6 +1692,122 @@ where
         }
 
         Ok(CollectionAdvance::Waiting)
+    }
+
+    /// Continues an already-entered drain without loading the Run's retained output bodies.
+    #[allow(clippy::too_many_arguments)]
+    async fn advance_draining_collection_from_run(
+        &self,
+        view: &View,
+        tenant: TenantId,
+        run: RunId,
+        owner: &ExecutionInstanceId,
+        transition: CollectionTransition,
+        definition: &WorkflowDefinition,
+        state: &execution::RunState,
+        collection: &execution::CollectionState,
+    ) -> Result<CollectionAdvance, CollectionAdvanceError>
+    where
+        S: CollectionStore,
+    {
+        let progress = self
+            .store
+            .collection_scope(tenant, run, owner)
+            .await?
+            .ok_or(CollectionAdvanceError::InvalidProgress)?;
+        if let Some(index) = collection.active_iterations().next() {
+            let path = collection
+                .entry_instance(index)
+                .ok_or(CollectionAdvanceError::InvalidProgress)?
+                .path();
+            let safe = state
+                .instances()
+                .filter(|(instance, _)| instance.path() == path)
+                .all(|(instance, step)| {
+                    let settled_derived = instance.node().is_derived()
+                        && matches!(
+                            step.status(),
+                            execution::StepStatus::Succeeded | execution::StepStatus::Skipped
+                        );
+                    // Nothing is in flight: a step that has not started, or that waits to retry (or
+                    // is ready to) in a run that is stopping and cannot lease it.
+                    let safe_unstarted = (step.attempt() == 0
+                        && matches!(
+                            step.status(),
+                            execution::StepStatus::Pending | execution::StepStatus::Ready
+                        ))
+                        || matches!(
+                            step.status(),
+                            execution::StepStatus::Ready | execution::StepStatus::RetryWait
+                        );
+                    step.status().is_terminal() && !instance.node().is_derived()
+                        || settled_derived
+                        || safe_unstarted
+                });
+            if !safe {
+                return Ok(CollectionAdvance::Waiting);
+            }
+            self.store
+                .drain_collection_iteration(&CollectionIterationDrain::new(
+                    transition,
+                    progress.scope_id,
+                    index,
+                    uuid::Uuid::now_v7(),
+                ))
+                .await?;
+            return Ok(CollectionAdvance::Drained { index });
+        }
+        if state.instances().any(|(instance, step)| {
+            instance != owner && instance.path().is_root() && !step.status().is_terminal()
+        }) {
+            return Ok(CollectionAdvance::Waiting);
+        }
+        // A scope that can be compensated undoes what its iterations completed before it ends
+        // (D380): the pure planner says what is next, and the commit is the scheduler's own, under
+        // its fence, like every other transition of the run.
+        if definition.scope_compensates(owner) {
+            let finished = state
+                .scope_saga(owner)
+                .is_some_and(|saga| saga.phase() == execution::SagaPhase::Done);
+            if !finished {
+                if !matches!(
+                    execution::plan_scope_compensation(definition, state)?,
+                    execution::AddressedPlan::Emit(_)
+                ) {
+                    return Ok(CollectionAdvance::Waiting);
+                }
+                return match self
+                    .apply_addressed(
+                        view,
+                        tenant,
+                        run,
+                        "scope_compensation",
+                        self.effects(),
+                        |def, state, _| {
+                            Ok(((), execution::advance_scope_compensation(def, state)?))
+                        },
+                    )
+                    .await
+                {
+                    Outcome::Done => Ok(CollectionAdvance::Compensated),
+                    Outcome::Skipped | Outcome::DoesNotFit => Ok(CollectionAdvance::Waiting),
+                    Outcome::Fenced => Err(CollectionAdvanceError::FenceUnavailable),
+                    Outcome::Failed | Outcome::QuotaStopped => Err(CollectionAdvanceError::Engine(
+                        EngineError::Store(StoreError::Internal {
+                            detail: "scope compensation could not be committed".to_owned(),
+                        }),
+                    )),
+                };
+            }
+        }
+        self.store
+            .finish_collection_drain(&CollectionDrainFinish::new(
+                transition,
+                progress.scope_id,
+                uuid::Uuid::now_v7(),
+            ))
+            .await?;
+        Ok(CollectionAdvance::DrainFinished)
     }
 
     /// Decides one collection transition from the scope's frontier (G461, D520). When the frontier
@@ -1682,29 +1886,66 @@ where
                 return Ok(Some(CollectionAdvance::AlreadyFinished));
             }
             execution::CollectionPhase::Open => {
-                let reason = if frontier.run.stop_reason == Some(StopReason::Cancelled) {
-                    Some(execution::CollectionDrainReason::Cancelled)
-                } else {
-                    // The first active iteration (in index order) with a failed step.
-                    frontier.active.iter().find_map(|member| {
-                        member.first_failure().map(|code| {
-                            execution::CollectionDrainReason::Failed {
-                                iteration: member.index,
-                                code: code.clone(),
-                            }
-                        })
-                    })
-                };
-                if let Some(reason) = reason {
+                let active_failure = frontier
+                    .active
+                    .iter()
+                    .find_map(|member| member.first_failure().map(|code| (member.index, code)));
+                if frontier.run.stop_reason == Some(StopReason::Cancelled) {
                     self.store
                         .start_collection_drain(&CollectionDrain::new(
                             transition(),
                             scope_id,
-                            reason,
+                            execution::CollectionDrainReason::Cancelled,
                             uuid::Uuid::now_v7(),
                         ))
                         .await?;
                     return Ok(Some(CollectionAdvance::DrainStarted));
+                }
+                if frontier.run.stop_reason == Some(StopReason::Failed)
+                    && frontier
+                        .run
+                        .stop_code
+                        .as_ref()
+                        .is_some_and(|code| code == &FailureCode::run_data_limit())
+                {
+                    return self
+                        .drain_collection_for_data_limit(
+                            transition(),
+                            scope_id,
+                            CollectionDataLimitEvidence::stopped_for_run_data_limit(),
+                        )
+                        .await
+                        .map(Some);
+                }
+                if frontier.run.stop_reason.is_some() {
+                    if frontier.run.stop_reason != Some(StopReason::Failed) {
+                        return Err(CollectionAdvanceError::InvalidProgress);
+                    }
+                    let Some((index, code)) = active_failure
+                        .filter(|(_, code)| frontier.run.stop_code.as_ref() == Some(*code))
+                    else {
+                        return Err(CollectionAdvanceError::InvalidProgress);
+                    };
+                    return self
+                        .fail_collection_iteration(transition(), scope_id, index, code.clone())
+                        .await
+                        .map(Some);
+                }
+                if let Some((index, code)) = active_failure {
+                    return self
+                        .fail_collection_iteration(transition(), scope_id, index, code.clone())
+                        .await
+                        .map(Some);
+                }
+                if retained_outputs_exceed_limit(frontier.run.effective_output_bytes) {
+                    return self
+                        .drain_collection_for_data_limit(
+                            transition(),
+                            scope_id,
+                            CollectionDataLimitEvidence::existing_outputs(),
+                        )
+                        .await
+                        .map(Some);
                 }
             }
             execution::CollectionPhase::Draining => {
@@ -1946,6 +2187,42 @@ where
         Ok(CollectionAdvance::DrainStarted)
     }
 
+    /// Starts the closed native data-limit drain and counts only its first committed write.
+    async fn drain_collection_for_data_limit(
+        &self,
+        transition: CollectionTransition,
+        scope_id: CollectionScopeId,
+        evidence: CollectionDataLimitEvidence,
+    ) -> Result<CollectionAdvance, CollectionAdvanceError> {
+        let audit = AuditRecord::engine(
+            transition.tenant_id(),
+            AuditAction::RunDataLimitExceeded,
+            ResourceType::Run,
+            transition.run_id().to_string(),
+            evidence.required_audit_reason().as_str(),
+            transition.trace_id().map(str::to_owned),
+            transition.occurred_at(),
+        );
+        let drain = CollectionDrain::for_data_limit(
+            transition.with_audit(audit),
+            scope_id,
+            evidence,
+            uuid::Uuid::now_v7(),
+        )?;
+        let write = self.store.start_collection_drain(&drain).await?;
+        if write.applied
+            && let Some(rejection) = WorkflowPrimitiveRejectionCode::from_reason("RUN_DATA_LIMIT")
+        {
+            metrics::counter!(
+                WorkflowPrimitiveMetric::Rejections.as_str(),
+                "kind" => WorkflowPrimitiveKind::Collection.as_str(),
+                "code" => rejection.as_str(),
+            )
+            .increment(1);
+        }
+        Ok(CollectionAdvance::DrainStarted)
+    }
+
     /// Why the aggregate the collection would store, given the results so far and the one being
     /// checkpointed, must not be stored: it cannot be computed (an expression error), it is over
     /// the 256 KiB value ceiling, or it would push the run's retained outputs past 4 MiB (both
@@ -1954,6 +2231,7 @@ where
         &self,
         result: &sagat_domain::workflow::Expression,
         data: &sagat_application::execution::RunData,
+        effective_output_bytes: u64,
         items: &[Vec<u8>],
         stored: impl Iterator<Item = (u32, &'a ExecutionInstanceId, &'a [u8])>,
         current: (u32, &'a ExecutionInstanceId, &'a [u8]),
@@ -1997,10 +2275,9 @@ where
         let Ok(aggregate) = serde_json::to_vec(&mapped) else {
             return Some(FailureCode::expression_error());
         };
-        let retained: usize = data.outputs.values().map(Vec::len).sum();
         (aggregate.len() > MAX_PAYLOAD_BYTES
-            || retained.saturating_add(aggregate.len()) > MAX_RUN_OUTPUT_BYTES)
-            .then(FailureCode::run_data_limit)
+            || output_increment_exceeds_limit(effective_output_bytes, aggregate.len()))
+        .then(FailureCode::run_data_limit)
     }
 
     /// Stops the run before its collection starts because a declared hard budget does not allow

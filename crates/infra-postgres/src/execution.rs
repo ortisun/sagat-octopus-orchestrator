@@ -29,6 +29,7 @@ use sagat_application::execution::{
     PathExecutionSnapshot, PathExecutionStore, PathExecutionTx, RunData, RunInfo, RunRecord,
     RunSegment, RunTx, ScopeInput, compensation_id, instance_compensation_id, instance_step_id,
 };
+use sagat_application::primitives::CollectionFinish;
 use sagat_application::runs::{
     ApprovalView, ChainView, GraphSnapshot, JournalEntry, Lock, NewRun, RunFilter, RunStore,
     SagaView, StepView,
@@ -3130,6 +3131,115 @@ impl PgRunTx {
         }
         Ok(())
     }
+
+    /// Closes the collection projection and records its one notification inside this Run
+    /// transaction. The caller persists the matching `CollectionFinished` event before commit.
+    pub(crate) async fn project_collection_finish(
+        &mut self,
+        finish: &CollectionFinish,
+        finish_sequence: u64,
+    ) -> Result<(), StoreError> {
+        let updated = sqlx::query(
+            "UPDATE iteration_scopes SET lifecycle='SUCCEEDED',result_digest=$4, \
+                    finish_sequence=$5,finish_outbox_id=$6,updated_at=$7 \
+             WHERE tenant_id=$1 AND run_id=$2 AND scope_id=$3 AND lifecycle='OPEN'",
+        )
+        .bind(finish.transition.tenant_id().as_uuid())
+        .bind(finish.transition.run_id().as_uuid())
+        .bind(finish.scope_id.as_uuid())
+        .bind(finish.result_digest.as_bytes().as_slice())
+        .bind(i64::try_from(finish_sequence).map_err(|_| corrupt("journal sequence"))?)
+        .bind(finish.outbox_id)
+        .bind(self.now)
+        .execute(&mut *self.tx)
+        .await
+        .map_err(store_error)?;
+        if updated.rows_affected() != 1 {
+            return Err(StoreError::Internal {
+                detail: "the collection projection changed while its Run was locked".into(),
+            });
+        }
+        sqlx::query(
+            "INSERT INTO event_outbox \
+             (id,tenant_id,aggregate_id,event_type,routing_key,payload) \
+             VALUES ($1,$2,$3,'collection.finished',$4,$5)",
+        )
+        .bind(finish.outbox_id)
+        .bind(finish.transition.tenant_id().as_uuid())
+        .bind(finish.transition.run_id().as_uuid())
+        .bind(finish.transition.owner().node().as_str())
+        .bind(serde_json::json!({
+            "tenantId": finish.transition.tenant_id().to_string(),
+            "namespaceId": finish.transition.namespace_id().to_string(),
+            "runId": finish.transition.run_id().to_string(),
+            "scopeId": finish.scope_id.as_uuid().to_string(),
+            "status": "SUCCEEDED",
+            "traceId": finish.transition.trace_id(),
+        }))
+        .execute(&mut *self.tx)
+        .await
+        .map_err(store_error)?;
+        Ok(())
+    }
+}
+
+/// Charges the aggregate retained by a successful root collection whose non-End successor keeps
+/// using the dedicated collection route. End successors use ordinary `PgRunTx::persist` charging.
+pub(crate) async fn charge_collection_owner_output(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: TenantId,
+    run: RunId,
+    owner: &ExecutionInstanceId,
+    effective: &collection_outputs::EffectiveOutputBytes,
+    bytes: usize,
+) -> Result<(), StoreError> {
+    let (path_nodes, path_indices) = stored_path_parts(owner.path());
+    let retained: Option<bool> = sqlx::query_scalar(
+        "SELECT output_digest IS NOT NULL FROM steps \
+         WHERE tenant_id=$1 AND run_id=$2 AND instance_path_nodes=$3 \
+           AND instance_path_indices=$4 AND node=$5 FOR UPDATE",
+    )
+    .bind(tenant.as_uuid())
+    .bind(run.as_uuid())
+    .bind(path_nodes)
+    .bind(path_indices)
+    .bind(owner.node().as_str())
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(store_error)?;
+    if retained != Some(false) {
+        return Err(corrupt("collection owner output projection"));
+    }
+    let charge = u64::try_from(bytes).map_err(|_| corrupt("output bytes"))?;
+    let after = effective
+        .total()
+        .checked_add(charge)
+        .ok_or_else(|| corrupt("effective output byte total"))?;
+    if after > u64::try_from(MAX_RUN_OUTPUT_BYTES).map_err(|_| corrupt("run output limit"))? {
+        return Err(StoreError::QuotaExceeded {
+            what: "output retained by one run",
+        });
+    }
+    let updated = sqlx::query(
+        "UPDATE run_instance_usage \
+         SET logical_output_bytes=logical_output_bytes+$4 \
+         WHERE tenant_id=$1 AND run_id=$2 \
+           AND logical_output_bytes=$3 \
+           AND logical_output_bytes+$4+$5 <= $6",
+    )
+    .bind(tenant.as_uuid())
+    .bind(run.as_uuid())
+    .bind(i64::try_from(effective.ledger()).map_err(|_| corrupt("output byte ledger"))?)
+    .bind(i64::try_from(charge).map_err(|_| corrupt("output byte charge"))?)
+    .bind(i64::try_from(effective.legacy_bytes()?).map_err(|_| corrupt("legacy output bytes"))?)
+    .bind(i64::try_from(MAX_RUN_OUTPUT_BYTES).map_err(|_| corrupt("run output limit"))?)
+    .execute(&mut **tx)
+    .await
+    .map_err(store_error)?;
+    if updated.rows_affected() != 1 {
+        return Err(corrupt("run output byte ledger changed under its run lock"));
+    }
+    Ok(())
 }
 
 fn micros(duration: Duration) -> i64 {

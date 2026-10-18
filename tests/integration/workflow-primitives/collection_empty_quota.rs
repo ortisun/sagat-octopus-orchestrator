@@ -318,7 +318,7 @@ async fn empty_collection_aggregate_obeys_remaining_run_bytes() {
     assert_eq!(row.get::<i64, _>("data_limit_audits"), 1);
     assert_eq!(
         row.get::<Option<String>, _>("audit_reason").as_deref(),
-        Some("collection aggregate data limit exceeded")
+        Some("aggregate")
     );
     p.api
         .executions

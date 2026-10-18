@@ -1,0 +1,11 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 46.67s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 3 tests
+test collection_empty_quota::empty_collection_aggregate_fits_with_exactly_two_bytes_remaining ... ok
+test collection_empty_quota::empty_collection_aggregate_obeys_remaining_run_bytes ... ok
+test collection_empty_quota::second_empty_collection_refuses_after_first_consumes_final_two_bytes ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 522 filtered out; finished in 12.61s
+

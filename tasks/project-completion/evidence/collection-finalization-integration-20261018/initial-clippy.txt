@@ -1,0 +1,38 @@
+    Checking sagat-application v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/application)
+error: this function has too many arguments (8/7)
+   --> crates/application/src/worker/scoped_reports.rs:291:5
+    |
+291 | /     async fn apply_path_report(
+292 | |         &self,
+293 | |         principal: &Principal,
+294 | |         task: &TaskRef<'_>,
+...   |
+299 | |         idempotency: Idempotency,
+300 | |     ) -> Result<PathReportApply, AppError> {
+    | |__________________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#too_many_arguments
+    = note: `-D clippy::too-many-arguments` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::too_many_arguments)]`
+
+error: this `map_or` can be simplified
+   --> crates/application/src/worker/scoped_reports.rs:364:27
+    |
+364 |               let exceeds = tx
+    |  ___________________________^
+365 | |                 .logical_output_bytes()
+366 | |                 .await?
+367 | |                 .checked_add(additional)
+368 | |                 .map_or(true, |total| total > MAX_RUN_OUTPUT_BYTES as u64);
+    | |__________________________________________________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#unnecessary_map_or
+    = note: `-D clippy::unnecessary-map-or` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::unnecessary_map_or)]`
+help: use `is_none_or` instead
+    |
+368 -                 .map_or(true, |total| total > MAX_RUN_OUTPUT_BYTES as u64);
+368 +                 .is_none_or(|total| total > MAX_RUN_OUTPUT_BYTES as u64);
+    |
+
+error: could not compile `sagat-application` (lib) due to 2 previous errors

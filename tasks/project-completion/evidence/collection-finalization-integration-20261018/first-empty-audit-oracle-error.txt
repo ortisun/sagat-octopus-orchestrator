@@ -1,0 +1,22 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.29s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 3 tests
+test collection_empty_quota::empty_collection_aggregate_fits_with_exactly_two_bytes_remaining ... ok
+test collection_empty_quota::empty_collection_aggregate_obeys_remaining_run_bytes ... 
+thread 'collection_empty_quota::empty_collection_aggregate_obeys_remaining_run_bytes' (127151824) panicked at tests/integration/workflow-primitives/collection_empty_quota.rs:319:5:
+assertion `left == right` failed
+  left: Some("aggregate")
+ right: Some("collection aggregate data limit exceeded")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test collection_empty_quota::second_empty_collection_refuses_after_first_consumes_final_two_bytes ... ok
+
+failures:
+
+failures:
+    collection_empty_quota::empty_collection_aggregate_obeys_remaining_run_bytes
+
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 522 filtered out; finished in 11.79s
+
+error: test failed, to rerun pass `-p sagat-tests --test integration_workflow_primitives`

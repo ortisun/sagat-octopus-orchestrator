@@ -1,0 +1,19 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "integration_workflow_primitives",
+    "collection_empty_quota",
+    "--",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "exit_code": 101,
+  "seconds": 12.14,
+  "started_utc": "2026-10-18T20:05:55.275063+00:00",
+  "log": "first-empty-audit-oracle-error.txt"
+}

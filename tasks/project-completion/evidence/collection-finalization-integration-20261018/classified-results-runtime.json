@@ -1,0 +1,19 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "integration_payload_classification",
+    "result::",
+    "--",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "exit_code": 0,
+  "seconds": 1.97,
+  "started_utc": "2026-10-18T20:19:41.914716+00:00",
+  "log": "classified-results-runtime.txt"
+}
