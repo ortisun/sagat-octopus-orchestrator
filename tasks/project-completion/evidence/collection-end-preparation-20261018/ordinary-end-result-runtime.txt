@@ -1,0 +1,12 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.24s
+     Running contract/durable-execution/grpc/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/contract_grpc_durable_execution-b446cc89526291b2)
+
+running 5 tests
+test run_result::a_child_result_becomes_the_output_of_the_parent_step ... ok
+test run_result::a_parent_that_cannot_keep_the_result_fails_its_step_with_run_data_limit ... ok
+test run_result::a_result_expression_that_fails_fails_the_child_and_the_parent_step ... ok
+test run_result::a_result_larger_than_one_payload_fails_the_child_with_run_data_limit ... ok
+test run_result::an_end_without_an_output_expression_leaves_the_parent_step_without_output ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 65 filtered out; finished in 8.45s
+

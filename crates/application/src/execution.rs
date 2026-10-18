@@ -541,6 +541,20 @@ pub trait ExpressionEvaluator: Send + Sync {
     fn is_json_object(&self, bytes: &[u8]) -> bool;
 }
 
+/// The evaluated answer for an End node that requested its `outputExpr`.
+///
+/// Absence is represented by the command that optionally carries this answer. In particular,
+/// [`Self::Succeeded`] containing `b"null"` is a successful JSON null and is not absence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EndOutputAnswer {
+    /// Canonical JSON bytes produced by the bounded expression evaluator.
+    Succeeded(Vec<u8>),
+    /// The expression could not be evaluated over the observed Run data.
+    ExpressionError,
+    /// The result exceeded the per-payload or retained Run-data ceiling.
+    RunDataLimit,
+}
+
 /// The run that started a child, and what becomes of the child when the parent stops.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParentLink {
@@ -1345,6 +1359,36 @@ impl<E: ExpressionEvaluator> Engine<E> {
         &self.evaluator
     }
 
+    /// Evaluates one End output request with the same failure redaction and retained-output limits
+    /// used by normal Engine execution.
+    ///
+    /// Callers must invoke this only for an actual [`Evaluation::Output`] produced by the reducer.
+    /// A reducer that settles without requesting output has no [`EndOutputAnswer`].
+    #[must_use]
+    pub fn evaluate_run_result(
+        &self,
+        node: &NodeId,
+        expression: &Expression,
+        data: &RunData,
+    ) -> EndOutputAnswer {
+        let bytes = match self
+            .evaluator
+            .run_result(expression, data)
+            .map_err(log_failure(node))
+        {
+            Ok(bytes) => bytes,
+            Err(()) => return EndOutputAnswer::ExpressionError,
+        };
+        let retained: usize = data.outputs.values().map(Vec::len).sum();
+        if bytes.len() > MAX_PAYLOAD_BYTES
+            || retained.saturating_add(bytes.len()) > MAX_RUN_OUTPUT_BYTES
+        {
+            EndOutputAnswer::RunDataLimit
+        } else {
+            EndOutputAnswer::Succeeded(bytes)
+        }
+    }
+
     /// Executes `command` against the transaction's run, resolves whatever the planner needs to
     /// evaluate, and persists the whole outcome. Nothing is committed here.
     ///
@@ -1533,25 +1577,8 @@ impl<E: ExpressionEvaluator> Engine<E> {
                 }
             }
             Evaluation::Output { node, expression } => {
-                let outcome = self
-                    .evaluator
-                    .run_result(expression, data)
-                    .map_err(log_failure(node))
-                    .map_err(|()| FailureCode::expression_error())
-                    .and_then(|bytes| {
-                        // The result is kept like any step output: within one payload, and within
-                        // what a run may retain (every lease carries it).
-                        let retained: usize = data.outputs.values().map(Vec::len).sum();
-                        if bytes.len() > MAX_PAYLOAD_BYTES
-                            || retained.saturating_add(bytes.len()) > MAX_RUN_OUTPUT_BYTES
-                        {
-                            Err(FailureCode::run_data_limit())
-                        } else {
-                            Ok(bytes)
-                        }
-                    });
-                return Ok(match outcome {
-                    Ok(bytes) => (
+                return Ok(match self.evaluate_run_result(node, expression, data) {
+                    EndOutputAnswer::Succeeded(bytes) => (
                         Resolution::Output {
                             node: node.clone(),
                             outcome: Ok(()),
@@ -1559,10 +1586,18 @@ impl<E: ExpressionEvaluator> Engine<E> {
                         None,
                         Some((node.clone(), bytes)),
                     ),
-                    Err(code) => (
+                    EndOutputAnswer::ExpressionError => (
                         Resolution::Output {
                             node: node.clone(),
-                            outcome: Err(code),
+                            outcome: Err(FailureCode::expression_error()),
+                        },
+                        None,
+                        None,
+                    ),
+                    EndOutputAnswer::RunDataLimit => (
+                        Resolution::Output {
+                            node: node.clone(),
+                            outcome: Err(FailureCode::run_data_limit()),
                         },
                         None,
                         None,

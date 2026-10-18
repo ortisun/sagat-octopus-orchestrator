@@ -17,6 +17,7 @@ use uuid::Uuid;
 
 use crate::collection_source::SourceItems;
 use crate::error::StoreError;
+use crate::execution::EndOutputAnswer;
 use crate::shards::Lease;
 
 /// Database-backed scheduler lease authorizing a transition for one run shard.
@@ -544,6 +545,7 @@ pub struct CollectionFinish {
     pub outbox_id: Uuid,
     result_content: Option<Vec<u8>>,
     source_digests: Option<Vec<(u32, Digest)>>,
+    end_answer: Option<EndOutputAnswer>,
 }
 
 /// Starts fail-fast or cancellation drain under the collection owner's scheduler fence.
@@ -636,6 +638,7 @@ impl CollectionFinish {
             outbox_id,
             result_content: None,
             source_digests: None,
+            end_answer: None,
         }
     }
 
@@ -678,6 +681,21 @@ impl CollectionFinish {
     #[must_use]
     pub fn source_digests(&self) -> Option<&[(u32, Digest)]> {
         self.source_digests.as_deref()
+    }
+
+    /// Adds the answer to an End output evaluation actually requested by the normal reducer.
+    ///
+    /// A finish whose reduction did not request output retains the constructor default of `None`.
+    #[must_use]
+    pub fn with_end_answer(mut self, answer: EndOutputAnswer) -> Self {
+        self.end_answer = Some(answer);
+        self
+    }
+
+    /// The prepared End answer, or `None` when reduction requested no output evaluation.
+    #[must_use]
+    pub fn end_answer(&self) -> Option<&EndOutputAnswer> {
+        self.end_answer.as_ref()
     }
 }
 

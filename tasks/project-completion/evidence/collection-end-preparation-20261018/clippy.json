@@ -1,0 +1,17 @@
+{
+  "command": [
+    "cargo",
+    "clippy",
+    "--locked",
+    "-p",
+    "sagat-application",
+    "--lib",
+    "--",
+    "-D",
+    "warnings"
+  ],
+  "exit_code": 0,
+  "seconds": 4.8,
+  "started_utc": "2026-10-18T18:10:27.240970+00:00",
+  "log": "clippy.txt"
+}
