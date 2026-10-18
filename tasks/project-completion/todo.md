@@ -79,6 +79,11 @@ not a SQL port or own-member authority. See evidence/capacity-header-restore-202
   depth-1 leaf collection path; typed predicate, storage and writer proof remain pending.
 - [x] B1b.2a.1b: Implement the pure versioned definition-shape predicate; no pin/source authority.
 - [ ] B1b.2a.1c: Review certification API/immutable record/receipt/audit/retention before source SQL.
+- [x] B1b.2a.1c.1: Review fixed V1 certification API and canonical identity-as-receipt;
+  current fence precedes replay, replay precedes creation CAS. No source/schema guarantee.
+- [ ] B1b.2a.1c.2: Add the exact application port/types and structural checks only.
+- [ ] B1b.2a.1c.3: Review canonical certification schema/immutability/retention/implicit locks and
+  truthful audit/resource vocabulary before implementing the source writer.
 - [ ] B1b.2a.1d: Prove exact successful source certification and actual producer races/restart;
   failed/drained/effect-bearing paths need their own source-closure contract.
 - [ ] B1b.2b: Review scoped binding/fingerprint/receipt/retention extension and its actual queries.

@@ -457,3 +457,11 @@ It follows actual root/body routes, qualifies local IDs and explicitly detects l
 derived producers and effect settings. It scans bounded static definition metadata, not runtime
 history, and proves no publication/version pin/source finality. API/record/source-writer and real
 producer/restart gates remain next; do not activate scoped capacity from this pure result.
+
+
+B1b.2a.1c.1 fixes the immutable source-certification port: canonical tenant/namespace/original-run/
+depth-1 path is its own receipt for fixed OrdinaryLeafV1, with no caller business parameters.
+Current own-run scheduler authority precedes canonical replay; first creation CAS follows receipt
+miss and precedes actual pinned source proof. Existing-group mutations retain B1a key/fingerprint
+rules. Before source SQL, add exact application types/structural checks, then review immutable
+schema/retention/implicit locks and truthful audit identity. See leaf-certification-port.md.
