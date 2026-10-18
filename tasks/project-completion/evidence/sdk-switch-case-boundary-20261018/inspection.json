@@ -1,0 +1,14 @@
+{
+  "five_complete_outputs_equal_unchanged_runtime_golden": true,
+  "harness_pid": "58005",
+  "languages": [
+    "dotnet",
+    "go",
+    "java",
+    "python",
+    "typescript"
+  ],
+  "actual_32_case_publication_and_execution": true,
+  "public_builders_refuse_33": true,
+  "runtime_golden_changed": false
+}

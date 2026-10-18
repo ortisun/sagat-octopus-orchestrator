@@ -1,0 +1,44 @@
+{
+  "base": "0e6704f3383b92417517678c5c02d77c4d893120",
+  "scope": "Shared switch32/33 boundary only",
+  "command": {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "sdk_conformance",
+      "every_sdk_conforms_to_every_scenario",
+      "--",
+      "--exact",
+      "--ignored",
+      "--nocapture"
+    ],
+    "scenario": "switch-builders",
+    "languages": "all five",
+    "reuse": false,
+    "bless": false,
+    "exit_code": 0,
+    "seconds": 28.14,
+    "log": "five-sdk.txt"
+  },
+  "fresh_review_cycles": 1,
+  "files": {
+    "all-tested-inputs.json": "b1bbe20c31faa225f775eb659581e09c874d1f23c2c879a39843b096118da52e",
+    "command.json": "3915214ca782edab47141b70fce50bcd5fe7c6db3d10497f3f819c9a4aa2378a",
+    "five-sdk.txt": "1605596f5774c7d8345343eb848f0313d53b10c89b2543fbc68e00e7e23f2070",
+    "implementation.diff": "4e6434b3adbc71a15c68cbb50d502758b6da7cee78e237a2c1519e03f7ac676b",
+    "inspection.json": "b5f8570aa2e3ffc17c09292c7128e4b7e4d5fab59e9405a3b979ad026e3e473c",
+    "normalized/dotnet.json": "e492277a72cb38819bec01317da5f0e83db9069a3ff2b561fff7ebcb612af9d3",
+    "normalized/go.json": "e492277a72cb38819bec01317da5f0e83db9069a3ff2b561fff7ebcb612af9d3",
+    "normalized/java.json": "e492277a72cb38819bec01317da5f0e83db9069a3ff2b561fff7ebcb612af9d3",
+    "normalized/python.json": "e492277a72cb38819bec01317da5f0e83db9069a3ff2b561fff7ebcb612af9d3",
+    "normalized/typescript.json": "e492277a72cb38819bec01317da5f0e83db9069a3ff2b561fff7ebcb612af9d3",
+    "reproduce.md": "22330d307767c76a6e9929abb866b262c8e312997fd6c682126ab4e42d42fcd8",
+    "review.md": "f6a584c78829ef9d138b405d07e84e1d3fdf8ab0d2208604d5a4fe5aaa4c607d",
+    "source-before.json": "6b94ef1f9e7176077c51643808c2e94500d3f70ee13232c19616270394026bd8",
+    "source-tested.json": "4d688e2641a0d295b4b65b36ad49a8d760c6eb623021c0cd9b1e545265952b22"
+  }
+}

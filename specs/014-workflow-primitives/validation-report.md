@@ -2806,3 +2806,13 @@ actual evidence. C0/old binaries, chain-source, arbitrary privileged UPDATE, nes
 release INSERT/production caller and parent source-writer/runtime gates remain open. See
 `tasks/project-completion/leaf-current-producer-preservation.md` and
 `tasks/project-completion/evidence/leaf-current-producer-preservation-20261018/manifest.json`.
+
+## Shared switch case-count boundary — 2026-10-18
+
+Refs:T014-041, WP-07/12, FR-014-009/015. Exact32-case canonical publication/execution and33-case
+public-builder refusal passed in all five SDKs, focused aggregate1/1 in28.14s (harness27.32s).
+All five complete normalized outputs equal the unchanged reviewed runtime golden; only authored
+scenario/canonical/error expectations change. Fresh focused review found no issue. No blessing,
+reuse/language/source filter, server semantic change or optional workspace gate rerun. This closes
+the concrete shared case-count gap, not T014-041 or broader limit/nested/resource acceptance.
+Evidence:`tasks/project-completion/evidence/sdk-switch-case-boundary-20261018/manifest.json`.

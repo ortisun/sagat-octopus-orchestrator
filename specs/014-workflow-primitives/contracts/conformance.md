@@ -206,3 +206,11 @@ consumers must not split receipt lookup from live scope resolution. A duplicate 
 between two caller invocations remains replayable instead of becoming a spurious stale attempt.
 Blob quota-failure recovery reopens current authority and rechecks its live fence before writing
 any failure/receipt; rollback does not grandfather an expired lease.
+
+### Shared switch case boundary
+
+`switch-builders` authors and actually publishes/executes 32 cases in every SDK. Its otherwise
+valid 33-case fixture must fail through every public builder with `VALIDATION_FAILED`.
+Canonical expectations preserve every case and ordering; live first-match/default/predicate-error
+observations retain the pre-existing complete golden. This covers the WP-12 case-count boundary;
+it does not replace the other limit observations.

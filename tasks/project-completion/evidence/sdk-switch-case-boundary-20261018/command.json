@@ -1,0 +1,23 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "sdk_conformance",
+    "every_sdk_conforms_to_every_scenario",
+    "--",
+    "--exact",
+    "--ignored",
+    "--nocapture"
+  ],
+  "scenario": "switch-builders",
+  "languages": "all five",
+  "reuse": false,
+  "bless": false,
+  "exit_code": 0,
+  "seconds": 28.14,
+  "log": "five-sdk.txt"
+}

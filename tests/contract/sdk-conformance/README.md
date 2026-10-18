@@ -619,3 +619,10 @@ ordered returned descriptors with independently checked SHA-256, exact scoped in
 successful final server state. All five builder documents and normalized runtime results were
 compared before creating its new reviewed goldens; no existing golden or normalizer was changed.
 This focused case does not establish derived/declared-secret blob support or broader nested graphs.
+
+### Switch case limit refresh
+
+The shared `switch-builders` fixture has 32 ordered cases and an otherwise valid 33-case refusal.
+All five public builders must retain the exact canonical boundary document and return
+`VALIDATION_FAILED` for excess. Actual publication and first-match/default/predicate-error execution
+use that 32-case document; added cases are false. Existing normalized runtime golden is unchanged.

@@ -1,0 +1,5 @@
+{
+  "tests/contract/sdk-conformance/scenarios/switch-builders.json": "5eb333b7d7bb61c971ed9b27b625746fad9a4faf1dd734373006f86d61ff5f83",
+  "tests/contract/sdk-conformance/expected/switch-builders.workflows.json": "a3d1fd0a4dfd23e9a4dd87ce1942eb259353b14443eddc584439ae31d2237d9f",
+  "tests/contract/sdk-conformance/expected/switch-builders.json": "4529af87d928f477a8ce2a89aacd45e3452f7b57462f69c1cf1c7a3ba7d7b595"
+}

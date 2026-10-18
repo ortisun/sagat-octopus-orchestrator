@@ -367,3 +367,11 @@ separate. The table reports only each scenario's declared phase and the observed
 Bounded acceptance review keeps T014-041 open: shared WP-13 expression/list boundaries and
 unsupported object literals, plus WP-12 switch cases at 32/excess 33, still need five-SDK coverage.
 The successful current aggregate is retained without claiming those absent scenarios.
+
+### Switch 32/33-case focused refresh
+
+After the full aggregate, `switch-builders` was extended and rerun in all five SDKs: 32 cases
+publish/execute; 33 fail public builder validation. Focused aggregate passed in 28.14 s with
+unchanged complete runtime golden and reviewed canonical/error fixtures. Evidence:
+[switch case boundary](../tasks/project-completion/evidence/sdk-switch-case-boundary-20261018/reproduce.md).
+The previously recorded full aggregate remains its own earlier snapshot; WP-13 gaps stay open.

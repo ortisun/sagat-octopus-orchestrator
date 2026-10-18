@@ -121,3 +121,5 @@
 /tasks/project-completion/evidence/leaf-certification-saga-20261018/*.txt whitespace=-blank-at-eof
 /tasks/project-completion/evidence/leaf-certification-saga-20261018/*.diff whitespace=-blank-at-eol
 /tasks/project-completion/evidence/sdk58-current-20261018/*.txt whitespace=-blank-at-eof
+/tasks/project-completion/evidence/sdk-switch-case-boundary-20261018/*.txt whitespace=-blank-at-eof
+/tasks/project-completion/evidence/sdk-switch-case-boundary-20261018/*.diff whitespace=-blank-at-eol
