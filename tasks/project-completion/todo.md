@@ -201,8 +201,9 @@ See evidence/leaf-certification-process-20261018. Other producer/observation/rel
 - [ ] B1b.2c.1: Prove the enumerated current incoming-parent preservation for one ordinary unchained child source.
 - [x] B1b.2c.1a: Characterize genuine public child source, closure/fence/qualification/refusal and cold replay controls.
 - [ ] B1b.2c.1b: Prove actual PROPAGATE/DETACH/REQUEST_CANCEL parent flag writers in both child-row queue orders. Reviewed contract: [leaf-child-parent-flags.md](leaf-child-parent-flags.md); execution pending.
-- [ ] B1b.2c.1c: Prove actual own-child cancellation/drain consequences and later compensation preserve selected source.
+- [ ] B1b.2c.1c: Prove actual own-child cancellation/drain consequences and later compensation preserve selected source. Reviewed [contract](leaf-child-own-cancel.md); integrate after .1b acceptance.
 - [ ] B1b.2c.1d: Prove genuine terminal outcome fanout/parent settlement once in both observable orders.
+- [ ] B1b.2c.1e: Prove real DETACH parent settlement followed by legitimate later child execution and original source replay.
 
 The bounded ordinary-child source decision is reviewed, with no test acceptance yet. Source
 certification already accepts this shaped context; current source evidence limits are not an

@@ -69,9 +69,10 @@ For the reviewed minimal ordinary-child fixture, public parent CANCEL writes the
 
 After baseline acceptance, review/implement one family at a time:
 
-1. Incoming parent flag preservation: PROPAGATE/DETACH/REQUEST_CANCEL, both actual child-row queue directions, real flag effects, COMMIT guard lifetime; detachment followed by legitimate later child execution.
-2. Own-child cancellation/drain consequences: actual parent-triggered cancellation under child authority, creation-CAS versus replay distinction, and one known later effect with real later compensation. Unknown effects/manual review and effectful selected paths remain separate source profiles.
+1. Incoming parent flag preservation: PROPAGATE/DETACH/REQUEST_CANCEL, both actual child-row queue directions, real flag effects, COMMIT guard lifetime. Detached later child execution is the separate pending .1e below.
+2. Own-child cancellation/drain consequences: actual parent-triggered cancellation under child authority, creation-CAS versus replay distinction, and one known later effect with real later compensation. The reviewed [own-child contract](leaf-child-own-cancel.md) fixes two actual COMMIT orders, then exact later drain/ack/refund, stopping before child completion. Unknown effects/manual review and effectful selected paths remain separate source profiles.
 3. Terminal outcome fanout: genuine whole-child success and later failure, actual parent notification/settlement once, both orders and cold original-identity replay. No seeded terminal status as positive proof.
+4. Detached later execution (.1e): real DETACH parent CANCEL followed by real completion of the already leased later child activity, actual child progress/source preservation/original replay, unchanged settled parent and no child notification. Stop before whole-child completion; no repeated flag-race matrix.
 
 Only after these proofs and a fresh bounded source review can B1b.2c.1 claim the enumerated current incoming-writer preservation. General B1b.2c remains open. Existing uncertain-COMMIT/OS-reconciler tests remain their own shared transaction evidence; baseline reconstruction must not rebrand them as child engine/original-writer crash evidence.
 
