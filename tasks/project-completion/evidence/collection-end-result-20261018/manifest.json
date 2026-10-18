@@ -1,0 +1,21 @@
+{
+  "status": "genuine RED; correction pending",
+  "gates": [
+    "red-owner-and-end-result.json",
+    "red-end-instance-limit.json"
+  ],
+  "source_pins": [
+    [
+      "red-source-before.json",
+      "red-source-after.json"
+    ],
+    [
+      "instance-red-source-before.json",
+      "instance-red-source-after.json"
+    ]
+  ],
+  "distinct_tests": 2,
+  "passed": 0,
+  "expected_failure": true,
+  "production_changed": false
+}

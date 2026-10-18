@@ -1,0 +1,19 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "integration_workflow_primitives",
+    "collection_end_result::collection_success_does_not_bypass_the_successor_end_instance_limit",
+    "--",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "exit_code": 101,
+  "seconds": 39.7,
+  "started_utc": "2026-10-18T17:54:51.166389+00:00",
+  "log": "red-end-instance-limit.txt"
+}

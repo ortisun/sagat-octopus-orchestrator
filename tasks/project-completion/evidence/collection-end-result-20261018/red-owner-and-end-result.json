@@ -1,0 +1,19 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "integration_workflow_primitives",
+    "collection_end_result::",
+    "--",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "exit_code": 101,
+  "seconds": 38.21,
+  "started_utc": "2026-10-18T17:37:35.843567+00:00",
+  "log": "red-owner-and-end-result.txt"
+}

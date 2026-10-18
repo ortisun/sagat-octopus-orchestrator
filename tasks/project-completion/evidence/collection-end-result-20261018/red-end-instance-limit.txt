@@ -1,0 +1,21 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 36.27s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 1 test
+test collection_end_result::collection_success_does_not_bypass_the_successor_end_instance_limit ... 
+thread 'collection_end_result::collection_success_does_not_bypass_the_successor_end_instance_limit' (120275507) panicked at tests/integration/workflow-primitives/../../support/scope_flow.rs:288:13:
+assertion `left == right` failed: a scheduler action failed: Report { collections_advanced: 0, loops_advanced: 0, continuations_advanced: 0, continuations_waiting: 0, approvals_opened: 0, approvals_expired: 0, approval_routes_released: 0, stopped_runs_settled: 0, timers_fired: 0, waits_timed_out: 0, retries_released: 0, leases_expired: 0, deadlines_enforced: 0, hints_renewed: 0, children_started: 0, children_finished: 0, children_cancelled: 0, quota_stops: 0, skipped: 0, failed: 1, fenced: 0 }
+  left: 1
+ right: 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    collection_end_result::collection_success_does_not_bypass_the_successor_end_instance_limit
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 502 filtered out; finished in 1.28s
+
+error: test failed, to rerun pass `-p sagat-tests --test integration_workflow_primitives`
