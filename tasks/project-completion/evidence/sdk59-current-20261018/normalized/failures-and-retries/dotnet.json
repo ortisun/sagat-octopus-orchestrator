@@ -1,0 +1,598 @@
+{
+  "faultsApplied": [],
+  "observations": [
+    {
+      "id": "flaky",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "flaky-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "SUCCEEDED",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "flaky-journal",
+      "ok": true,
+      "op": "events",
+      "result": {
+        "events": [
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.started"
+          },
+          {
+            "attempt": null,
+            "stepId": "flaky",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "flaky",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "flaky",
+            "type": "step.retry_scheduled"
+          },
+          {
+            "attempt": null,
+            "stepId": "flaky",
+            "type": "step.retry_due"
+          },
+          {
+            "attempt": 2,
+            "stepId": "flaky",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 2,
+            "stepId": "flaky",
+            "type": "step.retry_scheduled"
+          },
+          {
+            "attempt": null,
+            "stepId": "flaky",
+            "type": "step.retry_due"
+          },
+          {
+            "attempt": 3,
+            "stepId": "flaky",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 3,
+            "stepId": "flaky",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "flaky",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.finished"
+          }
+        ]
+      }
+    },
+    {
+      "id": "permanent",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:4>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:2>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:5>",
+        "workflowId": "<uuid:6>"
+      }
+    },
+    {
+      "id": "permanent-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:4>",
+        "startedBy": "alice",
+        "status": "FAILED",
+        "traceId": "<trace:2>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:5>",
+        "workflowId": "<uuid:6>"
+      }
+    },
+    {
+      "id": "permanent-journal",
+      "ok": true,
+      "op": "events",
+      "result": {
+        "events": [
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.started"
+          },
+          {
+            "attempt": null,
+            "stepId": "permanent",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "permanent",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "permanent",
+            "type": "step.failed"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.stop_requested"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.finished"
+          }
+        ]
+      }
+    },
+    {
+      "id": "throws",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:7>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:3>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:8>",
+        "workflowId": "<uuid:9>"
+      }
+    },
+    {
+      "id": "throws-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:7>",
+        "startedBy": "alice",
+        "status": "FAILED",
+        "traceId": "<trace:3>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:8>",
+        "workflowId": "<uuid:9>"
+      }
+    },
+    {
+      "id": "throws-journal",
+      "ok": true,
+      "op": "events",
+      "result": {
+        "events": [
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.started"
+          },
+          {
+            "attempt": null,
+            "stepId": "throws",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "throws",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "throws",
+            "type": "step.retry_scheduled"
+          },
+          {
+            "attempt": null,
+            "stepId": "throws",
+            "type": "step.retry_due"
+          },
+          {
+            "attempt": 2,
+            "stepId": "throws",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 2,
+            "stepId": "throws",
+            "type": "step.failed"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.stop_requested"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.finished"
+          }
+        ]
+      }
+    },
+    {
+      "id": "unknown",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:10>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:4>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:11>",
+        "workflowId": "<uuid:12>"
+      }
+    },
+    {
+      "id": "unknown-wait",
+      "ok": true,
+      "op": "sleep"
+    },
+    {
+      "id": "unknown-state",
+      "ok": true,
+      "op": "get",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:10>",
+        "startedBy": "alice",
+        "status": "FAILED",
+        "traceId": "<trace:4>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:11>",
+        "workflowId": "<uuid:12>"
+      }
+    },
+    {
+      "id": "unknown-journal",
+      "ok": true,
+      "op": "events",
+      "result": {
+        "events": [
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.started"
+          },
+          {
+            "attempt": null,
+            "stepId": "unknown",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "unknown",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "unknown",
+            "type": "step.failed"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.stop_requested"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.finished"
+          }
+        ]
+      }
+    }
+  ],
+  "serverState": [
+    {
+      "nodes": [
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": "OUTCOME_UNKNOWN",
+          "forward": null,
+          "id": "unknown",
+          "kind": "FORWARD",
+          "status": "FAILED",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:10>",
+      "status": "FAILED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 2,
+          "cancelRequested": false,
+          "failureCode": "ACTIVITY_ERROR",
+          "forward": null,
+          "id": "throws",
+          "kind": "FORWARD",
+          "status": "FAILED",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:7>",
+      "status": "FAILED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": "INSUFFICIENT_FUNDS",
+          "forward": null,
+          "id": "permanent",
+          "kind": "FORWARD",
+          "status": "FAILED",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:4>",
+      "status": "FAILED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 3,
+          "cancelRequested": false,
+          "failureCode": "PROVIDER_BUSY",
+          "forward": null,
+          "id": "flaky",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:1>",
+      "status": "SUCCEEDED"
+    }
+  ],
+  "workerLog": {
+    "w1": [
+      {
+        "abortedReason": null,
+        "activity": "retry.flaky",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:1>:flaky",
+        "input": {
+          "case": "flaky"
+        },
+        "kind": "activity",
+        "node": "flaky",
+        "outcome": "failed",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:1>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "retry.flaky",
+        "attempt": 2,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:1>:flaky",
+        "input": {
+          "case": "flaky"
+        },
+        "kind": "activity",
+        "node": "flaky",
+        "outcome": "failed",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:1>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "retry.flaky",
+        "attempt": 3,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:1>:flaky",
+        "input": {
+          "case": "flaky"
+        },
+        "kind": "activity",
+        "node": "flaky",
+        "outcome": "returned",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:1>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "retry.permanent",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:4>:permanent",
+        "input": {
+          "case": "permanent"
+        },
+        "kind": "activity",
+        "node": "permanent",
+        "outcome": "failed",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:2>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "retry.throws",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:7>:throws",
+        "input": {
+          "case": "throws"
+        },
+        "kind": "activity",
+        "node": "throws",
+        "outcome": "threw",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:3>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "retry.throws",
+        "attempt": 2,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:7>:throws",
+        "input": {
+          "case": "throws"
+        },
+        "kind": "activity",
+        "node": "throws",
+        "outcome": "threw",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:3>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "retry.unknown",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:10>:unknown",
+        "input": {
+          "case": "unknown"
+        },
+        "kind": "activity",
+        "node": "unknown",
+        "outcome": "failed",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:4>",
+        "traceparentPresent": true
+      }
+    ]
+  }
+}

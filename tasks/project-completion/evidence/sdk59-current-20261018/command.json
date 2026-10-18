@@ -1,0 +1,24 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "sdk_conformance",
+    "every_sdk_conforms_to_every_scenario",
+    "--",
+    "--exact",
+    "--ignored",
+    "--nocapture"
+  ],
+  "exit_code": 0,
+  "seconds": 1142.1,
+  "log": "aggregate.txt",
+  "scenario_filter": false,
+  "language_filter": false,
+  "reuse": false,
+  "bless": false,
+  "archived_source": false
+}

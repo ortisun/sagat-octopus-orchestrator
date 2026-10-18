@@ -1,0 +1,1124 @@
+{
+  "faultsApplied": [],
+  "observations": [
+    {
+      "id": "start-worker",
+      "ok": true,
+      "op": "startWorker",
+      "result": {
+        "protocolVersion": "1.5"
+      }
+    },
+    {
+      "id": "limit",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "limit-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "COMPENSATED",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "limit-journal",
+      "ok": true,
+      "op": "events",
+      "result": {
+        "events": [
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.started"
+          },
+          {
+            "attempt": null,
+            "stepId": "loop",
+            "type": "loop.entered"
+          },
+          {
+            "attempt": null,
+            "stepId": "loop",
+            "type": "loop.iteration_admitted"
+          },
+          {
+            "attempt": null,
+            "stepId": "reserve",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "reserve",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "reserve",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "reserve",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "charge",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "charge",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "charge",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "charge",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "loop",
+            "type": "loop.iteration_returned"
+          },
+          {
+            "attempt": null,
+            "stepId": "loop",
+            "type": "loop.iteration_checkpointed"
+          },
+          {
+            "attempt": null,
+            "stepId": "loop",
+            "type": "loop.iteration_admitted"
+          },
+          {
+            "attempt": null,
+            "stepId": "reserve",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "reserve",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "reserve",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "reserve",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "charge",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "charge",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "charge",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "charge",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "loop",
+            "type": "loop.iteration_returned"
+          },
+          {
+            "attempt": null,
+            "stepId": "loop",
+            "type": "loop.iteration_checkpointed"
+          },
+          {
+            "attempt": null,
+            "stepId": "loop",
+            "type": "loop.iteration_admitted"
+          },
+          {
+            "attempt": null,
+            "stepId": "reserve",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "reserve",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "reserve",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "reserve",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "charge",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "charge",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "charge",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "charge",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.stop_requested"
+          },
+          {
+            "attempt": null,
+            "stepId": "loop",
+            "type": "loop.drain_started"
+          },
+          {
+            "attempt": null,
+            "stepId": "loop",
+            "type": "loop.iteration_drained"
+          },
+          {
+            "attempt": null,
+            "stepId": "loop",
+            "type": "scope.compensation_planned"
+          },
+          {
+            "attempt": null,
+            "stepId": "charge~c",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "charge~c",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "charge~c",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "charge~c",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "reserve~c",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "reserve~c",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "reserve~c",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "reserve~c",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "charge~c",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "charge~c",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "charge~c",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "charge~c",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "reserve~c",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "reserve~c",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "reserve~c",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "reserve~c",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "charge~c",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "charge~c",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "charge~c",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "charge~c",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "reserve~c",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "reserve~c",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "reserve~c",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "reserve~c",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "loop",
+            "type": "scope.compensated"
+          },
+          {
+            "attempt": null,
+            "stepId": "loop",
+            "type": "loop.finished"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.finished"
+          }
+        ]
+      }
+    },
+    {
+      "id": "stop-worker",
+      "ok": true,
+      "op": "stopWorker"
+    }
+  ],
+  "scopeEvidence": [
+    {
+      "events": [
+        {
+          "event": "loop.entered",
+          "initialCarry": 0,
+          "initial_condition": true,
+          "kind": "while",
+          "max_iterations": 3
+        },
+        {
+          "event": "loop.iteration_admitted",
+          "index": 0
+        },
+        {
+          "event": "loop.iteration_returned",
+          "index": 0
+        },
+        {
+          "carry": 1,
+          "condition": true,
+          "continuation": "continue",
+          "event": "loop.iteration_checkpointed",
+          "index": 0,
+          "result": 1
+        },
+        {
+          "event": "loop.iteration_admitted",
+          "index": 1
+        },
+        {
+          "event": "loop.iteration_returned",
+          "index": 1
+        },
+        {
+          "carry": 2,
+          "condition": true,
+          "continuation": "continue",
+          "event": "loop.iteration_checkpointed",
+          "index": 1,
+          "result": 1
+        },
+        {
+          "event": "loop.iteration_admitted",
+          "index": 2
+        },
+        {
+          "code": "ITERATION_LIMIT",
+          "event": "loop.drain_started"
+        },
+        {
+          "event": "loop.iteration_drained",
+          "index": 2
+        },
+        {
+          "cause": "ITERATION_LIMIT",
+          "entries": [
+            {
+              "after": [
+                {
+                  "node": "reserve",
+                  "path": [
+                    {
+                      "index": 1,
+                      "scope": "loop"
+                    }
+                  ]
+                }
+              ],
+              "instance": {
+                "node": "charge",
+                "path": [
+                  {
+                    "index": 0,
+                    "scope": "loop"
+                  }
+                ]
+              }
+            },
+            {
+              "after": [
+                {
+                  "node": "charge",
+                  "path": [
+                    {
+                      "index": 0,
+                      "scope": "loop"
+                    }
+                  ]
+                }
+              ],
+              "instance": {
+                "node": "reserve",
+                "path": [
+                  {
+                    "index": 0,
+                    "scope": "loop"
+                  }
+                ]
+              }
+            },
+            {
+              "after": [
+                {
+                  "node": "reserve",
+                  "path": [
+                    {
+                      "index": 2,
+                      "scope": "loop"
+                    }
+                  ]
+                }
+              ],
+              "instance": {
+                "node": "charge",
+                "path": [
+                  {
+                    "index": 1,
+                    "scope": "loop"
+                  }
+                ]
+              }
+            },
+            {
+              "after": [
+                {
+                  "node": "charge",
+                  "path": [
+                    {
+                      "index": 1,
+                      "scope": "loop"
+                    }
+                  ]
+                }
+              ],
+              "instance": {
+                "node": "reserve",
+                "path": [
+                  {
+                    "index": 1,
+                    "scope": "loop"
+                  }
+                ]
+              }
+            },
+            {
+              "after": [],
+              "instance": {
+                "node": "charge",
+                "path": [
+                  {
+                    "index": 2,
+                    "scope": "loop"
+                  }
+                ]
+              }
+            },
+            {
+              "after": [
+                {
+                  "node": "charge",
+                  "path": [
+                    {
+                      "index": 2,
+                      "scope": "loop"
+                    }
+                  ]
+                }
+              ],
+              "instance": {
+                "node": "reserve",
+                "path": [
+                  {
+                    "index": 2,
+                    "scope": "loop"
+                  }
+                ]
+              }
+            }
+          ],
+          "event": "scope.compensation_planned",
+          "irreversible": []
+        },
+        {
+          "event": "scope.compensated",
+          "outcome": "COMPENSATED"
+        },
+        {
+          "code": "ITERATION_LIMIT",
+          "event": "loop.finished",
+          "outcome": "failed"
+        }
+      ],
+      "peakActive": 1,
+      "runId": "<uuid:1>"
+    }
+  ],
+  "serverState": [
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "done",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": "ITERATION_LIMIT",
+          "forward": null,
+          "id": "loop",
+          "kind": "FORWARD",
+          "status": "FAILED",
+          "type": "while",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "loop[0]/charge",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": "charge",
+          "id": "loop[0]/charge~c",
+          "kind": "COMPENSATION",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "loop[0]/reserve",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": "reserve",
+          "id": "loop[0]/reserve~c",
+          "kind": "COMPENSATION",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "loop[0]/returned",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "return",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "loop[1]/charge",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": "charge",
+          "id": "loop[1]/charge~c",
+          "kind": "COMPENSATION",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "loop[1]/reserve",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": "reserve",
+          "id": "loop[1]/reserve~c",
+          "kind": "COMPENSATION",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "loop[1]/returned",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "return",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "loop[2]/charge",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": "charge",
+          "id": "loop[2]/charge~c",
+          "kind": "COMPENSATION",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "loop[2]/reserve",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": "reserve",
+          "id": "loop[2]/reserve~c",
+          "kind": "COMPENSATION",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "loop[2]/returned",
+          "kind": "FORWARD",
+          "status": "CANCELLED",
+          "type": "return",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:1>",
+      "status": "COMPENSATED"
+    }
+  ],
+  "workerLog": {
+    "w1": [
+      {
+        "abortedReason": null,
+        "activity": "loopc.reserve",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:1>:<uuid:4>",
+        "input": {},
+        "instance": {
+          "definitionNodeId": "reserve",
+          "instancePath": [
+            {
+              "iterationIndex": 0,
+              "scopeNodeId": "loop"
+            }
+          ]
+        },
+        "kind": "activity",
+        "node": "reserve",
+        "outcome": "returned",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:1>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "loopc.charge",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:1>:<uuid:5>",
+        "input": {},
+        "instance": {
+          "definitionNodeId": "charge",
+          "instancePath": [
+            {
+              "iterationIndex": 0,
+              "scopeNodeId": "loop"
+            }
+          ]
+        },
+        "kind": "activity",
+        "node": "charge",
+        "outcome": "returned",
+        "steps": {
+          "reserve": 1
+        },
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:1>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "loopc.reserve",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:1>:<uuid:6>",
+        "input": {},
+        "instance": {
+          "definitionNodeId": "reserve",
+          "instancePath": [
+            {
+              "iterationIndex": 1,
+              "scopeNodeId": "loop"
+            }
+          ]
+        },
+        "kind": "activity",
+        "node": "reserve",
+        "outcome": "returned",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:1>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "loopc.charge",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:1>:<uuid:7>",
+        "input": {},
+        "instance": {
+          "definitionNodeId": "charge",
+          "instancePath": [
+            {
+              "iterationIndex": 1,
+              "scopeNodeId": "loop"
+            }
+          ]
+        },
+        "kind": "activity",
+        "node": "charge",
+        "outcome": "returned",
+        "steps": {
+          "reserve": 1
+        },
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:1>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "loopc.reserve",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:1>:<uuid:8>",
+        "input": {},
+        "instance": {
+          "definitionNodeId": "reserve",
+          "instancePath": [
+            {
+              "iterationIndex": 2,
+              "scopeNodeId": "loop"
+            }
+          ]
+        },
+        "kind": "activity",
+        "node": "reserve",
+        "outcome": "returned",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:1>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "loopc.charge",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:1>:<uuid:9>",
+        "input": {},
+        "instance": {
+          "definitionNodeId": "charge",
+          "instancePath": [
+            {
+              "iterationIndex": 2,
+              "scopeNodeId": "loop"
+            }
+          ]
+        },
+        "kind": "activity",
+        "node": "charge",
+        "outcome": "returned",
+        "steps": {
+          "reserve": 1
+        },
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:1>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "loopc.refund",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "compensation:<uuid:10>:<uuid:1>",
+        "input": {},
+        "instance": {
+          "definitionNodeId": "charge~c",
+          "instancePath": [
+            {
+              "iterationIndex": 2,
+              "scopeNodeId": "loop"
+            }
+          ]
+        },
+        "kind": "compensation",
+        "node": "charge~c",
+        "outcome": "returned",
+        "steps": {
+          "charge": 1,
+          "reserve": 1
+        },
+        "targetIdempotencyKey": "<uuid:1>:<uuid:9>",
+        "targetNode": "charge",
+        "taskKind": "COMPENSATION",
+        "traceId": "<trace:1>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "loopc.release",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "compensation:<uuid:11>:<uuid:1>",
+        "input": {},
+        "instance": {
+          "definitionNodeId": "reserve~c",
+          "instancePath": [
+            {
+              "iterationIndex": 2,
+              "scopeNodeId": "loop"
+            }
+          ]
+        },
+        "kind": "compensation",
+        "node": "reserve~c",
+        "outcome": "returned",
+        "steps": {
+          "charge": 1,
+          "reserve": 1
+        },
+        "targetIdempotencyKey": "<uuid:1>:<uuid:8>",
+        "targetNode": "reserve",
+        "taskKind": "COMPENSATION",
+        "traceId": "<trace:1>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "loopc.refund",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "compensation:<uuid:12>:<uuid:1>",
+        "input": {},
+        "instance": {
+          "definitionNodeId": "charge~c",
+          "instancePath": [
+            {
+              "iterationIndex": 1,
+              "scopeNodeId": "loop"
+            }
+          ]
+        },
+        "kind": "compensation",
+        "node": "charge~c",
+        "outcome": "returned",
+        "steps": {
+          "charge": 1,
+          "reserve": 1
+        },
+        "targetIdempotencyKey": "<uuid:1>:<uuid:7>",
+        "targetNode": "charge",
+        "taskKind": "COMPENSATION",
+        "traceId": "<trace:1>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "loopc.release",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "compensation:<uuid:13>:<uuid:1>",
+        "input": {},
+        "instance": {
+          "definitionNodeId": "reserve~c",
+          "instancePath": [
+            {
+              "iterationIndex": 1,
+              "scopeNodeId": "loop"
+            }
+          ]
+        },
+        "kind": "compensation",
+        "node": "reserve~c",
+        "outcome": "returned",
+        "steps": {
+          "charge": 1,
+          "reserve": 1
+        },
+        "targetIdempotencyKey": "<uuid:1>:<uuid:6>",
+        "targetNode": "reserve",
+        "taskKind": "COMPENSATION",
+        "traceId": "<trace:1>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "loopc.refund",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "compensation:<uuid:14>:<uuid:1>",
+        "input": {},
+        "instance": {
+          "definitionNodeId": "charge~c",
+          "instancePath": [
+            {
+              "iterationIndex": 0,
+              "scopeNodeId": "loop"
+            }
+          ]
+        },
+        "kind": "compensation",
+        "node": "charge~c",
+        "outcome": "returned",
+        "steps": {
+          "charge": 1,
+          "reserve": 1
+        },
+        "targetIdempotencyKey": "<uuid:1>:<uuid:5>",
+        "targetNode": "charge",
+        "taskKind": "COMPENSATION",
+        "traceId": "<trace:1>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "loopc.release",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "compensation:<uuid:15>:<uuid:1>",
+        "input": {},
+        "instance": {
+          "definitionNodeId": "reserve~c",
+          "instancePath": [
+            {
+              "iterationIndex": 0,
+              "scopeNodeId": "loop"
+            }
+          ]
+        },
+        "kind": "compensation",
+        "node": "reserve~c",
+        "outcome": "returned",
+        "steps": {
+          "charge": 1,
+          "reserve": 1
+        },
+        "targetIdempotencyKey": "<uuid:1>:<uuid:4>",
+        "targetNode": "reserve",
+        "taskKind": "COMPENSATION",
+        "traceId": "<trace:1>",
+        "traceparentPresent": true
+      }
+    ]
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "scenarios": 59,
+  "languages": [
+    "dotnet",
+    "go",
+    "java",
+    "python",
+    "typescript"
+  ],
+  "language_scenario_plays": 295,
+  "build_only_plays": 30,
+  "publication_only_plays": 5,
+  "live_workflow_protocol_plays": 260,
+  "normalized_complete_artifacts": 265,
+  "all_complete_results_equal_reviewed_goldens": true,
+  "harness_pid": "73584",
+  "all_1241_frozen_inputs_identical": true,
+  "execution_base": "bea961c2bc3cf7fc15bc9b8e578b1b5328894802",
+  "documentary_head": "3634a95a2592f8aa3c3c9773826958f03d1f1fd8",
+  "T014_041_closed": false
+}

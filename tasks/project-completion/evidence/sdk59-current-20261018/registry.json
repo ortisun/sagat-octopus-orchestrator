@@ -1,0 +1,297 @@
+[
+  {
+    "name": "approval-builders",
+    "build_only": true,
+    "publication_only": false
+  },
+  {
+    "name": "approval-chain",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "approval-decisions",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "approval-security",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "approval-settlement",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "approval-state",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "blobs",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "builders",
+    "build_only": false,
+    "publication_only": true
+  },
+  {
+    "name": "cancellation",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "chain-cancel-parent",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "chain-child",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "chain-commands",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "chain-final-success",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "chain-inspect-cancel",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "chain-query-handoff",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "chain-query",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "chain-rerun",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "chain-root-wait",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "chain-state-final-success",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "chain-three-segments",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "classification",
+    "build_only": true,
+    "publication_only": false
+  },
+  {
+    "name": "collection-blob-output",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "collection-blob-source",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "collection-builders",
+    "build_only": true,
+    "publication_only": false
+  },
+  {
+    "name": "collection-compensation",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "collection-limits",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "collection-ordering",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "collection-runtime",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "collection-step-source",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "continuation-builders",
+    "build_only": true,
+    "publication_only": false
+  },
+  {
+    "name": "database-connections",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "errors",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "expression-limits",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "failures-and-retries",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "lease-lost",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "loop-builders",
+    "build_only": true,
+    "publication_only": false
+  },
+  {
+    "name": "loop-cancel",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "loop-compensation",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "loop-error-activity",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "loop-runtime",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "loop-semantics",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "lost-responses",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "protocol-negotiation",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "run-input-blobs",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "run-input-early-success",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "run-lifecycle",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "saga-compensation",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "scoped-identity",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "secrets",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "serialization",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "signals-and-events",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "state-operation-builders",
+    "build_only": true,
+    "publication_only": false
+  },
+  {
+    "name": "state-operations",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "switch-builders",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "worker-registration",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "worker-shutdown",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "worker-stream-faults",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "worker-transport-faults",
+    "build_only": false,
+    "publication_only": false
+  },
+  {
+    "name": "workflow-instance-limits",
+    "build_only": false,
+    "publication_only": false
+  }
+]

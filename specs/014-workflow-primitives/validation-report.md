@@ -2854,3 +2854,20 @@ RLS, global lock safety, C0, caller or nested authority follows. Actual migratio
 privilege evidence and observed downgrade locks remain separate implementation units. See
 `tasks/project-completion/scoped-leaf-finish-schema.md` and
 `tasks/project-completion/evidence/scoped-finish-schema-decision-20261018/manifest.json`.
+
+## Complete current 59-case SDK aggregate — 2026-10-18
+
+The complete current matrix passed in all five SDKs in 1,142.10 s: 59 scenarios, 295 language/case
+plays, including 30 authoring-only, 5 publication-only and 260 live workflow/protocol plays.
+All 265 complete normalized outputs equal the exact reviewed golden, with every 53 server-phase
+case/language pair present once and all 1,241 frozen input hashes unchanged. No blessing, reuse,
+archived source or scenario/language filtering. The source base is bea961c2; a later documentary
+schema contract changed none of those inputs. The earlier eight native compatibility tests retain
+identical executable inputs and a separately recorded conformance documentation delta.
+
+The final public-contract mapping still leaves T014-041 open for active sibling drain after failure,
+Query result-schema rejection with unchanged revisions, and successful upper bounds of 32 approval
+principals/queries/updates. These are separate from the open nested/C0/resource gates. Drafts for
+those public observations are outside the tested snapshot and cannot be counted as passing yet.
+
+Refs:T014-041. Evidence:`tasks/project-completion/evidence/sdk59-current-20261018/manifest.json`.

@@ -1,0 +1,791 @@
+{
+  "faultsApplied": [],
+  "observations": [
+    {
+      "id": "decided-run",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "decided-opened",
+      "ok": true,
+      "op": "listApprovals",
+      "result": {
+        "items": [
+          {
+            "approvalId": "<uuid:4>",
+            "deadline": "<time>",
+            "instancePath": [],
+            "nodeId": "review",
+            "runId": "<uuid:1>",
+            "settledAt": null,
+            "status": "PENDING"
+          }
+        ],
+        "nextCursor": null
+      }
+    },
+    {
+      "id": "decided-before",
+      "ok": true,
+      "op": "query",
+      "result": {
+        "result": "19.99",
+        "runVersion": 2,
+        "stateRevision": 0
+      }
+    },
+    {
+      "id": "decided-update",
+      "ok": true,
+      "op": "update",
+      "result": {
+        "afterStateRevision": 1,
+        "beforeStateRevision": 0,
+        "operation": "amount.replace",
+        "replayed": false,
+        "result": "24.99",
+        "runVersion": 3,
+        "status": "APPLIED",
+        "updateKey": "during-approval-{{unique}}"
+      }
+    },
+    {
+      "id": "decided-replay",
+      "ok": true,
+      "op": "update",
+      "result": {
+        "afterStateRevision": 1,
+        "beforeStateRevision": 0,
+        "operation": "amount.replace",
+        "replayed": true,
+        "result": "24.99",
+        "runVersion": 3,
+        "status": "APPLIED",
+        "updateKey": "during-approval-{{unique}}"
+      }
+    },
+    {
+      "error": {
+        "code": "CONFLICT",
+        "message": "<text>",
+        "reason": "REVISION_CONFLICT",
+        "remediation": "The request conflicts with the current state: read the resource again and decide; do not repeat it unchanged.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 409,
+        "traceId": "<trace:2>"
+      },
+      "id": "decided-stale",
+      "ok": false,
+      "op": "update"
+    },
+    {
+      "id": "decided-during",
+      "ok": true,
+      "op": "query",
+      "result": {
+        "result": "24.99",
+        "runVersion": 3,
+        "stateRevision": 1
+      }
+    },
+    {
+      "id": "decided-still-open",
+      "ok": true,
+      "op": "listApprovals",
+      "result": {
+        "items": [
+          {
+            "approvalId": "<uuid:4>",
+            "deadline": "<time>",
+            "instancePath": [],
+            "nodeId": "review",
+            "runId": "<uuid:1>",
+            "settledAt": null,
+            "status": "PENDING"
+          }
+        ],
+        "nextCursor": null
+      }
+    },
+    {
+      "id": "decided",
+      "ok": true,
+      "op": "decideApproval",
+      "result": {
+        "actor": "alice",
+        "approvalId": "<uuid:4>",
+        "decidedAt": "<time>",
+        "decision": "APPROVE",
+        "decisionKey": "state-approve-{{unique}}",
+        "outcomeSequence": 4,
+        "reasonCode": "POLICY_OK",
+        "receiptId": "<uuid:5>",
+        "replayed": false
+      }
+    },
+    {
+      "id": "decided-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "SUCCEEDED",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "decided-after",
+      "ok": true,
+      "op": "query",
+      "result": {
+        "result": "24.99",
+        "runVersion": 7,
+        "stateRevision": 1
+      }
+    },
+    {
+      "error": {
+        "code": "CONFLICT",
+        "message": "<text>",
+        "reason": "RUN_NOT_MUTABLE",
+        "remediation": "The request conflicts with the current state: read the resource again and decide; do not repeat it unchanged.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 409,
+        "traceId": "<trace:3>"
+      },
+      "id": "decided-late-update",
+      "ok": false,
+      "op": "update"
+    },
+    {
+      "id": "decided-settled",
+      "ok": true,
+      "op": "listApprovals",
+      "result": {
+        "items": [
+          {
+            "approvalId": "<uuid:4>",
+            "deadline": "<time>",
+            "instancePath": [],
+            "nodeId": "review",
+            "runId": "<uuid:1>",
+            "settledAt": "<time>",
+            "status": "APPROVED"
+          }
+        ],
+        "nextCursor": null
+      }
+    },
+    {
+      "id": "rejected-run",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:6>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:4>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "rejected-opened",
+      "ok": true,
+      "op": "listApprovals",
+      "result": {
+        "items": [
+          {
+            "approvalId": "<uuid:7>",
+            "deadline": "<time>",
+            "instancePath": [],
+            "nodeId": "review",
+            "runId": "<uuid:6>",
+            "settledAt": null,
+            "status": "PENDING"
+          }
+        ],
+        "nextCursor": null
+      }
+    },
+    {
+      "id": "rejected-update",
+      "ok": true,
+      "op": "update",
+      "result": {
+        "afterStateRevision": 1,
+        "beforeStateRevision": 0,
+        "operation": "amount.replace",
+        "replayed": false,
+        "result": "6.00",
+        "runVersion": 3,
+        "status": "APPLIED",
+        "updateKey": "before-rejection-{{unique}}"
+      }
+    },
+    {
+      "id": "rejected",
+      "ok": true,
+      "op": "decideApproval",
+      "result": {
+        "actor": "alice",
+        "approvalId": "<uuid:7>",
+        "decidedAt": "<time>",
+        "decision": "REJECT",
+        "decisionKey": "state-reject-{{unique}}",
+        "outcomeSequence": 4,
+        "reasonCode": "POLICY_BLOCKED",
+        "receiptId": "<uuid:8>",
+        "replayed": false
+      }
+    },
+    {
+      "id": "rejected-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:6>",
+        "startedBy": "alice",
+        "status": "SUCCEEDED",
+        "traceId": "<trace:4>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "rejected-after",
+      "ok": true,
+      "op": "query",
+      "result": {
+        "result": "6.00",
+        "runVersion": 7,
+        "stateRevision": 1
+      }
+    },
+    {
+      "id": "expired-run",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:9>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:5>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:10>",
+        "workflowId": "<uuid:11>"
+      }
+    },
+    {
+      "id": "expired-opened",
+      "ok": true,
+      "op": "listApprovals",
+      "result": {
+        "items": [
+          {
+            "approvalId": "<uuid:12>",
+            "deadline": "<time>",
+            "instancePath": [],
+            "nodeId": "review",
+            "runId": "<uuid:9>",
+            "settledAt": null,
+            "status": "PENDING"
+          }
+        ],
+        "nextCursor": null
+      }
+    },
+    {
+      "id": "expired-update",
+      "ok": true,
+      "op": "update",
+      "result": {
+        "afterStateRevision": 1,
+        "beforeStateRevision": 0,
+        "operation": "amount.replace",
+        "replayed": false,
+        "result": "8.00",
+        "runVersion": 3,
+        "status": "APPLIED",
+        "updateKey": "before-expiry-{{unique}}"
+      }
+    },
+    {
+      "id": "expired-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:9>",
+        "startedBy": "alice",
+        "status": "SUCCEEDED",
+        "traceId": "<trace:5>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:10>",
+        "workflowId": "<uuid:11>"
+      }
+    },
+    {
+      "id": "expired-after",
+      "ok": true,
+      "op": "query",
+      "result": {
+        "result": "8.00",
+        "runVersion": 7,
+        "stateRevision": 1
+      }
+    },
+    {
+      "id": "expired-settled",
+      "ok": true,
+      "op": "listApprovals",
+      "result": {
+        "items": [
+          {
+            "approvalId": "<uuid:12>",
+            "deadline": "<time>",
+            "instancePath": [],
+            "nodeId": "review",
+            "runId": "<uuid:9>",
+            "settledAt": "<time>",
+            "status": "EXPIRED"
+          }
+        ],
+        "nextCursor": null
+      }
+    },
+    {
+      "error": {
+        "code": "CONFLICT",
+        "message": "<text>",
+        "reason": "ALREADY_DECIDED",
+        "remediation": "The request conflicts with the current state: read the resource again and decide; do not repeat it unchanged.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 409,
+        "traceId": "<trace:6>"
+      },
+      "id": "expired-late-decision",
+      "ok": false,
+      "op": "decideApproval"
+    },
+    {
+      "id": "cancelled-run",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:13>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:7>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "cancelled-opened",
+      "ok": true,
+      "op": "listApprovals",
+      "result": {
+        "items": [
+          {
+            "approvalId": "<uuid:14>",
+            "deadline": "<time>",
+            "instancePath": [],
+            "nodeId": "review",
+            "runId": "<uuid:13>",
+            "settledAt": null,
+            "status": "PENDING"
+          }
+        ],
+        "nextCursor": null
+      }
+    },
+    {
+      "id": "cancelled-update",
+      "ok": true,
+      "op": "update",
+      "result": {
+        "afterStateRevision": 1,
+        "beforeStateRevision": 0,
+        "operation": "amount.replace",
+        "replayed": false,
+        "result": "10.00",
+        "runVersion": 3,
+        "status": "APPLIED",
+        "updateKey": "before-cancel-{{unique}}"
+      }
+    },
+    {
+      "id": "cancelled",
+      "ok": true,
+      "op": "cancel",
+      "result": {
+        "accepted": true,
+        "runStatus": "CANCELLED"
+      }
+    },
+    {
+      "id": "cancelled-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:13>",
+        "startedBy": "alice",
+        "status": "CANCELLED",
+        "traceId": "<trace:7>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "cancelled-after",
+      "ok": true,
+      "op": "query",
+      "result": {
+        "result": "10.00",
+        "runVersion": 6,
+        "stateRevision": 1
+      }
+    },
+    {
+      "id": "cancelled-settled",
+      "ok": true,
+      "op": "listApprovals",
+      "result": {
+        "items": [
+          {
+            "approvalId": "<uuid:14>",
+            "deadline": "<time>",
+            "instancePath": [],
+            "nodeId": "review",
+            "runId": "<uuid:13>",
+            "settledAt": "<time>",
+            "status": "CANCELLED"
+          }
+        ],
+        "nextCursor": null
+      }
+    },
+    {
+      "error": {
+        "code": "CONFLICT",
+        "message": "<text>",
+        "reason": "ALREADY_DECIDED",
+        "remediation": "The request conflicts with the current state: read the resource again and decide; do not repeat it unchanged.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 409,
+        "traceId": "<trace:8>"
+      },
+      "id": "cancelled-late-decision",
+      "ok": false,
+      "op": "decideApproval"
+    },
+    {
+      "error": {
+        "code": "CONFLICT",
+        "message": "<text>",
+        "reason": "RUN_NOT_MUTABLE",
+        "remediation": "The request conflicts with the current state: read the resource again and decide; do not repeat it unchanged.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 409,
+        "traceId": "<trace:9>"
+      },
+      "id": "cancelled-late-update",
+      "ok": false,
+      "op": "update"
+    }
+  ],
+  "serverState": [
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "approved",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "expired",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "rejected",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "review",
+          "kind": "FORWARD",
+          "status": "CANCELLED",
+          "type": "approval",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:13>",
+      "status": "CANCELLED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "approved",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "expired",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "rejected",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "review",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "approval",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:9>",
+      "status": "SUCCEEDED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "approved",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "expired",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "rejected",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "review",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "approval",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:6>",
+      "status": "SUCCEEDED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "approved",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "expired",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "rejected",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "review",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "approval",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:1>",
+      "status": "SUCCEEDED"
+    }
+  ],
+  "workerLog": {}
+}

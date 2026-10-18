@@ -1,0 +1,13 @@
+{
+  "previous_actual_evidence": "../sdk58-current-20261018/native-compatibility.txt",
+  "source_identity": "../sdk58-current-20261018/native-compatibility-source.json",
+  "all_721_other_inputs_identical": true,
+  "all_executable_inputs_identical": true,
+  "documentary_delta": {
+    "specs/014-workflow-primitives/contracts/conformance.md": {
+      "tested": "8cecf32ab8ac4955fa0b460b87d54ff06f35661eb1a7b03de820cee49d75c450",
+      "current": "8dace67866c94f1faac0fcd0faba255fee3371c23e8acdb93d3d519cc750836d"
+    }
+  },
+  "rerun": false
+}
