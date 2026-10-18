@@ -1,0 +1,15 @@
+
+running 1 test
+
+thread 'legacy_collection_output_view::a_current_full_run_transaction_reads_frozen_legacy_collection_outputs' (128814707) panicked at tests/integration/workflow-primitives/legacy_collection_output_view.rs:847:9:
+the bounded scheduler stalled before the target drain ended
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test legacy_collection_output_view::a_current_full_run_transaction_reads_frozen_legacy_collection_outputs ... FAILED
+
+failures:
+
+failures:
+    legacy_collection_output_view::a_current_full_run_transaction_reads_frozen_legacy_collection_outputs
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 524 filtered out; finished in 0.54s
+
