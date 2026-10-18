@@ -79,6 +79,7 @@ fn cause(state: &RunState, owner: &ExecutionInstanceId) -> FailureCode {
     if let Some(collection) = state.collection(owner) {
         return match collection.drain_reason() {
             Some(CollectionDrainReason::Failed { code, .. }) => code.clone(),
+            Some(CollectionDrainReason::RunDataLimit) => FailureCode::run_data_limit(),
             Some(CollectionDrainReason::StorageQuotaExceeded) => {
                 FailureCode::storage_quota_exceeded()
             }

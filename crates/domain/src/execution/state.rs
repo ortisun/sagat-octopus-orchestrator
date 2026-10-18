@@ -1841,6 +1841,7 @@ impl RunState {
                     None,
                     Some(
                         CollectionDrainReason::Failed { .. }
+                            | CollectionDrainReason::RunDataLimit
                             | CollectionDrainReason::StorageQuotaExceeded
                     )
                 )
@@ -1882,8 +1883,10 @@ impl RunState {
             }
             CollectionPhase::Failed => {
                 let storage_quota = FailureCode::storage_quota_exceeded();
+                let run_data_limit = FailureCode::run_data_limit();
                 let expected = match &drain_reason {
                     Some(CollectionDrainReason::Failed { code, .. }) => Some(code),
+                    Some(CollectionDrainReason::RunDataLimit) => Some(&run_data_limit),
                     Some(CollectionDrainReason::StorageQuotaExceeded) => Some(&storage_quota),
                     _ => None,
                 };
@@ -2906,6 +2909,15 @@ impl RunState {
                         Some(CollectionDrainReason::Failed { code: recorded, .. }),
                     ) => {
                         scope.phase == CollectionPhase::Draining && code == recorded && all_settled
+                    }
+                    (
+                        CollectionOutcome::Failed(code),
+                        None,
+                        Some(CollectionDrainReason::RunDataLimit),
+                    ) => {
+                        scope.phase == CollectionPhase::Draining
+                            && code == &FailureCode::run_data_limit()
+                            && all_settled
                     }
                     (
                         CollectionOutcome::Failed(code),

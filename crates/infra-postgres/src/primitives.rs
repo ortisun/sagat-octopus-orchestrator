@@ -1764,6 +1764,12 @@ impl CollectionStore for PgCollectionStore {
         &self,
         drain: &CollectionDrain,
     ) -> Result<PrimitiveWrite, PrimitiveStoreError> {
+        // The evidence, audit and schema contract required to produce this reason is not integrated
+        // yet. Refuse before opening a transaction so this vocabulary cannot become an unguarded
+        // writer.
+        if matches!(&drain.reason, CollectionDrainReason::RunDataLimit) {
+            return Err(PrimitiveStoreError::RuntimeNotIntegrated);
+        }
         check_audit(&drain.transition)?;
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         let locked = lock_drain_run(&mut tx, &drain.transition).await?;
@@ -1798,6 +1804,9 @@ impl CollectionStore for PgCollectionStore {
                 ),
                 Some(code.as_str()),
             ),
+            CollectionDrainReason::RunDataLimit => {
+                return Err(PrimitiveStoreError::RuntimeNotIntegrated);
+            }
             CollectionDrainReason::StorageQuotaExceeded => {
                 ("STORAGE_QUOTA", None, Some(storage_quota_code.as_str()))
             }
@@ -1845,6 +1854,9 @@ impl CollectionStore for PgCollectionStore {
 
         let mut sequence = locked.run.run_version;
         match &drain.reason {
+            CollectionDrainReason::RunDataLimit => {
+                return Err(PrimitiveStoreError::RuntimeNotIntegrated);
+            }
             CollectionDrainReason::Cancelled => {
                 if locked.status != "CANCELLING"
                     || locked.stop_reason.as_deref() != Some("CANCELLED")
@@ -2006,6 +2018,9 @@ impl CollectionStore for PgCollectionStore {
         let detail = match &drain.reason {
             CollectionDrainReason::Failed { iteration, code } => {
                 json!({"reason":"failed","iteration":iteration,"code":code.as_str()})
+            }
+            CollectionDrainReason::RunDataLimit => {
+                return Err(PrimitiveStoreError::RuntimeNotIntegrated);
             }
             CollectionDrainReason::StorageQuotaExceeded => {
                 json!({"reason":"storage_quota_exceeded"})
