@@ -1,0 +1,2 @@
+# Captured test/compiler logs retain their original final blank lines.
+/tasks/project-completion/evidence/scoped-blob-20261017/*.txt whitespace=-blank-at-eof
