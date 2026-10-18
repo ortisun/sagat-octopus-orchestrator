@@ -1,0 +1,12 @@
+{
+  "command": [
+    "bash",
+    "scripts/test-legacy-collection-inflight-report-v1.sh",
+    "--case",
+    "drain-before-report"
+  ],
+  "exit_code": 0,
+  "seconds": 149.81,
+  "started_utc": "2026-10-18T22:33:31.304690+00:00",
+  "log": "old-current.txt"
+}

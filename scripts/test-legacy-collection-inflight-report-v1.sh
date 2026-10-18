@@ -1,11 +1,35 @@
 #!/usr/bin/env bash
-# One immutable-old/current case: ordinary known success is reported before collection drain.
+# Closed immutable-old/current cases for ordering one ordinary known success and collection drain.
 set -euo pipefail
 umask 077
 
 readonly old_commit="6c44a0e49670cf19660792cd1518d241e6c99b3b"
 readonly old_test="legacy_collection_inflight_report_producer_v1::frozen_old_ordinary_success_before_drain_producer"
-readonly current_test="legacy_collection_inflight_report_v1::old_ordinary_success_before_drain_preserves_the_report_and_compensation"
+case_name="report-before-drain"
+if (( $# != 0 )); then
+  if (( $# != 2 )) || [[ "$1" != "--case" ]]; then
+    echo "usage: $0 [--case report-before-drain|drain-before-report]" >&2
+    exit 2
+  fi
+  case_name="$2"
+fi
+case "${case_name}" in
+  report-before-drain)
+    current_test="legacy_collection_inflight_report_v1::old_ordinary_success_before_drain_preserves_the_report_and_compensation"
+    artifact_namespace="sagat-q10c-ordinary-before-drain-v1"
+    log_label="ordinary-before-drain"
+    ;;
+  drain-before-report)
+    current_test="legacy_collection_inflight_report_v1::old_ordinary_success_after_drain_preserves_the_report_and_compensation"
+    artifact_namespace="sagat-q10c-ordinary-drain-before-report-v1"
+    log_label="ordinary-drain-before-report"
+    ;;
+  *)
+    echo "unknown case: ${case_name}" >&2
+    exit 2
+    ;;
+esac
+readonly case_name current_test artifact_namespace log_label
 repo_root="$(git rev-parse --show-toplevel)"
 producer_overlay="${repo_root}/tests/fixtures/legacy-collection-inflight-report-v1/producer.rs"
 consumer_source="${repo_root}/tests/integration/workflow-primitives/legacy_collection_inflight_report_v1.rs"
@@ -29,7 +53,7 @@ for command in cargo git python3 psql tar; do
   command -v "${command}" >/dev/null || { echo "missing command: ${command}" >&2; exit 2; }
 done
 [[ -f "${producer_overlay}" ]] || { echo "missing immutable-old producer overlay" >&2; exit 2; }
-[[ -f "${consumer_source}" ]] || { echo "missing current report-before-drain consumer" >&2; exit 2; }
+[[ -f "${consumer_source}" ]] || { echo "missing current legacy in-flight consumer" >&2; exit 2; }
 [[ -f "${fixture_readme}" ]] || { echo "missing fixture scope documentation" >&2; exit 2; }
 
 df -h "${CARGO_TARGET_DIR}"
@@ -39,7 +63,7 @@ if (( available_kib < 8 * 1024 * 1024 )); then
   exit 2
 fi
 
-artifact_root="${SAGAT_Q10C_ARTIFACT_ROOT:-${TMPDIR:-/tmp}/sagat-q10c-ordinary-before-drain-v1}"
+artifact_root="${SAGAT_Q10C_ARTIFACT_ROOT:-${TMPDIR:-/tmp}/${artifact_namespace}}"
 mkdir -p -m 0700 "${artifact_root}"
 run_root="$(mktemp -d "${artifact_root}/run.XXXXXX")"
 chmod 0700 "${run_root}"
@@ -301,6 +325,10 @@ install -m 0755 "${current_built}" "${current_binary}"
 
 git -C "${repo_root}" diff --binary HEAD > "${artifacts}/current.diff"
 {
+  echo "case ${case_name}"
+  echo "log-label ${log_label}"
+  echo "old-test ${old_test}"
+  echo "current-test ${current_test}"
   echo "old-commit ${old_commit}"
   echo "current-commit $(git -C "${repo_root}" rev-parse HEAD)"
   echo "current-diff-sha256 $(sha256 "${artifacts}/current.diff")"
@@ -358,7 +386,7 @@ for role in owner runtime; do
   else unset SAGAT_TEST_AS_RUNTIME_ROLE || true; fi
   export SAGAT_Q10C_ORDINARY_PHASE_RECEIPT="${receipt}"
 
-  producer_log="${logs}/${role}-producer.log"
+  producer_log="${logs}/${log_label}-${role}-producer.log"
   if ! run_bounded 1200 "${producer_started_marker}" \
     "${old_binary}" --exact "${old_test}" --nocapture > "${producer_log}" 2>&1; then
     cat "${producer_log}" >&2
@@ -393,7 +421,7 @@ PY
     echo "old producer created an unexpected number of databases" >&2; exit 1;
   }
 
-  consumer_log="${logs}/${role}-consumer.log"
+  consumer_log="${logs}/${log_label}-${role}-consumer.log"
   if ! run_bounded 1200 - \
     "${current_binary}" --ignored --exact "${current_test}" --nocapture \
     > "${consumer_log}" 2>&1; then
@@ -418,4 +446,4 @@ PY
 done
 unset SAGAT_TEST_AS_RUNTIME_ROLE SAGAT_Q10C_ORDINARY_PHASE_RECEIPT || true
 
-echo "Q10c ordinary-before-drain evidence: ${run_root}"
+echo "Q10c ${log_label} evidence: ${run_root}"

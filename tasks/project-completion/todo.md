@@ -225,7 +225,7 @@ See evidence/leaf-certification-process-20261018. Other producer/observation/rel
 - [x] B1b.2c.1d.0Q7b.3: Prove actual OpenBao public version rotation rejects the stale scanned vector without execution effects; original-key/lease retry and replay pass with exact provider catalog/audit/quota oracles;8d07b0d3, evidence/refusal-secret-versions-20261018.
 - [ ] B1b.2c.1d.0Q10c: Complete genuine old in-flight compatibility: both byte conditions/orderings, cancellation precedence, Applied, output-dependent old worker and post-ACK process/uncertain-COMMIT controls. No external-provider undo guarantee is inferred.
 - [x] B1b.2c.1d.0Q10c.1: Prove ordinary E>limit report-before-drain through separate immutable-old/current processes with original worker/session/lease/request, owner and actual sagat_app, exact receipt/replay and real compensation;f026e928, evidence/legacy-inflight-ordinary-v1-20261018.
-- [ ] B1b.2c.1d.0Q10c.2: Prove ordinary E>limit drain-before-report with a still-live cancelled-requested lease and unchanged first stop/drain. Primary D1 reviewed None; evidence/legacy-ordinary-drain-first-decision-20261018; implementation draft in progress. Cancellation-first companion is deferred to its own reviewed increment.
+- [x] B1b.2c.1d.0Q10c.2: Prove ordinary E>limit drain-before-report with a still-live cancellation-requested lease and unchanged first stop/drain; four old/current phases pass, plus four default report-first regression phases. Evidence/legacy-inflight-drain-first-20261018; cancellation-first remains a separate pending companion.
 - [x] B1b.2c.1e: Prove real DETACH parent settlement followed by legitimate later child execution and original source replay.
 
 The bounded ordinary-child source master remains open; its enumerated .1a/.1b/.1c/.1e
@@ -352,3 +352,16 @@ under runtime invocation in41.49s,1125 identical source hashes. This combines th
 report/drain faults, compensation and binding controls with the byte/End suite. Evidence:
 `tasks/project-completion/evidence/collection-current-merged-regression-20261018/README.md`.
 OpenBao/old-current tests retain separate evidence; full014/nesting/release tasks remain open.
+
+
+### Immutable-old ordinary drain-before-report — 2026-10-18
+
+Primary D1 passes all four real old/current phases in both API pool modes,149.81s.
+A live original member retains its slot/reservations through actual normal drain and an extra
+waiting tick; the original success stays SUCCEEDED, without output/new report outbox or journal
+payload reference. Exact first stop/drain and receipt replay remain stable. Actual original-target
+compensation must finish before COMPENSATED. Default report-before-drain regression also passes
+all four phases147.54s. Strict Clippy/fmt/architecture and1125 identical source inputs.
+Evidence: `tasks/project-completion/evidence/legacy-inflight-drain-first-20261018/README.md`.
+Only ordinary E>limit ordering is accepted; cancellation-first, other byte condition, Applied,
+cold-process/uncertain-COMMIT and full Q10c/canonical014 release gates remain open.

@@ -1,0 +1,1244 @@
+diff --git a/scripts/test-legacy-collection-inflight-report-v1.sh b/scripts/test-legacy-collection-inflight-report-v1.sh
+index 2002b8bb..8960ebd4 100755
+--- a/scripts/test-legacy-collection-inflight-report-v1.sh
++++ b/scripts/test-legacy-collection-inflight-report-v1.sh
+@@ -1,11 +1,35 @@
+ #!/usr/bin/env bash
+-# One immutable-old/current case: ordinary known success is reported before collection drain.
++# Closed immutable-old/current cases for ordering one ordinary known success and collection drain.
+ set -euo pipefail
+ umask 077
+ 
+ readonly old_commit="6c44a0e49670cf19660792cd1518d241e6c99b3b"
+ readonly old_test="legacy_collection_inflight_report_producer_v1::frozen_old_ordinary_success_before_drain_producer"
+-readonly current_test="legacy_collection_inflight_report_v1::old_ordinary_success_before_drain_preserves_the_report_and_compensation"
++case_name="report-before-drain"
++if (( $# != 0 )); then
++  if (( $# != 2 )) || [[ "$1" != "--case" ]]; then
++    echo "usage: $0 [--case report-before-drain|drain-before-report]" >&2
++    exit 2
++  fi
++  case_name="$2"
++fi
++case "${case_name}" in
++  report-before-drain)
++    current_test="legacy_collection_inflight_report_v1::old_ordinary_success_before_drain_preserves_the_report_and_compensation"
++    artifact_namespace="sagat-q10c-ordinary-before-drain-v1"
++    log_label="ordinary-before-drain"
++    ;;
++  drain-before-report)
++    current_test="legacy_collection_inflight_report_v1::old_ordinary_success_after_drain_preserves_the_report_and_compensation"
++    artifact_namespace="sagat-q10c-ordinary-drain-before-report-v1"
++    log_label="ordinary-drain-before-report"
++    ;;
++  *)
++    echo "unknown case: ${case_name}" >&2
++    exit 2
++    ;;
++esac
++readonly case_name current_test artifact_namespace log_label
+ repo_root="$(git rev-parse --show-toplevel)"
+ producer_overlay="${repo_root}/tests/fixtures/legacy-collection-inflight-report-v1/producer.rs"
+ consumer_source="${repo_root}/tests/integration/workflow-primitives/legacy_collection_inflight_report_v1.rs"
+@@ -29,7 +53,7 @@ for command in cargo git python3 psql tar; do
+   command -v "${command}" >/dev/null || { echo "missing command: ${command}" >&2; exit 2; }
+ done
+ [[ -f "${producer_overlay}" ]] || { echo "missing immutable-old producer overlay" >&2; exit 2; }
+-[[ -f "${consumer_source}" ]] || { echo "missing current report-before-drain consumer" >&2; exit 2; }
++[[ -f "${consumer_source}" ]] || { echo "missing current legacy in-flight consumer" >&2; exit 2; }
+ [[ -f "${fixture_readme}" ]] || { echo "missing fixture scope documentation" >&2; exit 2; }
+ 
+ df -h "${CARGO_TARGET_DIR}"
+@@ -39,7 +63,7 @@ if (( available_kib < 8 * 1024 * 1024 )); then
+   exit 2
+ fi
+ 
+-artifact_root="${SAGAT_Q10C_ARTIFACT_ROOT:-${TMPDIR:-/tmp}/sagat-q10c-ordinary-before-drain-v1}"
++artifact_root="${SAGAT_Q10C_ARTIFACT_ROOT:-${TMPDIR:-/tmp}/${artifact_namespace}}"
+ mkdir -p -m 0700 "${artifact_root}"
+ run_root="$(mktemp -d "${artifact_root}/run.XXXXXX")"
+ chmod 0700 "${run_root}"
+@@ -301,6 +325,10 @@ install -m 0755 "${current_built}" "${current_binary}"
+ 
+ git -C "${repo_root}" diff --binary HEAD > "${artifacts}/current.diff"
+ {
++  echo "case ${case_name}"
++  echo "log-label ${log_label}"
++  echo "old-test ${old_test}"
++  echo "current-test ${current_test}"
+   echo "old-commit ${old_commit}"
+   echo "current-commit $(git -C "${repo_root}" rev-parse HEAD)"
+   echo "current-diff-sha256 $(sha256 "${artifacts}/current.diff")"
+@@ -358,7 +386,7 @@ for role in owner runtime; do
+   else unset SAGAT_TEST_AS_RUNTIME_ROLE || true; fi
+   export SAGAT_Q10C_ORDINARY_PHASE_RECEIPT="${receipt}"
+ 
+-  producer_log="${logs}/${role}-producer.log"
++  producer_log="${logs}/${log_label}-${role}-producer.log"
+   if ! run_bounded 1200 "${producer_started_marker}" \
+     "${old_binary}" --exact "${old_test}" --nocapture > "${producer_log}" 2>&1; then
+     cat "${producer_log}" >&2
+@@ -393,7 +421,7 @@ PY
+     echo "old producer created an unexpected number of databases" >&2; exit 1;
+   }
+ 
+-  consumer_log="${logs}/${role}-consumer.log"
++  consumer_log="${logs}/${log_label}-${role}-consumer.log"
+   if ! run_bounded 1200 - \
+     "${current_binary}" --ignored --exact "${current_test}" --nocapture \
+     > "${consumer_log}" 2>&1; then
+@@ -418,4 +446,4 @@ PY
+ done
+ unset SAGAT_TEST_AS_RUNTIME_ROLE SAGAT_Q10C_ORDINARY_PHASE_RECEIPT || true
+ 
+-echo "Q10c ordinary-before-drain evidence: ${run_root}"
++echo "Q10c ${log_label} evidence: ${run_root}"
+diff --git a/tests/fixtures/legacy-collection-inflight-report-v1/README.md b/tests/fixtures/legacy-collection-inflight-report-v1/README.md
+index 00fc6f9d..1cdb73d2 100644
+--- a/tests/fixtures/legacy-collection-inflight-report-v1/README.md
++++ b/tests/fixtures/legacy-collection-inflight-report-v1/README.md
+@@ -1,20 +1,39 @@
+ # Legacy collection in-flight report fixture v1
+ 
+-This fixture covers one compatibility case. The immutable
++This fixture covers two separately produced compatibility cases. The immutable
+ `6c44a0e49670cf19660792cd1518d241e6c99b3b` binary creates ten closed legacy
+ collection aggregates, leases the compensable `c10/0/reserve` forward task, and
+ exits without reporting it. A separately built current binary reopens the same
+-database and reports the retained ordinary success before any current scheduler
+-tick.
++database. The consumer case selects whether the current binary reports the
++retained ordinary success before collection drain, or starts the normal
++`RUN_DATA_LIMIT` drain first while the original lease remains live.
+ 
+ The current phase uses the persisted worker membership, exact binding, worker ID,
+ session token, lease, and completion request. It creates a fresh JWT through the
+ current test identity provider. It does not provision, bind, or register the
+ worker again. The acceptance assertions require `SUCCEEDED` plus
+ `RUN_DATA_LIMIT`, no retained refused output, no report outbox row, exact receipt
+-replay before scheduler advancement, and the engine's real `line.release`
++replay, and the engine's real `line.release`
+ compensation task with the original target identity and key.
+ 
++The no-argument default preserves the original report-before-drain case. Select
++the independently named drain-first consumer and artifact namespace with:
++
++```sh
++CARGO_TARGET_DIR=/absolute/private/target \
++SAGAT_TEST_DATABASE_URL='postgres://…/postgres' \
++SAGAT_Q10C_OWNED_POSTGRES=1 \
++scripts/test-legacy-collection-inflight-report-v1.sh --case drain-before-report
++```
++
++That case uses normal `Keeper` ownership and `Scheduler::tick` discovery. It
++proves the first tick retains the original lease and requests cancellation, a
++second tick waits for the live member, and the exact original success remains
++`SUCCEEDED` without output before one real compensation reaches
++`COMPENSATED`. It preserves the first stop and drain identity throughout and
++does not seed a drain, rewrite a lease, register authority, or create a
++reconciliation verdict.
++
+ Run both owner and least privilege API modes with an explicitly owned PostgreSQL
+ server and a private absolute Cargo target:
+ 
+@@ -25,17 +44,20 @@ SAGAT_Q10C_OWNED_POSTGRES=1 \
+ scripts/test-legacy-collection-inflight-report-v1.sh
+ ```
+ 
+-The coordinator builds both test binaries before creating the retained lease. It
+-uses a new `sagat-q10c-ordinary-before-drain-v1` artifact namespace, writes the
+-credential bearing receipt under a mode `0700` directory as an atomic mode `0600`
+-file, and removes the receipt and owned test database after each phase. Logs and
+-the nonsecret manifest contain hashes and process results, never the lease or
+-session values.
+-
+-This case establishes only ordinary report before drain and public engine
+-compensation semantics. It does not establish an external provider effect,
+-external compensation, exactly once behavior, Applied reconciliation, the other
+-report/drain order, cancellation precedence, a post ACK process restart,
+-output-dependent compensation, or the remaining authority, race, and fault
+-matrix. A passing run does not close the full Q10c row or the open feature 014
+-release tasks.
++The coordinator builds both test binaries before creating the retained lease.
++The default uses `sagat-q10c-ordinary-before-drain-v1`; the selected drain-first
++case uses `sagat-q10c-ordinary-drain-before-report-v1` and distinct log labels.
++It writes the credential bearing receipt under a mode `0700` directory as an
++atomic mode `0600` file, and removes the receipt and owned test database after
++each phase. Logs and the nonsecret manifest contain hashes and process results,
++never the lease or session values. Each case invokes a fresh old producer and
++one exact current consumer in owner mode, then repeats both processes against a
++fresh database as the least privilege runtime role.
++
++These cases establish only the two ordinary `E > limit` report/drain orders and
++public engine compensation semantics. They do not establish an external
++provider effect, external compensation, exactly once behavior, Applied
++reconciliation, `E <= limit < E + candidate`, cancellation precedence, a post
++ACK process restart, output-dependent compensation, secret or blob policy, or
++the remaining authority, race, and fault matrix. A passing run does not close
++the full Q10c row or the open feature 014 release tasks.
+diff --git a/tests/integration/workflow-primitives/legacy_collection_inflight_report_v1.rs b/tests/integration/workflow-primitives/legacy_collection_inflight_report_v1.rs
+index a0c2be68..1622f249 100644
+--- a/tests/integration/workflow-primitives/legacy_collection_inflight_report_v1.rs
++++ b/tests/integration/workflow-primitives/legacy_collection_inflight_report_v1.rs
+@@ -1,5 +1,5 @@
+-//! One bounded old/current acceptance case: a genuine immutable-old ordinary success is reported
+-//! before any current scheduler advancement, then the engine's real compensation task is completed.
++//! Two bounded old/current acceptance cases for one genuine immutable-old ordinary success:
++//! report it before the current drain, or after the current drain has requested cancellation.
+ #![allow(clippy::expect_used, clippy::panic)]
+ 
+ use std::os::unix::fs::PermissionsExt as _;
+@@ -21,6 +21,7 @@ use sagat_infra_postgres::{PgPool, PgRunStore, PoolConfig, connect, migrate};
+ use sagat_scheduler::{Keeper, KeeperSettings, Placement, Scheduler, SchedulerSettings};
+ use serde_json::{Value, json};
+ use sha2::{Digest as _, Sha256};
++use sqlx::Row as _;
+ use uuid::Uuid;
+ 
+ use crate::support::api::{Options, TestApi, start_on_db};
+@@ -189,6 +190,9 @@ type SuccessfulRefusalState = (
+     bool,
+     bool,
+     bool,
++    bool,
++    String,
++    bool,
+     i64,
+     i64,
+ );
+@@ -450,12 +454,13 @@ async fn payloads(pool: &PgPool, receipt: &Receipt) -> i64 {
+         .expect("tenant payload count")
+ }
+ 
+-async fn assert_live_target(pool: &PgPool, receipt: &Receipt) {
+-    let live: (String, i32, i64, bool, bool, bool, bool, bool) = sqlx::query_as(
++async fn assert_live_target(pool: &PgPool, receipt: &Receipt, cancel_requested: bool) {
++    let live: (String, i32, i64, bool, bool, bool, bool, bool, bool) = sqlx::query_as(
+         "SELECT step.status,step.attempt,step.generation,step.step_id=$4, \
+                 step.lease_token_hash=$5,step.leased_by=$6, \
+                 step.lease_expires_at>clock_timestamp(), \
+-                session.token_hash=$7 AND session.expires_at>clock_timestamp() \
++                session.token_hash=$7 AND session.expires_at>clock_timestamp(), \
++                step.cancel_requested=$8 \
+            FROM steps step JOIN worker_sessions session \
+              ON session.tenant_id=step.tenant_id AND session.id::text=step.leased_by \
+           WHERE step.tenant_id=$1 AND step.run_id=$2 AND step.namespace_id=$3 \
+@@ -469,6 +474,7 @@ async fn assert_live_target(pool: &PgPool, receipt: &Receipt) {
+     .bind(Token::hash_of(&receipt.lease.lease_token))
+     .bind(&receipt.worker_id)
+     .bind(Token::hash_of(&receipt.session_token))
++    .bind(cancel_requested)
+     .fetch_one(pool)
+     .await
+     .expect("current live old target");
+@@ -476,7 +482,10 @@ async fn assert_live_target(pool: &PgPool, receipt: &Receipt) {
+         (live.0.as_str(), live.1, live.2),
+         ("LEASED", receipt.lease.attempt, receipt.lease.generation)
+     );
+-    assert!(live.3 && live.4 && live.5 && live.6 && live.7);
++    assert!(
++        live.3 && live.4 && live.5 && live.6 && live.7 && live.8,
++        "the original attempt, lease, session and cancellation state must remain exact"
++    );
+     let now_ms = time::OffsetDateTime::now_utc().unix_timestamp_nanos() as i64 / 1_000_000;
+     assert!(receipt.lease.expires_at_epoch_ms > now_ms);
+ }
+@@ -541,13 +550,15 @@ async fn verified_report_receipt(
+         "report ACK command does not identify the committed journal head"
+     );
+ 
++    let expected_scope = report_scope(receipt);
+     let mut rows: Vec<(Uuid, String, String, Vec<u8>, String, time::OffsetDateTime)> =
+         sqlx::query_as(
+             "SELECT tenant_id,scope,idempotency_key,request_hash,resource_id,created_at \
+          FROM command_dedupe \
+-          WHERE tenant_id=$1 AND idempotency_key=$2",
++          WHERE tenant_id=$1 AND scope=$2 AND idempotency_key=$3",
+         )
+         .bind(receipt.tenant.as_uuid())
++        .bind(&expected_scope)
+         .bind(&receipt.completion.idempotency_key)
+         .fetch_all(pool)
+         .await
+@@ -563,7 +574,7 @@ async fn verified_report_receipt(
+         "report receipt changed the original tenant identity"
+     );
+     assert!(
+-        scope == report_scope(receipt),
++        scope == expected_scope,
+         "report receipt has a noncanonical scoped lease identity"
+     );
+     assert!(
+@@ -590,6 +601,28 @@ async fn verified_report_receipt(
+     }
+ }
+ 
++async fn stored_report_receipt(pool: &PgPool, receipt: &Receipt) -> ReportReceipt {
++    let scope = report_scope(receipt);
++    let row: (Uuid, String, String, Vec<u8>, String, time::OffsetDateTime) = sqlx::query_as(
++        "SELECT tenant_id,scope,idempotency_key,request_hash,resource_id,created_at \
++           FROM command_dedupe WHERE tenant_id=$1 AND scope=$2 AND idempotency_key=$3",
++    )
++    .bind(receipt.tenant.as_uuid())
++    .bind(&scope)
++    .bind(&receipt.completion.idempotency_key)
++    .fetch_one(pool)
++    .await
++    .expect("exact original complete report receipt");
++    ReportReceipt {
++        tenant: row.0,
++        scope: row.1,
++        key: row.2,
++        request_hash: row.3,
++        resource: row.4,
++        created_at: row.5,
++    }
++}
++
+ async fn report_identity(pool: &PgPool, receipt: &Receipt) -> (i64, i64, i64, i64, i64, i64, i64) {
+     sqlx::query_as(
+         "SELECT \
+@@ -618,11 +651,13 @@ async fn assert_successful_refusal(
+     receipt: &Receipt,
+     outboxes_before: i64,
+     payloads_before: i64,
++    expected_scope_lifecycle: &str,
+ ) {
+     let state: SuccessfulRefusalState = sqlx::query_as(
+         "SELECT run.status,run.stop_reason,run.stop_code,scope.lifecycle,step.status, \
+                     step.output_digest IS NULL,step.reported_lease_token_hash=$4, \
+-                    step.attempt=$5 AND step.generation=$6, \
++                    step.attempt=$5 AND step.generation=$6,step.cancel_requested, \
++                    member.lifecycle,member.slot_held, \
+                     telemetry.head_seq,run.run_version \
+                FROM runs run JOIN iteration_scopes scope \
+                  ON scope.tenant_id=run.tenant_id AND scope.run_id=run.id \
+@@ -631,6 +666,9 @@ async fn assert_successful_refusal(
+                JOIN steps step ON step.tenant_id=run.tenant_id AND step.run_id=run.id \
+                 AND step.node='reserve' AND step.instance_path_nodes=ARRAY['c10']::text[] \
+                 AND step.instance_path_indices=ARRAY[0]::integer[] \
++               JOIN collection_iterations member ON member.tenant_id=scope.tenant_id \
++                AND member.run_id=scope.run_id AND member.scope_id=scope.scope_id \
++                AND member.iteration_index=0 \
+                JOIN telemetry_pending telemetry \
+                  ON telemetry.tenant_id=run.tenant_id AND telemetry.run_id=run.id \
+               WHERE run.tenant_id=$1 AND run.id=$2 AND step.namespace_id=$3",
+@@ -647,11 +685,14 @@ async fn assert_successful_refusal(
+     assert_eq!(state.0, "CANCELLING");
+     assert_eq!(state.1.as_deref(), Some("FAILED"));
+     assert_eq!(state.2.as_deref(), Some("RUN_DATA_LIMIT"));
+-    assert_eq!(state.3, "OPEN");
++    assert_eq!(state.3, expected_scope_lifecycle);
+     assert_eq!(state.4, "SUCCEEDED");
+     assert!(state.5 && state.6 && state.7);
++    assert!(!state.8, "successful report clears the cancellation request");
++    assert_eq!(state.9, "ADMITTED");
++    assert!(state.10, "the scheduler has not drained the reported member yet");
+     assert_eq!(
+-        state.8, state.9,
++        state.11, state.12,
+         "telemetry reaches the committed journal head"
+     );
+ 
+@@ -738,6 +779,422 @@ async fn assert_successful_refusal(
+     );
+ }
+ 
++async fn output_reference_fingerprint(pool: &PgPool, receipt: &Receipt) -> String {
++    let value: Value = sqlx::query_scalar(
++        "SELECT jsonb_build_object( \
++          'runResult',encode(run.result_digest,'hex'), \
++          'stepOutputs',(SELECT coalesce(jsonb_agg(jsonb_build_object( \
++              'pathNodes',step.instance_path_nodes,'pathIndices',step.instance_path_indices, \
++              'node',step.node,'output',encode(step.output_digest,'hex')) \
++            ORDER BY step.instance_path_nodes,step.instance_path_indices,step.node),'[]'::jsonb) \
++            FROM steps step WHERE step.tenant_id=run.tenant_id AND step.run_id=run.id), \
++          'scopeResults',(SELECT coalesce(jsonb_agg(jsonb_build_object( \
++              'owner',scope.owner_node,'result',encode(scope.result_digest,'hex')) \
++            ORDER BY scope.owner_node),'[]'::jsonb) FROM iteration_scopes scope \
++            WHERE scope.tenant_id=run.tenant_id AND scope.run_id=run.id), \
++          'memberResults',(SELECT coalesce(jsonb_agg(jsonb_build_object( \
++              'scope',member.scope_id,'index',member.iteration_index, \
++              'result',encode(member.result_digest,'hex')) \
++            ORDER BY member.scope_id,member.iteration_index),'[]'::jsonb) \
++            FROM collection_iterations member \
++            WHERE member.tenant_id=run.tenant_id AND member.run_id=run.id), \
++          'checkpoints',(SELECT coalesce(jsonb_agg(jsonb_build_object( \
++              'scope',checkpoint.scope_id,'index',checkpoint.iteration_index, \
++              'result',encode(checkpoint.result_digest,'hex')) \
++            ORDER BY checkpoint.scope_id,checkpoint.iteration_index),'[]'::jsonb) \
++            FROM iteration_checkpoints checkpoint \
++            WHERE checkpoint.tenant_id=run.tenant_id AND checkpoint.run_id=run.id), \
++          'blobs',(SELECT coalesce(jsonb_agg(to_jsonb(blob) ORDER BY blob.id),'[]'::jsonb) \
++            FROM blobs blob WHERE blob.tenant_id=run.tenant_id AND blob.run_id=run.id)) \
++         FROM runs run WHERE run.tenant_id=$1 AND run.id=$2",
++    )
++    .bind(receipt.tenant.as_uuid())
++    .bind(receipt.run.as_uuid())
++    .fetch_one(pool)
++    .await
++    .expect("bounded output-reference snapshot");
++    sha(&value)
++}
++
++async fn stop_drain_fingerprint(pool: &PgPool, receipt: &Receipt) -> String {
++    let value: Value = sqlx::query_scalar(
++        "SELECT jsonb_build_object( \
++          'stop',jsonb_build_object('reason',run.stop_reason,'code',run.stop_code), \
++          'stopEvent',(SELECT to_jsonb(event) FROM run_events event \
++            WHERE event.tenant_id=run.tenant_id AND event.run_id=run.id \
++              AND event.event_type='run.stop_requested'), \
++          'scope',(SELECT jsonb_build_object( \
++              'kind',scope.drain_kind,'iteration',scope.drain_iteration, \
++              'code',scope.drain_failure_code,'sequence',scope.drain_sequence, \
++              'outbox',scope.drain_outbox_id) FROM iteration_scopes scope \
++            WHERE scope.tenant_id=run.tenant_id AND scope.run_id=run.id \
++              AND scope.owner_path_nodes='{}'::text[] \
++              AND scope.owner_path_indices='{}'::integer[] AND scope.owner_node='c10'), \
++          'drainEvent',(SELECT to_jsonb(event) FROM run_events event \
++            WHERE event.tenant_id=run.tenant_id AND event.run_id=run.id \
++              AND event.event_type='collection.drain_started' AND event.node='c10'), \
++          'cancelEvent',(SELECT to_jsonb(event) FROM run_events event \
++            WHERE event.tenant_id=run.tenant_id AND event.run_id=run.id \
++              AND event.event_type='step.cancel_requested' AND event.node='reserve' \
++              AND event.instance_path_nodes=ARRAY['c10']::text[] \
++              AND event.instance_path_indices=ARRAY[0]::integer[]), \
++          'audit',(SELECT to_jsonb(audit) FROM audit_records audit \
++            WHERE audit.tenant_id=run.tenant_id AND audit.resource_type='run' \
++              AND audit.resource_id=run.id::text AND audit.action='run.data_limit_exceeded' \
++              AND audit.reason='existing_outputs'), \
++          'outbox',(SELECT to_jsonb(message) FROM event_outbox message \
++            WHERE message.tenant_id=run.tenant_id AND message.aggregate_id=run.id \
++              AND message.event_type='collection.drain.started' AND message.routing_key='c10')) \
++         FROM runs run WHERE run.tenant_id=$1 AND run.id=$2",
++    )
++    .bind(receipt.tenant.as_uuid())
++    .bind(receipt.run.as_uuid())
++    .fetch_one(pool)
++    .await
++    .expect("immutable stop and drain identity");
++    sha(&value)
++}
++
++async fn drain_wait_fingerprint(pool: &PgPool, receipt: &Receipt) -> String {
++    let value: Value = sqlx::query_scalar(
++        "SELECT jsonb_build_object( \
++          'run',jsonb_build_object('status',run.status,'reason',run.stop_reason, \
++            'code',run.stop_code,'version',run.run_version), \
++          'scope',(SELECT to_jsonb(scope) FROM iteration_scopes scope \
++            WHERE scope.tenant_id=run.tenant_id AND scope.run_id=run.id \
++              AND scope.owner_path_nodes='{}'::text[] \
++              AND scope.owner_path_indices='{}'::integer[] AND scope.owner_node='c10'), \
++          'member',(SELECT to_jsonb(member) FROM collection_iterations member \
++            JOIN iteration_scopes scope USING(tenant_id,run_id,scope_id) \
++            WHERE member.tenant_id=run.tenant_id AND member.run_id=run.id \
++              AND scope.owner_node='c10' AND member.iteration_index=0), \
++          'step',(SELECT to_jsonb(step) FROM steps step \
++            WHERE step.tenant_id=run.tenant_id AND step.run_id=run.id \
++              AND step.node='reserve' AND step.instance_path_nodes=ARRAY['c10']::text[] \
++              AND step.instance_path_indices=ARRAY[0]::integer[]), \
++          'events',(SELECT jsonb_agg(to_jsonb(event) ORDER BY event.seq) FROM run_events event \
++            WHERE event.tenant_id=run.tenant_id AND event.run_id=run.id), \
++          'sagas',(SELECT jsonb_agg(to_jsonb(saga)) FROM scope_sagas saga \
++            WHERE saga.tenant_id=run.tenant_id AND saga.run_id=run.id), \
++          'telemetry',(SELECT head.head_seq FROM telemetry_pending head \
++            WHERE head.tenant_id=run.tenant_id AND head.run_id=run.id)) \
++         FROM runs run WHERE run.tenant_id=$1 AND run.id=$2",
++    )
++    .bind(receipt.tenant.as_uuid())
++    .bind(receipt.run.as_uuid())
++    .fetch_one(pool)
++    .await
++    .expect("exact drain wait snapshot");
++    sha(&value)
++}
++
++async fn assert_initial_drain_first_state(
++    pool: &PgPool,
++    receipt: &Receipt,
++    output_fingerprint: &str,
++) {
++    let row = sqlx::query(
++        "SELECT run.status,run.stop_reason,run.stop_code,run.result_digest IS NULL AS no_run_result, \
++                scope.lifecycle,scope.item_count,scope.next_admission_index,scope.admitted_count, \
++                scope.completed_count,scope.active_count,scope.result_digest IS NULL AS no_scope_result, \
++                scope.drain_kind IS NULL AS no_drain_kind,scope.drain_iteration IS NULL AS no_drain_iteration, \
++                scope.drain_sequence IS NULL AS no_drain_sequence, \
++                member.lifecycle AS member_lifecycle,member.slot_held,member.reserved_instances, \
++                member.remaining_reservations,step.status AS step_status,step.cancel_requested, \
++                (SELECT count(*) FROM iteration_scopes old_scope JOIN steps owner \
++                  ON owner.tenant_id=old_scope.tenant_id AND owner.run_id=old_scope.run_id \
++                 AND owner.node=old_scope.owner_node AND owner.instance_path_nodes='{}'::text[] \
++                 AND owner.instance_path_indices='{}'::integer[] \
++                 WHERE old_scope.tenant_id=$1 AND old_scope.run_id=$2 \
++                   AND old_scope.owner_node=ANY($3::text[]) AND old_scope.lifecycle='SUCCEEDED' \
++                   AND owner.status='SUCCEEDED' AND owner.output_digest IS NULL) AS old_successes, \
++                (SELECT count(*) FROM leaf_collection_success_certifications certificate \
++                  WHERE certificate.tenant_id=$1 AND certificate.run_id=$2) AS certificates, \
++                (SELECT count(*) FROM iteration_checkpoints checkpoint \
++                  WHERE checkpoint.tenant_id=$1 AND checkpoint.run_id=$2 \
++                    AND checkpoint.scope_id=scope.scope_id) AS checkpoints, \
++                (SELECT count(*) FROM run_events event WHERE event.tenant_id=$1 AND event.run_id=$2 \
++                  AND event.event_type='step.completed' AND event.node='reserve' \
++                  AND event.instance_path_nodes=ARRAY['c10']::text[] \
++                  AND event.instance_path_indices=ARRAY[0]::integer[]) AS selected_completions, \
++                (SELECT count(*) FROM run_events event WHERE event.tenant_id=$1 AND event.run_id=$2 \
++                  AND event.event_type='step.cancel_requested' AND event.node='reserve' \
++                  AND event.instance_path_nodes=ARRAY['c10']::text[] \
++                  AND event.instance_path_indices=ARRAY[0]::integer[]) AS cancellations, \
++                (SELECT count(*) FROM scope_sagas saga WHERE saga.tenant_id=$1 AND saga.run_id=$2) AS sagas, \
++                (SELECT count(*) FROM command_dedupe receipt_row WHERE receipt_row.tenant_id=$1 \
++                  AND receipt_row.scope=$4 AND receipt_row.idempotency_key=$5) AS receipts \
++           FROM runs run JOIN iteration_scopes scope \
++             ON scope.tenant_id=run.tenant_id AND scope.run_id=run.id \
++            AND scope.owner_path_nodes='{}'::text[] AND scope.owner_path_indices='{}'::integer[] \
++            AND scope.owner_node='c10' \
++           JOIN collection_iterations member ON member.tenant_id=scope.tenant_id \
++            AND member.run_id=scope.run_id AND member.scope_id=scope.scope_id \
++            AND member.iteration_index=0 \
++           JOIN steps step ON step.tenant_id=run.tenant_id AND step.run_id=run.id \
++            AND step.node='reserve' AND step.instance_path_nodes=ARRAY['c10']::text[] \
++            AND step.instance_path_indices=ARRAY[0]::integer[] \
++          WHERE run.tenant_id=$1 AND run.id=$2",
++    )
++    .bind(receipt.tenant.as_uuid())
++    .bind(receipt.run.as_uuid())
++    .bind(source_nodes())
++    .bind(report_scope(receipt))
++    .bind(&receipt.completion.idempotency_key)
++    .fetch_one(pool)
++    .await
++    .expect("genuine pre-drain old state");
++    let initial_status = row.get::<String, _>("status");
++    assert!(
++        matches!(initial_status.as_str(), "RUNNING" | "WAITING"),
++        "the genuine old run must still be live before current scheduling"
++    );
++    assert!(row.get::<Option<String>, _>("stop_reason").is_none());
++    assert!(row.get::<Option<String>, _>("stop_code").is_none());
++    assert!(row.get::<bool, _>("no_run_result"));
++    assert_eq!(row.get::<String, _>("lifecycle"), "OPEN");
++    assert_eq!(row.get::<i32, _>("item_count"), 1);
++    assert_eq!(row.get::<i32, _>("next_admission_index"), 1);
++    assert_eq!(row.get::<i32, _>("admitted_count"), 1);
++    assert_eq!(row.get::<i32, _>("completed_count"), 0);
++    assert_eq!(row.get::<i32, _>("active_count"), 1);
++    assert!(row.get::<bool, _>("no_scope_result"));
++    assert!(row.get::<bool, _>("no_drain_kind"));
++    assert!(row.get::<bool, _>("no_drain_iteration"));
++    assert!(row.get::<bool, _>("no_drain_sequence"));
++    assert_eq!(row.get::<String, _>("member_lifecycle"), "ADMITTED");
++    assert!(row.get::<bool, _>("slot_held"));
++    assert!(row.get::<i32, _>("reserved_instances") >= 1);
++    assert!(row.get::<i32, _>("remaining_reservations") >= 1);
++    assert_eq!(row.get::<String, _>("step_status"), "LEASED");
++    assert!(!row.get::<bool, _>("cancel_requested"));
++    assert_eq!(row.get::<i64, _>("old_successes"), 10);
++    assert_eq!(row.get::<i64, _>("certificates"), 0);
++    assert_eq!(row.get::<i64, _>("checkpoints"), 0);
++    assert_eq!(row.get::<i64, _>("selected_completions"), 0);
++    assert_eq!(row.get::<i64, _>("cancellations"), 0);
++    assert_eq!(row.get::<i64, _>("sagas"), 0);
++    assert_eq!(row.get::<i64, _>("receipts"), 0);
++    assert!(
++        output_reference_fingerprint(pool, receipt).await == output_fingerprint,
++        "the initial current read changed output or blob references"
++    );
++}
++
++async fn assert_first_drain(
++    pool: &PgPool,
++    receipt: &Receipt,
++    outboxes_before: i64,
++    payloads_before: i64,
++    output_fingerprint: &str,
++) -> String {
++    let row = sqlx::query(
++        "SELECT run.status,run.stop_reason,run.stop_code,run.result_digest IS NULL AS no_run_result, \
++                run.run_version,telemetry.head_seq,scope.lifecycle,scope.drain_kind, \
++                scope.drain_iteration,scope.drain_failure_code,scope.drain_sequence, \
++                scope.result_digest IS NULL AS no_scope_result,member.lifecycle AS member_lifecycle, \
++                member.slot_held,step.status AS step_status,step.cancel_requested, \
++                step.step_id=$3 AS same_step,step.lease_token_hash=$4 AS same_token, \
++                step.leased_by=$5 AS same_worker,step.attempt=$6 AS same_attempt, \
++                step.generation=$7 AS same_generation,step.lease_expires_at>clock_timestamp() AS live_lease, \
++                (SELECT count(*) FROM run_events event WHERE event.tenant_id=$1 AND event.run_id=$2 \
++                  AND event.event_type='run.stop_requested' AND event.detail->>'reason'='FAILED' \
++                  AND event.detail->>'code'='RUN_DATA_LIMIT') AS stops, \
++                (SELECT min(event.seq) FROM run_events event WHERE event.tenant_id=$1 AND event.run_id=$2 \
++                  AND event.event_type='run.stop_requested') AS stop_seq, \
++                (SELECT count(*) FROM run_events event WHERE event.tenant_id=$1 AND event.run_id=$2 \
++                  AND event.event_type='collection.drain_started' AND event.node='c10' \
++                  AND event.detail->>'reason'='run_data_limit') AS drains, \
++                (SELECT min(event.seq) FROM run_events event WHERE event.tenant_id=$1 AND event.run_id=$2 \
++                  AND event.event_type='collection.drain_started' AND event.node='c10') AS drain_seq, \
++                (SELECT count(*) FROM run_events event WHERE event.tenant_id=$1 AND event.run_id=$2 \
++                  AND event.event_type='step.cancel_requested' AND event.node='reserve' \
++                  AND event.instance_path_nodes=ARRAY['c10']::text[] \
++                  AND event.instance_path_indices=ARRAY[0]::integer[]) AS cancellations, \
++                (SELECT min(event.seq) FROM run_events event WHERE event.tenant_id=$1 AND event.run_id=$2 \
++                  AND event.event_type='step.cancel_requested' AND event.node='reserve' \
++                  AND event.instance_path_nodes=ARRAY['c10']::text[] \
++                  AND event.instance_path_indices=ARRAY[0]::integer[]) AS cancel_seq, \
++                (SELECT count(*) FROM run_events event WHERE event.tenant_id=$1 AND event.run_id=$2 \
++                  AND ((event.event_type IN ('step.completed','step.failed','step.cancelled', \
++                                             'step.retry_scheduled') \
++                       AND event.node='reserve' AND event.instance_path_nodes=ARRAY['c10']::text[] \
++                       AND event.instance_path_indices=ARRAY[0]::integer[]) \
++                    OR (event.event_type IN ('collection.iteration_returned', \
++                                             'collection.iteration_checkpointed', \
++                                             'collection.iteration_drained','collection.finished') \
++                       AND event.node='c10') OR event.event_type='run.finished')) AS premature_events, \
++                (SELECT count(*) FROM scope_sagas saga WHERE saga.tenant_id=$1 AND saga.run_id=$2) AS sagas, \
++                (SELECT count(*) FROM steps extra WHERE extra.tenant_id=$1 AND extra.run_id=$2 \
++                  AND extra.instance_path_nodes=ARRAY['c10']::text[] \
++                  AND extra.instance_path_indices=ARRAY[0]::integer[] \
++                  AND (extra.node='reserve~c' OR extra.node='reserve~r')) AS extra_effects, \
++                (SELECT count(*) FROM audit_records audit WHERE audit.tenant_id=$1 \
++                  AND audit.resource_type='run' AND audit.resource_id=$2::text \
++                  AND audit.action='run.data_limit_exceeded' AND audit.reason='existing_outputs' \
++                  AND audit.actor='system:engine' AND audit.trace_id IS NOT DISTINCT FROM run.trace_id) AS audits, \
++                (SELECT count(*) FROM event_outbox message WHERE message.tenant_id=$1 \
++                  AND message.aggregate_id=$2 AND message.event_type='collection.drain.started' \
++                  AND message.routing_key='c10' AND message.payload->>'reason'='FAILED') AS drain_outboxes, \
++                (SELECT count(*) FROM command_dedupe receipt_row WHERE receipt_row.tenant_id=$1 \
++                  AND receipt_row.scope=$8 AND receipt_row.idempotency_key=$9) AS receipts \
++           FROM runs run JOIN telemetry_pending telemetry \
++             ON telemetry.tenant_id=run.tenant_id AND telemetry.run_id=run.id \
++           JOIN iteration_scopes scope ON scope.tenant_id=run.tenant_id AND scope.run_id=run.id \
++            AND scope.owner_path_nodes='{}'::text[] AND scope.owner_path_indices='{}'::integer[] \
++            AND scope.owner_node='c10' \
++           JOIN collection_iterations member ON member.tenant_id=scope.tenant_id \
++            AND member.run_id=scope.run_id AND member.scope_id=scope.scope_id \
++            AND member.iteration_index=0 \
++           JOIN steps step ON step.tenant_id=run.tenant_id AND step.run_id=run.id \
++            AND step.node='reserve' AND step.instance_path_nodes=ARRAY['c10']::text[] \
++            AND step.instance_path_indices=ARRAY[0]::integer[] \
++          WHERE run.tenant_id=$1 AND run.id=$2",
++    )
++    .bind(receipt.tenant.as_uuid())
++    .bind(receipt.run.as_uuid())
++    .bind(Uuid::parse_str(&receipt.lease.step_id).expect("step id"))
++    .bind(Token::hash_of(&receipt.lease.lease_token))
++    .bind(&receipt.worker_id)
++    .bind(receipt.lease.attempt)
++    .bind(receipt.lease.generation)
++    .bind(report_scope(receipt))
++    .bind(&receipt.completion.idempotency_key)
++    .fetch_one(pool)
++    .await
++    .expect("first normal drain state");
++    assert_eq!(row.get::<String, _>("status"), "CANCELLING");
++    assert_eq!(row.get::<Option<String>, _>("stop_reason").as_deref(), Some("FAILED"));
++    assert_eq!(row.get::<Option<String>, _>("stop_code").as_deref(), Some("RUN_DATA_LIMIT"));
++    assert!(row.get::<bool, _>("no_run_result"));
++    assert_eq!(row.get::<i64, _>("run_version"), row.get::<i64, _>("head_seq"));
++    assert_eq!(row.get::<String, _>("lifecycle"), "DRAINING");
++    assert_eq!(row.get::<Option<String>, _>("drain_kind").as_deref(), Some("RUN_DATA_LIMIT"));
++    assert!(row.get::<Option<i32>, _>("drain_iteration").is_none());
++    assert_eq!(
++        row.get::<Option<String>, _>("drain_failure_code")
++            .as_deref(),
++        Some("RUN_DATA_LIMIT")
++    );
++    assert!(row.get::<bool, _>("no_scope_result"));
++    assert_eq!(row.get::<String, _>("member_lifecycle"), "ADMITTED");
++    assert!(row.get::<bool, _>("slot_held"));
++    assert_eq!(row.get::<String, _>("step_status"), "LEASED");
++    assert!(row.get::<bool, _>("cancel_requested"));
++    assert!(row.get::<bool, _>("same_step"));
++    assert!(row.get::<bool, _>("same_token"));
++    assert!(row.get::<bool, _>("same_worker"));
++    assert!(row.get::<bool, _>("same_attempt"));
++    assert!(row.get::<bool, _>("same_generation"));
++    assert!(row.get::<bool, _>("live_lease"));
++    assert_eq!(row.get::<i64, _>("stops"), 1);
++    assert_eq!(row.get::<i64, _>("drains"), 1);
++    assert_eq!(row.get::<i64, _>("cancellations"), 1);
++    let stop_seq = row.get::<i64, _>("stop_seq");
++    let drain_seq = row.get::<i64, _>("drain_seq");
++    let cancel_seq = row.get::<i64, _>("cancel_seq");
++    assert!(
++        stop_seq < drain_seq && drain_seq < cancel_seq,
++        "stop, drain and cancellation order changed"
++    );
++    assert_eq!(row.get::<Option<i64>, _>("drain_sequence"), Some(cancel_seq));
++    assert_eq!(row.get::<i64, _>("run_version"), cancel_seq);
++    assert_eq!(row.get::<i64, _>("premature_events"), 0);
++    assert_eq!(row.get::<i64, _>("sagas"), 0);
++    assert_eq!(row.get::<i64, _>("extra_effects"), 0);
++    assert_eq!(row.get::<i64, _>("audits"), 1);
++    assert_eq!(row.get::<i64, _>("drain_outboxes"), 1);
++    assert_eq!(row.get::<i64, _>("receipts"), 0);
++    assert_eq!(outboxes(pool, receipt).await, outboxes_before + 1);
++    assert_eq!(payloads(pool, receipt).await, payloads_before);
++    assert_eq!(effective_totals(pool, receipt).await, (2_100_000, 2_100_020, 4_200_020));
++    assert!(
++        output_reference_fingerprint(pool, receipt).await == output_fingerprint,
++        "the drain retained or rewired an output or blob"
++    );
++    assert!(
++        source_witness(pool, receipt.tenant, receipt.run).await == receipt.source_witness,
++        "the drain changed the immutable old source"
++    );
++    stop_drain_fingerprint(pool, receipt).await
++}
++
++async fn assert_pending_compensation(pool: &PgPool, receipt: &Receipt) -> String {
++    let row = sqlx::query(
++        "SELECT run.status,run.finished_at IS NULL AS unfinished,scope.lifecycle,member.lifecycle, \
++                saga.phase,saga.outcome,compensation.status AS compensation_status, \
++                compensation.lease_expires_at>clock_timestamp() AS compensation_live, \
++                (SELECT count(*) FROM scope_saga_entries entry WHERE entry.tenant_id=$1 \
++                  AND entry.run_id=$2 AND entry.owner_path_nodes='{}'::text[] \
++                  AND entry.owner_path_indices='{}'::integer[] AND entry.owner_node='c10' \
++                  AND entry.iteration_index=0 AND entry.node='reserve' \
++                  AND entry.kind='COMPENSATE') AS entries, \
++                (SELECT count(*) FROM run_events event WHERE event.tenant_id=$1 AND event.run_id=$2 \
++                  AND event.event_type='collection.iteration_drained' AND event.node='c10') AS drains, \
++                (SELECT count(*) FROM run_events event WHERE event.tenant_id=$1 AND event.run_id=$2 \
++                  AND event.event_type IN ('collection.finished','run.finished')) AS terminal_events, \
++                (SELECT count(*) FROM steps extra WHERE extra.tenant_id=$1 AND extra.run_id=$2 \
++                  AND extra.node='reserve~r' AND extra.instance_path_nodes=ARRAY['c10']::text[] \
++                  AND extra.instance_path_indices=ARRAY[0]::integer[]) AS reconciliations \
++           FROM runs run JOIN iteration_scopes scope \
++             ON scope.tenant_id=run.tenant_id AND scope.run_id=run.id \
++            AND scope.owner_path_nodes='{}'::text[] AND scope.owner_path_indices='{}'::integer[] \
++            AND scope.owner_node='c10' \
++           JOIN collection_iterations member ON member.tenant_id=scope.tenant_id \
++            AND member.run_id=scope.run_id AND member.scope_id=scope.scope_id \
++            AND member.iteration_index=0 \
++           JOIN scope_sagas saga ON saga.tenant_id=run.tenant_id AND saga.run_id=run.id \
++            AND saga.owner_path_nodes='{}'::text[] AND saga.owner_path_indices='{}'::integer[] \
++            AND saga.owner_node='c10' \
++           JOIN steps compensation ON compensation.tenant_id=run.tenant_id \
++            AND compensation.run_id=run.id AND compensation.node='reserve~c' \
++            AND compensation.instance_path_nodes=ARRAY['c10']::text[] \
++            AND compensation.instance_path_indices=ARRAY[0]::integer[] \
++          WHERE run.tenant_id=$1 AND run.id=$2",
++    )
++    .bind(receipt.tenant.as_uuid())
++    .bind(receipt.run.as_uuid())
++    .fetch_one(pool)
++    .await
++    .expect("leased compensation remains an open obligation");
++    assert_eq!(row.get::<String, _>("status"), "COMPENSATING");
++    assert!(row.get::<bool, _>("unfinished"));
++    assert_eq!(row.get::<String, _>("lifecycle"), "DRAINING");
++    assert_eq!(row.get::<String, _>("member_lifecycle"), "DRAINED");
++    assert_eq!(row.get::<String, _>("phase"), "COMPENSATING");
++    assert!(row.get::<Option<String>, _>("outcome").is_none());
++    assert_eq!(row.get::<String, _>("compensation_status"), "LEASED");
++    assert!(row.get::<bool, _>("compensation_live"));
++    assert_eq!(row.get::<i64, _>("entries"), 1);
++    assert_eq!(row.get::<i64, _>("drains"), 1);
++    assert_eq!(row.get::<i64, _>("terminal_events"), 0);
++    assert_eq!(row.get::<i64, _>("reconciliations"), 0);
++    let value: Value = sqlx::query_scalar(
++        "SELECT jsonb_build_object( \
++          'run',(SELECT jsonb_build_object('status',status,'version',run_version,'finished',finished_at) \
++            FROM runs WHERE tenant_id=$1 AND id=$2), \
++          'scope',(SELECT to_jsonb(scope) FROM iteration_scopes scope WHERE scope.tenant_id=$1 \
++            AND scope.run_id=$2 AND scope.owner_node='c10'), \
++          'member',(SELECT to_jsonb(member) FROM collection_iterations member \
++            JOIN iteration_scopes scope USING(tenant_id,run_id,scope_id) \
++            WHERE member.tenant_id=$1 AND member.run_id=$2 AND scope.owner_node='c10'), \
++          'saga',(SELECT to_jsonb(saga) FROM scope_sagas saga WHERE saga.tenant_id=$1 \
++            AND saga.run_id=$2 AND saga.owner_node='c10'), \
++          'entries',(SELECT jsonb_agg(to_jsonb(entry)) FROM scope_saga_entries entry \
++            WHERE entry.tenant_id=$1 AND entry.run_id=$2 AND entry.owner_node='c10'), \
++          'compensation',(SELECT to_jsonb(step) FROM steps step WHERE step.tenant_id=$1 \
++            AND step.run_id=$2 AND step.node='reserve~c' \
++            AND step.instance_path_nodes=ARRAY['c10']::text[] \
++            AND step.instance_path_indices=ARRAY[0]::integer[]))",
++    )
++    .bind(receipt.tenant.as_uuid())
++    .bind(receipt.run.as_uuid())
++    .fetch_one(pool)
++    .await
++    .expect("pending compensation identity");
++    sha(&value)
++}
++
+ async fn fresh_verify(api: &TestApi, receipt: &Receipt) {
+     let url = if crate::support::as_runtime_role() {
+         api.db.url_for(RUNTIME_ROLE, RUNTIME_ROLE_PASSWORD)
+@@ -749,10 +1206,8 @@ async fn fresh_verify(api: &TestApi, receipt: &Receipt) {
+         .expect("fresh verification pool");
+     let store = PgRunStore::new(pool, DefinitionCache::new(Arc::new(JsonIrCodec), 8))
+         .with_scoped_worker_protocol();
+-    assert!(
+-        store.verify_run(receipt.tenant, receipt.run).await.is_ok(),
+-        "cold journal projection replay"
+-    );
++    let verified = store.verify_run(receipt.tenant, receipt.run).await;
++    assert!(verified.is_ok(), "cold journal projection replay failed");
+ }
+ 
+ async fn poll_compensation(
+@@ -867,7 +1322,7 @@ async fn old_ordinary_success_before_drain_preserves_the_report_and_compensation
+         identity_witness(&platform.api.db.pool, &receipt).await == authority_before,
+         "persisted worker authority changed during current API startup"
+     );
+-    assert_live_target(&platform.api.db.pool, &receipt).await;
++    assert_live_target(&platform.api.db.pool, &receipt, false).await;
+     assert_eq!(
+         effective_totals(&platform.api.db.pool, &receipt).await,
+         (2_100_000, 2_100_020, 4_200_020)
+@@ -897,7 +1352,14 @@ async fn old_ordinary_success_before_drain_preserves_the_report_and_compensation
+     assert_eq!(accepted.step_status, "SUCCEEDED");
+     assert_eq!(accepted.run_status, "CANCELLING");
+     assert!(platform.api.authentication_lookups() > lookups_before);
+-    assert_successful_refusal(&platform.api, &receipt, outboxes_before, payloads_before).await;
++    assert_successful_refusal(
++        &platform.api,
++        &receipt,
++        outboxes_before,
++        payloads_before,
++        "OPEN",
++    )
++    .await;
+     let original_report_receipt =
+         verified_report_receipt(&platform.api.db.pool, &receipt, &accepted.command_id).await;
+     assert!(
+@@ -1040,7 +1502,10 @@ async fn old_ordinary_success_before_drain_preserves_the_report_and_compensation
+         compensation.target_idempotency_key,
+         receipt.lease.idempotency_key
+     );
+-    assert_eq!(compensation.target_instance, receipt.lease.instance);
++    assert!(
++        compensation.target_instance == receipt.lease.instance,
++        "compensation targets the exact original forward instance"
++    );
+     let compensation_instance = compensation
+         .instance
+         .as_ref()
+@@ -1133,3 +1598,428 @@ async fn old_ordinary_success_before_drain_preserves_the_report_and_compensation
+     );
+     fresh_verify(&platform.api, &receipt).await;
+ }
++
++#[tokio::test]
++#[ignore = "requires scripts/test-legacy-collection-inflight-report-v1.sh --case drain-before-report"]
++async fn old_ordinary_success_after_drain_preserves_the_report_and_compensation() {
++    let receipt_path = std::env::var_os("SAGAT_Q10C_ORDINARY_PHASE_RECEIPT")
++        .map(std::path::PathBuf::from)
++        .expect("phased runner receipt path");
++    assert_eq!(
++        std::fs::metadata(&receipt_path)
++            .expect("private receipt metadata")
++            .permissions()
++            .mode()
++            & 0o777,
++        0o600
++    );
++    let receipt = Receipt::parse(&std::fs::read(&receipt_path).expect("read private receipt"));
++    assert_wire_identity(&receipt);
++
++    let admin_url = std::env::var("SAGAT_TEST_DATABASE_URL")
++        .expect("coordinator-owned external PostgreSQL admin URL");
++    let db = attach_existing_db(&admin_url, &receipt.database_name).await;
++    let actual_database: String = sqlx::query_scalar("SELECT current_database()::text")
++        .fetch_one(&db.pool)
++        .await
++        .expect("retained database identity");
++    assert_eq!(actual_database, receipt.database_name);
++    assert!(
++        projection_witness(&db.pool, receipt.tenant, receipt.run).await
++            == receipt.projection_witness,
++        "immutable-old projection witness changed before migration"
++    );
++    assert!(
++        source_witness(&db.pool, receipt.tenant, receipt.run).await == receipt.source_witness,
++        "closed source witness changed before migration"
++    );
++    let authority_before = identity_witness(&db.pool, &receipt).await;
++
++    migrate(&db.pool)
++        .await
++        .expect("apply current migrations as owner");
++    assert!(
++        projection_witness(&db.pool, receipt.tenant, receipt.run).await
++            == receipt.projection_witness,
++        "immutable-old projection witness changed during migration"
++    );
++    assert!(
++        source_witness(&db.pool, receipt.tenant, receipt.run).await == receipt.source_witness,
++        "closed source witness changed during migration"
++    );
++    let api = start_on_db(db, current_options()).await;
++    let platform = Platform {
++        api,
++        tenant: receipt.tenant,
++        other_tenant: receipt.other_tenant,
++    };
++    let current_api_role: String = sqlx::query_scalar("SELECT current_user::text")
++        .fetch_one(&platform.api.api_pool)
++        .await
++        .expect("consumer API database role");
++    assert_eq!(current_api_role, receipt.producer_api_role);
++    if crate::support::as_runtime_role() {
++        assert_eq!(receipt.producer_api_role, RUNTIME_ROLE);
++        assert_eq!(current_api_role, RUNTIME_ROLE);
++    } else {
++        assert_ne!(receipt.producer_api_role, RUNTIME_ROLE);
++        assert_ne!(current_api_role, RUNTIME_ROLE);
++    }
++    eprintln!(
++        "q10c ordinary-drain-before-report API roles: producer={}, consumer={current_api_role}",
++        receipt.producer_api_role
++    );
++    assert!(
++        identity_witness(&platform.api.db.pool, &receipt).await == authority_before,
++        "persisted worker authority changed during current API startup"
++    );
++    assert_live_target(&platform.api.db.pool, &receipt, false).await;
++    assert_eq!(
++        effective_totals(&platform.api.db.pool, &receipt).await,
++        (2_100_000, 2_100_020, 4_200_020)
++    );
++
++    let mut worker = platform
++        .connect(&receipt.worker_subject, &receipt.tenant_alias)
++        .await;
++    worker.worker_id = receipt.worker_id.clone();
++    worker.session = receipt.session_token.clone();
++    assert!(
++        identity_witness(&platform.api.db.pool, &receipt).await == authority_before,
++        "transport connection changed persisted worker authority"
++    );
++
++    let outboxes_before = outboxes(&platform.api.db.pool, &receipt).await;
++    let payloads_before = payloads(&platform.api.db.pool, &receipt).await;
++    let output_fingerprint = output_reference_fingerprint(&platform.api.db.pool, &receipt).await;
++    assert_initial_drain_first_state(
++        &platform.api.db.pool,
++        &receipt,
++        &output_fingerprint,
++    )
++    .await;
++
++    let stored_owner: (i64, i64, Option<String>, Option<String>) = sqlx::query_as(
++        "SELECT count(*) FILTER (WHERE owner IS NOT NULL), \
++                count(DISTINCT owner) FILTER (WHERE owner IS NOT NULL),min(owner),max(owner) \
++           FROM scheduler_shards",
++    )
++    .fetch_one(&platform.api.db.pool)
++    .await
++    .expect("immutable-old scheduler owner");
++    assert_eq!(stored_owner.0, i64::from(SHARDS));
++    assert_eq!(stored_owner.1, 1);
++    assert_eq!(stored_owner.2.as_deref(), Some(receipt.scheduler_owner.as_str()));
++    assert_eq!(stored_owner.3.as_deref(), Some(receipt.scheduler_owner.as_str()));
++
++    let placement = Placement::new(receipt.scheduler_owner.clone());
++    let round = Keeper::new(
++        platform.api.executions.clone(),
++        placement.clone(),
++        KeeperSettings {
++            ttl: Duration::from_secs(3_600),
++        },
++    )
++    .round()
++    .await
++    .expect("renew immutable-old scheduler identity");
++    assert_eq!(round.replicas, 1);
++    assert_eq!(round.held, usize::from(SHARDS));
++    assert!(placement.owned().contains(Shard::of(receipt.run.as_uuid())));
++    let scheduler = Scheduler::new(
++        platform.api.executions.clone(),
++        Engine::new(JsonEvaluator),
++        SystemEntropy,
++        SchedulerSettings {
++            discovery_rest: Duration::ZERO,
++            ..SchedulerSettings::default()
++        },
++    )
++    .with_placement(placement);
++
++    let drain_report = scheduler.tick().await;
++    assert_eq!(drain_report.failed, 0, "normal drain discovery failed");
++    assert_eq!(
++        drain_report.collections_advanced, 1,
++        "normal discovery did not select the legacy c10 scope"
++    );
++    let frozen_stop_drain = assert_first_drain(
++        &platform.api.db.pool,
++        &receipt,
++        outboxes_before,
++        payloads_before,
++        &output_fingerprint,
++    )
++    .await;
++    assert_live_target(&platform.api.db.pool, &receipt, true).await;
++    assert!(
++        identity_witness(&platform.api.db.pool, &receipt).await == authority_before,
++        "drain changed persisted worker authority"
++    );
++    fresh_verify(&platform.api, &receipt).await;
++
++    let waiting = drain_wait_fingerprint(&platform.api.db.pool, &receipt).await;
++    let wait_report = scheduler.tick().await;
++    assert_eq!(wait_report.failed, 0, "live-member wait failed");
++    assert_eq!(
++        wait_report.collections_advanced, 0,
++        "a live member must not count as collection progress"
++    );
++    assert!(wait_report.skipped >= 1, "the live draining scope was not observed waiting");
++    assert!(
++        drain_wait_fingerprint(&platform.api.db.pool, &receipt).await == waiting,
++        "a live cancellation request was incorrectly treated as a drained member"
++    );
++    assert_live_target(&platform.api.db.pool, &receipt, true).await;
++    assert!(
++        stop_drain_fingerprint(&platform.api.db.pool, &receipt).await == frozen_stop_drain,
++        "the live-member wait changed the original stop or drain"
++    );
++    assert_eq!(outboxes(&platform.api.db.pool, &receipt).await, outboxes_before + 1);
++    fresh_verify(&platform.api, &receipt).await;
++
++    let lookups_before = platform.api.authentication_lookups();
++    let request = worker.req(receipt.completion.clone());
++    let accepted = worker
++        .client
++        .complete_step(request)
++        .await
++        .expect("submit the exact old success after current drain")
++        .into_inner();
++    assert!(!accepted.already_applied);
++    assert_eq!(accepted.step_status, "SUCCEEDED");
++    assert_eq!(accepted.run_status, "CANCELLING");
++    assert!(platform.api.authentication_lookups() > lookups_before);
++    assert_successful_refusal(
++        &platform.api,
++        &receipt,
++        outboxes_before + 1,
++        payloads_before,
++        "DRAINING",
++    )
++    .await;
++    assert!(
++        stop_drain_fingerprint(&platform.api.db.pool, &receipt).await == frozen_stop_drain,
++        "the genuine success replaced the committed stop or drain"
++    );
++    assert!(
++        output_reference_fingerprint(&platform.api.db.pool, &receipt).await == output_fingerprint,
++        "the refused success retained an output or blob reference"
++    );
++    let order: (i64, i64) = sqlx::query_as(
++        "SELECT \
++          (SELECT seq FROM run_events WHERE tenant_id=$1 AND run_id=$2 \
++            AND event_type='step.cancel_requested' AND node='reserve' \
++            AND instance_path_nodes=ARRAY['c10']::text[] \
++            AND instance_path_indices=ARRAY[0]::integer[]), \
++          (SELECT seq FROM run_events WHERE tenant_id=$1 AND run_id=$2 \
++            AND event_type='step.completed' AND node='reserve' \
++            AND instance_path_nodes=ARRAY['c10']::text[] \
++            AND instance_path_indices=ARRAY[0]::integer[])",
++    )
++    .bind(receipt.tenant.as_uuid())
++    .bind(receipt.run.as_uuid())
++    .fetch_one(&platform.api.db.pool)
++    .await
++    .expect("drain-before-report journal order");
++    assert!(order.0 < order.1, "the original success did not follow the cancellation request");
++    let original_report_receipt =
++        verified_report_receipt(&platform.api.db.pool, &receipt, &accepted.command_id).await;
++    assert!(
++        identity_witness(&platform.api.db.pool, &receipt).await == authority_before,
++        "ordinary report changed persisted worker authority"
++    );
++    fresh_verify(&platform.api, &receipt).await;
++
++    let first_identity = report_identity(&platform.api.db.pool, &receipt).await;
++    let replay_request = worker.req(receipt.completion.clone());
++    let replay = worker
++        .client
++        .complete_step(replay_request)
++        .await
++        .expect("exact report receipt replay under fresh current authentication")
++        .into_inner();
++    assert!(replay.already_applied);
++    assert_eq!(replay.command_id, accepted.command_id);
++    assert_eq!(replay.step_status, "SUCCEEDED");
++    assert_eq!(replay.run_status, "CANCELLING");
++    assert_eq!(report_identity(&platform.api.db.pool, &receipt).await, first_identity);
++    let replayed_report_receipt =
++        verified_report_receipt(&platform.api.db.pool, &receipt, &replay.command_id).await;
++    assert!(
++        replayed_report_receipt == original_report_receipt,
++        "exact replay changed the complete report receipt identity"
++    );
++    assert!(
++        stop_drain_fingerprint(&platform.api.db.pool, &receipt).await == frozen_stop_drain,
++        "exact replay changed the original stop or drain"
++    );
++    assert!(
++        output_reference_fingerprint(&platform.api.db.pool, &receipt).await == output_fingerprint,
++        "exact replay changed output or blob references"
++    );
++    assert_eq!(outboxes(&platform.api.db.pool, &receipt).await, outboxes_before + 1);
++    assert_eq!(payloads(&platform.api.db.pool, &receipt).await, payloads_before);
++    assert!(
++        identity_witness(&platform.api.db.pool, &receipt).await == authority_before,
++        "exact replay changed persisted worker authority"
++    );
++    fresh_verify(&platform.api, &receipt).await;
++
++    let compensation = poll_compensation(&scheduler, &mut worker).await;
++    assert_eq!(compensation.task_kind, "COMPENSATION");
++    assert_eq!(compensation.activity_name, "line.release");
++    assert_eq!(compensation.target_node, "reserve");
++    assert_eq!(compensation.target_idempotency_key, receipt.lease.idempotency_key);
++    assert!(
++        compensation.target_instance == receipt.lease.instance,
++        "compensation targets the exact original forward instance"
++    );
++    let compensation_instance = compensation.instance.as_ref().expect("compensation identity");
++    assert_eq!(compensation_instance.definition_node_id, "reserve~c");
++    assert_eq!(compensation_instance.instance_path.len(), 1);
++    assert_eq!(compensation_instance.instance_path[0].scope_node_id, "c10");
++    assert_eq!(compensation_instance.instance_path[0].iteration_index, 0);
++
++    let pending_compensation = assert_pending_compensation(&platform.api.db.pool, &receipt).await;
++    let pending_report = scheduler.tick().await;
++    assert_eq!(pending_report.failed, 0, "leased compensation wait failed");
++    assert!(
++        assert_pending_compensation(&platform.api.db.pool, &receipt).await == pending_compensation,
++        "normal scheduling finalized or replaced an unfinished compensation"
++    );
++    assert!(
++        stop_drain_fingerprint(&platform.api.db.pool, &receipt).await == frozen_stop_drain,
++        "compensation planning changed the original stop or drain"
++    );
++
++    let compensation_ack = worker
++        .complete(&compensation, &json!({"released": true}))
++        .await
++        .expect("complete the real engine compensation task");
++    assert!(!compensation_ack.already_applied);
++    assert_eq!(compensation_ack.step_status, "SUCCEEDED");
++    finish_after_compensation(&scheduler, &platform.api, &receipt).await;
++
++    let final_state = sqlx::query(
++        "SELECT run.status,run.result_digest IS NULL AS no_run_result, \
++                scope.lifecycle,scope.drain_kind,scope.drain_failure_code, \
++                owner.status AS owner_status,owner.failure_code AS owner_failure, \
++                saga.phase,saga.outcome,forward.status AS forward_status, \
++                forward.output_digest IS NULL AS no_forward_output, \
++                compensation.status AS compensation_status, \
++                telemetry.head_seq,run.run_version, \
++                (SELECT count(*) FROM scope_saga_entries entry WHERE entry.tenant_id=$1 \
++                  AND entry.run_id=$2 AND entry.owner_node='c10' \
++                  AND entry.iteration_index=0 AND entry.node='reserve' \
++                  AND entry.kind='COMPENSATE') AS saga_entries, \
++                (SELECT count(*) FROM run_events event WHERE event.tenant_id=$1 AND event.run_id=$2 \
++                  AND event.event_type='collection.iteration_drained' AND event.node='c10') AS drained_events, \
++                (SELECT count(*) FROM run_events event WHERE event.tenant_id=$1 AND event.run_id=$2 \
++                  AND event.event_type='step.completed' AND event.node='reserve~c' \
++                  AND event.instance_path_nodes=ARRAY['c10']::text[] \
++                  AND event.instance_path_indices=ARRAY[0]::integer[]) AS compensation_completions, \
++                (SELECT count(*) FROM run_events event WHERE event.tenant_id=$1 AND event.run_id=$2 \
++                  AND event.event_type='collection.finished' AND event.node='c10' \
++                  AND event.detail->>'outcome'='failed' \
++                  AND event.detail->>'code'='RUN_DATA_LIMIT') AS collection_finishes, \
++                (SELECT count(*) FROM run_events event WHERE event.tenant_id=$1 AND event.run_id=$2 \
++                  AND event.event_type='run.finished' AND event.detail->>'status'='COMPENSATED') AS run_finishes, \
++                (SELECT count(*) FROM event_outbox message WHERE message.tenant_id=$1 \
++                  AND message.aggregate_id=$2 AND message.event_type='collection.finished' \
++                  AND message.routing_key='c10' AND message.payload->>'status'='FAILED') AS collection_outboxes, \
++                (SELECT count(*) FROM event_outbox message WHERE message.tenant_id=$1 \
++                  AND message.aggregate_id=$2 AND message.event_type='run.finished' \
++                  AND message.payload->>'status'='COMPENSATED') AS run_outboxes, \
++                (SELECT count(*) FROM steps final_step WHERE final_step.tenant_id=$1 \
++                  AND final_step.run_id=$2 AND final_step.node='done' \
++                  AND cardinality(final_step.instance_path_nodes)=0) AS end_steps, \
++                (SELECT count(*) FROM steps reconciliation WHERE reconciliation.tenant_id=$1 \
++                  AND reconciliation.run_id=$2 AND reconciliation.node='reserve~r' \
++                  AND reconciliation.instance_path_nodes=ARRAY['c10']::text[] \
++                  AND reconciliation.instance_path_indices=ARRAY[0]::integer[]) AS reconciliations \
++           FROM runs run JOIN telemetry_pending telemetry \
++             ON telemetry.tenant_id=run.tenant_id AND telemetry.run_id=run.id \
++           JOIN iteration_scopes scope ON scope.tenant_id=run.tenant_id AND scope.run_id=run.id \
++            AND scope.owner_path_nodes='{}'::text[] AND scope.owner_path_indices='{}'::integer[] \
++            AND scope.owner_node='c10' \
++           JOIN steps owner ON owner.tenant_id=run.tenant_id AND owner.run_id=run.id \
++            AND owner.instance_path_nodes='{}'::text[] AND owner.instance_path_indices='{}'::integer[] \
++            AND owner.node='c10' \
++           JOIN scope_sagas saga ON saga.tenant_id=run.tenant_id AND saga.run_id=run.id \
++            AND saga.owner_path_nodes='{}'::text[] AND saga.owner_path_indices='{}'::integer[] \
++            AND saga.owner_node='c10' \
++           JOIN steps forward ON forward.tenant_id=run.tenant_id AND forward.run_id=run.id \
++            AND forward.node='reserve' AND forward.instance_path_nodes=ARRAY['c10']::text[] \
++            AND forward.instance_path_indices=ARRAY[0]::integer[] \
++           JOIN steps compensation ON compensation.tenant_id=run.tenant_id \
++            AND compensation.run_id=run.id AND compensation.node='reserve~c' \
++            AND compensation.instance_path_nodes=ARRAY['c10']::text[] \
++            AND compensation.instance_path_indices=ARRAY[0]::integer[] \
++          WHERE run.tenant_id=$1 AND run.id=$2",
++    )
++    .bind(receipt.tenant.as_uuid())
++    .bind(receipt.run.as_uuid())
++    .fetch_one(&platform.api.db.pool)
++    .await
++    .expect("final drain-first compensated state");
++    assert_eq!(final_state.get::<String, _>("status"), "COMPENSATED");
++    assert!(final_state.get::<bool, _>("no_run_result"));
++    assert_eq!(final_state.get::<String, _>("lifecycle"), "FAILED");
++    assert_eq!(
++        final_state
++            .get::<Option<String>, _>("drain_kind")
++            .as_deref(),
++        Some("RUN_DATA_LIMIT")
++    );
++    assert_eq!(
++        final_state
++            .get::<Option<String>, _>("drain_failure_code")
++            .as_deref(),
++        Some("RUN_DATA_LIMIT")
++    );
++    assert_eq!(final_state.get::<String, _>("owner_status"), "FAILED");
++    assert_eq!(
++        final_state
++            .get::<Option<String>, _>("owner_failure")
++            .as_deref(),
++        Some("RUN_DATA_LIMIT")
++    );
++    assert_eq!(final_state.get::<String, _>("phase"), "DONE");
++    assert_eq!(final_state.get::<Option<String>, _>("outcome").as_deref(), Some("COMPENSATED"));
++    assert_eq!(final_state.get::<String, _>("forward_status"), "SUCCEEDED");
++    assert!(final_state.get::<bool, _>("no_forward_output"));
++    assert_eq!(final_state.get::<String, _>("compensation_status"), "SUCCEEDED");
++    assert_eq!(final_state.get::<i64, _>("head_seq"), final_state.get::<i64, _>("run_version"));
++    assert_eq!(final_state.get::<i64, _>("saga_entries"), 1);
++    assert_eq!(final_state.get::<i64, _>("drained_events"), 1);
++    assert_eq!(final_state.get::<i64, _>("compensation_completions"), 1);
++    assert_eq!(final_state.get::<i64, _>("collection_finishes"), 1);
++    assert_eq!(final_state.get::<i64, _>("run_finishes"), 1);
++    assert_eq!(final_state.get::<i64, _>("collection_outboxes"), 1);
++    assert_eq!(final_state.get::<i64, _>("run_outboxes"), 1);
++    assert_eq!(final_state.get::<i64, _>("end_steps"), 0);
++    assert_eq!(final_state.get::<i64, _>("reconciliations"), 0);
++    assert_eq!(
++        effective_totals(&platform.api.db.pool, &receipt).await,
++        (2_100_000, 2_100_020, 4_200_020)
++    );
++    assert!(
++        source_witness(&platform.api.db.pool, receipt.tenant, receipt.run).await
++            == receipt.source_witness,
++        "closed source witness changed during drain-first compensation"
++    );
++    assert!(
++        identity_witness(&platform.api.db.pool, &receipt).await == authority_before,
++        "compensation changed persisted worker authority"
++    );
++    assert!(
++        stop_drain_fingerprint(&platform.api.db.pool, &receipt).await == frozen_stop_drain,
++        "final compensation changed the original stop or drain"
++    );
++    assert!(
++        stored_report_receipt(&platform.api.db.pool, &receipt).await == original_report_receipt,
++        "final scheduling changed the exact report receipt"
++    );
++    fresh_verify(&platform.api, &receipt).await;
++}

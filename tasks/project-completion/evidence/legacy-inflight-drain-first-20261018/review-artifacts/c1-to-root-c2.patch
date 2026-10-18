@@ -1,0 +1,105 @@
+--- C1-formatted-consumer
++++ tests/integration/workflow-primitives/legacy_collection_inflight_report_v1.rs
+@@ -810,6 +810,11 @@
+             ORDER BY checkpoint.scope_id,checkpoint.iteration_index),'[]'::jsonb) \
+             FROM iteration_checkpoints checkpoint \
+             WHERE checkpoint.tenant_id=run.tenant_id AND checkpoint.run_id=run.id), \
++          'journalPayloads',(SELECT coalesce(jsonb_agg(jsonb_build_object( \
++              'sequence',event.seq,'digest',encode(event.payload_digest,'hex')) \
++            ORDER BY event.seq),'[]'::jsonb) FROM run_events event \
++            WHERE event.tenant_id=run.tenant_id AND event.run_id=run.id \
++              AND event.payload_digest IS NOT NULL), \
+           'blobs',(SELECT coalesce(jsonb_agg(to_jsonb(blob) ORDER BY blob.id),'[]'::jsonb) \
+             FROM blobs blob WHERE blob.tenant_id=run.tenant_id AND blob.run_id=run.id)) \
+          FROM runs run WHERE run.tenant_id=$1 AND run.id=$2",
+@@ -819,6 +824,31 @@
+     .fetch_one(pool)
+     .await
+     .expect("bounded output-reference snapshot");
++    sha(&value)
++}
++
++async fn reservation_usage_fingerprint(pool: &PgPool, receipt: &Receipt) -> String {
++    let value: Value = sqlx::query_scalar(
++        "SELECT jsonb_build_object( \
++          'member',(SELECT jsonb_build_object('reserved',member.reserved_instances, \
++              'remaining',member.remaining_reservations,'slotHeld',member.slot_held) \
++            FROM collection_iterations member JOIN iteration_scopes scope \
++              USING(tenant_id,run_id,scope_id) \
++            WHERE member.tenant_id=run.tenant_id AND member.run_id=run.id \
++              AND scope.owner_path_nodes='{}'::text[] \
++              AND scope.owner_path_indices='{}'::integer[] \
++              AND scope.owner_node='c10' AND member.iteration_index=0), \
++          'runUsage',(SELECT to_jsonb(run_usage) FROM run_instance_usage run_usage \
++            WHERE run_usage.tenant_id=run.tenant_id AND run_usage.run_id=run.id), \
++          'tenantIterations',(SELECT to_jsonb(tenant_usage) FROM tenant_iteration_usage tenant_usage \
++            WHERE tenant_usage.tenant_id=run.tenant_id)) \
++         FROM runs run WHERE run.tenant_id=$1 AND run.id=$2",
++    )
++    .bind(receipt.tenant.as_uuid())
++    .bind(receipt.run.as_uuid())
++    .fetch_one(pool)
++    .await
++    .expect("live member reservation and iteration usage snapshot");
+     sha(&value)
+ }
+ 
+@@ -1145,7 +1175,7 @@
+ 
+ async fn assert_pending_compensation(pool: &PgPool, receipt: &Receipt) -> String {
+     let row = sqlx::query(
+-        "SELECT run.status,run.finished_at IS NULL AS unfinished,scope.lifecycle,member.lifecycle, \
++        "SELECT run.status,run.finished_at IS NULL AS unfinished,scope.lifecycle AS scope_lifecycle,member.lifecycle AS member_lifecycle, \
+                 saga.phase,saga.outcome,compensation.status AS compensation_status, \
+                 compensation.lease_expires_at>clock_timestamp() AS compensation_live, \
+                 (SELECT count(*) FROM scope_saga_entries entry WHERE entry.tenant_id=$1 \
+@@ -1156,7 +1186,9 @@
+                 (SELECT count(*) FROM run_events event WHERE event.tenant_id=$1 AND event.run_id=$2 \
+                   AND event.event_type='collection.iteration_drained' AND event.node='c10') AS drains, \
+                 (SELECT count(*) FROM run_events event WHERE event.tenant_id=$1 AND event.run_id=$2 \
+-                  AND event.event_type IN ('collection.finished','run.finished')) AS terminal_events, \
++                  AND (event.event_type='run.finished' OR (event.event_type='collection.finished' \
++                    AND event.node='c10' AND event.instance_path_nodes='{}'::text[] \
++                    AND event.instance_path_indices='{}'::integer[]))) AS terminal_events, \
+                 (SELECT count(*) FROM steps extra WHERE extra.tenant_id=$1 AND extra.run_id=$2 \
+                   AND extra.node='reserve~r' AND extra.instance_path_nodes=ARRAY['c10']::text[] \
+                   AND extra.instance_path_indices=ARRAY[0]::integer[]) AS reconciliations \
+@@ -1183,7 +1215,7 @@
+     .expect("leased compensation remains an open obligation");
+     assert_eq!(row.get::<String, _>("status"), "COMPENSATING");
+     assert!(row.get::<bool, _>("unfinished"));
+-    assert_eq!(row.get::<String, _>("lifecycle"), "DRAINING");
++    assert_eq!(row.get::<String, _>("scope_lifecycle"), "DRAINING");
+     assert_eq!(row.get::<String, _>("member_lifecycle"), "DRAINED");
+     assert_eq!(row.get::<String, _>("phase"), "COMPENSATING");
+     assert!(row.get::<Option<String>, _>("outcome").is_none());
+@@ -1762,6 +1794,7 @@
+     )
+     .with_placement(placement);
+ 
++    let reservations_before = reservation_usage_fingerprint(&platform.api.db.pool, &receipt).await;
+     let drain_report = scheduler.tick().await;
+     assert_eq!(drain_report.failed, 0, "normal drain discovery failed");
+     assert_eq!(
+@@ -1783,6 +1816,10 @@
+     );
+     fresh_verify(&platform.api, &receipt).await;
+ 
++    assert!(
++        reservation_usage_fingerprint(&platform.api.db.pool, &receipt).await == reservations_before,
++        "initial drain changed the live member reservations or run/tenant iteration usage"
++    );
+     let waiting = drain_wait_fingerprint(&platform.api.db.pool, &receipt).await;
+     let wait_report = scheduler.tick().await;
+     assert_eq!(wait_report.failed, 0, "live-member wait failed");
+@@ -1809,6 +1846,10 @@
+     );
+     fresh_verify(&platform.api, &receipt).await;
+ 
++    assert!(
++        reservation_usage_fingerprint(&platform.api.db.pool, &receipt).await == reservations_before,
++        "live-member wait changed the original reservations or run/tenant iteration usage"
++    );
+     let lookups_before = platform.api.authentication_lookups();
+     let request = worker.req(receipt.completion.clone());
+     let accepted = worker

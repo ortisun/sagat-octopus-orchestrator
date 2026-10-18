@@ -1,0 +1,26 @@
+{
+  "phase_count": 4,
+  "identical_native_inputs": 1125,
+  "phases": [
+    {
+      "phase": "ordinary-before-drain-owner-consumer.log",
+      "one_test_passed": true,
+      "sha256": "3e145e5869d7ef14fd1fc7ceb35fcfce9b9aca092e7a844b23ccf06ea48975b2"
+    },
+    {
+      "phase": "ordinary-before-drain-owner-producer.log",
+      "one_test_passed": true,
+      "sha256": "4213e4a1a92e032d1c1bfb7a396afe0c26b8f1f9ec05966ff41e47bc5e6eb578"
+    },
+    {
+      "phase": "ordinary-before-drain-runtime-consumer.log",
+      "one_test_passed": true,
+      "sha256": "6bb5ea0c2bb81430a94c4d9ed0209dd36db2439c036cb6ae3e7794699e366dce"
+    },
+    {
+      "phase": "ordinary-before-drain-runtime-producer.log",
+      "one_test_passed": true,
+      "sha256": "051408ce29b435d27d5c93a33a1788dfba74153ba27cdf57c0dfc8f90e7ed299"
+    }
+  ]
+}

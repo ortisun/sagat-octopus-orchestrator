@@ -1,0 +1,17 @@
+[
+  {
+    "path": "scripts/test-legacy-collection-inflight-report-v1.sh",
+    "sha256": "e72e92b8821b0b9a851192b1f47468988d70dbf0d407a092b94c654263d7843c",
+    "snapshot": "test-legacy-collection-inflight-report-v1.sh.snapshot"
+  },
+  {
+    "path": "tests/integration/workflow-primitives/legacy_collection_inflight_report_v1.rs",
+    "sha256": "6de755b15e5ddee31081b36fb7ba345190f58b18bb5ab99b4b9f67bee184e509",
+    "snapshot": "legacy_collection_inflight_report_v1.rs.snapshot"
+  },
+  {
+    "path": "tests/fixtures/legacy-collection-inflight-report-v1/README.md",
+    "sha256": "ae3e7e303ccbcadb0dce67983df1878ed6cf51990b5b95cc7c2bf8bc837673c9",
+    "snapshot": "README.md.snapshot"
+  }
+]

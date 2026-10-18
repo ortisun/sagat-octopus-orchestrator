@@ -385,3 +385,16 @@ Two fixture-oracle failures are retained (shared key across instances and SQL al
 collision). This is not a literal pre-begin fence/terminal race or an owner/runtime matrix.
 Other authority, old-order/Applied, cold-process/uncertain-COMMIT, nesting and release gates
 remain open; canonical014 checkboxes are unchanged.
+
+
+### Immutable-old ordinary drain-before-report — 2026-10-18
+
+Primary D1 passes all four real old/current phases in both API pool modes,149.81s.
+A live original member retains its slot/reservations through actual normal drain and an extra
+waiting tick; the original success stays SUCCEEDED, without output/new report outbox or journal
+payload reference. Exact first stop/drain and receipt replay remain stable. Actual original-target
+compensation must finish before COMPENSATED. Default report-before-drain regression also passes
+all four phases147.54s. Strict Clippy/fmt/architecture and1125 identical source inputs.
+Evidence: `tasks/project-completion/evidence/legacy-inflight-drain-first-20261018/README.md`.
+Only ordinary E>limit ordering is accepted; cancellation-first, other byte condition, Applied,
+cold-process/uncertain-COMMIT and full Q10c/canonical014 release gates remain open.
