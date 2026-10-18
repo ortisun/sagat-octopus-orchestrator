@@ -55,3 +55,32 @@ updates; no such divergence is approved here.
 The review's first cycle is complete; the revised protocol is still pending. The user selected
 the current review after the optional external cross-model review was offered. No external CLI
 was authorized or invoked.
+
+
+## Subsequent bounded reviews
+
+Cycle2 (`nested-capacity-protocol-proposal.md`) found three actionable failures:
+terminal-only return strands a parent that wakes while its borrower waits for an event the parent
+must produce; reduction2→1 cannot park two independent idle enabled chains; and exclusive transfer
+to a detached deepest child strands upstream return entitlements. No finding was accepted as a
+trade-off. The capacity-group draft attempted to address these independently of semantic joins.
+
+Cycle3 (`nested-capacity-protocol-v3.md`) still found two substantive actionable issues:
+
+1. **Vacant group recovery is undefined.** In A→B→C, B possesses the group and C parks on a
+   durable wait. If B detaches C and reaches FINAL, A later observes B FINAL but neither A nor C
+   has a consumable offer. The protocol needs an explicit vacant/released state and fenced CAS
+   acquisition, or a durable transferable grant installed at settlement, even with no ready
+   recipient. Recovery cannot reopen a terminal source or lock two existing runs.
+2. **Run-first prefix conflicts with accepted chain locking.** ADR-0030§18/data-model§6 require
+   applicable chain serialization before the owning run, including direct-run commands. The
+   draft's literal all-writes run-first prefix can deadlock a chain handoff. A complete existing
+   prefix plus group/link ordering for cancellation/handoff is required; no lock-order ADR
+   divergence is approved.
+
+Both corrections can preserve ADR-0030; the group quota projection still needs canonical
+specification/contracts, actual migration/mixed-version fencing and crash/scale evidence.
+The doubt-driven-development three-cycle bound has been reached and escalated to the user.
+No fourth whole-proposal review is authorized by that skill. The drafts remain unaccepted and
+nesting stays closed while the user chooses decomposition or deferral. Existing independent
+blob, SDK and measurement work continues; no task is checked for this design history.
