@@ -1,0 +1,27 @@
+{
+  "source_base": "c0a8d5878b989acd41bbe6222c5b6ffed83063cb",
+  "recorded_utc": "2026-10-18T07:07:15.592399+00:00",
+  "scope": "B1a one existing group transaction entry only, unimplemented",
+  "reviews": {
+    "cycles": 2,
+    "model": "gpt-6-astra/xhigh fresh-context read-only",
+    "final": "no remaining substantive findings",
+    "external_cli": false
+  },
+  "tests": "No runtime change or tests; future adapter evidence explicitly pending",
+  "limits": [
+    "No unchecked production authorization",
+    "No guaranteed rollback after COMMIT dispatch",
+    "No complete B1/group/old-writer/global DAG/fairness/resource acceptance"
+  ],
+  "source_sha256": {
+    "tasks/project-completion/capacity-transaction-entry.md": "2d11d9838090c31d6e60659ed6e8b493c3a1ebae130a4756960bea554d8a27c8",
+    "tasks/project-completion/todo.md": "48eaa6c3fdaa0fbf1e0d6dff9e62f986346e842ff2c1cab87af8146f0fad61aa",
+    "specs/014-workflow-primitives/plan.md": "cb7fdc23639bb8bd211ea1d952975a6a62d987fa678deb7be15ca39707298596"
+  },
+  "evidence_sha256": {
+    "artifact.md": "2d11d9838090c31d6e60659ed6e8b493c3a1ebae130a4756960bea554d8a27c8",
+    "claim.md": "16945e61524113bbea58f59e1d66460578a872533244d0264238dda2b7514307",
+    "review.md": "b8af49994c0d556c05148167dff70dce90cf7323b3733af3c8834213addbe36f"
+  }
+}

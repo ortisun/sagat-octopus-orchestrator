@@ -373,3 +373,8 @@ tasks/project-completion/evidence/managed-replay-prefix-20261018/.
 Rerun source admission correction: ADR-0039, exact tenant/source identity KEY SHARE after replay
 and before admission. Evidence: tasks/project-completion/evidence/rerun-source-identity-20261018.
 Do not generalize this root-rerun writer exception to child ancestry or nested group eligibility.
+
+B1a scoped entry decision is reviewed: one existing group NOWAIT after current chain/own-run
+entry, whole transaction rollback on contention; unknown COMMIT outcome reconciles atomic
+receipt/state. See tasks/project-completion/capacity-transaction-entry.md. No SQL lifecycle,
+own-member transition authority, B1 completion or nested runtime activation is accepted.

@@ -49,3 +49,15 @@ observations only, not a new lock order or global deadlock-free guarantee.
 
 ADR-0037 resolves only the stable-parent identity guard exception with an explicit immutable
 ancestry precondition and ordered-race control. B0 is source-inventoried; the new B1 transaction order is still unchecked.
+
+## B1 bounded decisions
+
+- [x] B1a: Review one-existing-group transaction entry: applicable chain → exact own run →
+  header FOR UPDATE NOWAIT, whole-TX rollback on contention; unknown commit result reconciles
+  atomic receipt/state. Two bounded reviews, no SQL/runtime acceptance. See capacity-transaction-entry.md.
+- [ ] B1b: Define exact own-member identity/current-owner and transition authority; quiescence,
+  retained logical continuation and terminal settlement cannot come from caller assertions.
+- [ ] B1c: Define current forward eligibility versus reserved drain, reduction and policy0.
+- [ ] B1d: Define bounded durable discovery/offer/parking/fairness without foreign-run mutation.
+- [ ] B1e: Review creation/join, continuation and per-member cancellation/cleanup families before
+  integrating them. B1 and canonical runtime tasks remain unchecked until all dependencies pass.
