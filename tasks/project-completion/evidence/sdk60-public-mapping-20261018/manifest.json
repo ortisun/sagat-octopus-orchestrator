@@ -1,0 +1,11 @@
+{
+  "scope": "third/final supported-public SDK requirement mapping and direct historical/current capability documentation reconciliation",
+  "base": "8d15bacc",
+  "current_fixture_base": "762a1d01",
+  "runtime_gaps_found": 0,
+  "actionable_documentation_families": 1,
+  "document_sha256": "7f077c037d66ecce304f440f5ef620b55597b106c5178d8f74d036a9b1c87a0b",
+  "full60_pass_claimed": false,
+  "T014_041_closed": false,
+  "review_sha256": "9466cc7d64c4abcc41e77ab300331073c3516d1b5faabcf76fb65b69fc59f259"
+}
