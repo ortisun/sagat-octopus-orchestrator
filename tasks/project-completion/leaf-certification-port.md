@@ -1,6 +1,7 @@
 # Immutable leaf-success certification port — B1b.2a.1c.1 candidate
 
-Status: reviewed API/idempotence boundary; no schema or source writer implemented.
+Status: reviewed API/idempotence boundary and application types/structural checks implemented;
+no schema or source writer implemented.
 Refs:T014-014..017/040, ADR-0030§15, capacity-leaf-success-certification.md.
 This operation certifies one existing original-run path and never acquires G.
 
@@ -96,3 +97,10 @@ Independent fresh Astra/xhigh bounded review cycle1 found no concrete issue in r
 authority/replay/CAS order or unknown recovery, after checking ADR-0030 and reviewed prerequisites.
 This is an API decision only, no source writer/schema/test guarantee. Existing user choice keeps
 current review; no external review CLI.
+
+Application types now live in application::leaf_certification. Identity enforces depth1 and retains
+all four qualifiers; command revision checks enforce positive signed-journal range. Record checks
+enforce exact return-path binding and V1 source-sequence ordering without pretending to establish
+the existence or finality of those sources. Error Display/Debug use safe messages; the diagnostic
+StoreError remains available through explicit source-chain inspection, which requires caller
+redaction. No database adapter, source writer or production caller is supplied by these types.

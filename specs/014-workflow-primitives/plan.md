@@ -465,3 +465,8 @@ Current own-run scheduler authority precedes canonical replay; first creation CA
 miss and precedes actual pinned source proof. Existing-group mutations retain B1a key/fingerprint
 rules. Before source SQL, add exact application types/structural checks, then review immutable
 schema/retention/implicit locks and truthful audit identity. See leaf-certification-port.md.
+
+B1b.2a.1c.2 adds application::leaf_certification command/identity/profile/record/result/error and
+store port, with7focused structural/privacy tests. Depth1, qualified return-path binding and
+positive signed-journal sequence relationships are checked; actual version/source/fence/CAS
+proof remains the future adapter's responsibility. No schema, adapter or production caller exists.

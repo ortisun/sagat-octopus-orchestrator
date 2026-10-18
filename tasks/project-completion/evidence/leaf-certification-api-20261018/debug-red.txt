@@ -1,0 +1,25 @@
+   Compiling sagat-application v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/application)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.58s
+     Running tests/leaf_certification.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/leaf_certification-a078fafbedd9b068)
+
+running 7 tests
+
+thread 'error_formatting_keeps_storage_diagnostics_and_path_text_private' (96402304) panicked at crates/application/tests/leaf_certification.rs:201:5:
+assertion failed: !format!("{error:?}").contains(canary)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test canonical_identity_never_drops_tenant_namespace_run_owner_or_index ... ok
+test creation_cas_bounds_are_checked_but_renewable_authority_does_not_change_identity ... ok
+test a_return_from_another_path_cannot_satisfy_structural_record_binding ... ok
+test identity_is_exactly_depth_one_and_preserves_shared_qualifiers ... ok
+test v1_record_uses_existing_distinct_reduction_and_checkpoint_references ... ok
+test malformed_source_sequence_snapshots_fail_without_arithmetic_overflow ... ok
+test error_formatting_keeps_storage_diagnostics_and_path_text_private ... FAILED
+
+failures:
+
+failures:
+    error_formatting_keeps_storage_diagnostics_and_path_text_private
+
+test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p sagat-application --test leaf_certification`

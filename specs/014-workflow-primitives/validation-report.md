@@ -2634,3 +2634,20 @@ the explicit defensive check remains. Final8/8 (4.30s command), strict domain/al
 fmt4.11s and24-crate architecture pass. Fresh Astra/xhigh cycle1 found that fixture issue, cycle2
 found none. API/schema/source-writer/producer barrier/restart and broader B1/B2/runtime gates remain
 open. Evidence: tasks/project-completion/evidence/collection-success-shape-20261018/manifest.json.
+
+## Leaf certification application boundary — 2026-10-18
+
+Refs:T014-014/017/040. B1b.2a.1c.2 adds only the fixed V1 application port and shared typed
+identity/command/result/record/errors. Tests cover exact depth1 qualified identity, revision
+bounds, distinct checkpoint/aggregate digests, ordered source references, overflow and wrong
+return-path refusal. Constructing or structurally validating a record proves no database source,
+definition pin, current authority, execution closure or capability.
+
+Missing-module compilation failure is retained separately from two actual privacy failures:
+initial Display exposed StoreError detail; review then found derived Debug exposed it too.
+Both were reproduced with a synthetic canary and fixed; Display/Debug are safe while explicit
+source-chain diagnostics remain internal and require caller redaction. Final7/7,5.01s command;
+strict application/all-target Clippy6.76s, fmt4.10s and24-crate architecture pass. No database,
+Bao, S3, scheduler, SDK or restart execution by this unit. Source schema/retention/audit/writer
+and broader B1/B2/runtime gates remain open. Evidence:
+tasks/project-completion/evidence/leaf-certification-api-20261018/manifest.json.

@@ -1,0 +1,6 @@
+{
+  "crates/application/src/lib.rs": "3260547e6b4187e8f735791b6d7895ce40904d4ea93f713e8f18afc73ee90884",
+  "crates/application/src/leaf_certification.rs": "f2e2d087a1820bc4a34264b37e7868e90561c51bcd0d4dcf890c80011a7349a5",
+  "crates/application/tests/leaf_certification.rs": "172519684994b2a8bd89d7cf0e3eb244c9bcb99e14a555635e31b007ea944476",
+  "tasks/project-completion/leaf-certification-port.md": "68006371a312e9b4a70c50a7d2f490b1869b37817aeed3f8725124ab6c511df1"
+}

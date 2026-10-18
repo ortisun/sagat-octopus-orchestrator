@@ -1,0 +1,2 @@
+    Checking sagat-application v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/application)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.69s

@@ -1,0 +1,189 @@
+{
+  "base": "55c00d8c",
+  "scope": "B1b.2a.1c.2 application boundary only",
+  "commands": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-application",
+        "--test",
+        "leaf_certification",
+        "--",
+        "--nocapture"
+      ],
+      "exit_code": 101,
+      "seconds": 5.37,
+      "log": "missing-api.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-application",
+        "--test",
+        "leaf_certification",
+        "--",
+        "--nocapture"
+      ],
+      "exit_code": 101,
+      "seconds": 4.97,
+      "log": "first.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-application",
+        "--test",
+        "leaf_certification",
+        "--",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "seconds": 5.03,
+      "log": "second.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "-p",
+        "sagat-application",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "seconds": 9.11,
+      "log": "clippy.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "seconds": 4.09,
+      "log": "fmt.txt"
+    },
+    {
+      "command": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "exit_code": 0,
+      "seconds": 0.3,
+      "log": "architecture.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-application",
+        "--test",
+        "leaf_certification",
+        "--",
+        "--nocapture"
+      ],
+      "exit_code": 101,
+      "seconds": 1.82,
+      "log": "debug-red.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-application",
+        "--test",
+        "leaf_certification",
+        "--",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "seconds": 5.01,
+      "log": "final.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "-p",
+        "sagat-application",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "seconds": 6.76,
+      "log": "clippy-final.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "seconds": 4.1,
+      "log": "fmt-final.txt"
+    },
+    {
+      "command": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "exit_code": 0,
+      "seconds": 0.32,
+      "log": "architecture-final.txt"
+    }
+  ],
+  "final_tests": {
+    "passed": 7,
+    "failed": 0,
+    "command_seconds": 5.01
+  },
+  "source_final": "source-final.json",
+  "no_sql_or_runtime_authority": true,
+  "evidence_sha256": {
+    "architecture-final.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "clippy-final.txt": "93289438e9683fecc177a25049d87d2d457c8d5cfc54a3521ae6e315ffc0fd37",
+    "clippy.txt": "90e9c6441e23b1713f55cd0718dcdf35562b35034056acff5ce45214925c1e56",
+    "commands.json": "0fd6992f8bb04409898295721cce5acec158bc9e227b4aa5dec28ae7b2a8d99e",
+    "debug-red.txt": "b9aa32f61196839632306d9c74f79ff3656381ce3e03d9fdfd6a3222f810aaf5",
+    "final.txt": "216fdcb784773f730674475dda4e997e80c023436ae99420b151d6c7fceb1b0d",
+    "first.txt": "2e365a6fff09355db549d9ec6a9ea88e1baf87a9b3432ee6f5d53304f98cdb74",
+    "fmt-final.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "implementation.diff": "eaa1533ecca4fdfdc7b6113d4936f44dcf88680a6b81d4c2fc3f8ee004261930",
+    "missing-api.txt": "446935e9620989ebf06a584fbecde848fb66455dd7c429a55f53ed7ca4a2a0de",
+    "reproduce.md": "7bb629f1051d699a009959a21f24a0a27f5364f3c4610f271df23a4d52aa7dd5",
+    "review.md": "ea7544e4c792e487f83f97d7e977131cd313af2bd4b6c3413686cf7a311a959b",
+    "second.txt": "d9b22aecd75df222db6e3afdbbbcab7f37f29cea27a9c89e2766e1aede522c17",
+    "source-debug-red.json": "cf5d364b452aec1c56a2ce273788b5cccac108c779d5e0bae94ccc4e88dba7fa",
+    "source-final.json": "71ccaffc01f1a822449c1c43daf7f46607f55dc115454ad0614cbb4c9704664d",
+    "source-first.json": "a2f552557b623e757dd07f431df7287fc805f70711a09bbce92926e550f306d5",
+    "source-missing-api.json": "703fddcad93ce817e37880992f6341ec1bd510da2d9461078585a3eaf20d0521",
+    "source-second.json": "83ae9ee8b8fe5d941ce375a88f893e9f04f21bf4ec9fe4564ed7cf0e3b6a93f5"
+  }
+}
