@@ -653,3 +653,9 @@ when a committed unknown is absent from process counters. An abandoned call has 
 outcome; direct untraced calls emit metrics without an OTLP span. Future production callers must
 supply trace context and durable original-command reconciliation before using this dormant port.
 No public wire API, production invocation, execution eligibility or nested activation is added.
+
+### Prepared collection data-limit internal boundary
+
+The internal journal reason `run_data_limit` maps to `CollectionDrainReason::RunDataLimit`, SQL RUN_DATA_LIMIT with no failed-member index, and the existing public drain hint reason FAILED. No AsyncAPI enum or SDK wire shape is added. The checked Rust evidence distinguishes actual aggregate refusal, verified existing output total and an exact authoritative failed/RUN_DATA_LIMIT stop. Its required engine Run audit uses `run.data_limit_exceeded` and fixed reasons; candidate values/digests/sizes never become audit text or metric labels. The scoped known-success report uses the distinct fixed audit reason `successful scoped output refused by run data limit`.
+
+Direct native writer preparation is guarded in9fd9405f and is not behavioral or rollout acceptance. The report transaction itself has no outgoing message: zero new outbox rows are expected; durable collection discovery schedules the subsequent native drain, whose existing hint/audit/journal/head commit atomically. Cold discovery, source/byte/fault/replay/runtime and actual old/current producer gates remain required. No source/history backfill or release permission is inferred.
