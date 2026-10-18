@@ -209,10 +209,12 @@ See evidence/leaf-certification-process-20261018. Other producer/observation/rel
 - [x] B1b.2c.1d.0Q0: Reproduce public empty aggregate exact-byte boundaries and raw durable-reason decode with genuine RED (63956f51).
 - [x] B1b.2c.1d.0Q1: Add closed reason/domain/codec vocabulary with native producer explicitly unavailable; collection-data-limit-vocabulary-20261018/manifest.json.
 - [x] B1b.2c.1d.0Q1a: Prove empty/checkpointed drain, strict domain projection restore and completed-effect compensation in the pure domain harness; collection-data-limit-domain-20261018/manifest.json. Real PostgreSQL/worker/upgrade gates remain.
-- [ ] B1b.2c.1d.0Q2: Integrate full/path PostgreSQL readers and existing drain finish without enabling new reason production.
+- [ ] B1b.2c.1d.0Q2: Integrate full/path PostgreSQL readers and existing drain finish without enabling new reason production. Source c620c2bd; public full/descendant SQL defenses pass in7212a4b1; dormant owned-nested fixture and native positive/replay remain pending.
 - [x] B1b.2c.1d.0Q4: Add total closed reason CHECK and guarded own-Run-first down/up; five behavioral schema tests in each mode, explicit static fixtures. collection-data-limit-schema-20261018/manifest.json.
-- [x] B1b.2c.1d.0Q6a: Declare effective RunTx output-byte scalar with complete-data compatibility default; compile/static gates only, no PG override/consumer activation.
-- [ ] B1b.2c.1d.0Q5: Implement verified read-only legacy aggregate overlay, metadata-only effective total and full writer guard.
+- [x] B1b.2c.1d.0Q3: Add closed typed audit and transient evidence; audit9/9 and constructor3/3, no native authority. ffec26d5.
+- [x] B1b.2c.1d.0Q7a: Add root-only known-success preparation and genuine ordinary/Applied phase composition; pure domain34/34, no application/native activation. c04b786d.
+- [x] B1b.2c.1d.0Q6a: Declare effective RunTx output-byte scalar with complete-data compatibility default; port compile/static gates; PG override source preparation now a7dc19b3, actual legacy acceptance/consumer activation remain pending.
+- [ ] B1b.2c.1d.0Q5: Implement verified read-only legacy aggregate overlay, metadata-only effective total and full writer guard. Source a7dc19b3 landed; actual frozen old-producer positive/corruption/guard acceptance remains pending.
 - [ ] B1b.2c.1d.0Q6b: Use the authoritative effective scalar in existing full preflights after the PG override, preserving typed outcomes.
 - [x] B1b.2c.1e: Prove real DETACH parent settlement followed by legitimate later child execution and original source replay.
 
