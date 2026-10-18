@@ -484,3 +484,7 @@ startup append-only role checks and five real PostgreSQL schema/retention/downgr
 default/runtime-role modes. Existing chain obstruction fixtures reuse retained rows. Dedicated
 audit vocabulary and the real bounded source certifier/producer proofs remain next. No source
 adapter, INSERT runtime grant, production caller, scoped Finish or nested execution is enabled.
+
+B1b.2a.1c.3b adds the dedicated noncollapsing collection.leaf_success_certified audit action and
+leaf_collection_success resource type. Domain audit8/8 checks vocabulary/dedupe policy only;
+first-record/atomic audit/replay/source correctness still requires the native adapter and tests.

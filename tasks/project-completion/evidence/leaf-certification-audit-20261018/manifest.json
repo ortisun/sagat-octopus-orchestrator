@@ -1,0 +1,94 @@
+{
+  "base": "85b75dfa",
+  "scope": "B1b.2a.1c.3b enum vocabulary only",
+  "commands": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-domain",
+        "--test",
+        "audit",
+        "--",
+        "--nocapture"
+      ],
+      "exit_code": 101,
+      "seconds": 0.43,
+      "log": "missing-vocabulary.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-domain",
+        "--test",
+        "audit",
+        "--",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "seconds": 4.27,
+      "log": "audit.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "-p",
+        "sagat-domain",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "seconds": 10.73,
+      "log": "clippy.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "seconds": 4.11,
+      "log": "fmt.txt"
+    },
+    {
+      "command": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "exit_code": 0,
+      "seconds": 0.32,
+      "log": "architecture.txt"
+    }
+  ],
+  "final_tests": {
+    "passed": 8,
+    "failed": 0,
+    "command_seconds": 4.27
+  },
+  "no_actual_source_writer": true,
+  "evidence_sha256": {
+    "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "audit.txt": "a1e3c5e8c6a0a5da55d8c3cacf444d78e661f6b25dd155b4442685aab1c7cd76",
+    "clippy.txt": "1bd581ac5c461d87e60d4e24a6197be02957b805bd02b8eeb51bd5f063b40a56",
+    "commands.json": "0ae81c54ae058b7f39642c5427700c989be87cbce886daf3ddfa9eb44b187144",
+    "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "implementation.diff": "e65d82a1d1db4819280262e5f6035f7c5e30aa6f5f2af2e0646db975ee3c5682",
+    "missing-vocabulary.txt": "651190a0ece50bb0bdbc65c7b93431b78ed63fe9e3e6608f692614a5d7e3b43a",
+    "reproduce.md": "bc9a992d0f27cec0716954db9c9d4447e706ca42b057aee81c458cf5a9ef9ecd",
+    "review.md": "a384c57284914ba237a71f9bf4ad9ee5e68835133e9a6c4a5322d4cd5dbbb8c7",
+    "source-final.json": "5ea1e3499d74a92760a686bca0f50dc0769c3990ab2c89aefb2a523e7638a41e",
+    "source-missing.json": "55b337358481992608080dc56a7884e7a69f3daf4680c4e3ccc77570a674a8f3"
+  }
+}

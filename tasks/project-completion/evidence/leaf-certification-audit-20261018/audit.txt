@@ -1,0 +1,16 @@
+   Compiling sagat-domain v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/domain)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.02s
+     Running tests/audit.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/audit-28c4ad3f6005abdd)
+
+running 8 tests
+test leaf_certification_audit_uses_noncollapsing_metadata_vocabulary ... ok
+test capacity_settlement_audit_is_an_engine_transition_without_generic_repeat_collapse ... ok
+test each_record_gets_a_distinct_id ... ok
+test payload_disclosure_audits_have_the_decided_repeat_semantics ... ok
+test provisioning_records_are_attributed_to_the_system_and_cannot_be_mistaken_for_a_user ... ok
+test reason_is_optional_and_attached_on_request ... ok
+test stored_names_are_a_stable_contract ... ok
+test tenant_and_actor_come_from_the_principal ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

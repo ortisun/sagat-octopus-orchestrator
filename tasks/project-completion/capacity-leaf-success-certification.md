@@ -1,6 +1,7 @@
 # Successful leaf collection path certification — B1b.2a.1a candidate
 
-Status: reviewed source-writer choice only; typed port/schema/proofs pending.
+Status: reviewed source-writer choice; pure shape/application port/dormant schema/audit vocabulary
+implemented separately. Source adapter and actual producer/recovery proofs remain pending.
 Refs:T014-014..017/040, ADR-0030, B1a, capacity-path-settlement.md.
 No failed/drained path, loops, nested controllers, children or capacity mutation.
 

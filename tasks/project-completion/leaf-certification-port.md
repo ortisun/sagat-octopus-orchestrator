@@ -1,7 +1,7 @@
 # Immutable leaf-success certification port — B1b.2a.1c.1 candidate
 
 Status: reviewed API/idempotence boundary and application types/structural checks implemented;
-no schema or source writer implemented.
+dormant retained schema and audit vocabulary now exist; no source writer implemented.
 Refs:T014-014..017/040, ADR-0030§15, capacity-leaf-success-certification.md.
 This operation certifies one existing original-run path and never acquires G.
 

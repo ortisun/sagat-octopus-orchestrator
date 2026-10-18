@@ -2679,3 +2679,15 @@ retention1/1 (2.65s), postfixture strict workspace/all-targetClippy8.35s, fmt4.0
 their production sources are unchanged. No full-workspace test run, SDK/Bao/S3/100k/restart or
 source-certifier acceptance follows. Evidence:
 tasks/project-completion/evidence/leaf-certification-schema-20261018/manifest.json.
+
+## Leaf certification audit vocabulary — 2026-10-18
+
+Refs:T014-014/017/040. Dedicated LeafCollectionSuccessCertified/LeafCollectionSuccess tags map to
+collection.leaf_success_certified/leaf_collection_success. The action has no generic repeat collapse,
+window or distinct cap; a future canonical first-record transaction supplies exactly its own audit,
+without generic dedupe suppression/advisory lock. No actual source/audit writer, hint or execution
+journal event is added. Missing-variant compile failure retained, not behavioral RED. Domain audit
+8/8 (4.27s), strict domain/all-targetClippy10.73s, fmt4.11s and24-crate architecture0.32s pass.
+Fresh bounded Astra/xhigh review found none. Atomic source/audit/replay, producer preservation,
+recovery and production activation remain pending. Evidence:
+tasks/project-completion/evidence/leaf-certification-audit-20261018/manifest.json.

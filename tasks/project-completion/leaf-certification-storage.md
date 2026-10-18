@@ -1,7 +1,7 @@
 # Dormant ordinary-leaf certification storage — B1b.2a.1c.3
 
 Status: reviewed bounded decision; dormant schema/retention guards implemented and tested;
-audit vocabulary/source adapter remain pending.
+audit vocabulary implemented; source adapter remains pending.
 Refs:T014-014/017/040, ADR-0030, D298, leaf-certification-port.md,
 leaf-source-retention-inventory.md. Fixed OrdinaryLeafV1 only; no capacity mutation/caller.
 

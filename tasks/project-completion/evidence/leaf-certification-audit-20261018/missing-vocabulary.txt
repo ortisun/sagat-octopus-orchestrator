@@ -1,0 +1,15 @@
+   Compiling sagat-domain v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/domain)
+error[E0599]: no variant, associated function, or constant named `LeafCollectionSuccessCertified` found for enum `AuditAction` in the current scope
+   --> crates/domain/tests/audit.rs:199:31
+    |
+199 |     let action = AuditAction::LeafCollectionSuccessCertified;
+    |                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ variant, associated function, or constant not found in `AuditAction`
+
+error[E0599]: no variant, associated function, or constant named `LeafCollectionSuccess` found for enum `ResourceType` in the current scope
+   --> crates/domain/tests/audit.rs:207:23
+    |
+207 |         ResourceType::LeafCollectionSuccess.as_str(),
+    |                       ^^^^^^^^^^^^^^^^^^^^^ variant, associated function, or constant not found in `ResourceType`
+
+For more information about this error, try `rustc --explain E0599`.
+error: could not compile `sagat-domain` (test "audit") due to 2 previous errors

@@ -1,0 +1,71 @@
+[
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-domain",
+      "--test",
+      "audit",
+      "--",
+      "--nocapture"
+    ],
+    "exit_code": 101,
+    "seconds": 0.43,
+    "log": "missing-vocabulary.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-domain",
+      "--test",
+      "audit",
+      "--",
+      "--nocapture"
+    ],
+    "exit_code": 0,
+    "seconds": 4.27,
+    "log": "audit.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "clippy",
+      "--locked",
+      "-p",
+      "sagat-domain",
+      "--all-targets",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit_code": 0,
+    "seconds": 10.73,
+    "log": "clippy.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "fmt",
+      "--all",
+      "--",
+      "--check"
+    ],
+    "exit_code": 0,
+    "seconds": 4.11,
+    "log": "fmt.txt"
+  },
+  {
+    "command": [
+      "python3",
+      "scripts/check-architecture.py"
+    ],
+    "exit_code": 0,
+    "seconds": 0.32,
+    "log": "architecture.txt"
+  }
+]

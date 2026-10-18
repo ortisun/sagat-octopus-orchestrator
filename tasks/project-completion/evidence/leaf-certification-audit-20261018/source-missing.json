@@ -1,0 +1,4 @@
+{
+  "crates/domain/src/audit.rs": "2f87fef0c9e537acb37a18da35f0aece2bf9f8fab7dc423afa3b6d7b236c7b0c",
+  "crates/domain/tests/audit.rs": "1369dabfe65e5063b27672083906fb3bd6a91aa54221ef7d8e8ade6290fa2f34"
+}

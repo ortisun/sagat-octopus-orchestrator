@@ -33,6 +33,8 @@ pub enum AuditAction {
     RunFinished,
     /// A current child-chain FINAL member settled its capacity membership.
     CapacityMemberFinished,
+    /// An immutable ordinary leaf-path success fact was certified from committed source evidence.
+    LeafCollectionSuccessCertified,
     /// Retained workflow content exceeded the tenant storage ceiling and forced the run to stop.
     RunStorageQuotaExceeded,
     RunCancelRequested,
@@ -270,6 +272,7 @@ impl AuditAction {
             Self::RunContinued => "run.continued",
             Self::RunFinished => "run.finished",
             Self::CapacityMemberFinished => "capacity.member.finished",
+            Self::LeafCollectionSuccessCertified => "collection.leaf_success_certified",
             Self::RunStorageQuotaExceeded => "run.storage_quota_exceeded",
             Self::RunCancelRequested => "run.cancel_requested",
             Self::RunPaused => "run.paused",
@@ -380,6 +383,8 @@ pub enum ResourceType {
     WorkflowVersion,
     Run,
     CapacityGroup,
+    /// Immutable source metadata, identified as namespace/run/root-owner/iteration-index.
+    LeafCollectionSuccess,
     Secret,
     DatabaseConnection,
     Quota,
@@ -420,6 +425,7 @@ impl ResourceType {
             Self::WorkflowVersion => "workflow_version",
             Self::Run => "run",
             Self::CapacityGroup => "capacity_group",
+            Self::LeafCollectionSuccess => "leaf_collection_success",
             Self::Secret => "secret",
             Self::DatabaseConnection => "database_connection",
             Self::Quota => "quota",

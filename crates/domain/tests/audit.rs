@@ -193,3 +193,18 @@ fn capacity_settlement_audit_is_an_engine_transition_without_generic_repeat_coll
     assert!(!record.action().collapses_repeats());
     assert_eq!(record.action().repeat_window(), None);
 }
+
+#[test]
+fn leaf_certification_audit_uses_noncollapsing_metadata_vocabulary() {
+    let action = AuditAction::LeafCollectionSuccessCertified;
+    assert!(!action.collapses_repeats());
+    assert_eq!(action.repeat_window(), None);
+    assert_eq!(action.distinct_cap(), None);
+    assert_ne!(action, AuditAction::RunFinished);
+    assert_ne!(action, AuditAction::CapacityMemberFinished);
+    assert_eq!(action.as_str(), "collection.leaf_success_certified");
+    assert_eq!(
+        ResourceType::LeafCollectionSuccess.as_str(),
+        "leaf_collection_success"
+    );
+}
