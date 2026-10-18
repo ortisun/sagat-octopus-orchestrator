@@ -1,0 +1,33 @@
+{
+  "source_base": "2cdd5aaf",
+  "docs_only_head": "86cd7cdd",
+  "local_units": [
+    "B1b.2c.1e"
+  ],
+  "default_tests_passed": 1,
+  "runtime_tests_passed": 1,
+  "tests": [
+    "leaf_certification_native::child_source::detached_progress::detached_child_completes_real_later_work_and_replays_original_source"
+  ],
+  "frozen_inputs": 1106,
+  "sources_unchanged": true,
+  "product_implementation_changed": false,
+  "files": {
+    "acceptance-section.md": "14e73a54d857a0b332d7612f3470dd0609838a1e02931852d21378cc58d03264",
+    "architecture.json": "3839e8fc03fbd08652ed4d92418f4fcd143feaef675b92092567db4dea317abb",
+    "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "clippy.json": "38d8e0230b6dfe49df90d5d4a501f7a8c992f0f50fcf0704617c76228f61bd56",
+    "clippy.txt": "42d61b27e0bf3550b879d29af322c619f1d680a25e99fadf2506e951d23e417a",
+    "default-detached-progress.json": "7db435348560bb569c18d974af90aa1ecfe4e9736eb6b80305475b150ac747d9",
+    "default-detached-progress.txt": "08b26d3177ae1f856bd4e619cbe5d785b1c70faa8cc4ef4793bd844d769b6dae",
+    "fmt.json": "514dfc46073f9d0a9d9ae9949edfe4696d749e7f5a755b56b67393ccd7c8a7a5",
+    "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "reproduce.md": "0ee8a879ccbad1559caa0b65ef24cc04af0bfa1108b665a1548e134755e5a3c4",
+    "review.md": "372b41726e8b14586d4e263bb5b05820a198b6a188c8bc52b9757ec3d7a5f956",
+    "runtime-detached-progress.json": "d856208a816653cef1a97b76206ff289c99154792050897678092c9b3eae7f48",
+    "runtime-detached-progress.txt": "bb290f7b3e9d0ee826c67031f60684332b07c9f33d6c766c4fe229cac66c1f50",
+    "source-after.json": "3a42d22b7cc457ad08ae9774a7362c2a1b31176c930abdef6409775fa29957de",
+    "source-before.json": "3a42d22b7cc457ad08ae9774a7362c2a1b31176c930abdef6409775fa29957de",
+    "test-index.json": "153618e7213300f40bc57705749fe699862dfe46346c80f79d294834aca1c5c5"
+  }
+}

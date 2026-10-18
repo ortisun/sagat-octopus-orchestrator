@@ -1227,3 +1227,6 @@ async fn genuine_ordinary_child_certificate_still_cannot_authorize_scoped_finish
 
 #[path = "leaf_certification_child_parent_flags.rs"]
 mod parent_flags;
+
+#[path = "leaf_certification_child_detach.rs"]
+mod detached_progress;

@@ -1,0 +1,16 @@
+{
+  "default": {
+    "passed": 1,
+    "tests": [
+      "leaf_certification_native::child_source::detached_progress::detached_child_completes_real_later_work_and_replays_original_source"
+    ],
+    "harness_seconds": 1.94
+  },
+  "runtime": {
+    "passed": 1,
+    "tests": [
+      "leaf_certification_native::child_source::detached_progress::detached_child_completes_real_later_work_and_replays_original_source"
+    ],
+    "harness_seconds": 1.91
+  }
+}
