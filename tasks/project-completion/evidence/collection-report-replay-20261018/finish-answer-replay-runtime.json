@@ -1,0 +1,19 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "integration_workflow_primitives",
+    "collection_finish_atomic",
+    "--",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "exit_code": 0,
+  "seconds": 2.65,
+  "started_utc": "2026-10-18T20:57:49.246861+00:00",
+  "log": "finish-answer-replay-runtime.txt"
+}

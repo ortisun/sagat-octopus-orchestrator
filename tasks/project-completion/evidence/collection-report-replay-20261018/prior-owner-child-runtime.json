@@ -1,0 +1,19 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "integration_workflow_primitives",
+    "collection_child_end_result_reaches_its_parent_end",
+    "--",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "exit_code": 0,
+  "seconds": 3.32,
+  "started_utc": "2026-10-18T20:57:45.890902+00:00",
+  "log": "prior-owner-child-runtime.txt"
+}

@@ -228,3 +228,18 @@ production. This does not close .1d.0 or .1d.0Q: explicit prior-owner expression
 failure/pre-evaluation replay, remaining End Run-byte boundary, report transaction races and
 old compensable in-flight upgrade acceptance remain. No full fanout race matrix or general
 nested eligibility is inferred from the one public scalar child composition.
+## Failed replay and final byte-boundary checkpoint — 2026-10-18
+
+Test increment `6ed26a12` has
+[real default/runtime evidence](evidence/collection-report-replay-20261018/reproduce.md)
+for failed-expression and pre-evaluation INSTANCE_LIMIT exact bodyless replays, contradictory
+End bytes, explicit prior/current owner consumption in the actual child End, late report receipt
+rollback/retry, and legal End bytes crossing the Run ceiling after its aggregate fits. The final
+quota oracle verifies all terminal notifications, preserved audit actions and absence of orphan
+End payload17. Successful collection/owner retention, truthful failed Run and telemetry/journal
+agreement hold. No production caller, privilege or general graph eligibility changes.
+
+The result-specific observations above are accepted. The master .1d.0/.0Q remain open for the
+old in-flight known-success report/reconciliation/order/recovery gates, remaining authority and
+secret races, output-dependent compensation and complete rollout; they are not replaced by
+passing current-version result tests. The later merged Clippy/release gates remain required.

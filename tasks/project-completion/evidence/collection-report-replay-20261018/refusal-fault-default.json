@@ -1,0 +1,19 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "integration_workflow_primitives",
+    "a_late_receipt_fault_rolls_back_the_whole_successful_refusal_and_same_key_retries",
+    "--",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "exit_code": 0,
+  "seconds": 9.49,
+  "started_utc": "2026-10-18T20:57:17.735009+00:00",
+  "log": "refusal-fault-default.txt"
+}

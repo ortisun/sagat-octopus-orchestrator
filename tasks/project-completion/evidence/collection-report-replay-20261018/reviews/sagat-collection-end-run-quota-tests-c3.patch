@@ -1,0 +1,34 @@
+--- a/tests/integration/workflow-primitives/collection_empty_quota.rs
++++ b/tests/integration/workflow-primitives/collection_empty_quota.rs
+@@ -438,6 +438,15 @@
+     let prefix_bytes = MAX_RUN_OUTPUT_BYTES - 3;
+     assert_eq!(outputs.iter().sum::<usize>(), prefix_bytes);
+     assert_prefix_outputs(&p, run, prefix_bytes).await;
++    let rejected_end_payloads_before: i64 = sqlx::query_scalar(
++        "SELECT count(*) FROM payloads WHERE tenant_id=$1 AND content=$2",
++    )
++    .bind(p.tenant.as_uuid())
++    .bind(b"17".as_slice())
++    .fetch_one(&p.api.db.pool)
++    .await
++    .expect("the candidate End payload is absent before collection finalization");
++    assert_eq!(rejected_end_payloads_before, 0);
+     let expected_run_audit_actions: Vec<String> = sqlx::query_scalar(
+         "SELECT action FROM audit_records \
+            WHERE tenant_id=$1 AND resource_type='run' AND resource_id=$2::text \
+@@ -613,6 +622,15 @@
+             .any(|action| action == "run.storage_quota_exceeded"),
+         "a logical-output refusal is not a stored-byte quota event"
+     );
++    let rejected_end_payloads_after: i64 = sqlx::query_scalar(
++        "SELECT count(*) FROM payloads WHERE tenant_id=$1 AND content=$2",
++    )
++    .bind(p.tenant.as_uuid())
++    .bind(b"17".as_slice())
++    .fetch_one(&p.api.db.pool)
++    .await
++    .expect("the refused End payload is not retained as an orphan");
++    assert_eq!(rejected_end_payloads_after, 0);
+     assert_eq!(
+         row.get::<i64, _>("head_seq"),
+         row.get::<i64, _>("run_version"),

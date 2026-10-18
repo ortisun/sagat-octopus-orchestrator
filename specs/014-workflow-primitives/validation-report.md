@@ -3296,3 +3296,12 @@ collection is discovered with a live RUNNING worker, records its audited drain/s
 the real worker lease and finishes without rewriting closed source. This is not old in-flight
 report acceptance, mixed-writer rollout, OS restart or uncertain COMMIT. The local correction
 and all eight canonical open feature014 tasks remain open for their remaining required gates.
+## Report atomicity and terminal End replay — 2026-10-18
+
+Source `6ed26a12` has [focused real evidence](../../tasks/project-completion/evidence/collection-report-replay-20261018/reproduce.md)
+for report receipt fault/rollback/same-key retry, failed-expression/pre-evaluation exact native
+replays, contradictory retained End bytes, prior-owner child context and the legal End result
+crossing the remaining Run-byte budget. Scope success and owner output remain durable while the
+Run fails; the final oracle checks physical payload absence, terminal hints, audit and head.
+Current-version default/runtime results are separate from old in-flight upgrade acceptance.
+All canonical open tasks remain unchecked; the later merged Clippy and release gates still apply.

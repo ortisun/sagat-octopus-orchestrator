@@ -1,0 +1,88 @@
+diff --git a/tests/integration/workflow-primitives/collection_empty_quota.rs b/tests/integration/workflow-primitives/collection_empty_quota.rs
+index 5fc7ccb8..8a6386b8 100644
+--- a/tests/integration/workflow-primitives/collection_empty_quota.rs
++++ b/tests/integration/workflow-primitives/collection_empty_quota.rs
+@@ -438,6 +438,22 @@ async fn legal_end_output_refuses_when_successful_empty_aggregate_leaves_one_run
+     let prefix_bytes = MAX_RUN_OUTPUT_BYTES - 3;
+     assert_eq!(outputs.iter().sum::<usize>(), prefix_bytes);
+     assert_prefix_outputs(&p, run, prefix_bytes).await;
++    let expected_run_audit_actions: Vec<String> = sqlx::query_scalar(
++        "SELECT action FROM audit_records \
++           WHERE tenant_id=$1 AND resource_type='run' AND resource_id=$2::text \
++           ORDER BY created_at,id",
++    )
++    .bind(p.tenant.as_uuid())
++    .bind(run)
++    .fetch_all(&p.api.db.pool)
++    .await
++    .expect("Run audit actions after the real worker prefix");
++    assert!(
++        !expected_run_audit_actions
++            .iter()
++            .any(|action| action == "run.storage_quota_exceeded"),
++        "the real worker prefix did not exhaust stored-byte quota"
++    );
+ 
+     assert_eq!(
+         drive_to_terminal(&p, &sched, run).await,
+@@ -475,12 +491,20 @@ async fn legal_end_output_refuses_when_successful_empty_aggregate_leaves_one_run
+                   AND event.run_id=run.id AND event.event_type='run.finished' \
+                   AND event.detail->>'status'='FAILED') AS run_finished, \
+                 (SELECT count(*) FROM event_outbox message WHERE message.tenant_id=run.tenant_id \
+-                  AND message.aggregate_id=run.id AND message.event_type='collection.finished' \
+-                  AND message.routing_key='items' \
+-                  AND message.payload->>'status'='SUCCEEDED') AS collection_outboxes, \
++                  AND message.aggregate_id=run.id \
++                  AND message.event_type='collection.finished') AS collection_outboxes, \
++                COALESCE((SELECT bool_and(message.routing_key='items' \
++                  AND message.payload->>'status'='SUCCEEDED') FROM event_outbox message \
++                  WHERE message.tenant_id=run.tenant_id AND message.aggregate_id=run.id \
++                    AND message.event_type='collection.finished'),false) \
++                  AS collection_outbox_exact, \
+                 (SELECT count(*) FROM event_outbox message WHERE message.tenant_id=run.tenant_id \
+-                  AND message.aggregate_id=run.id AND message.event_type='run.finished' \
+-                  AND message.payload->>'status'='FAILED') AS run_outboxes \
++                  AND message.aggregate_id=run.id \
++                  AND message.event_type='run.finished') AS run_outboxes, \
++                COALESCE((SELECT bool_and(message.routing_key IS NULL \
++                  AND message.payload->>'status'='FAILED') FROM event_outbox message \
++                  WHERE message.tenant_id=run.tenant_id AND message.aggregate_id=run.id \
++                    AND message.event_type='run.finished'),false) AS run_outbox_exact \
+            FROM runs run JOIN iteration_scopes scope \
+              ON scope.tenant_id=run.tenant_id AND scope.run_id=run.id \
+             AND scope.owner_path_nodes='{}' AND scope.owner_path_indices='{}' \
+@@ -561,6 +585,34 @@ async fn legal_end_output_refuses_when_successful_empty_aggregate_leaves_one_run
+         (1, 1, 0, 1, 1, 1, 1),
+         "one successful collection and one failed terminal decision are committed"
+     );
++    assert!(
++        row.get::<bool, _>("collection_outbox_exact"),
++        "the sole collection.finished hint has the successful items routing"
++    );
++    assert!(
++        row.get::<bool, _>("run_outbox_exact"),
++        "the sole run.finished hint has the failed Run payload and no routing key"
++    );
++    let final_run_audit_actions: Vec<String> = sqlx::query_scalar(
++        "SELECT action FROM audit_records \
++           WHERE tenant_id=$1 AND resource_type='run' AND resource_id=$2::text \
++           ORDER BY created_at,id",
++    )
++    .bind(p.tenant.as_uuid())
++    .bind(run)
++    .fetch_all(&p.api.db.pool)
++    .await
++    .expect("Run audit actions after the End budget refusal");
++    assert_eq!(
++        final_run_audit_actions, expected_run_audit_actions,
++        "End logical-output refusal requires no new Run audit action"
++    );
++    assert!(
++        !final_run_audit_actions
++            .iter()
++            .any(|action| action == "run.storage_quota_exceeded"),
++        "a logical-output refusal is not a stored-byte quota event"
++    );
+     assert_eq!(
+         row.get::<i64, _>("head_seq"),
+         row.get::<i64, _>("run_version"),

@@ -1,0 +1,24 @@
+Artifact: /tmp/sagat-collection-end-run-quota-tests-c2.patch
+Patch form: incremental C1 -> C2
+Target: tests/integration/workflow-primitives/collection_empty_quota.rs
+
+Base state
+- The shared working tree already contained the applied and formatted C1 test.
+- Exact C2 base source SHA-256: 35e245072a75971f5917d453518afbfdf00f3338edbc336fa7395fa2d477091c
+- C2 must be applied after C1 in that state; it intentionally preserves the C1 artifact and does not include the original additive test body.
+
+Review corrections
+- Immediately after the 16 real gRPC worker completions and before terminal scheduling, captures the ordered action list of every audit record scoped to this Run.
+- Proves the prefix has no run.storage_quota_exceeded audit.
+- After the End result fails the logical Run byte limit, compares the complete ordered Run audit action list with the preterminal snapshot. This proves the End budget refusal adds no audit action.
+- Reasserts that the final list contains no run.storage_quota_exceeded action, distinguishing logical output refusal from stored-byte quota refusal.
+- Counts every collection.finished outbox row for the Run, independent of status and routing predicates.
+- Counts every run.finished outbox row for the Run, independent of status and routing predicates.
+- The existing tuple assertion requires both all-event counts to equal one. Separate bool_and assertions then require that sole collection row to be SUCCEEDED/routed to items and that sole Run row be FAILED/without a routing key. Opposite-status or misrouted extra rows can no longer escape the counts.
+- Retains C1's real worker flow, exact byte proof, successful collection scope/owner, retained [] aggregate, absence of End output/EndReached/Run result, and full snapshot verification.
+- All SQL remains read-only.
+
+Validation
+- Patch SHA-256: 63751448ef187319f5e7b3ababa2e23885f8448f5559a4242d905354fcf0bd96
+- `git apply --check /tmp/sagat-collection-end-run-quota-tests-c2.patch`: exit 0 against the exact base hash above.
+- Per task constraints, no repository file was edited by this draft and no test, build, formatter, or commit command was run.

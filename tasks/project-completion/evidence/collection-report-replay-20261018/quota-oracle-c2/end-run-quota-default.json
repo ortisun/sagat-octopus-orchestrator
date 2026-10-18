@@ -1,0 +1,19 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "integration_workflow_primitives",
+    "legal_end_output_refuses_when_successful_empty_aggregate_leaves_one_run_byte",
+    "--",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "exit_code": 0,
+  "seconds": 55.69,
+  "started_utc": "2026-10-18T21:00:09.597859+00:00",
+  "log": "end-run-quota-default.txt"
+}

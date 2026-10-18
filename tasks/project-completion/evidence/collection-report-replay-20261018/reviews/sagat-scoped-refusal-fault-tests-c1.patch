@@ -1,0 +1,243 @@
+--- a/tests/integration/workflow-primitives/byte_ceilings.rs
++++ b/tests/integration/workflow-primitives/byte_ceilings.rs
+@@ -194,8 +194,116 @@
+     .fetch_one(&flow.api.db.pool)
+     .await
+     .expect("refusal identity")
++}
++
++fn positive_advisory_key() -> i64 {
++    i64::try_from(uuid::Uuid::new_v4().as_u128() & ((1_u128 << 63) - 1))
++        .expect("positive advisory key")
++}
++
++async fn install_refusal_receipt_fault(pool: &sqlx::PgPool, key: i64) {
++    let ddl = format!(
++        "CREATE FUNCTION scoped_refusal_receipt_fault() RETURNS trigger LANGUAGE plpgsql AS $$ \
++         BEGIN \
++           IF NEW.resource_id LIKE 'SUCCEEDED|CANCELLING|%' THEN \
++             PERFORM pg_advisory_xact_lock({key}); \
++             RAISE EXCEPTION 'test-only scoped output refusal receipt abort' \
++               USING ERRCODE='23514',CONSTRAINT='scoped_refusal_receipt_forced_abort'; \
++           END IF; \
++           RETURN NEW; \
++         END $$; \
++         CREATE TRIGGER scoped_refusal_receipt_gate AFTER INSERT ON command_dedupe \
++         FOR EACH ROW EXECUTE FUNCTION scoped_refusal_receipt_fault();"
++    );
++    sqlx::raw_sql(sqlx::AssertSqlSafe(ddl))
++        .execute(pool)
++        .await
++        .expect("install labelled refusal receipt fault");
++}
++
++async fn remove_refusal_receipt_fault(pool: &sqlx::PgPool) {
++    sqlx::raw_sql(
++        "DROP TRIGGER scoped_refusal_receipt_gate ON command_dedupe; \
++         DROP FUNCTION scoped_refusal_receipt_fault();",
++    )
++    .execute(pool)
++    .await
++    .expect("remove labelled refusal receipt fault");
++}
++
++async fn refusal_transaction_snapshot(flow: &Flow) -> Value {
++    sqlx::query_scalar(
++        "SELECT jsonb_build_object( \
++            'run',to_jsonb(run), \
++            'scopes',(SELECT coalesce(jsonb_agg(to_jsonb(scope) ORDER BY scope.scope_id),'[]'::jsonb) \
++              FROM iteration_scopes scope \
++              WHERE scope.tenant_id=run.tenant_id AND scope.run_id=run.id), \
++            'iterations',(SELECT coalesce(jsonb_agg(to_jsonb(member) \
++              ORDER BY member.scope_id,member.iteration_index),'[]'::jsonb) \
++              FROM collection_iterations member \
++              WHERE member.tenant_id=run.tenant_id AND member.run_id=run.id), \
++            'steps',(SELECT coalesce(jsonb_agg(to_jsonb(step) \
++              ORDER BY step.instance_path_nodes,step.instance_path_indices,step.node),'[]'::jsonb) \
++              FROM steps step WHERE step.tenant_id=run.tenant_id AND step.run_id=run.id), \
++            'journal',(SELECT coalesce(jsonb_agg(jsonb_build_object( \
++                'row',to_jsonb(event),'payload',encode(payload.content,'hex')) \
++              ORDER BY event.seq),'[]'::jsonb) \
++              FROM run_events event LEFT JOIN payloads payload \
++                ON payload.tenant_id=event.tenant_id AND payload.digest=event.payload_digest \
++              WHERE event.tenant_id=run.tenant_id AND event.run_id=run.id), \
++            'usage',(SELECT to_jsonb(usage) FROM run_instance_usage usage \
++              WHERE usage.tenant_id=run.tenant_id AND usage.run_id=run.id), \
++            'telemetry',(SELECT to_jsonb(head) FROM telemetry_pending head \
++              WHERE head.tenant_id=run.tenant_id AND head.run_id=run.id), \
++            'tenantPayloads',(SELECT coalesce(jsonb_agg(to_jsonb(payload) \
++              ORDER BY encode(payload.digest,'hex')),'[]'::jsonb) \
++              FROM payloads payload WHERE payload.tenant_id=run.tenant_id), \
++            'tenantRetainedUsage',(SELECT to_jsonb(retained) FROM tenant_retained_usage retained \
++              WHERE retained.tenant_id=run.tenant_id), \
++            'audits',(SELECT coalesce(jsonb_agg(to_jsonb(audit) ORDER BY audit.id),'[]'::jsonb) \
++              FROM audit_records audit WHERE audit.tenant_id=run.tenant_id), \
++            'receipts',(SELECT coalesce(jsonb_agg(to_jsonb(receipt) \
++              ORDER BY receipt.scope,receipt.idempotency_key),'[]'::jsonb) \
++              FROM command_dedupe receipt WHERE receipt.tenant_id=run.tenant_id), \
++            'outbox',(SELECT coalesce(jsonb_agg(to_jsonb(message) ORDER BY message.id),'[]'::jsonb) \
++              FROM event_outbox message WHERE message.tenant_id=run.tenant_id), \
++            'sagas',(SELECT coalesce(jsonb_agg(to_jsonb(saga) \
++              ORDER BY saga.owner_path_nodes,saga.owner_path_indices,saga.owner_node),'[]'::jsonb) \
++              FROM scope_sagas saga WHERE saga.tenant_id=run.tenant_id AND saga.run_id=run.id), \
++            'sagaEntries',(SELECT coalesce(jsonb_agg(to_jsonb(entry) \
++              ORDER BY entry.owner_path_nodes,entry.owner_path_indices,entry.owner_node, \
++                       entry.iteration_index,entry.node),'[]'::jsonb) \
++              FROM scope_saga_entries entry \
++              WHERE entry.tenant_id=run.tenant_id AND entry.run_id=run.id)) \
++           FROM runs run WHERE run.tenant_id=$1 AND run.id=$2",
++    )
++    .bind(flow.tenant.as_uuid())
++    .bind(flow.run.as_uuid())
++    .fetch_one(&flow.api.db.pool)
++    .await
++    .expect("complete refusal transaction snapshot")
+ }
+ 
++async fn waiting_refusal_receipt(flow: &Flow, gate_pid: i32) -> i32 {
++    crate::support::eventually(
++        "actual refusal receipt waits after the root and scoped persists",
++        || async {
++            sqlx::query_scalar::<_, i32>(
++                "SELECT pid FROM pg_stat_activity \
++                   WHERE datname=current_database() AND usename='sagat_app' \
++                     AND state='active' AND wait_event_type='Lock' \
++                     AND $1=ANY(pg_blocking_pids(pid)) \
++                     AND position('INSERT INTO command_dedupe' in query)>0 LIMIT 1",
++            )
++            .bind(gate_pid)
++            .fetch_optional(&flow.api.db.pool)
++            .await
++            .expect("refusal receipt advisory wait witness")
++        },
++    )
++    .await
++}
++
+ #[allow(clippy::type_complexity)] // One query captures the atomic public report projection.
+ async fn assert_successful_refusal(
+     flow: &Flow,
+@@ -457,7 +565,123 @@
+         .expect_err("a new command cannot reuse the completed lease fence");
+     assert_eq!(stale.code(), tonic::Code::Aborted);
+     assert_eq!(refusal_identity(&flow, &key).await, first_identity);
++
++    drain_and_compensate_every_reservation(&flow).await;
++}
++
++#[tokio::test(flavor = "current_thread")]
++async fn a_late_receipt_fault_rolls_back_the_whole_successful_refusal_and_same_key_retries() {
++    let name = format!("scoped-refusal-fault-{}", uuid::Uuid::now_v7());
++    let (flow, task, output) = collection_at_seventeenth_member(&name, false).await;
++    let outboxes_before = run_outboxes(&flow).await;
++    let key = format!("refusal-fault-{}", uuid::Uuid::now_v7());
++    let before = refusal_transaction_snapshot(&flow).await;
++    let fault_key = positive_advisory_key();
++    install_refusal_receipt_fault(&flow.api.db.pool, fault_key).await;
++    let mut gate = flow
++        .api
++        .db
++        .pool
++        .begin()
++        .await
++        .expect("owned refusal receipt gate");
++    let gate_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
++        .fetch_one(&mut *gate)
++        .await
++        .expect("refusal gate backend pid");
++    sqlx::query("SELECT pg_advisory_xact_lock($1)")
++        .bind(fault_key)
++        .execute(&mut *gate)
++        .await
++        .expect("hold refusal receipt gate");
++    let (_fault_log_guard, fault_logs) =
++        crate::support::logs::capture_at(tracing::Level::ERROR);
+ 
++    let reporting = flow.try_complete(&task, output.clone(), &key);
++    tokio::pin!(reporting);
++    let observe = async {
++        let writer_pid = waiting_refusal_receipt(&flow, gate_pid).await;
++        assert_ne!(writer_pid, gate_pid);
++        assert_eq!(
++            refusal_transaction_snapshot(&flow).await,
++            before,
++            "a second connection sees no root stop, scoped success, reported lease, journal/head, audit, receipt, output/accounting, payload, saga or outbox write"
++        );
++        let still_blocked: bool = sqlx::query_scalar(
++            "SELECT EXISTS(SELECT 1 FROM pg_stat_activity \
++               WHERE pid=$1 AND state='active' AND wait_event_type='Lock' \
++                 AND $2=ANY(pg_blocking_pids(pid)) \
++                 AND position('INSERT INTO command_dedupe' in query)>0)",
++        )
++        .bind(writer_pid)
++        .bind(gate_pid)
++        .fetch_one(&flow.api.db.pool)
++        .await
++        .expect("refusal writer remains blocked after the complete observation");
++        gate.rollback()
++            .await
++            .expect("release only the owned refusal receipt gate");
++        still_blocked
++    };
++    tokio::pin!(observe);
++    let (failed, blocked_through_observation) = tokio::join!(&mut reporting, &mut observe);
++    assert!(
++        blocked_through_observation,
++        "the actual receipt writer must remain blocked until observation releases the gate"
++    );
++    let failure = failed.expect_err("the late receipt fault returns no fabricated StepAck");
++    assert_eq!(failure.code(), tonic::Code::Internal);
++    assert_eq!(
++        crate::support::worker::machine_code(&failure),
++        "INTERNAL"
++    );
++    let fault_log = fault_logs.text();
++    assert!(
++        fault_log.contains("test-only scoped output refusal receipt abort"),
++        "the public failure must come from the labelled receipt trigger: {fault_log}"
++    );
++    assert!(
++        !fault_log.contains("statement timeout"),
++        "the report timed out before the labelled fault: {fault_log}"
++    );
++    assert_eq!(
++        refusal_transaction_snapshot(&flow).await,
++        before,
++        "the labelled late failure rolls back both persists, audit and receipt"
++    );
++
++    remove_refusal_receipt_fault(&flow.api.db.pool).await;
++    let accepted = flow
++        .try_complete(&task, output.clone(), &key)
++        .await
++        .expect("the identical public report applies after the fault is removed");
++    assert!(!accepted.already_applied);
++    assert_eq!(accepted.step_status, "SUCCEEDED");
++    assert_eq!(accepted.run_status, "CANCELLING");
++    assert_successful_refusal(&flow, &task, &key, outboxes_before).await;
++    flow.verify().await;
++
++    let committed = refusal_transaction_snapshot(&flow).await;
++    let identity = refusal_identity(&flow, &key).await;
++    assert_eq!(identity.0, 1, "one refusal audit");
++    assert_eq!(identity.1, 1, "one original receipt");
++    assert_eq!(identity.2, outboxes_before, "the report creates no outbox");
++    assert_eq!(identity.3, identity.4, "the journal reaches the Run head");
++    let replay = flow
++        .try_complete(&task, output, &key)
++        .await
++        .expect("the identical public report returns its original receipt");
++    assert!(replay.already_applied);
++    assert_eq!(replay.command_id, accepted.command_id);
++    assert_eq!(replay.step_status, "SUCCEEDED");
++    assert_eq!(replay.run_status, "CANCELLING");
++    assert_eq!(refusal_identity(&flow, &key).await, identity);
++    assert_eq!(
++        refusal_transaction_snapshot(&flow).await,
++        committed,
++        "receipt replay adds no stop, success, audit, receipt, payload, accounting, journal, head, saga or outbox effect"
++    );
++
+     drain_and_compensate_every_reservation(&flow).await;
+ }
+ 

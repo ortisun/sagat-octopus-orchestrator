@@ -1,0 +1,11 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.28s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 4 tests
+test collection_end_result::collection_end_preserves_optional_null_and_typed_evaluation_semantics ... ok
+test collection_end_result::collection_end_retains_owner_aggregate_and_evaluated_run_result ... ok
+test collection_end_result::collection_result_uses_pinned_output_schema_for_http_disclosure ... ok
+test collection_end_result::collection_success_does_not_bypass_the_successor_end_instance_limit ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 526 filtered out; finished in 13.14s
+

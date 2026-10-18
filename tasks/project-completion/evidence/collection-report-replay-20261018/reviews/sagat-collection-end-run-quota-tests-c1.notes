@@ -1,0 +1,26 @@
+Artifact: /tmp/sagat-collection-end-run-quota-tests-c1.patch
+Scope: one additive test in tests/integration/workflow-primitives/collection_empty_quota.rs
+
+Drafted coverage
+- Builds the existing 16-activity prefix through actual public gRPC worker completions.
+- Produces the exact L = 4 MiB - 3 prefix with fifteen 256 KiB values and one (256 KiB - 3) value.
+- Lets the empty collection finish successfully and retain its two-byte [] aggregate, leaving one Run byte.
+- Evaluates a valid End output expression whose JSON result is the two-byte value 17.
+- Proves the End step and Run fail with RUN_DATA_LIMIT while the collection scope and owner remain SUCCEEDED, the [] aggregate remains referenced, no End output or Run result is retained, and no end.reached event exists.
+- Proves logical usage and retained step-output references are exactly L + 2 = 4 MiB - 1, with 17 output references, so the rejected End result adds no charge.
+- Checks collection/End/Run journal events, terminal outbox rows, telemetry head equality, and verify_run replay consistency from the complete stored snapshot.
+- Performs no SQL mutation, status seeding, ledger seeding, or output seeding.
+
+Helper/API assessment
+- No helper or public API change is needed. The existing fixed 16-output helper accepts positive values up to MAX_PAYLOAD_BYTES and can represent the exact prefix.
+- Fifteen values must sit at the allowed 256 KiB ceiling to reach 4 MiB - 3 with 16 outputs. If “beneath 256 KiB” means strict `< 256 KiB`, that combination is arithmetically impossible; the current contract and helper allow `<= MAX_PAYLOAD_BYTES`, and the draft asserts that bound.
+
+Read/provenance
+- Base source SHA-256: c04a99f04a192d79a2e1a32fb4e963a33f6f864ffdaa58369f3d53f26d37b95f
+- Patch SHA-256: cee94be9a9002fd2cc9dd84d8ecad691f64170d2088f143e68ad54d1c2b3854e
+- `git apply --check /tmp/sagat-collection-end-run-quota-tests-c1.patch`: exit 0
+- Target source remained clean during drafting.
+
+Execution
+- Per task constraints, no repository file was edited and no build, test, formatter, or commit command was run.
+- Compilation and runtime behavior remain for the root executor to verify after applying the patch to its frozen input.

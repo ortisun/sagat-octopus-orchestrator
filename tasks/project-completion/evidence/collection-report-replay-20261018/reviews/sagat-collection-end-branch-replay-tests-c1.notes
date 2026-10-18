@@ -1,0 +1,33 @@
+Sagat collection End branch replay test draft (C1)
+Date: 2026-10-18
+
+Artifact
+- Patch: /tmp/sagat-collection-end-branch-replay-tests-c1.patch
+- Patch SHA-256: a85333dce45e8f60bb99dfa1715e48b0a73e5e181e921d783e99299528fd9b03
+- Repository files were not modified by this draft.
+
+Patch scope
+- One existing file only: tests/integration/workflow-primitives/collection_end_result.rs
+- Extends the genuine public scheduler-produced EXPRESSION_ERROR and pre-evaluation INSTANCE_LIMIT flows.
+- Reconstructs each original Finish from retained finish sequence minus one, ordered checkpoint digests, scope/result/outbox identity, trace, retained event timestamp, and the current scheduler fence.
+- Uses a fresh DefinitionCache and PgCollectionStore over flow.api.api_pool.
+- The evaluated failure replay supplies EndOutputAnswer::ExpressionError; a supplied successful answer is rejected as DuplicateMismatch.
+- The pre-evaluation refusal replay supplies no End answer; an unexpected ExpressionError answer is rejected as DuplicateMismatch.
+- Both matching replays require applied=false and the retained current Run head.
+- Before/after equality covers the Run, successful scope/owner, collection members and checkpoints, full Run journal, full tenant payload rows, run/tenant retained/tenant iteration usage, telemetry head, finish receipt fields, Run audits, and stable outbox fields.
+- The replay command carries no aggregate body. PgCollectionStore accepts no expression evaluator or provider, so the cold call has no evaluation/provider path.
+
+Base read hashes
+- tests/integration/workflow-primitives/collection_end_result.rs: c7892f073dadbf8cc67643dae8839498f43e39f132fc786037461ff0bfb4133c
+- crates/application/src/primitives.rs: 68ae14887dfc5904ae0ee4dc4886b0dc3872d03aa717b5a6acfe939902a39633
+- crates/infra-postgres/src/primitives.rs: 14532a4fb34ae5a7cecd5c8ce8cef80b6f2cbfa8e2a824349b50bb2999921418
+- crates/scheduler/src/passes.rs: 7798c15380bdd10d43072316467cb990326090519fa1750c89da190ccb5d7d40
+
+Verification performed
+- git apply --check /tmp/sagat-collection-end-branch-replay-tests-c1.patch: exit 0
+- No build, test, formatter, commit, or repository edit was performed.
+
+API dependency / gap
+- The draft depends on the current uncommitted CollectionFinish::from_checkpoint_digests API in crates/application/src/primitives.rs.
+- No additional public API is required. The existing constructor, EndOutputAnswer, CollectionStore port, and PgCollectionStore::with_definition_cache are sufficient.
+- Compilation and runtime behavior remain deliberately unexecuted for root to verify on the merged tree.

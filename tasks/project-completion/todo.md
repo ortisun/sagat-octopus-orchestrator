@@ -253,3 +253,14 @@ late Finish rollback/retry and fresh-store bodyless source-bound replay. Classif
 collection-specific public HTTP disclosure case. See evidence/collection-result-composition-20261018.
 These close their described bounded observations only; .1d.0/.0Q, Q7c/Q8/Q9/Q10 and the eight
 canonical014 tasks remain open for the explicitly listed remaining controls and delivery gates.
+
+## Report/End replay checkpoint — 2026-10-18
+
+Source6ed26a12 adds successful real default/runtime report receipt rollback/retry, failed-End
+and pre-evaluation INSTANCE_LIMIT exact replays, contradictory retained End bytes, prior-owner
+child expression consumption and the actual End Run-byte boundary (including orphan payload,
+complete terminal outboxes and correct audit-set checks). Evidence: collection-report-replay-20261018.
+Each revision retains separate source pins and commands; final C3 assertion delta still joins
+the later merged Clippy gate. Canonical eight014 tasks, local master .1d.0/.0Q and broader
+Q7c/Q8/Q9/Q10 controls remain open. Next prerequisite is current API reattachment to the same
+owned DB, before the genuine old in-flight report fixture. No old-session authority is fabricated.

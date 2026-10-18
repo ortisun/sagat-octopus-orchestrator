@@ -221,6 +221,16 @@ The public StepAck truthfully reports the resulting successful step and stopping
 
 **Effect/liveness result:** report-before-drain leaves SUCCEEDED plus an authoritative stop before any successor can be released; drain-before-report leaves the existing draining scope/stop and records the valid in-flight success, rather than replacing it with CANCELLED/failure. The live member cannot be drained while its worker is still active; after the success report it can settle/drain and the existing saga planner sees the SUCCEEDED activity. Successful known effects do not require a new operator decision to be recognized, and cannot be blindly rerun. Compensations with sufficient declared inputs execute normally. If a declared compensation requires the refused output, do not synthesize it: existing task-input/failure/manual-review policy must retain that open obligation and prevent a false compensated/final outcome. Tests must demonstrate both a real successful compensation and this honest missing-input limitation. Existing audited operator intervention remains available only through its existing policy; this design does not introduce a new review-first policy or grant.
 
+For the output-dependent compensation test, the requirement belongs to the declared activity's
+actual worker implementation. The engine's ordinary task context exposes only retained outputs;
+it does not infer arbitrary worker input requirements from an activity name. Exercise the same
+strict worker handler against actual retained/refused lease input, then report its genuine typed
+application failure through the existing FailStep/manual-review policy. A fixture-defined error
+code is not a new built-in platform diagnosis or IR dependency declaration. An authorized failed
+resolution must finish COMPENSATION_FAILED honestly; it must not imply a successful release,
+external provider undo or old-binary acceptance. The bounded decision is recorded with the test
+evidence; no production input contract changes.
+
 `StoppedForRunDataLimit` is transient internal evidence, not durable vocabulary. Native start requires OPEN scope and exact stored `(stop_reason='FAILED', stop_code='RUN_DATA_LIMIT')`, native revision, scheduler fence, owner/namespace and audit. It does not accept CANCELLED, timeout, another failure code, a stopped Run with no matching code, or E<=limit with no stop. It never creates a stop itself. ExistingOutputs still freshly proves E>limit, and Aggregate still proves the actual final candidate/source bindings. No source row, checkpoint origin, aggregate length or member failure is invented to justify a refused report.
 
 ### 11.3 Frontier guard on the actual production dispatcher
