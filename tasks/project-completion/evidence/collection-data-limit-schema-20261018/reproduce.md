@@ -1,0 +1,9 @@
+# Q4 additive schema
+
+Run each retained JSON command with CARGO_TARGET_DIR=/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=3 RUST_MIN_STACK=16777216 SAGAT_TEST_DATABASE_URL=postgres://postgres@127.0.0.1:65117/postgres. Default unsets SAGAT_TEST_AS_RUNTIME_ROLE; runtime sets 1. PostgreSQL16.15 held loopback fixture. All1112 final inputs match.
+
+Five behavioral PostgreSQL tests pass in each mode: total CHECK including single-null UNKNOWN controls and old forms; ordinary-history down/up behind an observed Run lock; retained scope and journal independently reject down with55000; actual G/D/W lock queue proves down-before-writer and23514/complete rollback of the queued writer. Queue assertions inspect three distinct backend PIDs, pg_stat_activity, pg_locks and blocker edges. These are static storage fixtures, not native producer/replay or binary upgrade evidence.
+
+The reviewed C2 schema patch8872ccebfdbcde832b1ba5ebb1f885002ce00f59c7258f13ac98d064d1bfdaff required no SQL amendment. Root removed its redundant SQL-source string assertion; behavioral lock tests remain. Initial compilation failed because the borrowed-connection SQLx migration future was not Send; the final helper drives that same dedicated connection via Handle::block_on in spawn_blocking. Initial logs/pins are retained separately; zero behavioral tests ran on that failed build. Final strict integration Clippy, fmt and architecture pass. The final five-test counts do not include the removed string assertion.
+
+New-reason native writer remains explicitly unavailable. Schema down eligibility does not authorize old binary execution. No history is deleted to pass down; operational writer quiescence, corrected readers/writers and actual old/current process acceptance remain pending.

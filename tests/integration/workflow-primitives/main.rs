@@ -26,6 +26,7 @@ mod chains;
 mod chains_http;
 mod collection_10k;
 mod collection_budgets;
+mod collection_data_limit_schema;
 mod collection_empty_quota;
 mod collection_end_result;
 mod collection_pipeline;

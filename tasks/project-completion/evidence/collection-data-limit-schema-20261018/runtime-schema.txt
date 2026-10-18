@@ -1,0 +1,12 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.26s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 5 tests
+test collection_data_limit_schema::downgrade_owns_run_before_a_new_reason_writer_and_the_writer_rolls_back ... ok
+test collection_data_limit_schema::ordinary_history_without_the_new_reason_downgrades_and_reapplies ... ok
+test collection_data_limit_schema::retained_static_run_data_limit_journal_refuses_downgrade ... ok
+test collection_data_limit_schema::retained_static_run_data_limit_scope_refuses_downgrade ... ok
+test collection_data_limit_schema::run_data_limit_constraint_is_total_and_preserves_every_old_form ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 507 filtered out; finished in 4.82s
+

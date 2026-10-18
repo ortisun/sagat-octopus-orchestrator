@@ -1,0 +1,34 @@
+   Compiling sagat-infra-postgres v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-postgres)
+   Compiling sagat-control-plane v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/control-plane)
+   Compiling sagat-sandbox-runner v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/sandbox-runner)
+   Compiling sagat-execution-engine v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/execution-engine)
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+error: implementation of `sqlx::Acquire` is not general enough
+   --> tests/integration/workflow-primitives/collection_data_limit_schema.rs:597:16
+    |
+597 |       let down = tokio::spawn(async move {
+    |  ________________^
+598 | |         MIGRATOR
+599 | |             .undo(&mut *down_connection, BEFORE_RUN_DATA_LIMIT)
+600 | |             .await
+601 | |     });
+    | |______^ implementation of `sqlx::Acquire` is not general enough
+    |
+    = note: `sqlx::Acquire<'0>` would have to be implemented for the type `&mut PgConnection`, for any lifetime `'0`...
+    = note: ...but `sqlx::Acquire<'1>` is actually implemented for the type `&'1 mut PgConnection`, for some specific lifetime `'1`
+
+error: implementation of `sqlx::Acquire` is not general enough
+   --> tests/integration/workflow-primitives/collection_data_limit_schema.rs:597:16
+    |
+597 |       let down = tokio::spawn(async move {
+    |  ________________^
+598 | |         MIGRATOR
+599 | |             .undo(&mut *down_connection, BEFORE_RUN_DATA_LIMIT)
+600 | |             .await
+601 | |     });
+    | |______^ implementation of `sqlx::Acquire` is not general enough
+    |
+    = note: `sqlx::Acquire<'_>` would have to be implemented for the type `&'0 mut PgConnection`, for any lifetime `'0`...
+    = note: ...but `sqlx::Acquire<'1>` is actually implemented for the type `&'1 mut PgConnection`, for some specific lifetime `'1`
+
+error: could not compile `sagat-tests` (test "integration_workflow_primitives") due to 2 previous errors
