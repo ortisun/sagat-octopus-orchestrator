@@ -133,6 +133,7 @@ pub enum WorkflowPrimitiveRejectionCode {
     InstanceLimit,
     ChainLimit,
     ExpressionError,
+    RunDataLimit,
     InvalidOperationState,
     NotEligible,
     InitiatorCannotDecide,
@@ -151,13 +152,14 @@ pub enum WorkflowPrimitiveRejectionCode {
 }
 
 impl WorkflowPrimitiveRejectionCode {
-    pub const ALL: [Self; 21] = [
+    pub const ALL: [Self; 22] = [
         Self::UnsupportedNode,
         Self::InvalidScope,
         Self::IterationLimit,
         Self::InstanceLimit,
         Self::ChainLimit,
         Self::ExpressionError,
+        Self::RunDataLimit,
         Self::InvalidOperationState,
         Self::NotEligible,
         Self::InitiatorCannotDecide,
@@ -184,6 +186,7 @@ impl WorkflowPrimitiveRejectionCode {
             Self::InstanceLimit => "INSTANCE_LIMIT",
             Self::ChainLimit => "CHAIN_LIMIT",
             Self::ExpressionError => "EXPRESSION_ERROR",
+            Self::RunDataLimit => "RUN_DATA_LIMIT",
             Self::InvalidOperationState => "INVALID_OPERATION_STATE",
             Self::NotEligible => "NOT_ELIGIBLE",
             Self::InitiatorCannotDecide => "INITIATOR_CANNOT_DECIDE",

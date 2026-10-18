@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 
 use sagat_telemetry::{
-    REDACTED, WorkflowPrimitiveKind, WorkflowPrimitiveMetric, WorkflowPrimitiveOutcome,
+    Metrics, REDACTED, WorkflowPrimitiveKind, WorkflowPrimitiveMetric, WorkflowPrimitiveOutcome,
     WorkflowPrimitiveRejectionCode, WorkflowPrimitiveSpan, WorkflowPrimitiveSpanField, scrub,
 };
 
@@ -150,4 +150,62 @@ fn secret_markers_are_redacted_from_telemetry_text() {
 
     assert!(!rendered.contains(marker));
     assert!(rendered.contains(REDACTED));
+}
+
+#[test]
+fn run_data_limit_is_a_finite_private_rejection_series() {
+    let code = WorkflowPrimitiveRejectionCode::from_reason("RUN_DATA_LIMIT")
+        .expect("the durable data-limit reason is in the closed vocabulary");
+    assert_eq!(code, WorkflowPrimitiveRejectionCode::RunDataLimit);
+    assert_eq!(code.as_str(), "RUN_DATA_LIMIT");
+
+    let private = [
+        "run_data_limit",
+        "RUN_DATA_LIMIT:4194305",
+        "payload=secret-marker",
+        "sha256:secret-marker",
+        "steps.items.output",
+    ];
+    assert!(
+        private
+            .into_iter()
+            .all(|reason| WorkflowPrimitiveRejectionCode::from_reason(reason).is_none())
+    );
+
+    let (export, recorder) = Metrics::detached(std::time::Duration::from_secs(60));
+    metrics::with_local_recorder(&recorder, || {
+        metrics::counter!(
+            WorkflowPrimitiveMetric::Rejections.as_str(),
+            "kind" => WorkflowPrimitiveKind::Collection.as_str(),
+            "code" => code.as_str(),
+        )
+        .increment(1);
+        for reason in private {
+            if let Some(unexpected) = WorkflowPrimitiveRejectionCode::from_reason(reason) {
+                metrics::counter!(
+                    WorkflowPrimitiveMetric::Rejections.as_str(),
+                    "kind" => WorkflowPrimitiveKind::Collection.as_str(),
+                    "code" => unexpected.as_str(),
+                )
+                .increment(1);
+            }
+        }
+    });
+    let page = export.render();
+    let sample = page
+        .lines()
+        .find(|line| line.starts_with("workflow_primitive_rejections_total"))
+        .expect("exported rejection sample");
+    assert!(sample.contains("code=\"RUN_DATA_LIMIT\""), "{sample}");
+    assert!(sample.contains("kind=\"collection\""), "{sample}");
+    assert!(sample.ends_with(" 1"), "{sample}");
+    for forbidden in [
+        "secret-marker",
+        "4194305",
+        "sha256",
+        "steps.items.output",
+        "payload",
+    ] {
+        assert!(!page.contains(forbidden), "{page}");
+    }
 }
