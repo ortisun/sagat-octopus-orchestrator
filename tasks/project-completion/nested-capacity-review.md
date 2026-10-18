@@ -52,5 +52,6 @@ updates; no such divergence is approved here.
 - Actual retained ownership/execution counters versus persisted holders after replay/restart;
   unchanged tenant identity, lifetime ceilings, reservations, outbox and audit boundaries.
 
-The review's first cycle is complete; the revised protocol is still pending. The optional external
-cross-model review was offered to the user. No external CLI was authorized or invoked.
+The review's first cycle is complete; the revised protocol is still pending. The user selected
+the current review after the optional external cross-model review was offered. No external CLI
+was authorized or invoked.

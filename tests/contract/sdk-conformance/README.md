@@ -25,8 +25,8 @@ successful run is separate from current-client conformance; it does not bless ne
 
 ## Protocol compatibility
 
-The short `secrets` journal fixture schedules the current worker's first heartbeat after its
-30-second completion deadline (60 seconds). It therefore compares secret resolution and completion
+The short `secrets` and `blobs` journal fixtures schedule the current worker's first heartbeat after their
+30-second completion deadline (60 seconds). They compare secret/blob operations and completion
 without racing an optional `step.started` heartbeat event against the short activity. The full raw
 result is still checked for secret leaks, and no journal event is removed by normalization.
 Heartbeat renewal and cancellation are exercised separately by their dedicated scenarios.

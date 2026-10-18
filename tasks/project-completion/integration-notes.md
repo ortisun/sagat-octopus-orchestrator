@@ -1466,3 +1466,16 @@ The independent nesting proposal review found five actionable protocol omissions
 counterexamples and the pending correction are in `nested-capacity-review.md`. No new ADR or runtime
 guarantee is inferred. Nesting stays closed pending its durable protocol, quota-reduction and crash
 evidence. No remaining task checkbox changes.
+
+## 2026-10-17 — Blob scenario heartbeat race
+
+The full56-scenario/all-five run exposed optional `step.started` journal events in TypeScript/Go's
+short blob activities: their first200ms heartbeat committed before completion, unlike the other
+three SDKs and the reviewed golden. Original scenario and failures remain under
+`/tmp/sagat-completion-sdk-final-matrix/`; the complete matrix is still running and must retain
+its failing aggregate result. The blob fixture now follows the existing secrets fixture: first
+heartbeat60s, after each30s completion deadline. The corrected all-five blob case passed1/1,24.73s
+(`/tmp/sagat-completion-sdk-blobs-heartbeat-fixed.log`). No event is filtered, no expected document,
+SDK/runner implementation, server guarantee or public heartbeat behavior is changed. Dedicated
+heartbeat/cancellation/fault scenarios retain their short heartbeats and exact journal assertions.
+The user chose the current agent review; no external cross-model CLI was invoked.
