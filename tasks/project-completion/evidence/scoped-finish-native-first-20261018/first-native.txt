@@ -1,0 +1,16 @@
+   Compiling sagat-infra-postgres v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-postgres)
+   Compiling sagat-control-plane v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/control-plane)
+   Compiling sagat-execution-engine v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/execution-engine)
+   Compiling sagat-sandbox-runner v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/sandbox-runner)
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 40.64s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 4 tests
+test leaf_certification_native::scoped_finish::native_scoped_finish_applies_once_and_replays_original_after_real_later_changes ... ok
+test leaf_certification_native::scoped_finish::native_scoped_finish_preserves_exact_a1_holder_vacant_and_last_transitions ... ok
+test leaf_certification_native::scoped_finish::native_scoped_finish_refuses_signed_counter_overflow_atomically ... ok
+test leaf_certification_native::scoped_finish::native_scoped_finish_refuses_source_authority_context_cas_and_inactive_in_order ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 465 filtered out; finished in 6.47s
+

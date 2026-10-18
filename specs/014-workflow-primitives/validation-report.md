@@ -3059,3 +3059,26 @@ decoding, actual barriers, unknown-COMMIT/process and observations into separate
 This closes no broader B1/B2/C0 or canonical runtime/release task.
 See tasks/project-completion/scoped-leaf-finish-native-contract.md and
 evidence/scoped-finish-native-decision-20261018/manifest.json.
+
+
+## First dormant native scoped Finish — 2026-10-18
+
+Local B1b.2b.13, refs:T014-014..017/040. Four runtime-role PostgreSQL tests pass in49.22s
+(6.47s harness) after natural E0432 pre-export RED. The store consumes genuine native leaf
+metadata under own chain/Run/G/current-fence/flat-context ordering and commits only selected
+capacity contribution plus one receipt/audit/scoped hint. Actual two-index certification and
+two native Finishes prove original-result replay after later G advance and legitimate Run
+failure. A1 holder/nonholder/vacant/last transitions, exact member/audit/receipt time, actual
+canonical hint, source/execution/nonselected snapshots, typed ordered refusals and signed
+overflow are checked. Source INSERT is revoked before Finish; four extra receipt columns are
+granted only in disposable fixtures, with explicit sagat_app/current_user assertions.
+
+Two fresh implementation-slice reviews found no issue. Test review identified three actionable
+oracle gaps (scalar two-iteration snapshot, CAS/inactive ordering, exact member time); all were
+fixed before running, then the second fresh test review found none. Strict adapter all-target
+Clippy13.62s, integration Clippy29.72s, fmt4.31s and architecture0.39s pass. All1091 frozen
+Rust/SQL/Protobuf/Cargo/canonical-contract input hashes are unchanged. No runtime grant/caller
+or source activation is added. Source/receipt corruption and qualification, metadata-only
+reads, full context matrix, real barriers/failures, unknown-COMMIT/process and observations
+remain subsequent units; no general nested/B1/B2/C0 or canonical task closes here.
+Evidence: tasks/project-completion/evidence/scoped-finish-native-first-20261018/manifest.json.

@@ -179,7 +179,7 @@ See evidence/leaf-certification-process-20261018. Other producer/observation/rel
   parent/chain source closure remains unproved, with actual native context tests pending.
 - [x] B1b.2b.12: Review one dormant flat scoped native Finish transaction, exact source/receipt
   decoding, own guards, A1 writes, truthful audit/hint and conservative commit outcome only.
-- [ ] B1b.2b.13: Implement first dormant flat scoped native transaction with genuine source,
+- [x] B1b.2b.13: Implement first dormant flat scoped native transaction with genuine source,
   original-result replay, A1 result/refusal/counter tests; no release permission/caller.
 - [ ] B1b.2b.14: Prove closed source/receipt decoding, exact qualification and metadata-only reads.
 - [ ] B1b.2b.15: Prove actual waits/current authority, source-writer ordering and atomic failures.

@@ -39,6 +39,8 @@ mod process;
 mod refusals;
 #[path = "leaf_certification_saga.rs"]
 mod saga;
+#[path = "scoped_leaf_finish_native.rs"]
+mod scoped_finish;
 
 fn document(name: &str) -> Value {
     let mut d = collection_document(

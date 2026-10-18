@@ -1,0 +1,17 @@
+{
+  "command": [
+    "cargo",
+    "clippy",
+    "--locked",
+    "-p",
+    "sagat-infra-postgres",
+    "--all-targets",
+    "--",
+    "-D",
+    "warnings"
+  ],
+  "exit_code": 0,
+  "seconds": 13.62,
+  "started_utc": "2026-10-18T15:12:56.970734+00:00",
+  "log": "clippy-adapter.txt"
+}

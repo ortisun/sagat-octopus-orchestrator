@@ -322,3 +322,23 @@ probe ignored in direct enumeration atc0b38fbc, and hint3/3, AsyncAPI4/4, canoni
 plus existing native capacity Finish33/33 at3f6b2973. Exact evidence remains in those commits.
 This checkpoint approves only the next dormant implementation unit, not its unrun native
 tests, source authority, caller, runtime grants, C0 or any broader B1/B2/runtime task.
+
+
+## First dormant executable unit — 2026-10-18
+
+B1b.2b.13 implements PgScopedLeafFinishStore without a production caller or release grant.
+Four real PostgreSQL tests pass using explicit sagat_app pools, genuine public-source native
+certificates and labelled owner membership fixtures. Actual Finish on two genuinely certified
+indices changes G; later legitimate Run failure still permits the first original receipt/result.
+A1 holder/nonholder/vacant/last results preserve nonselected members; exact member/audit/receipt
+time and canonical actual outbox metadata are checked. Missing source/current stale authority/
+root-chain context, ordered CAS including inactive fixtures, and signed overflow refuse atomically.
+
+Natural pre-export E0432 RED precedes implementation. Two independent implementation slices
+found no issue. Test review found three actionable oracle issues, fixed before the first run;
+its second fresh review found none. Native4/4, strict adapter/all-target and integration Clippy,
+fmt and architecture pass, with1091 frozen Rust/SQL/Protobuf/Cargo/canonical-contract inputs
+unchanged. Detailed qualification/corruption/metadata-only probes, complete context matrix, real
+wait/failure barriers, unknown-COMMIT/process recovery and returned observations remain pending
+units14..17. Instrumented code alone does not establish those guarantees or broader B1/B2/C0.
+Evidence: evidence/scoped-finish-native-first-20261018/manifest.json.

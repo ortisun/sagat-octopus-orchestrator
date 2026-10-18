@@ -1,0 +1,33 @@
+{
+  "source_base": "4cb02846",
+  "local_unit": "B1b.2b.13",
+  "native_tests_passed": 4,
+  "frozen_inputs": 1091,
+  "sources_unchanged": true,
+  "production_caller": false,
+  "released_scoped_insert": false,
+  "files": {
+    "architecture.json": "8e3bbed2387ba299932a6a81118172744af9f4adbd36ff9d4a33117dc1ac27c4",
+    "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "clippy-adapter.json": "692241a03513420350fce63ff6f0fbb7e0551c358b25b87657f3d33d14c1e5d6",
+    "clippy-adapter.txt": "8e32fadb8277c7a59107378953f8cc97adaeb936961b05c5ceeb339baa4bcb50",
+    "clippy-integration.json": "3aa6e6f419c1bb5ba80357930a0d402df3d43f1c8bdfe2ecef46e81f9aa43d95",
+    "clippy-integration.txt": "cc0b93f73e341568ff3dcf596ce8156755d405019f3bd0a0fc64c0cb29a0b55d",
+    "decoder-review.md": "7b0649ffdb8de8685fcabe834967129c98d36c3a370a692f0b601a291ecf7c65",
+    "first-native.json": "02672e87695090e21c6c00df382c0272b3c38a4dd9fbe75b018b9b3bae65eef1",
+    "first-native.txt": "267045cbdb6602812d5b5a111f2133e6484ac870908d6f03c80f6d1df8067628",
+    "fmt.json": "bf81e49e439a8b325346022fd152fefd8873d17cb33624110484f77a9458499a",
+    "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "integration-notes.md": "23ce24807ef77f3e617d09e78262eebc95d2b7127e1853072a7db0d8732143af",
+    "red.json": "887758de8fcfc4c7cdd8d647f00437fc248597101b2585010e4b4f900e666461",
+    "red.txt": "1b70dbbc7c5563f06c494e52683088a3f0c3738f78caf4e5e5a09e59a6cbce78",
+    "reproduce.md": "27c13ed4a0366d140521773a15a6ceeb8efca7ed0876e00099193ca6f566a325",
+    "source-after.json": "8f0c776b04a6f9bee85f78746751b2352fe457b0d231e3934241b9d0553cf802",
+    "source-before.json": "8f0c776b04a6f9bee85f78746751b2352fe457b0d231e3934241b9d0553cf802",
+    "store-draft-notes.md": "534980cd06a13d6f04c4f90eb309d33878a336006bc40a05a1a1cc02aa399e1e",
+    "test-draft-notes.md": "3d4d318365ddcb39fce03324b8a3cc78aa7288ba8e8209a40d7ce4317d3dc899",
+    "test-review-c1.md": "8770514b7ad68f333d7add23c786c64b6d06c7cf0fd4c399b47d49b62ba157da",
+    "test-review-c2.md": "b0d58d69621d7738c5364f1a61b8913195309b14c99a10aaff02a9ded789fcbc",
+    "transaction-review.md": "e9a9be9f82ffd7546834e78fcb5d3a71ae58c18ebad6599608b9f707dda6fc94"
+  }
+}
