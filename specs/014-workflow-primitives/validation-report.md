@@ -3385,3 +3385,10 @@ Two fixture-oracle failures are retained (shared key across instances and SQL al
 collision). This is not a literal pre-begin fence/terminal race or an owner/runtime matrix.
 Other authority, old-order/Applied, cold-process/uncertain-COMMIT, nesting and release gates
 remain open; canonical014 checkboxes are unchanged.
+
+
+Merged regression after8d07b0d3: full byte_ceilings26/26 (zero ignored/failures) passes
+under runtime invocation in41.49s,1125 identical source hashes. This combines the recent
+report/drain faults, compensation and binding controls with the byte/End suite. Evidence:
+`tasks/project-completion/evidence/collection-current-merged-regression-20261018/README.md`.
+OpenBao/old-current tests retain separate evidence; full014/nesting/release tasks remain open.
