@@ -2990,3 +2990,24 @@ coverage remains separately scoped, with other historical features/versions unte
 
 Evidence: [complete SDK60 aggregate](../../tasks/project-completion/evidence/sdk60-current-20261018/reproduce.md).
 This evidence does not accept general nested runtime, C0, production ceilings or final release gates.
+
+
+## Scoped Finish application port and flat-context prerequisite — 2026-10-18
+
+Local B1b.2b.6/.11 only, refs:T014-014..017/040. The additive public port shares the genuine
+LeafCollectionPathIdentity, names original_run_id in its separate receipt result, validates
+ordinary depth1 owner/index and signed counters, and uses the independent fixed152-byte SHA256
+vector. Six public integration tests passed in5.42s after natural E0432 RED before module export.
+Field perturbations include same-length owner changes; invalid commands refuse before hashing.
+Renewable scheduler/operation key are excluded; raw StoreError stays absent from ordinary errors.
+Strict all-target application Clippy8.15s, fmt4.16s and architecture0.40s pass. Two bounded
+implementation reviews corrected two oracle gaps and ended without findings.
+
+A separate fresh bounded Astra review accepts only the future consumer restriction: actual
+originalRun has no parent and no exact qualified chain membership, after authority and before
+source/receipt. UnsupportedRunContext is additive; no caller assertion or certificate-profile
+change supplies this proof. Actual native context tests remain pending. Current child creation
+always records ParentLink, but initializes a chain only with continuation policy.
+No native adapter, source query, runtime grant, caller, C0 or broader nested acceptance follows.
+Evidence: tasks/project-completion/evidence/scoped-finish-application-20261018/manifest.json;
+contracts: scoped-leaf-finish-application-contract.md and scoped-leaf-finish-flat-context.md.

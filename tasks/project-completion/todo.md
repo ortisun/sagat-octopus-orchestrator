@@ -165,7 +165,7 @@ See evidence/leaf-certification-process-20261018. Other producer/observation/rel
   ACTIVE/FINISHED scoped retention refusal and observed original-Run relation lock barrier.
 - [x] B1b.2b.5: Review the additive fixed scoped Finish application contract, shared path identity,
   distinct fingerprint, original-Run result and authority/source/receipt/CAS ordering only.
-- [ ] B1b.2b.6: Implement application types, structural bounds and independent fingerprint/error
+- [x] B1b.2b.6: Implement application types, structural bounds and independent fingerprint/error
   tests without native source queries, new runtime grants or a production caller.
 - [x] B1b.2b.7: Review crate-private canonical leaf reader extraction using genuine shared identity
   and actual locked pin/revision; unchanged metadata/replay semantics and no new authority.
@@ -175,6 +175,8 @@ See evidence/leaf-certification-process-20261018. Other producer/observation/rel
   closed operational observations while preserving ChildRoot wire/metric semantics.
 - [ ] B1b.2b.10: Add canonical scoped hint vocabulary/schema/baseline tests and truthful audit
   wording before the native scoped Finish producer; no producer or release permission inferred.
+- [x] B1b.2b.11: Review the initial flat original-Run context gate and distinct typed refusal;
+  parent/chain source closure remains unproved, with actual native context tests pending.
 - [ ] B1b.2c: Review nested/child relationship closure and remaining quiescence/transition authority.
 
 ## B2 dormant Finish increments

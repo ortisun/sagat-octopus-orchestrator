@@ -1,0 +1,33 @@
+{
+  "source_base": "bd31dd7c",
+  "local_units": [
+    "B1b.2b.6",
+    "B1b.2b.11"
+  ],
+  "tests": 6,
+  "native_context_tests": "pending",
+  "tested_source_sha256": {
+    "crates/application/src/lib.rs": "0844efd0b912e579cf4474fa22a7fadb243d4bb4031f00a26aa06e4bbd2a3954",
+    "crates/application/src/scoped_leaf_finish.rs": "f389cf29a48684f24fa76d9cd4da567b1bea6a81ae52bc1f0a7a06ce0038e2e3",
+    "crates/application/tests/scoped_leaf_finish.rs": "9379033930c3f0cb5819a1a5000bc068948208c783e8ed8e9f8349ba3bb8c93a",
+    "tasks/project-completion/scoped-leaf-finish-application-contract.md": "a30cbdd8b88096534d4b74c8f8c78fabe31a1b50a8f5f26dda6be3ca309e6d99",
+    "tasks/project-completion/scoped-leaf-finish-flat-context.md": "640d40ec1b1589233ab6e9adfa3a247f736db505d5a9af867188cf829d22befa"
+  },
+  "files": {
+    "architecture.json": "fb32ad7c864600b905f2025ad5b443f777ea1b8a15ca70d9d1d0c8c9d020f183",
+    "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "clippy.json": "7effb7ec6582c223dba0c3719ce4d2e088870a4042518dde78b4cd070bba7501",
+    "clippy.txt": "84dd3f9e03d9761490dc8606d186dae136e97ce5d6fe7a9561b32ca7eb3828bc",
+    "context-review.md": "5048b739ff6bc220d85e1d710b67eedc4bfb65784d6ef13d6961f8b514a54ec4",
+    "fmt.json": "b9e25f241d4885bd8c58862d6ae55065fd04788cdd06869bf89fbd1ed59b6229",
+    "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "green.json": "ba9746d2f2dc8a160e669559890a21913fe934ae3c23c1bf7cd8a409c9709a44",
+    "green.txt": "f2e97fdd9b2e9f48b73aef8c5d4c21c49737efd63f93aea988412271003eaf72",
+    "independent-vectors.json": "0ea76f8cb0c926cbfcc2165d60edd754f54d5382aa652ce2b42172c948bc2aad",
+    "red.json": "f58e1f6cca15b4d03dbc5b0e6fc1d84b9ea10448d91cb1503986ca5499a93897",
+    "red.txt": "7057a4008abad13477ec87e101116adaeed40e7e8c659213a1b634c3652d0328",
+    "reproduce.md": "fae5ee57ca237da4bb0744d35c54caa9fe83bbec35ca02cd7312672bcb22ff8d",
+    "review-c1.md": "0422392bad3350f0ff01ff0223d1f15e142f60f4d10e7f586d88af6003f6fc37",
+    "review-c2.md": "902964a9fcd79f79650ff34bb0dbe413a767afebc3939a3a699931a997650a99"
+  }
+}

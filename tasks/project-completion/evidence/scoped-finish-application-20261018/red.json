@@ -1,0 +1,14 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-application",
+    "--test",
+    "scoped_leaf_finish"
+  ],
+  "exit_code": 101,
+  "reason": "E0432 public scoped_leaf_finish module absent before implementation",
+  "log": "red.txt"
+}

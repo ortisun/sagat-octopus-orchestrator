@@ -46,7 +46,7 @@ pub struct ScopedLeafFinishResult {
 }
 pub enum ScopedLeafFinishError {
     UnsupportedPath, InvalidRevision, CounterExhausted,
-    Busy, Missing, BindingMismatch, SchedulerFenceLost,
+    Busy, Missing, BindingMismatch, SchedulerFenceLost, UnsupportedRunContext,
     SourceEvidenceMissing, UnsupportedStoredProfile, ContradictorySource,
     FingerprintConflict, ContradictoryProjection,
     StaleGroupRevision { current: u64 }, StaleGroupEpoch { current: u64 },
@@ -100,6 +100,10 @@ G revision/epoch and immutable original result; it contains no invented chain/he
    binding under G; retain the original-run scheduler guard and sample its actual postwait clock.
    G contention is Busy and consumes/rolls back the whole transaction. Never require current head.
    Current scheduler authority is mandatory on first application and replay, even for terminal Run.
+   Before source or receipt lookup, require locked originalRun.parent_run_id IS NULL and no
+   exact tenant/namespace/originalRun membership in chain_segments; otherwise UnsupportedRunContext.
+   This applies to first application and replay after current authority, without a late chain lock.
+   See scoped-leaf-finish-flat-context.md; this initial restriction does not prove child/chain closure.
 3. Read the exact canonical persisted certificate by tenant/namespace/originalRun/owner/index in
    this same transaction. Decode the closed ORDINARY_LEAF_V1 profile and bounded metadata; reuse
    LeafCollectionSuccessRecord::validate_structure, require its actual immutable definition pin
@@ -123,7 +127,7 @@ G revision/epoch and immutable original result; it contains no invented chain/he
    receipt, truthful scoped audit and reference hint. Preserve another holder and descendants;
    do not change source/run journal/revision or claim execution eligibility. Retain guards to commit.
 
-This freezes authority -> validated canonical source -> receipt -> creation CAS/member ordering.
+This freezes authority -> supported original-Run context -> validated canonical source -> receipt -> creation CAS/member ordering.
 No receipt replay bypasses missing/corrupt retained source. Native query/lock/error-order tests
 must prove this contract separately; the application API and schema shape cannot establish it.
 

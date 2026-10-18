@@ -1,0 +1,15 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-application",
+    "--test",
+    "scoped_leaf_finish"
+  ],
+  "exit_code": 0,
+  "seconds": 5.42,
+  "started_utc": "2026-10-18T14:45:20.616788+00:00",
+  "log": "green.txt"
+}

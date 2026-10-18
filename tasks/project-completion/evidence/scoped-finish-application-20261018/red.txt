@@ -1,0 +1,11 @@
+   Compiling sagat-domain v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/domain)
+   Compiling sagat-telemetry v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/telemetry)
+   Compiling sagat-application v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/application)
+error[E0432]: unresolved import `sagat_application::scoped_leaf_finish`
+  --> crates/application/tests/scoped_leaf_finish.rs:10:5
+   |
+10 |     scoped_leaf_finish::*,
+   |     ^^^^^^^^^^^^^^^^^^ could not find `scoped_leaf_finish` in `sagat_application`
+
+For more information about this error, try `rustc --explain E0432`.
+error: could not compile `sagat-application` (test "scoped_leaf_finish") due to 1 previous error

@@ -1,0 +1,43 @@
+{
+  "provenance": {
+    "generator": "Python 3 standard library: uuid.UUID(...).bytes, int.to_bytes(..., 'big'), hashlib.sha256",
+    "generated_at": "2026-10-18",
+    "repository_revision_read": "88b8f915",
+    "rust_execution": "none",
+    "command_shape": "domain || five UUID byte strings || BE16 owner length || owner ASCII || BE32 index || three BE64 counters"
+  },
+  "input": {
+    "tenant_id": "00000000-0000-0000-0000-000000000001",
+    "namespace_id": "00000000-0000-0000-0000-000000000002",
+    "group_id": "00000000-0000-0000-0000-000000000003",
+    "member_id": "00000000-0000-0000-0000-000000000004",
+    "original_run_id": "00000000-0000-0000-0000-000000000005",
+    "owner": "items",
+    "owner_ascii_length": 5,
+    "iteration_index": 7,
+    "group_revision": 9,
+    "group_epoch": 3,
+    "run_revision": 11
+  },
+  "vectors": {
+    "scoped_leaf_v1": {
+      "domain_ascii_with_nul": "sagat.capacity.finish.scoped-leaf.v1\\u0000",
+      "payload_length": 152,
+      "payload_hex": "73616761742e63617061636974792e66696e6973682e73636f7065642d6c6561662e763100000000000000000000000000000000010000000000000000000000000000000200000000000000000000000000000003000000000000000000000000000000040000000000000000000000000000000500056974656d730000000700000000000000090000000000000003000000000000000b",
+      "sha256": "d305b48d527e1cfa02a198311b7d4d78d2a85f1994d3314e6cb6573b0668993b"
+    },
+    "child_root_domain_same_tail_control": {
+      "domain_ascii_with_nul": "sagat.capacity.finish.child-root.v1\\u0000",
+      "payload_length": 151,
+      "sha256": "79a44dba313e675ef7a4a7a74b83ef81ba8d4f94e170ccd8a0ebc437528caee2"
+    },
+    "omitted_owner_length_control": {
+      "payload_length": 150,
+      "sha256": "fa5ed3b4b8f8a1627d355b27ed6b3f5098ede166ec8ff3270e3cffe2492ee696"
+    },
+    "little_endian_owner_length_control": {
+      "payload_length": 152,
+      "sha256": "8ffae39e1a729e5e55d89a0d0a05944debffefd25775363c85d2e4a59e656960"
+    }
+  }
+}

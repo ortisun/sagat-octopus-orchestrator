@@ -1,0 +1,14 @@
+   Compiling sagat-application v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/application)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.19s
+     Running tests/scoped_leaf_finish.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/scoped_leaf_finish-3f4ff1465b69d418)
+
+running 6 tests
+test result_names_the_original_run_and_error_formatting_redacts_store_detail ... ok
+test canonical_fingerprint_matches_the_independent_python_vector_and_domain ... ok
+test operation_key_and_scheduler_renewal_do_not_change_the_fingerprint ... ok
+test revision_validation_preserves_invalid_then_exhausted_error_precedence ... ok
+test structural_validation_accepts_only_the_shared_depth_one_ordinary_path_bounds ... ok
+test every_identity_and_expectation_field_changes_the_fingerprint ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
