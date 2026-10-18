@@ -1,0 +1,61 @@
+{
+  "source": "/Users/marcelo/Documents/Projects/sagat-octopus-completion-benchmark-b1855cbe",
+  "commit": "b1855cbeb515dc2df204f56ecf93cb75d0ef0b82",
+  "source_clean": true,
+  "binary": "/tmp/sagat-completion-runtime-perf-b1855cbe/perf_workflow_primitives",
+  "sha256": "372e91c1ee31bd4ce5a85e5f244423de44a1f73be629aed14bdcb4e3d8350ed2",
+  "profile": "debug",
+  "fixture": "repository disposable PostgreSQL; no external database URL",
+  "workload": "10000 members; one in-process serial completion driver; widths 1,16,256 in separate processes",
+  "limitations": "Host may also run builds/functional tests; retain observed environment/load, no latency SLO inferred",
+  "results": [
+    {
+      "width": 1,
+      "exit_code": 0,
+      "elapsed_seconds": 1282.68,
+      "command": [
+        "/usr/bin/time",
+        "-l",
+        "-o",
+        "/tmp/sagat-completion-runtime-perf-b1855cbe/process-c1.log",
+        "/tmp/sagat-completion-runtime-perf-b1855cbe/perf_workflow_primitives",
+        "collections::measure_collection_fanout",
+        "--exact",
+        "--ignored",
+        "--nocapture"
+      ]
+    },
+    {
+      "width": 16,
+      "exit_code": 0,
+      "elapsed_seconds": 899.14,
+      "command": [
+        "/usr/bin/time",
+        "-l",
+        "-o",
+        "/tmp/sagat-completion-runtime-perf-b1855cbe/process-c16.log",
+        "/tmp/sagat-completion-runtime-perf-b1855cbe/perf_workflow_primitives",
+        "collections::measure_collection_fanout",
+        "--exact",
+        "--ignored",
+        "--nocapture"
+      ]
+    },
+    {
+      "width": 256,
+      "exit_code": 0,
+      "elapsed_seconds": 1436.18,
+      "command": [
+        "/usr/bin/time",
+        "-l",
+        "-o",
+        "/tmp/sagat-completion-runtime-perf-b1855cbe/process-c256.log",
+        "/tmp/sagat-completion-runtime-perf-b1855cbe/perf_workflow_primitives",
+        "collections::measure_collection_fanout",
+        "--exact",
+        "--ignored",
+        "--nocapture"
+      ]
+    }
+  ]
+}

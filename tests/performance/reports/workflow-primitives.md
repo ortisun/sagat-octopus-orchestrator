@@ -1404,3 +1404,34 @@ PostgreSQL container RSS was not isolated and the shared host also ran SDK/build
 [workload details](raw/workflow-primitives/20261017-waits-runtime/waits.md), and
 [native process resources](raw/workflow-primitives/20261017-waits-runtime/process-resources.txt)
 are reproducible evidence for this workload, not full T014-042 acceptance or a latency SLO.
+
+
+### Frozen runtime-role 10,000-item flat collections
+
+All three separate executions passed using frozen clean source`b1855cbe` and the copied binary
+SHA-256`372e91c1ee31bd4ce5a85e5f244423de44a1f73be629aed14bdcb4e3d8350ed2`.
+Each uses verified`sagat_app` worker/scheduler stores and the repository disposable PostgreSQL16
+fixture. Each retained10,000 checkpoints and20,002 step rows, returned zero scheduler errors,
+added no client retries and recorded10,000 actual ready-to-lease queue samples.
+
+| Logical concurrency | Observed active peak | Workload wall(s) | Queue p50/p95/p99(ms) | Sampled peak RSS(MiB) |
+| --- | ---: | ---: | --- | ---: |
+| 1 | 1 | 1238.8 | 28.9 / 96.8 / 208.8 | 121.2 |
+| 16 | 16 | 860.1 | 293.5 / 729.0 / 989.2 | 120.6 |
+| 256 | 256 | 1387.1 | 7966.6 / 43926.5 / 190292.8 | 120.4 |
+
+Actual holders were observed after every admission and every8 transitions; both configured scope
+and tenant bounds were asserted at every observation. The one in-process worker driver polls at
+most64 leases and completes them serially. Concurrency256 therefore describes logical iteration
+width, not256 parallel external workers. The shared host also ran builds and functional suites;
+these observed queue delays establish no latency SLO. Command walls, including setup/inspection,
+were1282.68/899.14/1436.18s, distinct from the workload walls above.
+Admission/checkpoint SQL work is sampled and reported as separate families. Sampled process RSS
+is not an OS peak; unmodified Darwin`time -l` maximum-resident/footprint fields are retained for
+each process, without guessing a unit conversion. PostgreSQL container RSS is not isolated.
+[Source and exact commands](raw/workflow-primitives/20261017-runtime-flat/manifest.json),
+[width1](raw/workflow-primitives/20261017-runtime-flat/collection-10000-c1.md),
+[width16](raw/workflow-primitives/20261017-runtime-flat/collection-10000-c16.md), and
+[width256](raw/workflow-primitives/20261017-runtime-flat/collection-10000-c256.md) retain full
+settings, operation quantiles, journal sizes and raw process evidence. Nested/low-quota progress,
+100k nested instances and release gates remain open; this does not close all of T014-042.
