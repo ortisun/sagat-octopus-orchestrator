@@ -1,0 +1,43 @@
+{
+  "base": "83c2cada",
+  "advisory_database_commit": "999ec89d5d3f10f20be14750ec8c2d8b44e0ac9b",
+  "dependency_count": 627,
+  "advisory_count": 1338,
+  "commands": [
+    {
+      "command": [
+        "cargo",
+        "audit",
+        "--version"
+      ],
+      "exit_code": 0,
+      "seconds": 0.03,
+      "log": "version.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "audit",
+        "--deny",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "seconds": 2.29,
+      "log": "audit.txt"
+    }
+  ],
+  "source_hashes": {
+    "Cargo.lock": "4b1a45c6872d754071e456d49d996d942668ec63ca0b7dd749666cbcee326bee",
+    ".cargo/audit.toml": "1f490f42be0f354450c6d37c7ccaef15967afa15c040cac8b572a8e5985aeeb7",
+    ".github/workflows/ci.yml": "bfb5fc553bc22188b00a509174935a774621de6b0d7a2f9dcd4681e1bff0e8b4"
+  },
+  "policy_changed": false,
+  "existing_exception_count": 5,
+  "evidence_sha256": {
+    "audit.txt": "89ab0490eb26801fe7897be2b71e88192a78f2205bcc058b67ac78bff08f5a59",
+    "commands.json": "3101282f1454bf6a126e8e8a6c3f7751d32c9c09747a7011afd0c2c6e31b8db4",
+    "reproduce.md": "169109d4389a3a7f29a58df81bbab177751e8050dba886b698234b3039b935ac",
+    "source.json": "9aaeaf63b8a93d9e1f0e681dad39500c5c0675b1f074e87c4aea25497fd628f9",
+    "version.txt": "db7ec1f5601bae24da672cbd457db9538250e50b4d2f9b5ae8135fb852ef5e20"
+  }
+}

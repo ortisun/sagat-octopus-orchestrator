@@ -1,0 +1,23 @@
+[
+  {
+    "command": [
+      "cargo",
+      "audit",
+      "--version"
+    ],
+    "exit_code": 0,
+    "seconds": 0.03,
+    "log": "version.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "audit",
+      "--deny",
+      "warnings"
+    ],
+    "exit_code": 0,
+    "seconds": 2.29,
+    "log": "audit.txt"
+  }
+]

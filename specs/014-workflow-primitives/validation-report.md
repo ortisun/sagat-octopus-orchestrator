@@ -2591,3 +2591,15 @@ Local dormant B2a-f closes, not full B1/B2 or canonical runtime tasks. Scoped se
 caller intent/trace, retention/mixed writers, process restart, SDK/resource/Compose/advisory/release
 acceptance remain pending. No production invocation or nested activation. Exact evidence:
 tasks/project-completion/evidence/capacity-finish-observations-20261018/manifest.json.
+
+
+## Integrated dependency advisory checkpoint — 2026-10-18
+
+Refs:T014-043. cargo-audit0.22.2 (same pinned CI tool) executes cargo audit --deny warnings:
+exit0 in2.29s,627locked dependencies,1338advisories from RustSec database commit
+999ec89d5d3f10f20be14750ec8c2d8b44e0ac9b. Existing .cargo/audit.toml policy is unchanged: RSA
+RUSTSEC-2023-0071 and four rustls RUSTSEC-2026-0346..0349 exceptions remain explicitly documented
+there and in foundation research. This result is passing under that policy, not absence of all
+known advisories. No dependency/lock/policy change. Other T014-043 gates and the task remain open.
+Exact lock/config/CI hashes, tool output and commands:
+tasks/project-completion/evidence/dependency-advisories-20261018/manifest.json.
