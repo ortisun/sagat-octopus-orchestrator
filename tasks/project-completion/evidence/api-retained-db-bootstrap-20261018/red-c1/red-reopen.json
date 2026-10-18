@@ -1,0 +1,19 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "integration_workflow_primitives",
+    "api_reopen::current_api_reopens_owned_database_and_resumes_original_public_worker",
+    "--",
+    "--exact",
+    "--nocapture"
+  ],
+  "exit_code": 101,
+  "seconds": 76.22,
+  "started_utc": "2026-10-18T21:10:52.183409+00:00",
+  "log": "red-reopen.txt"
+}

@@ -1,0 +1,21 @@
+[
+  {
+    "runs": 0,
+    "steps": null,
+    "tenants": 0,
+    "database": "t_01a150db8a6675a2a241e087717167df",
+    "sessions": 0
+  },
+  {
+    "runs": 1,
+    "steps": [
+      {
+        "node": "a",
+        "status": "LEASED"
+      }
+    ],
+    "tenants": 2,
+    "database": "t_01a150db858174d6adf48bca3f2e84e0",
+    "sessions": 1
+  }
+]

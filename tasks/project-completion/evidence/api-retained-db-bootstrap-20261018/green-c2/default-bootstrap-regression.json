@@ -1,0 +1,18 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "integration_workflow_primitives",
+    "collections_http::",
+    "--",
+    "--nocapture"
+  ],
+  "exit_code": 0,
+  "seconds": 3.64,
+  "started_utc": "2026-10-18T21:19:31.072891+00:00",
+  "log": "default-bootstrap-regression.txt"
+}

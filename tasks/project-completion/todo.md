@@ -264,3 +264,11 @@ Each revision retains separate source pins and commands; final C3 assertion delt
 the later merged Clippy gate. Canonical eight014 tasks, local master .1d.0/.0Q and broader
 Q7c/Q8/Q9/Q10 controls remain open. Next prerequisite is current API reattachment to the same
 owned DB, before the genuine old in-flight report fixture. No old-session authority is fabricated.
+
+
+Retained-database public API dependency: current/current instance restart now passes with the
+original persisted tenant, memberships, bindings, sole session and original completion request.
+Real C1 RED was HTTP401 on a newly allocated base; C2 GREEN1/1, nearby collection HTTP3/3,
+strict integration Clippy/fmt/architecture pass with1122 matching native source hashes.
+See evidence/api-retained-db-bootstrap-20261018. This is not an OS restart or old/current
+compatibility acceptance; Q10c and all canonical014 pending tasks remain open.

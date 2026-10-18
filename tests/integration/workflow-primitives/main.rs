@@ -6,6 +6,7 @@
 #[path = "../../support/mod.rs"]
 mod support;
 
+mod api_reopen;
 mod approval_combinations;
 mod approval_progress;
 mod approval_scheduler;

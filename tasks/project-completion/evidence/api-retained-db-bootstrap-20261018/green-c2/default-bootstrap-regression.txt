@@ -1,0 +1,10 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.41s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 3 tests
+test collections_http::publication_keeps_unproven_collection_bodies_closed ... ok
+test collections_http::iteration_capacity_is_tenant_scoped_authorized_audited_and_reducible ... ok
+test collections_http::proven_collection_can_be_published_and_started_over_http ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 528 filtered out; finished in 3.18s
+

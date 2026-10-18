@@ -209,6 +209,52 @@ pub async fn migrated_db() -> TestDb {
     db
 }
 
+/// Connects to an existing database previously created by this test harness.
+///
+/// This does not create or migrate a database, provision a role, or start a fallback server. The
+/// caller must keep the server that owns this database alive for the returned handle's lifetime.
+pub async fn attach_existing_db(admin_url: &str, database_name: &str) -> TestDb {
+    let owned_name = database_name.strip_prefix("t_").is_some_and(|suffix| {
+        suffix.len() == 32
+            && suffix
+                .bytes()
+                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    });
+    assert!(
+        owned_name,
+        "only a database identity owned by this test harness may be attached"
+    );
+
+    let base = admin_url
+        .rsplit_once('/')
+        .expect("admin URL with database")
+        .0;
+    let url = format!("{base}/{database_name}");
+    let pool = match PgPoolOptions::new().max_connections(8).connect(&url).await {
+        Ok(pool) => pool,
+        Err(_) => panic!("could not connect to the existing owned database"),
+    };
+    let actual: String = sqlx::query_scalar("SELECT current_database()::text")
+        .fetch_one(&pool)
+        .await
+        .expect("read existing database identity");
+    assert_eq!(
+        actual, database_name,
+        "connection must resolve to the exact requested database"
+    );
+
+    TestDb {
+        _server: Arc::new(Server {
+            _container: None,
+            admin_url: admin_url.to_owned(),
+        }),
+        pool,
+        url,
+        admin_url: admin_url.to_owned(),
+        name: database_name.to_owned(),
+    }
+}
+
 /// Current time truncated to microseconds, the precision PostgreSQL stores.
 pub fn now() -> OffsetDateTime {
     let t = OffsetDateTime::now_utc();

@@ -1,0 +1,90 @@
+diff --git a/tests/integration/workflow-primitives/main.rs b/tests/integration/workflow-primitives/main.rs
+index 32306fbf..94b20335 100644
+--- a/tests/integration/workflow-primitives/main.rs
++++ b/tests/integration/workflow-primitives/main.rs
+@@ -6,6 +6,7 @@
+ #[path = "../../support/mod.rs"]
+ mod support;
+ 
++mod api_reopen;
+ mod approval_combinations;
+ mod approval_progress;
+ mod approval_scheduler;
+diff --git a/tests/support/api.rs b/tests/support/api.rs
+index f3be2b5e..f0d44218 100644
+--- a/tests/support/api.rs
++++ b/tests/support/api.rs
+@@ -300,6 +300,16 @@ pub async fn start() -> TestApi {
+ pub async fn start_with(options: Options) -> TestApi {
+     install_crypto_provider();
+     let db = migrated_db().await;
++    start_on_ready_db(db, options).await
++}
++
++/// Starts the real API against a caller-owned, already migrated test database.
++pub async fn start_on_db(db: TestDb, options: Options) -> TestApi {
++    install_crypto_provider();
++    start_on_ready_db(db, options).await
++}
++
++async fn start_on_ready_db(db: TestDb, options: Options) -> TestApi {
+     let idp = TestIdp::start().await;
+ 
+     let mut auth = AuthConfig::new(ISSUER, AUDIENCE, idp.jwks_url());
+diff --git a/tests/support/mod.rs b/tests/support/mod.rs
+index 6507eb48..8a9a2ff5 100644
+--- a/tests/support/mod.rs
++++ b/tests/support/mod.rs
+@@ -209,6 +209,52 @@ pub async fn migrated_db() -> TestDb {
+     db
+ }
+ 
++/// Connects to an existing database previously created by this test harness.
++///
++/// This does not create or migrate a database, provision a role, or start a fallback server. The
++/// caller must keep the server that owns this database alive for the returned handle's lifetime.
++pub async fn attach_existing_db(admin_url: &str, database_name: &str) -> TestDb {
++    let owned_name = database_name.strip_prefix("t_").is_some_and(|suffix| {
++        suffix.len() == 32
++            && suffix
++                .bytes()
++                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
++    });
++    assert!(
++        owned_name,
++        "only a database identity owned by this test harness may be attached"
++    );
++
++    let base = admin_url
++        .rsplit_once('/')
++        .expect("admin URL with database")
++        .0;
++    let url = format!("{base}/{database_name}");
++    let pool = match PgPoolOptions::new().max_connections(8).connect(&url).await {
++        Ok(pool) => pool,
++        Err(_) => panic!("could not connect to the existing owned database"),
++    };
++    let actual: String = sqlx::query_scalar("SELECT current_database()::text")
++        .fetch_one(&pool)
++        .await
++        .expect("read existing database identity");
++    assert_eq!(
++        actual, database_name,
++        "connection must resolve to the exact requested database"
++    );
++
++    TestDb {
++        _server: Arc::new(Server {
++            _container: None,
++            admin_url: admin_url.to_owned(),
++        }),
++        pool,
++        url,
++        admin_url: admin_url.to_owned(),
++        name: database_name.to_owned(),
++    }
++}
++
+ /// Current time truncated to microseconds, the precision PostgreSQL stores.
+ pub fn now() -> OffsetDateTime {
+     let t = OffsetDateTime::now_utc();

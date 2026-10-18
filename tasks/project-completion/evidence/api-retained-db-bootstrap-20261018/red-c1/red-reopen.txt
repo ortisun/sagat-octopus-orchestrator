@@ -1,0 +1,21 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 10s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 1 test
+
+thread 'api_reopen::current_api_reopens_owned_database_and_resumes_original_public_worker' (131160471) panicked at tests/integration/workflow-primitives/../../support/worker.rs:125:9:
+assertion `left == right` failed: {"code":"UNAUTHENTICATED","message":"authentication required","remediation":"Send a valid bearer token issued for this platform, and check that it has not expired.","requestId":"b6d3afc8c6e74314b820f417f5207f2c","retryable":false,"traceId":"5d4dac8def3143389dbc8e0dbff52e22"}
+  left: 401
+ right: 200
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test api_reopen::current_api_reopens_owned_database_and_resumes_original_public_worker ... FAILED
+
+failures:
+
+failures:
+    api_reopen::current_api_reopens_owned_database_and_resumes_original_public_worker
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 530 filtered out; finished in 2.13s
+
+error: test failed, to rerun pass `-p sagat-tests --test integration_workflow_primitives`

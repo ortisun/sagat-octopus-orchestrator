@@ -300,6 +300,16 @@ pub async fn start() -> TestApi {
 pub async fn start_with(options: Options) -> TestApi {
     install_crypto_provider();
     let db = migrated_db().await;
+    start_on_ready_db(db, options).await
+}
+
+/// Starts the real API against a caller-owned, already migrated test database.
+pub async fn start_on_db(db: TestDb, options: Options) -> TestApi {
+    install_crypto_provider();
+    start_on_ready_db(db, options).await
+}
+
+async fn start_on_ready_db(db: TestDb, options: Options) -> TestApi {
     let idp = TestIdp::start().await;
 
     let mut auth = AuthConfig::new(ISSUER, AUDIENCE, idp.jwks_url());

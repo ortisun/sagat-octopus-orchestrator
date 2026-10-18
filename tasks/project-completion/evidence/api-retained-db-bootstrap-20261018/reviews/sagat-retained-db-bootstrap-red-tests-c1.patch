@@ -1,0 +1,168 @@
+--- a/tests/integration/workflow-primitives/main.rs
++++ b/tests/integration/workflow-primitives/main.rs
+@@ -10,6 +10,7 @@
+ mod approval_progress;
+ mod approval_scheduler;
+ mod approval_telemetry;
++mod api_reopen;
+ mod approvals_http;
+ mod bounded_capabilities;
+ mod bounded_fences;
+--- /dev/null
++++ b/tests/integration/workflow-primitives/api_reopen.rs
+@@ -0,0 +1,155 @@
++//! A current API process can reopen its owned database and honor durable public worker authority.
++use std::time::Duration;
++
++use sagat_application::worker::WorkerSettings;
++use serde_json::json;
++
++use crate::support::api::{Options, start_with};
++use crate::support::worker::{Platform, TENANT, Worker, single_ir};
++use crate::support::{RUNTIME_ROLE, hold_server};
++
++const WORKER: &str = "retained-db-public-worker";
++
++fn runtime_options() -> Options {
++    Options {
++        runtime_role: true,
++        worker: WorkerSettings {
++            lease_ttl: Duration::from_secs(300),
++            session_ttl: Duration::from_secs(300),
++            ..WorkerSettings::default()
++        },
++        ..Options::default()
++    }
++}
++
++async fn identity_witness(
++    platform: &Platform,
++    namespace_id: &str,
++    worker_id: &str,
++) -> (bool, bool, bool, bool) {
++    sqlx::query_as(
++        r#"
++        SELECT
++          EXISTS (SELECT 1 FROM tenants WHERE id=$1 AND slug=$2),
++          EXISTS (
++            SELECT 1 FROM memberships
++            WHERE tenant_id=$1 AND subject=$3 AND role='worker'
++          ),
++          EXISTS (
++            SELECT 1 FROM worker_bindings
++            WHERE tenant_id=$1 AND namespace_id::text=$4
++              AND subject=$3 AND pattern='*'
++          ),
++          EXISTS (
++            SELECT 1 FROM worker_sessions
++            WHERE tenant_id=$1 AND id::text=$5 AND subject=$3
++          )
++        "#,
++    )
++    .bind(platform.tenant.as_uuid())
++    .bind(TENANT)
++    .bind(WORKER)
++    .bind(namespace_id)
++    .bind(worker_id)
++    .fetch_one(&platform.api.db.pool)
++    .await
++    .expect("read retained public identity")
++}
++
++async fn assert_pool_roles(platform: &Platform) {
++    let api_role: String = sqlx::query_scalar("SELECT current_user::text")
++        .fetch_one(&platform.api.api_pool)
++        .await
++        .expect("API database role");
++    let owner_role: String = sqlx::query_scalar("SELECT current_user::text")
++        .fetch_one(&platform.api.db.pool)
++        .await
++        .expect("owner inspection role");
++    assert_eq!(api_role, RUNTIME_ROLE);
++    assert_ne!(owner_role, RUNTIME_ROLE);
++}
++
++#[tokio::test(flavor = "current_thread")]
++async fn current_api_reopens_owned_database_and_resumes_original_public_worker() {
++    let _server = hold_server();
++    let original = crate::support::worker::platform_with(runtime_options()).await;
++    assert_pool_roles(&original).await;
++
++    let namespace_id = original.namespace_id().await;
++    let workflow = original
++        .publish(
++            "retained-db-current-reopen",
++            &single_ir("retained-db-current-reopen", None),
++        )
++        .await;
++    let run = original.start(&workflow, &json!({"request":"before-reopen"})).await;
++    let scheduled = original.tick().await;
++    assert_eq!(scheduled.failed, 0, "schedule original task: {scheduled:?}");
++
++    let (worker_id, session, completion, identity_before) = {
++        let mut worker = original.worker(WORKER).await;
++        worker.register_version(&["act.a"], "1.5").await;
++        let lease = worker.one_task().await;
++        let completion = Worker::complete_message(&lease, r#"{"completed":"after-reopen"}"#);
++        let identity = identity_witness(&original, &namespace_id, &worker.worker_id).await;
++        assert_eq!(identity, (true, true, true, true));
++        (
++            worker.worker_id.clone(),
++            worker.session.clone(),
++            completion,
++            identity,
++        )
++    };
++
++    let database_name = original.api.db.name.clone();
++    let _admin_url = original.api.db.admin_url.clone();
++    let tenant = original.tenant;
++    let other_tenant = original.other_tenant;
++    drop(original);
++
++    // Behavioral RED: the existing constructor always allocates another database, so the fresh
++    // current JWT cannot resolve this original tenant and the original task is absent.
++    let api = start_with(runtime_options()).await;
++    let reopened = Platform {
++        api,
++        tenant,
++        other_tenant,
++    };
++    assert_pool_roles(&reopened).await;
++
++    let lookups_before = reopened.api.authentication_lookups();
++    let reopened_namespace = reopened.namespace_id().await;
++    assert_eq!(reopened_namespace, namespace_id);
++    assert!(
++        reopened.api.authentication_lookups() > lookups_before,
++        "the current JWT must pass through current tenant and membership lookup"
++    );
++    assert_eq!(reopened.api.db.name, database_name);
++    assert_eq!(reopened.status(&run).await, "RUNNING");
++
++    let mut resumed = reopened.connect(WORKER, TENANT).await;
++    resumed.worker_id = worker_id.clone();
++    resumed.session = session;
++    assert!(
++        resumed.poll(1).await.is_empty(),
++        "the original session resumes while its original task remains leased"
++    );
++    let request = resumed.req(completion);
++    let completed = resumed
++        .client
++        .complete_step(request)
++        .await
++        .expect("complete the exact original request after API reopen")
++        .into_inner();
++    assert!(!completed.already_applied);
++    assert_eq!(completed.step_status, "SUCCEEDED");
++    assert_eq!(
++        identity_witness(&reopened, &namespace_id, &worker_id).await,
++        identity_before,
++        "reopen neither provisions nor registers durable public authority"
++    );
++
++    let settled = reopened.tick().await;
++    assert_eq!(settled.failed, 0, "settle reopened run: {settled:?}");
++    assert_eq!(reopened.status(&run).await, "SUCCEEDED");
++}
