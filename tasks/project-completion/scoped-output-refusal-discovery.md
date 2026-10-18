@@ -51,3 +51,15 @@ Append to section11.5:
 No tests/builds were executed for this document. No deployment or task closure is inferred.
 
 Fresh bounded C1 reviewed originalbd5ff35f52ef12bc8d0cd406d7ac81e97d2007409aef9e317a023f93ae295395 and found no required issue; source/constitution/ADR mapping accepted. This status update adds no test result.
+## Coupled producer checkpoint — 2026-10-18
+
+The reviewed worker refusal path and collection scheduler/native producers now have focused
+[combined integration evidence](evidence/collection-finalization-integration-20261018/reproduce.md).
+Both genuine successful forward and Applied refusals pass through durable discovery and 17 real
+compensations in default/runtime invocations. Report replay preserves its ACK and writes no new
+report outbox row. These changes are a coupled deployment dependency; the PostgreSQL/scheduler
+and worker commits are not independent release candidates.
+
+This checkpoint does not close Q9/Q10. Genuine old-produced effective-over-limit discovery with
+full concurrency, report transaction faults/current-secret races, cold recovery/uncertain COMMIT
+and the remaining release gates still require their separately recorded acceptance.

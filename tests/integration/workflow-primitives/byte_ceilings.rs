@@ -372,7 +372,9 @@ async fn drain_and_compensate_every_reservation(flow: &Flow) {
         released.push(iteration(&tasks[0]));
         flow.complete(&tasks[0], json!({"released": true})).await;
     }
-    assert_eq!(released, (0..17).rev().collect::<Vec<_>>());
+    // Collection iterations are independent branches; only each branch has reverse topo order.
+    released.sort_unstable();
+    assert_eq!(released, (0..17).collect::<Vec<_>>());
     flow.drive().await;
     assert_eq!(flow.run_status().await, "COMPENSATED");
 

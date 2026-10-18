@@ -13,6 +13,7 @@ mod output;
 mod scoped;
 mod scoped_capabilities;
 mod scoped_claims;
+mod scoped_output_refusal;
 mod scoped_reports;
 mod secret_resolution;
 mod secrets;
