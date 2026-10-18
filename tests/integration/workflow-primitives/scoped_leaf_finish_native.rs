@@ -1057,3 +1057,8 @@ async fn native_scoped_finish_refuses_signed_counter_overflow_atomically() {
 
 #[path = "scoped_leaf_finish_source_controls.rs"]
 mod source_controls;
+
+#[path = "scoped_leaf_finish_qualification.rs"]
+mod qualification;
+#[path = "scoped_leaf_finish_receipts.rs"]
+mod receipts;

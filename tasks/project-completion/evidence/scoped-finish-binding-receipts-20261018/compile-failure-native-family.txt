@@ -1,0 +1,17 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+error[E0282]: type annotations needed
+  --> tests/integration/workflow-primitives/scoped_leaf_finish_qualification.rs:69:9
+   |
+69 |     let run = crate::support::api::json_of(started).await["runId"]
+   |         ^^^
+...
+79 |     .bind(run.as_uuid())
+   |           --- type must be known at this point
+   |
+help: consider giving `run` an explicit type
+   |
+69 |     let run: /* Type */ = crate::support::api::json_of(started).await["runId"]
+   |            ++++++++++++
+
+For more information about this error, try `rustc --explain E0282`.
+error: could not compile `sagat-tests` (test "integration_workflow_primitives") due to 1 previous error

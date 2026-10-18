@@ -3100,3 +3100,24 @@ before the final run, and freshC2 found no issue. Strict integration Clippy14.80
 architecture0.40s pass. All1092 frozen inputs unchanged. No product implementation change,
 released privilege/caller, owner-corruption resistance or general decoder/fault guarantee.
 Evidence: tasks/project-completion/evidence/scoped-finish-source-controls-20261018/manifest.json.
+
+
+## Scoped Finish binding and receipt controls — 2026-10-18
+
+Local B1b.2b.14b/.14c, refs:T014-014..017/040. The complete current scoped family passes12/12
+in54.22s (19.48s harness):4first-native,3source,3qualification and2receipt controls. Native
+qualification proves opaque tenant/namespace/group/member absence versus observable binding
+mismatch, cross-namespace holder preservation without a holder certificate, and group-wide
+differing-fingerprint ChildRoot conflict followed by genuine fresh-key apply/replay. Hidden
+bindings deliberately mismatch to catch omission of discovery qualifiers before later lookups.
+
+Receipt-owner fixtures retain every CHECK/FK and exact user-trigger catalog, restore ALWAYS
+before calls, and exercise year10000 rejection, fingerprint precedence,9999/BC exact replay,
+coherent counter/binding discrepancies and exact native restoration. Every call preserves
+source/execution/nonselected members and its full before-call capacity state where required.
+No owner-corruption resistance or statement-level foreign-Run read proof follows. Qualification
+reviewC1/C2 found masking oracles, fixed; C3None. Receipt reviewNone. ActualE0282 HTTP RunId
+helper inference failure is retained separately and fixed with shared RunId annotation. Strict
+Clippy9.48s, fmt4.24s, architecture0.35s pass;1094 frozen inputs unchanged. Residual exact-FP
+ChildRoot decoder control is inventoried in14d; actual barriers/recovery/observations stay open.
+Evidence: tasks/project-completion/evidence/scoped-finish-binding-receipts-20261018/manifest.json.

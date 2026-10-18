@@ -361,3 +361,25 @@ tests pass, Clippy/fmt/architecture pass and1092 frozen inputs are unchanged. Th
 helper compilation error and initial nine-table pass are retained separately. ReviewC1 added
 the omitted payload/item tables; freshC2 found no issue. Broader14b..d/15..17 gates remain open.
 Evidence: evidence/scoped-finish-source-controls-20261018/manifest.json.
+
+
+## Binding and schema-valid receipt controls — 2026-10-18
+
+B1b.2b.14b/.14c add3 qualification and2 receipt tests. The integrated scoped family passes12/12
+(4first-native,3source,3qualification,2receipt). Hidden tenant/namespace/group probes deliberately
+disagree with the stored binding so unfenced discovery cannot be masked by later Missing. An
+actual other-namespace holder-member probe returns opaque Missing; native selected Finish
+preserves that holder, its uncertified alternate Run and epoch. Differing-fingerprint ChildRoot
+receipt reuse returns FingerprintConflict before unrelated decoding; a fresh key applies/replays.
+No statement-level foreign-Run SELECT instrumentation is claimed.
+
+Labelled receipt-owner decoder fixtures keep all CHECK/FK constraints validated and active,
+disable only the named append-only guard and restore ALWAYS before native entry. Exact matching
+fingerprint plus year10000 refuses, differing fingerprint takes precedence, and9999/BC controls
+replay exact stored time. Schema-valid counter-pair/accepted-Run/coherent-binding discrepancies
+refuse atomically; restored native fields replay the original result. No owner-forgery resistance.
+Three bounded qualification reviews fixed hidden-discovery oracles and ended None; receipt
+reviewNone. ActualE0282 helper compilation failure and fix are retained. Clippy/fmt/architecture
+pass, with1094 frozen inputs unchanged. Residual14d remains for an exact-fingerprint ChildRoot
+variant, distinct from the already tested differing-fingerprint conflict;15..17 remain open.
+Evidence: evidence/scoped-finish-binding-receipts-20261018/manifest.json.

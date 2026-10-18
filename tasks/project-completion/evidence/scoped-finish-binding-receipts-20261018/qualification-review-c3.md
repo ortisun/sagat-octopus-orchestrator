@@ -1,0 +1,1 @@
+Third/final fresh bounded Astra/xhigh read-only qualification review ofd566473414d330ff8b4eb8090d181f32a933aca47eb063f49b54fa1663a0bf44: None. Absent group now distinguishes unfenced discovery from later missing G. No remaining substantive issue within qualification, cross-namespace holder, differing-fingerprint cross-kind scope. No tests by reviewer.

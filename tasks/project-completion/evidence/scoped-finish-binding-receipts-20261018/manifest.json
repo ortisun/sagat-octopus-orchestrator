@@ -1,0 +1,41 @@
+{
+  "source_base": "cbfb620d",
+  "local_units": [
+    "B1b.2b.14b",
+    "B1b.2b.14c"
+  ],
+  "integrated_native_tests_passed": 12,
+  "test_counts": {
+    "base": 4,
+    "qualification": 3,
+    "receipts": 2,
+    "source_controls": 3
+  },
+  "frozen_inputs": 1094,
+  "sources_unchanged": true,
+  "product_implementation_changed": false,
+  "files": {
+    "architecture.json": "033368deda0e74b15273c1b6a89bdbafa733a8e21256ae0c0968e6a7c5b690df",
+    "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "clippy.json": "f9bfa7a2075888236701418cddc612e0d0b3af5fcebacc61cc6f5062e42a48af",
+    "clippy.txt": "06f2fafcb63568c1b03074009cb32ddecf0621944296e5b933e199cfb1d68b80",
+    "compile-failure-native-family.json": "1ebc698b3fe0316bd17e798f9533e2841822c0786fdb14ee21c56f790b1fee6a",
+    "compile-failure-native-family.txt": "d246d7885eb84d7a8f7a416b343ca2fcaab16ae2025a19d1f423c9daf415b337",
+    "compile-failure-source-after.json": "6969e1ee8cab8185c9725b76308670b935fcc2a2b038f2b2dca08a043721c24f",
+    "compile-failure-source-before.json": "6969e1ee8cab8185c9725b76308670b935fcc2a2b038f2b2dca08a043721c24f",
+    "fmt.json": "afe0b45f35389c1006fa9f7388257d975ca5ae934f991627dfb05733c8e157eb",
+    "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "native-family.json": "faa5baaf2587e46ab15032d631a65d149221f86c2ded4153637cfb78ed71306f",
+    "native-family.txt": "ac12e676b70f31cc1e7a7cce0b116460bf084202573d565902b22b552de766ba",
+    "qualification-draft-notes.md": "351fc53d88f6208e294f096d7c5455b3fe71c4d9ab805c5ccd31b808e6aee6e1",
+    "qualification-review-c1.md": "ed60227522488f60ea89f635a2bd72f0734e7120f6f9c405e129e2c2e1e6f598",
+    "qualification-review-c2.md": "a981cccb1e5e740d323ccd5c4e603bf2a18ef4219392d824d37e8dc666f038f8",
+    "qualification-review-c3.md": "70ee9e05f73a5942f37b15b60855818ce9a0e92caf2fbb17f4f49f3dfee5aebe",
+    "receipt-draft-notes.md": "1a30c83b128ca1fd91267a7f1ae16b71878993c22f42571ad8d8e9f680fc4754",
+    "receipt-review.md": "144006512b4db58b32d11fa52c613277fded7c1eadd637ca515f7e91391fff96",
+    "reproduce.md": "51460dfe6839bce875665ba5de779e51634cc971e01c356c4241ac7f6e703b65",
+    "source-after.json": "e84f692e1ff5d14d9a917ea0c19faa2b155c1147d03c9d8779f5788543e7db11",
+    "source-before.json": "e84f692e1ff5d14d9a917ea0c19faa2b155c1147d03c9d8779f5788543e7db11",
+    "test-index.json": "c153827cc59e726f691a92e133ccd11654d24dd25a5a69d61921569f22b3dc3b"
+  }
+}

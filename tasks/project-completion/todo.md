@@ -184,8 +184,8 @@ See evidence/leaf-certification-process-20261018. Other producer/observation/rel
 - [ ] B1b.2b.14: Prove closed source/receipt decoding, exact qualification and metadata-only reads.
 - [x] B1b.2b.14a: Prove canonical source-before-matching/conflicting receipt and current fence
   before missing source, plus actual11-table denied-read metadata-only native apply/replay.
-- [ ] B1b.2b.14b: Prove exact tenant/namespace/binding opacity and group-wide cross-kind conflicts.
-- [ ] B1b.2b.14c: Prove schema-valid receipt binding/counter and safe timestamp decoder controls.
+- [x] B1b.2b.14b: Prove exact tenant/namespace/binding opacity and group-wide cross-kind conflicts.
+- [x] B1b.2b.14c: Prove schema-valid receipt binding/counter and safe timestamp decoder controls.
 - [ ] B1b.2b.14d: Inventory residual closed decoder/diagnostic obligations and test concrete gaps.
 - [ ] B1b.2b.15: Prove actual waits/current authority, source-writer ordering and atomic failures.
 - [ ] B1b.2b.16: Prove lost COMMIT/reconciliation and actual process recovery for scoped Finish.
