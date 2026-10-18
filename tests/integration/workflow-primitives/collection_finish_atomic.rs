@@ -495,5 +495,20 @@ async fn collection_finish_is_atomic_after_persistence_and_retry_commits_once() 
         stable,
         "contradictory source metadata changes no persisted or accounting state"
     );
+    let contradictory_end = cold_replay
+        .clone()
+        .with_end_answer(EndOutputAnswer::Succeeded(b"18".to_vec()));
+    assert_eq!(
+        cold_store
+            .finish_collection(&contradictory_end)
+            .await
+            .expect_err("retained End answer is part of exact replay identity"),
+        PrimitiveStoreError::DuplicateMismatch
+    );
+    assert_eq!(
+        snapshot(&flow.api.db.pool, flow.tenant.as_uuid(), flow.run).await,
+        stable,
+        "contradictory End bytes change no persisted or accounting state"
+    );
     flow.verify().await;
 }

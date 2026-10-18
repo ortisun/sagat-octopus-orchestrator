@@ -406,6 +406,242 @@ async fn empty_collection_aggregate_fits_with_exactly_two_bytes_remaining() {
 }
 
 #[tokio::test]
+async fn legal_end_output_refuses_when_successful_empty_aggregate_leaves_one_run_byte() {
+    let p = platform().await;
+    let name = "collection-end-crosses-run-byte-limit";
+    let mut document = empty_collection_after_prefix(name);
+    document["nodes"]
+        .as_array_mut()
+        .expect("workflow nodes")
+        .iter_mut()
+        .find(|node| node["id"] == "done")
+        .expect("terminal End")["outputExpr"] = json!("17");
+    assert_eq!(json!(17).to_string().len(), 2, "End result is two bytes");
+    let workflow = p.publish(name, &document).await;
+    let run = start_inline(&p, &workflow, &json!({})).await;
+    let sched = scheduler(&p, None).await;
+    let mut worker = p.worker("collection-end-run-quota-worker").await;
+    worker
+        .register_version(&[PREFIX_ACTIVITY, BODY_ACTIVITY], "1.5")
+        .await;
+
+    const { assert!(PREFIX_COUNT * MAX_PAYLOAD_BYTES == MAX_RUN_OUTPUT_BYTES) };
+    let mut outputs = [MAX_PAYLOAD_BYTES; PREFIX_COUNT];
+    outputs[PREFIX_COUNT - 1] -= 3;
+    assert!(
+        outputs
+            .iter()
+            .all(|bytes| *bytes > 0 && *bytes <= MAX_PAYLOAD_BYTES),
+        "every real worker output is positive and within the 256 KiB value ceiling"
+    );
+    complete_prefix_over_grpc(&mut worker, &sched, &outputs).await;
+    let prefix_bytes = MAX_RUN_OUTPUT_BYTES - 3;
+    assert_eq!(outputs.iter().sum::<usize>(), prefix_bytes);
+    assert_prefix_outputs(&p, run, prefix_bytes).await;
+    let rejected_end_payloads_before: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM payloads WHERE tenant_id=$1 AND content=$2")
+            .bind(p.tenant.as_uuid())
+            .bind(b"17".as_slice())
+            .fetch_one(&p.api.db.pool)
+            .await
+            .expect("the candidate End payload is absent before collection finalization");
+    assert_eq!(rejected_end_payloads_before, 0);
+    let expected_run_audit_actions: Vec<String> = sqlx::query_scalar(
+        "SELECT action FROM audit_records \
+           WHERE tenant_id=$1 AND resource_type='run' AND resource_id=$2::text \
+           ORDER BY created_at,id",
+    )
+    .bind(p.tenant.as_uuid())
+    .bind(run)
+    .fetch_all(&p.api.db.pool)
+    .await
+    .expect("Run audit actions after the real worker prefix");
+    assert!(
+        !expected_run_audit_actions
+            .iter()
+            .any(|action| action == "run.storage_quota_exceeded"),
+        "the real worker prefix did not exhaust stored-byte quota"
+    );
+
+    assert_eq!(
+        drive_to_terminal(&p, &sched, run).await,
+        ("FAILED".to_owned(), Some("RUN_DATA_LIMIT".to_owned())),
+        "the retained [] fits, but the legal two-byte End result crosses the Run ceiling"
+    );
+
+    let row = sqlx::query(
+        "SELECT run.status AS run_status,run.stop_reason,run.stop_code, \
+                run.result_digest IS NULL AS no_run_result,scope.lifecycle, \
+                scope.result_digest AS aggregate_digest,owner.status AS owner_status, \
+                owner.failure_code AS owner_failure,owner.routed AS owner_routed, \
+                owner.output_digest AS owner_digest,aggregate.content AS aggregate, \
+                ended.status AS end_status,ended.failure_code AS end_code, \
+                ended.output_digest IS NULL AS no_end_output,usage.logical_output_bytes, \
+                telemetry.head_seq,run.run_version, \
+                (SELECT count(*) FROM steps step WHERE step.tenant_id=run.tenant_id \
+                  AND step.run_id=run.id AND step.output_digest IS NOT NULL) AS output_count, \
+                (SELECT coalesce(sum(octet_length(output.content)),0)::bigint \
+                  FROM steps step JOIN payloads output \
+                    ON output.tenant_id=step.tenant_id AND output.digest=step.output_digest \
+                  WHERE step.tenant_id=run.tenant_id AND step.run_id=run.id) AS step_output_bytes, \
+                (SELECT count(*) FROM run_events event WHERE event.tenant_id=run.tenant_id \
+                  AND event.run_id=run.id AND event.event_type='collection.finished' \
+                  AND event.node='items' AND event.detail->>'outcome'='succeeded') AS collection_finished, \
+                (SELECT count(*) FROM run_events event WHERE event.tenant_id=run.tenant_id \
+                  AND event.run_id=run.id AND event.event_type='step.failed' \
+                  AND event.node='done' AND event.detail->>'code'='RUN_DATA_LIMIT') AS end_failed, \
+                (SELECT count(*) FROM run_events event WHERE event.tenant_id=run.tenant_id \
+                  AND event.run_id=run.id AND event.event_type='end.reached') AS end_reached, \
+                (SELECT count(*) FROM run_events event WHERE event.tenant_id=run.tenant_id \
+                  AND event.run_id=run.id AND event.event_type='run.stop_requested' \
+                  AND event.detail->>'code'='RUN_DATA_LIMIT') AS stop_events, \
+                (SELECT count(*) FROM run_events event WHERE event.tenant_id=run.tenant_id \
+                  AND event.run_id=run.id AND event.event_type='run.finished' \
+                  AND event.detail->>'status'='FAILED') AS run_finished, \
+                (SELECT count(*) FROM event_outbox message WHERE message.tenant_id=run.tenant_id \
+                  AND message.aggregate_id=run.id \
+                  AND message.event_type='collection.finished') AS collection_outboxes, \
+                COALESCE((SELECT bool_and(message.routing_key='items' \
+                  AND message.payload->>'status'='SUCCEEDED') FROM event_outbox message \
+                  WHERE message.tenant_id=run.tenant_id AND message.aggregate_id=run.id \
+                    AND message.event_type='collection.finished'),false) \
+                  AS collection_outbox_exact, \
+                (SELECT count(*) FROM event_outbox message WHERE message.tenant_id=run.tenant_id \
+                  AND message.aggregate_id=run.id \
+                  AND message.event_type='run.finished') AS run_outboxes, \
+                COALESCE((SELECT bool_and(message.routing_key IS NULL \
+                  AND message.payload->>'status'='FAILED') FROM event_outbox message \
+                  WHERE message.tenant_id=run.tenant_id AND message.aggregate_id=run.id \
+                    AND message.event_type='run.finished'),false) AS run_outbox_exact \
+           FROM runs run JOIN iteration_scopes scope \
+             ON scope.tenant_id=run.tenant_id AND scope.run_id=run.id \
+            AND scope.owner_path_nodes='{}' AND scope.owner_path_indices='{}' \
+            AND scope.owner_node='items' \
+           JOIN steps owner ON owner.tenant_id=run.tenant_id AND owner.run_id=run.id \
+            AND owner.instance_path_nodes='{}' AND owner.instance_path_indices='{}' \
+            AND owner.node='items' \
+           JOIN steps ended ON ended.tenant_id=run.tenant_id AND ended.run_id=run.id \
+            AND ended.instance_path_nodes='{}' AND ended.instance_path_indices='{}' \
+            AND ended.node='done' \
+           JOIN payloads aggregate ON aggregate.tenant_id=scope.tenant_id \
+            AND aggregate.digest=scope.result_digest \
+           JOIN run_instance_usage usage ON usage.tenant_id=run.tenant_id AND usage.run_id=run.id \
+           JOIN telemetry_pending telemetry ON telemetry.tenant_id=run.tenant_id \
+            AND telemetry.run_id=run.id \
+          WHERE run.tenant_id=$1 AND run.id=$2",
+    )
+    .bind(p.tenant.as_uuid())
+    .bind(run)
+    .fetch_one(&p.api.db.pool)
+    .await
+    .expect("successful aggregate and refused End result snapshot");
+
+    assert_eq!(row.get::<String, _>("run_status"), "FAILED");
+    assert_eq!(
+        row.get::<Option<String>, _>("stop_reason").as_deref(),
+        Some("FAILED")
+    );
+    assert_eq!(
+        row.get::<Option<String>, _>("stop_code").as_deref(),
+        Some("RUN_DATA_LIMIT")
+    );
+    assert!(row.get::<bool, _>("no_run_result"));
+    assert_eq!(row.get::<String, _>("lifecycle"), "SUCCEEDED");
+    assert_eq!(row.get::<String, _>("owner_status"), "SUCCEEDED");
+    assert_eq!(row.get::<Option<String>, _>("owner_failure"), None);
+    assert!(row.get::<bool, _>("owner_routed"));
+    assert_eq!(
+        row.get::<Option<Vec<u8>>, _>("owner_digest"),
+        Some(row.get::<Vec<u8>, _>("aggregate_digest")),
+        "the successful owner retains the fitting aggregate"
+    );
+    assert_eq!(row.get::<Vec<u8>, _>("aggregate"), b"[]".to_vec());
+    assert_eq!(row.get::<String, _>("end_status"), "FAILED");
+    assert_eq!(
+        row.get::<Option<String>, _>("end_code").as_deref(),
+        Some("RUN_DATA_LIMIT")
+    );
+    assert!(row.get::<bool, _>("no_end_output"));
+
+    let retained_bytes = prefix_bytes + b"[]".len();
+    assert_eq!(retained_bytes, MAX_RUN_OUTPUT_BYTES - 1);
+    assert_eq!(
+        row.get::<i64, _>("logical_output_bytes"),
+        retained_bytes as i64,
+        "only the real prefix and fitting owner aggregate charge the Run"
+    );
+    assert_eq!(
+        row.get::<i64, _>("step_output_bytes"),
+        retained_bytes as i64,
+        "the ledger equals the complete set of retained step-output references"
+    );
+    assert_eq!(
+        row.get::<i64, _>("output_count"),
+        (PREFIX_COUNT + 1) as i64,
+        "sixteen worker outputs plus the owner aggregate are retained"
+    );
+    assert_eq!(
+        (
+            row.get::<i64, _>("collection_finished"),
+            row.get::<i64, _>("end_failed"),
+            row.get::<i64, _>("end_reached"),
+            row.get::<i64, _>("stop_events"),
+            row.get::<i64, _>("run_finished"),
+            row.get::<i64, _>("collection_outboxes"),
+            row.get::<i64, _>("run_outboxes"),
+        ),
+        (1, 1, 0, 1, 1, 1, 1),
+        "one successful collection and one failed terminal decision are committed"
+    );
+    assert!(
+        row.get::<bool, _>("collection_outbox_exact"),
+        "the sole collection.finished hint has the successful items routing"
+    );
+    assert!(
+        row.get::<bool, _>("run_outbox_exact"),
+        "the sole run.finished hint has the failed Run payload and no routing key"
+    );
+    let final_run_audit_actions: Vec<String> = sqlx::query_scalar(
+        "SELECT action FROM audit_records \
+           WHERE tenant_id=$1 AND resource_type='run' AND resource_id=$2::text \
+           ORDER BY created_at,id",
+    )
+    .bind(p.tenant.as_uuid())
+    .bind(run)
+    .fetch_all(&p.api.db.pool)
+    .await
+    .expect("Run audit actions after the End budget refusal");
+    assert_eq!(
+        final_run_audit_actions, expected_run_audit_actions,
+        "End logical-output refusal requires no new Run audit action"
+    );
+    assert!(
+        !final_run_audit_actions
+            .iter()
+            .any(|action| action == "run.storage_quota_exceeded"),
+        "a logical-output refusal is not a stored-byte quota event"
+    );
+    let rejected_end_payloads_after: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM payloads WHERE tenant_id=$1 AND content=$2")
+            .bind(p.tenant.as_uuid())
+            .bind(b"17".as_slice())
+            .fetch_one(&p.api.db.pool)
+            .await
+            .expect("the refused End payload is not retained as an orphan");
+    assert_eq!(rejected_end_payloads_after, 0);
+    assert_eq!(
+        row.get::<i64, _>("head_seq"),
+        row.get::<i64, _>("run_version"),
+        "the complete terminal snapshot is visible at one telemetry head"
+    );
+    p.api
+        .executions
+        .verify_run(p.tenant, RunId::new(run))
+        .await
+        .expect("the successful aggregate and failed End replay consistently");
+}
+
+#[tokio::test]
 async fn second_empty_collection_refuses_after_first_consumes_final_two_bytes() {
     let p = platform().await;
     let name = "second-empty-collection-at-run-byte-limit";

@@ -21,7 +21,7 @@ fn result_child_document(name: &str) -> Value {
         .iter_mut()
         .find(|node| node["id"].as_str() == Some("done"))
         .expect("child End");
-    end["outputExpr"] = json!("steps.later.output[0].amount");
+    end["outputExpr"] = json!("[steps.lines.output[0], steps.later.output[0]][1].amount");
     document
 }
 
