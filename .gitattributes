@@ -4,3 +4,4 @@
 /tasks/project-completion/evidence/child-root-fk-20261018/*.txt whitespace=-blank-at-eof
 # The native harness ends its in-progress test prefix with a space before a panic newline.
 /tasks/project-completion/evidence/child-root-fk-20261018/red.txt whitespace=-blank-at-eof,-blank-at-eol
+/tasks/project-completion/evidence/sdk-instance-limits-20261018/*.txt whitespace=-blank-at-eof

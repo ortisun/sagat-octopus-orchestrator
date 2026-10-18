@@ -39,6 +39,11 @@ server-only fault injection is additionally exercised below. A subset run is dia
 not five-language parity. Conformance checks task/heartbeat/complete instance identity through real
 worker registration and leases rather than echoing a local builder document alone.
 
+`workflow-instance-limits` exercises WP-12 instance admission at3/excess2 in all five, with persisted
+INSTANCE_LIMIT and cancelled unadmitted end, plus instance0/100001 and depth0/9 builder refusal.
+Depth1/8 is an authoring check here, not execution of nested depth8. Each root is created before
+its dedicated worker starts so start responses cannot race completion.
+
 ## Server failure-injection matrix
 
 Use deterministic barriers at the named transaction edges, a real PostgreSQL database, real

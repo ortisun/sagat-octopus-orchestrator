@@ -153,6 +153,14 @@ five builders and conformance runners. `loop-runtime` explicitly authors 12 inst
 fields, while runtime output is checked separately. The Rust `limits.rs` suite covers admission
 boundaries and policy reduction; this small SDK matrix does not establish the large workload ceilings.
 
+`workflow-instance-limits.json` now exercises actual instance admission in all five SDKs: an
+`a -> b -> end` workflow succeeds with `maxInstances: 3`; at2, both activity completions are accepted
+and the run fails with persisted `INSTANCE_LIMIT`, leaving the end cancelled at attempt0.
+Each run is created with workers stopped, then its dedicated worker starts; this keeps the
+start observation independent of execution speed. Four invalid builder cases reject instance0/
+100001 and depth0/9 with `VALIDATION_FAILED`. Depth1/8 authoring is checked; this does not execute
+nested depth8 or establish the remaining WP-12 resource ceilings. No normalizer fields are hidden.
+
 `collection-compensation.json` is the WP-04 contract for a collection that stops. A `map` with concurrency one
 over bodies of several activities: when `ship` fails for good in the first iteration, the iteration's completed
 `reserve` and `charge` are undone in reverse order (the refund before the release), through `COMPENSATION` tasks

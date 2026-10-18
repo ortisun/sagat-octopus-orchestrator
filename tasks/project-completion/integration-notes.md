@@ -1583,3 +1583,21 @@ narrow remedy; runtime-role regression passed709 tests with the separate long10k
 locked workspace/all-target Clippy, formatting/diff and24-crate architecture checks passed.
 See evidence/child-root-fk-20261018/manifest.json for exact source, commands and failures. B0 remains an incomplete inventory;
 no group persistence, nesting activation or canonical task closure is inferred.
+
+
+## 2026-10-18 — Five-SDK instance-limit admission
+
+The new58th common case `workflow-instance-limits` proves maxInstances3 succeeds for a->b->end;
+maxInstances2 accepts both activity completions, fails with persisted INSTANCE_LIMIT and leaves
+end CANCELLED/attempt0. All five builders preserve depth1/8 and reject instance0/100001 and depth0/9
+with VALIDATION_FAILED. No nested depth8 execution is inferred. Source/status/graph evidence and
+four worker calls agree in all five complete documents. Two fresh-context reviews found then
+resolved a start-response race: each root now starts while workers are stopped, then its dedicated
+worker starts; it is stopped/drained before the next root. No sleeps or normalizer changes hide it.
+The missing-golden probes are retained separately from the actual final pass: all five completed
+in11.83s. Complete builder/runtime documents were independently compared and inspected before
+writing the two new goldens, without blessing. Native primitive contracts passed47/47 in0.45s;
+registry preflight passed1/1 with58 scenarios. This is focused evidence, not an all58 matrix result.
+Exact commands/hashes/results are in tasks/project-completion/evidence/sdk-instance-limits-20261018/manifest.json.
+T014-004 still needs its public HTTP malformed-scope/object-literal evidence; canonical broader
+runtime, nesting and release tasks remain open. G425's old SDK-authoring limitation is resolved.

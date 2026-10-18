@@ -1,0 +1,24 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 52.44s
+     Running contract/sdk-conformance/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/sdk_conformance-b2617ec528303b0c)
+
+running 1 test
+--- workflow-instance-limits (5 languages)
+FAIL workflow-instance-limits: /Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests/contract/sdk-conformance/expected/workflow-instance-limits.workflows.json does not exist (SAGAT_SDK_BLESS=1 writes it)
+FAIL workflow-instance-limits: /Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests/contract/sdk-conformance/expected/workflow-instance-limits.json does not exist (SAGAT_SDK_BLESS=1 writes it)
+
+thread 'every_sdk_conforms_to_every_scenario' (75698459) panicked at tests/contract/sdk-conformance/harness.rs:1401:9:
+the SDKs do not conform:
+workflow-instance-limits: /Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests/contract/sdk-conformance/expected/workflow-instance-limits.workflows.json does not exist (SAGAT_SDK_BLESS=1 writes it)
+workflow-instance-limits: /Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests/contract/sdk-conformance/expected/workflow-instance-limits.json does not exist (SAGAT_SDK_BLESS=1 writes it)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test every_sdk_conforms_to_every_scenario ... FAILED
+
+failures:
+
+failures:
+    every_sdk_conforms_to_every_scenario
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 16.09s
+
+error: test failed, to rerun pass `-p sagat-tests --test sdk_conformance`

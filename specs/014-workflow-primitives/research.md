@@ -1217,10 +1217,13 @@ O420-O421 (D410+ and G410+ are free for the peer increments).
 - **G424 — No retention for committed blobs.** The foreign key protects a live membership; a retention
   policy for finished runs (D298) must still decide when `iteration_scopes` rows, and with them the
   reference, go.
-- **G425 — The SDK builders cannot set the top-level `limits`.** A scenario's `limits` key is ignored by
-  all five runners, so WP-12's instance budget, depth and node ceilings are not exercised through the
-  SDKs (`loop-runtime.json` carries a `limits` that has no effect). Rust covers them (`limits.rs`,
-  `ceilings.rs`).
+- **G425 — Resolved for authoring and bounded instance admission (2026-10-18).** The original
+  builders/runner gap has been implemented in all five SDKs. Reviewed `loop-runtime` and
+  `scoped-identity` documents preserve their limits; `workflow-instance-limits` additionally proves
+  maxInstances3 succeeds and2 fails with persisted INSTANCE_LIMIT. Four invalid authoring cases
+  cover instance0/100001 and depth0/9; depth1/8 is retained in canonical output. This does not prove
+  nested depth8 execution or the large-workload ceilings. Native `limits.rs`/`ceilings.rs` remain
+  separate evidence.
 - **G426 — WP-02 server-side rejection and WP-13 object-literal rejection are not SDK-visible.** Publishing a
   document is not an SDK operation (the harness publishes), so rejection of invalid, cyclic or escaping bodies
   and of unsupported expressions is proven by the Rust contract suites, not by the five SDKs.

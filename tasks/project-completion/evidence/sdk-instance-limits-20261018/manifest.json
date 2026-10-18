@@ -1,0 +1,95 @@
+{
+  "source_base": "a16b0ee3",
+  "scope": "new58th common SDK scenario; no runtime, SDK, runner or normalizer code changed",
+  "initial_probe": {
+    "seconds": 16.09,
+    "failed_only": "missing new goldens; all five complete builder/runtime docs equal",
+    "issue": "worker active before start could race the start status; rejected by independent review"
+  },
+  "ordered_probe": {
+    "seconds": 13.84,
+    "failed_only": "missing new goldens; all five complete ordered runtime docs equal"
+  },
+  "green": {
+    "languages": [
+      "typescript",
+      "go",
+      "python",
+      "dotnet",
+      "java"
+    ],
+    "seconds": 11.83,
+    "full_documents_equal_to_reviewed_goldens": true,
+    "reuse_prepared_runners": true,
+    "bless": false,
+    "artifacts": [
+      "typescript.39955.normalized.json",
+      "go.39955.normalized.json",
+      "python.39955.normalized.json",
+      "dotnet.39955.normalized.json",
+      "java.39955.normalized.json"
+    ]
+  },
+  "native_contracts": {
+    "passed": 47,
+    "failed": 0,
+    "seconds": 0.45
+  },
+  "registry": {
+    "passed": 1,
+    "scenario_count": 58,
+    "seconds": 0.05
+  },
+  "review": {
+    "cycles": 2,
+    "model": "gpt-6-astra",
+    "reasoning": "xhigh",
+    "finding": "start response reread can race already-active immediate workers",
+    "remedy": "start each root before dedicated worker; stop/drain worker before next root",
+    "final_review": "no concrete issues; reviewer did not run tests or verify future goldens; root separately inspected complete documents",
+    "external_cli": false
+  },
+  "semantic_oracle": [
+    "maxInstances3: a,b,end succeed",
+    "maxInstances2: a,b succeed, end cancelled attempt0, persisted INSTANCE_LIMIT",
+    "four invalid builder values: VALIDATION_FAILED,raised=true,mentions=true",
+    "depth1/8 authoring only; no nested depth8 execution claim"
+  ],
+  "test_environment": "repository disposable PostgreSQL, actual sagat_app runtime role, no external DB URL",
+  "command": "env -u SAGAT_TEST_DATABASE_URL -u SAGAT_SDK_BLESS SAGAT_TEST_AS_RUNTIME_ROLE=1 SAGAT_SDK_REUSE=1 SAGAT_SDK_SCENARIO=workflow-instance-limits CARGO_TARGET_DIR=/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=3 RUST_MIN_STACK=16777216 cargo test --locked -p sagat-tests --test sdk_conformance every_sdk_conforms_to_every_scenario -- --exact --ignored --nocapture",
+  "hashes": {
+    "dotnet.builder.json": "67ea07c4a6c4b4de892876b744582cceb71b831c5d1ee5c63aed356753d3400c",
+    "dotnet.green.normalized.json": "0b5e9b22e4ac13badc0fa261313357707902ad5bc4d2ed929cd91f4af2d28ec4",
+    "dotnet.initial.normalized.json": "034426376f01a9fe1623a8dc05108f016a38e169b14133f73f326d8a952cbdf0",
+    "dotnet.ordered.normalized.json": "0b5e9b22e4ac13badc0fa261313357707902ad5bc4d2ed929cd91f4af2d28ec4",
+    "go.builder.json": "615b84280bf631055636a622fa3683d3d90180c671d05c8f3a1b9ee06e120552",
+    "go.green.normalized.json": "0b5e9b22e4ac13badc0fa261313357707902ad5bc4d2ed929cd91f4af2d28ec4",
+    "go.initial.normalized.json": "034426376f01a9fe1623a8dc05108f016a38e169b14133f73f326d8a952cbdf0",
+    "go.ordered.normalized.json": "0b5e9b22e4ac13badc0fa261313357707902ad5bc4d2ed929cd91f4af2d28ec4",
+    "green.txt": "83acad062478fd1f0de25f90e95306618e4e537394b88becabfaafa880ebc061",
+    "initial-missing-goldens.txt": "38be362593ccdad5b0dfba5319a474fdedee972ba27f2154478f8a6223b77be7",
+    "java.builder.json": "615b84280bf631055636a622fa3683d3d90180c671d05c8f3a1b9ee06e120552",
+    "java.green.normalized.json": "0b5e9b22e4ac13badc0fa261313357707902ad5bc4d2ed929cd91f4af2d28ec4",
+    "java.initial.normalized.json": "034426376f01a9fe1623a8dc05108f016a38e169b14133f73f326d8a952cbdf0",
+    "java.ordered.normalized.json": "0b5e9b22e4ac13badc0fa261313357707902ad5bc4d2ed929cd91f4af2d28ec4",
+    "native-contracts.txt": "e29528797e614c367139229ed10fa7229b26d30f3a9922ceee4f1d3f9aab1dea",
+    "ordered-probe-missing-goldens.txt": "e968346aaa283862f519ebb9accadd3534c6b600aa8716402b193d26401c88a2",
+    "python.builder.json": "429b2262f83bced0a2e2c696dbc424287f7657e32be5b7045b42901fe74e710a",
+    "python.green.normalized.json": "0b5e9b22e4ac13badc0fa261313357707902ad5bc4d2ed929cd91f4af2d28ec4",
+    "python.initial.normalized.json": "034426376f01a9fe1623a8dc05108f016a38e169b14133f73f326d8a952cbdf0",
+    "python.ordered.normalized.json": "0b5e9b22e4ac13badc0fa261313357707902ad5bc4d2ed929cd91f4af2d28ec4",
+    "registry.txt": "ff9bc4edbc4512e1f0b767b320fcd0e5b51c83bee9d78f506c15a894327ac0c4",
+    "typescript.builder.json": "92b80b8ee80cba38fe954c9fd74ddbcc1afaf7ad9d2b878cdfc5012a5f9cc7a7",
+    "typescript.green.normalized.json": "0b5e9b22e4ac13badc0fa261313357707902ad5bc4d2ed929cd91f4af2d28ec4",
+    "typescript.initial.normalized.json": "034426376f01a9fe1623a8dc05108f016a38e169b14133f73f326d8a952cbdf0",
+    "typescript.ordered.normalized.json": "0b5e9b22e4ac13badc0fa261313357707902ad5bc4d2ed929cd91f4af2d28ec4"
+  },
+  "source_sha256": {
+    "tests/contract/sdk-conformance/scenarios/workflow-instance-limits.json": "e5cc21c1867bbbc4faa968ca7061971495fef4821268cf25b0375e1479baaf36",
+    "tests/contract/sdk-conformance/expected/workflow-instance-limits.json": "d39c42fb6ab11e1d25d0d99fac3aa538094625fc4ffcb109fce80619186463c0",
+    "tests/contract/sdk-conformance/expected/workflow-instance-limits.workflows.json": "f66a0d260040ad4739ce365d44ba0e1bd56a437295b266e75c4bcff196e4aff2",
+    "tests/contract/sdk-conformance/harness.rs": "661c0fc731a93524014f9115dce7948ae7b439387be6b3ed497d1b9e575031fa",
+    "tests/contract/sdk-conformance/normalize.rs": "29b61fc971900f3054fe6bdf68cf28dfc24a70e65d72a428d8a5efa40ff93a45"
+  },
+  "remaining": "T014-004 public HTTP malformed-scope/object-literal fixtures and broader canonical task gates remain open; no complete all58 matrix result inferred"
+}
