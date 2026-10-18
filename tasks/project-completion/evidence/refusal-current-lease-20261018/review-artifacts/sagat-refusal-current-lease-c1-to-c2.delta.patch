@@ -1,0 +1,184 @@
+--- a/tests/integration/workflow-primitives/refusal_secret_versions.rs
++++ b/tests/integration/workflow-primitives/refusal_secret_versions.rs
+@@ -651,8 +651,116 @@
+     .fetch_all(&platform.api.db.pool)
+     .await
+     .expect("exact scope-worker sessions")
++}
++
++async fn worker_authority_snapshot(platform: &Platform) -> Value {
++    sqlx::query_scalar(
++        "SELECT jsonb_build_object( \
++            'bindings',(SELECT coalesce(jsonb_agg(to_jsonb(binding_row) \
++              ORDER BY binding_row.namespace_id,binding_row.subject,binding_row.pattern),'[]'::jsonb) \
++              FROM worker_bindings binding_row WHERE binding_row.tenant_id=$1), \
++            'bindingPools',(SELECT coalesce(jsonb_agg(to_jsonb(pool_row) \
++              ORDER BY pool_row.namespace_id,pool_row.subject,pool_row.pool),'[]'::jsonb) \
++              FROM worker_binding_pools pool_row WHERE pool_row.tenant_id=$1), \
++            'sessions',(SELECT coalesce(jsonb_agg(to_jsonb(session_row) \
++              ORDER BY session_row.namespace_id,session_row.subject,session_row.id),'[]'::jsonb) \
++              FROM worker_sessions session_row WHERE session_row.tenant_id=$1), \
++            'memberships',(SELECT coalesce(jsonb_agg(to_jsonb(member_row) \
++              ORDER BY member_row.subject),'[]'::jsonb) \
++              FROM memberships member_row WHERE member_row.tenant_id=$1))",
++    )
++    .bind(platform.tenant.as_uuid())
++    .fetch_one(&platform.api.db.pool)
++    .await
++    .expect("complete tenant worker authority snapshot")
+ }
+ 
++async fn exact_binding_updated_at(platform: &Platform, namespace: Uuid) -> time::OffsetDateTime {
++    sqlx::query_scalar(
++        "SELECT updated_at FROM worker_bindings \
++          WHERE tenant_id=$1 AND namespace_id=$2 AND subject='scope-worker' AND pattern=$3",
++    )
++    .bind(platform.tenant.as_uuid())
++    .bind(namespace)
++    .bind(ACTIVITY)
++    .fetch_one(&platform.api.db.pool)
++    .await
++    .expect("exact retained binding update time")
++}
++
++fn authority_narrowing_is_exact(
++    before: &Value,
++    after: &Value,
++    namespace: Uuid,
++    removed_session: Uuid,
++) -> bool {
++    let namespace = namespace.to_string();
++    let removed_session = removed_session.to_string();
++    let Some(before_bindings) = before["bindings"].as_array() else {
++        return false;
++    };
++    let Some(after_bindings) = after["bindings"].as_array() else {
++        return false;
++    };
++    let binding_is_target = |row: &&Value| {
++        row["namespace_id"].as_str() == Some(namespace.as_str())
++            && row["subject"].as_str() == Some("scope-worker")
++    };
++    let before_target_bindings: Vec<&Value> = before_bindings
++        .iter()
++        .filter(|row| binding_is_target(row))
++        .collect();
++    let after_target_bindings: Vec<&Value> = after_bindings
++        .iter()
++        .filter(|row| binding_is_target(row))
++        .collect();
++    let before_other_bindings: Vec<&Value> = before_bindings
++        .iter()
++        .filter(|row| !binding_is_target(row))
++        .collect();
++    let after_other_bindings: Vec<&Value> = after_bindings
++        .iter()
++        .filter(|row| !binding_is_target(row))
++        .collect();
++    if before_target_bindings.len() != 2
++        || after_target_bindings.len() != 1
++        || before_other_bindings != after_other_bindings
++    {
++        return false;
++    }
++
++    let Some(before_sessions) = before["sessions"].as_array() else {
++        return false;
++    };
++    let Some(after_sessions) = after["sessions"].as_array() else {
++        return false;
++    };
++    let session_is_target = |row: &&Value| row["id"].as_str() == Some(removed_session.as_str());
++    let before_target_sessions: Vec<&Value> =
++        before_sessions
++            .iter()
++            .filter(|row| session_is_target(row))
++            .collect();
++    let after_target_sessions: Vec<&Value> =
++        after_sessions
++            .iter()
++            .filter(|row| session_is_target(row))
++            .collect();
++    let before_other_sessions: Vec<&Value> = before_sessions
++        .iter()
++        .filter(|row| !session_is_target(row))
++        .collect();
++    let after_other_sessions: Vec<&Value> = after_sessions
++        .iter()
++        .filter(|row| !session_is_target(row))
++        .collect();
++    before_target_sessions.len() == 1
++        && after_target_sessions.is_empty()
++        && before_other_sessions == after_other_sessions
++        && before["bindingPools"] == after["bindingPools"]
++        && before["memberships"] == after["memberships"]
++}
++
+ fn restore_native_expiry_fields(snapshot: &mut Value, step: Uuid, original: &Value) {
+     let step = step.to_string();
+     let target = snapshot["steps"]
+@@ -1170,6 +1278,7 @@
+         "one registered session must advertise both exact activities and no pools"
+     );
+     let session = sessions_before[0].0;
++    let authority_before = worker_authority_snapshot(&platform).await;
+     let binding_before = binding_rows(&platform, namespace_id).await;
+     assert!(
+         binding_before
+@@ -1302,6 +1411,12 @@
+         assert!(
+             binding_after == vec![(ACTIVITY.to_owned(), "alice".to_owned())],
+             "the current binding must retain only the report activity"
++        );
++        let binding_updated_at = exact_binding_updated_at(&platform, namespace_id).await;
++        assert!(
++            binding_updated_at >= replacement_started_at
++                && binding_updated_at <= replacement_finished_at,
++            "the retained binding metadata timestamp must belong to the public replacement request"
+         );
+         let binding_bytes_after = binding_physical_bytes(&platform, namespace_id).await;
+         let binding_delta = binding_bytes_after - binding_bytes_before;
+@@ -1325,6 +1440,16 @@
+             sessions_after.is_empty(),
+             "only the identified incompatible worker session must be removed"
+         );
++        let authority_after = worker_authority_snapshot(&platform).await;
++        assert!(
++            authority_narrowing_is_exact(
++                &authority_before,
++                &authority_after,
++                namespace_id,
++                session,
++            ),
++            "the public replacement must preserve every other complete tenant authority row and remove only the identified session"
++        );
+ 
+         let retained_after = retained_usage(&platform).await;
+         assert!(
+@@ -1411,6 +1536,7 @@
+             pools_after,
+             membership_after,
+             secret_catalog_after,
++            authority_after,
+         )
+     };
+     tokio::pin!(observe_and_narrow);
+@@ -1434,6 +1560,7 @@
+         pools_after,
+         membership_after,
+         secret_catalog_after,
++        authority_after,
+     ) = mutation;
+     assert!(
+         refusal_snapshot(&platform, run, &[], 0).await == post_mutation_raw,
+@@ -1451,6 +1578,10 @@
+             && secret_catalog_snapshot(&platform, namespace_id).await == secret_catalog_after,
+         "the stale report must preserve the exact current binding, pools, membership and secret catalog"
+     );
++    assert!(
++        worker_authority_snapshot(&platform).await == authority_after,
++        "the stale report must preserve the raw complete postmutation binding and session authority snapshot"
++    );
+     let final_lease = refusal_lease_fence(&platform, run, step).await;
+     assert!(
+         final_lease.lease_expires_at <= final_lease.database_time

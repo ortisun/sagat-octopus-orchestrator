@@ -1,0 +1,19 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "integration_workflow_primitives",
+    "refusal_secret_versions::a_scanned_output_refusal_rechecks_the_original_lease_after_path_drop",
+    "--",
+    "--exact",
+    "--nocapture"
+  ],
+  "exit_code": 0,
+  "seconds": 51.91,
+  "started_utc": "2026-10-18T22:44:45.394737+00:00",
+  "log": "focused-default.txt"
+}

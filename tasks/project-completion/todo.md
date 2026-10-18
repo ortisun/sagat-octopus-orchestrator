@@ -223,6 +223,7 @@ See evidence/leaf-certification-process-20261018. Other producer/observation/rel
 - [x] B1b.2c.1d.0Q7b.1: Prove post-root/pre-scoped report rollback and later drain-outbox rollback separately, with same-key retry and real compensation; e51b3390, evidence/refusal-transaction-faults-20261018.
 - [x] B1b.2c.1d.0Q7b.2: Prove native binding revocation at actual full restoration rejects NOT_BOUND with exact binding quota/audit delta and only the mandatory traced denial audit;3a9f8c4f, evidence/refusal-fresh-binding-20261018.
 - [x] B1b.2c.1d.0Q7b.3: Prove actual OpenBao public version rotation rejects the stale scanned vector without execution effects; original-key/lease retry and replay pass with exact provider catalog/audit/quota oracles;8d07b0d3, evidence/refusal-secret-versions-20261018.
+- [x] B1b.2c.1d.0Q7b.4: Prove actual native expiry of the original scanned inline lease while its activity stays bound; exact post-mutation execution and complete authority remain unchanged after STALE_ATTEMPT. Evidence/refusal-current-lease-20261018; generation/terminal/pre-begin controls remain separate.
 - [ ] B1b.2c.1d.0Q10c: Complete genuine old in-flight compatibility: both byte conditions/orderings, cancellation precedence, Applied, output-dependent old worker and post-ACK process/uncertain-COMMIT controls. No external-provider undo guarantee is inferred.
 - [x] B1b.2c.1d.0Q10c.1: Prove ordinary E>limit report-before-drain through separate immutable-old/current processes with original worker/session/lease/request, owner and actual sagat_app, exact receipt/replay and real compensation;f026e928, evidence/legacy-inflight-ordinary-v1-20261018.
 - [x] B1b.2c.1d.0Q10c.2: Prove ordinary E>limit drain-before-report with a still-live cancellation-requested lease and unchanged first stop/drain; four old/current phases pass, plus four default report-first regression phases. Evidence/legacy-inflight-drain-first-20261018; cancellation-first remains a separate pending companion.
@@ -365,3 +366,17 @@ all four phases147.54s. Strict Clippy/fmt/architecture and1125 identical source 
 Evidence: `tasks/project-completion/evidence/legacy-inflight-drain-first-20261018/README.md`.
 Only ordinary E>limit ordering is accepted; cancellation-first, other byte condition, Applied,
 cold-process/uncertain-COMMIT and full Q10c/canonical014 release gates remain open.
+
+
+### Current scanned original-lease expiry — 2026-10-18
+
+Actual public binding narrowing preserves the report activity but natively closes its incompatible
+session and expires the original lease while full checkpoint restoration remains observed blocked.
+After release, the scanned inline report returns Aborted/STALE_ATTEMPT with raw post-mutation
+execution and complete tenant authority unchanged. Exact quota/audit/expiry-only deltas, original
+natural-expiry control, checkpoint/catalog preservation, no refusal/receipt/outbox/head effect,
+cold journal reconstruction and log redaction pass. Final focused1/1 default/runtime, both actual
+sagat_app; strict Clippy/fmt/architecture and1125 identical source inputs.
+Evidence: `tasks/project-completion/evidence/refusal-current-lease-20261018/README.md`.
+One fixture registration-order failure is preserved. This proves current lease expiry after path
+drop inside full restore, not a literal pre-begin/generation/terminal race or full Q7b closure.

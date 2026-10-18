@@ -1,0 +1,658 @@
+--- a/tests/integration/workflow-primitives/refusal_secret_versions.rs
++++ b/tests/integration/workflow-primitives/refusal_secret_versions.rs
+@@ -513,8 +513,165 @@
+     assert_eq!(state.6, 1);
+     assert_eq!(state.7, 1);
+     assert_eq!(state.8, 1);
++}
++
++#[derive(sqlx::FromRow)]
++struct RefusalLeaseFence {
++    status: String,
++    lease_token_hash: Vec<u8>,
++    attempt: i32,
++    generation: i64,
++    leased_by: String,
++    lease_expires_at: time::OffsetDateTime,
++    updated_at: time::OffsetDateTime,
++    cancel_requested: bool,
++    output_absent: bool,
++    reported_lease_absent: bool,
++    database_time: time::OffsetDateTime,
++}
++
++#[derive(sqlx::FromRow)]
++struct BindingAuditWitness {
++    id: Uuid,
++    tenant_id: Uuid,
++    actor: String,
++    action: String,
++    resource_type: String,
++    resource_id: String,
++    reason: Option<String>,
++    trace_id: Option<String>,
++    created_at: time::OffsetDateTime,
++}
++
++async fn refusal_lease_fence(platform: &Platform, run: Uuid, step: Uuid) -> RefusalLeaseFence {
++    sqlx::query_as(
++        "SELECT status,lease_token_hash,attempt,generation,leased_by,lease_expires_at,updated_at, \
++                cancel_requested,output_digest IS NULL AS output_absent, \
++                reported_lease_token_hash IS NULL AS reported_lease_absent, \
++                clock_timestamp() AS database_time \
++           FROM steps WHERE tenant_id=$1 AND run_id=$2 AND step_id=$3 \
++             AND instance_path_nodes=ARRAY['lines']::text[] \
++             AND instance_path_indices=ARRAY[16]::integer[] AND node='reserve'",
++    )
++    .bind(platform.tenant.as_uuid())
++    .bind(run)
++    .bind(step)
++    .fetch_one(&platform.api.db.pool)
++    .await
++    .expect("exact seventeenth lease fence")
++}
++
++async fn exact_step_row(platform: &Platform, run: Uuid, step: Uuid) -> Value {
++    sqlx::query_scalar(
++        "SELECT to_jsonb(step) FROM steps step \
++          WHERE step.tenant_id=$1 AND step.run_id=$2 AND step.step_id=$3",
++    )
++    .bind(platform.tenant.as_uuid())
++    .bind(run)
++    .bind(step)
++    .fetch_one(&platform.api.db.pool)
++    .await
++    .expect("exact seventeenth step row")
++}
++
++async fn checkpoint_snapshot(platform: &Platform, run: Uuid) -> Value {
++    sqlx::query_scalar(
++        "SELECT coalesce(jsonb_agg(to_jsonb(checkpoint) \
++                  ORDER BY checkpoint.scope_id,checkpoint.iteration_index),'[]'::jsonb) \
++           FROM iteration_checkpoints checkpoint \
++          WHERE checkpoint.tenant_id=$1 AND checkpoint.run_id=$2",
++    )
++    .bind(platform.tenant.as_uuid())
++    .bind(run)
++    .fetch_one(&platform.api.db.pool)
++    .await
++    .expect("exact iteration checkpoint snapshot")
++}
++
++async fn binding_rows(platform: &Platform, namespace: Uuid) -> Vec<(String, String)> {
++    sqlx::query_as(
++        "SELECT pattern,updated_by FROM worker_bindings \
++          WHERE tenant_id=$1 AND namespace_id=$2 AND subject='scope-worker' ORDER BY pattern",
++    )
++    .bind(platform.tenant.as_uuid())
++    .bind(namespace)
++    .fetch_all(&platform.api.db.pool)
++    .await
++    .expect("exact scope-worker binding rows")
+ }
+ 
++async fn binding_physical_bytes(platform: &Platform, namespace: Uuid) -> i64 {
++    sqlx::query_scalar(
++        "SELECT coalesce(sum((octet_length(pattern)+octet_length(subject))::bigint),0)::bigint \
++           FROM worker_bindings \
++          WHERE tenant_id=$1 AND namespace_id=$2 AND subject='scope-worker'",
++    )
++    .bind(platform.tenant.as_uuid())
++    .bind(namespace)
++    .fetch_one(&platform.api.db.pool)
++    .await
++    .expect("exact scope-worker binding bytes")
++}
++
++async fn binding_pool_snapshot(platform: &Platform, namespace: Uuid) -> Value {
++    sqlx::query_scalar(
++        "SELECT coalesce(jsonb_agg(to_jsonb(pool_row) ORDER BY pool_row.pool),'[]'::jsonb) \
++           FROM worker_binding_pools pool_row \
++          WHERE pool_row.tenant_id=$1 AND pool_row.namespace_id=$2 \
++            AND pool_row.subject='scope-worker'",
++    )
++    .bind(platform.tenant.as_uuid())
++    .bind(namespace)
++    .fetch_one(&platform.api.db.pool)
++    .await
++    .expect("exact scope-worker pool rows")
++}
++
++async fn worker_membership_snapshot(platform: &Platform) -> Value {
++    sqlx::query_scalar(
++        "SELECT to_jsonb(member) FROM memberships member \
++          WHERE member.tenant_id=$1 AND member.subject='scope-worker'",
++    )
++    .bind(platform.tenant.as_uuid())
++    .fetch_one(&platform.api.db.pool)
++    .await
++    .expect("exact scope-worker membership")
++}
++
++async fn worker_session_witness(
++    platform: &Platform,
++    namespace: Uuid,
++) -> Vec<(Uuid, Vec<String>, Vec<String>)> {
++    sqlx::query_as(
++        "SELECT id,activities,pools FROM worker_sessions \
++          WHERE tenant_id=$1 AND namespace_id=$2 AND subject='scope-worker' ORDER BY id",
++    )
++    .bind(platform.tenant.as_uuid())
++    .bind(namespace)
++    .fetch_all(&platform.api.db.pool)
++    .await
++    .expect("exact scope-worker sessions")
++}
++
++fn restore_native_expiry_fields(snapshot: &mut Value, step: Uuid, original: &Value) {
++    let step = step.to_string();
++    let target = snapshot["steps"]
++        .as_array_mut()
++        .expect("snapshot step rows")
++        .iter_mut()
++        .find(|row| row["step_id"].as_str() == Some(step.as_str()))
++        .expect("seventeenth snapshot step");
++    target["lease_expires_at"] = original["lease_expires_at"].clone();
++    target["updated_at"] = original["updated_at"].clone();
++}
++
++fn only_native_expiry_fields_changed(after: &Value, before: &Value) -> bool {
++    let mut normalized = after.clone();
++    normalized["lease_expires_at"] = before["lease_expires_at"].clone();
++    normalized["updated_at"] = before["updated_at"].clone();
++    &normalized == before
++}
++
+ #[tokio::test(flavor = "current_thread")]
+ async fn a_scoped_refusal_rechecks_openbao_versions_after_its_path_check() {
+     let provider_token = Uuid::now_v7().to_string();
+@@ -835,3 +992,489 @@
+         "captured logs must not contain the second secret value"
+     );
+ }
++
++#[tokio::test(flavor = "current_thread")]
++async fn a_scanned_output_refusal_rechecks_the_original_lease_after_path_drop() {
++    let provider_token = Uuid::now_v7().to_string();
++    let openbao = GenericImage::new("openbao/openbao", "2.7.1")
++        .with_wait_for(WaitFor::message_on_stdout(
++            "Development mode should NOT be used in production",
++        ))
++        .with_exposed_port(8200.into())
++        .with_env_var("BAO_DEV_ROOT_TOKEN_ID", provider_token.clone())
++        .with_cmd(["server", "-dev", "-dev-listen-address=0.0.0.0:8200"])
++        .start()
++        .await
++        .expect("real OpenBao");
++    let port = openbao
++        .get_host_port_ipv4(8200)
++        .await
++        .expect("OpenBao port");
++    let credential_directory = tempfile::tempdir().expect("private provider credential directory");
++    let token_file = credential_directory.path().join("token");
++    std::fs::write(&token_file, provider_token).expect("private provider credential");
++    let provider: Arc<dyn SecretProvider> = Arc::new(
++        OpenBao::new(OpenBaoConfig {
++            address: format!("http://127.0.0.1:{port}"),
++            mount: "secret".into(),
++            token_file,
++            timeout: Duration::from_secs(5),
++            development_loopback: true,
++            ca_pem: None,
++        })
++        .expect("official OpenBao adapter"),
++    );
++    let platform = platform_with(Options {
++        runtime_role: true,
++        statement_timeout: Duration::from_secs(30),
++        secret_provider: Some(provider),
++        ..Options::default()
++    })
++    .await;
++    let namespace = platform.namespace_id().await;
++    let namespace_id = Uuid::parse_str(&namespace).expect("namespace id");
++    let secret_value = format!("current-lease-{}", Uuid::now_v7());
++    let (_log_guard, logs) = crate::support::logs::capture_at(tracing::Level::TRACE);
++    let secret_response = put_secret(
++        &platform,
++        &namespace,
++        &secret_value,
++        0,
++        Uuid::now_v7(),
++    )
++    .await;
++    assert!(
++        secret_response["version"] == 1,
++        "the public managed secret must begin at version one"
++    );
++
++    let (quota_status, _) = platform
++        .rest(
++            Method::PUT,
++            "/quotas/iteration_concurrency",
++            Some(&json!({"limit": 4})),
++        )
++        .await;
++    assert_eq!(quota_status, 200);
++    let name = format!("refusal-current-lease-{}", Uuid::now_v7());
++    let workflow = platform.publish(&name, &refusal_document(&name)).await;
++    let run: Uuid = platform
++        .start(
++            &workflow,
++            &json!({"lines": (0_u32..17).collect::<Vec<_>>() }),
++        )
++        .await
++        .parse()
++        .expect("run id");
++    let scheduler = scheduler(&platform, None).await;
++    let mut worker = scoped_worker(&platform, "scope-worker", &[ACTIVITY, "line.release"]).await;
++
++    let (setup_status, setup_binding) = platform
++        .rest(
++            Method::PUT,
++            &format!("/namespaces/{namespace}/worker-bindings/scope-worker"),
++            Some(&json!({"activities":[ACTIVITY,"line.release"]})),
++        )
++        .await;
++    assert_eq!(setup_status, 200);
++    assert!(
++        setup_binding["subject"] == "scope-worker"
++            && setup_binding["activities"] == json!(["line.release", ACTIVITY])
++            && setup_binding["pools"] == json!([])
++            && setup_binding["revoked"]["sessionsClosed"] == 0
++            && setup_binding["revoked"]["leasesReleased"] == 0,
++        "the initial public binding must normalize both advertised activities without revocation"
++    );
++
++    let output = refused_member_output();
++    assert!(
++        !output.to_string().contains(&secret_value),
++        "the report body must not contain the managed secret value"
++    );
++    for index in 0_u32..16 {
++        drive(&scheduler).await;
++        let tasks = worker.poll(8).await;
++        assert_eq!(tasks.len(), 1);
++        let task = &tasks[0];
++        let instance = task.instance.as_ref().expect("scoped task identity");
++        assert!(
++            instance.definition_node_id == "reserve"
++                && instance.instance_path.len() == 1
++                && instance.instance_path[0].iteration_index == index,
++            "the public producer must lease the expected bounded member"
++        );
++        let accepted = worker
++            .complete(task, &output)
++            .await
++            .expect("a real bounded member report");
++        assert!(
++            accepted.step_status == "SUCCEEDED",
++            "each retained producer member must succeed"
++        );
++    }
++    drive(&scheduler).await;
++    let mut tasks = worker.poll(8).await;
++    assert_eq!(tasks.len(), 1);
++    let seventeenth = tasks.remove(0);
++    let seventeenth_instance = seventeenth
++        .instance
++        .as_ref()
++        .expect("seventeenth scoped identity");
++    assert!(
++        seventeenth_instance.definition_node_id == "reserve"
++            && seventeenth_instance.instance_path.len() == 1
++            && seventeenth_instance.instance_path[0].iteration_index == 16,
++        "the held report must be the original seventeenth member"
++    );
++    let step = Uuid::parse_str(&seventeenth.step_id).expect("seventeenth step id");
++    let premises: (i64, i64, String, i64, String) = sqlx::query_as(
++        "SELECT (SELECT count(*) FROM iteration_checkpoints checkpoint \
++                  WHERE checkpoint.tenant_id=scope.tenant_id AND checkpoint.run_id=scope.run_id), \
++                usage.logical_output_bytes,scope.lifecycle, \
++                (SELECT count(*) FROM collection_iterations member \
++                  WHERE member.tenant_id=scope.tenant_id AND member.run_id=scope.run_id \
++                    AND member.scope_id=scope.scope_id),step.status \
++           FROM iteration_scopes scope JOIN run_instance_usage usage \
++             ON usage.tenant_id=scope.tenant_id AND usage.run_id=scope.run_id \
++           JOIN steps step ON step.tenant_id=scope.tenant_id AND step.run_id=scope.run_id \
++          WHERE scope.tenant_id=$1 AND scope.run_id=$2 AND scope.owner_node='lines' \
++            AND step.step_id=$3 AND step.instance_path_nodes=ARRAY['lines']::text[] \
++            AND step.instance_path_indices=ARRAY[16]::integer[] AND step.node='reserve'",
++    )
++    .bind(platform.tenant.as_uuid())
++    .bind(run)
++    .bind(step)
++    .fetch_one(&platform.api.db.pool)
++    .await
++    .expect("the public collection reached its seventeenth member");
++    assert!(
++        premises.0 == 16
++            && premises.1 == 4_000_000
++            && premises.2 == "OPEN"
++            && premises.3 == 17
++            && premises.4 == "LEASED",
++        "the exact public refusal premise must be present"
++    );
++    assert!(
++        usize::try_from(premises.1).expect("nonnegative retained output bytes")
++            + output.to_string().len()
++            > 4_194_304,
++        "the seventeenth report must exceed the exact run output ceiling"
++    );
++
++    let sessions_before = worker_session_witness(&platform, namespace_id).await;
++    assert!(
++        sessions_before.len() == 1
++            && sessions_before[0].1 == vec![ACTIVITY.to_owned(), "line.release".to_owned()]
++            && sessions_before[0].2.is_empty(),
++        "one registered session must advertise both exact activities and no pools"
++    );
++    let session = sessions_before[0].0;
++    let binding_before = binding_rows(&platform, namespace_id).await;
++    assert!(
++        binding_before
++            == vec![
++                ("line.release".to_owned(), "alice".to_owned()),
++                (ACTIVITY.to_owned(), "alice".to_owned()),
++            ],
++        "the normalized public binding must contain both exact activities"
++    );
++    let binding_bytes_before = binding_physical_bytes(&platform, namespace_id).await;
++    let pools_before = binding_pool_snapshot(&platform, namespace_id).await;
++    let membership_before = worker_membership_snapshot(&platform).await;
++    assert!(
++        membership_before["role"] == "worker",
++        "scope-worker must retain Worker membership"
++    );
++    let secret_catalog_before = secret_catalog_snapshot(&platform, namespace_id).await;
++    let retained_before = retained_usage(&platform).await;
++    let lease_before = refusal_lease_fence(&platform, run, step).await;
++    assert!(
++        lease_before.status == "LEASED"
++            && lease_before.lease_token_hash == Token::hash_of(&seventeenth.lease_token)
++            && lease_before.attempt == seventeenth.attempt
++            && lease_before.generation == seventeenth.generation
++            && lease_before.leased_by == session.to_string()
++            && lease_before.lease_expires_at > lease_before.database_time
++            && !lease_before.cancel_requested
++            && lease_before.output_absent
++            && lease_before.reported_lease_absent,
++        "the original public lease must be exact, live, uncancelled and unreported"
++    );
++    let step_before = exact_step_row(&platform, run, step).await;
++    let checkpoints_before = checkpoint_snapshot(&platform, run).await;
++    let before_report = refusal_snapshot(&platform, run, &[], 0).await;
++
++    let key = format!("done-{}", seventeenth.task_id);
++    // Iterations reuse task_id; the full receipt address distinguishes this member and lease.
++    let token_prefix = Token::hash_of(&seventeenth.lease_token)
++        .iter()
++        .take(8)
++        .map(|byte| format!("{byte:02x}"))
++        .collect::<String>();
++    let scope = format!("step:{run}:scoped:5:lines:16;7:reserve:{token_prefix}");
++
++    let mut gate = platform
++        .api
++        .db
++        .pool
++        .begin()
++        .await
++        .expect("owned checkpoint table gate");
++    let gate_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
++        .fetch_one(&mut *gate)
++        .await
++        .expect("checkpoint table gate pid");
++    sqlx::query("LOCK TABLE public.iteration_checkpoints IN ACCESS EXCLUSIVE MODE")
++        .execute(&mut *gate)
++        .await
++        .expect("hold exact full-restore table gate");
++
++    let reporting = worker.complete(&seventeenth, &output);
++    tokio::pin!(reporting);
++    let observe_and_narrow = async {
++        let report_pid = waiting_full_checkpoint_restore(&platform, gate_pid).await;
++        assert_ne!(report_pid, gate_pid);
++        assert!(
++            refusal_snapshot(&platform, run, &[], 0).await == before_report,
++            "the blocked report must preserve the complete pre-report snapshot"
++        );
++        assert_no_refusal_effect(&platform, run, &key, &scope).await;
++        let still_live = refusal_lease_fence(&platform, run, step).await;
++        assert!(
++            still_live.lease_expires_at == lease_before.lease_expires_at
++                && still_live.updated_at == lease_before.updated_at
++                && still_live.lease_expires_at > still_live.database_time,
++            "the exact original lease must remain unchanged and live before binding replacement"
++        );
++        assert!(
++            still_waiting_full_checkpoint_restore(&platform, gate_pid, report_pid).await,
++            "the exact named runtime PID must remain blocked before binding replacement"
++        );
++
++        let replacement_started_at = time::OffsetDateTime::now_utc();
++        let (status, trace_id, body, replacement_finished_at) =
++            tokio::time::timeout(Duration::from_secs(5), async {
++                let response = platform
++                    .api
++                    .as_user(
++                        Method::PUT,
++                        &format!("/namespaces/{namespace}/worker-bindings/scope-worker"),
++                        "alice",
++                        "acme",
++                    )
++                    .json(&json!({"activities":[ACTIVITY]}))
++                    .send()
++                    .await
++                    .expect("actual binding replacement request");
++                let status = response.status();
++                let trace_id = response
++                    .headers()
++                    .get("x-trace-id")
++                    .and_then(|value| value.to_str().ok())
++                    .expect("native binding response trace id")
++                    .to_owned();
++                let body: Value = response.json().await.expect("binding replacement response");
++                (
++                    status,
++                    trace_id,
++                    body,
++                    time::OffsetDateTime::now_utc(),
++                )
++            })
++            .await
++            .expect("binding replacement must complete while the report PID is blocked");
++        assert!(
++            status == reqwest::StatusCode::OK
++                && body["subject"] == "scope-worker"
++                && body["activities"] == json!([ACTIVITY])
++                && body["pools"] == json!([])
++                && body["revoked"]["sessionsClosed"] == 1
++                && body["revoked"]["leasesReleased"] == 1,
++            "the public replacement must narrow activity and report one nested session and lease revocation"
++        );
++        assert!(
++            still_waiting_full_checkpoint_restore(&platform, gate_pid, report_pid).await,
++            "the same named runtime PID must stay blocked through public binding replacement"
++        );
++
++        let binding_after = binding_rows(&platform, namespace_id).await;
++        assert!(
++            binding_after == vec![(ACTIVITY.to_owned(), "alice".to_owned())],
++            "the current binding must retain only the report activity"
++        );
++        let binding_bytes_after = binding_physical_bytes(&platform, namespace_id).await;
++        let binding_delta = binding_bytes_after - binding_bytes_before;
++        let pools_after = binding_pool_snapshot(&platform, namespace_id).await;
++        let membership_after = worker_membership_snapshot(&platform).await;
++        let secret_catalog_after = secret_catalog_snapshot(&platform, namespace_id).await;
++        assert!(
++            pools_after == pools_before,
++            "binding replacement must preserve the exact worker pool rows"
++        );
++        assert!(
++            membership_after == membership_before,
++            "binding replacement must preserve the complete Worker membership"
++        );
++        assert!(
++            secret_catalog_after == secret_catalog_before,
++            "binding replacement must preserve the complete managed secret catalog"
++        );
++        let sessions_after = worker_session_witness(&platform, namespace_id).await;
++        assert!(
++            sessions_after.is_empty(),
++            "only the identified incompatible worker session must be removed"
++        );
++
++        let retained_after = retained_usage(&platform).await;
++        assert!(
++            retained_after.0 == retained_before.0 + binding_delta
++                && retained_after.1 == retained_before.1
++                && retained_after.2 == retained_before.2,
++            "the retained quota ledger must apply only the exact binding byte delta"
++        );
++
++        let lease_after = refusal_lease_fence(&platform, run, step).await;
++        assert!(
++            lease_after.status == lease_before.status
++                && lease_after.lease_token_hash == lease_before.lease_token_hash
++                && lease_after.attempt == lease_before.attempt
++                && lease_after.generation == lease_before.generation
++                && lease_after.leased_by == lease_before.leased_by
++                && lease_after.cancel_requested == lease_before.cancel_requested
++                && lease_after.output_absent == lease_before.output_absent
++                && lease_after.reported_lease_absent == lease_before.reported_lease_absent,
++            "native binding replacement must preserve every non-time lease and report fact"
++        );
++        assert!(
++            lease_after.lease_expires_at <= lease_after.database_time
++                && lease_after.lease_expires_at < lease_before.lease_expires_at
++                && lease_before.lease_expires_at > lease_after.database_time
++                && lease_after.updated_at >= lease_before.updated_at,
++            "native replacement alone must expire the still-naturally-live original lease"
++        );
++        let step_after = exact_step_row(&platform, run, step).await;
++        assert!(
++            only_native_expiry_fields_changed(&step_after, &step_before),
++            "only native lease expiry and update time may change on the held step"
++        );
++
++        let mut audits: Vec<BindingAuditWitness> = sqlx::query_as(
++            "SELECT id,tenant_id,actor,action,resource_type,resource_id,reason,trace_id,created_at \
++               FROM audit_records WHERE tenant_id=$1 AND trace_id=$2 ORDER BY id",
++        )
++        .bind(platform.tenant.as_uuid())
++        .bind(&trace_id)
++        .fetch_all(&platform.api.db.pool)
++        .await
++        .expect("trace-bound binding audit");
++        assert!(
++            audits.len() == 1,
++            "the public binding replacement must append exactly one trace-bound audit"
++        );
++        let audit = audits.pop().expect("one trace-bound binding audit");
++        assert!(
++            audit.id != Uuid::nil()
++                && audit.tenant_id == platform.tenant.as_uuid()
++                && audit.actor == "alice"
++                && audit.action == "worker.bound"
++                && audit.resource_type == "worker_binding"
++                && audit.resource_id == namespace
++                && audit.reason.as_deref() == Some("scope-worker: line.reserve")
++                && audit.trace_id.as_deref() == Some(trace_id.as_str())
++                && audit.created_at >= replacement_started_at
++                && audit.created_at <= replacement_finished_at,
++            "the native worker.bound audit must have the exact identity, grant, trace and request bounds"
++        );
++
++        let post_mutation_raw = refusal_snapshot(&platform, run, &[], 0).await;
++        let mut normalized =
++            refusal_snapshot(&platform, run, &[audit.id], binding_delta).await;
++        restore_native_expiry_fields(&mut normalized, step, &step_before);
++        assert!(
++            normalized == before_report,
++            "the verified binding, session, expiry, audit and physical-byte changes must be the complete mutation delta"
++        );
++        assert_no_refusal_effect(&platform, run, &key, &scope).await;
++        assert!(
++            still_waiting_full_checkpoint_restore(&platform, gate_pid, report_pid).await,
++            "the exact named runtime PID must remain blocked immediately before gate release"
++        );
++        gate.rollback()
++            .await
++            .expect("release only the owned checkpoint table gate");
++        (
++            post_mutation_raw,
++            audit.id,
++            binding_delta,
++            binding_after,
++            pools_after,
++            membership_after,
++            secret_catalog_after,
++        )
++    };
++    tokio::pin!(observe_and_narrow);
++    let (reported, mutation) = tokio::time::timeout(Duration::from_secs(15), async {
++        tokio::join!(&mut reporting, &mut observe_and_narrow)
++    })
++    .await
++    .expect("the original report and public binding replacement must finish");
++    let stale = match reported {
++        Err(stale) => stale,
++        Ok(_) => panic!("the natively expired original lease must be rejected"),
++    };
++    assert_eq!(stale.code(), tonic::Code::Aborted);
++    assert_eq!(machine_code(&stale), "STALE_ATTEMPT");
++
++    let (
++        post_mutation_raw,
++        _binding_audit,
++        _binding_delta,
++        binding_after,
++        pools_after,
++        membership_after,
++        secret_catalog_after,
++    ) = mutation;
++    assert!(
++        refusal_snapshot(&platform, run, &[], 0).await == post_mutation_raw,
++        "the stale report must add no execution, payload, usage, receipt, audit, outbox or head effect"
++    );
++    assert!(
++        checkpoint_snapshot(&platform, run).await == checkpoints_before,
++        "the stale report must preserve every real producer checkpoint"
++    );
++    assert_no_refusal_effect(&platform, run, &key, &scope).await;
++    assert!(
++        binding_rows(&platform, namespace_id).await == binding_after
++            && binding_pool_snapshot(&platform, namespace_id).await == pools_after
++            && worker_membership_snapshot(&platform).await == membership_after
++            && secret_catalog_snapshot(&platform, namespace_id).await == secret_catalog_after,
++        "the stale report must preserve the exact current binding, pools, membership and secret catalog"
++    );
++    let final_lease = refusal_lease_fence(&platform, run, step).await;
++    assert!(
++        final_lease.lease_expires_at <= final_lease.database_time
++            && final_lease.status == "LEASED"
++            && final_lease.reported_lease_absent,
++        "the rejected report must leave the original lease expired and unreported"
++    );
++
++    let cold_store = PgRunStore::new(
++        platform.api.api_pool.clone(),
++        DefinitionCache::new(Arc::new(JsonIrCodec), 64),
++    )
++    .with_scoped_worker_protocol();
++    let cold_verification = cold_store
++        .verify_run(platform.tenant, RunId::new(run))
++        .await;
++    assert!(
++        cold_verification.is_ok(),
++        "a fresh store and definition cache must rebuild the untouched journal"
++    );
++
++    let captured = logs.text();
++    assert!(
++        !captured.contains(&secret_value),
++        "captured logs must not contain the managed secret value"
++    );
++}

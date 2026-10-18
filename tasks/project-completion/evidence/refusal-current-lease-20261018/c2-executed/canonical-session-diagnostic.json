@@ -1,0 +1,12 @@
+{
+  "command": [
+    "/opt/homebrew/bin/psql",
+    "postgres://postgres@127.0.0.1:65117/t_01a1512f67e07496aac888f8144d82df",
+    "-Atc",
+    "SELECT activities,pools FROM worker_sessions WHERE subject='scope-worker'"
+  ],
+  "exit_code": 0,
+  "seconds": 0.03,
+  "started_utc": "2026-10-18T22:45:06.839870+00:00",
+  "log": "canonical-session-diagnostic.txt"
+}

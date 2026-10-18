@@ -1,0 +1,22 @@
+[
+  {
+    "file": "sagat-refusal-current-lease.patch",
+    "sha256": "1e2f03b508dfabba49585b14a8c55af1c7ffc552bc4c65b7f36fd15c7d089406"
+  },
+  {
+    "file": "sagat-refusal-current-lease.NOTES.md",
+    "sha256": "8f5b205854a28aed10ab6aef58b8b5b80122cd7dcf71ffc35d77a272d0bbdd92"
+  },
+  {
+    "file": "sagat-refusal-current-lease-c2.patch",
+    "sha256": "53be8294e87d168789760187091c5f12f194290633282d9665b858fcae1b36ca"
+  },
+  {
+    "file": "sagat-refusal-current-lease-c1-to-c2.delta.patch",
+    "sha256": "14dd7a50b51d46d7e8250710b5f964cd4bd34f0ea1cb321d6a753e237f27a4d0"
+  },
+  {
+    "file": "sagat-refusal-current-lease-c2.NOTES.md",
+    "sha256": "daea3e3a86ce25834b97d32b4e257378b5b60c82b41d4e8048c7f1d50990a2dc"
+  }
+]

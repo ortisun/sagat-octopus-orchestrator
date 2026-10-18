@@ -3412,3 +3412,17 @@ all four phases147.54s. Strict Clippy/fmt/architecture and1125 identical source 
 Evidence: `tasks/project-completion/evidence/legacy-inflight-drain-first-20261018/README.md`.
 Only ordinary E>limit ordering is accepted; cancellation-first, other byte condition, Applied,
 cold-process/uncertain-COMMIT and full Q10c/canonical014 release gates remain open.
+
+
+### Current scanned original-lease expiry — 2026-10-18
+
+Actual public binding narrowing preserves the report activity but natively closes its incompatible
+session and expires the original lease while full checkpoint restoration remains observed blocked.
+After release, the scanned inline report returns Aborted/STALE_ATTEMPT with raw post-mutation
+execution and complete tenant authority unchanged. Exact quota/audit/expiry-only deltas, original
+natural-expiry control, checkpoint/catalog preservation, no refusal/receipt/outbox/head effect,
+cold journal reconstruction and log redaction pass. Final focused1/1 default/runtime, both actual
+sagat_app; strict Clippy/fmt/architecture and1125 identical source inputs.
+Evidence: `tasks/project-completion/evidence/refusal-current-lease-20261018/README.md`.
+One fixture registration-order failure is preserved. This proves current lease expiry after path
+drop inside full restore, not a literal pre-begin/generation/terminal race or full Q7b closure.

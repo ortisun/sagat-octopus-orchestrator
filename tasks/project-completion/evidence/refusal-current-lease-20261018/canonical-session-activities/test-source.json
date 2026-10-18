@@ -1,0 +1,5 @@
+{
+  "source": "tests/integration/workflow-primitives/refusal_secret_versions.rs",
+  "sha256": "a1a512d91ef5dd562f943aa843025a43c643501dd679bc27f93893b066c790f7",
+  "snapshot": "test.rs.snapshot"
+}

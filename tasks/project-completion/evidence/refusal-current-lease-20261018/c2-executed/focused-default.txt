@@ -1,0 +1,19 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 45.76s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 1 test
+
+thread 'refusal_secret_versions::a_scanned_output_refusal_rechecks_the_original_lease_after_path_drop' (137332476) panicked at tests/integration/workflow-primitives/refusal_secret_versions.rs:1265:5:
+one registered session must advertise both exact activities and no pools
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test refusal_secret_versions::a_scanned_output_refusal_rechecks_the_original_lease_after_path_drop ... FAILED
+
+failures:
+
+failures:
+    refusal_secret_versions::a_scanned_output_refusal_rechecks_the_original_lease_after_path_drop
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 538 filtered out; finished in 6.19s
+
+error: test failed, to rerun pass `-p sagat-tests --test integration_workflow_primitives`
