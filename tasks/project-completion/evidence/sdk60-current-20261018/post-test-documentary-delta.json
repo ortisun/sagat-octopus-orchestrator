@@ -1,0 +1,12 @@
+[
+  {
+    "path": "specs/014-workflow-primitives/contracts/conformance.md",
+    "tested_sha256": "e92f892192f540ec38a9df86ffe8f9e7151e932f7e72aa74096fe16d3de4eb8f",
+    "documentary_sha256": "c2c17152b375ad0fb9f882b53ec9c598815c2859d62ad0ffe569a3ab7c66641e"
+  },
+  {
+    "path": "tests/contract/sdk-conformance/README.md",
+    "tested_sha256": "7d3c3df23f632c1af88164895719c5e7d76334cb3fb6b23923a0509193fcaeb2",
+    "documentary_sha256": "193da83e4a9b701c2aa0ec5d098e7689027b872628731e58cabf82a3194991bf"
+  }
+]

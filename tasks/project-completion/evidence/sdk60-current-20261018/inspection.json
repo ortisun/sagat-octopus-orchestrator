@@ -1,0 +1,23 @@
+{
+  "scenarios": 60,
+  "languages": [
+    "typescript",
+    "go",
+    "python",
+    "dotnet",
+    "java"
+  ],
+  "language_scenario_plays": 300,
+  "authoring_only_plays": 30,
+  "publication_only_plays": 5,
+  "live_workflow_protocol_plays": 265,
+  "normalized_complete_artifacts": 270,
+  "all_complete_results_equal_reviewed_goldens": true,
+  "all_1672_frozen_inputs_identical": true,
+  "harness_pid": "67300",
+  "execution_base": "6b34f227daa739cce16c05eddd96257bae61f6bd",
+  "documentary_head": "4f3b6ac0ead1162151e9c909d0de63331f63925f",
+  "native_compatibility_current_inputs_unchanged_since": "8d15bacc",
+  "native_compatibility_actual_evidence": "../scoped-finish-downgrade-20261018/compatibility.txt",
+  "previous_incomplete_full_run": "../sdk60-first-failure-20261018/manifest.json"
+}

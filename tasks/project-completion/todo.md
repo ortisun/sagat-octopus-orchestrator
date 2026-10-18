@@ -20,7 +20,8 @@ unchecked T016 task (64 at authorization). See [plan.md](plan.md).
 
 The authorization scope above is historical. T014-038 is now closed with its exact current
 five-SDK chain evidence; T014-004 is closed with its native ceilings, common cases and public
-HTTP rejection evidence (2026-10-18). Nine feature014 tasks remain unchecked. Feature016 has only T016-001
+HTTP rejection evidence (2026-10-18). T014-041 is closed by the current complete60 all-five aggregate and8 native compatibility tests.
+Eight feature014 tasks remain unchecked. Feature016 has only T016-001
 unchecked, explicitly closing on specification merge. This checklist does not override either
 canonical ledger. Scoped forward blob completion and runtime flat10k widths1/16/256 plus20k waits
 have new focused evidence; nested capacity/body planning and final integration/release gates

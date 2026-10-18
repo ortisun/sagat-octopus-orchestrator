@@ -373,7 +373,7 @@ separate. The table reports only each scenario's declared phase and the observed
 | `worker-transport-faults` | authoring/live protocol | pass | pass | pass | pass | pass |
 | `workflow-instance-limits` | authoring/live protocol | pass | pass | pass | pass | pass |
 
-Bounded acceptance review keeps T014-041 open: shared WP-13 expression/list boundaries and
+At that 58-case checkpoint, bounded acceptance review kept T014-041 open: shared WP-13 expression/list boundaries and
 unsupported object literals, plus WP-12 switch cases at 32/excess 33, still need five-SDK coverage.
 The successful current aggregate is retained without claiming those absent scenarios.
 
@@ -406,7 +406,7 @@ archived source or scenario/language filtering. The source base is bea961c2; a l
 schema contract changed none of those inputs. The earlier eight native compatibility tests retain
 identical executable inputs and a separately recorded conformance documentation delta.
 
-The final public-contract mapping still leaves T014-041 open for active sibling drain after failure,
+At that 59-case checkpoint, public-contract mapping left T014-041 open for active sibling drain after failure,
 Query result-schema rejection with unchanged revisions, and successful upper bounds of 32 approval
 principals/queries/updates. These are separate from the open nested/C0/resource gates. Drafts for
 those public observations are outside the tested snapshot and cannot be counted as passing yet.
@@ -418,5 +418,88 @@ Evidence: [complete SDK59 aggregate](../tasks/project-completion/evidence/sdk59-
 Registry now contains 60 cases. Approval principal boundary passed in all five (16.11 s,
 authoring-only); expression declaration/schema observations passed in all five (20.38 s); new
 active sibling drain passed in all five (22.33 s). All ten complete live outputs equal reviewed
-goldens. No blessing or runner/server change. A complete current 60-case aggregate remains a
-separate integration gate. Evidence: [public contract gaps](../tasks/project-completion/evidence/sdk-public-gaps-20261018/reproduce.md).
+goldens. No blessing or runner/server change. At that focused checkpoint, a complete current 60-case aggregate remained a
+separate integration gate; it is completed below. Evidence: [public contract gaps](../tasks/project-completion/evidence/sdk-public-gaps-20261018/reproduce.md).
+
+
+## Complete current 60-case SDK acceptance — 2026-10-18
+
+T014-041 closes on the complete, unfiltered current five-SDK aggregate: 60 scenarios, 300
+language/scenario plays, 30 authoring-only, 5 publication-only and 265 live workflow/protocol.
+All 270 complete normalized outputs independently equal the reviewed golden; all 1,672 frozen
+inputs are unchanged. The aggregate passed in 1,067.94 s (harness 1,067.57 s), without blessing,
+prepared-runner reuse or archived source. Eight actual native compatibility tests pass on
+identical executable inputs, covering active-old-run and old-worker-minor compatibility.
+
+The first full attempt failed during managed-secret PUT with an unexplained 503, before the
+five database scenario outputs. Its same-source focused retry and this subsequent full pass
+are retained separately; no inferred provider cause or speculative fix is claimed. The third
+and final supported-public mapping review found no further missing observation after the
+last focused fixtures; stale matrix wording was corrected. Actual tagged v0.1.0 lifecycle
+coverage remains separately scoped, with other historical features/versions untested.
+
+Evidence: [complete SDK60 aggregate](../tasks/project-completion/evidence/sdk60-current-20261018/reproduce.md).
+This evidence does not accept general nested runtime, C0, production ceilings or final release gates.
+
+| Scenario | Phase | TypeScript | Go | Python | C# | Java |
+| --- | --- | --- | --- | --- | --- | --- |
+| `approval-builders` | authoring-only | pass | pass | pass | pass | pass |
+| `approval-chain` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `approval-decisions` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `approval-security` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `approval-settlement` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `approval-state` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `blobs` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `builders` | publication-only | pass | pass | pass | pass | pass |
+| `cancellation` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `chain-cancel-parent` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `chain-child` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `chain-commands` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `chain-final-success` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `chain-inspect-cancel` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `chain-query-handoff` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `chain-query` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `chain-rerun` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `chain-root-wait` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `chain-state-final-success` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `chain-three-segments` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `classification` | authoring-only | pass | pass | pass | pass | pass |
+| `collection-blob-output` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `collection-blob-source` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `collection-builders` | authoring-only | pass | pass | pass | pass | pass |
+| `collection-compensation` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `collection-fail-fast-drain` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `collection-limits` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `collection-ordering` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `collection-runtime` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `collection-step-source` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `continuation-builders` | authoring-only | pass | pass | pass | pass | pass |
+| `database-connections` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `errors` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `expression-limits` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `failures-and-retries` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `lease-lost` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `loop-builders` | authoring-only | pass | pass | pass | pass | pass |
+| `loop-cancel` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `loop-compensation` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `loop-error-activity` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `loop-runtime` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `loop-semantics` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `lost-responses` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `protocol-negotiation` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `run-input-blobs` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `run-input-early-success` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `run-lifecycle` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `saga-compensation` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `scoped-identity` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `secrets` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `serialization` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `signals-and-events` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `state-operation-builders` | authoring-only | pass | pass | pass | pass | pass |
+| `state-operations` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `switch-builders` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `worker-registration` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `worker-shutdown` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `worker-stream-faults` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `worker-transport-faults` | live-workflow-or-protocol | pass | pass | pass | pass | pass |
+| `workflow-instance-limits` | live-workflow-or-protocol | pass | pass | pass | pass | pass |

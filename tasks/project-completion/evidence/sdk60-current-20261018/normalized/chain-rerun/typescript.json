@@ -1,0 +1,352 @@
+{
+  "faultsApplied": [],
+  "observations": [
+    {
+      "id": "start",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "chain": {
+          "chainId": "<uuid:1>",
+          "completionKind": null,
+          "segmentIndex": 0,
+          "successorRunId": null
+        },
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": "<chain-deadline:1>",
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "WAITING",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "inspect",
+      "ok": true,
+      "op": "inspectChain",
+      "result": {
+        "cancelRequested": false,
+        "chainId": "<uuid:1>",
+        "currentRunId": "<uuid:1>",
+        "finalOutcome": null,
+        "revision": 0,
+        "segments": [
+          {
+            "index": 0,
+            "predecessorRunId": null,
+            "runId": "<uuid:1>",
+            "successorRunId": null
+          }
+        ]
+      }
+    },
+    {
+      "id": "release",
+      "ok": true,
+      "op": "publishEvent",
+      "result": {
+        "eventId": "release-{{unique}}",
+        "status": "ACCEPTED"
+      }
+    },
+    {
+      "id": "inspect-second",
+      "ok": true,
+      "op": "inspectChain",
+      "result": {
+        "cancelRequested": false,
+        "chainId": "<uuid:1>",
+        "currentRunId": "<uuid:4>",
+        "finalOutcome": null,
+        "revision": 1,
+        "segments": [
+          {
+            "index": 0,
+            "predecessorRunId": null,
+            "runId": "<uuid:1>",
+            "successorRunId": "<uuid:4>"
+          },
+          {
+            "index": 1,
+            "predecessorRunId": "<uuid:1>",
+            "runId": "<uuid:4>",
+            "successorRunId": null
+          }
+        ]
+      }
+    },
+    {
+      "id": "continued",
+      "ok": true,
+      "op": "get",
+      "result": {
+        "chain": {
+          "chainId": "<uuid:1>",
+          "completionKind": "CONTINUED",
+          "segmentIndex": 0,
+          "successorRunId": "<uuid:4>"
+        },
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": "<chain-deadline:1>",
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "SUCCEEDED",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "rerun",
+      "ok": true,
+      "op": "operate",
+      "result": {
+        "accepted": true,
+        "newRunId": "<uuid:5>",
+        "runStatus": "SUCCEEDED"
+      }
+    },
+    {
+      "id": "rerun-run",
+      "ok": true,
+      "op": "get",
+      "result": {
+        "chain": {
+          "chainId": "<uuid:5>",
+          "completionKind": null,
+          "segmentIndex": 0,
+          "successorRunId": null
+        },
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": "<chain-deadline:2>",
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "rerunOf": "<uuid:1>",
+        "runId": "<uuid:5>",
+        "startedBy": "alice",
+        "status": "WAITING",
+        "traceId": "<trace:2>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "rerun-chain",
+      "ok": true,
+      "op": "inspectChain",
+      "result": {
+        "cancelRequested": false,
+        "chainId": "<uuid:5>",
+        "currentRunId": "<uuid:5>",
+        "finalOutcome": null,
+        "revision": 0,
+        "segments": [
+          {
+            "index": 0,
+            "predecessorRunId": null,
+            "runId": "<uuid:5>",
+            "successorRunId": null
+          }
+        ]
+      }
+    },
+    {
+      "error": {
+        "code": "CONFLICT",
+        "message": "<text>",
+        "reason": "STATE_CONFLICT",
+        "remediation": "The request conflicts with the current state: read the resource again and decide; do not repeat it unchanged.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 409,
+        "traceId": "<trace:3>"
+      },
+      "id": "rerun-open",
+      "ok": false,
+      "op": "operate"
+    },
+    {
+      "id": "original",
+      "ok": true,
+      "op": "inspectChain",
+      "result": {
+        "cancelRequested": false,
+        "chainId": "<uuid:1>",
+        "currentRunId": "<uuid:4>",
+        "finalOutcome": null,
+        "revision": 1,
+        "segments": [
+          {
+            "index": 0,
+            "predecessorRunId": null,
+            "runId": "<uuid:1>",
+            "successorRunId": "<uuid:4>"
+          },
+          {
+            "index": 1,
+            "predecessorRunId": "<uuid:1>",
+            "runId": "<uuid:4>",
+            "successorRunId": null
+          }
+        ]
+      }
+    },
+    {
+      "id": "cancel-original",
+      "ok": true,
+      "op": "cancelChain",
+      "result": {
+        "accepted": true
+      }
+    },
+    {
+      "id": "cancel-rerun",
+      "ok": true,
+      "op": "cancel",
+      "result": {
+        "accepted": true,
+        "runStatus": "CANCELLED"
+      }
+    },
+    {
+      "id": "rerun-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "chain": {
+          "chainId": "<uuid:5>",
+          "completionKind": "FINAL",
+          "segmentIndex": 0,
+          "successorRunId": null
+        },
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": "<chain-deadline:2>",
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "rerunOf": "<uuid:1>",
+        "runId": "<uuid:5>",
+        "startedBy": "alice",
+        "status": "CANCELLED",
+        "traceId": "<trace:2>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    }
+  ],
+  "serverState": [
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "next",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "continueAsNew",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "release",
+          "kind": "FORWARD",
+          "status": "CANCELLED",
+          "type": "waitEvent",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:5>",
+      "status": "CANCELLED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "next",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "continueAsNew",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "release",
+          "kind": "FORWARD",
+          "status": "CANCELLED",
+          "type": "waitEvent",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:4>",
+      "status": "CANCELLED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "next",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "continueAsNew",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "release",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "waitEvent",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:1>",
+      "status": "SUCCEEDED"
+    }
+  ],
+  "workerLog": {}
+}

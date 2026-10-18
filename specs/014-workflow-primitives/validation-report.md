@@ -2970,3 +2970,23 @@ labels or broker/execution authority follows. One fresh bounded Astra review fou
 No schema, tests, native producer, privilege or caller is claimed by this documentary unit.
 See tasks/project-completion/scoped-leaf-finish-audit-hint-contract.md and
 evidence/scoped-finish-vocabulary-decision-20261018.
+
+
+## Complete current 60-case SDK acceptance — 2026-10-18
+
+T014-041 closes on the complete, unfiltered current five-SDK aggregate: 60 scenarios, 300
+language/scenario plays, 30 authoring-only, 5 publication-only and 265 live workflow/protocol.
+All 270 complete normalized outputs independently equal the reviewed golden; all 1,672 frozen
+inputs are unchanged. The aggregate passed in 1,067.94 s (harness 1,067.57 s), without blessing,
+prepared-runner reuse or archived source. Eight actual native compatibility tests pass on
+identical executable inputs, covering active-old-run and old-worker-minor compatibility.
+
+The first full attempt failed during managed-secret PUT with an unexplained 503, before the
+five database scenario outputs. Its same-source focused retry and this subsequent full pass
+are retained separately; no inferred provider cause or speculative fix is claimed. The third
+and final supported-public mapping review found no further missing observation after the
+last focused fixtures; stale matrix wording was corrected. Actual tagged v0.1.0 lifecycle
+coverage remains separately scoped, with other historical features/versions untested.
+
+Evidence: [complete SDK60 aggregate](../../tasks/project-completion/evidence/sdk60-current-20261018/reproduce.md).
+This evidence does not accept general nested runtime, C0, production ceilings or final release gates.
