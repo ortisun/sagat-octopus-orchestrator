@@ -1,0 +1,78 @@
+diff --git a/crates/domain/tests/audit.rs b/crates/domain/tests/audit.rs
+index f5274ea3..62f793a7 100644
+--- a/crates/domain/tests/audit.rs
++++ b/crates/domain/tests/audit.rs
+@@ -172,3 +172,24 @@ fn provisioning_records_are_attributed_to_the_system_and_cannot_be_mistaken_for_
+     // Tokens only ever authenticate through membership lookup, and none can carry this subject.
+     assert_eq!(*record.actor(), Subject::provisioning());
+ }
++
++#[test]
++fn capacity_settlement_audit_is_an_engine_transition_with_receipt_deduplication() {
++    let tenant = TenantId::generate();
++    let record = AuditRecord::engine(
++        tenant,
++        AuditAction::CapacityMemberFinished,
++        ResourceType::CapacityGroup,
++        "group-id",
++        "member reached its own chain FINAL",
++        None,
++        OffsetDateTime::UNIX_EPOCH,
++    );
++    assert_eq!(record.tenant_id(), tenant);
++    assert_eq!(*record.actor(), Subject::engine());
++    assert_eq!(record.action().as_str(), "capacity.member.finished");
++    assert_eq!(record.resource_type().as_str(), "capacity_group");
++    assert_ne!(record.action(), AuditAction::RunFinished);
++    assert!(!record.action().collapses_repeats());
++    assert_eq!(record.action().repeat_window(), None);
++}
+diff --git a/tests/integration/workflow-primitives/hint_contract.rs b/tests/integration/workflow-primitives/hint_contract.rs
+index 5c7bae1d..2e2f18d0 100644
+--- a/tests/integration/workflow-primitives/hint_contract.rs
++++ b/tests/integration/workflow-primitives/hint_contract.rs
+@@ -103,3 +103,44 @@ pub(crate) fn assert_published(published: &[String], expected: &[&str]) {
+         );
+     }
+ }
++
++#[test]
++fn capacity_finish_hint_is_closed_control_metadata() {
++    let hint = hints()
++        .get("capacity.member.finished")
++        .expect("dormant capacity Finish has a canonical hint before any producer");
++    let payload = serde_json::json!({
++        "tenantId": uuid::Uuid::from_u128(1),
++        "namespaceId": uuid::Uuid::from_u128(2),
++        "groupId": uuid::Uuid::from_u128(3),
++        "memberId": uuid::Uuid::from_u128(4),
++        "chainId": uuid::Uuid::from_u128(5),
++        "headRunId": uuid::Uuid::from_u128(6),
++        "resultingRevision": 2,
++        "epoch": 2,
++        "retired": false,
++    });
++    assert!(hint.validator.is_valid(&payload));
++    for key in payload.as_object().expect("reference object").keys() {
++        let mut missing = payload.clone();
++        missing.as_object_mut().expect("reference object").remove(key);
++        assert!(!hint.validator.is_valid(&missing), "required {key}");
++    }
++    for (key, value) in [
++        ("credentials", serde_json::json!({"password": "test-only"})),
++        ("payload", serde_json::json!({})),
++        ("resultingRevision", serde_json::json!(0)),
++        ("epoch", serde_json::json!(0)),
++        ("retired", serde_json::json!("false")),
++        ("tenantId", serde_json::json!(1)),
++    ] {
++        let mut invalid = payload.clone();
++        invalid[key] = value;
++        assert!(!hint.validator.is_valid(&invalid), "invalid {key}");
++    }
++    let mut traced = payload;
++    traced["traceId"] = serde_json::json!("0123456789abcdef0123456789abcdef");
++    assert!(hint.validator.is_valid(&traced));
++    traced["traceId"] = Value::Null;
++    assert!(hint.validator.is_valid(&traced));
++}

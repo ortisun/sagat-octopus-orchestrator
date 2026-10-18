@@ -64,6 +64,15 @@ channels:
     messages:
       chainFinished:
         $ref: '#/components/messages/ChainFinished'
+  capacityMemberFinished:
+    address: sagat.v1.capacity.member.finished.{tenant}
+    description: A dormant capacity member settled after its own child chain FINAL. Reference-only discovery hint, not execution or foreign-run scheduling authority; no production caller is enabled by this vocabulary.
+    parameters:
+      tenant:
+        description: Tenant id (UUID).
+    messages:
+      capacityMemberFinished:
+        $ref: '#/components/messages/CapacityMemberFinished'
   loopFinished:
     address: sagat.v1.loop.finished.{tenant}
     description: A loop node finished (the run may continue past it).
@@ -248,6 +257,10 @@ operations:
     action: send
     channel: {$ref: '#/channels/chainFinished'}
     messages: [{$ref: '#/channels/chainFinished/messages/chainFinished'}]
+  publishCapacityMemberFinished:
+    action: send
+    channel: {$ref: '#/channels/capacityMemberFinished'}
+    messages: [{$ref: '#/channels/capacityMemberFinished/messages/capacityMemberFinished'}]
   publishLoopFinished:
     action: send
     channel: {$ref: '#/channels/loopFinished'}
@@ -399,6 +412,29 @@ components:
           headRunId: {type: string, format: uuid, description: 'The segment whose end is the chain outcome.'}
           status: {type: string, enum: [SUCCEEDED, FAILED, CANCELLED, TIMED_OUT, COMPENSATED, PARTIAL, COMPENSATION_FAILED]}
           traceId: {type: [string, 'null'], description: 'W3C trace id (32 hex) of the run.'}
+    CapacityMemberFinished:
+      name: CapacityMemberFinished
+      contentType: application/json
+      description: Reference-only capacity settlement metadata. Read current guarded state before acting; revisions here describe the committed receipt, not current execution authority.
+      headers:
+        type: object
+        properties:
+          Nats-Msg-Id: {type: string, description: 'The outbox row id; stable across redeliveries.'}
+      payload:
+        type: object
+        additionalProperties: false
+        required: [tenantId, namespaceId, groupId, memberId, chainId, headRunId, resultingRevision, epoch, retired]
+        properties:
+          tenantId: {type: string, format: uuid}
+          namespaceId: {type: string, format: uuid}
+          groupId: {type: string, format: uuid}
+          memberId: {type: string, format: uuid}
+          chainId: {type: string, format: uuid}
+          headRunId: {type: string, format: uuid}
+          resultingRevision: {type: integer, minimum: 2, maximum: 9223372036854775807}
+          epoch: {type: integer, minimum: 1, maximum: 9223372036854775807}
+          retired: {type: boolean}
+          traceId: {type: [string, 'null'], description: 'W3C trace id (32 hex) of the owning run.'}
     LoopHint:
       name: LoopHint
       contentType: application/json

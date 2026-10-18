@@ -31,6 +31,8 @@ pub enum AuditAction {
     RunContinued,
     /// A scheduler committed the terminal outcome of a run and its execution chain.
     RunFinished,
+    /// A current child-chain FINAL member settled its capacity membership.
+    CapacityMemberFinished,
     /// Retained workflow content exceeded the tenant storage ceiling and forced the run to stop.
     RunStorageQuotaExceeded,
     RunCancelRequested,
@@ -267,6 +269,7 @@ impl AuditAction {
             Self::RunStarted => "run.started",
             Self::RunContinued => "run.continued",
             Self::RunFinished => "run.finished",
+            Self::CapacityMemberFinished => "capacity.member.finished",
             Self::RunStorageQuotaExceeded => "run.storage_quota_exceeded",
             Self::RunCancelRequested => "run.cancel_requested",
             Self::RunPaused => "run.paused",
@@ -376,6 +379,7 @@ pub enum ResourceType {
     Workflow,
     WorkflowVersion,
     Run,
+    CapacityGroup,
     Secret,
     DatabaseConnection,
     Quota,
@@ -415,6 +419,7 @@ impl ResourceType {
             Self::Workflow => "workflow",
             Self::WorkflowVersion => "workflow_version",
             Self::Run => "run",
+            Self::CapacityGroup => "capacity_group",
             Self::Secret => "secret",
             Self::DatabaseConnection => "database_connection",
             Self::Quota => "quota",

@@ -172,3 +172,24 @@ fn provisioning_records_are_attributed_to_the_system_and_cannot_be_mistaken_for_
     // Tokens only ever authenticate through membership lookup, and none can carry this subject.
     assert_eq!(*record.actor(), Subject::provisioning());
 }
+
+#[test]
+fn capacity_settlement_audit_is_an_engine_transition_without_generic_repeat_collapse() {
+    let tenant = TenantId::generate();
+    let record = AuditRecord::engine(
+        tenant,
+        AuditAction::CapacityMemberFinished,
+        ResourceType::CapacityGroup,
+        "group-id",
+        "member reached its own chain FINAL",
+        None,
+        OffsetDateTime::UNIX_EPOCH,
+    );
+    assert_eq!(record.tenant_id(), tenant);
+    assert_eq!(*record.actor(), Subject::engine());
+    assert_eq!(record.action().as_str(), "capacity.member.finished");
+    assert_eq!(record.resource_type().as_str(), "capacity_group");
+    assert_ne!(record.action(), AuditAction::RunFinished);
+    assert!(!record.action().collapses_repeats());
+    assert_eq!(record.action().repeat_window(), None);
+}

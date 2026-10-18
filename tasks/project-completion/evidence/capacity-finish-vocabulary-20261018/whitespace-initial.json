@@ -1,0 +1,10 @@
+{
+  "command": [
+    "git",
+    "diff",
+    "--cached",
+    "--check"
+  ],
+  "exit_code": 2,
+  "output": "tasks/project-completion/evidence/capacity-finish-vocabulary-20261018/asyncapi-validate.txt:3: trailing whitespace.\n+Information \n"
+}

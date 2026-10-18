@@ -61,3 +61,6 @@
 /tasks/project-completion/evidence/rerun-source-identity-20261018/staged-diff-check-initial.txt whitespace=-blank-at-eof,-blank-at-eol
 /tasks/project-completion/evidence/capacity-header-restore-20261018/*.txt whitespace=-blank-at-eof
 /tasks/project-completion/evidence/capacity-header-restore-20261018/*.diff whitespace=-blank-at-eol
+/tasks/project-completion/evidence/capacity-finish-vocabulary-20261018/*.txt whitespace=-blank-at-eof
+/tasks/project-completion/evidence/capacity-finish-vocabulary-20261018/*.diff whitespace=-blank-at-eol
+/tasks/project-completion/evidence/capacity-finish-vocabulary-20261018/asyncapi-validate.txt whitespace=-blank-at-eof,-blank-at-eol

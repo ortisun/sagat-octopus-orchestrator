@@ -1,0 +1,9 @@
+{
+  "added_messages": [
+    "CapacityMemberFinished"
+  ],
+  "existing_message_count": 19,
+  "existing_messages_unchanged": true,
+  "sdk_goldens_changed": false,
+  "regenerated": false
+}

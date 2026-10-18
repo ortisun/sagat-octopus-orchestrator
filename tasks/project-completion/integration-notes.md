@@ -2111,3 +2111,19 @@ Supplied consistency is not actual database count/tenant/unique history/own-memb
 port/atomic journal/audit/outbox/OTel, mixed writers, eligibility/resource/SDK/nested acceptance
 remain pending adapter/integration work; no canonical checkbox closure. Evidence:
 tasks/project-completion/evidence/capacity-header-restore-20261018/manifest.json.
+
+
+## Dormant capacity Finish vocabulary — 2026-10-18
+
+Refs:T014-014/017/040. Truthful engine audit capacity.member.finished / capacity_group, without
+generic repeat collapse; native receipt dedup proof remains pending. Canonical closed AsyncAPI
+hint contains reference identities/result revision/epoch/retired/optional nullable trace only.
+Only new baseline message added manually; all prior parsed shapes and SDK goldens unchanged.
+Audit7/7, synthetic hint1/1, AsyncAPI evolution/actual existing outbound conformance4/4 (2.02s).
+Initial API/fixture compile errors retained separately; corrected hint RED0/1 (0.04s) on missing
+channel. Actual new producer/outbox/receipt behavior remains B2d/e; no broker delivery claim.
+Pinned CLI validates0errors/0warnings plus1version info; strict locked workspace/all-target
+Clippy83.89s, fmt4.04s,24-crate architecture pass. Fresh Astra/xhigh review's only finding was an
+overclaiming test name, corrected and audit rerun. No external reviewCLI. Native schema/port,
+SDK58/fullworkspace/resource/old-writer/nested acceptance and canonical tasks remain pending.
+Evidence: tasks/project-completion/evidence/capacity-finish-vocabulary-20261018/manifest.json.

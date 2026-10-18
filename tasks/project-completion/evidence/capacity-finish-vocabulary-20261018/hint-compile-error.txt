@@ -1,0 +1,61 @@
+   Compiling sagat-domain v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/domain)
+   Compiling sagat-application v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/application)
+   Compiling sagat-infra-egress v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-egress)
+   Compiling sagat-dev-idp v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/dev-idp)
+   Compiling sagat-infra-schema v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-schema)
+   Compiling sagat-api-http v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/api-http)
+   Compiling sagat-infra-ir v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-ir)
+   Compiling sagat-infra-secrets v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-secrets)
+   Compiling sagat-infra-postgres v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-postgres)
+   Compiling sagat-infra-blobstore v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-blobstore)
+   Compiling sagat-api-grpc v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/api-grpc)
+   Compiling sagat-infra-sandbox v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-sandbox)
+   Compiling sagat-scheduler v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/scheduler)
+   Compiling sagat-infra-nats v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-nats)
+   Compiling sagat-infra-connectors v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-connectors)
+   Compiling sagat-cli v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/cli)
+   Compiling sagat-control-plane v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/control-plane)
+   Compiling sagat-execution-engine v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/execution-engine)
+   Compiling sagat-sandbox-runner v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/sandbox-runner)
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+error[E0277]: the trait bound `Uuid: serde::Serialize` is not satisfied
+   --> tests/integration/workflow-primitives/hint_contract.rs:112:19
+    |
+112 |       let payload = serde_json::json!({
+    |  ___________________^
+113 | |         "tenantId": uuid::Uuid::from_u128(1),
+114 | |         "namespaceId": uuid::Uuid::from_u128(2),
+115 | |         "groupId": uuid::Uuid::from_u128(3),
+...   |
+121 | |         "retired": false,
+122 | |     });
+    | |      ^
+    | |      |
+    | |______the trait `serde_core::ser::Serialize` is not implemented for `Uuid`
+    |        required by a bound introduced by this call
+    |
+    = note: for local types consider adding `#[derive(serde::Serialize)]` to your `Uuid` type
+    = note: for types from other crates check whether the crate offers a `serde` feature flag
+    = help: the following other types implement trait `serde_core::ser::Serialize`:
+              &'a T
+              &'a mut T
+              ()
+              (T,)
+              (T0, T1)
+              (T0, T1, T2)
+              (T0, T1, T2, T3)
+              (T0, T1, T2, T3, T4)
+            and 849 others
+    = note: required for `&Uuid` to implement `serde_core::ser::Serialize`
+note: required by a bound in `serde_json::to_value`
+   --> /Users/marcelo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_json-1.0.151/src/value/mod.rs:997:8
+    |
+995 | pub fn to_value<T>(value: T) -> Result<Value, Error>
+    |        -------- required by a bound in this function
+996 | where
+997 |     T: Serialize,
+    |        ^^^^^^^^^ required by this bound in `to_value`
+    = note: this error originates in the macro `$crate::json_internal` which comes from the expansion of the macro `serde_json::json` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+For more information about this error, try `rustc --explain E0277`.
+error: could not compile `sagat-tests` (test "integration_workflow_primitives") due to 6 previous errors

@@ -78,7 +78,7 @@ This restricted proof depends on A1+B0+B1a+B1b.1; it refines the full B2 depende
 fixture-only slice, without closing B1/B2 or permitting any production caller/creation/activation.
 
 - [x] B2a: Freeze reviewed exact ChildRoot Finish schema/receipt/authority/recovery contract.
-- [ ] B2b: Add truthful audit/resource tags and closed canonical AsyncAPI hint vocabulary.
+- [x] B2b: Add truthful audit/resource tags and closed canonical AsyncAPI hint vocabulary.
 - [ ] B2c: Add dormant schema/classification, real constraints/privileges/tombstones/downgrade tests.
 - [ ] B2d: Implement exact bounded native Finish with real current FINAL/fence and atomic replay.
 - [ ] B2e: Prove contention, expiry, duplicate/stale, confirmed rollback and unknown-COMMIT recovery.

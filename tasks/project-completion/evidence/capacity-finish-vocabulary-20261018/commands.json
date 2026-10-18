@@ -1,0 +1,99 @@
+[
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-domain",
+      "--test",
+      "audit",
+      "capacity_settlement_audit"
+    ],
+    "exit_code": 101,
+    "seconds": 0.48,
+    "log": "audit-api-absence.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "hint_contract::capacity_finish_hint_is_closed_control_metadata",
+      "--",
+      "--nocapture"
+    ],
+    "exit_code": 101,
+    "seconds": 22.75,
+    "log": "hint-compile-error.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "hint_contract::capacity_finish_hint_is_closed_control_metadata",
+      "--",
+      "--nocapture"
+    ],
+    "exit_code": 101,
+    "seconds": 31.43,
+    "log": "hint-red.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-domain",
+      "--test",
+      "audit"
+    ],
+    "exit_code": 0,
+    "seconds": 4.27,
+    "log": "audit-green.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "hint_contract::capacity_finish_hint_is_closed_control_metadata",
+      "--",
+      "--nocapture"
+    ],
+    "exit_code": 0,
+    "seconds": 47.86,
+    "log": "hint-green.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "contract_asyncapi_events_webhooks_messaging",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "seconds": 23.73,
+    "log": "asyncapi-regression.txt"
+  }
+]

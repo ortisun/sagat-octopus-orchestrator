@@ -1,0 +1,12 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 20.33s
+     Running contract/events-webhooks-messaging/asyncapi/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/contract_asyncapi_events_webhooks_messaging-baa87a74125a5953)
+
+running 4 tests
+test compatibility::the_checker_accepts_growth_and_refuses_everything_else ... ok
+test compatibility::the_document_describes_every_message_it_sends_or_receives ... ok
+test compatibility::the_messages_have_only_grown_since_the_baseline ... ok
+test conformance::the_outbound_webhook_and_the_event_document_conform_to_the_document ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.02s
+

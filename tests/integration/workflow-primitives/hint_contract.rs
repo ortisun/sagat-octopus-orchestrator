@@ -103,3 +103,48 @@ pub(crate) fn assert_published(published: &[String], expected: &[&str]) {
         );
     }
 }
+
+#[test]
+fn capacity_finish_hint_is_closed_control_metadata() {
+    let hint = hints()
+        .get("capacity.member.finished")
+        .expect("dormant capacity Finish has a canonical hint before any producer");
+    let payload = serde_json::json!({
+        "tenantId": uuid::Uuid::from_u128(1).to_string(),
+        "namespaceId": uuid::Uuid::from_u128(2).to_string(),
+        "groupId": uuid::Uuid::from_u128(3).to_string(),
+        "memberId": uuid::Uuid::from_u128(4).to_string(),
+        "chainId": uuid::Uuid::from_u128(5).to_string(),
+        "headRunId": uuid::Uuid::from_u128(6).to_string(),
+        "resultingRevision": 2,
+        "epoch": 2,
+        "retired": false,
+    });
+    assert!(hint.validator.is_valid(&payload));
+    for key in payload.as_object().expect("reference object").keys() {
+        let mut missing = payload.clone();
+        missing
+            .as_object_mut()
+            .expect("reference object")
+            .remove(key);
+        assert!(!hint.validator.is_valid(&missing), "required {key}");
+    }
+    for (key, value) in [
+        ("credentials", serde_json::json!({"password": "test-only"})),
+        ("payload", serde_json::json!({})),
+        ("resultingRevision", serde_json::json!(0)),
+        ("resultingRevision", serde_json::json!(1)),
+        ("epoch", serde_json::json!(0)),
+        ("retired", serde_json::json!("false")),
+        ("tenantId", serde_json::json!(1)),
+    ] {
+        let mut invalid = payload.clone();
+        invalid[key] = value;
+        assert!(!hint.validator.is_valid(&invalid), "invalid {key}");
+    }
+    let mut traced = payload;
+    traced["traceId"] = serde_json::json!("0123456789abcdef0123456789abcdef");
+    assert!(hint.validator.is_valid(&traced));
+    traced["traceId"] = Value::Null;
+    assert!(hint.validator.is_valid(&traced));
+}

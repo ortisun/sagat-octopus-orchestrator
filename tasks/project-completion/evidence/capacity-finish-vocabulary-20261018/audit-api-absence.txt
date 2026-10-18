@@ -1,0 +1,15 @@
+   Compiling sagat-domain v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/domain)
+error[E0599]: no variant, associated function, or constant named `CapacityMemberFinished` found for enum `AuditAction` in the current scope
+   --> crates/domain/tests/audit.rs:181:22
+    |
+181 |         AuditAction::CapacityMemberFinished,
+    |                      ^^^^^^^^^^^^^^^^^^^^^^ variant, associated function, or constant not found in `AuditAction`
+
+error[E0599]: no variant, associated function, or constant named `CapacityGroup` found for enum `ResourceType` in the current scope
+   --> crates/domain/tests/audit.rs:182:23
+    |
+182 |         ResourceType::CapacityGroup,
+    |                       ^^^^^^^^^^^^^ variant, associated function, or constant not found in `ResourceType`
+
+For more information about this error, try `rustc --explain E0599`.
+error: could not compile `sagat-domain` (test "audit") due to 2 previous errors

@@ -1,0 +1,262 @@
+{
+  "source_base": "3651eb34293b8e2cb77f97a5e0a1959e75d1e2c9",
+  "recorded_utc": "2026-10-18T07:40:49.627225+00:00",
+  "scope": "Dormant capacity Finish audit/hint vocabulary only",
+  "commands": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-domain",
+        "--test",
+        "audit",
+        "capacity_settlement_audit"
+      ],
+      "exit_code": 101,
+      "seconds": 0.48,
+      "log": "audit-api-absence.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "hint_contract::capacity_finish_hint_is_closed_control_metadata",
+        "--",
+        "--nocapture"
+      ],
+      "exit_code": 101,
+      "seconds": 22.75,
+      "log": "hint-compile-error.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "hint_contract::capacity_finish_hint_is_closed_control_metadata",
+        "--",
+        "--nocapture"
+      ],
+      "exit_code": 101,
+      "seconds": 31.43,
+      "log": "hint-red.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-domain",
+        "--test",
+        "audit"
+      ],
+      "exit_code": 0,
+      "seconds": 4.27,
+      "log": "audit-green.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "hint_contract::capacity_finish_hint_is_closed_control_metadata",
+        "--",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "seconds": 47.86,
+      "log": "hint-green.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "contract_asyncapi_events_webhooks_messaging",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 23.73,
+      "log": "asyncapi-regression.txt"
+    }
+  ],
+  "gates": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-domain",
+        "--test",
+        "audit"
+      ],
+      "exit_code": 0,
+      "seconds": 1.64,
+      "log": "audit-final.txt"
+    },
+    {
+      "command": [
+        "npx",
+        "--yes",
+        "--ignore-scripts",
+        "@asyncapi/cli@3.6.0",
+        "validate",
+        "specs/001-platform-foundation/contracts/events.asyncapi.yaml"
+      ],
+      "exit_code": 0,
+      "seconds": 3.93,
+      "log": "asyncapi-validate.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "seconds": 83.89,
+      "log": "clippy.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "seconds": 4.04,
+      "log": "fmt.txt"
+    },
+    {
+      "command": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "exit_code": 0,
+      "seconds": 0.31,
+      "log": "architecture.txt"
+    }
+  ],
+  "results": {
+    "audit-green.txt": [
+      {
+        "passed": 7,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.0
+      }
+    ],
+    "hint-green.txt": [
+      {
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.03
+      }
+    ],
+    "hint-red.txt": [
+      {
+        "passed": 0,
+        "failed": 1,
+        "ignored": 0,
+        "seconds": 0.04
+      }
+    ],
+    "audit-final.txt": [
+      {
+        "passed": 7,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.0
+      }
+    ],
+    "asyncapi-regression.txt": [
+      {
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 2.02
+      }
+    ]
+  },
+  "review": {
+    "cycles": 1,
+    "model": "gpt-6-astra/xhigh fresh-context read-only",
+    "finding": "test name overclaims receipt proof; mechanically corrected",
+    "external_cli": false
+  },
+  "limits": [
+    "Synthetic shape test, actual native receipt/outbox pending",
+    "Initial API/fixture compile failures separate from missing-channel RED",
+    "Only new event baseline key, no auto bless or SDK golden changes",
+    "No fullworkspace tests/SDK58/native schema/lifecycle/broker/resource/nested acceptance"
+  ],
+  "source_sha256": {
+    ".gitattributes": "87020bead62755536d5085bf1d85d2255cc9851572e73ae6dff6c2aeb6e01094",
+    "crates/domain/src/audit.rs": "2f87fef0c9e537acb37a18da35f0aece2bf9f8fab7dc423afa3b6d7b236c7b0c",
+    "crates/domain/tests/audit.rs": "3b2b8cad5d30818d559e9ef2c90ed1f24f3398272e55b49a6b58d2349a4f42ff",
+    "docs/traceability.md": "0c3740a9a3324bb1256b9aac3b626a073302eb1d85ff0289bd97bf0707f99f76",
+    "specs/001-platform-foundation/contracts/events.asyncapi.yaml": "d44ef0bb4336973363814413769851c33e0e6cdb795d8c574fc2109d213e44dc",
+    "specs/001-platform-foundation/contracts/events.baseline.json": "d6eed9bc6e7df4d85554a197d4e87e081c39b99bf36262bcb8f1c6348d4ba94b",
+    "specs/014-workflow-primitives/contracts/README.md": "c7c5a0e3cd802ba500874ca911664d6e5fa007c02ad431277bba983138b318a2",
+    "specs/014-workflow-primitives/validation-report.md": "ea991319429c8a33d96d6029441c477d5145017d79509f93514a9e030e47c87c",
+    "tasks/project-completion/integration-notes.md": "0d0aa49acc71f903434ac380c98d5e6c22f348a78fdd56de77ce9758779386e1",
+    "tasks/project-completion/todo.md": "fa3648041ca9ca44e0dfa40b4bc755909faef43e5625f474a0e03afa238d263d",
+    "tests/integration/workflow-primitives/hint_contract.rs": "7e6de7a19b262d6d9689dbeea9693dce67a802cefb573a9da62d90fd699d1fa1"
+  },
+  "evidence_sha256": {
+    "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "asyncapi-regression.txt": "8e4627edd6e0f73f658840bf6b2550d7f84114d908295c289b5da3d0d2d701c9",
+    "asyncapi-validate.txt": "650d062a49b6ac8ec0b523bde126ca5c3936c9923fa018387fdc9cb8f82b4c74",
+    "audit-api-absence.txt": "a5a8a034baf67b93fb201a2e0304ec3bdf821ad890bebb610412ced82673debe",
+    "audit-final.txt": "5c496353843550e2e457f2d40af7c9deba9370843c0f466d61d38f4b3a2e3bb0",
+    "audit-green.txt": "1a40368cd14dd7a809c3665964a54e3e2959f4e4ed6bd66f0009cc810c232261",
+    "baseline-proof.json": "2f990c8515c83367e982df73cc91b0642ea86f4614a189ae85284e4fb181e1ef",
+    "clippy.txt": "6fab873002305d261a79dd40f6b3e2cb22ce43175856839617776b4a233aa580",
+    "commands.json": "d1f9630140a5d1e81b1dcbeb6329a347291e46f4db8e65f523eef306b7341f7d",
+    "compile-source.json": "687614aeea93e9840c31a895699b0806e56c782fbd863d05af797a73e4556647",
+    "compile-test.diff": "cb3017be4d94aed2a8e70c5f19545efe7917bece8f658741184b865fe1c55b24",
+    "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "gates.json": "34a039be6c92557d88e1f9b5ddd5281eeb21a1d7960d2629ab6b384a93976394",
+    "hint-compile-error.txt": "bef9d10d75bb56f21c2ecb22e71b2d30317dd7689ceef55b1a981e410d256099",
+    "hint-green.txt": "a1e99810c451816f2ad06c0ad23221704aca92b7c86742e1c55281da3f151895",
+    "hint-red.txt": "b10d39a33298fdc14997b1c7eedffa420c6ff081ac361f33031b03e8f14c0c10",
+    "implementation.diff": "0541184ddf0fd07abdcc9447048c6dd84e3c7024acaa11e422045bfa17cfb06b",
+    "red-source.json": "ac7da241186077c237a65464afe85526c603e646f2788f2920423ebd7c7105a9",
+    "reproduce.md": "581a09ff349a3f32fe7fbd1f6be62de10de4a180550677bb0ae323896bf337c0",
+    "review.md": "f8a4b0f3097844fd89661b849cbd562fdbc756e01d2e5392f88e566a14c59fdd",
+    "tested-source-final.json": "289268f5a49ec0cf46e15ba0165bed192d2f48e762eaa15125430de5013d3f6e",
+    "tested-source.json": "1539ed3f82587dbe350b614dbbf27a5614375a140df32649e97082b3bd7fa1ad",
+    "tests-first.diff": "a5d8d0277713a54332cebec5ef98157c9b28e93b72a0b4601767e2fc8a45b8bb",
+    "whitespace-initial.json": "35fafd620b59db7b00568d758746f75d53d38395c730190755c5feca466b8d01"
+  }
+}

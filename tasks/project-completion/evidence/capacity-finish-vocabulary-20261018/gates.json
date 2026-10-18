@@ -1,0 +1,65 @@
+[
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-domain",
+      "--test",
+      "audit"
+    ],
+    "exit_code": 0,
+    "seconds": 1.64,
+    "log": "audit-final.txt"
+  },
+  {
+    "command": [
+      "npx",
+      "--yes",
+      "--ignore-scripts",
+      "@asyncapi/cli@3.6.0",
+      "validate",
+      "specs/001-platform-foundation/contracts/events.asyncapi.yaml"
+    ],
+    "exit_code": 0,
+    "seconds": 3.93,
+    "log": "asyncapi-validate.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "clippy",
+      "--workspace",
+      "--all-targets",
+      "--locked",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit_code": 0,
+    "seconds": 83.89,
+    "log": "clippy.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "fmt",
+      "--all",
+      "--",
+      "--check"
+    ],
+    "exit_code": 0,
+    "seconds": 4.04,
+    "log": "fmt.txt"
+  },
+  {
+    "command": [
+      "python3",
+      "scripts/check-architecture.py"
+    ],
+    "exit_code": 0,
+    "seconds": 0.31,
+    "log": "architecture.txt"
+  }
+]

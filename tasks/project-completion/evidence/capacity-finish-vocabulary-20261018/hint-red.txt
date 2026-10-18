@@ -1,0 +1,19 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 29.31s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 1 test
+
+thread 'hint_contract::capacity_finish_hint_is_closed_control_metadata' (89687616) panicked at tests/integration/workflow-primitives/hint_contract.rs:111:10:
+dormant capacity Finish has a canonical hint before any producer
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test hint_contract::capacity_finish_hint_is_closed_control_metadata ... FAILED
+
+failures:
+
+failures:
+    hint_contract::capacity_finish_hint_is_closed_control_metadata
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 402 filtered out; finished in 0.04s
+
+error: test failed, to rerun pass `-p sagat-tests --test integration_workflow_primitives`

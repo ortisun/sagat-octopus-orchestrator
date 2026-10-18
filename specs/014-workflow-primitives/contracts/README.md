@@ -617,3 +617,11 @@ current own child-chain FINAL member, three metadata tables, current fence, whol
 and same-command unknown-COMMIT reconciliation. No RLS claim, generic creator, usage projection,
 production caller or public runtime activation. New audit/hint vocabulary, schema constraints,
 actual runtime-role native port and recovery tests must precede any use. Full B1/B2 remain open.
+
+Capacity Finish vocabulary: engine audit action `capacity.member.finished`, resource `capacity_group`,
+without generic repeat collapse. Receipt replay/deduplication is a separate pending native-port
+proof. The new canonical AsyncAPI hint is a closed reference object with UUID identities, result
+revision2..i64::MAX, epoch1..i64::MAX, retired boolean and optional nullable traceId. It conveys the
+committed receipt result, never current execution authority. Synthetic shape tests do not prove
+an actual producer, broker delivery or receipt behavior; those remain B2d/e. Only its new message
+was added to the event baseline; existing messages and all SDK goldens were preserved.
