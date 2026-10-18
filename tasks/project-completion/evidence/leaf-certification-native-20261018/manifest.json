@@ -1,0 +1,374 @@
+{
+  "base": "c43e8aab",
+  "scope": "B1b.2a.1d.2 first dormant native certifier; no released INSERT/caller/producer/recovery acceptance",
+  "commands": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "leaf_certification_native::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 101,
+      "seconds": 27.51,
+      "log": "missing-adapter.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "leaf_certification_native::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 76.55,
+      "log": "first.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "leaf_certification_native::native_certification_guard_failure",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 101,
+      "seconds": 43.21,
+      "log": "guard-log-red.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "leaf_certification_native::native_certification_refuses_unrepresentable",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 101,
+      "seconds": 35.87,
+      "log": "canonical-time-red.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "leaf_certification_native::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 57.09,
+      "log": "diagnostic-green.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "leaf_certification_native::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 8.23,
+      "log": "runtime-native.txt",
+      "runtime_role_suite": true
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "capacity_finish_native::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 0.37,
+      "log": "shared-guard-regression.txt",
+      "runtime_role_suite": true
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_platform_foundation",
+        "every_statement_the_stores_issue_is_within_the_runtime_roles_privileges",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 31.72,
+      "log": "runtime-privileges.txt",
+      "runtime_role_suite": false
+    },
+    {
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "--workspace",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "seconds": 110.85,
+      "log": "clippy.txt",
+      "runtime_role_suite": false
+    },
+    {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "seconds": 4.31,
+      "log": "fmt.txt",
+      "runtime_role_suite": false
+    },
+    {
+      "command": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "exit_code": 0,
+      "seconds": 0.7,
+      "log": "architecture.txt",
+      "runtime_role_suite": false
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "leaf_certification_native::native_certification_refuses_unrepresentable_scheduler",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 101,
+      "seconds": 43.76,
+      "log": "scheduler-expiry-red.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "leaf_certification_native::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 55.8,
+      "log": "final-native.txt",
+      "runtime_role_suite": false
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "leaf_certification_native::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 12.29,
+      "log": "final-runtime-native.txt",
+      "runtime_role_suite": true
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "capacity_finish::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 72.92,
+      "log": "final-shared-guard-regression.txt",
+      "runtime_role_suite": true
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_platform_foundation",
+        "every_statement_the_stores_issue_is_within_the_runtime_roles_privileges",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 27.55,
+      "log": "final-runtime-privileges.txt",
+      "runtime_role_suite": false
+    },
+    {
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "--workspace",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "seconds": 56.17,
+      "log": "final-clippy.txt",
+      "runtime_role_suite": false
+    },
+    {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "seconds": 4.21,
+      "log": "final-fmt.txt",
+      "runtime_role_suite": false
+    },
+    {
+      "command": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "exit_code": 0,
+      "seconds": 0.33,
+      "log": "final-architecture.txt",
+      "runtime_role_suite": false
+    }
+  ],
+  "files": {
+    "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "canonical-time-red.txt": "ef0c46e76279637f2606148e2d9536e462b1da92f3be8da5ebca8e654e643b8d",
+    "clippy.txt": "c34f768924b04131819d6a5153df3002e20b41fa72a5dd81478c63b07c11dd15",
+    "commands.json": "9c9ea33770ade51dba279d1ed5d775b235379205780f65123bcfcd1d3241db5c",
+    "diagnostic-green.txt": "df388b569df6ece308521d5c1fecec657de831fdfceb714dddab34a9f056881b",
+    "final-architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "final-clippy.txt": "dbd3067440515667066c62458e0b4d5c966c832475eb66063c4d3119bc6c81bc",
+    "final-fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "final-native.txt": "5d6e1fa952b72f0ce1f22c5e9fdcf177f3150bc3558a74d8bff8c471b484753f",
+    "final-runtime-native.txt": "d284647541e753ee095fecf0710d92de337eb6b354363b9b8da9bc7a807535db",
+    "final-runtime-privileges.txt": "5e91897104d9f048eadaef435a8d9425a0dd7f1a57bba84cd30ea91c28013187",
+    "final-shared-guard-regression.txt": "23a6090ced68ad85a169aafdc8b6bd1228425aafeb8efff18c3ecf57998e6c2a",
+    "first.txt": "2fb2a0bc8309abd59b22bec64a128c7881c256801c287c8091536a4ebf19327f",
+    "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "guard-log-red.txt": "fb9e250898647d525523220e39a28c4d7716e551cab06db960ee2afb02ac21b1",
+    "implementation.diff": "2addf10406f1969883afc8d61c24ccb6cc9b8ee9863006a8edc7ba30a3941aee",
+    "missing-adapter.txt": "fba4a5c9065b76057f185f376a864027d3c70cbac66eeb5f21b803da001944d0",
+    "reproduce.md": "ed4127749647235d2576363bd79c3586e2bc0eb650e158b0f426862a7d286be0",
+    "review.md": "f53a26167a16f5749e350e9ae2ddbaa6d786411c43c4769f8396df2fc863d761",
+    "runtime-native.txt": "8e888af208eec2d276d5e6ab98ac3ea6a37920346de9872fab708380b4d13032",
+    "runtime-privileges.txt": "30018f33dd40358d766b70e74cb377bb8d1e57c7e5d9bf443cfe11d1f8250fd1",
+    "scheduler-expiry-red.txt": "e7f4e9f6556d79f1f5109ce3bc41ebe648774c79b6c8693805af172e47178540",
+    "shared-guard-regression.txt": "eed3d0c107dba5de00caec5774a37007fe1d5170849afa7b9a32f9830958f49b",
+    "source-complete.json": "533fe51260dfe5a4e32d053baa02c8715b2ec90f9c490299175308c515d4c194",
+    "source-diagnostic-green.json": "3a59f57dcbdc78d7823fd526f0434ce1b7eae9ca0811d4e01e3628cf97112bb7",
+    "source-expiry-red.json": "9c997e34c6c6c736767e073e6c41e60ae4f73b441cbbf54bc0215212f3257b89",
+    "source-final.json": "b976ec626d319998cc88d0f48312fed44ab3951063531def6dee29ff6f1d3646",
+    "source-first.json": "de3d4c5485dc032b67f553f64a379129be5085cded8a82ff84025ffabb898ea5",
+    "source-gates.json": "44e671a7d2a6d7a73e3a1cc5eebae9cbf1e21cb2b863d40678a80ae0cc9230f2",
+    "source-guard-red.json": "1ba63c3061a5e4fc30c63d95d69814624a0ad443b98c37e5e0c986a67cad99af",
+    "source-missing.json": "f7f35fef34d17883f76ea84efd24d6b80a2a4b4078bd57fe76f43fb567e8a1cc",
+    "source-time-red.json": "59071c6e992030ab9723ff8e17cc42d2b24292da0f0b36fc534df38b51a61df7"
+  },
+  "final_source": {
+    "crates/infra-postgres/src/execution.rs": "fccef861b6c07b963a22c8e15d1f01401fc063870dd77d1ed414638cc186f22f",
+    "crates/infra-postgres/src/lib.rs": "4a18e81c36f47d7e64ff8869e2a55e822014e8623ad4cdfe10f1eb8407b4118c",
+    "tests/integration/workflow-primitives/main.rs": "188a4bb0062a181c765d7235a5106fe5eaed65d20d53c8d87bd63e2d6d292018",
+    "tests/integration/platform-foundation/runtime_privileges.rs": "7f91b1a488bbb9a24f3f3f9cefab007d6c524cadeda4239fc5403b5f5f692908",
+    "crates/infra-postgres/src/leaf_certification.rs": "caae3491985e749d84e3bd736fd3362aa8687526966f0d2694358c44aa259cde",
+    "tests/integration/workflow-primitives/leaf_certification_native.rs": "a8b525af2e6cac192af6a8359c94dcad79fa6476e607c99cc96ce3d8f185bec0"
+  },
+  "reviews": {
+    "driver_cycles": 3,
+    "source_proof_cycles": 1,
+    "model": "gpt-6-astra",
+    "reasoning_effort": "xhigh",
+    "external_cli": false
+  }
+}

@@ -1,0 +1,19 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 38.70s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 1 test
+test leaf_certification_native::native_certification_guard_failure_redacts_driver_diagnostics ... 
+thread 'leaf_certification_native::native_certification_guard_failure_redacts_driver_diagnostics' (99149052) panicked at tests/integration/workflow-primitives/leaf_certification_native.rs:100:5:
+raw guard diagnostic leaked
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    leaf_certification_native::native_certification_guard_failure_redacts_driver_diagnostics
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 434 filtered out; finished in 2.31s
+
+error: test failed, to rerun pass `-p sagat-tests --test integration_workflow_primitives`

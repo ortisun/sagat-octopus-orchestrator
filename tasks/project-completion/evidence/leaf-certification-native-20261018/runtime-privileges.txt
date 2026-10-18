@@ -1,0 +1,10 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 24.69s
+     Running integration/platform-foundation/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_platform_foundation-cbf7ec1e4090f04f)
+
+running 1 test
+test runtime_privileges::every_statement_the_stores_issue_is_within_the_runtime_roles_privileges ... runtime privilege audit: 1058 statements in 54 files, 670 distinct needs checked, 634 probed as sagat_app, 9 statements read from non-definer triggers, 74 SECURITY DEFINER trigger(s) not followed
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 90 filtered out; finished in 4.05s
+

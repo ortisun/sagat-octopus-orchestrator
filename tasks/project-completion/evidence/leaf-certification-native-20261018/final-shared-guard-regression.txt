@@ -1,0 +1,32 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.25s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 25 tests
+test capacity_finish::active_holder_fk_is_deferred_and_abort_preserves_both_rows ... ok
+test capacity_finish::barriers::audit_outbox_receipt_and_deferred_commit_failures_roll_back_all_effects ... ok
+test capacity_finish::barriers::group_busy_consumes_transaction_and_releases_own_chain_and_run ... ok
+test capacity_finish::barriers::own_chain_wait_precedes_run_lock_and_serializes_duplicate_commands ... ok
+test capacity_finish::barriers::postwait_expiry_refuses_first_application_and_receipt_replay ... ok
+test capacity_finish::commit_loss::unknown_commit_reconciles_actual_commit_and_abort_without_inventing_a_new_key ... ok
+test capacity_finish::continued_history_never_finishes_logical_member_even_after_successor_final ... ok
+test capacity_finish::contradictory_final_outcome_refuses_finish_and_root_binding_grants_no_authority ... ok
+test capacity_finish::counters_identity_and_tenant_namespace_bindings_are_enforced ... ok
+test capacity_finish::current_child_final_finishes_once_without_rewriting_execution ... ok
+test capacity_finish::downgrade_waits_for_writer_before_deciding_whether_storage_is_empty ... ok
+test capacity_finish::empty_schema_reverses_but_retained_tombstones_refuse_downgrade ... ok
+test capacity_finish::exhausted_sql_revision_leaves_no_partial_finish ... ok
+test capacity_finish::finishing_selected_child_preserves_other_members_and_historical_receipt ... ok
+test capacity_finish::historical_holder_receipt_survives_later_holder_finish ... ok
+test capacity_finish::native_finish_rejects_live_wrong_scope_stale_fence_and_conflicting_replay ... ok
+test capacity_finish::native_fixture_reaches_current_child_final_through_real_runtime_writers ... ok
+test capacity_finish::observations::filtered_finish_span_cannot_overwrite_its_callers_outcome_or_status ... ok
+test capacity_finish::observations::returned_outcomes_export_closed_spans_and_only_confirmed_first_commits_count ... ok
+test capacity_finish::races::committed_handoff_overtakes_discovered_old_owner_without_forwarding_finish ... ok
+test capacity_finish::races::same_tenant_members_in_two_namespaces_keep_exact_binding_and_receipt_identity ... ok
+test capacity_finish::runtime_has_only_selected_columns_and_receipt_append_privileges ... ok
+test capacity_finish::tombstones_and_receipts_survive_owner_mutation_attempts ... ok
+test capacity_finish::vacant_nonholder_receipt_keeps_epoch_and_fixed_fingerprint_bounds ... ok
+test capacity_finish::valid_owner_fixture_precedes_capacity_constraint_probes ... ok
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 412 filtered out; finished in 72.61s
+

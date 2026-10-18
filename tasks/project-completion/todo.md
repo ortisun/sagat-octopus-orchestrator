@@ -90,10 +90,17 @@ not a SQL port or own-member authority. See evidence/capacity-header-restore-202
 - [ ] B1b.2a.1d: Prove exact successful source certification and actual producer races/restart;
   failed/drained/effect-bearing paths need their own source-closure contract.
 - [x] B1b.2a.1d.1: Freeze bounded native proof/replay/error/metadata projection transaction.
-- [ ] B1b.2a.1d.2: Implement dormant native certifier and actual public-source happy/refusal/atomic
+- [x] B1b.2a.1d.2: Implement dormant native certifier and actual public-source happy/refusal/atomic
   write tests with disposable test-only INSERT grant; no released INSERT or caller.
 - [ ] B1b.2a.1d.3: Prove every actual producer's preservation barriers, bounded failures/recovery,
   uncertain-COMMIT/restart and closed observations before permitting release INSERT.
+
+First native certifier increment: actual public HTTP/gRPC source creation, before-closure refusal,
+audit/fact rollback/retry, metadata-only replay after later scope failure, redacted guard errors and
+strict canonical time decoding.4tests passed in default and runtime modes; shared guard regression
+25/25, runtime SQL/trigger privilege audit and strict workspace Clippy/fmt/architecture passed.
+Driver review3cycles and source proof review1cycle reached no remaining bounded finding; actual
+producer races/recovery/observations remain open. See evidence/leaf-certification-native-20261018.
 - [ ] B1b.2b: Review scoped binding/fingerprint/receipt/retention extension and its actual queries.
 - [ ] B1b.2c: Review nested/child relationship closure and remaining quiescence/transition authority.
 

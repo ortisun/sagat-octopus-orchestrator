@@ -1,0 +1,19 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 31.33s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 1 test
+test leaf_certification_native::native_certification_refuses_unrepresentable_canonical_time ... 
+thread 'leaf_certification_native::native_certification_refuses_unrepresentable_canonical_time' (99190911) panicked at /Users/marcelo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sqlx-postgres-0.9.0/src/types/time/datetime.rs:60:17:
+resulting value is out of range
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    leaf_certification_native::native_certification_refuses_unrepresentable_canonical_time
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 435 filtered out; finished in 2.45s
+
+error: test failed, to rerun pass `-p sagat-tests --test integration_workflow_primitives`

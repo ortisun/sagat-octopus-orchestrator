@@ -1,0 +1,6 @@
+{
+  "crates/infra-postgres/src/leaf_certification.rs": "c26e4459d1ac76562f469f1f30dc0824de3d5f3b0a0b9c948a00fec52d09a486",
+  "crates/infra-postgres/src/lib.rs": "4a18e81c36f47d7e64ff8869e2a55e822014e8623ad4cdfe10f1eb8407b4118c",
+  "tests/integration/workflow-primitives/leaf_certification_native.rs": "295ca6e5e9defea2821bad3f0160c1cfd3c1331f2d0b31e69e6e09ebebf2ca59",
+  "tests/integration/workflow-primitives/main.rs": "188a4bb0062a181c765d7235a5106fe5eaed65d20d53c8d87bd63e2d6d292018"
+}

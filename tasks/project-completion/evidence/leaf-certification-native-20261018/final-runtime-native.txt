@@ -1,0 +1,11 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.34s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 4 tests
+test leaf_certification_native::native_certification_compares_far_future_scheduler_expiry_on_the_server ... ok
+test leaf_certification_native::native_certification_guard_failure_redacts_driver_diagnostics ... ok
+test leaf_certification_native::native_certification_is_metadata_only_and_replays_after_later_scope_failure ... ok
+test leaf_certification_native::native_certification_refuses_unrepresentable_canonical_time ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 433 filtered out; finished in 11.88s
+

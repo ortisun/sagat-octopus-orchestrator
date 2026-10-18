@@ -433,6 +433,18 @@ pub(crate) async fn lock_member_chain(
     namespace: NamespaceId,
     run: RunId,
 ) -> Result<(), StoreError> {
+    lock_member_chain_sql(tx, tenant, namespace, run)
+        .await
+        .map_err(store_error)
+}
+
+/// The same guard without logging/classification; callers choose their diagnostic boundary.
+pub(crate) async fn lock_member_chain_sql(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: TenantId,
+    namespace: NamespaceId,
+    run: RunId,
+) -> Result<(), sqlx::Error> {
     sqlx::query(
         "SELECT c.chain_id FROM chain_segments s JOIN execution_chains c \
          ON c.tenant_id=s.tenant_id AND c.namespace_id=s.namespace_id AND c.chain_id=s.chain_id \
@@ -442,8 +454,7 @@ pub(crate) async fn lock_member_chain(
     .bind(namespace.as_uuid())
     .bind(run.as_uuid())
     .execute(&mut **tx)
-    .await
-    .map_err(store_error)?;
+    .await?;
     Ok(())
 }
 
@@ -502,30 +513,50 @@ pub(crate) async fn locked_scheduler_time(
     owner: &str,
     lease: sagat_application::shards::Lease,
 ) -> Result<Option<OffsetDateTime>, StoreError> {
+    locked_scheduler_time_sql(tx, run, owner, lease)
+        .await
+        .map_err(store_error)
+}
+
+/// Preserve the shared lock/clock order while letting sensitive callers redact driver failures.
+pub(crate) async fn locked_scheduler_time_sql(
+    tx: &mut Transaction<'_, Postgres>,
+    run: RunId,
+    owner: &str,
+    lease: sagat_application::shards::Lease,
+) -> Result<Option<OffsetDateTime>, sqlx::Error> {
     if lease.shard != sagat_domain::sharding::Shard::of(run.as_uuid()) {
         return Ok(None);
     }
     let Ok(generation) = i64::try_from(lease.generation) else {
         return Ok(None);
     };
-    let expiry: Option<OffsetDateTime> = sqlx::query_scalar(
-        "SELECT expires_at FROM scheduler_shards \
+    let held: Option<i16> = sqlx::query_scalar(
+        "SELECT shard FROM scheduler_shards \
          WHERE shard=$1 AND generation=$2 AND owner=$3 FOR SHARE",
     )
     .bind(i16::from(lease.shard.index()))
     .bind(generation)
     .bind(owner)
     .fetch_optional(&mut **tx)
-    .await
-    .map_err(store_error)?;
-    let Some(expiry) = expiry else {
+    .await?;
+    if held.is_none() {
         return Ok(None);
-    };
-    let now: OffsetDateTime = sqlx::query_scalar("SELECT clock_timestamp()")
-        .fetch_one(&mut **tx)
-        .await
-        .map_err(store_error)?;
-    Ok((expiry > now).then_some(now))
+    }
+    // Compare in PostgreSQL: finite lease expiry can exceed OffsetDateTime's year 9999.
+    // MATERIALIZED observes one fresh clock only after the SHARE lock, including after waits.
+    let now: Option<Option<OffsetDateTime>> = sqlx::query_scalar(
+        "WITH tick AS MATERIALIZED (SELECT clock_timestamp() AS now) \
+         SELECT CASE WHEN s.expires_at>tick.now THEN tick.now END \
+         FROM scheduler_shards s CROSS JOIN tick \
+         WHERE s.shard=$1 AND s.generation=$2 AND s.owner=$3",
+    )
+    .bind(i16::from(lease.shard.index()))
+    .bind(generation)
+    .bind(owner)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(now.flatten())
 }
 
 enum RunChainLock {

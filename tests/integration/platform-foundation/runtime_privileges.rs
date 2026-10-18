@@ -46,6 +46,11 @@ const CONTENT_USAGE: &str = "crates/infra-postgres/src/content_usage.rs";
 
 const ALLOWED: &[Allowed] = &[
     Allowed {
+        file: "crates/infra-postgres/src/leaf_certification.rs",
+        need: "INSERT leaf_collection_success_certifications(tenant_id, namespace_id, run_id, owner_node, iteration_index, profile, definition_version_id, scope_id, body_node, return_node, admitted_sequence, returned_sequence, checkpoint_sequence, checkpoint_result_digest, finished_sequence, aggregate_result_digest, owner_routed_sequence, certified_run_revision, certified_at, audit_id)",
+        reason: "B1b.2a.1d: dormant source certifier has no production caller; released INSERT is withheld until producer preservation, recovery and observations pass. Native tests grant INSERT explicitly in disposable databases; leaf_certification::dormant_runtime_cannot_create_or_rewrite_certifications proves the release restriction",
+    },
+    Allowed {
         file: IDENTITY,
         need: "INSERT tenants(id, slug, created_at)",
         reason: "provision-tenant runs as the owner role, never as the runtime role (control-plane runbook, section 1)",

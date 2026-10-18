@@ -1,6 +1,7 @@
 # Dormant ordinary-leaf source transaction — B1b.2a.1d.1 candidate
 
-Status: reviewed bounded native-writer contract, not source/producer/recovery acceptance.
+Status: reviewed contract and first dormant native implementation; producer/recovery acceptance
+and release activation remain pending. Evidence: evidence/leaf-certification-native-20261018.
 Refs:T014-014/017/040; reviewed leaf-certification-port.md and leaf-certification-storage.md.
 No production caller or released INSERT grant; native tests explicitly opt in via disposable owner.
 
@@ -11,6 +12,8 @@ lock_member_chain on qualified original run, then SELECT exact tenant/namespace/
 Return Missing for absent qualified original run. Read actual version/revision/trace; do not require
 success/current-head or redirect. Retain locked_scheduler_time's scheduler SHARE guard and actual
 postwait clock; None is SchedulerFenceLost. Do not use primitives::lock_run's terminal restrictions.
+The shared guard compares expiry against one materialized postlock clock in PostgreSQL, decoding
+only the returned clock. A valid finite lease expiry beyond Rust's timestamp range stays live.
 
 Canonical lookup follows authority. Strictly decode closed profile, qualified identity, nodes,
 digests/counters/time. Reconstruct depth1 return path, validate_structure and actual immutable

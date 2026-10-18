@@ -96,3 +96,6 @@
 /tasks/project-completion/evidence/leaf-certification-schema-20261018/chain-fixture-red.txt whitespace=-blank-at-eof,-blank-at-eol
 /tasks/project-completion/evidence/leaf-certification-audit-20261018/*.txt whitespace=-blank-at-eof
 /tasks/project-completion/evidence/leaf-certification-audit-20261018/*.diff whitespace=-blank-at-eol
+/tasks/project-completion/evidence/leaf-certification-native-20261018/*.txt whitespace=-blank-at-eof
+/tasks/project-completion/evidence/leaf-certification-native-20261018/*red.txt whitespace=-blank-at-eof,-blank-at-eol
+/tasks/project-completion/evidence/leaf-certification-native-20261018/*.diff whitespace=-blank-at-eol
