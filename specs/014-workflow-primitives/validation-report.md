@@ -2946,3 +2946,15 @@ One independent bounded Astra review found no issue. No tests or executable extr
 actual current baselines and concrete missing metadata controls precede that next implementation.
 See tasks/project-completion/canonical-leaf-reader-contract.md and
 evidence/canonical-leaf-reader-decision-20261018.
+
+## Incomplete first current60 SDK aggregate — 2026-10-18
+
+The first unfiltered current60 attempt failed after593.74s (harness570.55s), with31 scenarios
+completed and135 complete normalized outputs independently equal to reviewed goldens. At initial
+managed-secret setup for database-connections, the API returned503/UNAVAILABLE. All1672 frozen
+inputs remained identical. The exact same source/configuration then passed that focused case in
+all five SDKs in25.53s (harness24.66s), with prepared-runner reuse only. No underlying cause was
+established and no speculative product fix, write retry or golden change was added. Failed full
+and passing focused logs are retained separately at
+tasks/project-completion/evidence/sdk60-first-failure-20261018/manifest.json. T014-041 remains
+open pending a complete current60 pass; component successes are not combined into one.

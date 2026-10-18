@@ -1,0 +1,54 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 20.83s
+     Running contract/sdk-conformance/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/sdk_conformance-b2617ec528303b0c)
+
+running 1 test
+--- approval-builders (5 languages)
+--- approval-chain (5 languages)
+test every_sdk_conforms_to_every_scenario has been running for over 60 seconds
+--- approval-decisions (5 languages)
+--- approval-security (5 languages)
+--- approval-settlement (5 languages)
+--- approval-state (5 languages)
+--- blobs (5 languages)
+--- builders (5 languages)
+--- cancellation (5 languages)
+--- chain-cancel-parent (5 languages)
+--- chain-child (5 languages)
+--- chain-commands (5 languages)
+--- chain-final-success (5 languages)
+--- chain-inspect-cancel (5 languages)
+--- chain-query-handoff (5 languages)
+--- chain-query (5 languages)
+--- chain-rerun (5 languages)
+--- chain-root-wait (5 languages)
+--- chain-state-final-success (5 languages)
+--- chain-three-segments (5 languages)
+--- classification (5 languages)
+--- collection-blob-output (5 languages)
+--- collection-blob-source (5 languages)
+--- collection-builders (5 languages)
+--- collection-compensation (5 languages)
+--- collection-fail-fast-drain (5 languages)
+--- collection-limits (5 languages)
+--- collection-ordering (5 languages)
+--- collection-runtime (5 languages)
+--- collection-step-source (5 languages)
+--- continuation-builders (5 languages)
+--- database-connections (5 languages)
+
+thread 'every_sdk_conforms_to_every_scenario' (109041293) panicked at tests/contract/sdk-conformance/database.rs:116:9:
+assertion `left == right` failed: {"code":"UNAVAILABLE","message":"service temporarily unavailable","remediation":"Try again with a growing pause; if it lasts, check the platform's readiness and report the trace id.","requestId":"ffb3837ff0784a8cb284f596796ce8d8","retryable":true,"traceId":"93228561cec54bfc9637fe0ff2f8126d"}
+  left: 503
+ right: 200
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test every_sdk_conforms_to_every_scenario ... FAILED
+
+failures:
+
+failures:
+    every_sdk_conforms_to_every_scenario
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 570.55s
+
+error: test failed, to rerun pass `-p sagat-tests --test sdk_conformance`

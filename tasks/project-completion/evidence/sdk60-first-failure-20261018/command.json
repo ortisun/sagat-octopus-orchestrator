@@ -1,0 +1,28 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "sdk_conformance",
+    "every_sdk_conforms_to_every_scenario",
+    "--",
+    "--exact",
+    "--ignored",
+    "--nocapture"
+  ],
+  "exit_code": 101,
+  "seconds": 593.74,
+  "log": "aggregate.txt",
+  "scenario_filter": false,
+  "language_filter": false,
+  "reuse": false,
+  "bless": false,
+  "archived_source": false,
+  "runtime_role": true,
+  "held_postgresql": "16.15",
+  "frozen_inputs": 1672,
+  "sources_unchanged": true
+}

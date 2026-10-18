@@ -1,0 +1,22 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "sdk_conformance",
+    "every_sdk_conforms_to_every_scenario",
+    "--",
+    "--exact",
+    "--ignored",
+    "--nocapture"
+  ],
+  "scenario": "database-connections",
+  "all_five_languages": true,
+  "reuse_prepared_runners": true,
+  "exit_code": 0,
+  "seconds": 25.53,
+  "log": "database-reproduction.txt"
+}

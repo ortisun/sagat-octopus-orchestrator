@@ -1,0 +1,302 @@
+[
+  {
+    "name": "approval-builders",
+    "buildOnly": true,
+    "phase": "authoring-only"
+  },
+  {
+    "name": "approval-chain",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "approval-decisions",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "approval-security",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "approval-settlement",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "approval-state",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "blobs",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "builders",
+    "buildOnly": false,
+    "phase": "publication-only"
+  },
+  {
+    "name": "cancellation",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "chain-cancel-parent",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "chain-child",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "chain-commands",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "chain-final-success",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "chain-inspect-cancel",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "chain-query-handoff",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "chain-query",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "chain-rerun",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "chain-root-wait",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "chain-state-final-success",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "chain-three-segments",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "classification",
+    "buildOnly": true,
+    "phase": "authoring-only"
+  },
+  {
+    "name": "collection-blob-output",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "collection-blob-source",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "collection-builders",
+    "buildOnly": true,
+    "phase": "authoring-only"
+  },
+  {
+    "name": "collection-compensation",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "collection-fail-fast-drain",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "collection-limits",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "collection-ordering",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "collection-runtime",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "collection-step-source",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "continuation-builders",
+    "buildOnly": true,
+    "phase": "authoring-only"
+  },
+  {
+    "name": "database-connections",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "errors",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "expression-limits",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "failures-and-retries",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "lease-lost",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "loop-builders",
+    "buildOnly": true,
+    "phase": "authoring-only"
+  },
+  {
+    "name": "loop-cancel",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "loop-compensation",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "loop-error-activity",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "loop-runtime",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "loop-semantics",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "lost-responses",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "protocol-negotiation",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "run-input-blobs",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "run-input-early-success",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "run-lifecycle",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "saga-compensation",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "scoped-identity",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "secrets",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "serialization",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "signals-and-events",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "state-operation-builders",
+    "buildOnly": true,
+    "phase": "authoring-only"
+  },
+  {
+    "name": "state-operations",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "switch-builders",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "worker-registration",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "worker-shutdown",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "worker-stream-faults",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "worker-transport-faults",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  },
+  {
+    "name": "workflow-instance-limits",
+    "buildOnly": false,
+    "phase": "live-workflow-or-protocol"
+  }
+]

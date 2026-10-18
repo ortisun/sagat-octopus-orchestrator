@@ -1,0 +1,677 @@
+[
+  {
+    "scenario": "approval-chain",
+    "language": "dotnet",
+    "sha256": "94a3d8275bf1a5383af9e32f0b22e447df5c1787ff82703f5e5bf95d2a002bf6"
+  },
+  {
+    "scenario": "approval-chain",
+    "language": "go",
+    "sha256": "94a3d8275bf1a5383af9e32f0b22e447df5c1787ff82703f5e5bf95d2a002bf6"
+  },
+  {
+    "scenario": "approval-chain",
+    "language": "java",
+    "sha256": "94a3d8275bf1a5383af9e32f0b22e447df5c1787ff82703f5e5bf95d2a002bf6"
+  },
+  {
+    "scenario": "approval-chain",
+    "language": "python",
+    "sha256": "94a3d8275bf1a5383af9e32f0b22e447df5c1787ff82703f5e5bf95d2a002bf6"
+  },
+  {
+    "scenario": "approval-chain",
+    "language": "typescript",
+    "sha256": "94a3d8275bf1a5383af9e32f0b22e447df5c1787ff82703f5e5bf95d2a002bf6"
+  },
+  {
+    "scenario": "approval-decisions",
+    "language": "dotnet",
+    "sha256": "157d93bac91d6a03f398b9fd3da6b313b4b215f129408f705a91d46827b197b5"
+  },
+  {
+    "scenario": "approval-decisions",
+    "language": "go",
+    "sha256": "157d93bac91d6a03f398b9fd3da6b313b4b215f129408f705a91d46827b197b5"
+  },
+  {
+    "scenario": "approval-decisions",
+    "language": "java",
+    "sha256": "157d93bac91d6a03f398b9fd3da6b313b4b215f129408f705a91d46827b197b5"
+  },
+  {
+    "scenario": "approval-decisions",
+    "language": "python",
+    "sha256": "157d93bac91d6a03f398b9fd3da6b313b4b215f129408f705a91d46827b197b5"
+  },
+  {
+    "scenario": "approval-decisions",
+    "language": "typescript",
+    "sha256": "157d93bac91d6a03f398b9fd3da6b313b4b215f129408f705a91d46827b197b5"
+  },
+  {
+    "scenario": "approval-security",
+    "language": "dotnet",
+    "sha256": "a069b89050c928541f20b55f4d101986b57296d0ef3ea0f9e5593d17843ec129"
+  },
+  {
+    "scenario": "approval-security",
+    "language": "go",
+    "sha256": "a069b89050c928541f20b55f4d101986b57296d0ef3ea0f9e5593d17843ec129"
+  },
+  {
+    "scenario": "approval-security",
+    "language": "java",
+    "sha256": "a069b89050c928541f20b55f4d101986b57296d0ef3ea0f9e5593d17843ec129"
+  },
+  {
+    "scenario": "approval-security",
+    "language": "python",
+    "sha256": "a069b89050c928541f20b55f4d101986b57296d0ef3ea0f9e5593d17843ec129"
+  },
+  {
+    "scenario": "approval-security",
+    "language": "typescript",
+    "sha256": "a069b89050c928541f20b55f4d101986b57296d0ef3ea0f9e5593d17843ec129"
+  },
+  {
+    "scenario": "approval-settlement",
+    "language": "dotnet",
+    "sha256": "356d0d41443046b5dcbc8214e5ee6d04504c1b4106ef69b11e7e63bb56a77e80"
+  },
+  {
+    "scenario": "approval-settlement",
+    "language": "go",
+    "sha256": "356d0d41443046b5dcbc8214e5ee6d04504c1b4106ef69b11e7e63bb56a77e80"
+  },
+  {
+    "scenario": "approval-settlement",
+    "language": "java",
+    "sha256": "356d0d41443046b5dcbc8214e5ee6d04504c1b4106ef69b11e7e63bb56a77e80"
+  },
+  {
+    "scenario": "approval-settlement",
+    "language": "python",
+    "sha256": "356d0d41443046b5dcbc8214e5ee6d04504c1b4106ef69b11e7e63bb56a77e80"
+  },
+  {
+    "scenario": "approval-settlement",
+    "language": "typescript",
+    "sha256": "356d0d41443046b5dcbc8214e5ee6d04504c1b4106ef69b11e7e63bb56a77e80"
+  },
+  {
+    "scenario": "approval-state",
+    "language": "dotnet",
+    "sha256": "f176e92d1d70037b3ecbb66a138a0665f6eaa37c97263848710e0094f0814ca9"
+  },
+  {
+    "scenario": "approval-state",
+    "language": "go",
+    "sha256": "f176e92d1d70037b3ecbb66a138a0665f6eaa37c97263848710e0094f0814ca9"
+  },
+  {
+    "scenario": "approval-state",
+    "language": "java",
+    "sha256": "f176e92d1d70037b3ecbb66a138a0665f6eaa37c97263848710e0094f0814ca9"
+  },
+  {
+    "scenario": "approval-state",
+    "language": "python",
+    "sha256": "f176e92d1d70037b3ecbb66a138a0665f6eaa37c97263848710e0094f0814ca9"
+  },
+  {
+    "scenario": "approval-state",
+    "language": "typescript",
+    "sha256": "f176e92d1d70037b3ecbb66a138a0665f6eaa37c97263848710e0094f0814ca9"
+  },
+  {
+    "scenario": "blobs",
+    "language": "dotnet",
+    "sha256": "b1e07b89c929d1bd5963f8da1619953fbb266d80b26315011fb6364ae74f722b"
+  },
+  {
+    "scenario": "blobs",
+    "language": "go",
+    "sha256": "b1e07b89c929d1bd5963f8da1619953fbb266d80b26315011fb6364ae74f722b"
+  },
+  {
+    "scenario": "blobs",
+    "language": "java",
+    "sha256": "b1e07b89c929d1bd5963f8da1619953fbb266d80b26315011fb6364ae74f722b"
+  },
+  {
+    "scenario": "blobs",
+    "language": "python",
+    "sha256": "b1e07b89c929d1bd5963f8da1619953fbb266d80b26315011fb6364ae74f722b"
+  },
+  {
+    "scenario": "blobs",
+    "language": "typescript",
+    "sha256": "b1e07b89c929d1bd5963f8da1619953fbb266d80b26315011fb6364ae74f722b"
+  },
+  {
+    "scenario": "builders",
+    "language": "dotnet",
+    "sha256": "f4d78d3829ededda330c2e90ce703699a629096f770b1f0bc76ff0eb82b5d11b"
+  },
+  {
+    "scenario": "builders",
+    "language": "go",
+    "sha256": "f4d78d3829ededda330c2e90ce703699a629096f770b1f0bc76ff0eb82b5d11b"
+  },
+  {
+    "scenario": "builders",
+    "language": "java",
+    "sha256": "f4d78d3829ededda330c2e90ce703699a629096f770b1f0bc76ff0eb82b5d11b"
+  },
+  {
+    "scenario": "builders",
+    "language": "python",
+    "sha256": "f4d78d3829ededda330c2e90ce703699a629096f770b1f0bc76ff0eb82b5d11b"
+  },
+  {
+    "scenario": "builders",
+    "language": "typescript",
+    "sha256": "f4d78d3829ededda330c2e90ce703699a629096f770b1f0bc76ff0eb82b5d11b"
+  },
+  {
+    "scenario": "cancellation",
+    "language": "dotnet",
+    "sha256": "9adfdd6828f646a472d393e3253c36970a3b86fb5c817ea207f72e3762ffb0de"
+  },
+  {
+    "scenario": "cancellation",
+    "language": "go",
+    "sha256": "9adfdd6828f646a472d393e3253c36970a3b86fb5c817ea207f72e3762ffb0de"
+  },
+  {
+    "scenario": "cancellation",
+    "language": "java",
+    "sha256": "9adfdd6828f646a472d393e3253c36970a3b86fb5c817ea207f72e3762ffb0de"
+  },
+  {
+    "scenario": "cancellation",
+    "language": "python",
+    "sha256": "9adfdd6828f646a472d393e3253c36970a3b86fb5c817ea207f72e3762ffb0de"
+  },
+  {
+    "scenario": "cancellation",
+    "language": "typescript",
+    "sha256": "9adfdd6828f646a472d393e3253c36970a3b86fb5c817ea207f72e3762ffb0de"
+  },
+  {
+    "scenario": "chain-cancel-parent",
+    "language": "dotnet",
+    "sha256": "24290a9005760c74aa9327ec1c048968226cc380ba76c38b38975571cde494bd"
+  },
+  {
+    "scenario": "chain-cancel-parent",
+    "language": "go",
+    "sha256": "24290a9005760c74aa9327ec1c048968226cc380ba76c38b38975571cde494bd"
+  },
+  {
+    "scenario": "chain-cancel-parent",
+    "language": "java",
+    "sha256": "24290a9005760c74aa9327ec1c048968226cc380ba76c38b38975571cde494bd"
+  },
+  {
+    "scenario": "chain-cancel-parent",
+    "language": "python",
+    "sha256": "24290a9005760c74aa9327ec1c048968226cc380ba76c38b38975571cde494bd"
+  },
+  {
+    "scenario": "chain-cancel-parent",
+    "language": "typescript",
+    "sha256": "24290a9005760c74aa9327ec1c048968226cc380ba76c38b38975571cde494bd"
+  },
+  {
+    "scenario": "chain-child",
+    "language": "dotnet",
+    "sha256": "b8d4a2a1337d5a56c692a69b9643f87916e2317ce6df1398f38004d01f792147"
+  },
+  {
+    "scenario": "chain-child",
+    "language": "go",
+    "sha256": "b8d4a2a1337d5a56c692a69b9643f87916e2317ce6df1398f38004d01f792147"
+  },
+  {
+    "scenario": "chain-child",
+    "language": "java",
+    "sha256": "b8d4a2a1337d5a56c692a69b9643f87916e2317ce6df1398f38004d01f792147"
+  },
+  {
+    "scenario": "chain-child",
+    "language": "python",
+    "sha256": "b8d4a2a1337d5a56c692a69b9643f87916e2317ce6df1398f38004d01f792147"
+  },
+  {
+    "scenario": "chain-child",
+    "language": "typescript",
+    "sha256": "b8d4a2a1337d5a56c692a69b9643f87916e2317ce6df1398f38004d01f792147"
+  },
+  {
+    "scenario": "chain-commands",
+    "language": "dotnet",
+    "sha256": "f63045906f56e81ac93e8e6a6706a933d52e883469d663233c51f447fbf395d6"
+  },
+  {
+    "scenario": "chain-commands",
+    "language": "go",
+    "sha256": "f63045906f56e81ac93e8e6a6706a933d52e883469d663233c51f447fbf395d6"
+  },
+  {
+    "scenario": "chain-commands",
+    "language": "java",
+    "sha256": "f63045906f56e81ac93e8e6a6706a933d52e883469d663233c51f447fbf395d6"
+  },
+  {
+    "scenario": "chain-commands",
+    "language": "python",
+    "sha256": "f63045906f56e81ac93e8e6a6706a933d52e883469d663233c51f447fbf395d6"
+  },
+  {
+    "scenario": "chain-commands",
+    "language": "typescript",
+    "sha256": "f63045906f56e81ac93e8e6a6706a933d52e883469d663233c51f447fbf395d6"
+  },
+  {
+    "scenario": "chain-final-success",
+    "language": "dotnet",
+    "sha256": "5755664cdbfe4c72195b7199cd99953e61144e0060e7ddfde6ed42f5108ad5f4"
+  },
+  {
+    "scenario": "chain-final-success",
+    "language": "go",
+    "sha256": "5755664cdbfe4c72195b7199cd99953e61144e0060e7ddfde6ed42f5108ad5f4"
+  },
+  {
+    "scenario": "chain-final-success",
+    "language": "java",
+    "sha256": "5755664cdbfe4c72195b7199cd99953e61144e0060e7ddfde6ed42f5108ad5f4"
+  },
+  {
+    "scenario": "chain-final-success",
+    "language": "python",
+    "sha256": "5755664cdbfe4c72195b7199cd99953e61144e0060e7ddfde6ed42f5108ad5f4"
+  },
+  {
+    "scenario": "chain-final-success",
+    "language": "typescript",
+    "sha256": "5755664cdbfe4c72195b7199cd99953e61144e0060e7ddfde6ed42f5108ad5f4"
+  },
+  {
+    "scenario": "chain-inspect-cancel",
+    "language": "dotnet",
+    "sha256": "38c8ac9e5672b69b57044e3b9b1828b0884dae2c694a8c76d4a5ab74f1b0e247"
+  },
+  {
+    "scenario": "chain-inspect-cancel",
+    "language": "go",
+    "sha256": "38c8ac9e5672b69b57044e3b9b1828b0884dae2c694a8c76d4a5ab74f1b0e247"
+  },
+  {
+    "scenario": "chain-inspect-cancel",
+    "language": "java",
+    "sha256": "38c8ac9e5672b69b57044e3b9b1828b0884dae2c694a8c76d4a5ab74f1b0e247"
+  },
+  {
+    "scenario": "chain-inspect-cancel",
+    "language": "python",
+    "sha256": "38c8ac9e5672b69b57044e3b9b1828b0884dae2c694a8c76d4a5ab74f1b0e247"
+  },
+  {
+    "scenario": "chain-inspect-cancel",
+    "language": "typescript",
+    "sha256": "38c8ac9e5672b69b57044e3b9b1828b0884dae2c694a8c76d4a5ab74f1b0e247"
+  },
+  {
+    "scenario": "chain-query",
+    "language": "dotnet",
+    "sha256": "7125cc5a5e8c7c2d2e1f650108ea06059e4930ae50a31111110768655c1f7134"
+  },
+  {
+    "scenario": "chain-query",
+    "language": "go",
+    "sha256": "7125cc5a5e8c7c2d2e1f650108ea06059e4930ae50a31111110768655c1f7134"
+  },
+  {
+    "scenario": "chain-query",
+    "language": "java",
+    "sha256": "7125cc5a5e8c7c2d2e1f650108ea06059e4930ae50a31111110768655c1f7134"
+  },
+  {
+    "scenario": "chain-query",
+    "language": "python",
+    "sha256": "7125cc5a5e8c7c2d2e1f650108ea06059e4930ae50a31111110768655c1f7134"
+  },
+  {
+    "scenario": "chain-query",
+    "language": "typescript",
+    "sha256": "7125cc5a5e8c7c2d2e1f650108ea06059e4930ae50a31111110768655c1f7134"
+  },
+  {
+    "scenario": "chain-query-handoff",
+    "language": "dotnet",
+    "sha256": "655425a92e7959d4e0ca75b19bf386a621da9f309750965f611a56601fbd49e7"
+  },
+  {
+    "scenario": "chain-query-handoff",
+    "language": "go",
+    "sha256": "655425a92e7959d4e0ca75b19bf386a621da9f309750965f611a56601fbd49e7"
+  },
+  {
+    "scenario": "chain-query-handoff",
+    "language": "java",
+    "sha256": "655425a92e7959d4e0ca75b19bf386a621da9f309750965f611a56601fbd49e7"
+  },
+  {
+    "scenario": "chain-query-handoff",
+    "language": "python",
+    "sha256": "655425a92e7959d4e0ca75b19bf386a621da9f309750965f611a56601fbd49e7"
+  },
+  {
+    "scenario": "chain-query-handoff",
+    "language": "typescript",
+    "sha256": "655425a92e7959d4e0ca75b19bf386a621da9f309750965f611a56601fbd49e7"
+  },
+  {
+    "scenario": "chain-rerun",
+    "language": "dotnet",
+    "sha256": "f450a6c07a6aaa34feba3ba26fbdd946e13f5af9072adac1ce36daafdb9bcfb9"
+  },
+  {
+    "scenario": "chain-rerun",
+    "language": "go",
+    "sha256": "f450a6c07a6aaa34feba3ba26fbdd946e13f5af9072adac1ce36daafdb9bcfb9"
+  },
+  {
+    "scenario": "chain-rerun",
+    "language": "java",
+    "sha256": "f450a6c07a6aaa34feba3ba26fbdd946e13f5af9072adac1ce36daafdb9bcfb9"
+  },
+  {
+    "scenario": "chain-rerun",
+    "language": "python",
+    "sha256": "f450a6c07a6aaa34feba3ba26fbdd946e13f5af9072adac1ce36daafdb9bcfb9"
+  },
+  {
+    "scenario": "chain-rerun",
+    "language": "typescript",
+    "sha256": "f450a6c07a6aaa34feba3ba26fbdd946e13f5af9072adac1ce36daafdb9bcfb9"
+  },
+  {
+    "scenario": "chain-root-wait",
+    "language": "dotnet",
+    "sha256": "1140e734232d64e1639c59dd98eace5a7248c6c8918a516ec249810e1716a682"
+  },
+  {
+    "scenario": "chain-root-wait",
+    "language": "go",
+    "sha256": "1140e734232d64e1639c59dd98eace5a7248c6c8918a516ec249810e1716a682"
+  },
+  {
+    "scenario": "chain-root-wait",
+    "language": "java",
+    "sha256": "1140e734232d64e1639c59dd98eace5a7248c6c8918a516ec249810e1716a682"
+  },
+  {
+    "scenario": "chain-root-wait",
+    "language": "python",
+    "sha256": "1140e734232d64e1639c59dd98eace5a7248c6c8918a516ec249810e1716a682"
+  },
+  {
+    "scenario": "chain-root-wait",
+    "language": "typescript",
+    "sha256": "1140e734232d64e1639c59dd98eace5a7248c6c8918a516ec249810e1716a682"
+  },
+  {
+    "scenario": "chain-state-final-success",
+    "language": "dotnet",
+    "sha256": "befcfc17bc4887938f1cb0e502276a0768c30008460c15783bc950af30bd2d79"
+  },
+  {
+    "scenario": "chain-state-final-success",
+    "language": "go",
+    "sha256": "befcfc17bc4887938f1cb0e502276a0768c30008460c15783bc950af30bd2d79"
+  },
+  {
+    "scenario": "chain-state-final-success",
+    "language": "java",
+    "sha256": "befcfc17bc4887938f1cb0e502276a0768c30008460c15783bc950af30bd2d79"
+  },
+  {
+    "scenario": "chain-state-final-success",
+    "language": "python",
+    "sha256": "befcfc17bc4887938f1cb0e502276a0768c30008460c15783bc950af30bd2d79"
+  },
+  {
+    "scenario": "chain-state-final-success",
+    "language": "typescript",
+    "sha256": "befcfc17bc4887938f1cb0e502276a0768c30008460c15783bc950af30bd2d79"
+  },
+  {
+    "scenario": "chain-three-segments",
+    "language": "dotnet",
+    "sha256": "4d039b14aebd28e761c45b4f2d97a4c4418e402552ca0d94040065562a92902d"
+  },
+  {
+    "scenario": "chain-three-segments",
+    "language": "go",
+    "sha256": "4d039b14aebd28e761c45b4f2d97a4c4418e402552ca0d94040065562a92902d"
+  },
+  {
+    "scenario": "chain-three-segments",
+    "language": "java",
+    "sha256": "4d039b14aebd28e761c45b4f2d97a4c4418e402552ca0d94040065562a92902d"
+  },
+  {
+    "scenario": "chain-three-segments",
+    "language": "python",
+    "sha256": "4d039b14aebd28e761c45b4f2d97a4c4418e402552ca0d94040065562a92902d"
+  },
+  {
+    "scenario": "chain-three-segments",
+    "language": "typescript",
+    "sha256": "4d039b14aebd28e761c45b4f2d97a4c4418e402552ca0d94040065562a92902d"
+  },
+  {
+    "scenario": "collection-blob-output",
+    "language": "dotnet",
+    "sha256": "56f634e43ff20515c7635b669c1a67f0efcde009d43d2ca17d8a54c91d4a3c64"
+  },
+  {
+    "scenario": "collection-blob-output",
+    "language": "go",
+    "sha256": "56f634e43ff20515c7635b669c1a67f0efcde009d43d2ca17d8a54c91d4a3c64"
+  },
+  {
+    "scenario": "collection-blob-output",
+    "language": "java",
+    "sha256": "56f634e43ff20515c7635b669c1a67f0efcde009d43d2ca17d8a54c91d4a3c64"
+  },
+  {
+    "scenario": "collection-blob-output",
+    "language": "python",
+    "sha256": "56f634e43ff20515c7635b669c1a67f0efcde009d43d2ca17d8a54c91d4a3c64"
+  },
+  {
+    "scenario": "collection-blob-output",
+    "language": "typescript",
+    "sha256": "56f634e43ff20515c7635b669c1a67f0efcde009d43d2ca17d8a54c91d4a3c64"
+  },
+  {
+    "scenario": "collection-blob-source",
+    "language": "dotnet",
+    "sha256": "ff756e9949dd92c77d1c742e83e693af75dbcaf9f96066f6de077cb7b65db093"
+  },
+  {
+    "scenario": "collection-blob-source",
+    "language": "go",
+    "sha256": "ff756e9949dd92c77d1c742e83e693af75dbcaf9f96066f6de077cb7b65db093"
+  },
+  {
+    "scenario": "collection-blob-source",
+    "language": "java",
+    "sha256": "ff756e9949dd92c77d1c742e83e693af75dbcaf9f96066f6de077cb7b65db093"
+  },
+  {
+    "scenario": "collection-blob-source",
+    "language": "python",
+    "sha256": "ff756e9949dd92c77d1c742e83e693af75dbcaf9f96066f6de077cb7b65db093"
+  },
+  {
+    "scenario": "collection-blob-source",
+    "language": "typescript",
+    "sha256": "ff756e9949dd92c77d1c742e83e693af75dbcaf9f96066f6de077cb7b65db093"
+  },
+  {
+    "scenario": "collection-compensation",
+    "language": "dotnet",
+    "sha256": "815f9802f28c73ef6f60177cd650d4aebf9e53c9cd09207f1185d12709b7c975"
+  },
+  {
+    "scenario": "collection-compensation",
+    "language": "go",
+    "sha256": "815f9802f28c73ef6f60177cd650d4aebf9e53c9cd09207f1185d12709b7c975"
+  },
+  {
+    "scenario": "collection-compensation",
+    "language": "java",
+    "sha256": "815f9802f28c73ef6f60177cd650d4aebf9e53c9cd09207f1185d12709b7c975"
+  },
+  {
+    "scenario": "collection-compensation",
+    "language": "python",
+    "sha256": "815f9802f28c73ef6f60177cd650d4aebf9e53c9cd09207f1185d12709b7c975"
+  },
+  {
+    "scenario": "collection-compensation",
+    "language": "typescript",
+    "sha256": "815f9802f28c73ef6f60177cd650d4aebf9e53c9cd09207f1185d12709b7c975"
+  },
+  {
+    "scenario": "collection-fail-fast-drain",
+    "language": "dotnet",
+    "sha256": "e2ce40e345e6a42d28658b7896b4c065ed9f1807c2df56de437485ac55d298ce"
+  },
+  {
+    "scenario": "collection-fail-fast-drain",
+    "language": "go",
+    "sha256": "e2ce40e345e6a42d28658b7896b4c065ed9f1807c2df56de437485ac55d298ce"
+  },
+  {
+    "scenario": "collection-fail-fast-drain",
+    "language": "java",
+    "sha256": "e2ce40e345e6a42d28658b7896b4c065ed9f1807c2df56de437485ac55d298ce"
+  },
+  {
+    "scenario": "collection-fail-fast-drain",
+    "language": "python",
+    "sha256": "e2ce40e345e6a42d28658b7896b4c065ed9f1807c2df56de437485ac55d298ce"
+  },
+  {
+    "scenario": "collection-fail-fast-drain",
+    "language": "typescript",
+    "sha256": "e2ce40e345e6a42d28658b7896b4c065ed9f1807c2df56de437485ac55d298ce"
+  },
+  {
+    "scenario": "collection-limits",
+    "language": "dotnet",
+    "sha256": "651bad842160b39d06f611dec80d7bd6e2c6bb244cd1248f4d439cb7b94d5372"
+  },
+  {
+    "scenario": "collection-limits",
+    "language": "go",
+    "sha256": "651bad842160b39d06f611dec80d7bd6e2c6bb244cd1248f4d439cb7b94d5372"
+  },
+  {
+    "scenario": "collection-limits",
+    "language": "java",
+    "sha256": "651bad842160b39d06f611dec80d7bd6e2c6bb244cd1248f4d439cb7b94d5372"
+  },
+  {
+    "scenario": "collection-limits",
+    "language": "python",
+    "sha256": "651bad842160b39d06f611dec80d7bd6e2c6bb244cd1248f4d439cb7b94d5372"
+  },
+  {
+    "scenario": "collection-limits",
+    "language": "typescript",
+    "sha256": "651bad842160b39d06f611dec80d7bd6e2c6bb244cd1248f4d439cb7b94d5372"
+  },
+  {
+    "scenario": "collection-ordering",
+    "language": "dotnet",
+    "sha256": "36f81cb8b33944111bf85dc292a98590af6fffe89f57d729b4829f24293cbad8"
+  },
+  {
+    "scenario": "collection-ordering",
+    "language": "go",
+    "sha256": "36f81cb8b33944111bf85dc292a98590af6fffe89f57d729b4829f24293cbad8"
+  },
+  {
+    "scenario": "collection-ordering",
+    "language": "java",
+    "sha256": "36f81cb8b33944111bf85dc292a98590af6fffe89f57d729b4829f24293cbad8"
+  },
+  {
+    "scenario": "collection-ordering",
+    "language": "python",
+    "sha256": "36f81cb8b33944111bf85dc292a98590af6fffe89f57d729b4829f24293cbad8"
+  },
+  {
+    "scenario": "collection-ordering",
+    "language": "typescript",
+    "sha256": "36f81cb8b33944111bf85dc292a98590af6fffe89f57d729b4829f24293cbad8"
+  },
+  {
+    "scenario": "collection-runtime",
+    "language": "dotnet",
+    "sha256": "3ee04e2567bd92d95d720eec7ad2d15fd6ded53eca7d6c6718b17ab7df53f8db"
+  },
+  {
+    "scenario": "collection-runtime",
+    "language": "go",
+    "sha256": "3ee04e2567bd92d95d720eec7ad2d15fd6ded53eca7d6c6718b17ab7df53f8db"
+  },
+  {
+    "scenario": "collection-runtime",
+    "language": "java",
+    "sha256": "3ee04e2567bd92d95d720eec7ad2d15fd6ded53eca7d6c6718b17ab7df53f8db"
+  },
+  {
+    "scenario": "collection-runtime",
+    "language": "python",
+    "sha256": "3ee04e2567bd92d95d720eec7ad2d15fd6ded53eca7d6c6718b17ab7df53f8db"
+  },
+  {
+    "scenario": "collection-runtime",
+    "language": "typescript",
+    "sha256": "3ee04e2567bd92d95d720eec7ad2d15fd6ded53eca7d6c6718b17ab7df53f8db"
+  },
+  {
+    "scenario": "collection-step-source",
+    "language": "dotnet",
+    "sha256": "bf066988fe740c6f503e227656d825cbdbfbba50f573301e6e0624fc693ff291"
+  },
+  {
+    "scenario": "collection-step-source",
+    "language": "go",
+    "sha256": "bf066988fe740c6f503e227656d825cbdbfbba50f573301e6e0624fc693ff291"
+  },
+  {
+    "scenario": "collection-step-source",
+    "language": "java",
+    "sha256": "bf066988fe740c6f503e227656d825cbdbfbba50f573301e6e0624fc693ff291"
+  },
+  {
+    "scenario": "collection-step-source",
+    "language": "python",
+    "sha256": "bf066988fe740c6f503e227656d825cbdbfbba50f573301e6e0624fc693ff291"
+  },
+  {
+    "scenario": "collection-step-source",
+    "language": "typescript",
+    "sha256": "bf066988fe740c6f503e227656d825cbdbfbba50f573301e6e0624fc693ff291"
+  }
+]
