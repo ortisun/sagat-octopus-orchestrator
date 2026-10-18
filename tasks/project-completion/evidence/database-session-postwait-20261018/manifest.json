@@ -1,0 +1,200 @@
+{
+  "source_base": "4f060e986c4530f92b80317db5406f635ddc3fa1",
+  "recorded_utc": "2026-10-18T06:17:02.426282+00:00",
+  "scope": "Managed owner session SHARE postlock database expiry check",
+  "commands": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_database_connections",
+        "durable_provider_intents_reconcile_without_plaintext_or_duplicate_rotation",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 101,
+      "seconds": 40.75,
+      "log": "red.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_database_connections",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 59.56,
+      "log": "green.txt"
+    }
+  ],
+  "regression_commands": [
+    {
+      "command": [
+        "cargo",
+        "build",
+        "--locked",
+        "-p",
+        "sagat-database-runner",
+        "--bin",
+        "database-runner"
+      ],
+      "exit_code": 0,
+      "seconds": 13.93,
+      "log": "runner-build.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_database_runner",
+        "isolated_process_executes_openbao_capabilities_and_reports_bounded_results",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 104.87,
+      "log": "runner.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "seconds": 67.59,
+      "log": "clippy.txt"
+    }
+  ],
+  "gates": [
+    {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "seconds": 4.09,
+      "log": "fmt.txt"
+    },
+    {
+      "command": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "exit_code": 0,
+      "seconds": 0.31,
+      "log": "architecture.txt"
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit_code": 0,
+      "seconds": 0.02,
+      "log": "diff-check.txt"
+    }
+  ],
+  "results": {
+    "red.txt": [
+      {
+        "passed": 0,
+        "failed": 1,
+        "ignored": 0,
+        "seconds": 17.2
+      }
+    ],
+    "green.txt": [
+      {
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 28.78
+      }
+    ],
+    "runner.txt": [
+      {
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 28.49
+      }
+    ]
+  },
+  "review": {
+    "cycles": 2,
+    "model": "gpt-6-astra",
+    "reasoning": "xhigh",
+    "external_cli": false,
+    "final": "no actionable scoped defects; reviewers ran no tests"
+  },
+  "limits": [
+    "Actual public expired heartbeat accepted+leaseextended RED, notcredential disclosure",
+    "RealPostgres/OpenBao/publishedquery/dedicatedrunner/publiclease; actual knownblocker sagat_app wait",
+    "Postlocksample notcontinuousafterlaterwaits/untilcommit",
+    "Actual isolated runner regression, benchmarkfiltered notmeasurement",
+    "Complete B0/group/fullworkspace/SDK58/Compose/advisory/resource gates andcheckboxes remainopen"
+  ],
+  "source_sha256": {
+    ".gitattributes": "1ea38171b4c4183b6c18132b75cc72233eb8b7f20beeaa780d84972d935e6d3e",
+    "crates/infra-postgres/src/execution/database.rs": "f697997fc356f5f916651909a511f2ab33877a1c2ffe6866a660e5113ca4ffa5",
+    "docs/architecture/worker-runtime-protocol.md": "e355425ade99507b06d59468e5c266e123acead3af8c95ef278f9139b3a027f6",
+    "docs/traceability.md": "e1f6930773e9c128122952e267b182141238833fc4ad15830ae4bb689757bdfb",
+    "specs/009-security-multitenancy/plan.md": "5645434ffc59107883402e2bda4a6f8ec8f9951da08ec208a3ee1ef4ede36dee",
+    "specs/009-security-multitenancy/spec.md": "3938dcf061985f1f0289558def2317b20fc3674f6e5f38e8a94f6b248330bb81",
+    "specs/014-workflow-primitives/plan.md": "5d162fbc210e70610071ce53f1360cb0a654a66a19e7dc95335383a7d2f24512",
+    "specs/014-workflow-primitives/spec.md": "0bb8ec7281e0dabeb1945a8de6cba44a05ca8c71bb7f8109f77ed47a6803b5fe",
+    "specs/014-workflow-primitives/validation-report.md": "00f25986a3ab2145a62e1fde124e28754c518c5917c03e1ea55f50aecc59b7bb",
+    "specs/017-database-connections/contracts/managed-executor.md": "5e123c15aba9aab1472a4265e1b86c5040b95697b957192a81bb26a446e625cf",
+    "specs/017-database-connections/plan.md": "92ab09598ed2a57a7fdf40a86a4b52f06f97ee20cd32120ca5380c6acf43e74d",
+    "specs/017-database-connections/spec.md": "14454f7a66e418e9d2a6cd685fddb43691cf19bf497e75b22091ebe1a180fa6c",
+    "tasks/project-completion/capacity-lock-inventory.md": "e126896f28a89f7ce4036c7bcf300c2de0fa96e558abbd475f768fd089d21ca9",
+    "tasks/project-completion/integration-notes.md": "38014a4b1a69dbf8ea010ae6c899f18590be9feb9d46b2133a5d55f2d2bf33c8",
+    "tests/integration/database-connections/executor.rs": "53f4e1564e771af229f5f755c53594eccae479ce718cd1956058c2cd1ea47eae"
+  },
+  "evidence_sha256": {
+    "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "clippy.txt": "1c59cb46f215206bd719649670f0a8b58b1667423bb531753e5726acc6fd541a",
+    "commands.json": "b50ef429a4668a374bc96326732507e63773ff195bd9eea3478568f788f22712",
+    "diff-check.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "gates.json": "8a16497701336b79851808010c5df49b276229ffc2c736421166ccc8c91a50a9",
+    "green.txt": "5c4d08e807392331b74d2572e091255eb1e1aa394ffdbd1f5a2ae4e727e197a4",
+    "production.diff": "3d72f157fc7d2b3ec7d0dff5f66036c9930c0be440879ebb025f06f8b2d3a2be",
+    "red-source.json": "0093c8a12117a8718a20275501a0418860ee3459d84085378841e1c11a560f38",
+    "red.txt": "c0a29ba363d8492d603659c8a71454252d562ef4af87068270f78643bc9546b9",
+    "regression-commands.json": "342eac9c1dbc343317ebd6a2090d114ff69edd7feb4db8f4f398f3e0eb1b6acf",
+    "reproduce.md": "5d488c60fee3cad7aaef98c00e86832232ec73eed51268ed02e5ab22210e3c37",
+    "review.md": "b40d5b6d150bfb28eb756dd485561768ac2151de1a370ae8d6619c039813cc5f",
+    "runner-build.txt": "4d4eff2a790f56ca2e3f586f4f08c9a5dd18a24439b3484f296abff27b0f3476",
+    "runner.txt": "abf2a09315a273385314ed2c5b1ad8f8b3bb5a196531623d1e833b47c993972a",
+    "test-red.diff": "6ef62b99b99afd6ce344c6e54716e0988d58ba09beaa0e0a9a64768bd84182c9",
+    "tested-source.json": "0ab7bfc355ba04a58d2725e9e7ccadd58b660c58c8142f8d7270f10f240a56cf"
+  }
+}

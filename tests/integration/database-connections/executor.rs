@@ -261,6 +261,7 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
         "the connection pool bound spans worker sessions and identities"
     );
     let task = &tasks[0];
+    let session = Box::pin(session_expiry_after_wait(&w, session, task, &caps)).await;
     let reference = task_ref(task);
     assert!(
         w.workers
@@ -750,4 +751,123 @@ pub async fn grpc(provider: Arc<dyn SecretProvider>) {
             .code(),
         tonic::Code::Aborted
     );
+}
+
+async fn session_expiry_after_wait(
+    w: &super::support::engine::World,
+    session: Session,
+    task: &sagat_application::worker::ClaimedTask,
+    caps: &Capabilities,
+) -> Session {
+    let tenant = w.admin.tenant_id().as_uuid();
+    let expires_at: time::OffsetDateTime = sqlx::query_scalar(
+        "UPDATE worker_sessions SET expires_at=clock_timestamp()+interval '3 seconds' \
+         WHERE tenant_id=$1 AND id=$2 RETURNING expires_at",
+    )
+    .bind(tenant)
+    .bind(session.worker_id)
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("short managed session expiry");
+    let effects = || async {
+        sqlx::query_as::<_,(i64,i64,i64,i64,i64,time::OffsetDateTime,time::OffsetDateTime)>(
+            "SELECT r.run_version, \
+             (SELECT count(*) FROM run_events WHERE tenant_id=$1 AND run_id=$2), \
+             (SELECT count(*) FROM event_outbox WHERE tenant_id=$1 AND aggregate_id=$2), \
+             (SELECT count(*) FROM audit_records WHERE tenant_id=$1), \
+             (SELECT count(*) FROM step_database_credentials WHERE tenant_id=$1 AND run_id=$2), \
+             w.expires_at,s.lease_expires_at FROM runs r JOIN steps s ON s.tenant_id=r.tenant_id AND s.run_id=r.id \
+             JOIN worker_sessions w ON w.tenant_id=r.tenant_id AND w.id=$3 \
+             WHERE r.tenant_id=$1 AND r.id=$2 AND s.node=$4",
+        ).bind(tenant).bind(task.run_id.as_uuid()).bind(session.worker_id).bind(task.instance.node().as_str())
+        .fetch_one(&w.db.pool).await.expect("atomic managed heartbeat effects")
+    };
+    let before = effects().await;
+    let mut guard = w.db.pool.begin().await.expect("managed session guard");
+    let backend: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *guard)
+        .await
+        .expect("session guard backend");
+    sqlx::query("SELECT id FROM worker_sessions WHERE tenant_id=$1 AND id=$2 FOR UPDATE")
+        .bind(tenant)
+        .bind(session.worker_id)
+        .execute(&mut *guard)
+        .await
+        .expect("hold unchanged managed session");
+    let reference = task_ref(task);
+    let mut heartbeat = Box::pin(w.workers.heartbeat(&session.principal, &reference));
+    tokio::select! {
+        _ = &mut heartbeat => panic!("managed heartbeat must wait on its session"),
+        () = super::support::eventually("actual managed owner session SHARE wait", || async {
+            sqlx::query_scalar::<_,bool>(
+                "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() \
+                 AND $1=ANY(pg_blocking_pids(pid)) AND query LIKE '%JOIN worker_sessions w%' \
+                 AND (NOT $2 OR usename='sagat_app'))",
+            ).bind(backend).bind(super::support::as_runtime_role()).fetch_one(&w.db.pool).await
+            .expect("actual app managed session guard").then_some(())
+        }) => {}
+    }
+    assert!(
+        sqlx::query_scalar::<_, bool>("SELECT clock_timestamp()<$1")
+            .bind(expires_at)
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("session live at actual wait")
+    );
+    super::support::eventually("managed session expires under unchanged guard", || async {
+        sqlx::query_scalar::<_, bool>("SELECT clock_timestamp()>=$1")
+            .bind(expires_at)
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("database expiry")
+            .then_some(())
+    })
+    .await;
+    guard
+        .rollback()
+        .await
+        .expect("release unchanged expired managed session");
+    let result = heartbeat.await;
+    let after = effects().await;
+    assert!(
+        matches!(result, Err(AppError::NotBound)),
+        "expired managed session must be refused; accepted={}, lease_extended={}",
+        result.is_ok(),
+        after.6 > before.6
+    );
+    assert_eq!(
+        after, before,
+        "expired managed authority cannot renew or create journal/outbox/audit/pin effects"
+    );
+    w.store
+        .verify_run(w.admin.tenant_id(), task.run_id)
+        .await
+        .expect("managed journal remains consistent");
+
+    // A supported reconnect keeps the session id and existing lease accounting, replacing its
+    // token; no owner SQL revives expired authority for this positive control.
+    let registered = w
+        .workers
+        .register(&session.principal, "payments", "database-machine", caps)
+        .await
+        .expect("fresh managed reconnect");
+    assert_eq!(registered.worker_id, session.worker_id);
+    let fresh = Session {
+        principal: session.principal.clone(),
+        worker_id: registered.worker_id,
+        token: registered.session_token.expose().to_owned(),
+    };
+    assert!(
+        w.workers
+            .heartbeat(&fresh.principal, &reference)
+            .await
+            .expect("fresh current managed owner can heartbeat")
+            .lease_expires_at
+            .is_some()
+    );
+    w.store
+        .verify_run(w.admin.tenant_id(), task.run_id)
+        .await
+        .expect("fresh heartbeat journal matches projection");
+    fresh
 }

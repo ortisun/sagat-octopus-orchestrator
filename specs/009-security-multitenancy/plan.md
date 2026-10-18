@@ -140,6 +140,7 @@ changing expiry, leases, run version, journal or outbox. Fresh registration rema
 This is post-lock freshness, not continuous validity through commit; TTL/wire policy is unchanged.
 Full/path claim-room checks now share a transaction-typed post-lock clock check: expired
 authority supplies zero room without renewal, retaining the guard through count/claim commit.
-The managed-database session check remains a pending B0 unit.
+Managed-database ownership separately retains its session SHARE guard and samples time after
+acquisition; the complete B0/group lock graph remains pending.
 Runtime-role public-poll RED/GREEN and exact source/commands are retained under
 `tasks/project-completion/evidence/session-renewal-postwait-20261018/`. No canonical task closes.

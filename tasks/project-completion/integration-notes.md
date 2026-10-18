@@ -2003,3 +2003,30 @@ the prompt's root/scoped prefix wording; reviewers ran no tests. Existing worker
 trace and outcome/error mapping stay intact; port tests do not assert counters. No new full
 workspace/SDK58/Compose/advisory/resource/nested acceptance or canonical checkbox closure.
 Exact source/commands/limits: tasks/project-completion/evidence/session-room-postwait-20261018/manifest.json.
+
+
+## Managed owner session freshness after SHARE wait — 2026-10-18
+
+Refs:T014-040/044, FR-017-012/019, FR-014-014. Existing database_owner now retains matching
+session SHARE then samples DB clock; missing/expired supplies no owner authority. Keep exact
+tenant/namespace/ownrun/rootnode/subject/minor>=6 filters and binding→session→namespaceSecrets
+quota→current dedicated membership order. No TTL/wire/provider/role change or new run lock.
+Validity is at that postlock sample, not continuous through later catalog waits or commit.
+
+Real PostgreSQL/OpenBao aggregate creates credential/catalog/published database query/dedicated
+runner and obtains an actual public lease. Unchanged-row barrier observes known blocker and
+actual sagat_app JOINsession waiter whilelive, rolls back only after DBexpiry. RED aggregate
+0/1,17.20s: public heartbeat accepted and extended lease after session expiry. This proves
+heartbeat authorization failure, not credential disclosure. GREEN whole connections target3/3,
+28.78s: heartbeatNotBound and atomic runversion/events/outbox/audits/pins/sessionexpiry/leaseexpiry
+unchanged, verify_run; public same-name reconnect preserves ID, replaces token and permits
+heartbeat before continuing all prior aggregate cases. No owner SQL revives positive authority.
+
+Fresh isolated database-runner process integration1/1,28.49s (latency measurement filtered),
+with rebuilt binary; strict locked workspace/all-target Clippy67.59s, fmt/diff and24-crate
+architecture pass. Two fresh bounded plan/code reviews found no actionable issues; no tests
+run by reviewers or external CLI. Existing database.resolve/worker heartbeat metrics, closed
+errors and after-commit audit mappings remain; native barriers do not assert counters.
+Complete B0/group, fullworkspace/SDK58/Compose/advisory/resource acceptance remain pending,
+with no canonical checkbox closure. Exact sources/commands/limits:
+tasks/project-completion/evidence/database-session-postwait-20261018/manifest.json.

@@ -9,6 +9,11 @@ Implementation contract for T017-013..017; executed evidence is in [verification
 - Protocol 1.6 `ResolveDatabase` uses the existing task id, run/node, attempt, generation
   and lease token. A managed lease requires the dedicated executor protocol revision. Registration,
   claiming and capability use check current authority; a stale in-memory role does not suffice.
+- The managed owner check retains the exact matching session SHARE guard in the owning run
+  transaction and samples database time after acquiring it. A session that expires during an
+  unchanged-row wait supplies no authority, including for heartbeat renewal. This is validity
+  at the post-lock sample, not continuous validity until commit. Binding, dedicated current
+  role, lease, namespace and protocol checks remain required; the check does not renew sessions.
 - Resolution first opens the run transaction, checks the lease, executor/session ownership,
   connection pin/current status and current publisher/initiator ACLs, and reads provider metadata.
   It closes that transaction before any OpenBao I/O. After reading the value, it opens a new run

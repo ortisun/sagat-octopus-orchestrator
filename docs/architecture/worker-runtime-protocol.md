@@ -162,3 +162,10 @@ Claim concurrency is counted in the lease transaction under a tenant-scoped lock
 live managed step across sessions, namespaces and revisions of a connection. SQL execution,
 network destination enforcement, result inspection and deployment isolation belong to the
 separate feature-017 driver/runner delivery gates; this protocol contract alone proves none of them.
+
+
+Managed database ownership retains its matching session SHARE guard and checks expiry on a
+database clock sampled after acquisition. Expiry during the wait refuses owner authority,
+including heartbeat renewal. It preserves the current dedicated role, binding, namespace,
+protocol and lease checks; session renewal remains a separate operation. See the
+[managed executor contract](../../specs/017-database-connections/contracts/managed-executor.md).

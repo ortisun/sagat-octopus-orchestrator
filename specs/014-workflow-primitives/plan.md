@@ -337,6 +337,21 @@ changing expiry, leases, run version, journal or outbox. Fresh registration rema
 This is post-lock freshness, not continuous validity through commit; TTL/wire policy is unchanged.
 Full/path claim-room checks now share a transaction-typed post-lock clock check: expired
 authority supplies zero room without renewal, retaining the guard through count/claim commit.
-The managed-database session check remains a pending B0 unit.
+Managed-database ownership separately retains its session SHARE guard and samples time after
+acquisition; the complete B0/group lock graph remains pending.
 Runtime-role public-poll RED/GREEN and exact source/commands are retained under
 `tasks/project-completion/evidence/session-renewal-postwait-20261018/`. No canonical task closes.
+
+
+## Integrated managed-session expiry correction (2026-10-18)
+
+The existing managed executor owner check now reads the matching session expiry under its
+SHARE guard, then samples the database clock on the owning run transaction. A session that
+expired during an unchanged-row wait cannot authorize heartbeat renewal. Keep the existing
+binding→session→namespace secret/catalog quota→current dedicated membership order and all
+tenant/namespace/rootnode/protocol filters. No TTL, wire, role or provider policy changes;
+the guarantee is validity at that post-lock sample, not continuously until commit.
+This is a focused existing-writer correction required by014 B0, not nested execution or a new
+017 delivery gate. Real public managed lease/heartbeat RED/GREEN and reconnect controls use
+PostgreSQL/OpenBao in tasks/project-completion/evidence/database-session-postwait-20261018/.
+Standalone reference evidence remains historical; integrated release gates remain separate.

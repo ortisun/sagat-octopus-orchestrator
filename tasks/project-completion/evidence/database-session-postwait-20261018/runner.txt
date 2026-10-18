@@ -1,0 +1,10 @@
+    Blocking waiting for file lock on build directory
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 14s
+     Running integration/database-runner/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_database_runner-2e2aa7a60deebe25)
+
+running 1 test
+test isolated_process_executes_openbao_capabilities_and_reports_bounded_results ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 28.49s
+

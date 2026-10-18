@@ -1,0 +1,33 @@
+diff --git a/crates/infra-postgres/src/execution/database.rs b/crates/infra-postgres/src/execution/database.rs
+index a0b2512b..7ffb33a0 100644
+--- a/crates/infra-postgres/src/execution/database.rs
++++ b/crates/infra-postgres/src/execution/database.rs
+@@ -36,15 +36,24 @@ impl PgRunTx {
+             .map_err(store_error)?;
+         // Session before catalog/membership locks, as on claiming. The current lease token is
+         // independently checked by WorkerService; this also binds the token to its machine owner.
+-        let session: Option<Uuid> = sqlx::query_scalar(
+-            "SELECT w.id FROM steps s JOIN worker_sessions w ON w.tenant_id=s.tenant_id AND w.id::text=s.leased_by
++        let session: Option<OffsetDateTime> = sqlx::query_scalar(
++            "SELECT w.expires_at FROM steps s JOIN worker_sessions w ON w.tenant_id=s.tenant_id AND w.id::text=s.leased_by
+              WHERE s.tenant_id=$1 AND s.run_id=$2 AND s.node=$3 AND cardinality(s.instance_path_nodes)=0 AND cardinality(s.instance_path_indices)=0 AND w.namespace_id=$4
+-               AND w.subject=$5 AND w.expires_at>clock_timestamp() AND w.accepted_protocol_minor>=6
++               AND w.subject=$5 AND w.accepted_protocol_minor>=6
+              FOR SHARE OF w")
+             .bind(self.info.tenant_id.as_uuid()).bind(self.info.run_id.as_uuid()).bind(node.as_str())
+             .bind(self.info.namespace_id.as_uuid()).bind(subject)
+             .fetch_optional(&mut *self.tx).await.map_err(store_error)?;
+-        if session.is_none() {
++        let Some(expires_at) = session else {
++            return Ok(false);
++        };
++        // An unchanged-row lock wait can outlive expiry without rechecking a WHERE predicate.
++        // Observe time after retaining this session guard on the owning run transaction.
++        let now: OffsetDateTime = sqlx::query_scalar("SELECT clock_timestamp()")
++            .fetch_one(&mut *self.tx)
++            .await
++            .map_err(store_error)?;
++        if expires_at <= now {
+             return Ok(false);
+         }
+         // Same lock order as catalog mutations and current publisher/initiator checks.
