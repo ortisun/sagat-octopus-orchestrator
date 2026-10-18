@@ -1,0 +1,11 @@
+{
+  "scenario": "collection-runtime",
+  "language_filter": false,
+  "sdk_reuse": true,
+  "bless": false,
+  "runtime_role": true,
+  "production_base": "e51b33901a0cb9dad3758644aaa3dbaf1bc70962",
+  "native_inputs": 1122,
+  "sdk_scenario_inputs": 582,
+  "all_source_hashes_matched": true
+}

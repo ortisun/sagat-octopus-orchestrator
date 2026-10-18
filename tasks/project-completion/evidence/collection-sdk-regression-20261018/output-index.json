@@ -1,0 +1,37 @@
+[
+  {
+    "language": "dotnet",
+    "source": "target/sdk-conformance/collection-runtime/dotnet.37328.normalized.json",
+    "sha256": "3ee04e2567bd92d95d720eec7ad2d15fd6ded53eca7d6c6718b17ab7df53f8db",
+    "bytes": 5229,
+    "reviewed_golden_equal": true
+  },
+  {
+    "language": "go",
+    "source": "target/sdk-conformance/collection-runtime/go.37328.normalized.json",
+    "sha256": "3ee04e2567bd92d95d720eec7ad2d15fd6ded53eca7d6c6718b17ab7df53f8db",
+    "bytes": 5229,
+    "reviewed_golden_equal": true
+  },
+  {
+    "language": "java",
+    "source": "target/sdk-conformance/collection-runtime/java.37328.normalized.json",
+    "sha256": "3ee04e2567bd92d95d720eec7ad2d15fd6ded53eca7d6c6718b17ab7df53f8db",
+    "bytes": 5229,
+    "reviewed_golden_equal": true
+  },
+  {
+    "language": "python",
+    "source": "target/sdk-conformance/collection-runtime/python.37328.normalized.json",
+    "sha256": "3ee04e2567bd92d95d720eec7ad2d15fd6ded53eca7d6c6718b17ab7df53f8db",
+    "bytes": 5229,
+    "reviewed_golden_equal": true
+  },
+  {
+    "language": "typescript",
+    "source": "target/sdk-conformance/collection-runtime/typescript.37328.normalized.json",
+    "sha256": "3ee04e2567bd92d95d720eec7ad2d15fd6ded53eca7d6c6718b17ab7df53f8db",
+    "bytes": 5229,
+    "reviewed_golden_equal": true
+  }
+]

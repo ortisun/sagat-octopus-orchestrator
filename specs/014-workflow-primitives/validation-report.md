@@ -3329,3 +3329,13 @@ and runtime invocations (actual Flow sagat_app), with strict integration Clippy/
 and 1122 matching source inputs. Normal retries drain and complete 17 actual engine compensation
 tasks. Evidence: `tasks/project-completion/evidence/refusal-transaction-faults-20261018/README.md`.
 No old binary, OS process, unknown-COMMIT or external-provider claim; canonical tasks remain open.
+
+
+### Post-correction five-SDK collection regression — 2026-10-18
+
+At e51b3390, existing collection-runtime passes across all five SDKs without golden changes
+(one selected scenario, cached runners, runtime-role stack). Aggregate 114.62 s/harness 33.74 s;
+1122 native and 582 SDK/scenario hashes match, five fresh normalized outputs match the reviewed
+golden with type-preserving independent comparison. See
+`tasks/project-completion/evidence/collection-sdk-regression-20261018/README.md`.
+This is execution/identity regression, not result-value disclosure or a new complete 60 pass.

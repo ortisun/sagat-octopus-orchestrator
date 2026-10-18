@@ -1,0 +1,20 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "sdk_conformance",
+    "every_sdk_conforms_to_every_scenario",
+    "--",
+    "--exact",
+    "--ignored",
+    "--nocapture"
+  ],
+  "exit_code": 0,
+  "seconds": 114.62,
+  "started_utc": "2026-10-18T21:35:19.260060+00:00",
+  "log": "collection-runtime.txt"
+}
