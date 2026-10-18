@@ -162,6 +162,10 @@ See evidence/leaf-certification-process-20261018. Other producer/observation/rel
   privileges/immutability/legacy native regression;30actual PostgreSQL tests pass.
 - [ ] B1b.2b.4: Prove conditional extension downgrade with actual native legacy down/up replay,
   ACTIVE/FINISHED scoped retention refusal and observed original-Run relation lock barrier.
+- [x] B1b.2b.5: Review the additive fixed scoped Finish application contract, shared path identity,
+  distinct fingerprint, original-Run result and authority/source/receipt/CAS ordering only.
+- [ ] B1b.2b.6: Implement application types, structural bounds and independent fingerprint/error
+  tests without native source queries, new runtime grants or a production caller.
 - [ ] B1b.2c: Review nested/child relationship closure and remaining quiescence/transition authority.
 
 ## B2 dormant Finish increments

@@ -2909,3 +2909,15 @@ Initial Clippy flagged two complex test tuple annotations; local type aliases pr
 SQL/result values. After that type-only change all five scoped tests passed again in38.32s
 (harness4.03s), with unchanged frozen final sources through the gates. No full native rerun is
 claimed for this type-only annotation delta; its complete30/30 result is retained separately.
+
+## Fixed scoped Finish application contract — 2026-10-18
+
+Refs:T014-014..017/040; local B1b.2b.5. The reviewed additive interface reuses the exact existing
+LeafCollectionPathIdentity, validates ordinary owner/depth/index and positive SQL-range counters,
+and specifies a distinct length-prefixed SHA-256 domain. Results explicitly name original_run_id;
+ChildRoot head semantics remain separate. Future owning order is current authority, validated
+canonical retained certificate, group-wide operation receipt, then creation CAS/active checks.
+One fresh bounded Astra review found no issue. This is documentation only: no native consumer,
+source proof from types, runtime permission, caller or nesting acceptance. No tests run for this
+contract decision. See tasks/project-completion/scoped-leaf-finish-application-contract.md and
+evidence/scoped-finish-port-decision-20261018.

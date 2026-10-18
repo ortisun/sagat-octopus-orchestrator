@@ -1,0 +1,10 @@
+{
+  "scope": "B1b.2b.5 interface-only bounded decision",
+  "schema_base": "2deef834",
+  "contract_sha256": "934ee3c77ef02066ccad7baf86c4d1ac6d27314225476af02fe0f83ab376763d",
+  "review_cycles": 1,
+  "findings": 0,
+  "tests_run": false,
+  "executable_authority": false,
+  "review_sha256": "aebb96492da6b62bc7e42603b3e5114ca3bc401788f244d5a94a94bd0c027163"
+}
