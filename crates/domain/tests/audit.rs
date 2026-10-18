@@ -1,7 +1,7 @@
 //! Audit record invariants (FR-001-007).
 #![allow(clippy::expect_used)]
 
-use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
+use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType, RunDataLimitAuditReason};
 use sagat_domain::identity::{Principal, Role, Subject, TenantId};
 use time::OffsetDateTime;
 
@@ -82,6 +82,10 @@ fn stored_names_are_a_stable_contract() {
     assert_eq!(AuditAction::RunQueried.as_str(), "run.queried");
     assert_eq!(AuditAction::RunUpdated.as_str(), "run.updated");
     assert_eq!(
+        AuditAction::RunDataLimitExceeded.as_str(),
+        "run.data_limit_exceeded"
+    );
+    assert_eq!(
         AuditAction::RunStorageQuotaExceeded.as_str(),
         "run.storage_quota_exceeded"
     );
@@ -129,6 +133,32 @@ fn stored_names_are_a_stable_contract() {
         ResourceType::PayloadRevealGrant.as_str(),
         "payload_reveal_grant"
     );
+}
+
+#[test]
+fn run_data_limit_audit_has_closed_noncollapsing_reason_vocabulary() {
+    let action = AuditAction::RunDataLimitExceeded;
+    assert!(!action.collapses_repeats());
+    assert_eq!(action.repeat_window(), None);
+    assert_eq!(action.distinct_cap(), None);
+    assert_ne!(action, AuditAction::RunStorageQuotaExceeded);
+
+    let reasons = [
+        (RunDataLimitAuditReason::Aggregate, "aggregate"),
+        (RunDataLimitAuditReason::ExistingOutputs, "existing_outputs"),
+        (
+            RunDataLimitAuditReason::StoppedForRunDataLimit,
+            "stopped_for_run_data_limit",
+        ),
+        (
+            RunDataLimitAuditReason::SuccessfulScopedOutputRefused,
+            "successful scoped output refused by run data limit",
+        ),
+    ];
+    for (reason, stored) in reasons {
+        assert_eq!(reason.as_str(), stored);
+        assert_eq!(reason.to_string(), stored);
+    }
 }
 
 #[test]

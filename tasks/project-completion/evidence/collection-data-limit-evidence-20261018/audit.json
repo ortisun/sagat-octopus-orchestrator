@@ -1,0 +1,17 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-domain",
+    "--test",
+    "audit",
+    "--",
+    "--nocapture"
+  ],
+  "exit_code": 0,
+  "seconds": 5.4,
+  "started_utc": "2026-10-18T18:59:32.414133+00:00",
+  "log": "audit.txt"
+}

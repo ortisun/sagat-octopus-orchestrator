@@ -1,0 +1,7 @@
+# Q3 typed audit and transient native evidence
+
+Run retained JSON commands with CARGO_TARGET_DIR=/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=3 RUST_MIN_STACK=16777216. Domain audit9/9 (5.40s), application constructor3/3 (13.69s), strict Clippy6.67s, fmt4.34s and architecture0.35s/24crates pass. Final1115 source inputs match. These are pure Rust tests, no PostgreSQL or provider evidence.
+
+Fresh bounded review of0a86b37315264f6571517914a29ced2268f573edbabc3eefbe31bef3b5ee1102 found one unused test-helper parameter; root removed it and its eight call arguments before all gates. No additional API/security/audit issue was found. The opaque aggregate facts derive from actual bytes, reject unsorted/duplicate/out-of-bound indices, and carry no payloads. ExistingOutputs and Stopped contain no asserted total or stop status. The checked drain fixes the lifecycle reason and matches the exact engine/Run/action/reason/tenant/id/trace/time audit. The fourth successful-report audit reason cannot authorize a drain.
+
+Native writer still explicitly refuses the new reason before opening a transaction. Construction supplies no native authority: Q8 must recheck the audit, public mutable command fields, pinned source bindings and the selected fresh E/stop/aggregate predicate under the exact locked Run/fence/revision. Scheduler/report integration, actual native refusal/replay/fault and old/current upgrade remain pending. No public wire enum, grant or execution shape added.

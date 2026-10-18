@@ -1,0 +1,8 @@
+    Checking regex-automata v0.4.18
+    Checking sagat-domain v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/domain)
+    Checking proptest v1.11.0
+    Checking matchers v0.2.0
+    Checking tracing-subscriber v0.3.23
+    Checking sagat-telemetry v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/telemetry)
+    Checking sagat-application v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/application)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.60s

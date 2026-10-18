@@ -1,0 +1,17 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-application",
+    "--test",
+    "collection_data_limit_evidence",
+    "--",
+    "--nocapture"
+  ],
+  "exit_code": 0,
+  "seconds": 13.69,
+  "started_utc": "2026-10-18T18:59:37.852760+00:00",
+  "log": "constructors.txt"
+}

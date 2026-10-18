@@ -37,6 +37,8 @@ pub enum AuditAction {
     LeafCollectionSuccessCertified,
     /// Retained workflow content exceeded the tenant storage ceiling and forced the run to stop.
     RunStorageQuotaExceeded,
+    /// Retained outputs reached the run data ceiling and forced the run to stop.
+    RunDataLimitExceeded,
     RunCancelRequested,
     RunPaused,
     RunResumed,
@@ -274,6 +276,7 @@ impl AuditAction {
             Self::CapacityMemberFinished => "capacity.member.finished",
             Self::LeafCollectionSuccessCertified => "collection.leaf_success_certified",
             Self::RunStorageQuotaExceeded => "run.storage_quota_exceeded",
+            Self::RunDataLimitExceeded => "run.data_limit_exceeded",
             Self::RunCancelRequested => "run.cancel_requested",
             Self::RunPaused => "run.paused",
             Self::RunResumed => "run.resumed",
@@ -362,6 +365,42 @@ impl AuditAction {
             Self::BlobRead => "blob.read",
             Self::BlobDeleted => "blob.deleted",
         }
+    }
+}
+
+/// Closed reason vocabulary for a [`AuditAction::RunDataLimitExceeded`] record.
+///
+/// These names distinguish the fact that selected a collection boundary without recording output
+/// bytes, sizes, digests or caller-controlled text in the audit trail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RunDataLimitAuditReason {
+    /// A terminal collection aggregate could not be retained.
+    Aggregate,
+    /// The run's freshly recomputed effective retained outputs already exceed the ceiling.
+    ExistingOutputs,
+    /// The persisted run stop already records `FAILED` / `RUN_DATA_LIMIT`.
+    StoppedForRunDataLimit,
+    /// A successful scoped worker report was preserved without retaining its refused output.
+    SuccessfulScopedOutputRefused,
+}
+
+impl RunDataLimitAuditReason {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Aggregate => "aggregate",
+            Self::ExistingOutputs => "existing_outputs",
+            Self::StoppedForRunDataLimit => "stopped_for_run_data_limit",
+            Self::SuccessfulScopedOutputRefused => {
+                "successful scoped output refused by run data limit"
+            }
+        }
+    }
+}
+
+impl fmt::Display for RunDataLimitAuditReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
