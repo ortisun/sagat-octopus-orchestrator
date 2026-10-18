@@ -19,6 +19,7 @@ mod chains;
 mod collections;
 mod common;
 mod loops;
+mod measurement;
 mod tenants;
 
 use std::sync::Arc;

@@ -45,8 +45,16 @@ pub async fn platform() -> Platform {
             .await
             .expect("drop the open-step indexes for the control run");
     }
-    let store =
-        PgRunStore::new(world.db.pool.clone(), world.cache.clone()).with_scoped_worker_protocol();
+    let runtime = world.db.runtime_pool_with(8).await;
+    let execution_role: String = sqlx::query_scalar("SELECT current_user")
+        .fetch_one(&runtime)
+        .await
+        .expect("execution database role");
+    assert_eq!(
+        execution_role, "sagat_app",
+        "measure the actual runtime role"
+    );
+    let store = PgRunStore::new(runtime, world.cache.clone()).with_scoped_worker_protocol();
     let workers = WorkerService::new(
         store.clone(),
         SystemClock,
@@ -242,7 +250,16 @@ pub async fn postgres_description(world: &World) -> String {
         .fetch_one(&world.db.pool)
         .await
         .expect("version");
-    let mut lines = vec![format!("- PostgreSQL: {version}")];
+    let observer: String = sqlx::query_scalar("SELECT current_user")
+        .fetch_one(&world.db.pool)
+        .await
+        .expect("observer database role");
+    let mut lines = vec![
+        format!("- PostgreSQL: {version}"),
+        format!(
+            "- Setup/observer role: {observer}; worker/scheduler role: sagat_app (verified by fixture)"
+        ),
+    ];
     for setting in [
         "shared_buffers",
         "max_connections",

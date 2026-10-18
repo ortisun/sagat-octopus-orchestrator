@@ -1346,7 +1346,7 @@ Only the golden's operation label changes; `RUNNING` remains expected. The corre
 scenario passed (54.65 s harness time) on a self-contained fixture, and scenario validation passed
 1/1. No SDK source, runner, server status policy or semantic golden was changed.
 
-The flat 10k/width1,16,256 benchmark still runs from detached frozen `025ce8d4`; its executable is
+The flat 10k/width 1,16,256 benchmark still runs from detached frozen `025ce8d4`; its executable is
 not rebuilt while active. Its source worktree and manifest remain unchanged. Broader body graphs,
 public step-output collection sources, nesting/low quotas, scoped blob completion and the final
 compatibility/resource/release tasks remain open; no task was ticked by reducing scope.
@@ -1375,7 +1375,7 @@ production code unchanged and its four affected cases passed afterward. Strict w
 Clippy passed (1m10s), fmt/diff checks passed. Task 016's evidence records G420 progress without
 closing broader scope or any remaining checkbox.
 
-Frozen benchmark 025ce8d4 produced its first completed 10k fragment (width1,1580.7s,0errors,
+Frozen benchmark 025ce8d4 produced its first completed 10k fragment (width 1,1580.7s,0errors,
 peak observed active1,10000checkpoints). Width16/256 continue in the same frozen process. Important
 profile detail found by inspecting `performance/…/common.rs`: workers/scheduler explicitly use
 `world.db.pool` (owner), so SAGAT_TEST_AS_RUNTIME_ROLE does not convert these performance ports.
@@ -1383,3 +1383,25 @@ This diagnostic must be labelled owner-role; it is not a least-privilege capacit
 measurement work must wire runtime pools explicitly, sample both admission/checkpoint (the old
 even probe interval samples only checkpoints), report queue delay, and capture peak memory with
 a stated method. Do not rebuild/overwrite the active shared perf executable before it finishes.
+
+
+## 2026-10-17 — Completed flat diagnostic and measurement-profile correction
+
+Frozen 025ce8d4 finished all three 10k cases: c1=1580.7s,c16=980.4s,c256=1163.4s; zero scheduler
+errors,10k checkpoints/20,002 step rows per case. Whole command exit0,3864.6s. Raw fragments and
+manifest are retained under `tests/performance/reports/raw/workflow-primitives/20261017-025ce8d4/`.
+Sampled active peaks were1/15/255, not a measured16/256. The profile executes owner-role ports,
+uses a serial in-process completion driver, samples checkpoints only, lacks queue delay/true peak
+RSS and used a manually started diagnostic database. It is explicitly not final capacity acceptance.
+The executable digest stayed unchanged through completion; only after pgrep confirmed completion
+was the shared build path reused. Source remains frozen; the historical executable is not retained.
+
+New measurement tests were genuine RED 0/2,2.85s: no admission probes at an even interval, and a real
+journal trigger observed writes as postgres. `common::platform` now explicitly wires an 8-connection
+runtime pool, verifies current_user=sagat_app and reports execution/observer roles. The trigger
+checks actual scheduler/claim/report/finalization writes. Consecutive probes cover both transition
+families. GREEN 2/2,2.66s. Logs at `/tmp/sagat-completion-perf-profile-smoke/` retain both states.
+An earlier attempt to compile to a separate path failed because rustc disallows duplicate out-dir;
+that compiler error is not counted as RED test evidence. Normal compilation waited until the old
+frozen benchmark completed. Queue-delay/peak and improved slot sampling remain the next measurement
+work; nesting and the other feature acceptance gates remain open.

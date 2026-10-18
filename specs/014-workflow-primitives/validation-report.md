@@ -1760,3 +1760,23 @@ Strict workspace/all-target Clippy passed (1m10s, `...-clippy.log`); formatting/
 The G420 public source gap is closed for this plain prefix. Broader source policies/graphs,
 nesting and descendant admission under low quotas, remaining resource/compatibility and release
 criteria stay open. No task checkbox is advanced on the strength of this focused subset alone.
+
+
+## 2026-10-17 — Flat diagnostic completion and execution-role measurement guard
+
+The frozen 025ce8d4 diagnostic completed all 10k/width 1,16,256 cases with zero scheduler errors.
+Raw fragments, source/environment and limitations are retained in
+[the capacity report](../../tests/performance/reports/workflow-primitives.md). This owner-role,
+serial-driver diagnostic is not final capacity acceptance; sampled peaks 1/15/255 do not establish
+observed 16/256. Checkpoint-only SQL probes, queue delay, true peak RSS and canonical infrastructure
+remain explicit measurement limitations.
+
+Two new real measurement tests failed 0/2 (2.85s): an even interval selected no admission probes,
+and a journal trigger observed actual writes with current_user=postgres. The driver now creates
+an 8-connection runtime pool, verifies current_user=sagat_app and labels observer/execution roles.
+The trigger guards all measured scheduler, claim, completion and finalization journal writes.
+Two consecutive probe points cover both transition families. Corrected tests passed 2/2 (2.66s),
+with RED/GREEN logs at `/tmp/sagat-completion-perf-profile-smoke/`. An initial duplicate-out-dir
+compiler error is preserved separately and is not counted as a behavioral RED. The old benchmark
+completed before its executable path was rebuilt; its digest was checked unchanged at completion.
+These safeguards improve measurement validity and do not close T014-042 or production ceilings.

@@ -21,6 +21,12 @@ pub const ANALYZE_EVERY: usize = 50;
 
 pub const ACTIVITY: &str = "perf.item";
 
+pub(super) fn probe_transition(sequence: usize, stride: usize) -> bool {
+    // Two consecutive transitions cover both alternating admission/checkpoint families even
+    // when the reporting interval is even. A stride of one probes every transition.
+    sequence >= 2 && sequence % stride < 2
+}
+
 pub fn collection_document(name: &str, items: usize, concurrency: usize) -> Value {
     json!({
         "apiVersion": "sagat-octopus-orchestrator.io/v1",
@@ -128,7 +134,7 @@ pub async fn run_case(items: usize, concurrency: usize) -> CollectionResult {
         if transitions % ANALYZE_EVERY == 1 {
             analyze(&p.world).await;
         }
-        let probing = transitions >= 2 && transitions.is_multiple_of(probe_every);
+        let probing = probe_transition(transitions, probe_every);
         let cost_before = if probing {
             statements(&p.world).await
         } else {

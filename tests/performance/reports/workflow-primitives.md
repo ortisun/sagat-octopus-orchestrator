@@ -4,6 +4,13 @@ Measurements for T014-042 on one shared laptop, written 2026-10-17. They are **o
 production ceilings and not latency objectives**. The first section says what the numbers do and do not
 support; the raw summaries follow, failures and anomalies included.
 
+## Latest diagnostic update — bounded worker paths
+
+A frozen `025ce8d4` debug build completed 10,000 items at scope widths 1, 16 and 256 with zero
+scheduler errors and 10,000 durable checkpoints in each case. This is an owner-role diagnostic,
+not the final runtime-role capacity gate. See the raw update at the end; the historical results
+and failures below remain unchanged.
+
 ## What this report concludes
 
 - **Proven by assertion in the test (not only reported):** a suspended approval or timer owns no worker,
@@ -1310,3 +1317,34 @@ current-instance projection. They exclude final aggregate/finalization transitio
 worker polling/reporting, which still use full restoration. They are not a measurement of
 10,000-item collections, 100,000 nested instances, full-run memory bounds or production capacity.
 Those accepted release criteria remain open; no ceiling or latency promise is inferred here.
+
+
+## 2026-10-17 — Frozen bounded-worker diagnostic, not final capacity acceptance
+
+Source is detached frozen `025ce8d4`; raw hardware/PostgreSQL settings, latencies, row/buffer work,
+resources and source identity are retained in [the manifest](raw/workflow-primitives/20261017-025ce8d4/manifest.json).
+The debug executable ran all three cases successfully in 3,864.6 command seconds. Each case
+completed 10,000 members, wrote 10,000 checkpoints/20,002 step rows and returned zero scheduler
+errors. Fsync and synchronous commit were on; default query/connection settings were retained,
+with pg_stat_statements preloaded and an explicit 1 GiB shared-memory budget.
+
+| Scope width | Workload wall seconds | Sampled active peak | Raw fragment |
+| --- | ---: | ---: | --- |
+| 1 | 1580.7 | 1 | [collection-10000-c1.md](raw/workflow-primitives/20261017-025ce8d4/collection-10000-c1.md) |
+| 16 | 980.4 | 15 | [collection-10000-c16.md](raw/workflow-primitives/20261017-025ce8d4/collection-10000-c16.md) |
+| 256 | 1163.4 | 255 | [collection-10000-c256.md](raw/workflow-primitives/20261017-025ce8d4/collection-10000-c256.md) |
+
+The active bounds were asserted at each observation, not inferred from elapsed time. At width
+256 the observer sampled 255, so these samples do not establish an observed peak of 256. A single
+in-process driver polls 64 tasks and completes them serially; these are logical scope widths,
+not 256 parallel external worker processes. The host also ran builds and functional suites.
+
+The fixture explicitly constructed execution stores from the owner pool: setting
+`SAGAT_TEST_AS_RUNTIME_ROLE=1` alone did not change those stores. This is recorded as an owner-role
+profile, not evidence of runtime-role performance. The even probe interval sampled only checkpoints;
+for example width1 checkpoint samples returned 41 rows with 49 statements, but no admission SQL-cost
+claim follows from them. RSS is before/after, not a measured peak, and queue delay is absent.
+The server was a dedicated manually started diagnostic profile; later acceptance uses the
+repository-declared disposable fixture. These limitations remain acceptance work, along with
+nested/low-capacity admission, 100k nested instances, waits and fairness. No production ceilings
+or complete T014-042 acceptance are claimed by these three diagnostic runs.

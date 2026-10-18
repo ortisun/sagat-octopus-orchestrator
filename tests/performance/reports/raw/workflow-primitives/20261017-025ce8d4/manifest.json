@@ -1,0 +1,61 @@
+{
+  "task": "project-completion",
+  "source_worktree": "/Users/marcelo/Documents/Projects/sagat-octopus-completion-benchmark-025ce8d4",
+  "source_commit": "025ce8d43e8bf27f1f703e1b46064e4bd1d2eda9",
+  "binary": "/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/perf_workflow_primitives-c17f332ca9ce5ad9",
+  "binary_sha256": "0168d0f6e6db783e841e1cb5e84d1d3afc1887c2fb77f474f5b984cce921f43f",
+  "build_profile": "debug; unoptimized with debuginfo and debug assertions",
+  "postgres": {
+    "name": "sagat-completion-path-perf-20261017",
+    "id": "8640cba718b27dada0552c742f6fe1460c5a871418d4f96a6d56cb8e8121861b",
+    "owner_label": "project-completion-path-perf-20261017",
+    "image": "sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685",
+    "shm_size": 1073741824,
+    "postgres_args": [
+      "-c",
+      "shared_preload_libraries=pg_stat_statements",
+      "-c",
+      "pg_stat_statements.track=all"
+    ],
+    "host_port": 57426,
+    "started_at": "2026-10-17T23:11:02.141206004Z"
+  },
+  "hardware": {
+    "cpu": "Apple M3 Max",
+    "logical_cpus": "16",
+    "memory_bytes": "51539607552",
+    "os": "Darwin 25.3.0 arm64",
+    "docker": "16 CPUs, 8318709760 bytes",
+    "load": "20:15  up 22:28, 2 users, load averages: 6.52 8.29 12.03",
+    "rust": "rustc 1.98.0 (88d9e12ae 2026-08-18)"
+  },
+  "workload": {
+    "items": 10000,
+    "scope_concurrency": [
+      1,
+      16,
+      256
+    ],
+    "tenant_capacity": "max(scope_concurrency,16)",
+    "harness_threads": 1,
+    "statement_accounting": "pg_stat_statements.track=all",
+    "budget_seconds_per_case": 3600
+  },
+  "execution_database_role": "postgres (owner): common::platform explicitly constructs worker/scheduler store from world.db.pool; AS_RUNTIME_ROLE does not override that store",
+  "result": {
+    "exit_code": 0,
+    "seconds": 3864.6
+  },
+  "limitations": [
+    "diagnostic owner-role database profile, not runtime-role capacity acceptance",
+    "one in-process driver polling 64 tasks and completing them serially; scope concurrency is not external worker parallelism",
+    "probes select checkpoints only with this even interval; admission SQL work not established",
+    "active slots sampled every 8 transitions; observed width256 peak255 does not establish observed256",
+    "RSS before/after only; peak RSS and queue delay not captured",
+    "dedicated manually started database profile; canonical reproducibility uses repository disposable fixture in later measurements",
+    "host shared with builds and functional tests"
+  ],
+  "binary_path_is_historical": true,
+  "binary_retained_after_run": false,
+  "note": "The executable digest was recorded at launch and rechecked unchanged after all cases completed. The shared build path may be reused afterward; source remains available in the frozen worktree."
+}
