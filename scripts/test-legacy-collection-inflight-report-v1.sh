@@ -1,40 +1,48 @@
 #!/usr/bin/env bash
-# Closed immutable-old/current cases for ordering one ordinary known success, stop and drain.
+# Closed immutable-old/current cases for ordering ordinary known successes, stop and drain.
 set -euo pipefail
 umask 077
 
 readonly old_commit="6c44a0e49670cf19660792cd1518d241e6c99b3b"
-readonly old_test="legacy_collection_inflight_report_producer_v1::frozen_old_ordinary_success_before_drain_producer"
 case_name="report-before-drain"
 if (( $# != 0 )); then
   if (( $# != 2 )) || [[ "$1" != "--case" ]]; then
-    echo "usage: $0 [--case report-before-drain|drain-before-report|cancellation-before-report]" >&2
+    echo "usage: $0 [--case report-before-drain|drain-before-report|cancellation-before-report|under-limit-increment-before-drain]" >&2
     exit 2
   fi
   case_name="$2"
 fi
 case "${case_name}" in
   report-before-drain)
+    old_test="legacy_collection_inflight_report_producer_v1::frozen_old_ordinary_success_before_drain_producer"
     current_test="legacy_collection_inflight_report_v1::old_ordinary_success_before_drain_preserves_the_report_and_compensation"
     artifact_namespace="sagat-q10c-ordinary-before-drain-v1"
     log_label="ordinary-before-drain"
     ;;
   drain-before-report)
+    old_test="legacy_collection_inflight_report_producer_v1::frozen_old_ordinary_success_before_drain_producer"
     current_test="legacy_collection_inflight_report_v1::old_ordinary_success_after_drain_preserves_the_report_and_compensation"
     artifact_namespace="sagat-q10c-ordinary-drain-before-report-v1"
     log_label="ordinary-drain-before-report"
     ;;
   cancellation-before-report)
+    old_test="legacy_collection_inflight_report_producer_v1::frozen_old_ordinary_success_before_drain_producer"
     current_test="legacy_collection_inflight_report_v1::old_ordinary_success_after_cancellation_drain_preserves_the_original_stop"
     artifact_namespace="sagat-q10c-ordinary-cancellation-before-report-v1"
     log_label="ordinary-cancellation-before-report"
+    ;;
+  under-limit-increment-before-drain)
+    old_test="legacy_collection_inflight_report_producer_v1::frozen_old_ordinary_under_limit_increment_producer"
+    current_test="legacy_collection_inflight_report_v1::old_under_limit_increment_before_drain_preserves_the_report_and_compensation"
+    artifact_namespace="sagat-q10c-ordinary-under-limit-increment-v1"
+    log_label="ordinary-under-limit-increment-before-drain"
     ;;
   *)
     echo "unknown case: ${case_name}" >&2
     exit 2
     ;;
 esac
-readonly case_name current_test artifact_namespace log_label
+readonly case_name old_test current_test artifact_namespace log_label
 repo_root="$(git rev-parse --show-toplevel)"
 producer_overlay="${repo_root}/tests/fixtures/legacy-collection-inflight-report-v1/producer.rs"
 consumer_source="${repo_root}/tests/integration/workflow-primitives/legacy_collection_inflight_report_v1.rs"

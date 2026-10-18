@@ -29,10 +29,92 @@ use crate::support::api::Options;
 use crate::support::worker::{NAMESPACE, Platform, TENANT, Worker, platform_with};
 
 const FORMAT: &str = "q10c-ordinary-before-drain-v1";
+const UNDER_LIMIT_FORMAT: &str = "q10c-ordinary-under-limit-increment-v1";
 const OLD_COMMIT: &str = "6c44a0e49670cf19660792cd1518d241e6c99b3b";
 const WORKER_SUBJECT: &str = "q10c-ordinary-worker";
 const ACTIVITIES: [&str; 3] = ["line.work", "line.reserve", "line.release"];
 const SCHEDULER_OWNER: &str = "scope-compensation-q10c-ordinary-before-drain-v1";
+
+#[derive(Clone, Copy)]
+enum FixturePreset {
+    Ordinary,
+    UnderLimitIncrement,
+}
+
+impl FixturePreset {
+    const fn format(self) -> &'static str {
+        match self {
+            Self::Ordinary => FORMAT,
+            Self::UnderLimitIncrement => UNDER_LIMIT_FORMAT,
+        }
+    }
+
+    const fn workflow_name(self) -> &'static str {
+        match self {
+            Self::Ordinary => "q10c-ordinary-before-drain-v1",
+            Self::UnderLimitIncrement => "q10c-ordinary-under-limit-increment-v1",
+        }
+    }
+
+    const fn worker_subject(self) -> &'static str {
+        match self {
+            Self::Ordinary => WORKER_SUBJECT,
+            Self::UnderLimitIncrement => "q10c-ordinary-under-limit-increment-worker",
+        }
+    }
+
+    const fn scheduler_owner(self) -> &'static str {
+        match self {
+            Self::Ordinary => SCHEDULER_OWNER,
+            Self::UnderLimitIncrement => {
+                "scope-compensation-q10c-ordinary-under-limit-increment-v1"
+            }
+        }
+    }
+
+    const fn report_key_prefix(self) -> &'static str {
+        match self {
+            Self::Ordinary => "q10c-ordinary",
+            Self::UnderLimitIncrement => "q10c-ordinary-under-limit-increment",
+        }
+    }
+
+    const fn source_string_bytes(self) -> usize {
+        match self {
+            Self::Ordinary => 209_998,
+            Self::UnderLimitIncrement => 199_998,
+        }
+    }
+
+    const fn source_output_bytes(self) -> usize {
+        match self {
+            Self::Ordinary => 210_000,
+            Self::UnderLimitIncrement => 200_000,
+        }
+    }
+
+    const fn source_aggregate_bytes(self) -> usize {
+        match self {
+            Self::Ordinary => 210_002,
+            Self::UnderLimitIncrement => 200_002,
+        }
+    }
+
+    const fn expected_totals(self) -> (i64, i64, i64) {
+        match self {
+            Self::Ordinary => (2_100_000, 2_100_020, 4_200_020),
+            Self::UnderLimitIncrement => (2_000_000, 2_000_020, 4_000_020),
+        }
+    }
+
+    fn completion_json(self) -> String {
+        match self {
+            Self::Ordinary => "1".to_owned(),
+            Self::UnderLimitIncrement => serde_json::to_string(&Value::String("y".repeat(249_998)))
+                .expect("fixed under-limit completion JSON"),
+        }
+    }
+}
 
 const PROJECTION_WITNESS_SQL: &str = r#"WITH selected_runs AS (
   SELECT run.id FROM runs run WHERE run.tenant_id=$1 AND run.id=$2
@@ -154,7 +236,7 @@ const CLOSED_SOURCE_SQL: &str = r#"WITH selected_scopes AS (
     WHERE row_data.tenant_id=$1 AND row_data.run_id=$2 AND row_data.owner_node=ANY($3::text[]))
 )"#;
 
-fn document() -> Value {
+fn document(preset: FixturePreset) -> Value {
     let roots = (0..11)
         .map(|index| {
             let next = if index == 10 {
@@ -172,7 +254,7 @@ fn document() -> Value {
         .collect::<Vec<_>>();
     json!({
         "apiVersion": "sagat-octopus-orchestrator.io/v1", "kind": "Workflow",
-        "metadata": {"name": "q10c-ordinary-before-drain-v1"}, "entrypoint": "c0",
+        "metadata": {"name": preset.workflow_name()}, "entrypoint": "c0",
         "bodies": {
             "legacy": {"entrypoint": "work", "nodes": [
                 {"id": "work", "type": "activity", "activity": "line.work", "next": "returned"},
@@ -260,6 +342,7 @@ async fn assert_old_shape(
     final_lease: &TaskLease,
     worker_id: &str,
     session: &str,
+    preset: FixturePreset,
 ) {
     let totals: (i64, i64, i64, i64, i64, i64) = sqlx::query_as(
         "SELECT usage.logical_output_bytes, \
@@ -290,8 +373,9 @@ async fn assert_old_shape(
     .fetch_one(&platform.api.db.pool)
     .await
     .expect("old source totals");
-    assert_eq!(totals, (2_100_000, 2_100_020, 10, 10, 10, 10));
-    assert_eq!(totals.0 + totals.1, 4_200_020);
+    let expected = preset.expected_totals();
+    assert_eq!(totals, (expected.0, expected.1, 10, 10, 10, 10));
+    assert_eq!(totals.0 + totals.1, expected.2);
 
     let live: (String, i32, i64, bool, bool, bool, bool) = sqlx::query_as(
         "SELECT step.status,step.attempt,step.generation, \
@@ -355,6 +439,15 @@ fn publish_receipt(path: &std::path::Path, receipt: &Value) {
 
 #[tokio::test]
 async fn frozen_old_ordinary_success_before_drain_producer() {
+    produce(FixturePreset::Ordinary).await;
+}
+
+#[tokio::test]
+async fn frozen_old_ordinary_under_limit_increment_producer() {
+    produce(FixturePreset::UnderLimitIncrement).await;
+}
+
+async fn produce(preset: FixturePreset) {
     assert_eq!(env!("SAGAT_Q10C_SOURCE_COMMIT"), OLD_COMMIT);
     assert!(std::env::var_os("SAGAT_TEST_DATABASE_URL").is_some());
     let receipt_path = std::env::var_os("SAGAT_Q10C_ORDINARY_PHASE_RECEIPT")
@@ -379,13 +472,16 @@ async fn frozen_old_ordinary_success_before_drain_producer() {
     let namespace_id = platform.namespace_id().await;
 
     platform
-        .grant(platform.tenant, WORKER_SUBJECT, Role::Worker)
+        .grant(platform.tenant, preset.worker_subject(), Role::Worker)
         .await;
     let binding = platform
         .api
         .as_user(
             Method::PUT,
-            &format!("/namespaces/{namespace_id}/worker-bindings/{WORKER_SUBJECT}"),
+            &format!(
+                "/namespaces/{namespace_id}/worker-bindings/{}",
+                preset.worker_subject()
+            ),
             "alice",
             TENANT,
         )
@@ -403,16 +499,14 @@ async fn frozen_old_ordinary_success_before_drain_producer() {
         )
         .await;
     assert_eq!(quota.0, 200, "{}", quota.1);
-    let workflow = platform
-        .publish("q10c-ordinary-before-drain-v1", &document())
-        .await;
+    let workflow = platform.publish(preset.workflow_name(), &document(preset)).await;
     let run: RunId = platform
         .start(&workflow, &json!({"lines": [1]}))
         .await
         .parse()
         .expect("run id");
 
-    let placement = Placement::new(SCHEDULER_OWNER.to_owned());
+    let placement = Placement::new(preset.scheduler_owner().to_owned());
     let round = Keeper::new(
         platform.api.executions.clone(),
         placement.clone(),
@@ -436,15 +530,23 @@ async fn frozen_old_ordinary_success_before_drain_producer() {
     .with_children(DefinitionCache::new(Arc::new(JsonIrCodec), 64))
     .with_placement(placement);
 
-    let mut worker = platform.connect(WORKER_SUBJECT, TENANT).await;
+    let mut worker = platform.connect(preset.worker_subject(), TENANT).await;
     worker.register_version(&ACTIVITIES, "1.5").await;
     let worker_id = worker.worker_id.clone();
     let session_token = worker.session.clone();
-    let large = Value::String("x".repeat(209_998));
+    let large = Value::String("x".repeat(preset.source_string_bytes()));
     assert_eq!(
         serde_json::to_vec(&large).expect("large JSON").len(),
-        210_000
+        preset.source_output_bytes()
     );
+    assert!(preset.source_output_bytes() < 262_144);
+    assert_eq!(
+        serde_json::to_vec(&vec![large.clone()])
+            .expect("fixed single-member aggregate JSON")
+            .len(),
+        preset.source_aggregate_bytes()
+    );
+    assert!(preset.source_aggregate_bytes() < 262_144);
 
     for index in 0..10 {
         drive(&scheduler).await;
@@ -460,12 +562,43 @@ async fn frozen_old_ordinary_success_before_drain_producer() {
     drive(&scheduler).await;
     let final_lease = worker.one_task().await;
     assert_lease(&final_lease, "c10", "reserve", "line.reserve");
-    let mut completion = Worker::complete_message(&final_lease, "1");
-    completion.idempotency_key = format!("q10c-ordinary-{}", final_lease.task_id);
-    assert_old_shape(&platform, run, &final_lease, &worker_id, &session_token).await;
+    let completion_json = preset.completion_json();
+    assert!(completion_json.len() < 262_144);
+    let expected_totals = preset.expected_totals();
+    assert!(expected_totals.0 + i64::try_from(completion_json.len()).expect("candidate length")
+        < 4 * 1024 * 1024);
+    if matches!(preset, FixturePreset::UnderLimitIncrement) {
+        assert_eq!(completion_json.len(), 250_000);
+        assert_eq!(
+            expected_totals.0
+                + i64::try_from(completion_json.len()).expect("candidate length"),
+            2_250_000
+        );
+        assert_eq!(
+            expected_totals.2
+                + i64::try_from(completion_json.len()).expect("candidate length"),
+            4_250_020
+        );
+        assert!(
+            expected_totals.2
+                + i64::try_from(completion_json.len()).expect("candidate length")
+                > 4 * 1024 * 1024
+        );
+    }
+    let mut completion = Worker::complete_message(&final_lease, &completion_json);
+    completion.idempotency_key = format!("{}-{}", preset.report_key_prefix(), final_lease.task_id);
+    assert_old_shape(
+        &platform,
+        run,
+        &final_lease,
+        &worker_id,
+        &session_token,
+        preset,
+    )
+    .await;
 
     let receipt = json!({
-        "format": FORMAT,
+        "format": preset.format(),
         "source_commit": OLD_COMMIT,
         "database_name": platform.api.db.name,
         "producer_api_role": producer_api_role,
@@ -473,13 +606,13 @@ async fn frozen_old_ordinary_success_before_drain_producer() {
         "other_tenant_id": platform.other_tenant.to_string(),
         "namespace_id": namespace_id,
         "namespace_slug": NAMESPACE,
-        "worker_subject": WORKER_SUBJECT,
+        "worker_subject": preset.worker_subject(),
         "tenant_alias": TENANT,
         "worker_id": worker_id,
         "session_token": session_token,
         "run_id": run.to_string(),
         "selected_owner": "c10",
-        "scheduler_owner": SCHEDULER_OWNER,
+        "scheduler_owner": preset.scheduler_owner(),
         "task_lease_b64": base64::engine::general_purpose::STANDARD.encode(final_lease.encode_to_vec()),
         "completion_request_b64": base64::engine::general_purpose::STANDARD.encode(completion.encode_to_vec()),
         "producer_projection_witness_sha256": projection_witness(&platform, run).await,

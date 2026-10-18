@@ -1,0 +1,10 @@
+{
+  "command": [
+    "bash",
+    "scripts/test-legacy-collection-inflight-report-v1.sh"
+  ],
+  "exit_code": 0,
+  "seconds": 132.53,
+  "started_utc": "2026-10-18T23:36:38.581087+00:00",
+  "log": "old-current.txt"
+}

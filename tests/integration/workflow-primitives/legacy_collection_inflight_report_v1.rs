@@ -1,6 +1,7 @@
-//! Three bounded old/current acceptance cases for one genuine immutable-old ordinary success:
-//! report it before the current drain, after the data-limit drain requests cancellation, or after
-//! a public cancellation starts the normal collection drain.
+//! Four bounded old/current acceptance cases for genuine immutable-old ordinary successes:
+//! report before the current drain with either a pre-existing or candidate-triggered limit, report
+//! after the data-limit drain requests cancellation, or report after a public cancellation starts
+//! the normal collection drain.
 #![allow(clippy::expect_used, clippy::panic)]
 
 use std::os::unix::fs::PermissionsExt as _;
@@ -12,15 +13,24 @@ use prost::Message as _;
 use reqwest::{Method, StatusCode};
 use sagat_api_grpc::pb::{CompleteStepRequest, TaskLease};
 use sagat_application::entropy::{SystemEntropy, Token};
-use sagat_application::execution::{DefinitionCache, Engine};
+use sagat_application::execution::{DefinitionCache, Engine, RunTx};
 use sagat_application::maintenance::{MaintenanceStore, Window};
+use sagat_application::primitives::{
+    CollectionDataLimitEvidence, CollectionDrain, CollectionScopeId, CollectionStore,
+    CollectionTransition, PrimitiveStoreError, SchedulerAuthority,
+};
+use sagat_application::runs::{Lock, RunStore};
 use sagat_application::worker::WorkerSettings;
-use sagat_domain::execution::RunId;
-use sagat_domain::identity::TenantId;
+use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
+use sagat_domain::execution::{ExecutionInstanceId, RunId};
+use sagat_domain::identity::{NamespaceId, Subject, TenantId};
 use sagat_domain::sharding::{SHARDS, Shard};
+use sagat_domain::workflow::NodeId;
 use sagat_infra_ir::{JsonEvaluator, JsonIrCodec};
-use sagat_infra_postgres::{PgPool, PgRunStore, PoolConfig, connect, migrate};
-use sagat_scheduler::{Keeper, KeeperSettings, Placement, Scheduler, SchedulerSettings};
+use sagat_infra_postgres::{PgCollectionStore, PgPool, PgRunStore, PoolConfig, connect, migrate};
+use sagat_scheduler::{
+    CollectionAdvance, Keeper, KeeperSettings, Placement, Scheduler, SchedulerSettings,
+};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use sqlx::Row as _;
@@ -31,9 +41,40 @@ use crate::support::worker::{Platform, TENANT, Worker};
 use crate::support::{RUNTIME_ROLE, RUNTIME_ROLE_PASSWORD, attach_existing_db};
 
 const FORMAT: &str = "q10c-ordinary-before-drain-v1";
+const UNDER_LIMIT_FORMAT: &str = "q10c-ordinary-under-limit-increment-v1";
 const PINNED_OLD_COMMIT: &str = "6c44a0e49670cf19660792cd1518d241e6c99b3b";
 const CANCELLATION_KEY: &str = "legacy-cancellation-before-report-v1";
 const CANCELLATION_REASON: &str = "Cancel before the legacy drain";
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FixturePreset {
+    Ordinary,
+    UnderLimitIncrement,
+}
+
+impl FixturePreset {
+    const fn format(self) -> &'static str {
+        match self {
+            Self::Ordinary => FORMAT,
+            Self::UnderLimitIncrement => UNDER_LIMIT_FORMAT,
+        }
+    }
+
+    const fn expected_totals(self) -> (i64, i64, i64) {
+        match self {
+            Self::Ordinary => (2_100_000, 2_100_020, 4_200_020),
+            Self::UnderLimitIncrement => (2_000_000, 2_000_020, 4_000_020),
+        }
+    }
+
+    fn completion_json(self) -> String {
+        match self {
+            Self::Ordinary => "1".to_owned(),
+            Self::UnderLimitIncrement => serde_json::to_string(&Value::String("y".repeat(249_998)))
+                .expect("fixed under-limit completion JSON"),
+        }
+    }
+}
 
 const PROJECTION_WITNESS_SQL: &str = r#"WITH selected_runs AS (
   SELECT run.id FROM runs run WHERE run.tenant_id=$1 AND run.id=$2
@@ -156,6 +197,7 @@ const CLOSED_SOURCE_SQL: &str = r#"WITH selected_scopes AS (
 )"#;
 
 struct Receipt {
+    preset: FixturePreset,
     database_name: String,
     producer_api_role: String,
     tenant: TenantId,
@@ -229,6 +271,10 @@ type FinalCompensationState = (
 
 impl Receipt {
     fn parse(bytes: &[u8]) -> Self {
+        Self::parse_for(bytes, FixturePreset::Ordinary)
+    }
+
+    fn parse_for(bytes: &[u8], preset: FixturePreset) -> Self {
         let mut value: Value =
             serde_json::from_slice(bytes).expect("parse private producer receipt");
         let object = value.as_object_mut().expect("receipt object");
@@ -240,7 +286,7 @@ impl Receipt {
                 .unwrap_or_else(|| panic!("receipt string: {name}"))
         };
         assert!(
-            take("format") == FORMAT,
+            take("format") == preset.format(),
             "unexpected private receipt format"
         );
         assert!(
@@ -282,6 +328,7 @@ impl Receipt {
         let source_witness = take("closed_source_witness_sha256");
         assert!(object.is_empty(), "receipt has no unknown fields");
         Self {
+            preset,
             database_name,
             producer_api_role,
             tenant,
@@ -403,13 +450,38 @@ fn assert_wire_identity(receipt: &Receipt) {
     assert!(receipt.lease.tenant_alias.is_empty());
     assert_eq!(receipt.lease.task_kind, "FORWARD");
     assert_eq!(receipt.lease.activity_name, "line.reserve");
+    let expected_output = receipt.preset.completion_json();
     assert!(
-        receipt.completion.output_json == "1",
-        "retained completion output differs from the reviewed ordinary value"
+        receipt.completion.output_json == expected_output,
+        "retained completion output differs from the selected fixed value"
     );
     assert!(receipt.completion.output_blob_ref.is_empty());
     assert!(receipt.completion.output_sha256.is_empty());
-    assert!(2_100_000 + receipt.completion.output_json.len() < 4 * 1024 * 1024);
+    assert!(receipt.completion.output_json.len() < 262_144);
+    let expected_totals = receipt.preset.expected_totals();
+    assert!(
+        expected_totals.0
+            + i64::try_from(receipt.completion.output_json.len()).expect("candidate length")
+            < 4 * 1024 * 1024
+    );
+    if receipt.preset == FixturePreset::UnderLimitIncrement {
+        assert_eq!(receipt.completion.output_json.len(), 250_000);
+        assert_eq!(
+            expected_totals.0
+                + i64::try_from(receipt.completion.output_json.len()).expect("candidate length"),
+            2_250_000
+        );
+        assert_eq!(
+            expected_totals.2
+                + i64::try_from(receipt.completion.output_json.len()).expect("candidate length"),
+            4_250_020
+        );
+        assert!(
+            expected_totals.2
+                + i64::try_from(receipt.completion.output_json.len()).expect("candidate length")
+                > 4 * 1024 * 1024
+        );
+    }
     let instance = receipt
         .lease
         .instance
@@ -419,7 +491,7 @@ fn assert_wire_identity(receipt: &Receipt) {
     assert_eq!(instance.instance_path.len(), 1);
     assert_eq!(instance.instance_path[0].scope_node_id, "c10");
     assert_eq!(instance.instance_path[0].iteration_index, 0);
-    let mut expected = Worker::complete_message(&receipt.lease, "1");
+    let mut expected = Worker::complete_message(&receipt.lease, &expected_output);
     expected.idempotency_key = receipt.completion.idempotency_key.clone();
     assert!(
         expected.encode_to_vec() == receipt.completion.encode_to_vec(),
@@ -864,7 +936,7 @@ async fn assert_successful_refusal(
     assert_eq!(payloads(&api.db.pool, receipt).await, payloads_before);
     assert_eq!(
         effective_totals(&api.db.pool, receipt).await,
-        (2_100_000, 2_100_020, 4_200_020)
+        receipt.preset.expected_totals()
     );
     assert!(
         source_witness(&api.db.pool, receipt.tenant, receipt.run).await == receipt.source_witness,
@@ -881,6 +953,42 @@ async fn assert_successful_refusal(
             candidate.run_id == receipt.run && candidate.node.as_str() == "c10"
         })
     );
+}
+
+async fn assert_under_limit_report_boundary(pool: &PgPool, receipt: &Receipt) {
+    let row = sqlx::query(
+        "SELECT \
+          (SELECT min(event.seq) FROM run_events event WHERE event.tenant_id=$1 \
+            AND event.run_id=$2 AND event.event_type='run.stop_requested' \
+            AND event.detail->>'reason'='FAILED' AND event.detail->>'code'='RUN_DATA_LIMIT') \
+              AS stop_seq, \
+          (SELECT min(event.seq) FROM run_events event WHERE event.tenant_id=$1 \
+            AND event.run_id=$2 AND event.event_type='step.completed' AND event.node='reserve' \
+            AND event.instance_path_nodes=ARRAY['c10']::text[] \
+            AND event.instance_path_indices=ARRAY[0]::integer[]) AS completion_seq, \
+          (SELECT count(*) FROM run_events event WHERE event.tenant_id=$1 AND event.run_id=$2 \
+            AND event.node='reserve' AND event.instance_path_nodes=ARRAY['c10']::text[] \
+            AND event.instance_path_indices=ARRAY[0]::integer[] \
+            AND event.event_type IN ('step.failed','step.cancelled','step.retry_scheduled')) \
+              AS other_forward_outcomes, \
+          (SELECT count(*) FROM steps step WHERE step.tenant_id=$1 AND step.run_id=$2 \
+            AND step.instance_path_nodes=ARRAY['c10']::text[] \
+            AND step.instance_path_indices=ARRAY[0]::integer[] \
+            AND step.node IN ('reserve~r','reserve~c')) AS derived_steps",
+    )
+    .bind(receipt.tenant.as_uuid())
+    .bind(receipt.run.as_uuid())
+    .fetch_one(pool)
+    .await
+    .expect("under-limit report boundary order");
+    let stop_seq = row.get::<i64, _>("stop_seq");
+    let completion_seq = row.get::<i64, _>("completion_seq");
+    assert!(
+        stop_seq < completion_seq,
+        "data-limit stop must precede the known success"
+    );
+    assert_eq!(row.get::<i64, _>("other_forward_outcomes"), 0);
+    assert_eq!(row.get::<i64, _>("derived_steps"), 0);
 }
 
 async fn output_reference_fingerprint(pool: &PgPool, receipt: &Receipt) -> String {
@@ -922,6 +1030,48 @@ async fn output_reference_fingerprint(pool: &PgPool, receipt: &Receipt) -> Strin
     .fetch_one(pool)
     .await
     .expect("bounded output-reference snapshot");
+    sha(&value)
+}
+
+async fn retained_output_reference_fingerprint(pool: &PgPool, receipt: &Receipt) -> String {
+    let value: Value = sqlx::query_scalar(
+        "SELECT jsonb_build_object( \
+          'runResults',(SELECT coalesce(jsonb_agg(jsonb_build_object( \
+              'run',result_run.id,'digest',encode(result_run.result_digest,'hex')) \
+            ORDER BY result_run.id),'[]'::jsonb) FROM runs result_run \
+            WHERE result_run.tenant_id=$1 AND result_run.id=$2 \
+              AND result_run.result_digest IS NOT NULL), \
+          'stepOutputs',(SELECT coalesce(jsonb_agg(jsonb_build_object( \
+              'pathNodes',step.instance_path_nodes,'pathIndices',step.instance_path_indices, \
+              'node',step.node,'output',encode(step.output_digest,'hex')) \
+            ORDER BY step.instance_path_nodes,step.instance_path_indices,step.node),'[]'::jsonb) \
+            FROM steps step WHERE step.tenant_id=$1 AND step.run_id=$2 \
+              AND step.output_digest IS NOT NULL), \
+          'scopeResults',(SELECT coalesce(jsonb_agg(jsonb_build_object( \
+              'pathNodes',scope.owner_path_nodes,'pathIndices',scope.owner_path_indices, \
+              'owner',scope.owner_node,'result',encode(scope.result_digest,'hex')) \
+            ORDER BY scope.owner_path_nodes,scope.owner_path_indices,scope.owner_node),'[]'::jsonb) \
+            FROM iteration_scopes scope WHERE scope.tenant_id=$1 AND scope.run_id=$2 \
+              AND scope.result_digest IS NOT NULL), \
+          'memberResults',(SELECT coalesce(jsonb_agg(jsonb_build_object( \
+              'scope',member.scope_id,'index',member.iteration_index, \
+              'result',encode(member.result_digest,'hex')) \
+            ORDER BY member.scope_id,member.iteration_index),'[]'::jsonb) \
+            FROM collection_iterations member WHERE member.tenant_id=$1 AND member.run_id=$2 \
+              AND member.result_digest IS NOT NULL), \
+          'checkpoints',(SELECT coalesce(jsonb_agg(jsonb_build_object( \
+              'scope',checkpoint.scope_id,'index',checkpoint.iteration_index, \
+              'result',encode(checkpoint.result_digest,'hex')) \
+            ORDER BY checkpoint.scope_id,checkpoint.iteration_index),'[]'::jsonb) \
+            FROM iteration_checkpoints checkpoint \
+            WHERE checkpoint.tenant_id=$1 AND checkpoint.run_id=$2 \
+              AND checkpoint.result_digest IS NOT NULL))",
+    )
+    .bind(receipt.tenant.as_uuid())
+    .bind(receipt.run.as_uuid())
+    .fetch_one(pool)
+    .await
+    .expect("nonnull retained output-reference snapshot");
     sha(&value)
 }
 
@@ -1167,6 +1317,40 @@ async fn stop_drain_fingerprint(pool: &PgPool, receipt: &Receipt) -> String {
     .fetch_one(pool)
     .await
     .expect("immutable stop and drain identity");
+    sha(&value)
+}
+
+async fn stopped_limit_drain_fingerprint(pool: &PgPool, receipt: &Receipt) -> String {
+    let value: Value = sqlx::query_scalar(
+        "SELECT jsonb_build_object( \
+          'stop',jsonb_build_object('reason',run.stop_reason,'code',run.stop_code), \
+          'stopEvent',(SELECT to_jsonb(event) FROM run_events event \
+            WHERE event.tenant_id=run.tenant_id AND event.run_id=run.id \
+              AND event.event_type='run.stop_requested'), \
+          'scope',(SELECT jsonb_build_object( \
+              'kind',scope.drain_kind,'iteration',scope.drain_iteration, \
+              'code',scope.drain_failure_code,'sequence',scope.drain_sequence, \
+              'outbox',scope.drain_outbox_id) FROM iteration_scopes scope \
+            WHERE scope.tenant_id=run.tenant_id AND scope.run_id=run.id \
+              AND scope.owner_path_nodes='{}'::text[] \
+              AND scope.owner_path_indices='{}'::integer[] AND scope.owner_node='c10'), \
+          'drainEvent',(SELECT to_jsonb(event) FROM run_events event \
+            WHERE event.tenant_id=run.tenant_id AND event.run_id=run.id \
+              AND event.event_type='collection.drain_started' AND event.node='c10'), \
+          'audit',(SELECT to_jsonb(audit) FROM audit_records audit \
+            WHERE audit.tenant_id=run.tenant_id AND audit.resource_type='run' \
+              AND audit.resource_id=run.id::text AND audit.action='run.data_limit_exceeded' \
+              AND audit.reason='stopped_for_run_data_limit'), \
+          'outbox',(SELECT to_jsonb(message) FROM event_outbox message \
+            WHERE message.tenant_id=run.tenant_id AND message.aggregate_id=run.id \
+              AND message.event_type='collection.drain.started' AND message.routing_key='c10')) \
+         FROM runs run WHERE run.tenant_id=$1 AND run.id=$2",
+    )
+    .bind(receipt.tenant.as_uuid())
+    .bind(receipt.run.as_uuid())
+    .fetch_one(pool)
+    .await
+    .expect("immutable stopped-limit drain identity");
     sha(&value)
 }
 
@@ -1710,6 +1894,261 @@ async fn assert_pending_compensation(
     sha(&value)
 }
 
+async fn under_limit_execution_footprint(pool: &PgPool, receipt: &Receipt) -> String {
+    let audit_and_receipts: Value = sqlx::query_scalar(
+        "SELECT jsonb_build_object( \
+          'audits',(SELECT coalesce(jsonb_agg(to_jsonb(audit) ORDER BY audit.created_at,audit.id), \
+            '[]'::jsonb) FROM audit_records audit WHERE audit.tenant_id=$1 \
+              AND audit.resource_type='run' AND audit.resource_id=$2::text), \
+          'receipts',(SELECT coalesce(jsonb_agg(to_jsonb(receipt_row) \
+            ORDER BY receipt_row.scope,receipt_row.idempotency_key),'[]'::jsonb) \
+            FROM command_dedupe receipt_row WHERE receipt_row.tenant_id=$1 \
+              AND (receipt_row.scope=concat('run.operate:',$2::text) \
+                OR receipt_row.scope LIKE concat('step:',$2::text,':%'))), \
+          'payloadCount',(SELECT count(*) FROM payloads payload WHERE payload.tenant_id=$1))",
+    )
+    .bind(receipt.tenant.as_uuid())
+    .bind(receipt.run.as_uuid())
+    .fetch_one(pool)
+    .await
+    .expect("safe execution audit and receipt footprint");
+    let continuation_rows: Value = sqlx::query_scalar(
+        "SELECT jsonb_build_object( \
+          'telemetry',(SELECT to_jsonb(telemetry) FROM telemetry_pending telemetry \
+            WHERE telemetry.tenant_id=$1 AND telemetry.run_id=$2), \
+          'sagas',(SELECT jsonb_agg(to_jsonb(saga) \
+            ORDER BY saga.owner_path_nodes,saga.owner_path_indices,saga.owner_node) \
+            FROM scope_sagas saga WHERE saga.tenant_id=$1 AND saga.run_id=$2), \
+          'sagaEntries',(SELECT jsonb_agg(to_jsonb(entry) \
+            ORDER BY entry.owner_path_nodes,entry.owner_path_indices,entry.owner_node, \
+                     entry.iteration_index,entry.node) \
+            FROM scope_saga_entries entry WHERE entry.tenant_id=$1 AND entry.run_id=$2))",
+    )
+    .bind(receipt.tenant.as_uuid())
+    .bind(receipt.run.as_uuid())
+    .fetch_one(pool)
+    .await
+    .expect("exact telemetry and scope saga footprint");
+    sha(&json!({
+        "projection": projection_witness(pool, receipt.tenant, receipt.run).await,
+        "outputs": output_reference_fingerprint(pool, receipt).await,
+        "reservations": reservation_usage_fingerprint(pool, receipt).await,
+        "auditAndReceipts": audit_and_receipts,
+        "continuations": continuation_rows,
+    }))
+}
+
+async fn assert_under_limit_full_overlay(api: &TestApi, receipt: &Receipt) {
+    let before = under_limit_execution_footprint(&api.db.pool, receipt).await;
+    let source_before = source_witness(&api.db.pool, receipt.tenant, receipt.run).await;
+    let mut tx = api
+        .executions
+        .begin(receipt.tenant, receipt.run, Lock::Wait)
+        .await
+        .expect("open current production full run transaction")
+        .expect("retained legacy run");
+    assert_eq!(
+        tx.logical_output_bytes()
+            .await
+            .expect("production effective output scalar"),
+        4_000_020
+    );
+    let (root_aggregates, member_outputs, output_sum) = {
+        let data = tx
+            .data()
+            .await
+            .expect("bounded production full data overlay");
+        let root_aggregates = data
+            .root_outputs()
+            .filter(|(node, output)| {
+                node.as_str()
+                    .strip_prefix('c')
+                    .and_then(|suffix| suffix.parse::<u8>().ok())
+                    .is_some_and(|index| index < 10)
+                    && output.len() == 200_002
+            })
+            .count();
+        let member_outputs = data
+            .outputs
+            .iter()
+            .filter(|(instance, output)| {
+                instance.path().depth() == 1
+                    && instance.node().as_str() == "work"
+                    && output.len() == 200_000
+            })
+            .count();
+        let output_sum = data.outputs.values().map(Vec::len).sum::<usize>();
+        (root_aggregates, member_outputs, output_sum)
+    };
+    assert_eq!(root_aggregates, 10);
+    assert_eq!(member_outputs, 10);
+    assert_eq!(output_sum, 4_000_020);
+    tx.commit().await.expect("close read-only full overlay");
+    assert!(
+        source_witness(&api.db.pool, receipt.tenant, receipt.run).await == source_before,
+        "full overlay changed the immutable source witness"
+    );
+    assert!(
+        under_limit_execution_footprint(&api.db.pool, receipt).await == before,
+        "full overlay backfilled or changed durable execution state"
+    );
+}
+
+async fn fresh_scheduler(
+    api: &TestApi,
+    receipt: &Receipt,
+) -> Scheduler<PgRunStore, JsonEvaluator, SystemEntropy> {
+    let url = if crate::support::as_runtime_role() {
+        api.db.url_for(RUNTIME_ROLE, RUNTIME_ROLE_PASSWORD)
+    } else {
+        api.db.url.clone()
+    };
+    let pool = connect(&PoolConfig::new(url))
+        .await
+        .expect("fresh scheduler pool");
+    let store = PgRunStore::new(pool, DefinitionCache::new(Arc::new(JsonIrCodec), 8))
+        .with_scoped_worker_protocol();
+    let placement = Placement::new(receipt.scheduler_owner.clone());
+    let round = Keeper::new(
+        store.clone(),
+        placement.clone(),
+        KeeperSettings {
+            ttl: Duration::from_secs(3_600),
+        },
+    )
+    .round()
+    .await
+    .expect("renew scheduler authority through fresh store");
+    assert_eq!(round.replicas, 1);
+    assert_eq!(round.held, usize::from(SHARDS));
+    assert!(placement.owned().contains(Shard::of(receipt.run.as_uuid())));
+    Scheduler::new(
+        store,
+        Engine::new(JsonEvaluator),
+        SystemEntropy,
+        SchedulerSettings {
+            discovery_rest: Duration::ZERO,
+            ..SchedulerSettings::default()
+        },
+    )
+    .with_placement(placement)
+}
+
+async fn reject_existing_outputs_while_under_limit(api: &TestApi, receipt: &Receipt) {
+    let row = sqlx::query(
+        "SELECT run.namespace_id,run.run_version,run.trace_id,run.status, \
+                run.stop_reason,run.stop_code,scope.scope_id,scope.lifecycle, \
+                scope.drain_kind,shard.owner,shard.generation \
+           FROM runs run JOIN iteration_scopes scope \
+             ON scope.tenant_id=run.tenant_id AND scope.run_id=run.id \
+           JOIN scheduler_shards shard ON shard.shard=$3 \
+          WHERE run.tenant_id=$1 AND run.id=$2 \
+            AND scope.owner_path_nodes='{}'::text[] \
+            AND scope.owner_path_indices='{}'::integer[] AND scope.owner_node='c10'",
+    )
+    .bind(receipt.tenant.as_uuid())
+    .bind(receipt.run.as_uuid())
+    .bind(i16::from(Shard::of(receipt.run.as_uuid()).index()))
+    .fetch_one(&api.db.pool)
+    .await
+    .expect("exact current collection and scheduler authority");
+    assert_eq!(row.get::<Uuid, _>("namespace_id"), receipt.namespace);
+    assert_eq!(row.get::<String, _>("status"), "RUNNING");
+    assert!(row.get::<Option<String>, _>("stop_reason").is_none());
+    assert!(row.get::<Option<String>, _>("stop_code").is_none());
+    assert_eq!(row.get::<String, _>("lifecycle"), "OPEN");
+    assert!(row.get::<Option<String>, _>("drain_kind").is_none());
+    assert_eq!(row.get::<String, _>("owner"), receipt.scheduler_owner);
+    let version = u64::try_from(row.get::<i64, _>("run_version")).expect("run version");
+    let generation = u64::try_from(row.get::<i64, _>("generation")).expect("scheduler generation");
+    let trace = row.get::<Option<String>, _>("trace_id");
+    let evidence = CollectionDataLimitEvidence::existing_outputs();
+    let occurred_at = time::OffsetDateTime::now_utc();
+    let audit = AuditRecord::engine(
+        receipt.tenant,
+        AuditAction::RunDataLimitExceeded,
+        ResourceType::Run,
+        receipt.run.to_string(),
+        evidence.required_audit_reason().as_str(),
+        trace.clone(),
+        occurred_at,
+    );
+    let command = CollectionDrain::for_data_limit(
+        CollectionTransition::new(
+            receipt.tenant,
+            NamespaceId::new(receipt.namespace),
+            receipt.run,
+            version,
+            ExecutionInstanceId::root(NodeId::parse("c10").expect("selected owner")),
+            SchedulerAuthority::for_run(receipt.scheduler_owner.clone(), receipt.run, generation),
+            Subject::engine(),
+            trace,
+            occurred_at,
+            Some(audit),
+        ),
+        CollectionScopeId::new(row.get("scope_id")),
+        evidence,
+        Uuid::now_v7(),
+    )
+    .expect("checked ExistingOutputs command");
+    let before = under_limit_execution_footprint(&api.db.pool, receipt).await;
+    let store = PgCollectionStore::with_definition_cache(
+        api.api_pool.clone(),
+        DefinitionCache::new(Arc::new(JsonIrCodec), 8),
+    );
+    assert!(matches!(
+        store.start_collection_drain(&command).await,
+        Err(PrimitiveStoreError::InvalidTransition)
+    ));
+    assert!(
+        under_limit_execution_footprint(&api.db.pool, receipt).await == before,
+        "rejected ExistingOutputs changed execution, audit, receipt or output state"
+    );
+}
+
+async fn assert_under_limit_pre_report_controls(
+    api: &TestApi,
+    receipt: &Receipt,
+    scheduler: &Scheduler<PgRunStore, JsonEvaluator, SystemEntropy>,
+) {
+    assert_eq!(
+        effective_totals(&api.db.pool, receipt).await,
+        (2_000_000, 2_000_020, 4_000_020)
+    );
+    assert_under_limit_full_overlay(api, receipt).await;
+    let candidates = api
+        .executions
+        .collection_candidates(&Window::everything(8))
+        .await
+        .expect("pre-report collection candidates");
+    assert!(
+        !candidates.iter().any(|candidate| {
+            candidate.run_id == receipt.run && candidate.node.as_str() == "c10"
+        })
+    );
+    let owner = ExecutionInstanceId::root(NodeId::parse("c10").expect("selected owner"));
+    let before = under_limit_execution_footprint(&api.db.pool, receipt).await;
+    assert_eq!(
+        scheduler
+            .advance_collection(receipt.tenant, receipt.run, &owner)
+            .await
+            .expect("normal pre-report collection advance"),
+        CollectionAdvance::Waiting
+    );
+    let tick = scheduler.tick().await;
+    assert_eq!(tick.failed, 0, "pre-report scheduler tick: {tick:?}");
+    assert_eq!(
+        tick.collections_advanced, 0,
+        "pre-report scheduler tick: {tick:?}"
+    );
+    assert!(
+        under_limit_execution_footprint(&api.db.pool, receipt).await == before,
+        "pre-report scheduling changed execution or reservation state"
+    );
+    reject_existing_outputs_while_under_limit(api, receipt).await;
+    assert_live_target(&api.db.pool, receipt, false).await;
+}
+
 async fn fresh_verify(api: &TestApi, receipt: &Receipt) {
     let url = if crate::support::as_runtime_role() {
         api.db.url_for(RUNTIME_ROLE, RUNTIME_ROLE_PASSWORD)
@@ -1764,9 +2203,7 @@ async fn finish_after_compensation(
     panic!("the run did not reach its real terminal outcome after compensation");
 }
 
-#[tokio::test]
-#[ignore = "requires scripts/test-legacy-collection-inflight-report-v1.sh"]
-async fn old_ordinary_success_before_drain_preserves_the_report_and_compensation() {
+async fn run_report_before_drain_case(preset: FixturePreset) {
     let receipt_path = std::env::var_os("SAGAT_Q10C_ORDINARY_PHASE_RECEIPT")
         .map(std::path::PathBuf::from)
         .expect("phased runner receipt path");
@@ -1778,7 +2215,10 @@ async fn old_ordinary_success_before_drain_preserves_the_report_and_compensation
             & 0o777,
         0o600
     );
-    let receipt = Receipt::parse(&std::fs::read(&receipt_path).expect("read private receipt"));
+    let receipt = Receipt::parse_for(
+        &std::fs::read(&receipt_path).expect("read private receipt"),
+        preset,
+    );
     assert_wire_identity(&receipt);
 
     let admin_url = std::env::var("SAGAT_TEST_DATABASE_URL")
@@ -1841,7 +2281,7 @@ async fn old_ordinary_success_before_drain_preserves_the_report_and_compensation
     assert_live_target(&platform.api.db.pool, &receipt, false).await;
     assert_eq!(
         effective_totals(&platform.api.db.pool, &receipt).await,
-        (2_100_000, 2_100_020, 4_200_020)
+        preset.expected_totals()
     );
 
     let mut worker = platform
@@ -1853,6 +2293,20 @@ async fn old_ordinary_success_before_drain_preserves_the_report_and_compensation
         identity_witness(&platform.api.db.pool, &receipt).await == authority_before,
         "transport connection changed persisted worker authority"
     );
+
+    let pre_report_scheduler = if preset == FixturePreset::UnderLimitIncrement {
+        let scheduler = fresh_scheduler(&platform.api, &receipt).await;
+        assert_under_limit_pre_report_controls(&platform.api, &receipt, &scheduler).await;
+        Some(scheduler)
+    } else {
+        None
+    };
+    let output_fingerprint_before_report =
+        output_reference_fingerprint(&platform.api.db.pool, &receipt).await;
+    let retained_output_references_before_report =
+        retained_output_reference_fingerprint(&platform.api.db.pool, &receipt).await;
+    let footprint_before_report =
+        under_limit_execution_footprint(&platform.api.db.pool, &receipt).await;
 
     let outboxes_before = outboxes(&platform.api.db.pool, &receipt).await;
     let payloads_before = payloads(&platform.api.db.pool, &receipt).await;
@@ -1878,12 +2332,25 @@ async fn old_ordinary_success_before_drain_preserves_the_report_and_compensation
         Some("RUN_DATA_LIMIT"),
     )
     .await;
+    if preset == FixturePreset::UnderLimitIncrement {
+        assert_under_limit_report_boundary(&platform.api.db.pool, &receipt).await;
+        assert!(
+            output_reference_fingerprint(&platform.api.db.pool, &receipt).await
+                == output_fingerprint_before_report,
+            "refused candidate changed an output, journal payload or blob reference"
+        );
+        assert_eq!(
+            effective_totals(&platform.api.db.pool, &receipt).await,
+            (2_000_000, 2_000_020, 4_000_020)
+        );
+    }
     let original_report_receipt =
         verified_report_receipt(&platform.api.db.pool, &receipt, &accepted.command_id).await;
     assert!(
         identity_witness(&platform.api.db.pool, &receipt).await == authority_before,
         "ordinary report changed persisted worker authority"
     );
+    drop(pre_report_scheduler);
 
     fresh_verify(&platform.api, &receipt).await;
     let first_identity = report_identity(&platform.api.db.pool, &receipt).await;
@@ -1936,30 +2403,34 @@ async fn old_ordinary_success_before_drain_preserves_the_report_and_compensation
         Some(receipt.scheduler_owner.as_str())
     );
 
-    let placement = Placement::new(receipt.scheduler_owner.clone());
-    let round = Keeper::new(
-        platform.api.executions.clone(),
-        placement.clone(),
-        KeeperSettings {
-            ttl: Duration::from_secs(3_600),
-        },
-    )
-    .round()
-    .await
-    .expect("renew immutable-old scheduler identity");
-    assert_eq!(round.replicas, 1);
-    assert_eq!(round.held, usize::from(SHARDS));
-    assert!(placement.owned().contains(Shard::of(receipt.run.as_uuid())));
-    let scheduler = Scheduler::new(
-        platform.api.executions.clone(),
-        Engine::new(JsonEvaluator),
-        SystemEntropy,
-        SchedulerSettings {
-            discovery_rest: Duration::ZERO,
-            ..SchedulerSettings::default()
-        },
-    )
-    .with_placement(placement);
+    let scheduler = if preset == FixturePreset::UnderLimitIncrement {
+        fresh_scheduler(&platform.api, &receipt).await
+    } else {
+        let placement = Placement::new(receipt.scheduler_owner.clone());
+        let round = Keeper::new(
+            platform.api.executions.clone(),
+            placement.clone(),
+            KeeperSettings {
+                ttl: Duration::from_secs(3_600),
+            },
+        )
+        .round()
+        .await
+        .expect("renew immutable-old scheduler identity");
+        assert_eq!(round.replicas, 1);
+        assert_eq!(round.held, usize::from(SHARDS));
+        assert!(placement.owned().contains(Shard::of(receipt.run.as_uuid())));
+        Scheduler::new(
+            platform.api.executions.clone(),
+            Engine::new(JsonEvaluator),
+            SystemEntropy,
+            SchedulerSettings {
+                discovery_rest: Duration::ZERO,
+                ..SchedulerSettings::default()
+            },
+        )
+        .with_placement(placement)
+    };
 
     let drain_report = scheduler.tick().await;
     assert_eq!(
@@ -2006,6 +2477,35 @@ async fn old_ordinary_success_before_drain_preserves_the_report_and_compensation
         outboxes(&platform.api.db.pool, &receipt).await,
         outboxes_before + 1
     );
+    let stopped_limit_identity = if preset == FixturePreset::UnderLimitIncrement {
+        let drain_evidence: (i64, i64, i64, i64, i64) = sqlx::query_as(
+            "SELECT \
+              count(*) FILTER (WHERE reason='stopped_for_run_data_limit'), \
+              count(*) FILTER (WHERE reason='existing_outputs'), \
+              count(*) FILTER (WHERE reason='aggregate'), \
+              (SELECT count(*) FROM run_events event WHERE event.tenant_id=$1 \
+                AND event.run_id=$2 AND event.event_type='collection.drain_started' \
+                AND event.node='c10' AND event.detail->>'reason'='run_data_limit'), \
+              (SELECT count(*) FROM event_outbox message WHERE message.tenant_id=$1 \
+                AND message.aggregate_id=$2 AND message.event_type='collection.drain.started' \
+                AND message.routing_key='c10' AND message.payload->>'reason'='FAILED') \
+             FROM audit_records WHERE tenant_id=$1 AND resource_type='run' \
+              AND resource_id=$2::text AND action='run.data_limit_exceeded'",
+        )
+        .bind(receipt.tenant.as_uuid())
+        .bind(receipt.run.as_uuid())
+        .fetch_one(&platform.api.db.pool)
+        .await
+        .expect("exact stopped-limit drain evidence");
+        assert_eq!(drain_evidence, (1, 0, 0, 1, 1));
+        assert_eq!(
+            effective_totals(&platform.api.db.pool, &receipt).await,
+            (2_000_000, 2_000_020, 4_000_020)
+        );
+        Some(stopped_limit_drain_fingerprint(&platform.api.db.pool, &receipt).await)
+    } else {
+        None
+    };
     assert!(
         source_witness(&platform.api.db.pool, receipt.tenant, receipt.run).await
             == receipt.source_witness,
@@ -2032,6 +2532,25 @@ async fn old_ordinary_success_before_drain_preserves_the_report_and_compensation
     assert_eq!(compensation_instance.instance_path.len(), 1);
     assert_eq!(compensation_instance.instance_path[0].scope_node_id, "c10");
     assert_eq!(compensation_instance.instance_path[0].iteration_index, 0);
+    if preset == FixturePreset::UnderLimitIncrement {
+        let input: Value = serde_json::from_str(&compensation.input_json)
+            .expect("ordinary compensation task context");
+        assert_eq!(input["item"], json!(1));
+        assert_eq!(input["index"], json!(0));
+        assert!(
+            input.pointer("/steps/reserve/output").is_none(),
+            "refused forward output was synthesized in compensation input"
+        );
+        let pending =
+            assert_pending_compensation(&platform.api.db.pool, &receipt, "RUN_DATA_LIMIT").await;
+        let waiting = scheduler.tick().await;
+        assert_eq!(waiting.failed, 0, "pending compensation tick: {waiting:?}");
+        assert!(
+            assert_pending_compensation(&platform.api.db.pool, &receipt, "RUN_DATA_LIMIT").await
+                == pending,
+            "normal scheduling finalized or replaced unfinished compensation"
+        );
+    }
     let before_compensation: (String, String, Option<String>) = sqlx::query_as(
         "SELECT run.status,saga.phase,saga.outcome FROM runs run JOIN scope_sagas saga \
           ON saga.tenant_id=run.tenant_id AND saga.run_id=run.id \
@@ -2103,7 +2622,7 @@ async fn old_ordinary_success_before_drain_preserves_the_report_and_compensation
     assert_eq!(final_state.11, final_state.12);
     assert_eq!(
         effective_totals(&platform.api.db.pool, &receipt).await,
-        (2_100_000, 2_100_020, 4_200_020)
+        preset.expected_totals()
     );
     assert!(
         source_witness(&platform.api.db.pool, receipt.tenant, receipt.run).await
@@ -2114,7 +2633,90 @@ async fn old_ordinary_success_before_drain_preserves_the_report_and_compensation
         identity_witness(&platform.api.db.pool, &receipt).await == authority_before,
         "compensation changed persisted worker authority"
     );
+    if preset == FixturePreset::UnderLimitIncrement {
+        let compensation_output_absent: bool = sqlx::query_scalar(
+            "SELECT output_digest IS NULL FROM steps WHERE tenant_id=$1 AND run_id=$2 \
+              AND node='reserve~c' AND instance_path_nodes=ARRAY['c10']::text[] \
+              AND instance_path_indices=ARRAY[0]::integer[]",
+        )
+        .bind(receipt.tenant.as_uuid())
+        .bind(receipt.run.as_uuid())
+        .fetch_one(&platform.api.db.pool)
+        .await
+        .expect("real compensation output reference");
+        assert!(
+            compensation_output_absent,
+            "the real compensation retained an unexpected output"
+        );
+        assert!(
+            retained_output_reference_fingerprint(&platform.api.db.pool, &receipt).await
+                == retained_output_references_before_report,
+            "report, drain or compensation changed retained output references"
+        );
+        let stopped_limit_identity = stopped_limit_identity
+            .as_ref()
+            .expect("captured stopped-limit drain identity");
+        assert!(
+            stopped_limit_drain_fingerprint(&platform.api.db.pool, &receipt).await
+                == *stopped_limit_identity,
+            "final compensation changed the original stop or drain identity"
+        );
+        assert!(
+            stored_report_receipt(&platform.api.db.pool, &receipt).await == original_report_receipt,
+            "final compensation changed the stored original report receipt"
+        );
+        let before_terminal_replay =
+            under_limit_execution_footprint(&platform.api.db.pool, &receipt).await;
+        let terminal_replay_request = worker.req(receipt.completion.clone());
+        let terminal_replay = worker
+            .client
+            .complete_step(terminal_replay_request)
+            .await
+            .expect("replay original forward report after terminal compensation")
+            .into_inner();
+        assert!(terminal_replay.already_applied);
+        assert!(
+            terminal_replay.command_id == accepted.command_id
+                && terminal_replay.step_status == "SUCCEEDED"
+                && terminal_replay.run_status == "CANCELLING",
+            "terminal replay changed the original stored ACK"
+        );
+        assert!(
+            stored_report_receipt(&platform.api.db.pool, &receipt).await == original_report_receipt,
+            "terminal replay changed the stored original report receipt"
+        );
+        assert!(
+            under_limit_execution_footprint(&platform.api.db.pool, &receipt).await
+                == before_terminal_replay,
+            "terminal replay changed execution, audit, receipt or output state"
+        );
+        assert!(
+            stopped_limit_drain_fingerprint(&platform.api.db.pool, &receipt).await
+                == *stopped_limit_identity,
+            "terminal replay changed the original stop or drain identity"
+        );
+        assert_eq!(
+            effective_totals(&platform.api.db.pool, &receipt).await,
+            (2_000_000, 2_000_020, 4_000_020)
+        );
+        assert!(
+            footprint_before_report != before_terminal_replay,
+            "report, drain and compensation did not create their durable transitions"
+        );
+    }
     fresh_verify(&platform.api, &receipt).await;
+}
+
+#[tokio::test]
+#[ignore = "requires scripts/test-legacy-collection-inflight-report-v1.sh"]
+async fn old_ordinary_success_before_drain_preserves_the_report_and_compensation() {
+    run_report_before_drain_case(FixturePreset::Ordinary).await;
+}
+
+#[tokio::test]
+#[ignore = "requires scripts/test-legacy-collection-inflight-report-v1.sh --case under-limit-increment-before-drain"]
+async fn old_under_limit_increment_before_drain_preserves_the_report_and_compensation() {
+    run_report_before_drain_case(FixturePreset::UnderLimitIncrement).await;
 }
 
 #[tokio::test]

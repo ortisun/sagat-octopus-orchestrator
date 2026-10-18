@@ -1,0 +1,152 @@
+diff --git a/tests/integration/workflow-primitives/legacy_collection_inflight_report_v1.rs b/tests/integration/workflow-primitives/legacy_collection_inflight_report_v1.rs
+index 55a37b64..7ee2bc0b 100644
+--- a/tests/integration/workflow-primitives/legacy_collection_inflight_report_v1.rs
++++ b/tests/integration/workflow-primitives/legacy_collection_inflight_report_v1.rs
+@@ -1032,6 +1032,48 @@ async fn output_reference_fingerprint(pool: &PgPool, receipt: &Receipt) -> Strin
+     sha(&value)
+ }
+ 
++async fn retained_output_reference_fingerprint(pool: &PgPool, receipt: &Receipt) -> String {
++    let value: Value = sqlx::query_scalar(
++        "SELECT jsonb_build_object( \
++          'runResults',(SELECT coalesce(jsonb_agg(jsonb_build_object( \
++              'run',result_run.id,'digest',encode(result_run.result_digest,'hex')) \
++            ORDER BY result_run.id),'[]'::jsonb) FROM runs result_run \
++            WHERE result_run.tenant_id=$1 AND result_run.id=$2 \
++              AND result_run.result_digest IS NOT NULL), \
++          'stepOutputs',(SELECT coalesce(jsonb_agg(jsonb_build_object( \
++              'pathNodes',step.instance_path_nodes,'pathIndices',step.instance_path_indices, \
++              'node',step.node,'output',encode(step.output_digest,'hex')) \
++            ORDER BY step.instance_path_nodes,step.instance_path_indices,step.node),'[]'::jsonb) \
++            FROM steps step WHERE step.tenant_id=$1 AND step.run_id=$2 \
++              AND step.output_digest IS NOT NULL), \
++          'scopeResults',(SELECT coalesce(jsonb_agg(jsonb_build_object( \
++              'pathNodes',scope.owner_path_nodes,'pathIndices',scope.owner_path_indices, \
++              'owner',scope.owner_node,'result',encode(scope.result_digest,'hex')) \
++            ORDER BY scope.owner_path_nodes,scope.owner_path_indices,scope.owner_node),'[]'::jsonb) \
++            FROM iteration_scopes scope WHERE scope.tenant_id=$1 AND scope.run_id=$2 \
++              AND scope.result_digest IS NOT NULL), \
++          'memberResults',(SELECT coalesce(jsonb_agg(jsonb_build_object( \
++              'scope',member.scope_id,'index',member.iteration_index, \
++              'result',encode(member.result_digest,'hex')) \
++            ORDER BY member.scope_id,member.iteration_index),'[]'::jsonb) \
++            FROM collection_iterations member WHERE member.tenant_id=$1 AND member.run_id=$2 \
++              AND member.result_digest IS NOT NULL), \
++          'checkpoints',(SELECT coalesce(jsonb_agg(jsonb_build_object( \
++              'scope',checkpoint.scope_id,'index',checkpoint.iteration_index, \
++              'result',encode(checkpoint.result_digest,'hex')) \
++            ORDER BY checkpoint.scope_id,checkpoint.iteration_index),'[]'::jsonb) \
++            FROM iteration_checkpoints checkpoint \
++            WHERE checkpoint.tenant_id=$1 AND checkpoint.run_id=$2 \
++              AND checkpoint.result_digest IS NOT NULL))",
++    )
++    .bind(receipt.tenant.as_uuid())
++    .bind(receipt.run.as_uuid())
++    .fetch_one(pool)
++    .await
++    .expect("nonnull retained output-reference snapshot");
++    sha(&value)
++}
++
+ async fn reservation_usage_fingerprint(pool: &PgPool, receipt: &Receipt) -> String {
+     let value: Value = sqlx::query_scalar(
+         "SELECT jsonb_build_object( \
+@@ -1869,11 +1911,29 @@ async fn under_limit_execution_footprint(pool: &PgPool, receipt: &Receipt) -> St
+     .fetch_one(pool)
+     .await
+     .expect("safe execution audit and receipt footprint");
++    let continuation_rows: Value = sqlx::query_scalar(
++        "SELECT jsonb_build_object( \
++          'telemetry',(SELECT to_jsonb(telemetry) FROM telemetry_pending telemetry \
++            WHERE telemetry.tenant_id=$1 AND telemetry.run_id=$2), \
++          'sagas',(SELECT jsonb_agg(to_jsonb(saga) \
++            ORDER BY saga.owner_path_nodes,saga.owner_path_indices,saga.owner_node) \
++            FROM scope_sagas saga WHERE saga.tenant_id=$1 AND saga.run_id=$2), \
++          'sagaEntries',(SELECT jsonb_agg(to_jsonb(entry) \
++            ORDER BY entry.owner_path_nodes,entry.owner_path_indices,entry.owner_node, \
++                     entry.iteration_index,entry.node) \
++            FROM scope_saga_entries entry WHERE entry.tenant_id=$1 AND entry.run_id=$2))",
++    )
++    .bind(receipt.tenant.as_uuid())
++    .bind(receipt.run.as_uuid())
++    .fetch_one(pool)
++    .await
++    .expect("exact telemetry and scope saga footprint");
+     sha(&json!({
+         "projection": projection_witness(pool, receipt.tenant, receipt.run).await,
+         "outputs": output_reference_fingerprint(pool, receipt).await,
+         "reservations": reservation_usage_fingerprint(pool, receipt).await,
+         "auditAndReceipts": audit_and_receipts,
++        "continuations": continuation_rows,
+     }))
+ }
+ 
+@@ -2237,6 +2297,8 @@ async fn run_report_before_drain_case(preset: FixturePreset) {
+     };
+     let output_fingerprint_before_report =
+         output_reference_fingerprint(&platform.api.db.pool, &receipt).await;
++    let retained_output_references_before_report =
++        retained_output_reference_fingerprint(&platform.api.db.pool, &receipt).await;
+     let footprint_before_report =
+         under_limit_execution_footprint(&platform.api.db.pool, &receipt).await;
+ 
+@@ -2566,6 +2628,25 @@ async fn run_report_before_drain_case(preset: FixturePreset) {
+         "compensation changed persisted worker authority"
+     );
+     if preset == FixturePreset::UnderLimitIncrement {
++        let compensation_output_absent: bool = sqlx::query_scalar(
++            "SELECT output_digest IS NULL FROM steps WHERE tenant_id=$1 AND run_id=$2 \
++              AND node='reserve~c' AND instance_path_nodes=ARRAY['c10']::text[] \
++              AND instance_path_indices=ARRAY[0]::integer[]",
++        )
++        .bind(receipt.tenant.as_uuid())
++        .bind(receipt.run.as_uuid())
++        .fetch_one(&platform.api.db.pool)
++        .await
++        .expect("real compensation output reference");
++        assert!(
++            compensation_output_absent,
++            "the real compensation retained an unexpected output"
++        );
++        assert!(
++            retained_output_reference_fingerprint(&platform.api.db.pool, &receipt).await
++                == retained_output_references_before_report,
++            "report, drain or compensation changed retained output references"
++        );
+         let stopped_limit_identity = stopped_limit_identity
+             .as_ref()
+             .expect("captured stopped-limit drain identity");
+@@ -2614,11 +2695,6 @@ async fn run_report_before_drain_case(preset: FixturePreset) {
+             effective_totals(&platform.api.db.pool, &receipt).await,
+             (2_000_000, 2_000_020, 4_000_020)
+         );
+-        assert!(
+-            output_reference_fingerprint(&platform.api.db.pool, &receipt).await
+-                == output_fingerprint_before_report,
+-            "terminal replay retained the refused candidate"
+-        );
+         assert!(
+             footprint_before_report != before_terminal_replay,
+             "report, drain and compensation did not create their durable transitions"
+diff --git a/tests/fixtures/legacy-collection-inflight-report-v1/README.md b/tests/fixtures/legacy-collection-inflight-report-v1/README.md
+index b5e993a9..df63b436 100644
+--- a/tests/fixtures/legacy-collection-inflight-report-v1/README.md
++++ b/tests/fixtures/legacy-collection-inflight-report-v1/README.md
+@@ -35,11 +35,12 @@ an effective retained total of 4,000,020 bytes, below the 4 MiB run limit, while
+ the exact retained 250,000-byte candidate would raise it to 4,250,020 bytes.
+ Before the report, normal discovery excludes `c10`, explicit advance waits, and
+ an exact fenced native `existing_outputs` drain is rejected without changing
+-the execution. The successful report records the data-limit stop and fixed
+-refusal receipt without retaining the candidate. Normal current discovery then
+-starts the `stopped_for_run_data_limit` drain, preserves the live original
+-lease, and reaches `COMPENSATED` through the real `line.release` task. The final
+-replay returns the stored original acknowledgement and receipt.
++the execution. The successful report accepts the original live lease, records
++the data-limit stop and fixed refusal receipt, and does not retain the candidate.
++Normal current discovery then starts the `stopped_for_run_data_limit` drain and
++preserves the recorded success and original compensation target while the real
++`line.release` task reaches `COMPENSATED`. The final replay returns the stored
++original acknowledgement and receipt.
+ 
+ Select
+ the independently named drain-first consumer and artifact namespace with:

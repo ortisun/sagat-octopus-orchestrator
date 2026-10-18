@@ -1,0 +1,40 @@
+{
+  "phase_count": 4,
+  "identical_native_inputs": 1125,
+  "phases": [
+    {
+      "phase": "ordinary-cancellation-before-report-owner-consumer.log",
+      "one_test_passed": true,
+      "sha256": "467e67932301cd198e64cb8d611a44877710bf0a46c6d1cfd6a2a49f9772c980",
+      "results": [
+        "q10c ordinary-cancellation-before-report API roles: producer=postgres, consumer=postgres",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 541 filtered out; finished in 2.02s"
+      ]
+    },
+    {
+      "phase": "ordinary-cancellation-before-report-owner-producer.log",
+      "one_test_passed": true,
+      "sha256": "a843b1d71d7f4bcf39a9355612b6348e2c2c444f2c51881babd45d21c7be3b2f",
+      "results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 502 filtered out; finished in 6.95s"
+      ]
+    },
+    {
+      "phase": "ordinary-cancellation-before-report-runtime-consumer.log",
+      "one_test_passed": true,
+      "sha256": "dd6a7d0fa4c7fb0b38698437af77fcb4276a0798b1bd8583bd1a63784e0d345e",
+      "results": [
+        "q10c ordinary-cancellation-before-report API roles: producer=sagat_app, consumer=sagat_app",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 541 filtered out; finished in 1.48s"
+      ]
+    },
+    {
+      "phase": "ordinary-cancellation-before-report-runtime-producer.log",
+      "one_test_passed": true,
+      "sha256": "da3a7c48a63a6057999c258adea45fd345b5e28b70c33abd57d835912857604b",
+      "results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 502 filtered out; finished in 6.24s"
+      ]
+    }
+  ]
+}

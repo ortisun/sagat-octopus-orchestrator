@@ -1,0 +1,338 @@
+{
+  "source_baseline": "f81a1285",
+  "old_commit": "6c44a0e49670cf19660792cd1518d241e6c99b3b",
+  "production_changes": false,
+  "identical_native_inputs": 1125,
+  "cases": [
+    {
+      "case": "root-c2-executed",
+      "command_record": {
+        "command": [
+          "bash",
+          "scripts/test-legacy-collection-inflight-report-v1.sh",
+          "--case",
+          "under-limit-increment-before-drain"
+        ],
+        "exit_code": 0,
+        "seconds": 156.91,
+        "started_utc": "2026-10-18T23:33:27.019274+00:00",
+        "log": "old-current.txt"
+      },
+      "inspection": {
+        "phase_count": 4,
+        "identical_native_inputs": 1125,
+        "phases": [
+          {
+            "phase": "ordinary-under-limit-increment-before-drain-owner-consumer.log",
+            "one_test_passed": true,
+            "sha256": "768199c583a5e5ede26981063975dc9a14d2cb4b75a359bee680fc6544112261",
+            "results": [
+              "q10c ordinary-before-drain API roles: producer=postgres, consumer=postgres",
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 541 filtered out; finished in 1.95s"
+            ]
+          },
+          {
+            "phase": "ordinary-under-limit-increment-before-drain-owner-producer.log",
+            "one_test_passed": true,
+            "sha256": "7a4dbef31b1f0f3bc9c43c96a8a072192aa449e4e0c33336298db8c5d3cdbfd0",
+            "results": [
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 502 filtered out; finished in 5.84s"
+            ]
+          },
+          {
+            "phase": "ordinary-under-limit-increment-before-drain-runtime-consumer.log",
+            "one_test_passed": true,
+            "sha256": "cfc5f146d51b15964797c9f2369b348231bf071f2e3d5fd4e3cb3ac8ec37e599",
+            "results": [
+              "q10c ordinary-before-drain API roles: producer=sagat_app, consumer=sagat_app",
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 541 filtered out; finished in 1.87s"
+            ]
+          },
+          {
+            "phase": "ordinary-under-limit-increment-before-drain-runtime-producer.log",
+            "one_test_passed": true,
+            "sha256": "62326fd0a039bbf96901b6a48163b4b00bf4e5f505b9874aefa3b33f989eb9bb",
+            "results": [
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 502 filtered out; finished in 5.02s"
+            ]
+          }
+        ]
+      },
+      "cleanup": [
+        {
+          "mode": "owner",
+          "created_owned_database": "t_01a1515f15f975f1ab0355d88e3611cb",
+          "absent_after_coordinator": true,
+          "private_receipt_files_absent": true
+        },
+        {
+          "mode": "runtime",
+          "created_owned_database": "t_01a1515f35637628953d77498131d00b",
+          "absent_after_coordinator": true,
+          "private_receipt_files_absent": true
+        }
+      ]
+    },
+    {
+      "case": "shared-default-regression",
+      "command_record": {
+        "command": [
+          "bash",
+          "scripts/test-legacy-collection-inflight-report-v1.sh"
+        ],
+        "exit_code": 0,
+        "seconds": 132.53,
+        "started_utc": "2026-10-18T23:36:38.581087+00:00",
+        "log": "old-current.txt"
+      },
+      "inspection": {
+        "phase_count": 4,
+        "identical_native_inputs": 1125,
+        "phases": [
+          {
+            "phase": "ordinary-before-drain-owner-consumer.log",
+            "one_test_passed": true,
+            "sha256": "5391f0289ee764d9c4e8e3b81c58efd689e480611ccfd6a0fe66887561cee96b",
+            "results": [
+              "q10c ordinary-before-drain API roles: producer=postgres, consumer=postgres",
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 541 filtered out; finished in 1.07s"
+            ]
+          },
+          {
+            "phase": "ordinary-before-drain-owner-producer.log",
+            "one_test_passed": true,
+            "sha256": "a4e040c790580a40a5180bf06225aa311b7aec2ee7b27d0766883350c0ee74dc",
+            "results": [
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 502 filtered out; finished in 4.83s"
+            ]
+          },
+          {
+            "phase": "ordinary-before-drain-runtime-consumer.log",
+            "one_test_passed": true,
+            "sha256": "beb7b9bd3fcbbfd3d8d5301bf8e28252b678c57f556076e3b47b2f97894f1d68",
+            "results": [
+              "q10c ordinary-before-drain API roles: producer=sagat_app, consumer=sagat_app",
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 541 filtered out; finished in 1.11s"
+            ]
+          },
+          {
+            "phase": "ordinary-before-drain-runtime-producer.log",
+            "one_test_passed": true,
+            "sha256": "cf50ac39c608e5fa299169d0e568cf7fd4b164698d294401b1ad5aa3a629e6a9",
+            "results": [
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 502 filtered out; finished in 4.97s"
+            ]
+          }
+        ]
+      },
+      "cleanup": [
+        {
+          "mode": "owner",
+          "created_owned_database": "t_01a15161ad827109804badafa047eab4",
+          "absent_after_coordinator": true,
+          "private_receipt_files_absent": true
+        },
+        {
+          "mode": "runtime",
+          "created_owned_database": "t_01a15161c57f75dcbcc30c55b3629389",
+          "absent_after_coordinator": true,
+          "private_receipt_files_absent": true
+        }
+      ]
+    },
+    {
+      "case": "shared-drain-regression",
+      "command_record": {
+        "command": [
+          "bash",
+          "scripts/test-legacy-collection-inflight-report-v1.sh",
+          "--case",
+          "drain-before-report"
+        ],
+        "exit_code": 0,
+        "seconds": 135.47,
+        "started_utc": "2026-10-18T23:39:21.917651+00:00",
+        "log": "old-current.txt"
+      },
+      "inspection": {
+        "phase_count": 4,
+        "identical_native_inputs": 1125,
+        "phases": [
+          {
+            "phase": "ordinary-drain-before-report-owner-consumer.log",
+            "one_test_passed": true,
+            "sha256": "03cf792534fd129c01e575af9a743b5d9f044858b88438892d1b813d086c268c",
+            "results": [
+              "q10c ordinary-drain-before-report API roles: producer=postgres, consumer=postgres",
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 541 filtered out; finished in 1.36s"
+            ]
+          },
+          {
+            "phase": "ordinary-drain-before-report-owner-producer.log",
+            "one_test_passed": true,
+            "sha256": "f5beccddf9deb6685875f933579a6cb2758bbcaf60527a128337ffde1f59fa11",
+            "results": [
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 502 filtered out; finished in 5.43s"
+            ]
+          },
+          {
+            "phase": "ordinary-drain-before-report-runtime-consumer.log",
+            "one_test_passed": true,
+            "sha256": "289cad0295876df989f46b96ed8af77c831203446cee35d7ea2b2f9347fdd826",
+            "results": [
+              "q10c ordinary-drain-before-report API roles: producer=sagat_app, consumer=sagat_app",
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 541 filtered out; finished in 1.34s"
+            ]
+          },
+          {
+            "phase": "ordinary-drain-before-report-runtime-producer.log",
+            "one_test_passed": true,
+            "sha256": "c7f9fee5fb590b58deec76488bf2d96901a8e0f32d4123c283e6467678a6bce4",
+            "results": [
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 502 filtered out; finished in 5.36s"
+            ]
+          }
+        ]
+      },
+      "cleanup": [
+        {
+          "mode": "owner",
+          "created_owned_database": "t_01a1516431047239882642a43d8e3179",
+          "absent_after_coordinator": true,
+          "private_receipt_files_absent": true
+        },
+        {
+          "mode": "runtime",
+          "created_owned_database": "t_01a151644c7c74e8be6bce96f1d7a74f",
+          "absent_after_coordinator": true,
+          "private_receipt_files_absent": true
+        }
+      ]
+    },
+    {
+      "case": "shared-cancellation-regression",
+      "command_record": {
+        "command": [
+          "bash",
+          "scripts/test-legacy-collection-inflight-report-v1.sh",
+          "--case",
+          "cancellation-before-report"
+        ],
+        "exit_code": 0,
+        "seconds": 145.53,
+        "started_utc": "2026-10-18T23:41:56.725289+00:00",
+        "log": "old-current.txt"
+      },
+      "inspection": {
+        "phase_count": 4,
+        "identical_native_inputs": 1125,
+        "phases": [
+          {
+            "phase": "ordinary-cancellation-before-report-owner-consumer.log",
+            "one_test_passed": true,
+            "sha256": "467e67932301cd198e64cb8d611a44877710bf0a46c6d1cfd6a2a49f9772c980",
+            "results": [
+              "q10c ordinary-cancellation-before-report API roles: producer=postgres, consumer=postgres",
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 541 filtered out; finished in 2.02s"
+            ]
+          },
+          {
+            "phase": "ordinary-cancellation-before-report-owner-producer.log",
+            "one_test_passed": true,
+            "sha256": "a843b1d71d7f4bcf39a9355612b6348e2c2c444f2c51881babd45d21c7be3b2f",
+            "results": [
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 502 filtered out; finished in 6.95s"
+            ]
+          },
+          {
+            "phase": "ordinary-cancellation-before-report-runtime-consumer.log",
+            "one_test_passed": true,
+            "sha256": "dd6a7d0fa4c7fb0b38698437af77fcb4276a0798b1bd8583bd1a63784e0d345e",
+            "results": [
+              "q10c ordinary-cancellation-before-report API roles: producer=sagat_app, consumer=sagat_app",
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 541 filtered out; finished in 1.48s"
+            ]
+          },
+          {
+            "phase": "ordinary-cancellation-before-report-runtime-producer.log",
+            "one_test_passed": true,
+            "sha256": "da3a7c48a63a6057999c258adea45fd345b5e28b70c33abd57d835912857604b",
+            "results": [
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 502 filtered out; finished in 6.24s"
+            ]
+          }
+        ]
+      },
+      "cleanup": [
+        {
+          "mode": "owner",
+          "created_owned_database": "t_01a15166a89d701192f965f25b5f80da",
+          "absent_after_coordinator": true,
+          "private_receipt_files_absent": true
+        },
+        {
+          "mode": "runtime",
+          "created_owned_database": "t_01a15166ccb471928faa1205fe4ff7aa",
+          "absent_after_coordinator": true,
+          "private_receipt_files_absent": true
+        }
+      ]
+    }
+  ],
+  "separate_phase_passes": 16,
+  "unique_current_cases": 4,
+  "canonical_tasks_closed": [],
+  "static_gates": {
+    "clippy": {
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "seconds": 42.33,
+      "started_utc": "2026-10-18T23:32:11.648080+00:00",
+      "log": "clippy.txt"
+    },
+    "fmt": {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "seconds": 5.74,
+      "started_utc": "2026-10-18T23:32:11.646991+00:00",
+      "log": "fmt.txt"
+    },
+    "architecture": {
+      "command": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "exit_code": 0,
+      "seconds": 0.76,
+      "started_utc": "2026-10-18T23:32:11.647367+00:00",
+      "log": "architecture.txt"
+    }
+  },
+  "execution_environment": {
+    "CARGO_TARGET_DIR": "/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_BUILD_JOBS": "3",
+    "RUST_MIN_STACK": "16777216",
+    "owned_postgres_endpoint": "127.0.0.1:65117",
+    "SAGAT_Q10C_OWNED_POSTGRES": "1",
+    "role_switch": "Coordinator runs each case with actual owner and runtime pools; phase logs assert actual roles",
+    "credential_material": "Not recorded"
+  }
+}

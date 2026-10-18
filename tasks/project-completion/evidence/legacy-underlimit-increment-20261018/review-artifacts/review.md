@@ -1,0 +1,8 @@
+# First under-limit increment code reviews
+
+Accepted bounded decision None. C1 three fresh units reviewed producer/coordinator/README, pre-report controls and post-report/drain/compensation. Required findings classified actionable: README wrongly preserved a live lease after successful reporting; final all-step output fingerprint necessarily changes when the real NULL-output compensation step is created; unchanged-execution footprint omitted complete telemetry_pending/scope_sagas/scope_saga_entries. Telemetry was independently reported by two reviewers and deduplicated into one correction.
+
+C2 fixes only consumer/README: distinct nonnull retained-reference fingerprint preserves output-free new steps while detecting any new retained compensation output, explicit actual compensation output absence, complete deterministic telemetry/saga row snapshots, corrected lease/recorded-success wording. Root additionally clarifies COMPENSATED belongs to the Run, not the compensation task. All C1 artifacts remain unchanged. No runtime RED is invented for static findings. No production, migration, grant, main/support or flag changes. Root solely applies/executes; Sol drafts and fresh Astra reviews. Previously declined optional external review not repeated.
+
+
+Fresh bounded C2 retained-reference/continuation-row/wording delta review returned Required findings None. Stop condition met. Root final source strict integration Clippy42.33s, fmt5.74s, architecture0.76s, shell syntax pass before first actual old/current execution. No C1 runtime run or false RED is claimed. Static gates and first coordinator share the sealed1125native inputs; after seal remains pending until coordinator completion.

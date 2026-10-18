@@ -1,0 +1,18 @@
+{
+  "tests/fixtures/legacy-collection-inflight-report-v1/producer.rs": {
+    "sha256": "37396041360c7e75cfc90b4b86601db691658cfee4462c921ba0a74b88858441",
+    "snapshot": "producer.rs.snapshot"
+  },
+  "tests/integration/workflow-primitives/legacy_collection_inflight_report_v1.rs": {
+    "sha256": "47666055a1602c9b715da66ccf1066a1d6e90ae76e1ebc0d1e3af1eaa9df2f92",
+    "snapshot": "legacy_collection_inflight_report_v1.rs.snapshot"
+  },
+  "scripts/test-legacy-collection-inflight-report-v1.sh": {
+    "sha256": "6a82384ef438c13b03a8e1072688de1e6ba7e77c3861f719ef38b990f542d1de",
+    "snapshot": "test-legacy-collection-inflight-report-v1.sh.snapshot"
+  },
+  "tests/fixtures/legacy-collection-inflight-report-v1/README.md": {
+    "sha256": "c94a205de2687338275c254efca5efccb29e42680f8dfda0c11ec3137b298c7f",
+    "snapshot": "fixture-README.md.snapshot"
+  }
+}

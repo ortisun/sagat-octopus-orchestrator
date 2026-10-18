@@ -1,0 +1,7 @@
+
+running 1 test
+q10c ordinary-before-drain API roles: producer=postgres, consumer=postgres
+test legacy_collection_inflight_report_v1::old_under_limit_increment_before_drain_preserves_the_report_and_compensation ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 541 filtered out; finished in 1.95s
+

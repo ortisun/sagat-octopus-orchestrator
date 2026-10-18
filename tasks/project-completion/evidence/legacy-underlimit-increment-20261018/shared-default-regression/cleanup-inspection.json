@@ -1,0 +1,14 @@
+[
+  {
+    "mode": "owner",
+    "created_owned_database": "t_01a15161ad827109804badafa047eab4",
+    "absent_after_coordinator": true,
+    "private_receipt_files_absent": true
+  },
+  {
+    "mode": "runtime",
+    "created_owned_database": "t_01a15161c57f75dcbcc30c55b3629389",
+    "absent_after_coordinator": true,
+    "private_receipt_files_absent": true
+  }
+]
