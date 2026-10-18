@@ -1,6 +1,6 @@
 # B1b.2c.1c — Own-child cancellation, drain and later compensation
 
-Status: bounded decision accepted after fresh independent Astra/xhigh C1 review (None). Root checked the actual child-cancel discovery, own-child scheduler pass and frozen source-shape predicate. Execution remains pending. The design task performed no tests, builds, formatting, repository edits or implementation draft. Reviewed sealed draft:c67262990515b08acbe2041e269064fcd9b40ec152c41b063786a0af09341322. Optional external review was declined by the user. Read base: `2d86483f03efa683e13df8d78bb1338f5170602f`. `.1a` acceptance at `8df0ae90` is recorded evidence from the root, not a run performed here. `.1b` must pass and its helper ownership be sealed before these behavior tests are integrated.
+Status: bounded decision accepted after fresh independent Astra/xhigh C1 review (None). Root checked the actual child-cancel discovery, own-child scheduler pass and frozen source-shape predicate. Execution accepted in bounded .1c at `de64eafc`; see the final checkpoint below. The design task performed no tests, builds, formatting, repository edits or implementation draft. Reviewed sealed draft:c67262990515b08acbe2041e269064fcd9b40ec152c41b063786a0af09341322. Optional external review was declined by the user. Read base: `2d86483f03efa683e13df8d78bb1338f5170602f`. `.1a` acceptance at `8df0ae90` is recorded evidence from the root, not a run performed here. `.1b` passed at `2cdd5aaf` before these tests were integrated.
 
 ## Decision and boundary
 
