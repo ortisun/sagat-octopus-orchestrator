@@ -206,3 +206,9 @@ Closed internal RunDataLimit reason, exact run_data_limit codec/cause, domain fa
 ## Q1a domain acceptance — 2026-10-18
 
 Four new pure domain cases pass with existing targets: collection reducer17/17, restore6/6, scoped compensation30/30 in one6.27 s invocation. Empty/all-checkpointed boundary failure invents no member, rejects wrong/missing code/reason and successful aggregate, restores the exact event-derived state, and waits for actual domain-harness compensation lease/completion. These are not gRPC/provider/restart tests. Clippy4.43 s, fmt4.57 s, architecture0.53 s/24 crates pass;1109 frozen inputs unchanged. See evidence/collection-data-limit-domain-20261018/manifest.json. Native producer remains unavailable; all PostgreSQL/real upgrade/report/fanout acceptance is still separate.
+
+## Native and quota design amendments — 2026-10-18
+
+Native C1 found paused finish without consecutive routing and omitted-output INSTANCE_LIMIT replay mismatch. Amended native patch28a798893ddb1bcd70bf20fa697b0b4ba6ef49788b14c6f54fb537b69ccb6dc8 adds scheduler/locked-store pause gates, explicit consecutive owner routing, declaration-independent recorded refusal replay, bounded exact-instance source/terminal reads, and normal owner/output persistence before scope success. Fresh bounded native C2 returned None; patch is not installed or executed. Earlier601f6a8... is preserved. Mandatory quota implementation still blocks activation.
+
+Quota decision2983c9b5... has fresh bounded C2 None; [the selected correction](collection-result-quota-correction.md) includes exact known-effect refusal and production-frontier ordering, separate root/scoped persists inside one transaction, no mixed-writer widening. Its implementation and genuine legacy/report/upgrade cases remain pending. No fourth whole nested protocol review or general capability activation.

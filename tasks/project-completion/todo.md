@@ -205,7 +205,7 @@ See evidence/leaf-certification-process-20261018. Other producer/observation/rel
 - [ ] B1b.2c.1d: Prove genuine terminal outcome fanout/parent settlement once in both observable orders. Conditional [contract](leaf-child-terminal-fanout.md); .1d.0 prerequisite remains unresolved.
 - [ ] B1b.2c.1d.0: Reproduce dropped collection→End.outputExpr→Run result with genuine RED, review/correct atomic result retention and prove actual child result fanout before .1d. See [bounded correction](collection-end-result-correction.md).
 - [x] B1b.2c.1d.0b: Extract shared bounded End evaluation and typed finish answer, without activating the native path. collection-end-preparation-20261018/manifest.json; existing real result5/5 in each mode.
-- [ ] B1b.2c.1d.0Q: Review/implement effective legacy output accounting and truthful no-member RUN_DATA_LIMIT drain before native correction acceptance.
+- [ ] B1b.2c.1d.0Q: Review/implement effective legacy output accounting and truthful no-member RUN_DATA_LIMIT drain before native correction acceptance. Selected [quota correction](collection-result-quota-correction.md), bounded C2 None; implementation pending.
 - [x] B1b.2c.1d.0Q0: Reproduce public empty aggregate exact-byte boundaries and raw durable-reason decode with genuine RED (63956f51).
 - [x] B1b.2c.1d.0Q1: Add closed reason/domain/codec vocabulary with native producer explicitly unavailable; collection-data-limit-vocabulary-20261018/manifest.json.
 - [x] B1b.2c.1d.0Q1a: Prove empty/checkpointed drain, strict domain projection restore and completed-effect compensation in the pure domain harness; collection-data-limit-domain-20261018/manifest.json. Real PostgreSQL/worker/upgrade gates remain.
