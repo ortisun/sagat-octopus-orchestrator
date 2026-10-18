@@ -1,0 +1,38 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 59.97s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 3 tests
+test scoped_blob_completion::a_scoped_blob_commit_rolls_back_with_its_failed_journal_write ... FAILED
+test scoped_blob_completion::a_scoped_blob_commits_and_replays_without_unrelated_history ... FAILED
+test scoped_blob_completion::a_scoped_blob_cannot_be_committed_by_another_iteration ... FAILED
+
+failures:
+
+---- scoped_blob_completion::a_scoped_blob_commit_rolls_back_with_its_failed_journal_write stdout ----
+
+thread 'scoped_blob_completion::a_scoped_blob_commit_rolls_back_with_its_failed_journal_write' (71116713) panicked at tests/integration/workflow-primitives/scoped_blob_completion.rs:135:10:
+same-key retry applies after rollback: Status { code: Internal, message: "internal error", metadata: MetadataMap { headers: {"content-type": "application/grpc", "x-sagat-error": "INTERNAL", "date": "Sun, 18 Oct 2026 02:09:08 GMT"} }, source: None }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- scoped_blob_completion::a_scoped_blob_commits_and_replays_without_unrelated_history stdout ----
+
+thread 'scoped_blob_completion::a_scoped_blob_commits_and_replays_without_unrelated_history' (71116714) panicked at tests/integration/workflow-primitives/scoped_blob_completion.rs:88:10:
+bounded scoped commit: Status { code: Internal, message: "internal error", metadata: MetadataMap { headers: {"content-type": "application/grpc", "x-sagat-error": "INTERNAL", "date": "Sun, 18 Oct 2026 02:09:08 GMT"} }, source: None }
+
+---- scoped_blob_completion::a_scoped_blob_cannot_be_committed_by_another_iteration stdout ----
+
+thread 'scoped_blob_completion::a_scoped_blob_cannot_be_committed_by_another_iteration' (71116712) panicked at tests/integration/workflow-primitives/scoped_blob_completion.rs:157:5:
+assertion `left == right` failed
+  left: Internal
+ right: NotFound
+
+
+failures:
+    scoped_blob_completion::a_scoped_blob_cannot_be_committed_by_another_iteration
+    scoped_blob_completion::a_scoped_blob_commit_rolls_back_with_its_failed_journal_write
+    scoped_blob_completion::a_scoped_blob_commits_and_replays_without_unrelated_history
+
+test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 362 filtered out; finished in 4.84s
+
+error: test failed, to rerun pass `-p sagat-tests --test integration_workflow_primitives`

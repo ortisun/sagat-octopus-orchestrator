@@ -1,0 +1,19 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 35.62s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 1 test
+
+thread 'scoped_blob_completion::an_uploaded_scoped_result_can_be_reported_after_cancellation' (71568148) panicked at tests/integration/workflow-primitives/scoped_blob_completion.rs:217:10:
+a known produced result is recorded during drain, like an inline result: Status { code: Aborted, message: "the attempt is no longer current", metadata: MetadataMap { headers: {"content-type": "application/grpc", "x-sagat-error": "STALE_ATTEMPT", "date": "Sun, 18 Oct 2026 02:18:02 GMT"} }, source: None }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test scoped_blob_completion::an_uploaded_scoped_result_can_be_reported_after_cancellation ... FAILED
+
+failures:
+
+failures:
+    scoped_blob_completion::an_uploaded_scoped_result_can_be_reported_after_cancellation
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 365 filtered out; finished in 2.62s
+
+error: test failed, to rerun pass `-p sagat-tests --test integration_workflow_primitives`

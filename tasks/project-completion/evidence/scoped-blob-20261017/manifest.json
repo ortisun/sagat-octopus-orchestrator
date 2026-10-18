@@ -1,0 +1,129 @@
+{
+  "source_base": "e97e5e34",
+  "state": "focused scoped forward blob slice validated; broader body/nesting and project release gates remain open",
+  "runtime_role": "sagat_app; isolated repository fixture; no external database URL",
+  "new_case": "collection-blob-output: all five complete builder/runtime docs independently compared before writing new goldens; never blessed",
+  "review": {
+    "cycles": 3,
+    "actionable_findings": 5,
+    "external_review": "user chose current review only",
+    "last_fix": "single transaction receipt/scope preparation; behavioral RED then8/8 focused GREEN; no fourth source review"
+  },
+  "interrupted_validation": {
+    "result": "58passed/12failed gRPC aggregate, not accepted",
+    "observed_errors": [
+      "57P01 administrator termination",
+      "57P03 database shutting down",
+      "503 during shutdown"
+    ],
+    "context": "older validation processes were being superseded with SIGTERM; no product-causality claim, full uninterrupted rerun required"
+  },
+  "hashes": {
+    "acceptance.txt": "59a7145746c21299668100fb42735db94f6e7d4374ece0cffd7e5b396a7b5f58",
+    "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "blobs-dotnet.normalized.json": "8942c993c484cfadb5b0c012734029081f21dea9835ce1350be53235d8fe0d6c",
+    "blobs-go.normalized.json": "8942c993c484cfadb5b0c012734029081f21dea9835ce1350be53235d8fe0d6c",
+    "blobs-java.normalized.json": "8942c993c484cfadb5b0c012734029081f21dea9835ce1350be53235d8fe0d6c",
+    "blobs-python.normalized.json": "8942c993c484cfadb5b0c012734029081f21dea9835ce1350be53235d8fe0d6c",
+    "blobs-typescript.normalized.json": "8942c993c484cfadb5b0c012734029081f21dea9835ce1350be53235d8fe0d6c",
+    "boundary-fixture-compile-error.txt": "a392c891da46a2daa3b75f9167d7d0e82449b7dce7117ce6716a5920b5c79083",
+    "boundary-green.txt": "a747cc94660ae439e8626e3867b1c926d48f480038bc0755f517443532eb5dbe",
+    "boundary-red.txt": "358b32d8ffdb967cbf073e64807de5388d6f5b0adb0d7f9f7219ac8e29d6939a",
+    "cancel-fixture-compile-error.txt": "6ad82c6c655c131ae268a88b77dec0ec885c84df4977669b0b3b8f23099d1cda",
+    "cancel-red.txt": "ec785f4b5029a00441e2f27d56686a840eef0cb61391e51bd505879dd9b571c1",
+    "clippy.txt": "c5074d64da5fa8cb575195f5775886966815ec4131f4a6f9acc382f687ddf7aa",
+    "collection-blob-output-dotnet.builder.json": "321f419caf7c05b52115119d1932aef39468889e818ebcd14b36b64b3bd2e303",
+    "collection-blob-output-dotnet.normalized.json": "c63a857158cea00ad4897f8df1997cbdacb9ab9955a5b89751d72bcd2dc533e8",
+    "collection-blob-output-go.builder.json": "99242558b9c4a44ca222c3ad4cad00478488afefc8b5ec6899a43a1790d2c6be",
+    "collection-blob-output-go.normalized.json": "c63a857158cea00ad4897f8df1997cbdacb9ab9955a5b89751d72bcd2dc533e8",
+    "collection-blob-output-java.builder.json": "99242558b9c4a44ca222c3ad4cad00478488afefc8b5ec6899a43a1790d2c6be",
+    "collection-blob-output-java.normalized.json": "c63a857158cea00ad4897f8df1997cbdacb9ab9955a5b89751d72bcd2dc533e8",
+    "collection-blob-output-python.builder.json": "18cd74cd1a5e1ab587b83f1ed3eb081af08d1b61b668bf3b8b45f00f16c45a0f",
+    "collection-blob-output-python.normalized.json": "c63a857158cea00ad4897f8df1997cbdacb9ab9955a5b89751d72bcd2dc533e8",
+    "collection-blob-output-typescript.builder.json": "0de1a402b85a76935a01b492773d845acabdd2a440e795695fc159096243d1ec",
+    "collection-blob-output-typescript.normalized.json": "c63a857158cea00ad4897f8df1997cbdacb9ab9955a5b89751d72bcd2dc533e8",
+    "cycle2-fixture-error.txt": "2a7601e5771fd63f75b8d9f5f4cd796b768556a5bf82a55441e908fac1acec20",
+    "cycle2-green.txt": "d73c6d6175a12dd6ee12139c78db990997c7f02ecd169e29b42acfa3b3ac3be6",
+    "cycle2-red.txt": "2e1d7fb30255718cf4499dc8f018ecad0e0951735243c27121f70d4647a282ef",
+    "cycle3-green.txt": "8bd3e6303d8e7101abf6da9d2761f77fbedf642c8db2cb1330146450b47d623e",
+    "cycle3-red.txt": "3e38b15003af33efc05bc93e92c4a5274f1dac50205870d352e9f510e5c09024",
+    "formatting.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "initial-green.txt": "1ee7a4f74d8518d0f50f288cdac01a898817cca7b5b3ca5751b8b7d731eb3c2e",
+    "initial-red.txt": "b26ecf0a86d6e7eebd5d06596d4df8cee00ea5a1acc995772626bfc2d73aab4d",
+    "scenario-phases.txt": "2cad84973c8f82d22eea72ec1e5a760ca1daf1239d39020436f3b0a62a206e14",
+    "sdk-blobs.txt": "db06cab32bf3a908f413366900c3a36c3e311d807db7b481c7f4f5c2de721a80",
+    "sdk-collection-blob-output.txt": "8f67455fb557cde0a4f68892535713165470c4234b496aee7960770ab4fb7eab",
+    "sdk-initial-missing-goldens.txt": "d3936949e7bca396a6570982185f75f82c02d18dce0b45360099edba11a17608",
+    "validation-interrupted.txt": "0b9891e2cf1313d0914aae3a6cb0486a12d5c6d9485dd5b1fd92c4cb706ec6dc",
+    "validation-superseded.txt": "cdfd9f798953986e5a5c5e70e04c3517f6908778588cd4bda4d98d8485662e28"
+  },
+  "results": {
+    "focused_native": {
+      "passed": 8,
+      "failed": 0,
+      "seconds": 19.56
+    },
+    "grpc": {
+      "passed": 70,
+      "seconds": 51.04
+    },
+    "fault": {
+      "passed": 87,
+      "seconds": 95.07
+    },
+    "database_openbao": {
+      "passed": 3,
+      "seconds": 30.4
+    },
+    "workflow_integration": {
+      "passed": 369,
+      "ignored": 1,
+      "seconds": 191.06,
+      "ignored_case": "collection_10k::ten_thousand_items_are_admitted_concurrently_aggregated_in_order_and_bounded"
+    },
+    "sdk": {
+      "languages": [
+        "typescript",
+        "go",
+        "python",
+        "dotnet",
+        "java"
+      ],
+      "collection-blob-output_seconds": 17.68,
+      "blobs_seconds": 18.69,
+      "reuse_prepared_runners": true,
+      "bless": false,
+      "normalized_documents_equal_to_reviewed_goldens": 10
+    },
+    "scenario_phases": {
+      "passed": 1,
+      "scenario_count": 57,
+      "seconds": 0.06
+    },
+    "clippy": {
+      "workspace": true,
+      "all_targets": true,
+      "locked": true,
+      "warnings_denied": true,
+      "exit_code": 0,
+      "seconds": 90
+    },
+    "formatting": {
+      "exit_code": 0
+    },
+    "architecture": {
+      "exit_code": 0,
+      "crates": 24
+    }
+  },
+  "fixture_limits": "HTTP/gRPC and PostgreSQL are real; scoped blob tests use production Memory blob backend, not S3; aggregate database suite uses real OpenBao. Large ignored source-reference case not counted as passing here.",
+  "production_source_sha256": {
+    "crates/api-grpc/src/service.rs": "df190412849d7de9e5aaf93b4b0a3876dc9fd72048cce86ef1797eeb916ff32c",
+    "crates/application/src/blobs.rs": "4ef2070a7d95c05d4099b3b19f07db79e653dd4f0a53e9c120f377aaa051fc32",
+    "crates/application/src/worker.rs": "b03a771708733ab6f2e12a89186cd7ddf2f7f20782bf4cd96c59aecd7ae6c7d7",
+    "crates/application/src/worker/output.rs": "17164bad40b57b1f640d46e4949e099cc0bd55e64fad7f232b68b76c759bb74c",
+    "crates/application/src/worker/scoped_reports.rs": "cc17ee9d62ded96b855fd6f2c864c4439bcedc59e6aa4b6a9b33abb694778ba3",
+    "crates/infra-postgres/src/blobs.rs": "297428f9c77bf1ba5f2a610b7e801deeb61bdb9e910b544c4f0ed293394707a3",
+    "crates/infra-postgres/src/execution/path.rs": "fb0a7a067a64d74eccbe37ee8c335d867f2f6c27a9916720b00b693982616d11"
+  }
+}

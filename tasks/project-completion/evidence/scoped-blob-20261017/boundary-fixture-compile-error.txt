@@ -1,0 +1,79 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+error[E0599]: no associated function or constant named `new` found for struct `ExecutionInstanceId` in the current scope
+   --> tests/integration/workflow-primitives/scoped_blob_completion.rs:295:41
+    |
+295 |     let instance = ExecutionInstanceId::new(path.clone(), NodeId::parse("line").unwrap());
+    |                                         ^^^ associated function or constant not found in `ExecutionInstanceId`
+    |
+note: if you're trying to build a new `ExecutionInstanceId` consider using one of the following associated functions:
+      ExecutionInstanceId::root
+      ExecutionInstanceId::in_path
+   --> crates/domain/src/execution/instance.rs:118:5
+    |
+118 |     pub fn root(node: NodeId) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+123 |     pub const fn in_path(path: InstancePath, node: NodeId) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+help: there is a method `ne` with a similar name, but with different arguments
+   --> /Users/marcelo/.rustup/toolchains/1.98.0-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/cmp.rs:263:5
+    |
+263 |     fn ne(&self, other: &Rhs) -> bool {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0277]: the trait bound `Uuid: serde::Serialize` is not satisfied
+   --> tests/integration/workflow-primitives/scoped_blob_completion.rs:296:58
+    |
+296 |       for output in [b"null".to_vec(), serde_json::to_vec(&json!({"$blob": {
+    |  __________________________________________________________^
+297 | |         "id": Uuid::now_v7(), "size": 300000, "sha256": sha(&vec![b'x'; 300_000]),
+298 | |         "contentType": "application/octet-stream"
+299 | |     }})).unwrap()] {
+    | |       ^
+    | |       |
+    | |_______the trait `serde_core::ser::Serialize` is not implemented for `Uuid`
+    |         required by a bound introduced by this call
+    |
+    = note: for local types consider adding `#[derive(serde::Serialize)]` to your `Uuid` type
+    = note: for types from other crates check whether the crate offers a `serde` feature flag
+    = help: the following other types implement trait `serde_core::ser::Serialize`:
+              &'a T
+              &'a mut T
+              ()
+              (T,)
+              (T0, T1)
+              (T0, T1, T2)
+              (T0, T1, T2, T3)
+              (T0, T1, T2, T3, T4)
+            and 849 others
+    = note: required for `&Uuid` to implement `serde_core::ser::Serialize`
+note: required by a bound in `serde_json::to_value`
+   --> /Users/marcelo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_json-1.0.151/src/value/mod.rs:997:8
+    |
+995 | pub fn to_value<T>(value: T) -> Result<Value, Error>
+    |        -------- required by a bound in this function
+996 | where
+997 |     T: Serialize,
+    |        ^^^^^^^^^ required by this bound in `to_value`
+    = note: this error originates in the macro `$crate::json_internal` which comes from the expansion of the macro `json` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0599]: no associated function or constant named `parse` found for struct `sagat_domain::workflow::Digest` in the current scope
+   --> tests/integration/workflow-primitives/scoped_blob_completion.rs:308:29
+    |
+308 |             digest: Digest::parse(&sha(&vec![b'x'; 300_000])).unwrap(), scope: BlobScope {
+    |                             ^^^^^ associated function or constant not found in `sagat_domain::workflow::Digest`
+    |
+note: if you're trying to build a new `sagat_domain::workflow::Digest` consider using one of the following associated functions:
+      sagat_domain::workflow::Digest::new
+      sagat_domain::workflow::Digest::from_hex
+   --> crates/domain/src/workflow.rs:344:5
+    |
+344 |     pub const fn new(bytes: [u8; 32]) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+367 |     pub fn from_hex(hex: &str) -> Option<Self> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Some errors have detailed explanations: E0277, E0599.
+For more information about an error, try `rustc --explain E0277`.
+error: could not compile `sagat-tests` (test "integration_workflow_primitives") due to 3 previous errors

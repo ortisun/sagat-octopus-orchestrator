@@ -1,0 +1,31 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 50.30s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 7 tests
+test bounded_capabilities::scoped_blob_capabilities_need_no_unrelated_iteration_history ... ok
+test scoped_blob_completion::a_scoped_blob_commit_rolls_back_with_its_failed_journal_write ... ok
+test scoped_blob_completion::a_scoped_blob_cannot_be_committed_by_another_iteration ... ok
+
+thread 'scoped_blob_completion::a_scoped_blob_report_rejects_a_non_holder_before_catalog_lookup' (71926529) panicked at tests/integration/workflow-primitives/scoped_blob_completion.rs:274:9:
+assertion `left == right` failed
+  left: "INVALID_ARGUMENT"
+ right: "STALE_ATTEMPT"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test scoped_blob_completion::a_scoped_blob_report_rejects_a_non_holder_before_catalog_lookup ... FAILED
+test scoped_blob_completion::a_scoped_blob_commits_and_replays_without_unrelated_history ... ok
+test scoped_blob_completion::an_uploaded_scoped_result_can_be_reported_after_cancellation ... ok
+
+thread 'scoped_blob_completion::path_storage_rejects_a_blob_without_its_matching_output_descriptor' (71928327) panicked at tests/integration/workflow-primitives/scoped_blob_completion.rs:314:9:
+a committed blob must be the exact recorded output
+test scoped_blob_completion::path_storage_rejects_a_blob_without_its_matching_output_descriptor ... FAILED
+
+failures:
+
+failures:
+    scoped_blob_completion::a_scoped_blob_report_rejects_a_non_holder_before_catalog_lookup
+    scoped_blob_completion::path_storage_rejects_a_blob_without_its_matching_output_descriptor
+
+test result: FAILED. 5 passed; 2 failed; 0 ignored; 0 measured; 361 filtered out; finished in 12.30s
+
+error: test failed, to rerun pass `-p sagat-tests --test integration_workflow_primitives`

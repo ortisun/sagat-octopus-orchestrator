@@ -267,3 +267,13 @@ no alternate runtime, wire field or adapter query is introduced. Root producers 
 compensation/reconciliation, effect policies or managed database operations remain closed, as do
 activity successors and nested bodies. Real public inline/blob pipelines and equal root/body node
 ids are covered in native and all-five SDK fixtures; current evidence is in the validation report.
+
+
+### Scoped forward blob completion increment
+
+Add ordinary forward blob completion to the existing exact-path report transaction, sharing
+Root BlobCommit semantics. Preserve current authority before receipt lookup, cancellation-tolerant
+live fencing before catalog access on misses, and exact receipt replay after expiry. The adapter
+must bind the persisted descriptor to its blob commit and roll back both with journal failures.
+Public native failure tests and the all-five `collection-blob-output` case cover this slice;
+derived/declared-secret blobs, broader bodies/nesting and full resource gates remain closed.

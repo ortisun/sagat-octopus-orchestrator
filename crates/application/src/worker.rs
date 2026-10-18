@@ -456,6 +456,14 @@ pub struct StepAck {
     pub run_status: RunStatus,
 }
 
+/// Result of authorizing one blob completion before catalog access.
+/// Receipt lookup and a fresh report's scoped lease/scope checks share one transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BlobCompletionTarget {
+    Replayed(StepAck),
+    Ready(BlobScope),
+}
+
 /// Outcome of a heartbeat.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeartbeatAck {
@@ -1483,19 +1491,41 @@ where
         })
     }
 
-    /// Replays a blob report using its stable request identity before accessing object storage.
+    /// Resolves an exact receipt or fresh report scope under the same current authority.
+    /// Scoped receipt misses require a live cancellation-tolerant fence before catalog access.
     ///
     /// # Errors
     /// Permission, binding and idempotency errors are identical to completion.
-    pub async fn replay_blob_completion(
+    pub async fn prepare_blob_completion(
         &self,
         principal: &Principal,
         task: &TaskRef<'_>,
         blob_id: sagat_domain::blobs::BlobId,
         expected_digest: &str,
         key: &str,
-    ) -> Result<Option<StepAck>, AppError> {
+    ) -> Result<BlobCompletionTarget, AppError>
+    where
+        S: PathExecutionStore,
+    {
         principal.authorize(Permission::WorkerExecute)?;
+        if !task.instance.path().is_root() {
+            let mut tx = self.open_worker_path(principal, task).await?;
+            let identity = blob_report_identity(blob_id, expected_digest);
+            let idempotency = completion_idempotency(task, key, &identity, true);
+            if let Some(stored) = tx.replay(&idempotency).await? {
+                return Ok(BlobCompletionTarget::Replayed(parse_ack(
+                    &stored,
+                    true,
+                    task.run_id,
+                )));
+            }
+            // A receipt is replayable after expiry; a new report must not reach the catalog
+            // without its exact live lease, even when cancellation is draining the scope.
+            Self::live_path_fence(&mut tx, task, true).await?;
+            let scope = Self::scope_from_info(&tx.snapshot().info, task);
+            tx.commit().await?;
+            return Ok(BlobCompletionTarget::Ready(scope));
+        }
         let mut tx = self.open(principal, task, Lock::Wait).await?;
         if task
             .step_id
@@ -1512,10 +1542,36 @@ where
             .replayed(principal, &mut tx, task, &idempotency)
             .await?
         {
-            return Ok(Some(ack));
+            return Ok(BlobCompletionTarget::Replayed(ack));
         }
         self.ensure_bound(principal, &mut tx, task).await?;
-        Ok(None)
+        Ok(BlobCompletionTarget::Ready(Self::scope_of(&tx, task)))
+    }
+
+    /// Replays a blob report's exact request identity, or authorizes a fresh preparation.
+    /// Prefer `prepare_blob_completion` when proceeding to catalog access, so a duplicate cannot
+    /// commit between separate receipt and report-scope lookups.
+    ///
+    /// # Errors
+    /// Permission, binding, live-fence and idempotency errors match preparation.
+    pub async fn replay_blob_completion(
+        &self,
+        principal: &Principal,
+        task: &TaskRef<'_>,
+        blob_id: sagat_domain::blobs::BlobId,
+        expected_digest: &str,
+        key: &str,
+    ) -> Result<Option<StepAck>, AppError>
+    where
+        S: PathExecutionStore,
+    {
+        match self
+            .prepare_blob_completion(principal, task, blob_id, expected_digest, key)
+            .await?
+        {
+            BlobCompletionTarget::Replayed(ack) => Ok(Some(ack)),
+            BlobCompletionTarget::Ready(_) => Ok(None),
+        }
     }
 
     /// Whether `task` is an attempt that may still act: its lease is current and unexpired and the
@@ -1621,8 +1677,8 @@ where
         Ok(scope)
     }
 
-    /// Resolves the tenant-scoped report target without requiring a still-live lease. This permits
-    /// an exact completion replay after its lease ended; a new report is still fenced by completion.
+    /// Resolves the report target. Scoped new reports require their exact live lease before
+    /// catalog access; exact receipt replay is handled separately before this lookup.
     pub async fn blob_report_scope(
         &self,
         principal: &Principal,
@@ -1634,6 +1690,7 @@ where
         principal.authorize(Permission::WorkerExecute)?;
         if !task.instance.path().is_root() {
             let mut tx = self.open_worker_path(principal, task).await?;
+            Self::live_path_fence(&mut tx, task, true).await?;
             let scope = Self::scope_from_info(&tx.snapshot().info, task);
             tx.commit().await?;
             return Ok(scope);

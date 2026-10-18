@@ -1,0 +1,30 @@
+    Blocking waiting for file lock on build directory
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 45.50s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 7 tests
+test scoped_blob_completion::a_scoped_blob_commit_rolls_back_with_its_failed_journal_write ... ok
+test scoped_blob_completion::a_scoped_blob_commits_and_replays_without_unrelated_history ... ok
+test scoped_blob_completion::a_scoped_blob_cannot_be_committed_by_another_iteration ... ok
+
+thread 'scoped_blob_completion::a_scoped_blob_quota_recovery_rechecks_lease_expiry' (72079798) panicked at tests/integration/workflow-primitives/scoped_blob_completion.rs:390:65:
+close content quota: Database(PgDatabaseError { severity: Error, code: "42P10", message: "there is no unique or exclusion constraint matching the ON CONFLICT specification", detail: None, hint: None, position: None, where: None, schema: None, table: None, column: None, data_type: None, constraint: None, file: Some("plancat.c"), line: Some(920), routine: Some("infer_arbiter_indexes") })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test scoped_blob_completion::a_scoped_blob_quota_recovery_rechecks_lease_expiry ... FAILED
+test scoped_blob_completion::a_scoped_blob_report_rejects_a_non_holder_before_catalog_lookup ... ok
+test scoped_blob_completion::an_uploaded_scoped_result_can_be_reported_after_cancellation ... ok
+
+thread 'scoped_blob_completion::path_storage_rejects_a_blob_without_its_matching_output_descriptor' (72080903) panicked at tests/integration/workflow-primitives/scoped_blob_completion.rs:365:9:
+a committed blob must be the exact recorded output
+test scoped_blob_completion::path_storage_rejects_a_blob_without_its_matching_output_descriptor ... FAILED
+
+failures:
+
+failures:
+    scoped_blob_completion::a_scoped_blob_quota_recovery_rechecks_lease_expiry
+    scoped_blob_completion::path_storage_rejects_a_blob_without_its_matching_output_descriptor
+
+test result: FAILED. 5 passed; 2 failed; 0 ignored; 0 measured; 362 filtered out; finished in 10.07s
+
+error: test failed, to rerun pass `-p sagat-tests --test integration_workflow_primitives`

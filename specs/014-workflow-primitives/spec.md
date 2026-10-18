@@ -36,8 +36,13 @@ scans. Scoped secret delivery and blob capability checks also use current exact-
 secret resolution closes its transaction around provider reads and rechecks current authority before
 auditing a handoff. Public scoped uploads skip the root-only managed database probe and obtain their
 current exact-path capability before reserving object bytes; a skipped probe grants no access.
-Blob completion, broader body planning and the large resource gates remain
-separate work; these focused bounded paths do not establish the production ceilings. A new child is
+Ordinary forward scoped activities may complete with their own uploaded blob: current exact-path
+lease authority precedes catalog access after a receipt miss, while an exact receipt remains
+replayable after expiry under current role/binding checks. The exact descriptor, catalog commit,
+quota, journal, outbox and receipt share one transaction. Known produced results may be reported
+during cancellation to account for their effects. Derived/declared-secret blob outputs remain
+refused. Broader body planning and the large resource gates remain separate work; these focused
+bounded paths do not establish the production ceilings. A new child is
 admitted under its parent's shard lease only inside its uncommitted zero-event creation transaction;
 a reopened child requires its own shard lease for subsequent scheduler mutations.
 

@@ -66,8 +66,8 @@ where
         S: PathExecutionStore,
     {
         let blob = report.descriptor;
-        if let Some(ack) = self
-            .replay_blob_completion(
+        let scope = match self
+            .prepare_blob_completion(
                 principal,
                 task,
                 blob.id(),
@@ -76,8 +76,9 @@ where
             )
             .await?
         {
-            return Ok(ack);
-        }
+            BlobCompletionTarget::Replayed(ack) => return Ok(ack),
+            BlobCompletionTarget::Ready(scope) => scope,
+        };
         if let Some(content) = report.content
             && (content.len()
                 > sagat_domain::database::DatabaseLimits::MAX.max_result_bytes as usize
@@ -88,12 +89,28 @@ where
                 "managed blob content does not match its descriptor",
             ));
         }
+        if !task.instance.path().is_root() {
+            let output = descriptor_json(blob);
+            let identity = blob_report_identity(blob.id(), report.expected_digest);
+            let idempotency = completion_idempotency(task, idempotency_key, &identity, true);
+            return self
+                .report_path(
+                    principal,
+                    task,
+                    super::scoped_reports::PathReport::Completion {
+                        output: &output,
+                        blob: Some(BlobCommit::new(scope, blob)),
+                    },
+                    idempotency,
+                )
+                .await;
+        }
         self.complete_inner(
             principal,
             task,
             &descriptor_json(blob),
             Some(BlobCompletion {
-                commit: BlobCommit::new(self.blob_report_scope(principal, task).await?, blob),
+                commit: BlobCommit::new(scope, blob),
                 identity: blob_report_identity(blob.id(), report.expected_digest),
                 content: report.content,
                 content_type: blob.content_type().as_str(),
@@ -131,7 +148,7 @@ where
                 .report_path(
                     principal,
                     task,
-                    super::scoped_reports::PathReport::Completion(output),
+                    super::scoped_reports::PathReport::Completion { output, blob: None },
                     idempotency,
                 )
                 .await;

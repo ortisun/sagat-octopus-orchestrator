@@ -1,0 +1,54 @@
+{
+  "canonical": {
+    "map": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"bodies\":{\"file\":{\"entrypoint\":\"produce\",\"nodes\":[{\"activity\":\"blob.output\",\"id\":\"produce\",\"next\":\"returned\",\"type\":\"activity\"},{\"id\":\"returned\",\"result\":\"steps.produce.output\",\"type\":\"return\"}]}},\"entrypoint\":\"files\",\"kind\":\"Workflow\",\"limits\":{\"maxDepth\":1,\"maxInstances\":16},\"metadata\":{\"name\":\"collection-blob-output\"},\"nodes\":[{\"body\":\"file\",\"id\":\"files\",\"items\":\"input.lines\",\"maxConcurrency\":1,\"maxItems\":2,\"next\":\"done\",\"result\":\"bodyResult\",\"type\":\"forEach\"},{\"id\":\"done\",\"outputExpr\":\"steps.files.output\",\"type\":\"end\"}]}"
+  },
+  "workflows": {
+    "map": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "bodies": {
+        "file": {
+          "entrypoint": "produce",
+          "nodes": [
+            {
+              "activity": "blob.output",
+              "id": "produce",
+              "next": "returned",
+              "type": "activity"
+            },
+            {
+              "id": "returned",
+              "result": "steps.produce.output",
+              "type": "return"
+            }
+          ]
+        }
+      },
+      "entrypoint": "files",
+      "kind": "Workflow",
+      "limits": {
+        "maxDepth": 1,
+        "maxInstances": 16
+      },
+      "metadata": {
+        "name": "collection-blob-output"
+      },
+      "nodes": [
+        {
+          "body": "file",
+          "id": "files",
+          "items": "input.lines",
+          "maxConcurrency": 1,
+          "maxItems": 2,
+          "next": "done",
+          "result": "bodyResult",
+          "type": "forEach"
+        },
+        {
+          "id": "done",
+          "outputExpr": "steps.files.output",
+          "type": "end"
+        }
+      ]
+    }
+  }
+}

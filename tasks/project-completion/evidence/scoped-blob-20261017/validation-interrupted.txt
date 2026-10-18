@@ -1,0 +1,158 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 12s
+     Running contract/durable-execution/grpc/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/contract_grpc_durable_execution-b446cc89526291b2)
+
+running 70 tests
+test blobs::a_chunk_of_exactly_the_agreed_size_is_accepted ... ok
+test blobs::a_blob_over_the_maximum_is_refused_and_leaves_nothing ... ok
+test blobs::a_blob_nobody_used_is_swept_with_its_bytes ... ok
+test blobs::a_blob_belongs_to_one_step_and_a_retried_report_is_answered_again ... ok
+test blobs::a_stated_size_or_digest_that_is_wrong_is_refused_and_leaves_nothing ... ok
+test blobs::a_large_output_travels_as_a_blob_and_the_run_keeps_only_its_descriptor ... ok
+test blobs::a_read_returns_no_bytes_when_its_audit_cannot_be_appended ... ok
+test blobs::a_report_names_the_output_inline_or_as_a_blob_never_both ... ok
+test blobs::a_tenant_cannot_pile_up_unused_blobs ... ok
+test blobs::an_attempt_with_declared_secrets_cannot_upload_until_stream_scanning_is_available ... ok
+test blobs::an_empty_blob_is_a_blob ... ok
+test blobs::a_transfer_that_stalls_is_cut_and_leaves_nothing ... ok
+test blobs::blobs_are_refused_where_none_is_configured ... ok
+test blobs::an_upload_that_is_not_header_then_chunks_is_refused ... ok
+test blobs::another_tenants_blob_is_exactly_as_missing_as_one_that_does_not_exist ... ok
+test blobs::content_that_changed_in_the_store_ends_the_download_with_an_error ... ok
+test blobs::inline_descriptor_and_blob_completion_cannot_share_an_idempotency_key ... ok
+test blobs::only_so_many_transfers_run_at_once ... ok
+test blobs::only_the_holder_of_a_current_lease_can_move_blobs ... ok
+test input_blobs::child_inherits_catalog_provenance_only_when_it_inherits_the_input ... ok
+test input_blobs::concurrent_same_start_returns_one_run_and_audit_failure_rolls_back_the_binding ... ok
+test blobs::rejected_blob_completion_replays_after_unused_blob_collection ... ok
+test blobs::stalled_download_releases_tenant_and_transfer_slots_at_its_deadline ... ok
+test input_blobs::stalled_chunked_upload_times_out_and_releases_capacity_and_oversize_is_typed ... ok
+test input_blobs::large_input_is_private_until_start_then_lease_readable_and_deduplicated ... ok
+test input_blobs::upload_routes_preserve_protected_unknown_routes_and_method_errors ... ok
+test input_blobs::replay_precedes_active_version_and_expired_deadline_and_catalog_checks ... ok
+test limits::a_full_engine_sheds_calls_that_look_for_work_before_calls_that_keep_work_alive ... ok
+test limits::a_connection_beyond_the_cap_waits_for_a_place_instead_of_being_served ... ok
+test input_blobs::uploader_scope_schema_and_mode_fail_without_binding_or_creating_a_run ... ok
+test input_blobs::uploads_enforce_size_digest_normal_body_limit_and_expire_unused_inputs ... ok
+test protocol::a_cancellation_reaches_the_worker_through_the_heartbeat ... ok
+test protocol::a_completion_is_idempotent_and_a_conflicting_replay_is_refused ... ok
+test protocol::a_heartbeat_after_its_own_report_is_answered_without_an_error ... ok
+test protocol::a_failure_is_routed_by_the_engine_and_unknown_codes_are_normalised ... ok
+test protocol::a_heartbeat_of_a_lost_lease_stays_a_stale_attempt_after_another_worker_reports ... ok
+test protocol::a_report_without_the_current_lease_is_stale_and_changes_nothing ... ok
+test protocol::a_subject_over_its_budget_is_told_when_to_come_back ... ok
+test protocol::a_session_that_is_not_used_expires ... ok
+test protocol::a_worker_executes_a_workflow_through_every_rpc ... ok
+test protocol::a_worker_of_another_tenant_cannot_see_touch_or_reuse_anything ... ok
+test protocol::a_task_stream_spends_credit_across_successive_frames ... ok
+test protocol::an_activity_without_a_result_completes_with_an_empty_output ... ok
+test protocol::an_oversized_message_is_refused_before_it_is_processed ... ok
+test protocol::cancelling_while_a_claim_waits_rolls_back_before_the_fence_opens ... ok
+test protocol::every_rpc_requires_a_valid_bearer_token_from_a_known_member ... ok
+test protocol::malformed_requests_are_invalid_arguments_and_leave_the_attempt_intact ... ok
+test protocol::max_inflight_bounds_what_one_session_can_hold ... ok
+test protocol::nothing_to_do_is_an_empty_answer_with_a_retry_hint_not_an_error ... ok
+test protocol::only_the_worker_role_may_speak_the_worker_protocol ... ok
+test protocol::an_underfilled_task_stream_ends_with_one_positive_retry_hint ... ok
+test protocol::task_stream_credit_is_validated_and_old_sessions_cannot_lease ... ok
+test protocol_compatibility::committed_step_output_provenance_gates_the_downstream_task ... ok
+test protocol::unary_and_stream_claims_share_the_exact_session_limit ... ok
+test protocol::task_stream_byte_credit_is_cumulative_across_frames ... ok
+test protocol_compatibility::incompatible_backlog_does_not_hide_later_inline_work_from_an_old_worker ... ok
+test protocol_compatibility::mixed_workers_only_lease_run_input_blobs_to_protocol_1_3 ... ok
+test run_result::a_child_result_becomes_the_output_of_the_parent_step ... ok
+test run_result::a_result_larger_than_one_payload_fails_the_child_with_run_data_limit ... FAILED
+test run_result::a_result_expression_that_fails_fails_the_child_and_the_parent_step ... FAILED
+test run_result::a_parent_that_cannot_keep_the_result_fails_its_step_with_run_data_limit ... FAILED
+test stream_security::cancelling_an_idle_stream_stops_its_claims_and_a_new_stream_recovers ... FAILED
+test stream_security::bearer_expiry_ends_a_waiting_stream_and_suppresses_later_work ... FAILED
+test run_result::an_end_without_an_output_expression_leaves_the_parent_step_without_output ... FAILED
+test stream_security::role_and_membership_removal_end_waiting_streams_before_another_lease ... FAILED
+test stream_security::narrowed_and_revoked_bindings_end_waiting_streams_before_another_lease ... FAILED
+test stream_security::foreign_tenant_token_session_and_namespace_never_lease_ready_work ... FAILED
+test stream_telemetry::saturated_stream_admission_preserves_lease_calls_and_another_tenant ... FAILED
+test stream_telemetry::stream_metrics_are_bounded_clean_and_trace_preserving ... FAILED
+test protocol::task_stream_lifetime_admission_survives_headers_and_is_released_on_drop ... FAILED
+
+failures:
+
+---- run_result::a_result_larger_than_one_payload_fails_the_child_with_run_data_limit stdout ----
+
+thread 'run_result::a_result_larger_than_one_payload_fails_the_child_with_run_data_limit' (72357685) panicked at tests/contract/durable-execution/grpc/../../../support/mod.rs:208:29:
+migrate: ExecuteMigration(Database(PgDatabaseError { severity: Fatal, code: "57P01", message: "terminating connection due to administrator command", detail: None, hint: None, position: None, where: None, schema: None, table: None, column: None, data_type: None, constraint: None, file: Some("postgres.c"), line: Some(3286), routine: Some("ProcessInterrupts") }), 20261010000400)
+
+---- run_result::a_result_expression_that_fails_fails_the_child_and_the_parent_step stdout ----
+
+thread 'run_result::a_result_expression_that_fails_fails_the_child_and_the_parent_step' (72357680) panicked at tests/contract/durable-execution/grpc/../../../support/mod.rs:208:29:
+migrate: Execute(Database(PgDatabaseError { severity: Fatal, code: "57P01", message: "terminating connection due to administrator command", detail: None, hint: None, position: None, where: None, schema: None, table: None, column: None, data_type: None, constraint: None, file: Some("postgres.c"), line: Some(3286), routine: Some("ProcessInterrupts") }))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- run_result::a_parent_that_cannot_keep_the_result_fails_its_step_with_run_data_limit stdout ----
+
+thread 'run_result::a_parent_that_cannot_keep_the_result_fails_its_step_with_run_data_limit' (72356927) panicked at tests/contract/durable-execution/grpc/../../../support/worker.rs:166:9:
+assertion `left == right` failed: {"code":"UNAVAILABLE","message":"service temporarily unavailable","remediation":"Try again with a growing pause; if it lasts, check the platform's readiness and report the trace id.","requestId":"eb365bc98af24c2e8838e37b6bfbf9da","retryable":true,"traceId":"28a52a5f0172456dbac683701e4f27c9"}
+  left: 503
+ right: 202
+
+---- stream_security::cancelling_an_idle_stream_stops_its_claims_and_a_new_stream_recovers stdout ----
+
+thread 'stream_security::cancelling_an_idle_stream_stops_its_claims_and_a_new_stream_recovers' (72357778) panicked at tests/contract/durable-execution/grpc/../../../support/mod.rs:183:10:
+admin connection: Database(PgDatabaseError { severity: Fatal, code: "57P03", message: "the database system is shutting down", detail: None, hint: None, position: None, where: None, schema: None, table: None, column: None, data_type: None, constraint: None, file: Some("postmaster.c"), line: Some(2375), routine: Some("ProcessStartupPacket") })
+
+---- stream_security::bearer_expiry_ends_a_waiting_stream_and_suppresses_later_work stdout ----
+
+thread 'stream_security::bearer_expiry_ends_a_waiting_stream_and_suppresses_later_work' (72357777) panicked at tests/contract/durable-execution/grpc/../../../support/mod.rs:183:10:
+admin connection: Database(PgDatabaseError { severity: Fatal, code: "57P03", message: "the database system is shutting down", detail: None, hint: None, position: None, where: None, schema: None, table: None, column: None, data_type: None, constraint: None, file: Some("postmaster.c"), line: Some(2375), routine: Some("ProcessStartupPacket") })
+
+---- run_result::an_end_without_an_output_expression_leaves_the_parent_step_without_output stdout ----
+
+thread 'run_result::an_end_without_an_output_expression_leaves_the_parent_step_without_output' (72357776) panicked at tests/contract/durable-execution/grpc/../../../support/mod.rs:183:10:
+admin connection: Database(PgDatabaseError { severity: Fatal, code: "57P03", message: "the database system is shutting down", detail: None, hint: None, position: None, where: None, schema: None, table: None, column: None, data_type: None, constraint: None, file: Some("postmaster.c"), line: Some(2375), routine: Some("ProcessStartupPacket") })
+
+---- stream_security::role_and_membership_removal_end_waiting_streams_before_another_lease stdout ----
+
+thread 'stream_security::role_and_membership_removal_end_waiting_streams_before_another_lease' (72357781) panicked at tests/contract/durable-execution/grpc/../../../support/mod.rs:183:10:
+admin connection: Database(PgDatabaseError { severity: Fatal, code: "57P03", message: "the database system is shutting down", detail: None, hint: None, position: None, where: None, schema: None, table: None, column: None, data_type: None, constraint: None, file: Some("postmaster.c"), line: Some(2375), routine: Some("ProcessStartupPacket") })
+
+---- stream_security::narrowed_and_revoked_bindings_end_waiting_streams_before_another_lease stdout ----
+
+thread 'stream_security::narrowed_and_revoked_bindings_end_waiting_streams_before_another_lease' (72357780) panicked at tests/contract/durable-execution/grpc/../../../support/mod.rs:183:10:
+admin connection: Database(PgDatabaseError { severity: Fatal, code: "57P03", message: "the database system is shutting down", detail: None, hint: None, position: None, where: None, schema: None, table: None, column: None, data_type: None, constraint: None, file: Some("postmaster.c"), line: Some(2375), routine: Some("ProcessStartupPacket") })
+
+---- stream_security::foreign_tenant_token_session_and_namespace_never_lease_ready_work stdout ----
+
+thread 'stream_security::foreign_tenant_token_session_and_namespace_never_lease_ready_work' (72357779) panicked at tests/contract/durable-execution/grpc/../../../support/mod.rs:183:10:
+admin connection: Database(PgDatabaseError { severity: Fatal, code: "57P03", message: "the database system is shutting down", detail: None, hint: None, position: None, where: None, schema: None, table: None, column: None, data_type: None, constraint: None, file: Some("postmaster.c"), line: Some(2375), routine: Some("ProcessStartupPacket") })
+
+---- stream_telemetry::saturated_stream_admission_preserves_lease_calls_and_another_tenant stdout ----
+
+thread 'stream_telemetry::saturated_stream_admission_preserves_lease_calls_and_another_tenant' (72357782) panicked at tests/contract/durable-execution/grpc/../../../support/mod.rs:183:10:
+admin connection: Database(PgDatabaseError { severity: Fatal, code: "57P03", message: "the database system is shutting down", detail: None, hint: None, position: None, where: None, schema: None, table: None, column: None, data_type: None, constraint: None, file: Some("postmaster.c"), line: Some(2375), routine: Some("ProcessStartupPacket") })
+
+---- stream_telemetry::stream_metrics_are_bounded_clean_and_trace_preserving stdout ----
+
+thread 'stream_telemetry::stream_metrics_are_bounded_clean_and_trace_preserving' (72357783) panicked at tests/contract/durable-execution/grpc/../../../support/mod.rs:183:10:
+admin connection: Database(PgDatabaseError { severity: Fatal, code: "57P03", message: "the database system is shutting down", detail: None, hint: None, position: None, where: None, schema: None, table: None, column: None, data_type: None, constraint: None, file: Some("postmaster.c"), line: Some(2375), routine: Some("ProcessStartupPacket") })
+
+---- protocol::task_stream_lifetime_admission_survives_headers_and_is_released_on_drop stdout ----
+
+thread 'protocol::task_stream_lifetime_admission_survives_headers_and_is_released_on_drop' (72348640) panicked at tests/contract/durable-execution/grpc/protocol.rs:461:33:
+release survivor work: Database(PgDatabaseError { severity: Fatal, code: "57P01", message: "terminating connection due to administrator command", detail: None, hint: None, position: None, where: None, schema: None, table: None, column: None, data_type: None, constraint: None, file: Some("postgres.c"), line: Some(3286), routine: Some("ProcessInterrupts") })
+
+
+failures:
+    protocol::task_stream_lifetime_admission_survives_headers_and_is_released_on_drop
+    run_result::a_parent_that_cannot_keep_the_result_fails_its_step_with_run_data_limit
+    run_result::a_result_expression_that_fails_fails_the_child_and_the_parent_step
+    run_result::a_result_larger_than_one_payload_fails_the_child_with_run_data_limit
+    run_result::an_end_without_an_output_expression_leaves_the_parent_step_without_output
+    stream_security::bearer_expiry_ends_a_waiting_stream_and_suppresses_later_work
+    stream_security::cancelling_an_idle_stream_stops_its_claims_and_a_new_stream_recovers
+    stream_security::foreign_tenant_token_session_and_namespace_never_lease_ready_work
+    stream_security::narrowed_and_revoked_bindings_end_waiting_streams_before_another_lease
+    stream_security::role_and_membership_removal_end_waiting_streams_before_another_lease
+    stream_telemetry::saturated_stream_admission_preserves_lease_calls_and_another_tenant
+    stream_telemetry::stream_metrics_are_bounded_clean_and_trace_preserving
+
+test result: FAILED. 58 passed; 12 failed; 0 ignored; 0 measured; 0 filtered out; finished in 56.17s
+

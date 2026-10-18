@@ -14,3 +14,14 @@ unchecked T016 task (64 at authorization). See [plan.md](plan.md).
 - [ ] Finish accepted 014 runtime gaps and bounded large-workload behavior.
 - [ ] Execute integrated fault, canary, compatibility, browser, performance and release gates.
 - [ ] Update canonical tasks, dependent documentation and exact final evidence; commit clean delivery.
+
+
+## Current checkpoint — 2026-10-17
+
+The authorization scope above is historical. T014-038 is now closed with its exact current
+five-SDK chain evidence;10 feature014 tasks remain unchecked. Feature016 has only T016-001
+unchecked, explicitly closing on specification merge. This checklist does not override either
+canonical ledger. Scoped forward blob completion and runtime flat10k widths1/16/256 plus20k waits
+have new focused evidence; nested capacity/body planning and final integration/release gates
+remain open. The nested protocol reached its bounded three-review escalation and remains
+unaccepted; see nested-capacity-review.md. No PR, merge or deployment is claimed.

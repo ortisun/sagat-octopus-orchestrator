@@ -1,10 +1,14 @@
-//! Exact-path inline reports with current authority, out-of-transaction scans and durable receipts.
+//! Exact-path reports with current authority, out-of-transaction scans and durable receipts.
 use super::*;
+use crate::blobs::BlobCommit;
 
 type PathTx<S> = <S as PathExecutionStore>::Tx;
 
 pub(super) enum PathReport<'a> {
-    Completion(&'a [u8]),
+    Completion {
+        output: &'a [u8],
+        blob: Option<BlobCommit>,
+    },
     Failure {
         raw_code: &'a str,
         code: FailureCode,
@@ -15,7 +19,7 @@ pub(super) enum PathReport<'a> {
 impl PathReport<'_> {
     fn scan_bytes(&self) -> &[u8] {
         match self {
-            Self::Completion(bytes) => bytes,
+            Self::Completion { output, .. } => output,
             Self::Failure { raw_code, .. } => raw_code.as_bytes(),
         }
     }
@@ -56,11 +60,12 @@ where
             SecretReport::Ready(tx, leaked) => (tx, leaked),
         };
         let fallback_leak = leaked.clone();
-        let leak_what = if matches!(&report, PathReport::Completion(_)) {
+        let leak_what = if matches!(&report, PathReport::Completion { .. }) {
             "output"
         } else {
             "failure code"
         };
+        let blob_report = matches!(&report, PathReport::Completion { blob: Some(_), .. });
         let result = self
             .apply_path_report(principal, task, report, tx, leaked, idempotency.clone())
             .await;
@@ -73,7 +78,11 @@ where
                 if let Some(stored) = tx.replay(&idempotency).await? {
                     return Ok(parse_ack(&stored, true, task.run_id));
                 }
-                Self::verify_path_lease(&mut tx, task).await?;
+                if blob_report {
+                    Self::live_path_fence(&mut tx, task, true).await?;
+                } else {
+                    Self::verify_path_lease(&mut tx, task).await?;
+                }
                 let now = tx.now();
                 let snapshot = tx.snapshot();
                 let progress = execution::fail_path_instance(
@@ -131,6 +140,21 @@ where
             .node_for_instance(task.instance)
             .map(|node| node.secrets().to_vec())
             .unwrap_or_default();
+        if matches!(report, PathReport::Completion { blob: Some(_), .. }) {
+            if task.instance.node().is_derived() {
+                return Err(AppError::NotAllowed(
+                    "blob output requires a forward activity",
+                ));
+            }
+            if !names.is_empty() {
+                return Err(AppError::NotAllowed(
+                    "blob outputs with declared secrets require content scanning",
+                ));
+            }
+            // As for Root blob reports, retain the live lease but allow a known result to be
+            // recorded during cancellation so scope drain can account for the effect.
+            Self::live_path_fence(&mut tx, task, true).await?;
+        }
         if self.vault.is_none() || names.is_empty() {
             return Ok(SecretReport::Ready(tx, None));
         }
@@ -168,6 +192,7 @@ where
         let mut failure = None;
         let mut outputs = Vec::new();
         let mut verdict = None;
+        let mut output_blob = None;
         if let Some(name) = leaked {
             metrics::counter!("secret_output_detected_total").increment(1);
             effects.audit = Some(self.leak_audit(
@@ -175,7 +200,7 @@ where
                 &tx.snapshot().info,
                 task,
                 &name,
-                if matches!(report, PathReport::Completion(_)) {
+                if matches!(report, PathReport::Completion { .. }) {
                     "output"
                 } else {
                     "failure code"
@@ -187,7 +212,9 @@ where
                 PathReport::Failure {
                     code, retryable, ..
                 } => failure = Some((code, retryable)),
-                PathReport::Completion(output) if task.instance.node().is_reconciliation() => {
+                PathReport::Completion { output, .. }
+                    if task.instance.node().is_reconciliation() =>
+                {
                     match self.engine.evaluator().reconcile_answer(output) {
                         Err(error) => {
                             tracing::warn!(%error, "a scoped reconciliation answered nonsense");
@@ -209,10 +236,13 @@ where
                         }
                     }
                 }
-                PathReport::Completion(output) if !task.instance.node().is_compensation() => {
+                PathReport::Completion { output, blob }
+                    if !task.instance.node().is_compensation() =>
+                {
                     outputs.push((task.instance.clone(), output.to_vec()));
+                    output_blob = blob;
                 }
-                PathReport::Completion(_) => {}
+                PathReport::Completion { .. } => {}
             }
         }
         if !outputs.is_empty() {
@@ -228,6 +258,9 @@ where
             }
         }
         let now = tx.now();
+        if failure.is_none() {
+            effects.blobs.extend(output_blob);
+        }
         let snapshot = tx.snapshot();
         let progress = if let Some((code, retryable)) = failure {
             execution::fail_path_instance(

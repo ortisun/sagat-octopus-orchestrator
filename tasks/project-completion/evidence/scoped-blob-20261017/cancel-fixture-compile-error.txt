@@ -1,0 +1,27 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+error[E0599]: no method named `heartbeat` found for struct `support::worker::Worker<'a>` in the current scope
+   --> tests/integration/workflow-primitives/scoped_blob_completion.rs:202:14
+    |
+201 | /         worker
+202 | |             .heartbeat(task)
+    | |_____________-^^^^^^^^^
+    |
+   ::: tests/integration/workflow-primitives/../../support/worker.rs:309:1
+    |
+309 |   pub struct Worker<'a> {
+    |   --------------------- method `heartbeat` not found for this struct
+    |
+    = help: items from traits can only be used if the trait is implemented and in scope
+    = note: the following trait defines an item `heartbeat`, perhaps you need to implement it:
+            candidate #1: `sagat_api_grpc::pb::worker_service_server::WorkerService`
+help: one of the expressions' fields has a method of the same name
+    |
+202 |             .client.heartbeat(task)
+    |              +++++++
+help: there is a method `heartbeat_message` with a similar name
+    |
+202 |             .heartbeat_message(task)
+    |                       ++++++++
+
+For more information about this error, try `rustc --explain E0599`.
+error: could not compile `sagat-tests` (test "integration_workflow_primitives") due to 1 previous error

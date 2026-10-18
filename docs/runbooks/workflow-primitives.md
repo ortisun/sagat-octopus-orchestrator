@@ -359,14 +359,17 @@ while repeats within the same attempt collapse. Secret values and tokens never e
 
 Blob upload for a step declaring secrets retains the existing content-scanning refusal, including
 a current cancelled attempt: this only returns a denial. Other scoped blob access requires a live,
-uncancelled attempt. Report-scope lookup requires current authority and identity but permits an
-expired lease for receipt replay; it does not authorize any bytes or a new output commit.
+uncancelled attempt. An exact completion receipt may replay after lease expiry, after current authority and identity
+checks. A receipt miss and scoped report-target lookup require the exact live lease before catalog
+metadata access. Cancellation may still report a known produced result so scope drain can account
+for the effect; it does not authorize fresh uploads.
 
 Public gRPC `WriteBlob` skips the root-only managed database probe for a scoped instance. It still
 requires the current exact-path upload capability before object reservation. The real RPC fixture
 revokes SELECT on unrelated iteration checkpoints and verifies a successful upload plus a typed
 `STALE_ATTEMPT` refusal for a self-consistent forged generation, with no second object reserved.
-This does not enable the separately closed scoped blob-completion path.
+Upload permission is separate from completion; ordinary forward scoped completion follows the
+transactional rules below.
 
 Reproduce the bounded secret/blob checks and real-provider withdrawal barriers:
 
@@ -376,6 +379,18 @@ SAGAT_TEST_AS_RUNTIME_ROLE=1 cargo test --locked -p sagat-tests \
   bounded_capabilities:: bounded_report_provider:: --test-threads=2 --nocapture
 ```
 
-These capability checks do not exercise an object-store byte transfer. The existing blob service
-still verifies tenant/namespace, object/catalog state and bytes. Scoped blob completion remains
-closed pending its transactional writer and fault evidence.
+The capability-only checks do not transfer object bytes. `scoped_blob_completion` exercises the
+real public upload and completion path for300KB outputs. Blob service checks tenant/namespace,
+object/catalog state and digest; the exact-path writer additionally binds the stored descriptor
+ID/size/digest/content type to its catalog commit. Output, catalog state, journal, quota, outbox and receipt commit
+or roll back together. Derived tasks and activities declaring secrets cannot return blob outputs.
+A journal-insert fault leaves the blob UPLOADED and task leased; retrying the same request after
+removing the injected fault commits once, and later calls replay its receipt.
+
+```sh
+SAGAT_TEST_AS_RUNTIME_ROLE=1 cargo test --locked -p sagat-tests \
+  --test integration_workflow_primitives scoped_blob_completion:: -- --test-threads=3 --nocapture
+SAGAT_TEST_AS_RUNTIME_ROLE=1 SAGAT_SDK_SCENARIO=collection-blob-output \
+  cargo test --locked -p sagat-tests --test sdk_conformance \
+  every_sdk_conforms_to_every_scenario -- --exact --ignored --nocapture
+```

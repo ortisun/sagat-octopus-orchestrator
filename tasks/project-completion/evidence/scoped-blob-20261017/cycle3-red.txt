@@ -1,0 +1,19 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 37.97s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 1 test
+
+thread 'scoped_blob_completion::a_racing_blob_preparation_replays_a_report_committed_after_its_first_lookup' (72404139) panicked at tests/integration/workflow-primitives/scoped_blob_completion.rs:498:5:
+the old split preparation loses an exact receipt: Err(StaleAttempt)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test scoped_blob_completion::a_racing_blob_preparation_replays_a_report_committed_after_its_first_lookup ... FAILED
+
+failures:
+
+failures:
+    scoped_blob_completion::a_racing_blob_preparation_replays_a_report_committed_after_its_first_lookup
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 369 filtered out; finished in 3.04s
+
+error: test failed, to rerun pass `-p sagat-tests --test integration_workflow_primitives`

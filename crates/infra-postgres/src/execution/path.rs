@@ -359,10 +359,7 @@ impl PgPathExecutionTx {
                 detail: "a bounded write crossed its exact path".into(),
             });
         }
-        if !effects.outputs.is_empty()
-            || !effects.rehint.is_empty()
-            || !effects.children.is_empty()
-            || !effects.blobs.is_empty()
+        if !effects.outputs.is_empty() || !effects.rehint.is_empty() || !effects.children.is_empty()
         {
             return Err(StoreError::Internal {
                 detail: "a bounded write contains root-only effects".into(),
@@ -420,6 +417,36 @@ impl PgPathExecutionTx {
                 });
             }
         }
+        for blob in &effects.blobs {
+            let info = &self.snapshot.info;
+            let valid = effects.blobs.len() == 1
+                && effects.reported.as_ref().is_some_and(|reported| {
+                    let instance = &reported.instance;
+                    completed.contains(instance)
+                        && outputs.iter().any(|(output, bytes)| {
+                            output == instance && blob_output_matches(bytes, blob)
+                        })
+                        && !instance.node().is_derived()
+                        && blob.scope.access.tenant_id == info.tenant_id
+                        && blob.scope.access.namespace_id == info.namespace_id
+                        && blob.scope.run_id == info.run_id
+                        && blob.scope.step_id
+                            == instance_step_id(info.version_id, info.run_id, instance)
+                        && self
+                            .snapshot
+                            .state
+                            .local_instance(instance.node())
+                            .is_some_and(|step| {
+                                step.attempt() == blob.scope.attempt
+                                    && step.generation() == blob.scope.generation
+                            })
+                });
+            if !valid {
+                return Err(StoreError::Internal {
+                    detail: "a bounded blob commit has no matching forward completion".into(),
+                });
+            }
+        }
         self.charge_path_output_bytes(outputs).await?;
 
         let tenant = self.snapshot.info.tenant_id;
@@ -441,6 +468,9 @@ impl PgPathExecutionTx {
             self.snapshot
                 .data
                 .insert_output(instance.clone(), bytes.clone());
+        }
+        for blob in &effects.blobs {
+            crate::blobs::commit(&mut self.tx, tenant, blob).await?;
         }
 
         let mut touched = BTreeSet::new();
@@ -1222,4 +1252,27 @@ impl PgPathExecutionTx {
         .await
         .map_err(store_error)
     }
+}
+
+/// Keep the catalog transition and the payload reference inseparable at the storage boundary.
+fn blob_output_matches(bytes: &[u8], blob: &sagat_application::blobs::BlobCommit) -> bool {
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+        return false;
+    };
+    let Some(wrapper) = value.as_object().filter(|object| object.len() == 1) else {
+        return false;
+    };
+    let Some(descriptor) = wrapper.get("$blob").and_then(serde_json::Value::as_object) else {
+        return false;
+    };
+    descriptor.len() == 4
+        && descriptor.get("id").and_then(serde_json::Value::as_str)
+            == Some(blob.id.to_string().as_str())
+        && descriptor.get("size").and_then(serde_json::Value::as_u64) == Some(blob.size)
+        && descriptor.get("sha256").and_then(serde_json::Value::as_str)
+            == Some(blob.digest.to_hex().as_str())
+        && descriptor
+            .get("contentType")
+            .and_then(serde_json::Value::as_str)
+            == Some(blob.content_type.as_str())
 }

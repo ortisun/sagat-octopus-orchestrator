@@ -260,13 +260,14 @@ pub trait BlobCatalog: Send + Sync + fmt::Debug + 'static {
 
 /// A blob that a record about to be stored refers to (a step output). The store marks it
 /// `Committed` in the same transaction as that record, and only if it is still `Uploaded` with
-/// exactly this size and digest: the blob cannot be swept, replaced or used twice behind the
+/// exactly this size, digest and content type: the blob cannot be swept, replaced or used twice behind the
 /// record's back.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlobCommit {
     pub id: BlobId,
     pub size: u64,
     pub digest: Digest,
+    pub content_type: ContentType,
     pub scope: BlobScope,
 }
 
@@ -291,6 +292,7 @@ impl BlobCommit {
             id: descriptor.id(),
             size: descriptor.size(),
             digest: *descriptor.digest(),
+            content_type: descriptor.content_type().clone(),
             scope,
         }
     }

@@ -181,3 +181,23 @@ when the fence succeeds. A bounded binding read likewise holds the shared bindin
 that revocation takes exclusively, until commit. `bounded_fences.rs` exercises both expiry waits
 against an unchanged locked row and a real competing binding-revocation lock. Its runtime-role
 profile also verifies that the waiting execution connection is `sagat_app`.
+
+
+### Scoped forward blob completion
+
+Ordinary forward collection/loop activities may return the native BlobOutput descriptor through
+protocol1.5. No new wire fields or SDK semantics are introduced. Current membership, binding and
+echoed exact instance identity precede receipt lookup. Only an exact receipt may bypass lease
+expiry; a miss verifies the live token, attempt and generation before object/catalog lookup.
+A produced result can still be reported during cancellation, matching Root effect accounting.
+The path writer validates descriptor ID/size/digest/content type against its BlobCommit and commits catalog,
+payload, journal, quota, outbox and receipt together. Derived and declared-secret blob outputs
+remain denied. The `collection-blob-output` case requires all five SDK builders and runtime
+results to agree on two ordered300KB descriptors; native tests separately check actual catalog
+state, rollback, foreign-iteration refusal, current authority withdrawal and pre-catalog fencing.
+
+Preparation returns either the exact receipt or the authorized report scope in one transaction;
+consumers must not split receipt lookup from live scope resolution. A duplicate that commits
+between two caller invocations remains replayable instead of becoming a spurious stale attempt.
+Blob quota-failure recovery reopens current authority and rechecks its live fence before writing
+any failure/receipt; rollback does not grandfather an expired lease.

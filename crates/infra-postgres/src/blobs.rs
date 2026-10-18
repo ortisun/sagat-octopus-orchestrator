@@ -432,7 +432,7 @@ pub(crate) async fn commit(
         "UPDATE blobs SET state = 'COMMITTED', committed_at = clock_timestamp() \
          WHERE tenant_id = $1 AND namespace_id = $2 AND id = $3 AND state = 'UPLOADED' \
            AND run_id = $4 AND step_id = $5 AND attempt = $6 AND generation = $7 \
-           AND size_bytes = $8 AND sha256 = $9",
+           AND size_bytes = $8 AND sha256 = $9 AND content_type = $10",
     )
     .bind(tenant.as_uuid())
     .bind(blob.scope.access.namespace_id.as_uuid())
@@ -443,6 +443,7 @@ pub(crate) async fn commit(
     .bind(i64::try_from(blob.scope.generation).map_err(|_| corrupt("generation"))?)
     .bind(size)
     .bind(blob.digest.as_bytes().as_slice())
+    .bind(blob.content_type.as_str())
     .execute(conn)
     .await
     .map_err(store_error)?

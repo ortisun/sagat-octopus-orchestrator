@@ -432,3 +432,16 @@ reused; no payload/secret fields are added to logs or metric labels. Internal wo
 contracts are in feature 014's data model and migrations 20261207000000/20261208000000.
 Exact commands, initial failures, performance phase exclusions and unproven full worker/control/
 root-finalization criteria remain recorded in `tasks/project-completion/integration-notes.md`.
+
+
+### Focused scoped BlobOutput checkpoint — 2026-10-17
+
+FR-014-004/005/014/015/016: ordinary forward iteration outputs may use the existing claim-check
+blob protocol. `scoped_blob_completion.rs` traces exact identity/current authority, stable replay,
+cancellation effect accounting, catalog/output/journal rollback and live quota recovery;
+`collection-blob-output` and `blobs` provide all-five SDK result equality. Contracts:
+`specs/014-workflow-primitives/contracts/conformance.md`; existing worker.scoped.report spans,
+blob upload/read auditing and quota refusal counters remain. Reproduce happy/failure cases with
+the commands in `docs/runbooks/workflow-primitives.md`. Exact runtime/static evidence is recorded
+in `specs/014-workflow-primitives/validation-report.md` and its scoped-blob manifest. This is a
+partial checkpoint; broader/nested bodies and complete feature/release tasks remain unchecked.

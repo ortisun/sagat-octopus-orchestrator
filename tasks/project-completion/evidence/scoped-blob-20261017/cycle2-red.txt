@@ -1,0 +1,29 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 36.99s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 7 tests
+test scoped_blob_completion::a_scoped_blob_commit_rolls_back_with_its_failed_journal_write ... ok
+test scoped_blob_completion::a_scoped_blob_commits_and_replays_without_unrelated_history ... ok
+test scoped_blob_completion::a_scoped_blob_cannot_be_committed_by_another_iteration ... ok
+test scoped_blob_completion::a_scoped_blob_report_rejects_a_non_holder_before_catalog_lookup ... ok
+test scoped_blob_completion::an_uploaded_scoped_result_can_be_reported_after_cancellation ... ok
+
+thread 'scoped_blob_completion::path_storage_rejects_a_blob_without_its_matching_output_descriptor' (72122911) panicked at tests/integration/workflow-primitives/scoped_blob_completion.rs:365:9:
+a committed blob must be the exact recorded output
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test scoped_blob_completion::path_storage_rejects_a_blob_without_its_matching_output_descriptor ... FAILED
+
+thread 'scoped_blob_completion::a_scoped_blob_quota_recovery_rechecks_lease_expiry' (72120451) panicked at tests/integration/workflow-primitives/scoped_blob_completion.rs:410:43:
+quota recovery cannot report after lease expiry: Response { metadata: MetadataMap { headers: {"content-type": "application/grpc", "date": "Sun, 18 Oct 2026 02:33:12 GMT", "grpc-status": "0"} }, message: StepCommandResponse { command_id: "01a14cda-fc20-76ee-b80c-e05933759b4b:7", already_applied: false, step_status: "FAILED", run_status: "WAITING" }, extensions: {} }
+test scoped_blob_completion::a_scoped_blob_quota_recovery_rechecks_lease_expiry ... FAILED
+
+failures:
+
+failures:
+    scoped_blob_completion::a_scoped_blob_quota_recovery_rechecks_lease_expiry
+    scoped_blob_completion::path_storage_rejects_a_blob_without_its_matching_output_descriptor
+
+test result: FAILED. 5 passed; 2 failed; 0 ignored; 0 measured; 362 filtered out; finished in 17.27s
+
+error: test failed, to rerun pass `-p sagat-tests --test integration_workflow_primitives`

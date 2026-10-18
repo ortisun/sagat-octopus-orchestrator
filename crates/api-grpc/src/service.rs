@@ -21,7 +21,8 @@ use sagat_application::execution::{ExpressionEvaluator, MAX_PAYLOAD_BYTES, PathE
 use sagat_application::identity::RequestContext;
 use sagat_application::runs::RunStore;
 use sagat_application::worker::{
-    BlobOutput, Capabilities, ClaimedTask, StepAck, WorkerService, WorkerStore,
+    BlobCompletionTarget, BlobOutput, Capabilities, ClaimedTask, StepAck, WorkerService,
+    WorkerStore,
 };
 use sagat_domain::blobs::BlobId;
 use sagat_domain::execution::{ExecutionInstanceId, InstancePath};
@@ -903,9 +904,9 @@ where
                     .parse::<BlobId>()
                     .map_err(|_| invalid("output_blob_ref is not a blob id"))?;
                 let principal = &auth.session.principal;
-                if let Some(ack) = self
+                let scope = match self
                     .workers
-                    .replay_blob_completion(
+                    .prepare_blob_completion(
                         principal,
                         &attempt.task_ref(),
                         id,
@@ -915,13 +916,9 @@ where
                     .await
                     .map_err(app)?
                 {
-                    return Ok(step_response(&ack));
-                }
-                let scope = self
-                    .workers
-                    .blob_report_scope(principal, &attempt.task_ref())
-                    .await
-                    .map_err(app)?;
+                    BlobCompletionTarget::Replayed(ack) => return Ok(step_response(&ack)),
+                    BlobCompletionTarget::Ready(scope) => scope,
+                };
                 let described = blobs
                     .service
                     .describe_for_commit(scope, id)

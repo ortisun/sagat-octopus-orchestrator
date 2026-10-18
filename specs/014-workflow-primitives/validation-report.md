@@ -1808,3 +1808,63 @@ with RED/GREEN logs at `/tmp/sagat-completion-perf-profile-smoke/`. An initial d
 compiler error is preserved separately and is not counted as a behavioral RED. The old benchmark
 completed before its executable path was rebuilt; its digest was checked unchanged at completion.
 These safeguards improve measurement validity and do not close T014-042 or production ceilings.
+
+
+## 2026-10-17 — Scoped forward BlobOutput completion
+
+Ordinary forward scoped activities now upload and commit native BlobOutput results using current
+exact-path authority, without restoring unrelated iteration history. Preparation returns an exact
+receipt or a live scoped target in one transaction. A miss cannot reach catalog metadata with a
+forged/expired lease; an exact receipt remains replayable under current membership/binding after
+lease completion. Cancellation can report an already produced result for scope effect accounting.
+Derived and declared-secret blob outputs remain refused.
+
+The storage port binds descriptor ID/size/digest/content type to its BlobCommit, and the existing
+catalog UPDATE repeats exact catalog metadata/owner/state checks. Output, catalog state, journal,
+quota, outbox and receipt commit or roll back together. Blob quota-failure recovery repeats the
+live cancellation-tolerant fence after rollback. No migration, broad grant or wire field is added.
+Existing worker.scoped.report spans, upload/read audits and quota refusal counters remain; no blob
+bytes, lease tokens or provider values enter logs.
+
+Three bounded independent read-only reviews found five actionable issues, all corrected with
+behavioral regressions. The final split-preparation race was reproduced before replacing the two
+lookups with atomic receipt-or-scope preparation; no fourth full review was run after the skill's
+three-cycle bound was surfaced. The user selected the current review and no external CLI was used.
+
+| Executed gate, final source | Result |
+| --- | --- |
+| Native scoped_blob_completion filter, runtime role | 8 passed,0 failed,19.56s |
+| Complete contract_grpc_durable_execution | 70 passed,0 failed,51.04s |
+| Complete fault_workflow_primitives | 87 passed,0 failed,95.07s |
+| Complete integration_database_connections, real OpenBao | 3 passed,0 failed,30.40s |
+| Complete integration_workflow_primitives | 369 passed,0 failed,1 ignored,191.06s |
+| collection-blob-output, all five SDKs | 1 passed,17.68s; five exact normalized documents |
+| blobs, all five SDKs, existing reviewed golden | 1 passed,18.69s; five exact normalized documents |
+| Scenario phase/golden registration,57 cases | 1 passed,0.06s |
+
+The ignored test is the separately long10k reference-source end-to-end case; it is not counted as
+passing in this round, and the frozen flat performance workloads are not substituted for it.
+Public native tests cover300KB uploads, history SELECT refusal, journal rollback/retry, foreign
+iteration refusal, current role withdrawal, changed-key conflict, pre-catalog fencing, cancellation,
+descriptor/canonical catalog type mismatch and expiry at a real quota lock barrier. HTTP/gRPC and
+PostgreSQL are real; the blob fixture uses the production Memory backend, not an S3 acceptance test.
+The initial all-five execution failed only because this new case lacked reviewed golden files;
+all five builder/runtime documents were independently compared and inspected before creating the
+new goldens. No existing golden, normalizer or SDK runner was changed for this increment.
+
+A superseded validation attempt produced58 passing/12 failing gRPC tests with57P01/57P03 database
+shutdown errors while older validation processes were being interrupted. That result is retained,
+not accepted. The uninterrupted final run above passed all70; no product-causality claim is made
+from the interrupted fixture. Test-only compile/SQL mistakes are retained separately from actual
+behavioral RED. [Exact evidence and source hashes](../../tasks/project-completion/evidence/scoped-blob-20261017/manifest.json)
+retain failures, native/runtime results and all ten current normalized SDK documents.
+
+Broader body planning/nesting, descendant capacity,100k nested measurements and complete release
+gates remain open. This focused increment does not close T014-014..017 or T014-040..044.
+
+
+Final static gates for this increment: `cargo fmt --all -- --check` and `git diff --check` passed;
+`cargo clippy --locked --workspace --all-targets -- -D warnings` passed in1m30s;
+`python3 scripts/check-architecture.py` passed for24 crates with respected layers/no cycles.
+These are recorded with the same focused source hashes, not claimed as the complete T014-043
+release gate (Compose, full locked workspace execution and advisories still require their named gates).

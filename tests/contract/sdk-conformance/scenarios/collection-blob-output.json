@@ -1,0 +1,39 @@
+{
+  "name": "collection-blob-output",
+  "description": "WP-03/WP-14: two scoped activities upload 300000 bytes and return native BlobOutput values, committed with their exact iteration reports and retained in input order.",
+  "server": { "iterationConcurrency": 2 },
+  "scopeEvidence": "ordered",
+  "workflows": {
+    "map": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "name": "collection-blob-output",
+      "limits": { "maxInstances": 16, "maxDepth": 1 },
+      "bodies": {
+        "file": {
+          "program": [
+            { "op": "step", "id": "produce", "activity": "blob.output" },
+            { "op": "return", "id": "returned", "result": "steps.produce.output" }
+          ]
+        }
+      },
+      "program": [
+        { "op": "map", "id": "files", "items": "input.lines", "body": "file", "result": "bodyResult", "maxItems": 2, "maxConcurrency": 1 },
+        { "op": "end", "id": "done", "options": { "outputExpr": "steps.files.output" } }
+      ]
+    }
+  },
+  "workers": {
+    "current": {
+      "workerName": "scoped-blob-current", "protocolVersion": "1.5", "transport": "poll",
+      "maxInflight": 1, "autostart": false,
+      "activities": { "blob.output": { "behavior": { "blobOutputBytes": 300000 } } }
+    }
+  },
+  "steps": [
+    { "id": "start-worker", "op": "startWorker", "worker": "current" },
+    { "id": "run", "op": "start", "workflow": "map", "input": { "lines": [{ "sku": "a" }, { "sku": "b" }] } },
+    { "id": "done", "op": "waitForCompletion", "run": "run", "timeoutMs": 60000 },
+    { "id": "two-files", "op": "awaitWorkerLog", "worker": "current", "count": 2, "timeoutMs": 30000 },
+    { "id": "stop-worker", "op": "stopWorker", "worker": "current" }
+  ]
+}

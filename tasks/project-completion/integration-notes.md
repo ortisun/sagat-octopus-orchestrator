@@ -1530,3 +1530,43 @@ aggregate. Commit41600aba changes only that fixture heartbeat to60s after its30s
 the focused all-five rerun passed1/1 in24.73s. No normalizer, golden or SDK runtime was changed.
 The later `collection-blob-output` case is additional and is not part of this56-scenario run.
 T014-038 uses its separately recorded exact chain subset; broader T014-041 remains open.
+
+
+### Scoped forward blob review reconciliation
+
+Three bounded read-only Astra review cycles found five actionable issues; none was accepted as a
+trade-off: catalog metadata reached after receipt misses without a live lease; persisted output
+not bound to BlobCommit; content type not bound to catalog; quota-recovery expiry; and split
+receipt/scope preparation returning STALE_ATTEMPT after a concurrent exact commit. Native public
+and direct-port tests reproduced each boundary (initial test-only compile/SQL errors are retained
+separately, not counted as behavioral RED). Preparation now resolves receipt or fresh scope in one
+transaction, also consumed by public gRPC. Shared BlobCommit carries content type and the existing
+catalog UPDATE compares it atomically; no migration/grant/wire field is added.
+The third-cycle bound was surfaced to the user; no fourth full review was run. Final correction
+verification is executable regression evidence, not an additional independent review verdict.
+Final counts and retained logs are recorded below.
+
+
+### Frozen flat collection measurement complete
+
+Clean`b1855cbe` runtime-role10k widths1/16/256 each passed1/1 with actual active peaks1/16/256,
+10k queue samples each, zero scheduler errors and no client retries. Full raw output, native
+process resources and source/command/binary manifest are retained in
+`tests/performance/reports/raw/workflow-primitives/20261017-runtime-flat/`.
+The report distinguishes sequential driver queue delay, logical width, sampled RSS and native
+process peak evidence. This completes those flat workloads only; nested100k remains pending.
+
+
+### Scoped forward blob final validation
+
+The final uninterrupted runtime-role battery passed529 tests: gRPC70/51.04s, fault87/95.07s,
+real PostgreSQL/OpenBao aggregate3/30.40s and workflow integration369/191.06s. The integration
+suite ignored its separately long10k reference-source case; it is not counted as passed here.
+Focused8/8 native regressions passed19.56s, including the final receipt/scope race. Both scoped
+`collection-blob-output` and Root`blobs` matched the existing/new reviewed goldens in all five SDKs
+(17.68/18.69s); all ten normalized documents and all five new builder documents are retained.
+Phase registration passed for57 scenarios. Strict locked workspace/all-target Clippy passed1m30s,
+format/diff checks passed, architecture passed24 crates. Full source hashes, commands, failed
+interrupted results and fixture limitations are in `evidence/scoped-blob-20261017/manifest.json`.
+The blob backend is production Memory, not an S3 acceptance environment; the database aggregate
+uses real OpenBao. No fourth review or external CLI was run. Canonical broader tasks remain open.

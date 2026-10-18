@@ -96,7 +96,7 @@ async fn a_scoped_grpc_blob_upload_needs_no_unrelated_iteration_history() {
         .execute(&p.api.db.pool)
         .await
         .expect("restore replay oracle");
-    // Upload permission alone does not enable the separately closed scoped blob-completion path.
+    // This test isolates upload authorization; scoped_blob_completion covers its report transaction.
     worker
         .complete(&task, &json!({"v":1}))
         .await

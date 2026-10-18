@@ -604,3 +604,10 @@ The ordinary consumer in this root-work scenario explicitly offers 1.4, matching
 golden and the established old-worker fixtures; the isolated DatabaseRunner offers 1.6 and owns
 the managed capability. Scoped/default-1.5 behavior is exercised separately by the primitive and
 protocol-negotiation scenarios.
+
+
+`collection-blob-output` adds protocol1.5 forward iteration BlobOutput coverage: two300KB uploads,
+ordered returned descriptors with independently checked SHA-256, exact scoped instances and
+successful final server state. All five builder documents and normalized runtime results were
+compared before creating its new reviewed goldens; no existing golden or normalizer was changed.
+This focused case does not establish derived/declared-secret blob support or broader nested graphs.
