@@ -276,8 +276,9 @@ where
         }
         // Every lease receives the outputs of the steps before it, so what a run retains is bounded:
         // a completion that would exceed it fails the step (a retry would only exceed it again).
-        let retained: usize = tx.data().await?.outputs.values().map(Vec::len).sum();
-        if retained + output.len() > MAX_RUN_OUTPUT_BYTES {
+        let retained = tx.logical_output_bytes().await?;
+        let output_bytes = u64::try_from(output.len()).unwrap_or(u64::MAX);
+        if retained.saturating_add(output_bytes) > MAX_RUN_OUTPUT_BYTES as u64 {
             let code = if Self::database_write(&mut tx, task) {
                 FailureCode::outcome_unknown()
             } else {
@@ -473,11 +474,14 @@ where
             Ok(answer) => {
                 let substitute = (answer.verdict == sagat_domain::saga::ReconcileVerdict::Applied)
                     .then(|| answer.output.clone().unwrap_or_else(|| b"{}".to_vec()));
-                let retained: usize = tx.data().await?.outputs.values().map(Vec::len).sum();
-                if substitute
-                    .as_ref()
-                    .is_some_and(|bytes| retained + bytes.len() > MAX_RUN_OUTPUT_BYTES)
-                {
+                let exceeds_limit = if let Some(bytes) = &substitute {
+                    let retained = tx.logical_output_bytes().await?;
+                    let additional = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+                    retained.saturating_add(additional) > MAX_RUN_OUTPUT_BYTES as u64
+                } else {
+                    false
+                };
+                if exceeds_limit {
                     Some(FailureCode::run_data_limit())
                 } else {
                     let (node, fence, verdict) =

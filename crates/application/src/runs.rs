@@ -1519,10 +1519,11 @@ where
         }
         // What a run retains is bounded (every lease carries it): a signal that would exceed it is
         // refused instead of stored.
-        let retained: usize = tx.data().await?.outputs.values().map(Vec::len).sum();
-        if retained.saturating_add(payload.len().saturating_mul(targets.len()))
-            > crate::execution::MAX_RUN_OUTPUT_BYTES
-        {
+        let retained = tx.logical_output_bytes().await?;
+        let payload_bytes = u64::try_from(payload.len()).unwrap_or(u64::MAX);
+        let copies = u64::try_from(targets.len()).unwrap_or(u64::MAX);
+        let additional = payload_bytes.saturating_mul(copies);
+        if retained.saturating_add(additional) > crate::execution::MAX_RUN_OUTPUT_BYTES as u64 {
             return Err(AppError::QuotaExceeded("output retained by one run"));
         }
         let now = self.clock.now();

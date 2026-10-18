@@ -37,7 +37,7 @@ pub enum AuditAction {
     LeafCollectionSuccessCertified,
     /// Retained workflow content exceeded the tenant storage ceiling and forced the run to stop.
     RunStorageQuotaExceeded,
-    /// Retained outputs reached the run data ceiling and forced the run to stop.
+    /// An output could not be retained under the run data ceiling.
     RunDataLimitExceeded,
     RunCancelRequested,
     RunPaused,

@@ -1,0 +1,15 @@
+{
+  "architecture.json": "a3166a7f5cf0a3a0e5751cbac880dd7eb6132fe5d8913a455f757a94bce4410e",
+  "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+  "clippy.json": "d752eeec6363963f21d4496d4aa2b07dd4f70552376f6387c1a62caf1103cef3",
+  "clippy.txt": "4b3dc0293e72eea769286fd0a9ba82192d9a73b5e7228e73854e56fbc28586f3",
+  "default-run-result.json": "e0cac864693f7c5912fc6775621f2ddfe0fe1276eafb17cdf882b5dd7ad8745d",
+  "default-run-result.txt": "3d455892447457bc8fb5e41a1c10e14e98a3026d6f29302327175481616bb1fb",
+  "fmt.json": "d06f5343f35830de5d7338a739b4ec142e61d532f84a5df45d0b8e717e78b363",
+  "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "reproduce.md": "fc5fb8a9bb181dd3c83114c5d36280f9dca99d2c43c3d85154d121347158fb9e",
+  "runtime-run-result.json": "765c78a2ca82c82f0dc81892a87eab5bd3860ef4b1ef4f8c642f408adddbfc54",
+  "runtime-run-result.txt": "672d5f7b8ae3f6c2581dc4c4c3a54f9e506e235df9e04b8a6ba9d3386fd62386",
+  "source-after.json": "61bd7af9585678b48953aa7420820ad511b596d27c27b88ca95d351d29d77fdf",
+  "source-before.json": "61bd7af9585678b48953aa7420820ad511b596d27c27b88ca95d351d29d77fdf"
+}

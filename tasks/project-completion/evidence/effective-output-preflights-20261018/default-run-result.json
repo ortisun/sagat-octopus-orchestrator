@@ -1,0 +1,19 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "contract_grpc_durable_execution",
+    "run_result",
+    "--",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "exit_code": 0,
+  "seconds": 49.94,
+  "started_utc": "2026-10-18T19:04:21.330280+00:00",
+  "log": "default-run-result.txt"
+}
