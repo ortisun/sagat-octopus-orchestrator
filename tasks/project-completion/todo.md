@@ -44,3 +44,6 @@ A0/A1 evidence: three isolated component reviews found no substantive issues und
 preconditions. A1 passed6 model tests (1024 histories, seed3714) plus2 overflow tests, strict domain
 Clippy, architecture and formatting. This is not a fourth whole-protocol review, not a SQL port and
 not runtime activation. B0's source inventory is incomplete and has explicit current-prefix gaps.
+
+ADR-0037 resolves only the stable-parent identity guard exception with an explicit immutable
+ancestry precondition and ordered-race control. The remaining B0/B1 graph is still unchecked.

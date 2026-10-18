@@ -483,3 +483,23 @@ child policies and ordered cancellation/handoff races. The strict ADR metadata-g
 remaining B0 prefixes and canonical broader tasks stay open. Reproduction/remediation are in
 `docs/runbooks/workflow-primitives.md`; exact evidence is in
 `tasks/project-completion/evidence/child-link-only-20261018/manifest.json`.
+
+
+## 2026-10-18 — Stable parent identity guard (ADR-0037)
+
+The existing handoff keeps chain→parent KEY SHARE→own head→incoming link. ADR-0037 permits
+this narrow identity protection under immutable initial/head/link ancestry; it grants no parent
+business-state or mutation authority. Parent commands still require explicit own-run FOR UPDATE.
+No executable production change, migration, SDK/API change or nested activation is introduced.
+
+Removing only the early guard as a reversible negative control made the existing ordered race
+fail 0/1: handoff committed but parent cancellation returned Unavailable. That is an observed
+public error, not proof of PostgreSQL SQLSTATE/deadlock cause. Original source bytes were restored
+exactly and the same two-order race passed 1/1 (3.64s). Added positive ancestry assertions passed
+for three direct child segments/link (3.05s) and a depth-two handoff with distinct parent/root
+(2.85s). Two independent scoped reviews resolved an unstated ancestry precondition, then found
+no remaining concrete defects. This is a current-writer invariant, not a stronger FK guarantee.
+
+Exact controls, hashes and review: tasks/project-completion/evidence/parent-fk-guard-20261018/.
+The complete B0 graph, B1/group persistence, compatibility fencing and production resource/release
+gates remain open. No canonical checkbox closes from this clarification.

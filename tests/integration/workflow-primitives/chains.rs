@@ -821,6 +821,17 @@ async fn a_continuation_workflow_starts_as_a_child_with_a_durable_link() {
 async fn the_parent_hears_only_the_final_outcome_of_a_child_chain_and_hears_it_once() {
     let family = Family::start("final").await;
     family.scheduler.tick().await;
+    let initial = family
+        .world
+        .run_record(family.chain)
+        .await
+        .expect("initial segment")
+        .info;
+    assert_eq!(
+        initial.parent.as_ref().map(|parent| parent.run),
+        Some(family.parent)
+    );
+    assert_eq!((initial.root, initial.depth), (family.parent, 1));
     let session = family.world.session(&["segment.work", "act.after"]).await;
     let mut heads = vec![family.chain];
 
@@ -879,7 +890,27 @@ async fn the_parent_hears_only_the_final_outcome_of_a_child_chain_and_hears_it_o
     let after = family.world.one_task_of(&session, "act.after").await;
     assert_eq!(after.run_id, family.parent);
     family.world.assert_consistent(family.parent).await;
+    let linked_parent: Uuid = sqlx::query_scalar(
+        "SELECT parent_run_id FROM child_chain_links WHERE tenant_id=$1 AND child_chain_id=$2",
+    )
+    .bind(family.world.admin.tenant_id().as_uuid())
+    .bind(family.chain.as_uuid())
+    .fetch_one(&family.world.db.pool)
+    .await
+    .expect("original incoming link");
+    assert_eq!(linked_parent, family.parent.as_uuid());
     for head in heads {
+        let info = family
+            .world
+            .run_record(head)
+            .await
+            .expect("segment ancestry")
+            .info;
+        assert_eq!(
+            info.parent, initial.parent,
+            "a child chain never reparents a segment"
+        );
+        assert_eq!((info.root, info.depth), (initial.root, initial.depth));
         family.world.assert_consistent(head).await;
     }
 }

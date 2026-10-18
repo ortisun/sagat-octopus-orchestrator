@@ -1,0 +1,13 @@
+diff --git a/crates/infra-postgres/src/chain_progress.rs b/crates/infra-postgres/src/chain_progress.rs
+index c02eb8c7..d341976f 100644
+--- a/crates/infra-postgres/src/chain_progress.rs
++++ b/crates/infra-postgres/src/chain_progress.rs
+@@ -473,7 +473,7 @@ async fn lock_chain(
+     if row.get::<uuid::Uuid, _>("namespace_id") != command.scope().namespace_id().as_uuid() {
+         return Err(ChainProgressError::Missing);
+     }
+-    hold_parent(conn, command.scope().tenant_id(), command.chain_id()).await?;
++    // Negative-control experiment: omit the early parent foreign-key guard.
+     Ok(LockedChain {
+         namespace_id: NamespaceId::new(row.get("namespace_id")),
+         current_run_id: RunId::new(row.get("current_run_id")),

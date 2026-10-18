@@ -446,3 +446,21 @@ SAGAT_TEST_AS_RUNTIME_ROLE=1 cargo test --locked -p sagat-tests \
 The repository fixture starts its own PostgreSQL and exercises both draft validation and public
 publication with the application runtime role. See the exact failures and bounded review in
 `tasks/project-completion/evidence/publication-scope-20261018/`.
+
+
+### Stable parent identity guard
+
+ADR-0037 retains the early handoff parent KEY SHARE guard under immutable initial/head/link
+ancestry. Do not remove it or upgrade it to parent mutation authority. A reparenting or ancestry
+migration must re-establish that mapping before using the guard. The focused ordered race is:
+
+```sh
+SAGAT_TEST_AS_RUNTIME_ROLE=1 cargo test --locked -p sagat-tests --test fault_workflow_primitives \
+  chains::parent_cancellation_and_a_child_hand_off_commit_in_either_order_and_the_latch_never_gets_lost \
+  -- --exact --nocapture --test-threads=1
+```
+
+Use the repository disposable PostgreSQL fixture (unset SAGAT_TEST_DATABASE_URL). The retained
+negative control failed with public Unavailable; that error alone does not diagnose a database
+deadlock. Inspect database diagnostics when investigating failures. Evidence and restoration
+hashes: tasks/project-completion/evidence/parent-fk-guard-20261018/. General nesting stays closed.

@@ -1,0 +1,145 @@
+{
+  "source_base": "3592444da520e465c1be97b91ef9bee9f9c81c19",
+  "recorded_utc": "2026-10-18T04:32:14.406429+00:00",
+  "scope": "ADR-0037 identity-only clarification and positive ancestry assertions; production comment only",
+  "environment": {
+    "runtime_role": true,
+    "external_db_url": false,
+    "postgres": "repository disposable fixture",
+    "system": "Darwin arm64"
+  },
+  "control": {
+    "source_base": "3592444da520e465c1be97b91ef9bee9f9c81c19",
+    "source_path": "crates/infra-postgres/src/chain_progress.rs",
+    "baseline_sha256": "155083328578af9f6d210c75ee8625ba90884342a6859ac06a7f54026ea2c6f2",
+    "mutation": "remove only the existing hold_parent call from lock_chain; not a production candidate",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "fault_workflow_primitives",
+      "chains::parent_cancellation_and_a_child_hand_off_commit_in_either_order_and_the_latch_never_gets_lost",
+      "--",
+      "--exact",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "without_guard_exit_code": 101,
+    "without_guard_seconds": 68.0,
+    "restored_exactly": true,
+    "with_guard_exit_code": 0,
+    "with_guard_seconds": 41.75,
+    "restored_sha256": "155083328578af9f6d210c75ee8625ba90884342a6859ac06a7f54026ea2c6f2"
+  },
+  "control_test_source_sha256": "678c891517f80b1a6f390569fe31a2e8c12a872d28e812822f9dad815ceb60d5",
+  "ancestry_commands": [
+    {
+      "log": "ancestry-direct.txt",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "chains::the_parent_hears_only_the_final_outcome_of_a_child_chain_and_hears_it_once",
+        "--",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 47.03
+    },
+    {
+      "log": "ancestry-depth-two.txt",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "fault_workflow_primitives",
+        "chains::grandchild_handoff_and_root_child_admission_do_not_deadlock_on_the_root_foreign_key",
+        "--",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 36.3
+    }
+  ],
+  "results": {
+    "without_guard": {
+      "passed": 0,
+      "failed": 1,
+      "test_seconds": 4.5
+    },
+    "restored_guard": {
+      "passed": 1,
+      "failed": 0,
+      "test_seconds": 3.64
+    },
+    "ancestry_direct": {
+      "passed": 1,
+      "failed": 0,
+      "test_seconds": 3.05
+    },
+    "ancestry_depth_two": {
+      "passed": 1,
+      "failed": 0,
+      "test_seconds": 2.85
+    }
+  },
+  "review": {
+    "cycles": 2,
+    "first": "ancestry writer invariant missing; added with positive assertions",
+    "second": "no concrete scoped defects",
+    "external_cli": false
+  },
+  "limits": [
+    "Observed public Unavailable is not an observed PostgreSQL deadlock SQLSTATE",
+    "Control source restored exactly before later comment-only ADR reference",
+    "Positive ancestry assertions are not a claimed RED",
+    "Previous broad regression/SDK results were not rerun",
+    "B0 remains incomplete; no SQL group eligibility/nesting/migration/production ceilings or canonical task closure"
+  ],
+  "source_sha256": {
+    ".gitattributes": "da9f462408976fc53083f2f91d875a099d9440d935fe16d8d8c88749113c11ca",
+    "crates/infra-postgres/src/chain_progress.rs": "ad24e2795676dbe5c0b1744041e3627bed6e4d1fb1a2c2444064767073be91cd",
+    "docs/adr/ADR-0030-structured-instances-and-continuation-chains.md": "14c6d7bda428552b8ce65c5f27eaa36bbbafce840fb7e89e2558f2f0392ad7de",
+    "docs/runbooks/workflow-primitives.md": "fd7dd897a4e294a616295ae3b1f78ffe270d37e3634b09a83a4ac071b848c06d",
+    "docs/traceability.md": "ec8ccd43169d0a205d6df09a0825789af79a29989463fd28efd83fbcb84ab2dd",
+    "specs/014-workflow-primitives/contracts/README.md": "8d912f69e5c2cda5bcc2edb32b698d8ccc7cf412c18f90716962159109c0ba21",
+    "specs/014-workflow-primitives/data-model.md": "55f50a25dcf3360a8719ca0e088d1b3b52277406a49f28bbe2f4598b2d20be6f",
+    "specs/014-workflow-primitives/plan.md": "f1b3af58beef835e92983d32dcecf4de4fda3f4253b11bbf4a0a6150415deb95",
+    "specs/014-workflow-primitives/spec.md": "59d450baa0e271a48ab6e37343d80d786b510e6cd2bbf2d75defe88ebbe578f6",
+    "specs/014-workflow-primitives/validation-report.md": "5a98a1bb56be4e5b8153a86c51078818eef31c1e0d27d0b668860f2bfea90a5e",
+    "tasks/project-completion/capacity-lock-inventory.md": "8cd90ed95cb4e65ba80d8a2670467f0944ef799f482f42e55201e7cfb3a77e8b",
+    "tasks/project-completion/integration-notes.md": "a645857a737bba37a761ee743e498aa7d170616dd27dabe0f0a507e96eb62c6b",
+    "tasks/project-completion/todo.md": "cf22112215ba2aa760f6e24475e4edc564ac85c06621029c62576081923c7547",
+    "tests/fault/workflow-primitives/chains.rs": "8322eadb5d59f4c2d7b84846df0bf9b4f3f153dedf71c904c0d993c227700f92",
+    "tests/integration/workflow-primitives/chains.rs": "bc1d34be226ffede491c43ed91e6740bcd3370ed18b2a233f521d7ce662f6273",
+    "docs/adr/ADR-0037-stable-parent-identity-guards-for-child-handoff.md": "457043ff1e5498efde8fdc842aa6f032f69bc6fdba61e9758398f48d42dbbf10"
+  },
+  "evidence_sha256": {
+    "ancestry-commands.json": "f684a8ecda5dbca6d327525c82cccb518975505fa4c666991916d6f945ee0b0b",
+    "ancestry-depth-two.txt": "de1ecfb49a8a0fab3e81dd7f17a5b67e0c82bea05b68eb02385b6dbc5e670183",
+    "ancestry-direct.txt": "6fc8a180c15857014a1cbf8ba36368269274a40e786f7e97f919a9c9e22a7411",
+    "diff-check.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "experiment.json": "6baedc3a890e1ffc6c14e86bd9b2111408af13ad88f1a8ef1d788d76ce364985",
+    "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "gates.json": "19f50436b4c6edfade910fbe3f2cf936fef16714a22baed6bb2e7d12399d9fd8",
+    "reproduce.md": "c0f861575965e925ff06e8cbd64cb536e5b06d45603e5a8891f1b3a6f7b64baa",
+    "review.md": "5b77f9a792347c404d8ece55acfccd1bc8de3aaa2b3307173fac4f757adbcbd0",
+    "with-parent-guard.txt": "b5e1dbb8386434c50d6bd986bc285a091aa638eb3774cb6055e88a2afbd023ef",
+    "without-parent-guard.diff": "5b74e740c7545835b75b17c5f23ae3c3f49b73d3e23f8ffcce8152db64633a13",
+    "without-parent-guard.txt": "1d66b0e10bd0c8030ed2e2e3441df30e9ccbf8a45f1cdeef147c4118de64a936"
+  }
+}

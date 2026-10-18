@@ -1,0 +1,40 @@
+[
+  {
+    "log": "ancestry-direct.txt",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "chains::the_parent_hears_only_the_final_outcome_of_a_child_chain_and_hears_it_once",
+      "--",
+      "--exact",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "seconds": 47.03
+  },
+  {
+    "log": "ancestry-depth-two.txt",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "fault_workflow_primitives",
+      "chains::grandchild_handoff_and_root_child_admission_do_not_deadlock_on_the_root_foreign_key",
+      "--",
+      "--exact",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "seconds": 36.3
+  }
+]

@@ -1185,6 +1185,26 @@ async fn grandchild_handoff_and_root_child_admission_do_not_deadlock_on_the_root
     assert!(moved.is_ok(), "handoff: {moved:?}; creation: {created:?}");
     assert!(created.is_ok(), "creation: {created:?}");
     assert_eq!(chain_state(&world, chain).await.1, 2);
+    let successor = moved.expect("committed handoff").successor();
+    assert_ne!(middle, root, "the immediate parent and root are distinct");
+    let linked_parent: Uuid = sqlx::query_scalar(
+        "SELECT parent_run_id FROM child_chain_links WHERE tenant_id=$1 AND child_chain_id=$2",
+    )
+    .bind(tenant.as_uuid())
+    .bind(chain.as_uuid())
+    .fetch_one(&world.db.pool)
+    .await
+    .expect("depth-two incoming link");
+    assert_eq!(linked_parent, middle.as_uuid());
+    for segment in [chain, successor] {
+        let info = world
+            .run_record(segment)
+            .await
+            .expect("depth-two segment ancestry")
+            .info;
+        assert_eq!(info.parent.expect("child parent").run, middle);
+        assert_eq!((info.root, info.depth), (root, 2));
+    }
     let reserved = child_run_id(root, &NodeId::parse("other").expect("other"));
     assert!(
         world.run_record(reserved).await.is_none(),

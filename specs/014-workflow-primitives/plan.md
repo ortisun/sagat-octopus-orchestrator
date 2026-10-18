@@ -26,8 +26,9 @@ version after rejection. Five-SDK authoring/runtime cases remain a separate comm
 During B0 inventory, keep chained child settlement separate from legacy child-row flag updates.
 Prove both cancellation policies and final notification with a database trigger that rejects any
 legacy-flag UPDATE of an already-linked child; retain existing ordered handoff races, legacy
-children, journal consistency and exact command audits. This does not accept the remaining
-cross-run metadata guard or the complete group transaction design.
+children, journal consistency and exact command audits. This does not accept the
+complete group transaction design. ADR-0037 separately accepts the existing early stable-parent
+identity guard under its immutable ancestry precondition; the remaining B0 inventory stays open.
 
 ## Technical Context
 
@@ -204,9 +205,10 @@ capacity or distinguish suspended ancestor slots from tenant execution capacity;
 low-capacity admission before enabling nesting.
 
 Use chain-before-current-run locking for chain-capable runs and retain existing ownership/drain/session/activity
-fence ordering. Handoff inserts a successor rather than locking two existing runs. Parent and child
-transitions meet through a durable child-instance link: each locks only its own chain/run then the
-link, which holds cancellation/final-outcome/settlement state. The child's handoff checks its link
+fence ordering. Handoff inserts a successor without taking two existing run mutation locks. Its stable-parent
+identity KEY SHARE guard precedes head/link under ADR-0037's immutable ancestry precondition.
+Parent and child transitions meet through a durable child-instance link: each mutates only its
+own chain/run then the link, which holds cancellation/final-outcome/settlement state. The child's handoff checks its link
 latch under lock; final notification is applied once under the parent's shard fence. Keep legacy
 parent-first writers separate until explicitly migrated. Starting a child uses an explicit parent-shard
 creation fence before the child's first event. The adapter derives that parent from immutable

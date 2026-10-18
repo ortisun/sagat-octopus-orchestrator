@@ -494,8 +494,8 @@ async fn lock_chain(
 /// key-share lock on the parent's row (the foreign key). Take that metadata guard before the head
 /// run/link: otherwise a parent holding its own run and waiting for the link could block the
 /// successor's late foreign-key check. Actual order here is chain, parent key-share, then head/link.
-/// This existing cross-run metadata guard remains an explicit ADR-0030/B0 inventory question;
-/// it grants no authority to mutate the parent.
+/// ADR-0037 permits this identity-only guard under immutable initial/head/link parent ancestry;
+/// it grants no authority to read mutable parent state or mutate/upgrade the parent lock.
 async fn hold_parent(
     conn: &mut PgConnection,
     tenant_id: TenantId,

@@ -54,10 +54,9 @@ These reviews do not accept the complete B0 graph or the group transaction desig
 - The handoff actually takes chain→parent KEY SHARE→own head/link. Its old parent-before-chain
   comment is corrected. The early guard remains a cross-run metadata lock, not a proof of the
   strict own-run-only protocol; include it and the implicit successor FKs in any wait-for graph.
-- The mixed legacy UPDATE/link path has the focused correction below. The existing handoff
-  parent KEY SHARE guard still obtains another existing run row and therefore remains a strict
-  ADR-0030§18–19 deviation requiring a separate decision before B1 can claim that order compliant.
-  Correcting the legacy mutation path does not accept this guard or the complete graph.
+- The mixed legacy UPDATE/link path has the focused correction below. ADR-0037 separately
+  accepts only the early stable-parent identity KEY SHARE under immutable initial/head/link
+  ancestry; it does not grant foreign aggregate mutation authority or accept the complete graph.
 - Exact-path helpers directly lock a run. Map chain-capable scoped activity/public-operation call
   paths before claiming their chain-before-run prefix; publication restrictions do not prove an
   unsupported future composition safe.
@@ -93,9 +92,30 @@ Two read-only reviews covered this small remedy. The first required explicit aud
 assertions; the second found no concrete source/test issues. Reviewers ran no tests. Actual
 source/commands/failed and final regression evidence live in evidence/child-link-only-20261018/.
 The handoff comment and contract now name its actual chain→parent KEY SHARE→head/link order,
-without accepting that existing metadata-guard deviation. B0 remains incomplete and unchecked.
+without claiming a complete graph. The subsequent ADR-0037 clarification below resolves only
+that identity-guard exception; B0 remains incomplete and unchecked.
 
 Final focused regression passed fault92, durable178 and chain-filtered workflow72 tests. Both
 chain-child and chain-cancel-parent matched unchanged goldens in every SDK, including detach.
 Strict workspace/all-target Clippy, formatting and architecture passed. Exact results/hashes:
 evidence/child-link-only-20261018/manifest.json. These bounded results do not close B0.
+
+
+## 2026-10-18 — Stable parent identity guard (ADR-0037)
+
+The existing handoff keeps chain→parent KEY SHARE→own head→incoming link. ADR-0037 permits
+this narrow identity protection under immutable initial/head/link ancestry; it grants no parent
+business-state or mutation authority. Parent commands still require explicit own-run FOR UPDATE.
+No executable production change, migration, SDK/API change or nested activation is introduced.
+
+Removing only the early guard as a reversible negative control made the existing ordered race
+fail 0/1: handoff committed but parent cancellation returned Unavailable. That is an observed
+public error, not proof of PostgreSQL SQLSTATE/deadlock cause. Original source bytes were restored
+exactly and the same two-order race passed 1/1 (3.64s). Added positive ancestry assertions passed
+for three direct child segments/link (3.05s) and a depth-two handoff with distinct parent/root
+(2.85s). Two independent scoped reviews resolved an unstated ancestry precondition, then found
+no remaining concrete defects. This is a current-writer invariant, not a stronger FK guarantee.
+
+Exact controls, hashes and review: tasks/project-completion/evidence/parent-fk-guard-20261018/.
+The complete B0 graph, B1/group persistence, compatibility fencing and production resource/release
+gates remain open. No canonical checkbox closes from this clarification.

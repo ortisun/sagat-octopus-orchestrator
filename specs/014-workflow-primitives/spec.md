@@ -50,7 +50,9 @@ and active-run admission precede input/initial-state payload retention. This ord
 to existing child creation and evaluated continuation, independently of nested collection capacity.
 Parent cancellation and final notification use a matching child-chain link alone; legacy child
 flag writes are restricted to children without a link and with the exact own-parent association.
-The existing handoff parent key-share guard remains a separately recorded lock-order question.
+ADR-0037 retains the existing early parent key-share guard solely for identity protection under
+immutable initial/head/link ancestry. It grants no parent mutation authority; the remaining
+lock graph and nested-capacity transactions are still pending.
 
 Other collection and loop graphs and nested scopes remain closed for general publication. The
 remaining acceptance and release evidence is tracked

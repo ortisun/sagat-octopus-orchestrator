@@ -360,8 +360,9 @@ hand-off reads the latch under the chain, head-run and link locks and refuses, a
 the chain's current head. Parent cancellation/settlement updates a matching child-chain link
 without writing the child's legacy run flags; only a child without that link uses the legacy
 flag path, restricted to its own parent and tenant. The existing handoff metadata guard actually
-takes chain, parent key-share, then head/link; its strict ADR-0030 exception remains an explicit
-B0 inventory question, not an accepted whole-graph order. The successors are runs of the parent's tree and spend its
+takes chain, parent key-share, then head/link. ADR-0037 accepts this identity-only exception
+under immutable initial/head/link ancestry, without accepting the complete B0 graph or granting
+parent business-state authority. The successors are runs of the parent's tree and spend its
 1,024-run budget; a full tree ends the chain with the durable `CHAIN_LIMIT`, as the segment limit does.
 
 A continuation boundary that finds open work waits (D296): a running or ready step, a timer, a subscription,

@@ -1,0 +1,26 @@
+{
+  "source_base": "3592444da520e465c1be97b91ef9bee9f9c81c19",
+  "source_path": "crates/infra-postgres/src/chain_progress.rs",
+  "baseline_sha256": "155083328578af9f6d210c75ee8625ba90884342a6859ac06a7f54026ea2c6f2",
+  "mutation": "remove only the existing hold_parent call from lock_chain; not a production candidate",
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "fault_workflow_primitives",
+    "chains::parent_cancellation_and_a_child_hand_off_commit_in_either_order_and_the_latch_never_gets_lost",
+    "--",
+    "--exact",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "without_guard_exit_code": 101,
+  "without_guard_seconds": 68.0,
+  "restored_exactly": true,
+  "with_guard_exit_code": 0,
+  "with_guard_seconds": 41.75,
+  "restored_sha256": "155083328578af9f6d210c75ee8625ba90884342a6859ac06a7f54026ea2c6f2"
+}
