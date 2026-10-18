@@ -208,7 +208,7 @@ See evidence/leaf-certification-process-20261018. Other producer/observation/rel
 - [ ] B1b.2c.1d.0Q: Review/implement effective legacy output accounting and truthful no-member RUN_DATA_LIMIT drain before native correction acceptance.
 - [x] B1b.2c.1d.0Q0: Reproduce public empty aggregate exact-byte boundaries and raw durable-reason decode with genuine RED (63956f51).
 - [x] B1b.2c.1d.0Q1: Add closed reason/domain/codec vocabulary with native producer explicitly unavailable; collection-data-limit-vocabulary-20261018/manifest.json.
-- [ ] B1b.2c.1d.0Q1a: Prove empty/checkpointed drain, strict cold restore and actual completed-effect compensation under the new reason.
+- [x] B1b.2c.1d.0Q1a: Prove empty/checkpointed drain, strict domain projection restore and completed-effect compensation in the pure domain harness; collection-data-limit-domain-20261018/manifest.json. Real PostgreSQL/worker/upgrade gates remain.
 - [ ] B1b.2c.1d.0Q2: Integrate full/path PostgreSQL readers and existing drain finish without enabling new reason production.
 - [x] B1b.2c.1e: Prove real DETACH parent settlement followed by legitimate later child execution and original source replay.
 
