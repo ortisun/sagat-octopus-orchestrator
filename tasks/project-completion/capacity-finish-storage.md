@@ -187,3 +187,25 @@ in either namespace; exact binding rejection, nonholder preservation, vacancy/re
 historical replay retain correct receipt-linked audit/hint identities. These tests close local
 B2e only. B2f, full B1/B2, durable production caller intent, process restart, C0 retention/old-writer
 compatibility and runtime/SDK/resource/release gates remain open; nesting stays disabled.
+
+
+## B2f closed returned-attempt observation contract
+
+The dormant native port emits workflow.capacity.finish under its caller's existing trace, with
+sagat.tenant.id, sagat.namespace.id, sagat.capacity.group_id, sagat.capacity.member_id,
+sagat.chain.id, sagat.run.id and sagat.outcome only. StorageError and Unknown set fixed OTel error
+status; no error message, command key/fingerprint, scheduler identity, SQL or business value is
+attached. The existing OtlpLayer exports only traced workspace spans: an untraced direct call
+emits metrics but no OTLP span. A future production caller must establish request/persisted trace
+context before invoking this port. No additional authority/read is introduced for telemetry.
+
+workflow_capacity_finish_attempts_total{outcome} and
+workflow_capacity_finish_duration_seconds{outcome} record returned attempts only, with the closed
+outcomes applied/replayed/busy/refused/storage_error/unknown. Caller cancellation returns no
+outcome and is not counted as a completed attempt; an abandoned span may close without an outcome.
+workflow_capacity_member_finished_total has no labels and increments only after an acknowledged
+first commit. Confirmed abort, Busy/refusal, replay and Unknown never increment it. A committed
+Unknown followed by receipt replay can therefore remain uncounted in that process metric. The
+atomic durable receipt/audit/outbox, not process telemetry, establishes the transition. Metrics
+have no identifier labels, and no delivery/exactness or dashboard/alert promise follows here.
+The fixed completion log carries only the finite outcome under the safe identity span.

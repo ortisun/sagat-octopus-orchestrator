@@ -425,3 +425,11 @@ B2e.2 actual unresolved COMMIT response-loss evidence covers committed and abort
 same-command prefix timeout versus distinct-member G Busy, and same-key fresh transaction recovery.
 Production adapter unchanged; no durable caller/process restart or quota acceptance. B2e.3 still
 must cover real handoff/discovery and same-tenant multiple namespace membership; B2f remains open.
+
+
+B2e.3 real handoff/discovery and same-tenant two-namespace tests close the local B2e proof.
+B2f observes only returned native attempts, fixed safe identity spans under caller trace and
+finite outcome labels. The transition counter follows acknowledged first commit only; unknown
+and replay rely on durable receipt evidence. Preserve the unchanged transaction helper and
+ensure a filtered-out child span cannot mutate caller span fields. This closes no full B1/B2
+or canonical runtime task and introduces no production caller, eligibility or nesting.

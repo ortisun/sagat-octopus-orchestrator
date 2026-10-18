@@ -9,8 +9,10 @@ use sagat_domain::execution::{
     CapacityGroup, CapacityGroupError, CapacityMemberId, CapacityMemberSnapshot,
     CapacityMembership, CapacityPossession, RunId,
 };
+use sagat_telemetry::{CAPACITY_FINISH_SPAN, CapacityFinishOutcome};
 use sqlx::{PgPool, Postgres, Row, Transaction, postgres::PgRow};
 use time::OffsetDateTime;
+use tracing::Instrument;
 use uuid::Uuid;
 
 use crate::{
@@ -42,6 +44,71 @@ fn sql_counter(value: u64) -> Result<i64, Error> {
 
 impl CurrentChildRootFinishStore for PgCapacityFinishStore {
     async fn finish_current_child_root(
+        &self,
+        command: &CapacityFinishCommand,
+    ) -> Result<CapacityFinishResult, Error> {
+        let i = command.identity;
+        // Inherits a caller's trace. Untraced direct calls still emit metrics but no OTLP span;
+        // a future production caller must establish trace context before entering this port.
+        let span = tracing::info_span!(
+            CAPACITY_FINISH_SPAN,
+            sagat.tenant.id = %i.scope.tenant_id(),
+            sagat.namespace.id = %i.scope.namespace_id(),
+            sagat.capacity.group_id = %i.group_id,
+            sagat.capacity.member_id = %i.member_id,
+            sagat.chain.id = %i.chain_id,
+            sagat.run.id = %i.head_run_id,
+            sagat.outcome = tracing::field::Empty,
+            otel.status_code = tracing::field::Empty,
+        );
+        let entered = span.clone();
+        async {
+            let started = std::time::Instant::now();
+            let result = self.finish_transaction(command).await;
+            let outcome = match &result {
+                Ok(result) if result.replayed => CapacityFinishOutcome::Replayed,
+                Ok(_) => CapacityFinishOutcome::Applied,
+                Err(Error::Busy) => CapacityFinishOutcome::Busy,
+                Err(Error::Storage(_)) => CapacityFinishOutcome::StorageError,
+                Err(Error::CommitOutcomeUnknown { .. }) => CapacityFinishOutcome::Unknown,
+                Err(
+                    Error::Missing
+                    | Error::BindingMismatch
+                    | Error::StaleHead { .. }
+                    | Error::StaleGroupRevision { .. }
+                    | Error::StaleGroupEpoch { .. }
+                    | Error::StaleChainRevision { .. }
+                    | Error::StaleRunRevision { .. }
+                    | Error::SchedulerFenceLost
+                    | Error::NotFinal
+                    | Error::ContradictoryProjection
+                    | Error::InactiveMember
+                    | Error::FingerprintConflict
+                    | Error::CounterExhausted,
+                ) => CapacityFinishOutcome::Refused,
+            };
+            // A disabled child leaves the caller current. Record only on this exact handle.
+            span.record("sagat.outcome", outcome.as_str());
+            if matches!(
+                outcome,
+                CapacityFinishOutcome::StorageError | CapacityFinishOutcome::Unknown
+            ) {
+                span.record("otel.status_code", "error");
+            }
+            outcome.record(started.elapsed());
+            tracing::debug!(
+                outcome = outcome.as_str(),
+                "capacity Finish attempt completed"
+            );
+            result
+        }
+        .instrument(entered)
+        .await
+    }
+}
+
+impl PgCapacityFinishStore {
+    async fn finish_transaction(
         &self,
         command: &CapacityFinishCommand,
     ) -> Result<CapacityFinishResult, Error> {

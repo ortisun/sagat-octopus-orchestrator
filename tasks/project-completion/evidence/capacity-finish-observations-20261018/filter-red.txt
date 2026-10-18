@@ -1,0 +1,21 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 30.62s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 1 test
+test capacity_finish::observations::filtered_finish_span_cannot_overwrite_its_callers_outcome_or_status ... 
+thread 'capacity_finish::observations::filtered_finish_span_cannot_overwrite_its_callers_outcome_or_status' (94368562) panicked at tests/integration/workflow-primitives/capacity_finish_observations.rs:59:5:
+assertion `left == right` failed
+  left: Some("storage_error")
+ right: Some("caller_pending")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    capacity_finish::observations::filtered_finish_span_cannot_overwrite_its_callers_outcome_or_status
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 427 filtered out; finished in 2.20s
+
+error: test failed, to rerun pass `-p sagat-tests --test integration_workflow_primitives`

@@ -758,3 +758,31 @@ Clippy83.89s, fmt4.04s,24-crate architecture pass. Fresh Astra/xhigh review's on
 overclaiming test name, corrected and audit rerun. No external reviewCLI. Native schema/port,
 SDK58/fullworkspace/resource/old-writer/nested acceptance and canonical tasks remain pending.
 Evidence: tasks/project-completion/evidence/capacity-finish-vocabulary-20261018/manifest.json.
+
+
+## Dormant native capacity Finish checkpoint — 2026-10-18
+
+Refs:T014-014/017/040, FR-014-015. Local A1/B1a/B1b.1/B2a-e deliver only existing ChildRoot
+Finish in owner-seeded metadata. Actual current physical child FINAL and fence precede atomic
+member/header/receipt/audit/outbox; current head cannot be inferred from CONTINUED history.
+Schema constraints, narrow runtime column privileges and retained tombstones are tested; permanent
+chain references currently pin history and require C0 retention compatibility before activation.
+G Busy consumes the transaction, duplicate commands serialize, postwait expiry rejects first
+apply and replay, injected statement/deferred failures leave zero effects, and actual unresolved
+COMMIT response loss reconciles both real server outcomes with the retained original command.
+Handoff queue ordering, exact stale-head rejection and same-tenant two-namespace membership with
+both holder placements have native tests. Execution/retained usage snapshots remain unchanged;
+actual capacity.member.finished hints validate against the closed canonical AsyncAPI message.
+
+B2f adds workflow.capacity.finish and finite returned attempt metrics; see the exact native
+observation contract in specs/014-workflow-primitives/contracts/README.md. Only acknowledged first
+commit increments workflow_capacity_member_finished_total. Replay and unknown acknowledgement do
+not; the durable receipt remains authoritative. No identifier metric labels, payloads, scheduler
+credentials or arbitrary error strings are introduced by these observations. An untraced direct
+call emits metrics without an OTLP span; a future production caller must establish trace context.
+This dormant port has no production caller, creation/admission/eligibility, scoped-path Finish,
+retention rollout or nested execution authority. Full B1/B2, canonical tasks and broad runtime/
+SDK/resource/release gates remain open. Exact tests/reviews/source provenance are recorded under tasks/project-completion/evidence:
+capacity-finish-schema-20261018, capacity-native-finish-20261018, capacity-finish-barriers-20261018,
+capacity-finish-commit-loss-20261018, capacity-finish-races-20261018 and
+capacity-finish-observations-20261018.

@@ -1,0 +1,17 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.80s
+     Running contract/observability-operations/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/contract_observability_operations-23baca55b9322913)
+
+running 9 tests
+test a_dashboard_has_a_unique_uid_and_no_panel_without_an_expression ... ok
+test every_alert_the_monitor_can_raise_points_to_a_section_that_exists ... ok
+test every_metric_a_dashboard_draws_is_one_the_platform_emits ... ok
+test every_metric_an_alert_rule_evaluates_is_one_the_platform_emits ... ok
+test every_rule_has_a_severity_a_summary_and_a_runbook_section_that_exists ... ok
+test no_metric_is_labelled_with_something_that_grows_with_the_data ... ok
+test the_dashboard_covers_what_the_specification_names ... ok
+test the_files_the_overlay_mounts_and_the_dashboards_it_provisions_exist ... ok
+test the_monitor_raises_an_alert_for_each_condition_the_runbook_describes ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.44s
+

@@ -1,0 +1,240 @@
+{
+  "base": "8c68a16e",
+  "scope": "B2f dormant native ChildRoot Finish observations only",
+  "final_source": "source-final.json",
+  "commands": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "capacity_finish::observations::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 101,
+      "seconds": 35.8,
+      "log": "red.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "capacity_finish::observations::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 53.56,
+      "log": "first.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "capacity_finish::observations::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "mode": "default",
+      "exit_code": 0,
+      "seconds": 43.99,
+      "log": "second-default.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "capacity_finish::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "mode": "runtime",
+      "exit_code": 0,
+      "seconds": 65.01,
+      "log": "second-runtime.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "capacity_finish::observations::filtered_finish",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "mode": "runtime",
+      "exit_code": 101,
+      "seconds": 34.93,
+      "log": "filter-red.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "capacity_finish::observations::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "mode": "default",
+      "exit_code": 0,
+      "seconds": 45.25,
+      "log": "final-default.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "capacity_finish::observations::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "mode": "runtime",
+      "exit_code": 0,
+      "seconds": 5.69,
+      "log": "final-runtime.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "contract_observability_operations",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "mode": "runtime",
+      "exit_code": 0,
+      "seconds": 2.5,
+      "log": "observability-contract.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "mode": "runtime",
+      "exit_code": 0,
+      "seconds": 81.88,
+      "log": "clippy.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "mode": "runtime",
+      "exit_code": 0,
+      "seconds": 4.08,
+      "log": "fmt.txt"
+    },
+    {
+      "command": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "mode": "runtime",
+      "exit_code": 0,
+      "seconds": 0.31,
+      "log": "architecture.txt"
+    }
+  ],
+  "final_results": {
+    "default": {
+      "passed": 2,
+      "failed": 0,
+      "seconds": 5.08
+    },
+    "runtime": {
+      "passed": 2,
+      "failed": 0,
+      "seconds": 5.38
+    },
+    "observability_contract": {
+      "passed": 9,
+      "failed": 0,
+      "seconds": 0.44
+    }
+  },
+  "prior_capacity_run": {
+    "passed": 24,
+    "failed": 0,
+    "seconds": 64.7,
+    "before_final_span_handle_fix": true
+  },
+  "evidence_sha256": {
+    "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "clippy.txt": "542f187fd6321d0bdb31a01df5e9dc0f68e35a1f4b9ec25105d1b50716417df4",
+    "commands.json": "9b3b4c87145aac8a9c986c7e85bcef9b4590c8b38685b91fcbfbbe7ab7e85a53",
+    "filter-red.txt": "50c25946e7e5345dcf5dbf5d7fe0ec9effa650b560e724e2612aa7073ac88bb9",
+    "final-default.txt": "836ca58f2008e773fc36ae52124839b0b78433eef81cfbd4f3c48f63aee953ab",
+    "final-runtime.txt": "31cab1020ab12448aa96027a70dbc5e9cd365511607ecd6fed827a17eb24df15",
+    "first.txt": "b04ecf5eb01b4fd52fb36248d3ef097fba4ba428f35f3db32a204725b56eafd7",
+    "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "implementation.diff": "469652a3be7e709c65e4435a42925d1b5c91702b9c23b6072743e827ef54fd41",
+    "observability-contract.txt": "facb9984f563f749ea9a987ef3575da484c9b85f468547543e093e78d80062ab",
+    "red.txt": "064229078e3b9a093a64d7a3d5a761bf100c1831495d4293347be57708b59762",
+    "reproduce.md": "1bfd93f821e230cb9b700abeba7e711eb0e13ff49aa8afdb2ed19f22aab13acc",
+    "review.md": "165fb7f3f912a6fdc0f27c6ba4d092ef56a1ba4fb9c4708cbe513ccbf75449de",
+    "second-default.txt": "031eb0f39cf3739bf178bad113b5932aa9871e8dde5ed331ada067ab6c29a410",
+    "second-runtime.txt": "462dc732cda8ce48cdfe84624d04e955f971beea75226c5d57a601803a0a2be4",
+    "source-filter-red.json": "9a6c2ef44c7911c22e2254dc5293fa5a760e34f9299326ff7ca19edcaa576bcd",
+    "source-final.json": "0dcec9c64df3c136a33e1cc3b1a6128a665ac8e55a6cd4d79adce3c012f9391f",
+    "source-first.json": "0bb2a67c7223be7a7acfd9cf7bb60821c76845534e4d4bc904f2cc685645176c",
+    "source-red.json": "c1e81411e732d52f4b8f296b35c87c1fb43fb767b9bec81f5b719a4f144e7d22",
+    "source-second.json": "02507dc5a51045b8018e6750f07d03dc019f85f5ad2287ef2df070b9f17a6d1b"
+  }
+}

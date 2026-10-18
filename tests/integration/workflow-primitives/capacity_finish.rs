@@ -1038,3 +1038,6 @@ mod commit_proxy;
 
 #[path = "capacity_finish_races.rs"]
 mod races;
+
+#[path = "capacity_finish_observations.rs"]
+mod observations;

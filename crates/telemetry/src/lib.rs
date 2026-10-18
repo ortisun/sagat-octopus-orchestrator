@@ -8,6 +8,7 @@
 //!
 //! OTLP/HTTP JSON export supports spans plus focused log and gauge records.
 
+mod capacity;
 mod json_log;
 mod logging;
 mod metrics;
@@ -16,6 +17,7 @@ mod redact;
 mod span;
 mod trace;
 
+pub use capacity::{CAPACITY_FINISH_SPAN, CapacityFinishOutcome};
 pub use json_log::{LogLayer, Style};
 pub use logging::{LogFormat, Telemetry, TelemetryConfig, init, init_logging};
 pub use metrics::{

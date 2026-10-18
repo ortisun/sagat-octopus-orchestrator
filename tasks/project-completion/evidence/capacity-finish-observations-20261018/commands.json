@@ -1,0 +1,190 @@
+[
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "capacity_finish::observations::",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 101,
+    "seconds": 35.8,
+    "log": "red.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "capacity_finish::observations::",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "seconds": 53.56,
+    "log": "first.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "capacity_finish::observations::",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "mode": "default",
+    "exit_code": 0,
+    "seconds": 43.99,
+    "log": "second-default.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "capacity_finish::",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "mode": "runtime",
+    "exit_code": 0,
+    "seconds": 65.01,
+    "log": "second-runtime.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "capacity_finish::observations::filtered_finish",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "mode": "runtime",
+    "exit_code": 101,
+    "seconds": 34.93,
+    "log": "filter-red.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "capacity_finish::observations::",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "mode": "default",
+    "exit_code": 0,
+    "seconds": 45.25,
+    "log": "final-default.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "capacity_finish::observations::",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "mode": "runtime",
+    "exit_code": 0,
+    "seconds": 5.69,
+    "log": "final-runtime.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "contract_observability_operations",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "mode": "runtime",
+    "exit_code": 0,
+    "seconds": 2.5,
+    "log": "observability-contract.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "clippy",
+      "--workspace",
+      "--all-targets",
+      "--locked",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "mode": "runtime",
+    "exit_code": 0,
+    "seconds": 81.88,
+    "log": "clippy.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "fmt",
+      "--all",
+      "--",
+      "--check"
+    ],
+    "mode": "runtime",
+    "exit_code": 0,
+    "seconds": 4.08,
+    "log": "fmt.txt"
+  },
+  {
+    "command": [
+      "python3",
+      "scripts/check-architecture.py"
+    ],
+    "mode": "runtime",
+    "exit_code": 0,
+    "seconds": 0.31,
+    "log": "architecture.txt"
+  }
+]

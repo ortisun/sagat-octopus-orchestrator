@@ -638,3 +638,18 @@ versioned fingerprint and typed Busy/refusal/storage/unknown outcomes. Actual cu
 continuation-history rejection, renewed-fence replay and independent member survival have focused
 PG evidence. Ordinary chain/run entry can wait; only exact G NOWAIT55P03 is Busy. Native fault/
 contention/unknown-COMMIT and observations remain B2e/f; no production caller or wire API exists.
+
+
+### Dormant native ChildRoot Finish observations
+
+B2f uses workflow.capacity.finish under existing caller trace context. Its only span attributes
+are sagat.tenant.id, sagat.namespace.id, sagat.capacity.group_id, sagat.capacity.member_id,
+sagat.chain.id, sagat.run.id and sagat.outcome. Identifiers never label metrics. Only returned
+outcomes are counted: applied/replayed/busy/refused/storage_error/unknown on
+workflow_capacity_finish_attempts_total and workflow_capacity_finish_duration_seconds. The
+unlabeled workflow_capacity_member_finished_total increments after confirmed first commit only;
+replay and lost acknowledgement do not increment it. Durable receipt evidence remains authority
+when a committed unknown is absent from process counters. An abandoned call has no returned
+outcome; direct untraced calls emit metrics without an OTLP span. Future production callers must
+supply trace context and durable original-command reconciliation before using this dormant port.
+No public wire API, production invocation, execution eligibility or nested activation is added.

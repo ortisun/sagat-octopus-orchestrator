@@ -501,3 +501,14 @@ finishes one membership with receipt/audit/outbox. Replay returns the original r
 current authority. It never changes the terminal execution journal or other members' business
 state. Native contention/fault/unknown-COMMIT evidence and observations remain separate B2e/f work;
 no creation/admission/eligibility, retention rollout or nested runtime is enabled.
+
+
+### Dormant native capacity observations checkpoint — 2026-10-18
+
+Local B2e now has focused native contention, fresh fence, rollback, actual uncertain-COMMIT,
+handoff and namespace boundary evidence. B2f observes returned outcomes with closed finite
+metrics and a caller-traced workflow.capacity.finish span. Only an acknowledged first commit
+increments its transition counter; receipt replay and uncertain acknowledgement do not. Durable
+receipts remain authority and abandoned calls have no returned outcome. These are internal
+dormant observations, with no production caller or activation. Full B1/B2, scoped finality,
+retention/mixed writers, nested runtime and broader acceptance gates remain pending.

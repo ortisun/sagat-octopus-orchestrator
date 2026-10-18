@@ -87,4 +87,4 @@ fixture-only slice, without closing B1/B2 or permitting any production caller/cr
 - [x] B2e.1: Prove native G Busy/prefix/duplicate/postwait fence and confirmed abort atomicity; explicit runtime pool works in both suite modes.
 - [x] B2e.2: Prove actual committed/aborted COMMIT acknowledgement loss and fresh same-command reconciliation; distinguish prefix wait from distinct-member Busy.
 - [x] B2e.3: Prove actual handoff/discovery race and same-tenant multiple-namespace members in one G; integrate remaining native recovery counterexamples.
-- [ ] B2f: Add closed observations and requirement/test/contract evidence; broader gates stay pending.
+- [x] B2f: Add closed observations and requirement/test/contract evidence; broader gates stay pending.

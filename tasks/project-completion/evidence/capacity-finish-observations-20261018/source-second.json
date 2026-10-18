@@ -1,0 +1,7 @@
+{
+  "tests/integration/workflow-primitives/capacity_finish.rs": "c59d4b94fde1d732e4d067f420693dd72138770288e8371dcf15e2bd68912c28",
+  "tests/integration/workflow-primitives/capacity_finish_observations.rs": "93aff5fe3f51f00bd913f324d59bfc7fb05a6fbfe3a7c5924ae1b13c3f3e156e",
+  "crates/infra-postgres/src/capacity_finish.rs": "710d0e5d0c88b1a876be30c865a240a784a99d73a529dadc49be609751f50a5b",
+  "crates/telemetry/src/capacity.rs": "3eac1a112d0f6046b7888e7f5e7301b3d7c6027471087d039f2b78e4cf962158",
+  "crates/telemetry/src/lib.rs": "7678bc5a8ae0719be26047b4626a996bd8d985e2960f292ae9d99abe12b00bbc"
+}

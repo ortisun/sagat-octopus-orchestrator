@@ -2563,3 +2563,31 @@ fmt4.06s and24-crate architecture pass. Production source unchanged. Local B2e c
 fullB1/B2, durable production caller intent/process restart, C0 retention and mixed writers,
 canonical runtime/SDK/resource/release gates remain pending. No nested activation. Evidence:
 tasks/project-completion/evidence/capacity-finish-races-20261018/manifest.json.
+
+
+## Dormant native capacity observations — 2026-10-18
+
+Refs:T014-014/017/040. Local B2f adds a closed workflow.capacity.finish span under existing caller
+trace, six safe reference identities plus finite returned outcome, attempts/duration labeled only
+by outcome, and an unlabeled transition counter after acknowledged first commit only. Confirmed
+abort, Busy/refusal, replay and unknown acknowledgement do not increment transitions. A committed
+unknown followed by replay can remain uncounted in process metrics; durable receipt is authority.
+No raw command/key/owner/error/business value is added to these observations. Untraced direct
+calls still emit metrics but no OTLP span; cancellation has no returned-attempt outcome/counter.
+
+Real deferred-constraint abort, G Busy, fence refusal, first commit/replay and gated native reply
+loss/reconciliation produce exact outcome counts. Actual local OTLP collector validates exported
+span parent/identities/outcomes/status and safe completion logs. A filtered-child regression uses
+a real closed runtime pool and ensures Finish cannot overwrite its caller's outcome/error status.
+RED missing counter0vs1 (3.12s) and filtered caller mutation (2.20s) are retained. Fresh three-cycle
+review corrected ACK-loss test ordering and exact span targeting; final cycle found no issues.
+Final focused observations default2/2 (5.08s), full-runtime2/2 (5.38s); pre-final exact-handle fix
+native capacity set24/24 (64.70s), not represented as a final25-test run. Observability contracts
+9/9 (0.44s), strict locked workspace/all-target Clippy81.88s, fmt4.08s, architecture24crates pass.
+The transaction body is unchanged; only observations wrap it. Generic outbox routing still uses
+sagat.v1.<event_type>.<tenant> with fixed event classification; no broker delivery proof is added.
+
+Local dormant B2a-f closes, not full B1/B2 or canonical runtime tasks. Scoped settlement, production
+caller intent/trace, retention/mixed writers, process restart, SDK/resource/Compose/advisory/release
+acceptance remain pending. No production invocation or nested activation. Exact evidence:
+tasks/project-completion/evidence/capacity-finish-observations-20261018/manifest.json.

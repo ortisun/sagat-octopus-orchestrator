@@ -1,0 +1,4 @@
+{
+  "tests/integration/workflow-primitives/capacity_finish_observations.rs": "951e728babd41e593e899fb1a6c68b4e67d2e865705a4a87e9aa1aee7dcb8f22",
+  "crates/infra-postgres/src/capacity_finish.rs": "710d0e5d0c88b1a876be30c865a240a784a99d73a529dadc49be609751f50a5b"
+}
