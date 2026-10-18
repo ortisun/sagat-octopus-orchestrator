@@ -1,0 +1,30 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 46.85s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 4 tests
+test leaf_certification_native::child_source::genuine_ordinary_child_certificate_still_cannot_authorize_scoped_finish ... ok
+test leaf_certification_native::child_source::native_certifier_characterizes_a_real_ordinary_unchained_child_source ... ok
+test leaf_certification_native::child_source::parent_flags::incoming_parent_flag_waits_for_the_child_certifiers_actual_commit ... 
+thread 'leaf_certification_native::child_source::parent_flags::incoming_parent_flag_waits_for_the_child_certifiers_actual_commit' (118565339) panicked at tests/integration/workflow-primitives/leaf_certification_child_parent_flags.rs:498:5:
+assertion `left == right` failed
+  left: (1, Some("cancel"), true)
+ right: (1, Some("CANCEL"), true)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test leaf_certification_native::child_source::parent_flags::public_parent_flags_and_first_child_certification_serialize_in_both_orders ... 
+thread 'leaf_certification_native::child_source::parent_flags::public_parent_flags_and_first_child_certification_serialize_in_both_orders' (118565982) panicked at tests/integration/workflow-primitives/leaf_certification_child_parent_flags.rs:498:5:
+assertion `left == right` failed
+  left: (1, Some("cancel"), true)
+ right: (1, Some("CANCEL"), true)
+FAILED
+
+failures:
+
+failures:
+    leaf_certification_native::child_source::parent_flags::incoming_parent_flag_waits_for_the_child_certifiers_actual_commit
+    leaf_certification_native::child_source::parent_flags::public_parent_flags_and_first_child_certification_serialize_in_both_orders
+
+test result: FAILED. 2 passed; 2 failed; 0 ignored; 0 measured; 496 filtered out; finished in 7.40s
+
+error: test failed, to rerun pass `-p sagat-tests --test integration_workflow_primitives`

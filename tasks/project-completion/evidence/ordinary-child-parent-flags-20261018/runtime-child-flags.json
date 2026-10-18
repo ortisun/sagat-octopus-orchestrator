@@ -1,0 +1,19 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "integration_workflow_primitives",
+    "leaf_certification_native::child_source::",
+    "--",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "exit_code": 0,
+  "seconds": 17.43,
+  "started_utc": "2026-10-18T17:26:17.515651+00:00",
+  "log": "runtime-child-flags.txt"
+}

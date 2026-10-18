@@ -70,7 +70,11 @@ fn terminal_document(name: &str) -> Value {
     })
 }
 
-async fn start_public_parent(f: &Flow, label: &str) -> (RunId, RunId) {
+async fn start_public_parent_with_policy(
+    f: &Flow,
+    label: &str,
+    cancel_policy: CancelPolicy,
+) -> (RunId, RunId) {
     let suffix = Uuid::now_v7();
     let child_name = format!("ocs-c-{label}-{suffix}");
     crate::support::scope_flow::publish(&f.api, &child_name, document(&child_name))
@@ -78,13 +82,20 @@ async fn start_public_parent(f: &Flow, label: &str) -> (RunId, RunId) {
         .expect("the ordinary two-collection child publishes through the public API");
 
     let parent_name = format!("ocs-p-{label}-{suffix}");
+    let mut child_node =
+        json!({"id": "kid", "type": "child", "workflowId": child_name, "next": "done"});
+    child_node["cancelPolicy"] = json!(match cancel_policy {
+        CancelPolicy::Propagate => "propagate",
+        CancelPolicy::Detach => "detach",
+        CancelPolicy::RequestCancel => "request_cancel",
+    });
     let parent_document = json!({
         "apiVersion": "sagat-octopus-orchestrator.io/v1",
         "kind": "Workflow",
         "metadata": {"name": parent_name.clone()},
         "entrypoint": "kid",
         "nodes": [
-            {"id": "kid", "type": "child", "workflowId": child_name, "next": "done"},
+            child_node,
             {"id": "done", "type": "end"}
         ]
     });
@@ -114,7 +125,12 @@ async fn start_public_parent(f: &Flow, label: &str) -> (RunId, RunId) {
     (parent, child)
 }
 
-async fn assert_ordinary_child_context(f: &Flow, parent: RunId, child: RunId) {
+async fn assert_ordinary_child_context(
+    f: &Flow,
+    parent: RunId,
+    child: RunId,
+    cancel_policy: CancelPolicy,
+) {
     let parent_record = f
         .api
         .executions
@@ -135,7 +151,7 @@ async fn assert_ordinary_child_context(f: &Flow, parent: RunId, child: RunId) {
         parent_link.node,
         NodeId::parse("kid").expect("parent child node")
     );
-    assert_eq!(parent_link.cancel_policy, CancelPolicy::Propagate);
+    assert_eq!(parent_link.cancel_policy, cancel_policy);
     assert_eq!(record.info.tenant_id, f.tenant);
     assert_eq!(record.info.namespace_id, parent_record.info.namespace_id);
     assert_eq!((record.info.depth, record.info.root), (1, parent));
@@ -293,7 +309,10 @@ async fn assert_later_task_pending(f: &Flow, later: &TaskLease) {
     );
 }
 
-pub(super) async fn ordinary_child_source_boundary(label: &str) -> OrdinaryChildSourceBoundary {
+pub(super) async fn ordinary_child_source_boundary_with_policy(
+    label: &str,
+    cancel_policy: CancelPolicy,
+) -> OrdinaryChildSourceBoundary {
     let bootstrap_name = format!("ocs-b-{label}-{}", Uuid::now_v7());
     let mut flow = Flow::start(
         &bootstrap_name,
@@ -310,9 +329,9 @@ pub(super) async fn ordinary_child_source_boundary(label: &str) -> OrdinaryChild
     flow.scheduler = flow
         .scheduler
         .with_children(DefinitionCache::new(Arc::new(JsonIrCodec), 8));
-    let (parent, child) = start_public_parent(&flow, label).await;
+    let (parent, child) = start_public_parent_with_policy(&flow, label, cancel_policy).await;
     flow.drive().await;
-    assert_ordinary_child_context(&flow, parent, child).await;
+    assert_ordinary_child_context(&flow, parent, child, cancel_policy).await;
 
     // The bootstrap is terminal, so this worker batch belongs only to the actual child.
     flow.run = child;
@@ -364,6 +383,10 @@ pub(super) async fn ordinary_child_source_boundary(label: &str) -> OrdinaryChild
         later,
         source,
     }
+}
+
+pub(super) async fn ordinary_child_source_boundary(label: &str) -> OrdinaryChildSourceBoundary {
+    ordinary_child_source_boundary_with_policy(label, CancelPolicy::Propagate).await
 }
 
 fn record_source_projection(
@@ -1201,3 +1224,6 @@ async fn genuine_ordinary_child_certificate_still_cannot_authorize_scoped_finish
     fixture.flow.verify().await;
     pool.close().await;
 }
+
+#[path = "leaf_certification_child_parent_flags.rs"]
+mod parent_flags;

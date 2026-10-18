@@ -1,0 +1,35 @@
+    Checking sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+error: this function has too many arguments (8/7)
+   --> tests/integration/workflow-primitives/leaf_certification_child_parent_flags.rs:255:1
+    |
+255 | / async fn observe_order<A: Future, B: Future>(
+256 | |     first_future: Pin<&mut A>,
+257 | |     second_future: Pin<&mut B>,
+258 | |     pool: &PgPool,
+...   |
+263 | |     second_predicate: &str,
+264 | | ) -> (i32, i32, String, String, Vec<i32>, Vec<i32>) {
+    | |___________________________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#too_many_arguments
+    = note: `-D clippy::too-many-arguments` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::too_many_arguments)]`
+
+error: very complex type used. Consider factoring parts into `type` definitions
+   --> tests/integration/workflow-primitives/leaf_certification_child_parent_flags.rs:348:8
+    |
+348 |       ): (
+    |  ________^
+349 | |         &str,
+350 | |         bool,
+351 | |         bool,
+...   |
+357 | |         Vec<(&str, Option<&str>, Value)>,
+358 | |     ) = match policy {
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#type_complexity
+    = note: `-D clippy::type-complexity` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::type_complexity)]`
+
+error: could not compile `sagat-tests` (test "integration_workflow_primitives") due to 2 previous errors

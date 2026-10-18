@@ -1,0 +1,26 @@
+{
+  "default": {
+    "passed": 4,
+    "tests": [
+      "leaf_certification_native::child_source::genuine_ordinary_child_certificate_still_cannot_authorize_scoped_finish",
+      "leaf_certification_native::child_source::native_certifier_characterizes_a_real_ordinary_unchained_child_source",
+      "leaf_certification_native::child_source::parent_flags::incoming_parent_flag_waits_for_the_child_certifiers_actual_commit",
+      "leaf_certification_native::child_source::parent_flags::public_parent_flags_and_first_child_certification_serialize_in_both_orders"
+    ],
+    "queue_scenarios": 6,
+    "commit_scenarios": 1,
+    "witnesses": 7
+  },
+  "runtime": {
+    "passed": 4,
+    "tests": [
+      "leaf_certification_native::child_source::genuine_ordinary_child_certificate_still_cannot_authorize_scoped_finish",
+      "leaf_certification_native::child_source::native_certifier_characterizes_a_real_ordinary_unchained_child_source",
+      "leaf_certification_native::child_source::parent_flags::incoming_parent_flag_waits_for_the_child_certifiers_actual_commit",
+      "leaf_certification_native::child_source::parent_flags::public_parent_flags_and_first_child_certification_serialize_in_both_orders"
+    ],
+    "queue_scenarios": 6,
+    "commit_scenarios": 1,
+    "witnesses": 7
+  }
+}

@@ -548,3 +548,11 @@ default and runtime-role modes; exact evidence is in ordinary-child-source-basel
 subsequent proofs. Nonjournaled parent flag changes do not imply a stale child Run revision.
 General nesting, current-member authority, C0/mixed writers, resource ceilings and release gates
 remain unaccepted. This is a bounded evidence refinement under ADR-0030/0031/0032.
+
+
+The ordinary-child incoming parent flag family now has real PROPAGATE/DETACH/REQUEST_CANCEL
+queue-order and actual certifier-COMMIT guard evidence. The four-test child suite passes in
+default/runtime-role modes, with seven recorded three-PID observations per mode. No runtime
+implementation or activation changed. Own-child cancellation/compensation, detached progress
+and terminal fanout remain pending. Evidence: tasks/project-completion/evidence/
+ordinary-child-parent-flags-20261018/manifest.json.
