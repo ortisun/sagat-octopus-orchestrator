@@ -181,12 +181,12 @@ See evidence/leaf-certification-process-20261018. Other producer/observation/rel
   decoding, own guards, A1 writes, truthful audit/hint and conservative commit outcome only.
 - [x] B1b.2b.13: Implement first dormant flat scoped native transaction with genuine source,
   original-result replay, A1 result/refusal/counter tests; no release permission/caller.
-- [ ] B1b.2b.14: Prove closed source/receipt decoding, exact qualification and metadata-only reads.
+- [x] B1b.2b.14: Prove closed source/receipt decoding, exact qualification and metadata-only reads.
 - [x] B1b.2b.14a: Prove canonical source-before-matching/conflicting receipt and current fence
   before missing source, plus actual11-table denied-read metadata-only native apply/replay.
 - [x] B1b.2b.14b: Prove exact tenant/namespace/binding opacity and group-wide cross-kind conflicts.
 - [x] B1b.2b.14c: Prove schema-valid receipt binding/counter and safe timestamp decoder controls.
-- [ ] B1b.2b.14d: Inventory residual closed decoder/diagnostic obligations and test concrete gaps.
+- [x] B1b.2b.14d: Inventory residual closed decoder/diagnostic obligations and test concrete gaps.
 - [ ] B1b.2b.15: Prove actual waits/current authority, source-writer ordering and atomic failures.
 - [ ] B1b.2b.16: Prove lost COMMIT/reconciliation and actual process recovery for scoped Finish.
 - [ ] B1b.2b.17: Prove all scoped returned outcomes/OTLP/redaction/filtered span/cancellation counts.

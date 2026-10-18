@@ -1,0 +1,27 @@
+{
+  "source_base": "21139428",
+  "local_units": [
+    "B1b.2b.14",
+    "B1b.2b.14d"
+  ],
+  "integrated_native_tests_passed": 13,
+  "frozen_inputs": 1095,
+  "sources_unchanged": true,
+  "product_implementation_changed": false,
+  "files": {
+    "architecture.json": "9fafc38e76bcc509e3655e58dafcdfb2260f46b802522ff573e9770454997b4d",
+    "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "clippy.json": "2ccee60e080adbc0a2790a1ecfdafc12a157673b5b36e1e6c283dd2b2852aa77",
+    "clippy.txt": "96003070fc94c1a207fc52b76292a1cd38716b5639bf784f90170b8c37a0a58d",
+    "fmt.json": "2a3b300442bef9d250d251f93ffe3c356fe20446cac6717b265143e4ef8194f1",
+    "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "inventory.md": "a79626b450fae1dad6c5ee306d07315df513ee57d954a3e20b130b598cabe05e",
+    "native-family.json": "ff6e8a5a4254b36282ab2aad701ba61453d54f78d429fce3730201a3feec9e36",
+    "native-family.txt": "db9b54ab4f49c31c25412357c30e111384252a57ae67d349d17a9ea2ebd1eeb5",
+    "reproduce.md": "d7a8012fc5a5fd55e5060cdbf873cebe1b6edaa0953ef058835aa812f8cae09a",
+    "review.md": "85992541ed1664ab80e6c699845d816455188be7d624736018cb561bbfa0990f",
+    "source-after.json": "e16dc198750865bb653fa6e9daf304ffcdc5fae72f209f98db777478843b1819",
+    "source-before.json": "e16dc198750865bb653fa6e9daf304ffcdc5fae72f209f98db777478843b1819",
+    "test-index.json": "52d3cebdeabe044a547d2ed46a04a2bbe3e6af58f07909c9eebb01b1e8cd6f47"
+  }
+}

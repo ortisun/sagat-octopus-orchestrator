@@ -3121,3 +3121,21 @@ helper inference failure is retained separately and fixed with shared RunId anno
 Clippy9.48s, fmt4.24s, architecture0.35s pass;1094 frozen inputs unchanged. Residual exact-FP
 ChildRoot decoder control is inventoried in14d; actual barriers/recovery/observations stay open.
 Evidence: tasks/project-completion/evidence/scoped-finish-binding-receipts-20261018/manifest.json.
+
+
+## Current-schema decoder completion — 2026-10-18
+
+Local B1b.2b.14/14d close after a fresh bounded inventory and matching-fingerprint cross-kind
+control. A schema-valid owner-only ChildRoot receipt with exactly the scoped fingerprint
+reaches decoding and returns ContradictoryProjection, preserving exact source/capacity
+snapshots. A fresh key with the same scoped fingerprint applies once and its genuine scoped
+receipt replays exactly. All CHECK/FK/append-only guards remain intact; this fixture does not
+claim a hash collision or native ChildRoot finality.
+
+Root's complete current scoped family passes13/13 in86.09s wall (21.12s harness), with all1095
+frozen executable/contract inputs unchanged. Strict integration Clippy16.17s, fmt4.22s and
+architecture0.43s/24crates pass. Fresh Astra review found no substantive issue. Inventory
+separates current-schema guarantees from defensive changed-schema branches. Actual wait/fault,
+commit recovery, diagnostics/OTLP units15..17 and production/C0/nesting gates remain pending.
+
+Evidence: tasks/project-completion/evidence/scoped-finish-decoder-residual-20261018/manifest.json.

@@ -727,3 +727,6 @@ async fn qualification_rejects_a_group_wide_cross_kind_operation_key_then_applie
     assert_eq!(finish_counts(&f, seeded.group).await, (2, 1, 1));
     f.verify().await;
 }
+
+#[path = "scoped_leaf_finish_cross_kind_decoder.rs"]
+mod cross_kind_decoder;
