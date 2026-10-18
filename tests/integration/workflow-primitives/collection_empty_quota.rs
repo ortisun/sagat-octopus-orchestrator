@@ -75,6 +75,35 @@ pub(crate) fn empty_collection_after_prefix(name: &str) -> Value {
     })
 }
 
+fn two_empty_collections_after_prefix(name: &str) -> Value {
+    let mut document = empty_collection_after_prefix(name);
+    let nodes = document["nodes"]
+        .as_array_mut()
+        .expect("workflow nodes are an array");
+    nodes
+        .iter_mut()
+        .find(|node| node["id"] == "items")
+        .expect("first collection")["next"] = json!("second");
+    let end = nodes
+        .iter()
+        .position(|node| node["id"] == "done")
+        .expect("end node");
+    nodes.insert(
+        end,
+        json!({
+            "id": "second",
+            "type": "forEach",
+            "items": "steps.source15.output.items",
+            "body": "line",
+            "result": "bodyResult",
+            "maxItems": 1,
+            "maxConcurrency": 1,
+            "next": "done"
+        }),
+    );
+    document
+}
+
 async fn next_root_prefix_task(
     worker: &mut Worker<'_>,
     sched: &Sched,
@@ -374,4 +403,278 @@ async fn empty_collection_aggregate_fits_with_exactly_two_bytes_remaining() {
         .verify_run(p.tenant, RunId::new(run))
         .await
         .expect("the exact-fit success replays");
+}
+
+#[tokio::test]
+async fn second_empty_collection_refuses_after_first_consumes_final_two_bytes() {
+    let p = platform().await;
+    let name = "second-empty-collection-at-run-byte-limit";
+    let workflow = p
+        .publish(name, &two_empty_collections_after_prefix(name))
+        .await;
+    let run = start_inline(&p, &workflow, &json!({})).await;
+    let sched = scheduler(&p, None).await;
+    let mut worker = p.worker("two-empty-collections-quota-worker").await;
+    worker
+        .register_version(&[PREFIX_ACTIVITY, BODY_ACTIVITY], "1.5")
+        .await;
+
+    let mut outputs = [MAX_PAYLOAD_BYTES; PREFIX_COUNT];
+    outputs[PREFIX_COUNT - 1] -= 2;
+    complete_prefix_over_grpc(&mut worker, &sched, &outputs).await;
+    let prefix_bytes = MAX_RUN_OUTPUT_BYTES - 2;
+    assert_prefix_outputs(&p, run, prefix_bytes).await;
+
+    assert_eq!(
+        drive_to_terminal(&p, &sched, run).await,
+        ("FAILED".to_owned(), Some("RUN_DATA_LIMIT".to_owned())),
+        "the first [] spends the final two bytes, so the second [] must be refused"
+    );
+
+    let run_row = sqlx::query(
+        "SELECT run.status,run.stop_reason,run.stop_code,run.result_digest IS NULL AS no_result, \
+                usage.logical_output_bytes,telemetry.head_seq,run.run_version, \
+                (SELECT count(*) FROM steps step WHERE step.tenant_id=run.tenant_id \
+                  AND step.run_id=run.id AND step.instance_path_nodes='{}' \
+                  AND step.instance_path_indices='{}' AND step.node='done') AS end_steps, \
+                (SELECT count(*) FROM run_events event WHERE event.tenant_id=run.tenant_id \
+                  AND event.run_id=run.id AND event.event_type='end.reached') AS end_events, \
+                (SELECT count(*) FROM collection_scope_items item WHERE item.tenant_id=run.tenant_id \
+                  AND item.run_id=run.id) AS items, \
+                (SELECT count(*) FROM collection_iterations member WHERE member.tenant_id=run.tenant_id \
+                  AND member.run_id=run.id) AS members, \
+                (SELECT count(*) FROM iteration_checkpoints checkpoint \
+                  WHERE checkpoint.tenant_id=run.tenant_id AND checkpoint.run_id=run.id) AS checkpoints, \
+                (SELECT count(*) FROM steps step WHERE step.tenant_id=run.tenant_id \
+                  AND step.run_id=run.id AND cardinality(step.instance_path_nodes)>0) AS scoped_steps, \
+                (SELECT count(*) FROM run_events event WHERE event.tenant_id=run.tenant_id \
+                  AND event.run_id=run.id AND event.event_type LIKE 'collection.iteration_%') AS iteration_events \
+           FROM runs run JOIN run_instance_usage usage \
+             ON usage.tenant_id=run.tenant_id AND usage.run_id=run.id \
+           JOIN telemetry_pending telemetry \
+             ON telemetry.tenant_id=run.tenant_id AND telemetry.run_id=run.id \
+          WHERE run.tenant_id=$1 AND run.id=$2",
+    )
+    .bind(p.tenant.as_uuid())
+    .bind(run)
+    .fetch_one(&p.api.db.pool)
+    .await
+    .expect("terminal run and usage projections");
+    assert_eq!(run_row.get::<String, _>("status"), "FAILED");
+    assert_eq!(
+        run_row.get::<Option<String>, _>("stop_reason").as_deref(),
+        Some("FAILED")
+    );
+    assert_eq!(
+        run_row.get::<Option<String>, _>("stop_code").as_deref(),
+        Some("RUN_DATA_LIMIT")
+    );
+    assert!(run_row.get::<bool, _>("no_result"));
+    assert_eq!(
+        run_row.get::<i64, _>("logical_output_bytes"),
+        MAX_RUN_OUTPUT_BYTES as i64,
+        "only the first retained [] charges two bytes"
+    );
+    assert_eq!(
+        run_row.get::<i64, _>("head_seq"),
+        run_row.get::<i64, _>("run_version"),
+        "the terminal write advances the telemetry head atomically"
+    );
+    assert_eq!(
+        (
+            run_row.get::<i64, _>("end_steps"),
+            run_row.get::<i64, _>("end_events"),
+            run_row.get::<i64, _>("items"),
+            run_row.get::<i64, _>("members"),
+            run_row.get::<i64, _>("checkpoints"),
+            run_row.get::<i64, _>("scoped_steps"),
+            run_row.get::<i64, _>("iteration_events"),
+        ),
+        (0, 0, 0, 0, 0, 0, 0),
+        "two empty collections invent no item, member, checkpoint, scoped step, iteration event or End"
+    );
+
+    let first = sqlx::query(
+        "SELECT scope.lifecycle,scope.drain_kind,scope.drain_failure_code, \
+                scope.result_digest AS scope_digest,owner.status AS owner_status, \
+                owner.failure_code AS owner_failure,owner.output_digest AS owner_digest, \
+                payload.content,scope.finish_sequence,scope.finish_outbox_id \
+           FROM iteration_scopes scope JOIN steps owner \
+             ON owner.tenant_id=scope.tenant_id AND owner.run_id=scope.run_id \
+            AND owner.instance_path_nodes=scope.owner_path_nodes \
+            AND owner.instance_path_indices=scope.owner_path_indices AND owner.node=scope.owner_node \
+           JOIN payloads payload ON payload.tenant_id=scope.tenant_id \
+            AND payload.digest=scope.result_digest \
+          WHERE scope.tenant_id=$1 AND scope.run_id=$2 AND scope.owner_path_nodes='{}' \
+            AND scope.owner_path_indices='{}' AND scope.owner_node='items'",
+    )
+    .bind(p.tenant.as_uuid())
+    .bind(run)
+    .fetch_one(&p.api.db.pool)
+    .await
+    .expect("first empty collection result");
+    let first_scope_digest = first.get::<Vec<u8>, _>("scope_digest");
+    assert_eq!(first.get::<String, _>("lifecycle"), "SUCCEEDED");
+    assert_eq!(first.get::<Option<String>, _>("drain_kind"), None);
+    assert_eq!(first.get::<Option<String>, _>("drain_failure_code"), None);
+    assert_eq!(first.get::<String, _>("owner_status"), "SUCCEEDED");
+    assert_eq!(first.get::<Option<String>, _>("owner_failure"), None);
+    assert_eq!(
+        first.get::<Option<Vec<u8>>, _>("owner_digest").as_deref(),
+        Some(first_scope_digest.as_slice()),
+        "the successful owner retains the aggregate"
+    );
+    assert_eq!(first.get::<Vec<u8>, _>("content"), b"[]".to_vec());
+    assert!(first.get::<i64, _>("finish_sequence") > 0);
+    assert_ne!(first.get::<Uuid, _>("finish_outbox_id"), Uuid::nil());
+
+    let second = sqlx::query(
+        "SELECT scope.lifecycle,scope.drain_kind,scope.drain_failure_code, \
+                scope.result_digest IS NULL AS no_scope_result,owner.status AS owner_status, \
+                owner.failure_code AS owner_failure,owner.output_digest IS NULL AS no_owner_output, \
+                scope.finish_sequence,scope.finish_outbox_id \
+           FROM iteration_scopes scope JOIN steps owner \
+             ON owner.tenant_id=scope.tenant_id AND owner.run_id=scope.run_id \
+            AND owner.instance_path_nodes=scope.owner_path_nodes \
+            AND owner.instance_path_indices=scope.owner_path_indices AND owner.node=scope.owner_node \
+          WHERE scope.tenant_id=$1 AND scope.run_id=$2 AND scope.owner_path_nodes='{}' \
+            AND scope.owner_path_indices='{}' AND scope.owner_node='second'",
+    )
+    .bind(p.tenant.as_uuid())
+    .bind(run)
+    .fetch_one(&p.api.db.pool)
+    .await
+    .expect("second empty collection refusal");
+    assert_eq!(second.get::<String, _>("lifecycle"), "FAILED");
+    assert_eq!(
+        second.get::<Option<String>, _>("drain_kind").as_deref(),
+        Some("RUN_DATA_LIMIT")
+    );
+    assert_eq!(
+        second
+            .get::<Option<String>, _>("drain_failure_code")
+            .as_deref(),
+        Some("RUN_DATA_LIMIT")
+    );
+    assert!(second.get::<bool, _>("no_scope_result"));
+    assert_eq!(second.get::<String, _>("owner_status"), "FAILED");
+    assert_eq!(
+        second.get::<Option<String>, _>("owner_failure").as_deref(),
+        Some("RUN_DATA_LIMIT")
+    );
+    assert!(second.get::<bool, _>("no_owner_output"));
+    assert!(second.get::<i64, _>("finish_sequence") > 0);
+    assert_ne!(second.get::<Uuid, _>("finish_outbox_id"), Uuid::nil());
+
+    let journal = sqlx::query(
+        "SELECT \
+           count(*) FILTER (WHERE event_type='collection.entered' AND node='items' \
+             AND detail->>'item_count'='0') AS first_entered, \
+           count(*) FILTER (WHERE event_type='collection.entered' AND node='second' \
+             AND detail->>'item_count'='0') AS second_entered, \
+           count(*) FILTER (WHERE event_type='collection.finished' AND node='items' \
+             AND detail->>'outcome'='succeeded' \
+             AND decode(detail->>'result_digest','hex')=$3) AS first_finished, \
+           count(*) FILTER (WHERE event_type='collection.finished' AND node='second' \
+             AND detail->>'outcome'='failed' AND detail->>'code'='RUN_DATA_LIMIT') AS second_finished, \
+           count(*) FILTER (WHERE event_type='run.stop_requested' \
+             AND detail->>'reason'='FAILED' AND detail->>'code'='RUN_DATA_LIMIT') AS stops, \
+           count(*) FILTER (WHERE event_type='collection.drain_started' AND node='second' \
+             AND detail->>'reason'='run_data_limit') AS drains, \
+           count(*) FILTER (WHERE event_type='run.finished' \
+             AND detail->>'status'='FAILED') AS run_finished, \
+           count(*) FILTER (WHERE event_type='collection.entered') AS all_entered, \
+           count(*) FILTER (WHERE event_type='collection.finished') AS all_collection_finished, \
+           count(*) FILTER (WHERE event_type='run.stop_requested') AS all_stops, \
+           count(*) FILTER (WHERE event_type='collection.drain_started') AS all_drains, \
+           count(*) FILTER (WHERE event_type='run.finished') AS all_run_finished \
+         FROM run_events WHERE tenant_id=$1 AND run_id=$2",
+    )
+    .bind(p.tenant.as_uuid())
+    .bind(run)
+    .bind(&first_scope_digest)
+    .fetch_one(&p.api.db.pool)
+    .await
+    .expect("truthful collection journal");
+    assert_eq!(
+        (
+            journal.get::<i64, _>("first_entered"),
+            journal.get::<i64, _>("second_entered"),
+            journal.get::<i64, _>("first_finished"),
+            journal.get::<i64, _>("second_finished"),
+            journal.get::<i64, _>("stops"),
+            journal.get::<i64, _>("drains"),
+            journal.get::<i64, _>("run_finished"),
+            journal.get::<i64, _>("all_entered"),
+            journal.get::<i64, _>("all_collection_finished"),
+            journal.get::<i64, _>("all_stops"),
+            journal.get::<i64, _>("all_drains"),
+            journal.get::<i64, _>("all_run_finished"),
+        ),
+        (1, 1, 1, 1, 1, 1, 1, 2, 2, 1, 1, 1)
+    );
+
+    let hints = sqlx::query(
+        "SELECT \
+           count(*) FILTER (WHERE event_type='collection.finished' AND routing_key='items' \
+             AND payload->>'status'='SUCCEEDED') AS first_finished, \
+           count(*) FILTER (WHERE event_type='collection.finished' AND routing_key='second' \
+             AND payload->>'status'='FAILED') AS second_finished, \
+           count(*) FILTER (WHERE event_type='collection.drain.started' AND routing_key='second' \
+             AND payload->>'reason'='FAILED') AS drains, \
+           count(*) FILTER (WHERE event_type='run.finished' \
+             AND payload->>'status'='FAILED') AS run_finished, \
+           count(*) FILTER (WHERE event_type IN \
+             ('collection.finished','collection.drain.started','run.finished')) AS relevant_total \
+         FROM event_outbox WHERE tenant_id=$1 AND aggregate_id=$2",
+    )
+    .bind(p.tenant.as_uuid())
+    .bind(run)
+    .fetch_one(&p.api.db.pool)
+    .await
+    .expect("truthful collection outbox hints");
+    assert_eq!(
+        (
+            hints.get::<i64, _>("first_finished"),
+            hints.get::<i64, _>("second_finished"),
+            hints.get::<i64, _>("drains"),
+            hints.get::<i64, _>("run_finished"),
+            hints.get::<i64, _>("relevant_total"),
+        ),
+        (1, 1, 1, 1, 4)
+    );
+
+    let audit = sqlx::query(
+        "SELECT count(*) AS records,max(audit.actor) AS actor,max(audit.reason) AS reason, \
+                bool_and(audit.trace_id IS NOT DISTINCT FROM run.trace_id) AS matching_trace \
+           FROM audit_records audit JOIN runs run \
+             ON run.tenant_id=audit.tenant_id AND run.id=$2 \
+          WHERE audit.tenant_id=$1 AND audit.resource_type='run' \
+            AND audit.resource_id=$2::text AND audit.action='run.data_limit_exceeded'",
+    )
+    .bind(p.tenant.as_uuid())
+    .bind(run)
+    .fetch_one(&p.api.db.pool)
+    .await
+    .expect("private fixed-vocabulary refusal audit");
+    assert_eq!(audit.get::<i64, _>("records"), 1);
+    assert_eq!(
+        audit.get::<Option<String>, _>("actor").as_deref(),
+        Some("system:engine")
+    );
+    assert_eq!(
+        audit.get::<Option<String>, _>("reason").as_deref(),
+        Some("aggregate")
+    );
+    assert!(
+        audit
+            .get::<Option<bool>, _>("matching_trace")
+            .unwrap_or(false)
+    );
+
+    p.api
+        .executions
+        .verify_run(p.tenant, RunId::new(run))
+        .await
+        .expect("the successful first aggregate and second data-limit drain replay");
 }

@@ -1,6 +1,7 @@
 //! Public collection completion must honor the already declared End output contract.
 
 use crate::support::scope_flow::{Flow, collection_document};
+use sagat_application::execution::MAX_PAYLOAD_BYTES;
 use serde_json::{Value, json};
 use sqlx::Row;
 
@@ -141,4 +142,218 @@ async fn collection_success_does_not_bypass_the_successor_end_instance_limit() {
         )
     );
     f.verify().await;
+}
+
+#[tokio::test]
+async fn collection_end_preserves_optional_null_and_typed_evaluation_semantics() {
+    struct Case {
+        name: &'static str,
+        output_expr: Option<&'static str>,
+        worker_output: Value,
+        expected_status: &'static str,
+        expected_end_status: &'static str,
+        expected_result: Option<Value>,
+        expected_code: Option<&'static str>,
+    }
+
+    let ordinary = json!({"amount":17});
+    let large_source = Value::String("x".repeat(139_998));
+    assert_eq!(large_source.to_string().len(), 140_000);
+    assert!(
+        Value::Array(vec![large_source.clone()]).to_string().len() <= MAX_PAYLOAD_BYTES,
+        "the genuine collection aggregate must fit before End evaluation"
+    );
+    let cases = [
+        Case {
+            name: "collection-end-output-omitted",
+            output_expr: None,
+            worker_output: ordinary.clone(),
+            expected_status: "SUCCEEDED",
+            expected_end_status: "SUCCEEDED",
+            expected_result: None,
+            expected_code: None,
+        },
+        Case {
+            name: "collection-end-output-null",
+            output_expr: Some("null"),
+            worker_output: ordinary.clone(),
+            expected_status: "SUCCEEDED",
+            expected_end_status: "SUCCEEDED",
+            expected_result: Some(Value::Null),
+            expected_code: None,
+        },
+        Case {
+            name: "collection-end-output-missing-field",
+            output_expr: Some("steps.lines.output[0].missing"),
+            worker_output: ordinary,
+            expected_status: "FAILED",
+            expected_end_status: "FAILED",
+            expected_result: None,
+            expected_code: Some("EXPRESSION_ERROR"),
+        },
+        Case {
+            name: "collection-end-output-over-value-limit",
+            output_expr: Some("[steps.lines.output[0], steps.lines.output[0]]"),
+            worker_output: large_source,
+            expected_status: "FAILED",
+            expected_end_status: "FAILED",
+            expected_result: None,
+            expected_code: Some("RUN_DATA_LIMIT"),
+        },
+    ];
+
+    for case in cases {
+        let mut document = collection_document(
+            case.name,
+            vec![
+                json!({"id":"work","type":"activity","activity":"line.reserve","next":"returned"}),
+                json!({"id":"returned","type":"return","result":"steps.work.output"}),
+            ],
+            1,
+        );
+        if let Some(expression) = case.output_expr {
+            document["nodes"][1]["outputExpr"] = json!(expression);
+        }
+        let f = Flow::start(case.name, document, json!([{"id":1}])).await;
+        f.drive().await;
+        let tasks = f.poll().await;
+        assert_eq!(tasks.len(), 1, "{} public member lease", case.name);
+        f.complete(&tasks[0], case.worker_output.clone()).await;
+        f.drive().await;
+        assert_eq!(f.run_status().await, case.expected_status, "{}", case.name);
+
+        let row = sqlx::query(
+            "SELECT scope.lifecycle,owner.status AS owner_status,ended.status AS end_status, \
+                    owner_payload.content AS owner_output,end_payload.content AS end_output, \
+                    run_payload.content AS run_result,owner.output_digest AS owner_digest, \
+                    scope.result_digest AS aggregate_digest,ended.output_digest AS end_digest, \
+                    r.result_digest AS run_digest,r.stop_code, \
+                    (SELECT count(*) FROM run_events e WHERE e.tenant_id=r.tenant_id \
+                      AND e.run_id=r.id AND e.event_type='end.reached') AS end_events, \
+                    (SELECT e.payload_digest FROM run_events e WHERE e.tenant_id=r.tenant_id \
+                      AND e.run_id=r.id AND e.event_type='end.reached' LIMIT 1) AS end_event_digest, \
+                    (SELECT count(*) FROM run_events e WHERE e.tenant_id=r.tenant_id \
+                      AND e.run_id=r.id AND e.event_type='run.stop_requested') AS stop_events, \
+                    (SELECT count(*) FROM run_events e WHERE e.tenant_id=r.tenant_id \
+                      AND e.run_id=r.id AND e.event_type='run.finished') AS finished_events, \
+                    (SELECT count(*) FROM event_outbox o WHERE o.tenant_id=r.tenant_id \
+                      AND o.aggregate_id=r.id AND o.event_type='run.finished') AS finished_outboxes, \
+                    COALESCE((SELECT bool_and(o.payload->>'status'=r.status) FROM event_outbox o \
+                      WHERE o.tenant_id=r.tenant_id AND o.aggregate_id=r.id \
+                        AND o.event_type='run.finished'),false) AS outbox_status_matches \
+               FROM runs r JOIN iteration_scopes scope ON scope.tenant_id=r.tenant_id \
+                AND scope.run_id=r.id AND scope.owner_node='lines' \
+                AND scope.owner_path_nodes='{}' AND scope.owner_path_indices='{}' \
+               JOIN steps owner ON owner.tenant_id=r.tenant_id AND owner.run_id=r.id \
+                AND owner.node='lines' AND owner.instance_path_nodes='{}' \
+                AND owner.instance_path_indices='{}' \
+               JOIN steps ended ON ended.tenant_id=r.tenant_id AND ended.run_id=r.id \
+                AND ended.node='done' AND ended.instance_path_nodes='{}' \
+                AND ended.instance_path_indices='{}' \
+               LEFT JOIN payloads owner_payload ON owner_payload.tenant_id=r.tenant_id \
+                AND owner_payload.digest=owner.output_digest \
+               LEFT JOIN payloads end_payload ON end_payload.tenant_id=r.tenant_id \
+                AND end_payload.digest=ended.output_digest \
+               LEFT JOIN payloads run_payload ON run_payload.tenant_id=r.tenant_id \
+                AND run_payload.digest=r.result_digest \
+              WHERE r.tenant_id=$1 AND r.id=$2",
+        )
+        .bind(f.tenant.as_uuid())
+        .bind(f.run.as_uuid())
+        .fetch_one(&f.api.db.pool)
+        .await
+        .expect("public collection End semantic projection");
+
+        let aggregate = Value::Array(vec![case.worker_output]);
+        assert_eq!(
+            row.get::<String, _>("lifecycle"),
+            "SUCCEEDED",
+            "{}",
+            case.name
+        );
+        assert_eq!(
+            row.get::<String, _>("owner_status"),
+            "SUCCEEDED",
+            "{}",
+            case.name
+        );
+        assert_eq!(
+            decoded(row.get("owner_output")),
+            Some(aggregate),
+            "{}",
+            case.name
+        );
+        assert_eq!(
+            row.get::<Option<Vec<u8>>, _>("owner_digest"),
+            row.get::<Option<Vec<u8>>, _>("aggregate_digest"),
+            "{} owner output is the successful scope aggregate",
+            case.name,
+        );
+        assert_eq!(
+            row.get::<String, _>("end_status"),
+            case.expected_end_status,
+            "{}",
+            case.name
+        );
+        assert_eq!(
+            decoded(row.get("end_output")),
+            case.expected_result.clone(),
+            "{}",
+            case.name,
+        );
+        assert_eq!(
+            decoded(row.get("run_result")),
+            case.expected_result.clone(),
+            "{}",
+            case.name,
+        );
+        assert_eq!(
+            row.get::<Option<String>, _>("stop_code").as_deref(),
+            case.expected_code,
+            "{}",
+            case.name
+        );
+
+        let expected_terminal_event: i64 = if case.expected_code.is_none() { 1 } else { 0 };
+        assert_eq!(
+            row.get::<i64, _>("end_events"),
+            expected_terminal_event,
+            "{}",
+            case.name
+        );
+        assert_eq!(
+            row.get::<i64, _>("stop_events"),
+            1 - expected_terminal_event,
+            "{}",
+            case.name
+        );
+        assert_eq!(row.get::<i64, _>("finished_events"), 1, "{}", case.name);
+        assert_eq!(row.get::<i64, _>("finished_outboxes"), 1, "{}", case.name);
+        assert!(row.get::<bool, _>("outbox_status_matches"), "{}", case.name);
+
+        let end_digest = row.get::<Option<Vec<u8>>, _>("end_digest");
+        let run_digest = row.get::<Option<Vec<u8>>, _>("run_digest");
+        let event_digest = row.get::<Option<Vec<u8>>, _>("end_event_digest");
+        if case.expected_result.is_some() {
+            assert!(
+                end_digest.is_some(),
+                "{} retained explicit result",
+                case.name
+            );
+            assert_eq!(end_digest, run_digest, "{} End and Run digest", case.name);
+            assert_eq!(
+                end_digest, event_digest,
+                "{} EndReached payload digest",
+                case.name
+            );
+        } else {
+            assert_eq!(
+                (end_digest, run_digest, event_digest),
+                (None, None, None),
+                "{}",
+                case.name
+            );
+        }
+        f.verify().await;
+    }
 }

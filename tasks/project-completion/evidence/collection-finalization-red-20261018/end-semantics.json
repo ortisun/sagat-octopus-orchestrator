@@ -1,0 +1,20 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "integration_workflow_primitives",
+    "collection_end_result::collection_end_preserves_optional_null_and_typed_evaluation_semantics",
+    "--",
+    "--exact",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "exit_code": 101,
+  "seconds": 81.58,
+  "started_utc": "2026-10-18T19:59:03.844214+00:00",
+  "log": "end-semantics.txt"
+}

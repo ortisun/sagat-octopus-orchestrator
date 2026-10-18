@@ -1,0 +1,20 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "integration_workflow_primitives",
+    "collection_empty_quota::second_empty_collection_refuses_after_first_consumes_final_two_bytes",
+    "--",
+    "--exact",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "exit_code": 101,
+  "seconds": 9.19,
+  "started_utc": "2026-10-18T20:00:25.474682+00:00",
+  "log": "second-empty.txt"
+}
