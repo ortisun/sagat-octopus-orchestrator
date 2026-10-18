@@ -2168,3 +2168,22 @@ actual outbox validates canonical hints. B2e concurrency/fault/unknown-COMMIT ev
 observations remain pending, as do C0 retention compatibility, fullB1/B2 and canonical runtime/
 SDK/resource/release gates. Evidence: capacity-native-finish-20261018/manifest.json under
  tasks/project-completion/evidence.
+
+
+## Native capacity transaction barriers — 2026-10-18
+
+Refs:T014-014/017/040. B2e.1 test-only proof: G Busy consumes TX and releases own chain/run before
+the external G holder releases; two same-command chain waiters hold no earlier Run lock and yield
+one apply plus identical replay. First application and replay wait on an unchanged shard while
+DB time is live, then reject after actual DB expiry; renewed current authority succeeds. Audit/
+outbox/receipt statement and deferred receipt COMMIT23514 faults atomically preserve old state,
+with zero new side effects before one fresh same-key success. Injected-marker assertions exclude
+unrelated storage errors. No retained-quota delta/barrier or unknown-COMMIT proof is inferred.
+
+Fresh Astra/xhigh cycle1 found a test-role assumption, fixed by explicit sagat_app native pool;
+cycle2 found no remaining concrete issue. Corrected default4/4 (13.87s), full-runtime4/4 (14.24s);
+tightened marker assertion rerun1/1 in both modes (1.98s/2.02s). Strict locked workspace/all-target
+Clippy8.01s, final fmt and24-crate architecture pass. No production adapter changes. B2e.2 actual
+COMMIT acknowledgement loss/reconciliation and B2e.3 handoff/multiple-namespace counterexamples
+remain open, as do B2f observations/fullB1/B2/canonical runtime/SDK/resource/rollout gates. Evidence:
+tasks/project-completion/evidence/capacity-finish-barriers-20261018/manifest.json.

@@ -1027,3 +1027,6 @@ async fn contradictory_final_outcome_refuses_finish_and_root_binding_grants_no_a
     assert_eq!(execution_snapshot(&f).await, before);
     assert_eq!(finish_counts(&f).await, (0, 0, 0));
 }
+
+#[path = "capacity_finish_barriers.rs"]
+mod barriers;

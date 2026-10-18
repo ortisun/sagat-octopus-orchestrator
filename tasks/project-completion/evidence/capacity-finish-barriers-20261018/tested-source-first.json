@@ -1,0 +1,8 @@
+{
+  "base": "932188b110dde0ce1b7930c0601fc68d9ed9023a",
+  "files": {
+    "tests/integration/workflow-primitives/capacity_finish_barriers.rs": "6a97aa887673f2e6cb13d77d8956df113ce52fe0aef2ba5366bb35de36464dc3",
+    "tests/integration/workflow-primitives/capacity_finish.rs": "1b289bd0fd4a0808e83a4266636928e88938c530232a0a33e875c33d14637aa2",
+    "crates/infra-postgres/src/capacity_finish.rs": "0ce7c56a7c0c665a2deefde595fc1cd6dfb0f12f680186d1e36f1d25107f28c0"
+  }
+}

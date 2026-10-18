@@ -413,3 +413,9 @@ B2d.2 exact PG adapter and real current child FINAL/refusal/replay evidence are 
 B2e must now test actual contention, postwait expiry, confirmed failure atomicity and both unknown
 COMMIT outcomes; B2f adds closed observations. These checkpoints cannot enable a production caller
 before durable intent, C0 retention/old-writer compatibility and remaining lifecycle decisions.
+
+
+B2e.1 native G/prefix/fence and confirmed abort barriers have focused real PG evidence in both
+suite modes, with explicit runtime-role adapters. Keep B2e open for actual unknown-COMMIT outcomes,
+same-command prefix reconciliation versus distinct-member G Busy, handoff/discovery race and
+same-tenant multiple-namespace membership; no production activation or quota proof follows.

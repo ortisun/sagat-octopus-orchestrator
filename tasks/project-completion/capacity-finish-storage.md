@@ -165,3 +165,8 @@ corrected; final review found no remaining concrete issues, including postlock t
 Those decision reviews alone did not establish SQL/runtime acceptance. The subsequent B2c SQL
 implementation and focused schema tests are recorded in evidence/capacity-finish-schema-20261018;
 no native finality, receipt replay or production execution guarantee follows from schema fixtures.
+
+
+B2e.1 native barriers/confirmed aborts are tested; evidence/capacity-finish-barriers-20261018.
+B2e.2/3 unknown-COMMIT/reconciliation and remaining authority-race evidence stay pending. All
+native adapter tests in that barrier unit explicitly connect as sagat_app even in default mode.

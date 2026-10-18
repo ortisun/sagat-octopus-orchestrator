@@ -1,0 +1,104 @@
+[
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "capacity_finish::barriers::",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "seconds": 43.84,
+    "log": "barriers-first.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "capacity_finish::barriers::",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "unset": [
+      "SAGAT_TEST_DATABASE_URL",
+      "SAGAT_TEST_AS_RUNTIME_ROLE"
+    ],
+    "exit_code": 0,
+    "seconds": 46.44,
+    "log": "barriers-default-role.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "capacity_finish::barriers::",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "env": {
+      "SAGAT_TEST_AS_RUNTIME_ROLE": "1"
+    },
+    "unset": [
+      "SAGAT_TEST_DATABASE_URL"
+    ],
+    "exit_code": 0,
+    "seconds": 14.53,
+    "log": "barriers-runtime-role.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "capacity_finish::barriers::audit_outbox_receipt_and_deferred_commit_failures_roll_back_all_effects",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "runtime_mode": false,
+    "exit_code": 0,
+    "seconds": 33.92,
+    "log": "atomicity-marker-default.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "capacity_finish::barriers::audit_outbox_receipt_and_deferred_commit_failures_roll_back_all_effects",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "runtime_mode": true,
+    "exit_code": 0,
+    "seconds": 2.32,
+    "log": "atomicity-marker-runtime.txt"
+  }
+]

@@ -1,0 +1,12 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 30.30s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 4 tests
+test capacity_finish::barriers::every_native_write_and_actual_deferred_commit_failure_rolls_back_together ... ok
+test capacity_finish::barriers::group_busy_consumes_transaction_and_releases_own_chain_and_run ... ok
+test capacity_finish::barriers::own_chain_wait_precedes_run_lock_and_serializes_duplicate_commands ... ok
+test capacity_finish::barriers::postwait_expiry_refuses_first_application_and_receipt_replay ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 419 filtered out; finished in 11.47s
+

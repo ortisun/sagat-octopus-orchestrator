@@ -1,0 +1,162 @@
+{
+  "source_base": "932188b1",
+  "recorded_utc": "2026-10-18T08:26:48.042012+00:00",
+  "scope": "B2e.1 test-only native barriers/confirmed aborts; unknown COMMIT pending",
+  "commands": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "capacity_finish::barriers::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 43.84,
+      "log": "barriers-first.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "capacity_finish::barriers::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "unset": [
+        "SAGAT_TEST_DATABASE_URL",
+        "SAGAT_TEST_AS_RUNTIME_ROLE"
+      ],
+      "exit_code": 0,
+      "seconds": 46.44,
+      "log": "barriers-default-role.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "capacity_finish::barriers::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "env": {
+        "SAGAT_TEST_AS_RUNTIME_ROLE": "1"
+      },
+      "unset": [
+        "SAGAT_TEST_DATABASE_URL"
+      ],
+      "exit_code": 0,
+      "seconds": 14.53,
+      "log": "barriers-runtime-role.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "capacity_finish::barriers::audit_outbox_receipt_and_deferred_commit_failures_roll_back_all_effects",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "runtime_mode": false,
+      "exit_code": 0,
+      "seconds": 33.92,
+      "log": "atomicity-marker-default.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "capacity_finish::barriers::audit_outbox_receipt_and_deferred_commit_failures_roll_back_all_effects",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "runtime_mode": true,
+      "exit_code": 0,
+      "seconds": 2.32,
+      "log": "atomicity-marker-runtime.txt"
+    }
+  ],
+  "clippy": {
+    "command": [
+      "cargo",
+      "clippy",
+      "--workspace",
+      "--all-targets",
+      "--locked",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit_code": 0,
+    "seconds": 8.01
+  },
+  "results": {
+    "corrected_default": {
+      "passed": 4,
+      "failed": 0,
+      "seconds": 13.87
+    },
+    "corrected_runtime": {
+      "passed": 4,
+      "failed": 0,
+      "seconds": 14.24
+    },
+    "tightened_atomicity_default": {
+      "passed": 1,
+      "failed": 0,
+      "seconds": 1.98
+    },
+    "tightened_atomicity_runtime": {
+      "passed": 1,
+      "failed": 0,
+      "seconds": 2.02
+    }
+  },
+  "evidence_sha256": {
+    "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "atomicity-marker-default.txt": "1cfdde617469c9c06cbfb044ec1900676e68f4720d94b34a3df1c1980e564652",
+    "atomicity-marker-runtime.txt": "7f0f836f855db647ebd8e42d7f5b7810f2890c35f284c88612856a0d2f80eee6",
+    "barriers-default-role.txt": "98853682e22a205c813c5d6feb5af3f0ef172d46f683acc2af24344cd13cf19a",
+    "barriers-first.txt": "22811e3e8abf46faf8b068c8a0c905c947e8b7ed1bb7c0522d7e90b22e2b9be6",
+    "barriers-runtime-role.txt": "0ebd783517bf6824f65496ff0abfcda1bca4ea11f40903eeb196cac63de51da5",
+    "clippy.json": "54511fa43b27383b8798ef49517c470a2b034b5506473cfa1190f9901c13627c",
+    "clippy.txt": "a8a8ba49efa0505995dccf1be0713817d491bf5e589b8b8c905f9c092e6d099e",
+    "commands.json": "dd824111803c357db11b3a0314b0966b7dd01d6eb27d7d4e1bd0198e15350a71",
+    "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "implementation.diff": "8200e984351c5d8b3de06540a4f9138ece071a464d2cb5694204626f84125c82",
+    "reproduce.md": "15cc0e0489ed941694a507db117689cdc0310f5d5b45d084e57ed50ebeaad274",
+    "review.md": "f7cdf39830c23c1325efcedc4d9b625208c6175d5c2e768cc9cd52cc113b456f",
+    "tested-source-final.json": "7d86aaefd0e5331641ef11d63cdf22a4d4e016ceee08eb92d41a1907d5a9f01a",
+    "tested-source-first.json": "f38eb9928403d505740d0762f3969c66599de500ceb914dcdbca9762780e3f70"
+  }
+}
