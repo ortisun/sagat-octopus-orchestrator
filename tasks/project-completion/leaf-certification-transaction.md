@@ -113,6 +113,11 @@ CANCELLED without altering the selected source or creating its saga obligations.
 creation requires fresh CAS; canonical replay survives terminal later work. Evidence:
 evidence/leaf-certification-later-work-20261018. This excludes active-lease cancellation and does
 not establish other producers, chain membership or old-writer/C0 preservation.
+Actual HTTP binding replacement is also observed before source proof (certifier waits on held
+Run) and after proof/inserts during its actual deferred COMMIT (Run and shared scheduler fence
+remain held). It expires exactly one later leased step and closes its session without waiting for
+Run; selected source, Run and journal stay unchanged. It is not a Run-serialized producer.
+Evidence: evidence/leaf-certification-binding-20261018. This does not cover other ambient writers.
 Actual dispatched-COMMIT response loss and fresh direct pool/cache/store reconstruction are
 covered in evidence/leaf-certification-commit-loss-20261018 for both confirmed backend outcomes.
 The original qualified Run and shared scheduler fence remain held while the client sees Unknown;

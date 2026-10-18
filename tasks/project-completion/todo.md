@@ -104,6 +104,8 @@ not a SQL port or own-member authority. See evidence/capacity-header-restore-202
   against certification in both observed flat Run queue orders; fresh CAS and producer replay.
 - [x] B1b.2a.1d.3b.3: Race actual later completion/failure and READY cancellation against first
   certification in both flat Run queue orders, then drive real terminal planning with stable source.
+- [x] B1b.2a.1d.3b.4: Prove actual ambient binding replacement expires a later lease before
+  certification proof and during actual certifier COMMIT while preserving selected source/Run/journal.
 - [x] B1b.2a.1d.3c: Test real uncertain-COMMIT outcomes, fresh same-identity reconciliation and
   reconstruction after restart; absence requires fresh CAS and complete source proof.
 - [x] B1b.2a.1d.3c.1: Lose actual dispatched COMMIT replies for committed/aborted outcomes and

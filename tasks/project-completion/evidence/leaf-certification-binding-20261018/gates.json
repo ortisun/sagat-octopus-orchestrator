@@ -1,0 +1,40 @@
+[
+  {
+    "command": [
+      "cargo",
+      "clippy",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "log": "clippy.txt",
+    "exit_code": 0,
+    "seconds": 9.37
+  },
+  {
+    "command": [
+      "cargo",
+      "fmt",
+      "--all",
+      "--",
+      "--check"
+    ],
+    "log": "fmt.txt",
+    "exit_code": 0,
+    "seconds": 4.18
+  },
+  {
+    "command": [
+      "python3",
+      "scripts/check-architecture.py"
+    ],
+    "log": "architecture.txt",
+    "exit_code": 0,
+    "seconds": 0.33
+  }
+]
