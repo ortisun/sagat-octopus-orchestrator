@@ -59,9 +59,10 @@ are outside this implementation request.
 
 The whole-protocol proposal completed three review cycles with unresolved substantive findings;
 its drafts remain rejected/unaccepted. The owner selected the current review, declining the
-optional external review. After offering decomposition or deferral, continue with the recommended
-decomposition under the standing all-open-tasks authorization; a later preference still steers it.
-This is not a fourth whole-protocol review or permission to enable nesting.
+optional external review, and explicitly chose "Dividir o protocolo em decisões menores para
+implementar e verificar" on 2026-10-18. Continue the decomposed work below under that decision
+and the standing all-open-tasks authorization. This is not a fourth whole-protocol review or
+permission to enable nesting.
 
 1. **A — Group lifecycle, pure model.** Define retained membership, vacant possession, fenced
    compare-and-swap epochs and terminal settlement. Review only this small state machine, then

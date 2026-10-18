@@ -1274,14 +1274,22 @@ struct Family {
 impl Family {
     /// A parent waiting at a `child` node whose child is a three-segment chain, already started.
     async fn start(label: &str) -> Self {
+        Self::start_with_cancel_policy(label, None).await
+    }
+
+    async fn start_with_cancel_policy(label: &str, policy: Option<&str>) -> Self {
         let world = world().await;
         let kid = format!("kid-{label}-{}", Uuid::now_v7());
         world.publish(rolling(&kid)).await;
+        let mut child = child_node("kid", &kid, Some("after"));
+        if let Some(policy) = policy {
+            child["cancelPolicy"] = json!(policy);
+        }
         let (parent_workflow, _) = world
             .publish(document(
                 &format!("mother-{label}-{}", Uuid::now_v7()),
                 "kid",
-                vec![child_node("kid", &kid, Some("after")), activity("after")],
+                vec![child, activity("after")],
             ))
             .await;
         let parent = world
@@ -1336,6 +1344,159 @@ impl Family {
         .await
         .expect("link")
     }
+}
+
+/// A chain's legacy flags are initialized before this guard. Its parent must use the link,
+/// even when an UPDATE would write the same flag values and otherwise appear harmless.
+async fn forbid_legacy_chain_child_updates(family: &Family) {
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "CREATE FUNCTION reject_legacy_child_flags() RETURNS trigger LANGUAGE plpgsql AS $$ \
+         BEGIN RAISE EXCEPTION 'legacy child flags must not be updated for a chain'; END $$; \
+         CREATE TRIGGER reject_legacy_child_flags BEFORE UPDATE OF parent_settled,parent_cancel \
+         ON runs FOR EACH ROW WHEN (OLD.id='{}' AND OLD.tenant_id='{}') \
+         EXECUTE FUNCTION reject_legacy_child_flags()",
+        family.chain.as_uuid(),
+        family.world.admin.tenant_id().as_uuid()
+    )))
+    .execute(&family.world.db.pool)
+    .await
+    .expect("guard the chained child's legacy flags");
+}
+
+async fn legacy_child_flags(family: &Family) -> (bool, bool) {
+    sqlx::query_as("SELECT parent_settled,parent_cancel FROM runs WHERE tenant_id=$1 AND id=$2")
+        .bind(family.world.admin.tenant_id().as_uuid())
+        .bind(family.chain.as_uuid())
+        .fetch_one(&family.world.db.pool)
+        .await
+        .expect("legacy child metadata")
+}
+
+async fn parent_audit_counts(family: &Family) -> (i64, i64) {
+    sqlx::query_as(
+        "SELECT count(*) FILTER (WHERE action='run.started'), \
+                count(*) FILTER (WHERE action='run.cancel_requested') \
+         FROM audit_records WHERE tenant_id=$1 AND resource_type='run' AND resource_id=$2",
+    )
+    .bind(family.world.admin.tenant_id().as_uuid())
+    .bind(family.parent.to_string())
+    .fetch_one(&family.world.db.pool)
+    .await
+    .expect("parent command audit counts")
+}
+
+#[tokio::test]
+async fn chain_parent_propagated_cancellation_never_updates_the_childs_legacy_flags() {
+    let family = Family::start("link-only-propagate").await;
+    assert_eq!(parent_audit_counts(&family).await, (1, 0));
+    assert_eq!(legacy_child_flags(&family).await, (true, false));
+    forbid_legacy_chain_child_updates(&family).await;
+    family
+        .world
+        .operate(family.parent, RunOperation::Cancel)
+        .await
+        .expect("cancel through the link");
+    assert_eq!(
+        family.world.run_status(family.parent).await,
+        RunStatus::Cancelled
+    );
+    assert_eq!(family.link().await, (true, None, false));
+    let report = family.scheduler.tick().await;
+    assert_eq!(
+        (report.children_cancelled, report.failed),
+        (1, 0),
+        "{report:?}"
+    );
+    assert_eq!(family.head().await.3.as_deref(), Some("CANCELLED"));
+    assert_eq!(legacy_child_flags(&family).await, (true, false));
+    assert_eq!(parent_audit_counts(&family).await, (1, 1));
+    family.world.assert_consistent(family.parent).await;
+    family.world.assert_consistent(family.chain).await;
+}
+
+#[tokio::test]
+async fn chain_parent_requested_cancellation_never_updates_the_childs_legacy_flags() {
+    let family =
+        Family::start_with_cancel_policy("link-only-request", Some("request_cancel")).await;
+    assert_eq!(parent_audit_counts(&family).await, (1, 0));
+    forbid_legacy_chain_child_updates(&family).await;
+    family
+        .world
+        .operate(family.parent, RunOperation::Cancel)
+        .await
+        .expect("request cancellation through the link");
+    assert_eq!(
+        family.world.step_status(family.parent, "kid").await,
+        Some(StepStatus::Waiting)
+    );
+    assert_eq!(family.link().await, (true, None, false));
+    let cancelled = family.scheduler.tick().await;
+    assert_eq!(
+        (cancelled.children_cancelled, cancelled.failed),
+        (1, 0),
+        "{cancelled:?}"
+    );
+    let settled = family.scheduler.tick().await;
+    assert_eq!(
+        (settled.children_finished, settled.failed),
+        (1, 0),
+        "{settled:?}"
+    );
+    assert_eq!(
+        family.world.run_status(family.parent).await,
+        RunStatus::Cancelled
+    );
+    assert_eq!(family.link().await, (true, Some("CANCELLED".into()), true));
+    assert_eq!(legacy_child_flags(&family).await, (true, false));
+    assert_eq!(parent_audit_counts(&family).await, (1, 1));
+    assert_eq!(
+        count_events(&family.world, family.parent, "child.finished").await,
+        1
+    );
+    family.world.assert_consistent(family.parent).await;
+    family.world.assert_consistent(family.chain).await;
+}
+
+#[tokio::test]
+async fn chain_parent_final_settlement_never_updates_the_childs_legacy_flags() {
+    let family = Family::start("link-only-final").await;
+    for _ in 0..2 {
+        family.finish_segment().await;
+        let moved = family.scheduler.tick().await;
+        assert_eq!(moved.failed, 0, "{moved:?}");
+    }
+    family.finish_segment().await;
+    assert_eq!(
+        family.link().await,
+        (false, Some("SUCCEEDED".into()), false)
+    );
+    forbid_legacy_chain_child_updates(&family).await;
+    assert_eq!(parent_audit_counts(&family).await, (1, 0));
+    let report = family.scheduler.tick().await;
+    assert_eq!(
+        (report.children_finished, report.failed),
+        (1, 0),
+        "{report:?}"
+    );
+    assert_eq!(
+        family.world.step_status(family.parent, "kid").await,
+        Some(StepStatus::Succeeded)
+    );
+    assert_eq!(family.link().await, (false, Some("SUCCEEDED".into()), true));
+    assert_eq!(legacy_child_flags(&family).await, (true, false));
+    let duplicate = family.scheduler.tick().await;
+    assert_eq!(
+        (duplicate.children_finished, duplicate.failed),
+        (0, 0),
+        "{duplicate:?}"
+    );
+    assert_eq!(
+        count_events(&family.world, family.parent, "child.finished").await,
+        1
+    );
+    assert_eq!(parent_audit_counts(&family).await, (1, 0));
+    family.world.assert_consistent(family.parent).await;
+    family.world.assert_consistent(family.chain).await;
 }
 
 #[tokio::test]

@@ -296,7 +296,7 @@ advisory lock. It still excludes parent mutation/duplicate reservation but admit
 and initial-state payload rows after namespace/tenant active-run admission; payload uniqueness
 can block on an uncommitted equal digest. The two focused admission barriers cover these edges.
 The [source inventory](../../tasks/project-completion/capacity-lock-inventory.md) separately records
-the unresolved existing handoff parent guard/legacy settlement deviations; this is not a complete
+the unresolved existing handoff parent guard and remaining prefix gaps; this is not a complete
 lock-DAG acceptance or permission to activate nested groups.
 
 Parent transitions lock their own chain/run then child-instance links; child handoff/finalization
@@ -305,6 +305,13 @@ outcome state is authoritative across rollover, preventing cancellation loss or 
 completion. Legacy parent-first child creation and child-row UPDATE paths retain their behavior
 until explicitly migrated; do not mix their locks into this protocol or impose sorted run IDs on
 them. A scheduler parent notification checks the parent's shard fence.
+
+Current parent cancellation/settlement mutates a matching chain link without updating the child
+run's `parent_settled`/`parent_cancel` flags. The same transaction falls back to legacy flags only
+when no link exists, with tenant/child/own-parent predicates. Initial child creation/link insertion
+is excluded by the parent's existing lock. The handoff's parent key-share metadata guard is still
+the explicitly recorded exception to the strict other-run prohibition above; this correction
+does not resolve that design question or enable nested capacity groups.
 
 No caller response acknowledges a mutation before commit. Query uses a consistent read snapshot;
 a read audit must succeed before returning its data, without adding a workflow transition.

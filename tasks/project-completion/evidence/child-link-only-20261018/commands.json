@@ -1,0 +1,66 @@
+[
+  {
+    "log": "fault.txt",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "fault_workflow_primitives",
+      "--",
+      "--test-threads=3"
+    ],
+    "exit_code": 0,
+    "seconds": 129.5
+  },
+  {
+    "log": "durable.txt",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_durable_execution",
+      "--",
+      "--test-threads=3"
+    ],
+    "exit_code": 0,
+    "seconds": 184.36
+  },
+  {
+    "log": "workflow-chains.txt",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "chain",
+      "--",
+      "--test-threads=3"
+    ],
+    "exit_code": 0,
+    "seconds": 112.73
+  },
+  {
+    "log": "clippy.txt",
+    "command": [
+      "cargo",
+      "clippy",
+      "--locked",
+      "--workspace",
+      "--all-targets",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit_code": 0,
+    "seconds": 106.68
+  }
+]

@@ -1980,3 +1980,40 @@ separate long10,000-completion case remained ignored and is not counted as a fre
 
 Strict locked workspace/all-target Clippy passed in1m43s. Formatting, diff and24-crate
 architecture checks passed. These are local gates; shared release tasks remain unchecked.
+
+
+## 2026-10-18 — Separate chained-child settlement from legacy flags
+
+Refs: T014-014..017/040, FR-014-012–015, ADR-0030§18–19. The B0 inventory found that both
+parent cancellation variants and final notification updated the first child segment's legacy
+flags before the authoritative chain link. Three real PostgreSQL trigger guards reject those
+flag updates after chain initialization. All 3 failed before correction (two cancellation errors;
+one failed scheduler notification), then all 3 passed in 2.54s. This proves the mixed writes on
+actual service/scheduler paths; no database deadlock reproduction is claimed for these guards.
+
+The parent now updates its exact tenant/own-parent/child link and returns on a match. A child
+without a link retains legacy flags with an exact own-parent predicate. Propagate/RequestCancel
+and final latch/settlement behavior stay distinct; legacy metadata remains unchanged for chains.
+Cancellation has exactly one request audit, and automatic final notification preserves existing
+audit behavior with one child.finished journal event. Journal/projection consistency is checked
+for parent and child. Existing transaction/outbox boundaries and external-effect semantics remain.
+
+Two bounded reviews found and resolved a missing audit_records oracle, then found no concrete
+source/test issues. The handoff comment/contract now state its actual chain→parent KEY SHARE→
+head/link order. This leaves the existing strict-ADR metadata-guard decision and complete B0
+graph pending; no nested group persistence/activation or canonical task closure is inferred.
+
+The full fault target passed 92/92 in 91.80s, including both ordered parent/handoff races and
+failed/duplicate parent notification. Durable execution passed 178/178 in 146.65s, including
+legacy Propagate/RequestCancel/Detach, child races and tree budgets. Exact final commands,
+source hashes, failed and broader results: evidence/child-link-only-20261018/manifest.json
+under tasks/project-completion/. Counts from focused and full runs overlap.
+
+The chain-filtered workflow integration target passed72/72 in42.27s. The existing common
+chain-child and chain-cancel-parent goldens passed unchanged in all five SDKs (21.88s/12.93s
+test execution), including three child segments before parent continuation and propagated versus
+detached mid-chain cancellation. All ten complete normalized documents independently equal
+their existing golden and are retained; no blessing, SDK/runner/normalizer change or complete
+all58-matrix claim. Strict locked workspace/all-target Clippy passed in1m45s; formatting and
+24-crate architecture checks passed. Final exact manifest: tasks/project-completion/evidence/
+child-link-only-20261018/manifest.json. The remaining B0/ADR and release tasks stay unchecked.

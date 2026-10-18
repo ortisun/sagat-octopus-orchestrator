@@ -1,0 +1,31 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 59.12s
+     Running fault/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/fault_workflow_primitives-69bdcc40cb8c1b06)
+
+running 3 tests
+
+thread 'chains::chain_parent_requested_cancellation_never_updates_the_childs_legacy_flags' (77859459) panicked at tests/fault/workflow-primitives/chains.rs:1411:10:
+request cancellation through the link: Internal
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test chains::chain_parent_requested_cancellation_never_updates_the_childs_legacy_flags ... FAILED
+
+thread 'chains::chain_parent_propagated_cancellation_never_updates_the_childs_legacy_flags' (77859458) panicked at tests/fault/workflow-primitives/chains.rs:1384:10:
+cancel through the link: Internal
+test chains::chain_parent_propagated_cancellation_never_updates_the_childs_legacy_flags ... FAILED
+
+thread 'chains::chain_parent_final_settlement_never_updates_the_childs_legacy_flags' (77859457) panicked at tests/fault/workflow-primitives/chains.rs:1458:5:
+assertion `left == right` failed: Report { collections_advanced: 0, loops_advanced: 0, continuations_advanced: 0, continuations_waiting: 0, approvals_opened: 0, approvals_expired: 0, approval_routes_released: 0, stopped_runs_settled: 0, timers_fired: 0, waits_timed_out: 0, retries_released: 0, leases_expired: 0, deadlines_enforced: 0, hints_renewed: 0, children_started: 0, children_finished: 0, children_cancelled: 0, quota_stops: 0, skipped: 0, failed: 1, fenced: 0 }
+  left: (0, 1)
+ right: (1, 0)
+test chains::chain_parent_final_settlement_never_updates_the_childs_legacy_flags ... FAILED
+
+failures:
+
+failures:
+    chains::chain_parent_final_settlement_never_updates_the_childs_legacy_flags
+    chains::chain_parent_propagated_cancellation_never_updates_the_childs_legacy_flags
+    chains::chain_parent_requested_cancellation_never_updates_the_childs_legacy_flags
+
+test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 89 filtered out; finished in 2.61s
+
+error: test failed, to rerun pass `-p sagat-tests --test fault_workflow_primitives`

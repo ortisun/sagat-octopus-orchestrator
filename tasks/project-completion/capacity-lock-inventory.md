@@ -9,7 +9,7 @@ runtime eligibility remain unimplemented. Initial source at2455389e; expanded ag
 | Exact-path begin_current_path/begin_path | own runs row via lock_path_revision; no chain lock in that helper | execution.rs:482,530,566 |
 | Collection admission | run/fence before primitive-policy shared fence→tenant policy row→tenant_iteration_usage→run_instance_usage→iteration scope | primitives.rs:tenant_active_limit and collection admission around1212 |
 | Chain handoff | execution_chains row→hold_parent parent runs KEY SHARE→own head runs UPDATE→scheduler fence→child link | chain_progress.rs:lock_chain, hold_parent, continue_as_new |
-| Parent settle_child | parent transaction already open→legacy child runs UPDATE→child_chain_links UPDATE | execution.rs:settle_child |
+| Parent settle_child/release_child | own parent transaction→matching child_chain_links UPDATE; only a missing link falls back to legacy child runs UPDATE with exact own-parent predicate | execution.rs:update_child_chain_link, settle_child, release_child |
 | Initial child creation, before correction | payload input/initial-state INSERT→parent runs UPDATE→tree advisory→managed database admission if applicable→namespace active-run quota→tenant active-run quota→child INSERT | execution.rs:RunStore::create, claim_reservation; quotas.rs:ensure_room_for_run |
 | Evaluated handoff, after chain/run/link | tree advisory if child→namespace active-run quota→tenant active-run quota→input/state payload INSERT→successor INSERT | chain_progress.rs:continue_evaluated, ensure_replacement_capacity, retain_payload |
 | Scoped worker claim | exact-path own run→drain shared advisory→binding shared advisory→session UPDATE→current role/authority checks→activity policy/quota admission in sorted activity order | application/worker/scoped_claims.rs:claim_path; execution.rs:worker_drained, bound_patterns, worker_session_room; quotas.rs:lock_activity |
@@ -51,13 +51,13 @@ These reviews do not accept the complete B0 graph or the group transaction desig
 
 ## Gaps requiring resolution before B1
 
-- The handoff helper comment says parent-before-chain, but its actual call occurs **after** the
-  chain row is locked. Preserve this distinction in any wait-for graph; comments are not evidence
-  of acquisition order.
-- ADR-0030§19 prohibits mixing legacy child-row UPDATEs into the new child-link protocol.
-  settle_child currently executes both updates. Determine actual reachable legacy/new call paths
-  and prove a deadlock counterexample or demonstrate the intended exception; do not silently
-  declare this compliant. A divergence requires an ADR and dependent-document update.
+- The handoff actually takes chain→parent KEY SHARE→own head/link. Its old parent-before-chain
+  comment is corrected. The early guard remains a cross-run metadata lock, not a proof of the
+  strict own-run-only protocol; include it and the implicit successor FKs in any wait-for graph.
+- The mixed legacy UPDATE/link path has the focused correction below. The existing handoff
+  parent KEY SHARE guard still obtains another existing run row and therefore remains a strict
+  ADR-0030§18–19 deviation requiring a separate decision before B1 can claim that order compliant.
+  Correcting the legacy mutation path does not accept this guard or the complete graph.
 - Exact-path helpers directly lock a run. Map chain-capable scoped activity/public-operation call
   paths before claiming their chain-before-run prefix; publication restrictions do not prove an
   unsupported future composition safe.
@@ -70,3 +70,32 @@ These reviews do not accept the complete B0 graph or the group transaction desig
 
 Prior current full suites pass, which does not prove missing lock cycles impossible. The new
 model is not runtime activation evidence. B0 remains unchecked.
+
+
+## Focused chain-link settlement correction — 2026-10-18
+
+Both settle_child and nonsettling release_child previously updated the first child run's legacy
+flags before its chain link, even though initialization sets parent_settled=true and maintenance
+already discovers cancellation/finality through the link. The actual public cancellation and
+parent-notification paths reach these writes. Three real PostgreSQL trigger regressions rejected
+any UPDATE OF parent_settled,parent_cancel on the already-linked first segment: both Propagate
+and RequestCancel returned Internal, while final notification reported one failed scheduler
+action (0/3 passed). These are proof of the mixed writes, not a reproduced database deadlock.
+
+The correction updates the exact tenant/own-parent/child link first and returns when it matches.
+Only absent links fall back to legacy flags, also restricted to the exact own parent. Parent
+creation serialization excludes concurrent initial link insertion. The three focused cases now
+pass (2.54s), preserve legacy metadata, check final/cancellation latch state, journal consistency
+and exact cancellation audit counts. Automatic final notification preserves its existing audit
+behavior; its journal completion appears once. No new audit action is invented.
+
+Two read-only reviews covered this small remedy. The first required explicit audit_records
+assertions; the second found no concrete source/test issues. Reviewers ran no tests. Actual
+source/commands/failed and final regression evidence live in evidence/child-link-only-20261018/.
+The handoff comment and contract now name its actual chain→parent KEY SHARE→head/link order,
+without accepting that existing metadata-guard deviation. B0 remains incomplete and unchecked.
+
+Final focused regression passed fault92, durable178 and chain-filtered workflow72 tests. Both
+chain-child and chain-cancel-parent matched unchanged goldens in every SDK, including detach.
+Strict workspace/all-target Clippy, formatting and architecture passed. Exact results/hashes:
+evidence/child-link-only-20261018/manifest.json. These bounded results do not close B0.

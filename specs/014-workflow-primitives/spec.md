@@ -48,6 +48,9 @@ a reopened child requires its own shard lease for subsequent scheduler mutations
 Child reservation uses a parent write lock compatible with foreign-key key-share checks; tree
 and active-run admission precede input/initial-state payload retention. This ordering applies
 to existing child creation and evaluated continuation, independently of nested collection capacity.
+Parent cancellation and final notification use a matching child-chain link alone; legacy child
+flag writes are restricted to children without a link and with the exact own-parent association.
+The existing handoff parent key-share guard remains a separately recorded lock-order question.
 
 Other collection and loop graphs and nested scopes remain closed for general publication. The
 remaining acceptance and release evidence is tracked

@@ -10,3 +10,5 @@
 /tasks/project-completion/evidence/publication-scope-20261018/initial-mixed-oracle.txt whitespace=-blank-at-eof,-blank-at-eol
 # A retained unified diff prefixes unchanged blank context lines with one space.
 /tasks/project-completion/evidence/publication-scope-20261018/production.diff whitespace=-blank-at-eol
+/tasks/project-completion/evidence/child-link-only-20261018/*.txt whitespace=-blank-at-eof
+/tasks/project-completion/evidence/child-link-only-20261018/production.diff whitespace=-blank-at-eol

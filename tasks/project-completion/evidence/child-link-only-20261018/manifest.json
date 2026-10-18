@@ -1,0 +1,268 @@
+{
+  "source_base": "390f7de9266907adaa431a37b7e0e7a9c49a9a46",
+  "recorded_utc": "2026-10-18T04:20:04.182516+00:00",
+  "scope": "existing chained-child link mutation; no legacy flag UPDATE on linked child, own-parent restricted legacy fallback; no nested activation",
+  "environment": {
+    "runtime_role": true,
+    "external_db_url": false,
+    "postgres": "repository disposable fixture",
+    "system": "Darwin arm64",
+    "rust": "rustc 1.98.0 (88d9e12ae 2026-08-18)"
+  },
+  "results": {
+    "durable.txt": {
+      "targets": 1,
+      "passed": 178,
+      "failed": 0,
+      "ignored": 0,
+      "target_seconds": [
+        "146.65s"
+      ]
+    },
+    "fault.txt": {
+      "targets": 1,
+      "passed": 92,
+      "failed": 0,
+      "ignored": 0,
+      "target_seconds": [
+        "91.80s"
+      ]
+    },
+    "green.txt": {
+      "targets": 1,
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "target_seconds": [
+        "2.54s"
+      ]
+    },
+    "red.txt": {
+      "targets": 1,
+      "passed": 0,
+      "failed": 3,
+      "ignored": 0,
+      "target_seconds": [
+        "2.61s"
+      ]
+    },
+    "sdk-chain-cancel-parent.txt": {
+      "targets": 1,
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "target_seconds": [
+        "12.93s"
+      ]
+    },
+    "sdk-chain-child.txt": {
+      "targets": 1,
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "target_seconds": [
+        "21.88s"
+      ]
+    },
+    "workflow-chains.txt": {
+      "targets": 1,
+      "passed": 72,
+      "failed": 0,
+      "ignored": 0,
+      "target_seconds": [
+        "42.27s"
+      ]
+    }
+  },
+  "commands": [
+    {
+      "log": "fault.txt",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "fault_workflow_primitives",
+        "--",
+        "--test-threads=3"
+      ],
+      "exit_code": 0,
+      "seconds": 129.5
+    },
+    {
+      "log": "durable.txt",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_durable_execution",
+        "--",
+        "--test-threads=3"
+      ],
+      "exit_code": 0,
+      "seconds": 184.36
+    },
+    {
+      "log": "workflow-chains.txt",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "chain",
+        "--",
+        "--test-threads=3"
+      ],
+      "exit_code": 0,
+      "seconds": 112.73
+    },
+    {
+      "log": "clippy.txt",
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "--workspace",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "seconds": 106.68
+    }
+  ],
+  "sdk_commands": [
+    {
+      "scenario": "chain-child",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "sdk_conformance",
+        "every_sdk_conforms_to_every_scenario",
+        "--",
+        "--exact",
+        "--ignored",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "seconds": 123.84,
+      "bless": false,
+      "runner_reuse": true,
+      "normalized": {
+        "java.62101.normalized.json": "b8d4a2a1337d5a56c692a69b9643f87916e2317ce6df1398f38004d01f792147",
+        "python.62101.normalized.json": "b8d4a2a1337d5a56c692a69b9643f87916e2317ce6df1398f38004d01f792147",
+        "dotnet.62101.normalized.json": "b8d4a2a1337d5a56c692a69b9643f87916e2317ce6df1398f38004d01f792147",
+        "typescript.62101.normalized.json": "b8d4a2a1337d5a56c692a69b9643f87916e2317ce6df1398f38004d01f792147",
+        "go.62101.normalized.json": "b8d4a2a1337d5a56c692a69b9643f87916e2317ce6df1398f38004d01f792147"
+      }
+    },
+    {
+      "scenario": "chain-cancel-parent",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "sdk_conformance",
+        "every_sdk_conforms_to_every_scenario",
+        "--",
+        "--exact",
+        "--ignored",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "seconds": 13.63,
+      "bless": false,
+      "runner_reuse": true,
+      "normalized": {
+        "python.79996.normalized.json": "24290a9005760c74aa9327ec1c048968226cc380ba76c38b38975571cde494bd",
+        "java.79996.normalized.json": "24290a9005760c74aa9327ec1c048968226cc380ba76c38b38975571cde494bd",
+        "dotnet.79996.normalized.json": "24290a9005760c74aa9327ec1c048968226cc380ba76c38b38975571cde494bd",
+        "go.79996.normalized.json": "24290a9005760c74aa9327ec1c048968226cc380ba76c38b38975571cde494bd",
+        "typescript.79996.normalized.json": "24290a9005760c74aa9327ec1c048968226cc380ba76c38b38975571cde494bd"
+      }
+    }
+  ],
+  "review": {
+    "cycles": 2,
+    "model": "gpt-6-astra",
+    "reasoning": "xhigh",
+    "first_finding": "explicit audit_records oracle missing; added count assertions",
+    "second": "no concrete source/test issues; reviewers ran no tests",
+    "external_cli": false
+  },
+  "limits": [
+    "RED prototype predates explicit audit assertions; production unchanged until recorded failing guards",
+    "Trigger guards prove mixed legacy UPDATE attempts, not a PostgreSQL deadlock counterexample",
+    "Current handoff metadata KEY SHARE remains unchanged and is an explicit strict-ADR/B0 question",
+    "Full fault92/durable178/chain-filter72; counts overlap focused tests",
+    "Two focused five-SDK scenarios with reused unchanged runners, no bless; not full58 matrix",
+    "No complete workspace execution, Compose, advisory, rollout, production ceilings or nesting claim",
+    "No canonical task closed by this narrow correction"
+  ],
+  "source_sha256": {
+    ".gitattributes": "bd4520b5803e1c51388eb53a19b819a54a1a7d5198a3d480fee21f1f1d224e26",
+    "crates/infra-postgres/src/chain_progress.rs": "155083328578af9f6d210c75ee8625ba90884342a6859ac06a7f54026ea2c6f2",
+    "crates/infra-postgres/src/execution.rs": "8776ddf1ac1c5fac453b8e9f1cd81934f4ad8d2c39d43299b185db20122ec6ca",
+    "docs/runbooks/workflow-primitives.md": "9b4951e804c1361015aa21f860252ce42857045550755cf7039e0128389c0aca",
+    "docs/traceability.md": "02fa07e3770cfe16522d2cce1f9ab2c1e20d246b5960bf6c4a5e95f48d45a9b2",
+    "specs/014-workflow-primitives/contracts/README.md": "0fe01ec7d7e59d7c9f16bfe31ebbd000088de9157aa77de91b0c971475b80ac7",
+    "specs/014-workflow-primitives/data-model.md": "15d3102621f674d058151e68af86c0d6beb25cdf29f749ea5e48fa9bd47d759f",
+    "specs/014-workflow-primitives/plan.md": "d538b53c46e434293a697b9231abe2e0bd760cf70ec2801c146b1ada7558e76b",
+    "specs/014-workflow-primitives/spec.md": "5c6713fd2c46037f822d9a2592f5e6b8fd04e65b9a7aaa5f26844880cf558829",
+    "specs/014-workflow-primitives/validation-report.md": "a36dc41dc1bc91d7b11c3b67fa3a1e18532f945b48584ff73c24c133bac3ab34",
+    "tasks/project-completion/capacity-lock-inventory.md": "668347f0d0d8f63d8e4da43e51254e1eae13c105782ad94770e5aa114cf7ecf6",
+    "tasks/project-completion/integration-notes.md": "a1eaa8d9657ef7321b54b784ffa71986dfb410c41e9126ba5a336cf53077dac9",
+    "tasks/project-completion/plan.md": "9aa906fe974d44ecdf0ac242ad28441ebe0dfa2a30c72d8df5414b107506de35",
+    "tests/fault/workflow-primitives/chains.rs": "678c891517f80b1a6f390569fe31a2e8c12a872d28e812822f9dad815ceb60d5"
+  },
+  "golden_sha256": {
+    "tests/contract/sdk-conformance/expected/chain-child.json": "b8d4a2a1337d5a56c692a69b9643f87916e2317ce6df1398f38004d01f792147",
+    "tests/contract/sdk-conformance/expected/chain-child.workflows.json": "2acba142de60d6a42bf289d78ee905b9e84d1d69057471ab0c1c4d111f1f52a8",
+    "tests/contract/sdk-conformance/expected/chain-cancel-parent.json": "24290a9005760c74aa9327ec1c048968226cc380ba76c38b38975571cde494bd",
+    "tests/contract/sdk-conformance/expected/chain-cancel-parent.workflows.json": "971dc8325c35318afcc11c4bb305ac3b6e4cdbea4b75a4208e8164dd4dd00bb6"
+  },
+  "sdk_test_binary_sha256": "e31c7e91838f3160d0d2610d8d6e34c23de77d73bee30393fb50c84c7a055778",
+  "evidence_sha256": {
+    "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "clippy.txt": "d5772d6856c42d8989bc76ebd0bf3fef3223682f0635473fe70d08a1c2cccacb",
+    "commands.json": "4e2041cba64bd1873a1d1b584d5901fe4db8d53d74c97e7b7d7fb9cf373f4772",
+    "durable.txt": "b9a175a451563156867a61fbbb9defea5f029982ee1eadc5c02aec8f55ee154a",
+    "fault.txt": "1b25634097b234c6432936cfd873c791d6f294579cdff27f5489b58a3f501ee5",
+    "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "green.txt": "d48a0badc50701009cfbdd79811da9bedcb33c37edd1d08a03f14e485dca4330",
+    "production.diff": "ce3db3f133fa386819651a11ac10d9b852dba3109d07a75f0e941d904d35405c",
+    "red.txt": "4022c31c66d3b162fc4f181421e9368f9e35a8916dd2864120d8d8c195f448bc",
+    "reproduce.md": "2c7bd6fcc9be89d9ac39048811a50533ea72be9284a10e8b49aa20e703e1ea0d",
+    "review.md": "662f37789fa08141ee5d0d904c6f3696bfc1e61f7e3803bae6286f00961e6c12",
+    "sdk/chain-cancel-parent/dotnet.79996.normalized.json": "24290a9005760c74aa9327ec1c048968226cc380ba76c38b38975571cde494bd",
+    "sdk/chain-cancel-parent/go.79996.normalized.json": "24290a9005760c74aa9327ec1c048968226cc380ba76c38b38975571cde494bd",
+    "sdk/chain-cancel-parent/java.79996.normalized.json": "24290a9005760c74aa9327ec1c048968226cc380ba76c38b38975571cde494bd",
+    "sdk/chain-cancel-parent/python.79996.normalized.json": "24290a9005760c74aa9327ec1c048968226cc380ba76c38b38975571cde494bd",
+    "sdk/chain-cancel-parent/typescript.79996.normalized.json": "24290a9005760c74aa9327ec1c048968226cc380ba76c38b38975571cde494bd",
+    "sdk/chain-child/dotnet.62101.normalized.json": "b8d4a2a1337d5a56c692a69b9643f87916e2317ce6df1398f38004d01f792147",
+    "sdk/chain-child/go.62101.normalized.json": "b8d4a2a1337d5a56c692a69b9643f87916e2317ce6df1398f38004d01f792147",
+    "sdk/chain-child/java.62101.normalized.json": "b8d4a2a1337d5a56c692a69b9643f87916e2317ce6df1398f38004d01f792147",
+    "sdk/chain-child/python.62101.normalized.json": "b8d4a2a1337d5a56c692a69b9643f87916e2317ce6df1398f38004d01f792147",
+    "sdk/chain-child/typescript.62101.normalized.json": "b8d4a2a1337d5a56c692a69b9643f87916e2317ce6df1398f38004d01f792147",
+    "sdk-chain-cancel-parent.txt": "371e7419433f897b25b044fdf764dd5d6e0f33f1c94c8f161b8da796bb56512c",
+    "sdk-chain-child.txt": "f6d85e7fdb2cb731e7f28410a0a8c01d69745f7f971542fef2db90a10ecd2ebc",
+    "sdk-commands.json": "4a973211506d0d105e48320f30c8cd924a8d3ca745bbb3997a65dcf791deaf0d",
+    "workflow-chains.txt": "834f36b57850617e20feaa1c406c2c138778bcd3796f4ef975a717b28104b9cd"
+  }
+}

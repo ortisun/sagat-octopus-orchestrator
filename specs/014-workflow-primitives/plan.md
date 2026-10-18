@@ -23,6 +23,12 @@ byte-limit causes in the domain; the HTTP adapter classifies these without match
 Check schema-first precedence, root graph compatibility, trace identity and absence of a published
 version after rejection. Five-SDK authoring/runtime cases remain a separate common contract.
 
+During B0 inventory, keep chained child settlement separate from legacy child-row flag updates.
+Prove both cancellation policies and final notification with a database trigger that rejects any
+legacy-flag UPDATE of an already-linked child; retain existing ordered handoff races, legacy
+children, journal consistency and exact command audits. This does not accept the remaining
+cross-run metadata guard or the complete group transaction design.
+
 ## Technical Context
 
 **Language/Version**: Rust 1.98.0 from `rust-toolchain.toml`; existing locked TypeScript, Go, Python,

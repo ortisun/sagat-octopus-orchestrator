@@ -1,0 +1,58 @@
+[
+  {
+    "scenario": "chain-child",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "sdk_conformance",
+      "every_sdk_conforms_to_every_scenario",
+      "--",
+      "--exact",
+      "--ignored",
+      "--nocapture"
+    ],
+    "exit_code": 0,
+    "seconds": 123.84,
+    "bless": false,
+    "runner_reuse": true,
+    "normalized": {
+      "java.62101.normalized.json": "b8d4a2a1337d5a56c692a69b9643f87916e2317ce6df1398f38004d01f792147",
+      "python.62101.normalized.json": "b8d4a2a1337d5a56c692a69b9643f87916e2317ce6df1398f38004d01f792147",
+      "dotnet.62101.normalized.json": "b8d4a2a1337d5a56c692a69b9643f87916e2317ce6df1398f38004d01f792147",
+      "typescript.62101.normalized.json": "b8d4a2a1337d5a56c692a69b9643f87916e2317ce6df1398f38004d01f792147",
+      "go.62101.normalized.json": "b8d4a2a1337d5a56c692a69b9643f87916e2317ce6df1398f38004d01f792147"
+    }
+  },
+  {
+    "scenario": "chain-cancel-parent",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "sdk_conformance",
+      "every_sdk_conforms_to_every_scenario",
+      "--",
+      "--exact",
+      "--ignored",
+      "--nocapture"
+    ],
+    "exit_code": 0,
+    "seconds": 13.63,
+    "bless": false,
+    "runner_reuse": true,
+    "normalized": {
+      "python.79996.normalized.json": "24290a9005760c74aa9327ec1c048968226cc380ba76c38b38975571cde494bd",
+      "java.79996.normalized.json": "24290a9005760c74aa9327ec1c048968226cc380ba76c38b38975571cde494bd",
+      "dotnet.79996.normalized.json": "24290a9005760c74aa9327ec1c048968226cc380ba76c38b38975571cde494bd",
+      "go.79996.normalized.json": "24290a9005760c74aa9327ec1c048968226cc380ba76c38b38975571cde494bd",
+      "typescript.79996.normalized.json": "24290a9005760c74aa9327ec1c048968226cc380ba76c38b38975571cde494bd"
+    }
+  }
+]

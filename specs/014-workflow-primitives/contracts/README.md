@@ -357,8 +357,11 @@ with the chain's final outcome; a continued segment tells it nothing. The chain 
 (the smaller of the parent's, the node's and the chain's required timeout) as its original one. Cancelling the
 parent (or settling its step under a cancelling policy) latches the link under the parent's lock only; the
 hand-off reads the latch under the chain, head-run and link locks and refuses, and the scheduler cancels
-the chain's current head. A hand-off locks the parent first (key share), then the chain and the head run, the
-order every writer of a child uses. The successors are runs of the parent's tree and spend its
+the chain's current head. Parent cancellation/settlement updates a matching child-chain link
+without writing the child's legacy run flags; only a child without that link uses the legacy
+flag path, restricted to its own parent and tenant. The existing handoff metadata guard actually
+takes chain, parent key-share, then head/link; its strict ADR-0030 exception remains an explicit
+B0 inventory question, not an accepted whole-graph order. The successors are runs of the parent's tree and spend its
 1,024-run budget; a full tree ends the chain with the durable `CHAIN_LIMIT`, as the segment limit does.
 
 A continuation boundary that finds open work waits (D296): a running or ready step, a timer, a subscription,

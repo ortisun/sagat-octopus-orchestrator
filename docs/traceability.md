@@ -471,3 +471,15 @@ results are in `tasks/project-completion/evidence/publication-scope-20261018/man
 Together with existing five-SDK instance-limit evidence and fresh ordered10,000-reference
 materialization in the379-test runtime-role regression,
 this closes the fixture task; broader runtime and shared release tasks remain unchecked.
+
+
+### Child-chain settlement checkpoint — 2026-10-18
+
+FR-014-012–015: parent cancellation/final notification updates its child-chain link without
+mixing legacy child flag UPDATEs. Three real PostgreSQL trigger regressions failed before
+correction and passed afterward; exact cancellation audits and one parent completion journal
+event accompany consistency checks. Full fault 92 and durable 178 targets pass, including legacy
+child policies and ordered cancellation/handoff races. The strict ADR metadata-guard question,
+remaining B0 prefixes and canonical broader tasks stay open. Reproduction/remediation are in
+`docs/runbooks/workflow-primitives.md`; exact evidence is in
+`tasks/project-completion/evidence/child-link-only-20261018/manifest.json`.

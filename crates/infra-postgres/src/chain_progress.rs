@@ -491,11 +491,11 @@ async fn lock_chain(
 }
 
 /// A child chain's successor is a run whose parent is the chain's parent, so inserting it takes a
-/// key-share lock on the parent's row (the foreign key). Every writer of a child run locks the
-/// parent first (`claim_reservation`, the parent's own commands); a hand-off holds the chain and the
-/// head run and would take the parent last, which deadlocks against a parent that is writing the
-/// child's run (found by the ordered parent-cancellation race). Taking the same lock here, before
-/// the head run is locked, keeps one order: parent, then chain, then runs.
+/// key-share lock on the parent's row (the foreign key). Take that metadata guard before the head
+/// run/link: otherwise a parent holding its own run and waiting for the link could block the
+/// successor's late foreign-key check. Actual order here is chain, parent key-share, then head/link.
+/// This existing cross-run metadata guard remains an explicit ADR-0030/B0 inventory question;
+/// it grants no authority to mutate the parent.
 async fn hold_parent(
     conn: &mut PgConnection,
     tenant_id: TenantId,

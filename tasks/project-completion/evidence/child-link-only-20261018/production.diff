@@ -1,0 +1,140 @@
+diff --git a/crates/infra-postgres/src/chain_progress.rs b/crates/infra-postgres/src/chain_progress.rs
+index 3131d5ba..c02eb8c7 100644
+--- a/crates/infra-postgres/src/chain_progress.rs
++++ b/crates/infra-postgres/src/chain_progress.rs
+@@ -491,11 +491,11 @@ async fn lock_chain(
+ }
+ 
+ /// A child chain's successor is a run whose parent is the chain's parent, so inserting it takes a
+-/// key-share lock on the parent's row (the foreign key). Every writer of a child run locks the
+-/// parent first (`claim_reservation`, the parent's own commands); a hand-off holds the chain and the
+-/// head run and would take the parent last, which deadlocks against a parent that is writing the
+-/// child's run (found by the ordered parent-cancellation race). Taking the same lock here, before
+-/// the head run is locked, keeps one order: parent, then chain, then runs.
++/// key-share lock on the parent's row (the foreign key). Take that metadata guard before the head
++/// run/link: otherwise a parent holding its own run and waiting for the link could block the
++/// successor's late foreign-key check. Actual order here is chain, parent key-share, then head/link.
++/// This existing cross-run metadata guard remains an explicit ADR-0030/B0 inventory question;
++/// it grants no authority to mutate the parent.
+ async fn hold_parent(
+     conn: &mut PgConnection,
+     tenant_id: TenantId,
+diff --git a/crates/infra-postgres/src/execution.rs b/crates/infra-postgres/src/execution.rs
+index 65b17328..610aaf7e 100644
+--- a/crates/infra-postgres/src/execution.rs
++++ b/crates/infra-postgres/src/execution.rs
+@@ -4887,6 +4887,33 @@ impl PgRunTx {
+         Ok(())
+     }
+ 
++    /// A chained child answers through its link. The owning parent transaction already locks
++    /// the parent, excluding initial child creation/link insertion; no match uses legacy handling.
++    /// Never combine a matching link mutation with an UPDATE of the existing child's run row.
++    async fn update_child_chain_link(
++        &mut self,
++        child: RunId,
++        cancel: bool,
++        finished: bool,
++    ) -> Result<bool, StoreError> {
++        let changed = sqlx::query(
++            "UPDATE child_chain_links SET cancel_requested = (cancel_requested OR $4), \
++                    settled = (settled OR ($5 AND final_outcome IS NOT NULL)), updated_at = $6 \
++             WHERE tenant_id = $1 AND parent_run_id = $2 AND child_chain_id = $3",
++        )
++        .bind(self.info.tenant_id.as_uuid())
++        .bind(self.info.run_id.as_uuid())
++        .bind(child.as_uuid())
++        .bind(cancel)
++        .bind(finished)
++        .bind(self.now)
++        .execute(&mut *self.tx)
++        .await
++        .map_err(store_error)?
++        .rows_affected();
++        Ok(changed != 0)
++    }
++
+     /// The parent is told the outcome (or no longer cares): the child need not notify it again.
+     /// `finished` says the outcome was applied to the parent's step (a child chain's link is then
+     /// settled); otherwise the parent only stopped caring and the link is merely latched.
+@@ -4896,30 +4923,21 @@ impl PgRunTx {
+         cancel: bool,
+         finished: bool,
+     ) -> Result<(), StoreError> {
++        if self
++            .update_child_chain_link(child, cancel, finished)
++            .await?
++        {
++            return Ok(());
++        }
+         sqlx::query(
+             "UPDATE runs SET parent_settled = true, \
+-                    parent_cancel = (parent_cancel OR ($3 AND finished_at IS NULL)) \
+-             WHERE tenant_id = $1 AND id = $2 AND parent_run_id IS NOT NULL",
++                    parent_cancel = (parent_cancel OR ($4 AND finished_at IS NULL)) \
++             WHERE tenant_id = $1 AND id = $2 AND parent_run_id = $3",
+         )
+         .bind(self.info.tenant_id.as_uuid())
+         .bind(child.as_uuid())
+-        .bind(cancel)
+-        .execute(&mut *self.tx)
+-        .await
+-        .map_err(store_error)?;
+-        // A child chain answers through its link: the parent's lock is the only one taken here, so
+-        // the latch can never wait for (or deadlock with) a hand-off holding the chain's locks.
+-        sqlx::query(
+-            "UPDATE child_chain_links SET cancel_requested = (cancel_requested OR $4), \
+-                    settled = (settled OR ($5 AND final_outcome IS NOT NULL)), updated_at = $6 \
+-             WHERE tenant_id = $1 AND parent_run_id = $2 AND child_chain_id = $3",
+-        )
+-        .bind(self.info.tenant_id.as_uuid())
+         .bind(self.info.run_id.as_uuid())
+-        .bind(child.as_uuid())
+         .bind(cancel)
+-        .bind(finished)
+-        .bind(self.now)
+         .execute(&mut *self.tx)
+         .await
+         .map_err(store_error)?;
+@@ -4929,8 +4947,8 @@ impl PgRunTx {
+     /// A `child` step of this run was cancelled (`settle`) or asked to stop: apply the node's cancel
+     /// policy to the child run it reserved, if it exists.
+     ///
+-    /// The flag is set by the parent, under the parent's lock; the scheduler then cancels the child
+-    /// under the child's own lock, so no transaction ever holds both.
++    /// A chained child's link latch is set under the parent's lock; the scheduler then cancels
++    /// the child under its own authority. Only children without a link use the legacy row flags.
+     async fn release_child(&mut self, node: &NodeId, settle: bool) -> Result<(), StoreError> {
+         let Some(NodeKind::Child { cancel_policy, .. }) =
+             self.def.node(node).map(sagat_domain::workflow::Node::kind)
+@@ -4954,23 +4972,19 @@ impl PgRunTx {
+         if settle {
+             self.settle_child(RunId::new(child), cascades, false).await
+         } else if cascades {
++            if self
++                .update_child_chain_link(RunId::new(child), true, false)
++                .await?
++            {
++                return Ok(());
++            }
+             sqlx::query(
+                 "UPDATE runs SET parent_cancel = true \
+-                 WHERE tenant_id = $1 AND id = $2 AND parent_run_id IS NOT NULL",
++                 WHERE tenant_id = $1 AND id = $2 AND parent_run_id = $3",
+             )
+             .bind(self.info.tenant_id.as_uuid())
+             .bind(child)
+-            .execute(&mut *self.tx)
+-            .await
+-            .map_err(store_error)?;
+-            sqlx::query(
+-                "UPDATE child_chain_links SET cancel_requested = true, updated_at = $4 \
+-                 WHERE tenant_id = $1 AND parent_run_id = $2 AND child_chain_id = $3",
+-            )
+-            .bind(self.info.tenant_id.as_uuid())
+             .bind(self.info.run_id.as_uuid())
+-            .bind(child)
+-            .bind(self.now)
+             .execute(&mut *self.tx)
+             .await
+             .map_err(store_error)?;

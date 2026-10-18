@@ -417,6 +417,18 @@ commits a new root alongside continuation. Their focused results do not establis
 child-link lock graph or nested collection capacity; see the
 [working lock inventory](../../tasks/project-completion/capacity-lock-inventory.md).
 
+A chained child's parent updates its link for cancellation/final notification; it does not update
+the first segment's legacy `parent_settled`/`parent_cancel` flags. Only children without a matching
+link use legacy flags, restricted to tenant and exact parent. The scheduler follows a cancelled
+link to its current child head. Diagnose failures through existing scheduler outcomes, cancellation
+audits and the `child.finished` journal event without logging payloads. Reproduce the three
+database trigger guards with:
+
+```sh
+SAGAT_TEST_AS_RUNTIME_ROLE=1 cargo test --locked -p sagat-tests \
+  --test fault_workflow_primitives chain_parent_ -- --test-threads=3 --nocapture
+```
+
 ### Publication diagnostic checks
 
 Validate an editable draft before publishing. Canonical schema errors have precedence (`SCHEMA`);
