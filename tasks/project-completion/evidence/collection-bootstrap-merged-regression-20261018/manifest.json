@@ -1,0 +1,29 @@
+{
+  "source_commit": "db2b04c6",
+  "source_changes_since_byte_gate": "c7f62b4a supplied-pool API constructor refactor and 8b8046e5 legacy under-limit test increment",
+  "result": {
+    "passed": 26,
+    "failed": 0,
+    "ignored": 0,
+    "filtered_out": 516,
+    "harness_seconds": 69.63,
+    "wall_seconds": 76.45
+  },
+  "native_input_count": 1125,
+  "before_after_equal": true,
+  "environment": {
+    "SAGAT_TEST_AS_RUNTIME_ROLE": "1",
+    "RUST_TEST_THREADS": "2",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_BUILD_JOBS": "3",
+    "RUST_MIN_STACK": "16777216",
+    "CARGO_TARGET_DIR": "/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target",
+    "database": "owned disposable PostgreSQL16 on loopback65117; trust test-only"
+  },
+  "artifacts": {
+    "runtime.json": "014ec7c69838886c8349487d295535f54cbe291309fc2d318b7cdbf46c1f03d8",
+    "runtime.txt": "aa53b8b61bb1842101ad09493d8d1c56076f5201289a568abab0df3b6898a624",
+    "source-after.json": "1873b5a47e575794950e8d39a61f018c04afa04c2e65069e0581b4aec2a8d924",
+    "source-before.json": "1873b5a47e575794950e8d39a61f018c04afa04c2e65069e0581b4aec2a8d924"
+  }
+}
