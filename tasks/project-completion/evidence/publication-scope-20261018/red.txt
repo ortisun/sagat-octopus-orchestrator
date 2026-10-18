@@ -1,0 +1,44 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 34.32s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 6 tests
+
+thread 'publication_rejections::a_body_edge_cycle_returns_invalid_scope_over_http' (76459469) panicked at tests/integration/workflow-primitives/publication_rejections.rs:82:5:
+assertion `left == right` failed: {"code":"VALIDATION_FAILED","details":{"reason":"GRAPH"},"message":"the graph has a cycle through node 'work'","remediation":"Correct what `details` names (a problem, a path) and send the request again.","requestId":"c566592a73fd4a27996086118776ab9b","retryable":false,"traceId":"7523d997e2244389b8bf16cfaa427d8f"}
+  left: String("GRAPH")
+ right: "INVALID_SCOPE"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'publication_rejections::a_recursive_body_returns_invalid_scope_over_http' (76459471) panicked at tests/integration/workflow-primitives/publication_rejections.rs:82:5:
+assertion `left == right` failed: {"code":"VALIDATION_FAILED","details":{"reason":"GRAPH"},"message":"body references contain a cycle through 'line'","remediation":"Correct what `details` names (a problem, a path) and send the request again.","requestId":"3500ae0df58e41f3ad97c32f40135995","retryable":false,"traceId":"a984c48b899f42d596e2bb2cf0f2a83d"}
+  left: String("GRAPH")
+ right: "INVALID_SCOPE"
+
+thread 'publication_rejections::a_body_route_into_the_root_returns_invalid_scope_over_http' (76459470) panicked at tests/integration/workflow-primitives/publication_rejections.rs:82:5:
+assertion `left == right` failed: {"code":"VALIDATION_FAILED","details":{"reason":"GRAPH"},"message":"node 'work' refers to 'done', which does not exist","remediation":"Correct what `details` names (a problem, a path) and send the request again.","requestId":"e120349fb9c541e58e5b495717df37b5","retryable":false,"traceId":"5f5670e5875747e8a05f1cae8a369aa6"}
+  left: String("GRAPH")
+ right: "INVALID_SCOPE"
+test publication_rejections::a_terminal_body_node_is_rejected_by_the_canonical_schema_over_http ... ok
+test publication_rejections::a_body_edge_cycle_returns_invalid_scope_over_http ... FAILED
+test publication_rejections::a_body_route_into_the_root_returns_invalid_scope_over_http ... FAILED
+test publication_rejections::a_recursive_body_returns_invalid_scope_over_http ... FAILED
+
+thread 'publication_rejections::overlapping_parallel_branches_return_invalid_scope_over_http' (76461046) panicked at tests/integration/workflow-primitives/publication_rejections.rs:82:5:
+assertion `left == right` failed: {"code":"VALIDATION_FAILED","details":{"reason":"GRAPH"},"message":"parallel node 'fork': branch regions of 'left' and 'right' overlap at 'shared'","remediation":"Correct what `details` names (a problem, a path) and send the request again.","requestId":"f96741657c1e4cc69804dd17a7f757f5","retryable":false,"traceId":"197c67e9ce5044a880a3f2f5057c156f"}
+  left: String("GRAPH")
+ right: "INVALID_SCOPE"
+test publication_rejections::an_object_literal_is_rejected_at_http_publication_before_execution ... ok
+test publication_rejections::overlapping_parallel_branches_return_invalid_scope_over_http ... FAILED
+
+failures:
+
+failures:
+    publication_rejections::a_body_edge_cycle_returns_invalid_scope_over_http
+    publication_rejections::a_body_route_into_the_root_returns_invalid_scope_over_http
+    publication_rejections::a_recursive_body_returns_invalid_scope_over_http
+    publication_rejections::overlapping_parallel_branches_return_invalid_scope_over_http
+
+test result: FAILED. 2 passed; 4 failed; 0 ignored; 0 measured; 370 filtered out; finished in 4.33s
+
+error: test failed, to rerun pass `-p sagat-tests --test integration_workflow_primitives`

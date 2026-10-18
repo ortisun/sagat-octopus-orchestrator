@@ -72,6 +72,8 @@ pub enum WorkflowError {
     InvalidEventType(String),
     #[error("invalid expression: {0}")]
     InvalidExpression(ExpressionViolation),
+    #[error("node '{node}': expression exceeds the supported limit of {limit} UTF-8 bytes")]
+    ExpressionByteLimit { node: NodeId, limit: usize },
     #[error("a workflow needs at least one node")]
     NoNodes,
     #[error("a workflow may have at most {MAX_NODES} nodes, found {0}")]
@@ -1758,7 +1760,10 @@ fn check_graph_kind(node: &Node, kind: GraphKind) -> Result<(), WorkflowError> {
                 return Err(invalid("switch cannot declare next, onError or timeout"));
             }
             if cases.iter().any(|case| case.when().as_str().len() > 1024) {
-                return Err(invalid("predicate exceeds the supported byte limit"));
+                return Err(WorkflowError::ExpressionByteLimit {
+                    node: node.id().clone(),
+                    limit: 1024,
+                });
             }
         }
         NodeKind::Approval { .. } => {
@@ -1898,10 +1903,10 @@ fn check_graph_kind(node: &Node, kind: GraphKind) -> Result<(), WorkflowError> {
             .iter()
             .any(|expression| expression.as_str().len() > 1024)
         {
-            return Err(scope_error(
-                node.id(),
-                "expression exceeds the supported byte limit",
-            ));
+            return Err(WorkflowError::ExpressionByteLimit {
+                node: node.id().clone(),
+                limit: 1024,
+            });
         }
     }
     Ok(())

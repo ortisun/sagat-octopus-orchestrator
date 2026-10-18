@@ -1,0 +1,21 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 35.52s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 1 test
+test publication_rejections::an_oversized_multibyte_expression_returns_expression_instead_of_scope ... 
+thread 'publication_rejections::an_oversized_multibyte_expression_returns_expression_instead_of_scope' (76950504) panicked at tests/integration/workflow-primitives/publication_rejections.rs:90:5:
+assertion `left == right` failed: {"code":"VALIDATION_FAILED","details":{"reason":"INVALID_SCOPE"},"message":"node 'returned': invalid structured scope (expression exceeds the supported byte limit)","remediation":"Keep the referenced node inside its declared body and remove recursive or overlapping scope paths.","requestId":"6659954973664a00b00fbf28a1fe377f","retryable":false,"traceId":"83226b79ec874b63a1b7158914a924de"}
+  left: String("INVALID_SCOPE")
+ right: "EXPRESSION"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    publication_rejections::an_oversized_multibyte_expression_returns_expression_instead_of_scope
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 377 filtered out; finished in 3.48s
+
+error: test failed, to rerun pass `-p sagat-tests --test integration_workflow_primitives`

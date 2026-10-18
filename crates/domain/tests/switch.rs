@@ -93,3 +93,13 @@ fn a_switch_has_at_least_one_case_and_cannot_declare_an_error_route() {
     .expect_err("switch cannot catch predicate errors");
     assert!(matches!(invalid, WorkflowError::InvalidSwitch { .. }));
 }
+
+#[test]
+fn a_switch_predicate_reports_its_effective_expression_byte_limit() {
+    let predicate = format!("'{}'", "é".repeat(600));
+    assert!(matches!(
+        definition(vec![case("one", &predicate, "first")]),
+        Err(WorkflowError::ExpressionByteLimit { node, limit: 1024 })
+            if node.as_str() == "choose"
+    ));
+}

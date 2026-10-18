@@ -17,6 +17,12 @@ tasks stay open until their named tests pass.
 The design retains an acyclic immutable IR, adds durable scoped instance identities and reuses the
 pure reducer, PostgreSQL transaction boundary, leases, quotas and outbox.
 
+T014-004 publication fixtures use the public HTTP draft validation/publication paths under the
+runtime database role. Preserve named-body provenance at the IR adapter and typed expression
+byte-limit causes in the domain; the HTTP adapter classifies these without matching message text.
+Check schema-first precedence, root graph compatibility, trace identity and absence of a published
+version after rejection. Five-SDK authoring/runtime cases remain a separate common contract.
+
 ## Technical Context
 
 **Language/Version**: Rust 1.98.0 from `rust-toolchain.toml`; existing locked TypeScript, Go, Python,

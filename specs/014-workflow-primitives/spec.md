@@ -52,6 +52,12 @@ to existing child creation and evaluated continuation, independently of nested c
 Other collection and loop graphs and nested scopes remain closed for general publication. The
 remaining acceptance and release evidence is tracked
 in [the validation report](./validation-report.md).
+
+Publication diagnostics preserve schema-first rejection. Cyclic, escaping, overlapping or
+recursive graphs that pass the schema return `INVALID_SCOPE`; unsupported expression literals
+and effective expression byte-limit failures return `EXPRESSION`. An ordinary dangling root
+edge retains `GRAPH`. A rejected draft creates no published version. These diagnostics do not
+widen the accepted runtime shapes.
 [ADR-0030](../../docs/adr/ADR-0030-structured-instances-and-continuation-chains.md) accepts the
 execution design and [ADR-0031](../../docs/adr/ADR-0031-declared-operation-result-disclosure.md)
 accepts the declared-result disclosure policy. [ADR-0032](../../docs/adr/ADR-0032-additive-workflow-ir.md)

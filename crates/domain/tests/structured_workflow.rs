@@ -388,7 +388,13 @@ fn collection_limits_and_effective_expression_bytes_are_validated() {
     let oversized =
         Expression::parse(&"é".repeat(513)).expect("legacy wrapper permits up to 2048 bytes");
     let invalid = Node::new(id("return"), NodeKind::Return { result: oversized });
-    assert!(BodyDefinition::new(id("line"), id("return"), vec![invalid]).is_err());
+    assert_eq!(
+        BodyDefinition::new(id("line"), id("return"), vec![invalid]),
+        Err(WorkflowError::ExpressionByteLimit {
+            node: id("return"),
+            limit: 1024,
+        })
+    );
     let mut nodes = root_nodes("line");
     nodes[0] = Node::new(
         id("items"),

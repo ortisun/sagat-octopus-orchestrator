@@ -1,0 +1,61 @@
+[
+  {
+    "log": "contract.txt",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "contract_workflow_primitives",
+      "--",
+      "--nocapture"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 8.36
+  },
+  {
+    "log": "infra-ir-final.txt",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-infra-ir"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 80.84
+  },
+  {
+    "log": "integration.txt",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "--",
+      "--test-threads=3"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 247.16
+  },
+  {
+    "log": "clippy.txt",
+    "command": [
+      "cargo",
+      "clippy",
+      "--locked",
+      "--workspace",
+      "--all-targets",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 104.07
+  }
+]

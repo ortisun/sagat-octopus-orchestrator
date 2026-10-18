@@ -434,6 +434,15 @@ error codes.
 `tests/contract/workflow-primitives/errors.rs` reads this table: every reason it introduces has a
 specific remediation row and is named in the OpenAPI `Error.details` description (D292).
 
+Publication validates the canonical schema first: a forbidden `end`/`continueAsNew` body node
+therefore returns `SCHEMA`, before graph-scope validation. A missing target in a named body
+returns `INVALID_SCOPE` with `details.body` and `details.node`; an ordinary missing root target
+keeps `GRAPH`. Dry-run validation keeps the body's existing `UNKNOWN_TARGET` problem code and
+adds its `/bodies/{body}` path. Effective expression length is measured in UTF-8 bytes, including
+switch predicates: exceeding 1024 bytes returns `EXPRESSION` with the node and byte limit, even
+when the string passes the schema's character limit. The byte-limit diagnostic contains no
+expression content.
+
 Workflow deadlines use existing TIMED_OUT behavior; request wait deadlines do not implicitly cancel
 runs/updates. T014-006 adds the new reasons and their remediation rows to the canonical OpenAPI
 and to `crates/api-http/src/error.rs` together, and checks each mapping against the existing ones.

@@ -13,6 +13,7 @@ use sagat_application::definitions::IrError;
 use sagat_application::error::{AccessDenial, AppError, ConflictKind};
 use sagat_domain::execution::ApprovalError;
 use sagat_domain::scripts::ScriptError;
+use sagat_domain::workflow::WorkflowError;
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -838,6 +839,24 @@ fn definition_details(error: &IrError) -> Value {
         }
         IrError::TooLarge => json!({ "reason": "TOO_LARGE" }),
         IrError::Malformed => json!({ "reason": "MALFORMED" }),
+        IrError::EscapingBodyEdge { body, from, .. } => {
+            json!({ "reason": "INVALID_SCOPE", "body": body.as_str(), "node": from.as_str() })
+        }
+        IrError::Invalid(WorkflowError::ExpressionByteLimit { node, limit }) => {
+            json!({ "reason": "EXPRESSION", "node": node.as_str(), "limit": limit })
+        }
+        IrError::Invalid(
+            WorkflowError::InvalidScope { .. }
+            | WorkflowError::RecursiveBody(_)
+            | WorkflowError::UnknownBody { .. }
+            | WorkflowError::Cycle(_)
+            | WorkflowError::BranchOverlap { .. }
+            | WorkflowError::BranchBoundary { .. }
+            | WorkflowError::SagaBoundary { .. }
+            | WorkflowError::EndInsideBranch { .. }
+            | WorkflowError::EndInsideSaga { .. }
+            | WorkflowError::BodyDepthExceeded(_),
+        ) => json!({ "reason": "INVALID_SCOPE" }),
         IrError::Invalid(_) => json!({ "reason": "GRAPH" }),
     }
 }

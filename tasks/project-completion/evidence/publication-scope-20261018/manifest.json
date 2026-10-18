@@ -1,0 +1,327 @@
+{
+  "source_base": "72c8ddf0a4ee4130905f56944a35306b41bfb895",
+  "scope": "T014-004 publication fixtures and typed error provenance; no new executable workflow shape",
+  "recorded_utc": "2026-10-18T04:02:59.208342+00:00",
+  "environment": {
+    "system": "Darwin arm64",
+    "toolchain": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+    "external_db_url": false,
+    "runtime_role": true,
+    "postgres": "repository disposable PostgreSQL fixture",
+    "cargo_target_dir": "/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target"
+  },
+  "results": {
+    "contract.txt": {
+      "targets": 1,
+      "passed": 47,
+      "failed": 0,
+      "ignored": 0,
+      "target_seconds": [
+        "0.50s"
+      ]
+    },
+    "final-http-with-wrapper.txt": {
+      "targets": 1,
+      "passed": 10,
+      "failed": 0,
+      "ignored": 0,
+      "target_seconds": [
+        "9.83s"
+      ]
+    },
+    "final-http.txt": {
+      "targets": 1,
+      "passed": 9,
+      "failed": 0,
+      "ignored": 0,
+      "target_seconds": [
+        "7.68s"
+      ]
+    },
+    "green.txt": {
+      "targets": 1,
+      "passed": 7,
+      "failed": 0,
+      "ignored": 0,
+      "target_seconds": [
+        "4.60s"
+      ]
+    },
+    "infra-ir-final.txt": {
+      "targets": 18,
+      "passed": 169,
+      "failed": 0,
+      "ignored": 0,
+      "target_seconds": [
+        "0.06s",
+        "0.14s",
+        "0.01s",
+        "10.81s",
+        "0.02s",
+        "0.01s",
+        "0.24s",
+        "0.02s",
+        "0.03s",
+        "0.13s",
+        "0.01s",
+        "0.03s",
+        "0.26s",
+        "0.00s",
+        "0.02s",
+        "0.02s",
+        "0.00s",
+        "0.00s"
+      ]
+    },
+    "initial-mixed-oracle.txt": {
+      "targets": 1,
+      "passed": 1,
+      "failed": 3,
+      "ignored": 0,
+      "target_seconds": [
+        "2.53s"
+      ]
+    },
+    "integration.txt": {
+      "targets": 1,
+      "passed": 379,
+      "failed": 0,
+      "ignored": 1,
+      "target_seconds": [
+        "246.25s"
+      ]
+    },
+    "multibyte-red.txt": {
+      "targets": 1,
+      "passed": 0,
+      "failed": 1,
+      "ignored": 0,
+      "target_seconds": [
+        "3.48s"
+      ]
+    },
+    "native.txt": {
+      "targets": 77,
+      "passed": 971,
+      "failed": 0,
+      "ignored": 0,
+      "target_seconds": [
+        "5.59s",
+        "0.02s",
+        "2.73s",
+        "0.00s",
+        "0.00s",
+        "0.05s",
+        "0.13s",
+        "0.00s",
+        "0.00s",
+        "0.00s",
+        "0.12s",
+        "0.00s",
+        "0.00s",
+        "0.00s",
+        "0.00s",
+        "0.00s",
+        "0.00s",
+        "0.00s",
+        "0.00s",
+        "0.00s",
+        "0.00s",
+        "0.00s",
+        "0.00s",
+        "0.01s",
+        "0.22s",
+        "0.02s",
+        "0.00s",
+        "0.00s",
+        "0.30s",
+        "0.00s",
+        "0.00s",
+        "0.00s",
+        "0.00s",
+        "0.00s",
+        "0.00s",
+        "0.00s",
+        "0.00s",
+        "14.46s",
+        "0.00s",
+        "0.00s",
+        "0.00s",
+        "0.00s",
+        "0.00s",
+        "0.00s",
+        "0.01s",
+        "0.01s",
+        "0.00s",
+        "0.00s",
+        "0.38s",
+        "0.00s",
+        "0.11s",
+        "0.00s",
+        "0.00s",
+        "0.00s",
+        "1.32s",
+        "0.00s",
+        "0.06s",
+        "0.14s",
+        "0.01s",
+        "11.28s",
+        "0.02s",
+        "0.01s",
+        "0.25s",
+        "0.02s",
+        "0.03s",
+        "0.13s",
+        "0.01s",
+        "0.03s",
+        "0.27s",
+        "0.00s",
+        "0.03s",
+        "0.03s",
+        "0.00s",
+        "0.00s",
+        "0.00s",
+        "0.00s",
+        "0.00s"
+      ]
+    },
+    "red.txt": {
+      "targets": 1,
+      "passed": 2,
+      "failed": 4,
+      "ignored": 0,
+      "target_seconds": [
+        "4.33s"
+      ]
+    },
+    "wrapper-red.txt": {
+      "targets": 1,
+      "passed": 0,
+      "failed": 1,
+      "ignored": 0,
+      "target_seconds": [
+        "2.15s"
+      ]
+    }
+  },
+  "gates": [
+    {
+      "log": "contract.txt",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "contract_workflow_primitives",
+        "--",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 8.36
+    },
+    {
+      "log": "infra-ir-final.txt",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-infra-ir"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 80.84
+    },
+    {
+      "log": "integration.txt",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "--",
+        "--test-threads=3"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 247.16
+    },
+    {
+      "log": "clippy.txt",
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "--workspace",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 104.07
+    }
+  ],
+  "native_scope": "971 tests in four packages before final adapter precheck; all169 IR tests rerun after; overlapping counts, not unique sum",
+  "review": {
+    "cycles": 3,
+    "model": "gpt-6-astra",
+    "reasoning": "xhigh",
+    "read_only": true,
+    "reviewers_ran_tests": false,
+    "external_cli": false,
+    "final_adapter_precheck": "root reconciled third finding with failing public test and final gates; no fourth independent review"
+  },
+  "limits": [
+    "One long10000-completion integration test ignored, not counted as pass",
+    "10000-reference ordered materialization and10001 refusal passed in379-test regression",
+    "No full58 SDK matrix, workspace execution, Compose, advisory or release claim",
+    "Canonical T014-014..017 and040..044 remain open; T016-001 awaits specification merge"
+  ],
+  "source_sha256": {
+    ".gitattributes": "7e733dfe089f736413f660f1110f801658b27822167f95e84abb50edf31bd37c",
+    "crates/api-http/src/error.rs": "67194a511faaded897107d333932edf76f5e2d4e28ec87a0a869cef419dfca39",
+    "crates/application/src/definitions.rs": "824eba04be60877777750e0b07d96ecb613e36855ecf74c62622a5e853b393aa",
+    "crates/application/tests/definition_service.rs": "717a46c6129b1cb0cd920e20865d44c4ca6242319a3cb7ce85b05a55ff5157cb",
+    "crates/domain/src/workflow.rs": "f58a4f5738d5ba95e47efe4d4a0384e230ca7118478f94a180810a0c49a4e3b8",
+    "crates/domain/tests/structured_workflow.rs": "4e4b19534c10980c8f79ab4e51698167ad5f0979519a00675778db5fa9b8d78f",
+    "crates/domain/tests/switch.rs": "64eac96f0e23f8777dc320cc67faf6956f6637b508866d4f95f495a4e7baed16",
+    "crates/infra-ir/src/convert.rs": "fc55881ad1e9dd13f63f29eeb8f53f1766c918a6fbed0536d8f386ba6256e612",
+    "crates/infra-ir/tests/codec.rs": "c4d077a1d647fe1951c36a0db34b6fbec3b1782a220568e03357d8147c3f3d79",
+    "docs/runbooks/workflow-primitives.md": "cd158dc9f03e14e0da5d0e9ac8d7b3712f67a14e4843a3ffefb6dc32cb507dbf",
+    "docs/traceability.md": "334a51964d57a1076e8635d8b5e855ca0bc13c452e72ab0c76b1377b0282083e",
+    "specs/014-workflow-primitives/contracts/README.md": "11cdab900021f73aa20f011bb6654e829fb9af05e7295f96dc16ce5f112f8aa9",
+    "specs/014-workflow-primitives/plan.md": "20b659415848e78a6f0f6d85aec606d6f822aab7cddbeeea4cd299a054242920",
+    "specs/014-workflow-primitives/research.md": "aa8a54e775488b673c589f5d4fb114916c4e0e1fa9379742952a2a9d2350d097",
+    "specs/014-workflow-primitives/spec.md": "d881e4859f6473c83d6750698a7067bbc964b03079830cce87541a9e6a227f70",
+    "specs/014-workflow-primitives/tasks.md": "dba201242227e7eec525d096cffd93ff0a421d777da9334bc37d68ff9c2a85c1",
+    "specs/014-workflow-primitives/validation-report.md": "0d170e3bbff3725ee48feec6d289219fef014c2b60adea0688439a10669bc2bd",
+    "tasks/project-completion/integration-notes.md": "2a424c411c6be018d5719fc21a712fa65661404aede96bf8f40987d66b85ea2b",
+    "tasks/project-completion/todo.md": "78f5a93d87a489dc537cb3eef9482da3c39b2c47bb01e22bb0683bf56fdec02f",
+    "tests/integration/workflow-primitives/main.rs": "c3dd2da82a21d0e86acf969c070135dd882505692751e78be6ff664fe62d96b4",
+    "tests/integration/workflow-primitives/publication_rejections.rs": "c54d43aea14690e4753284725aac0c2d41a9b40874c101c5530d3de57a31c19a"
+  },
+  "evidence_sha256": {
+    "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "clippy.txt": "7140b07bcf5b952d2662105fe50699f0bf91e36071a274110b0e91caae0596aa",
+    "commands.md": "d675d86c6bbfb34f18fe35763ef98b062f4d5c10a7008ceb76e29d4faa01de9c",
+    "contract.txt": "e483b5cdde697abc80294fb9a5a124a3d2c9cbd4f3dfed5fc907b641a3915fc8",
+    "final-http-with-wrapper.txt": "16f7d8b7d3ac8fb136fc3d8bc4533fc8d7273c464719cdc532b3969b06763dbe",
+    "final-http.txt": "480f66e95b52052765e7cb4dcb263715d60597faa10c70eaa247242f8a5cfe02",
+    "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "gate-commands.json": "0da301129c7659cec2de5448fe77b2417218542facca3fd35d950c6eac701531",
+    "green.txt": "8e9f15bfcf9481f8e454bd708105a09d0de2516c55f569e6eaa142a51de3bb9e",
+    "infra-ir-final.txt": "848cdc1e6a1ea9db73513911017a71f3219cc9dcfc6e1b167b8a7d401689a2ce",
+    "initial-mixed-oracle.txt": "1aa445fade50bf63cee781202b1d0e43299af02d925fbd2bde9f8ca7aea7075a",
+    "integration.txt": "10af64e903ed45cbcb5407162d7fd5c7af038325a6ad915da7226bcd40ab800d",
+    "multibyte-red.txt": "03cda6cc72f3e615733987db43335bd50e585e0a7eac19a2d14230e68849f3e3",
+    "native.txt": "d7a32a5b8055b177f08720d5598c208be516ec5840350337fa3e519068ae0b77",
+    "production.diff": "8efd1d3c4d51ef34427514bf3e7b0e4b4b4d2cc5da587df6b25df1d607d57b07",
+    "red.txt": "ba87531d0ddfb62c52f26ebd8a56bb020c184b25303785a8778752f1cbee102b",
+    "review.md": "542b9545b0e3da4466b6c76255bf5a6ff5bd2478639bc21ea34c84acc84f0d8e",
+    "wrapper-red.txt": "65f7a5454886247a4e9379492da3887643a319c581e72ae1623a2ed6af1f4ab8"
+  }
+}

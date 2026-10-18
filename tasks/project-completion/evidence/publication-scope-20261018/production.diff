@@ -1,0 +1,195 @@
+diff --git a/crates/api-http/src/error.rs b/crates/api-http/src/error.rs
+index 2ae4fea0..632db4e6 100644
+--- a/crates/api-http/src/error.rs
++++ b/crates/api-http/src/error.rs
+@@ -13,6 +13,7 @@ use sagat_application::definitions::IrError;
+ use sagat_application::error::{AccessDenial, AppError, ConflictKind};
+ use sagat_domain::execution::ApprovalError;
+ use sagat_domain::scripts::ScriptError;
++use sagat_domain::workflow::WorkflowError;
+ use serde::Serialize;
+ use serde_json::{Value, json};
+ 
+@@ -838,6 +839,24 @@ fn definition_details(error: &IrError) -> Value {
+         }
+         IrError::TooLarge => json!({ "reason": "TOO_LARGE" }),
+         IrError::Malformed => json!({ "reason": "MALFORMED" }),
++        IrError::EscapingBodyEdge { body, from, .. } => {
++            json!({ "reason": "INVALID_SCOPE", "body": body.as_str(), "node": from.as_str() })
++        }
++        IrError::Invalid(WorkflowError::ExpressionByteLimit { node, limit }) => {
++            json!({ "reason": "EXPRESSION", "node": node.as_str(), "limit": limit })
++        }
++        IrError::Invalid(
++            WorkflowError::InvalidScope { .. }
++            | WorkflowError::RecursiveBody(_)
++            | WorkflowError::UnknownBody { .. }
++            | WorkflowError::Cycle(_)
++            | WorkflowError::BranchOverlap { .. }
++            | WorkflowError::BranchBoundary { .. }
++            | WorkflowError::SagaBoundary { .. }
++            | WorkflowError::EndInsideBranch { .. }
++            | WorkflowError::EndInsideSaga { .. }
++            | WorkflowError::BodyDepthExceeded(_),
++        ) => json!({ "reason": "INVALID_SCOPE" }),
+         IrError::Invalid(_) => json!({ "reason": "GRAPH" }),
+     }
+ }
+diff --git a/crates/application/src/definitions.rs b/crates/application/src/definitions.rs
+index de3433c4..5337fdbc 100644
+--- a/crates/application/src/definitions.rs
++++ b/crates/application/src/definitions.rs
+@@ -13,7 +13,7 @@ use sagat_domain::definition::{Workflow, WorkflowId, WorkflowVersion, WorkflowVe
+ use sagat_domain::identity::{Namespace, NamespaceId, Permission, Principal, Slug, TenantId};
+ use sagat_domain::saga::{SagaPlan, compensation_plans};
+ use sagat_domain::workflow::{
+-    DefinitionWarning, Digest, NodeKind, WorkflowDefinition, WorkflowError,
++    DefinitionWarning, Digest, NodeId, NodeKind, WorkflowDefinition, WorkflowError,
+ };
+ use time::OffsetDateTime;
+ 
+@@ -125,6 +125,13 @@ pub enum IrError {
+     },
+     #[error("{0}")]
+     Invalid(WorkflowError),
++    /// Unlike an ordinary missing root target, this edge leaves its named body's closed graph.
++    #[error("body '{body}': node '{from}' references '{to}' outside its declared body")]
++    EscapingBodyEdge {
++        body: NodeId,
++        from: NodeId,
++        to: NodeId,
++    },
+     #[error("node '{node}', field '{field}': {message}")]
+     Expression {
+         node: String,
+@@ -262,6 +269,11 @@ pub fn problems_of(error: &IrError) -> Vec<Problem> {
+                 None => problem,
+             }]
+         }
++        IrError::EscapingBodyEdge { body, from, .. } => vec![
++            Problem::error("UNKNOWN_TARGET", error.to_string())
++                .at_node(from.to_string())
++                .at_path(format!("/bodies/{body}")),
++        ],
+     }
+ }
+ 
+@@ -274,6 +286,7 @@ fn graph_rule(error: &WorkflowError) -> (&'static str, Option<String>) {
+         E::InvalidActivityName(_) => ("INVALID_ACTIVITY_NAME", None),
+         E::InvalidEventType(_) => ("INVALID_EVENT_TYPE", None),
+         E::InvalidExpression(_) => ("INVALID_EXPRESSION", None),
++        E::ExpressionByteLimit { node, .. } => ("EXPRESSION", Some(node.to_string())),
+         E::NoNodes => ("NO_NODES", None),
+         E::TooManyNodes(_) => ("TOO_MANY_NODES", None),
+         E::TooManyParallels(_) => ("TOO_MANY_PARALLELS", None),
+diff --git a/crates/domain/src/workflow.rs b/crates/domain/src/workflow.rs
+index bf4ee543..b71cd6cd 100644
+--- a/crates/domain/src/workflow.rs
++++ b/crates/domain/src/workflow.rs
+@@ -72,6 +72,8 @@ pub enum WorkflowError {
+     InvalidEventType(String),
+     #[error("invalid expression: {0}")]
+     InvalidExpression(ExpressionViolation),
++    #[error("node '{node}': expression exceeds the supported limit of {limit} UTF-8 bytes")]
++    ExpressionByteLimit { node: NodeId, limit: usize },
+     #[error("a workflow needs at least one node")]
+     NoNodes,
+     #[error("a workflow may have at most {MAX_NODES} nodes, found {0}")]
+@@ -1758,7 +1760,10 @@ fn check_graph_kind(node: &Node, kind: GraphKind) -> Result<(), WorkflowError> {
+                 return Err(invalid("switch cannot declare next, onError or timeout"));
+             }
+             if cases.iter().any(|case| case.when().as_str().len() > 1024) {
+-                return Err(invalid("predicate exceeds the supported byte limit"));
++                return Err(WorkflowError::ExpressionByteLimit {
++                    node: node.id().clone(),
++                    limit: 1024,
++                });
+             }
+         }
+         NodeKind::Approval { .. } => {
+@@ -1898,10 +1903,10 @@ fn check_graph_kind(node: &Node, kind: GraphKind) -> Result<(), WorkflowError> {
+             .iter()
+             .any(|expression| expression.as_str().len() > 1024)
+         {
+-            return Err(scope_error(
+-                node.id(),
+-                "expression exceeds the supported byte limit",
+-            ));
++            return Err(WorkflowError::ExpressionByteLimit {
++                node: node.id().clone(),
++                limit: 1024,
++            });
+         }
+     }
+     Ok(())
+diff --git a/crates/infra-ir/src/convert.rs b/crates/infra-ir/src/convert.rs
+index ce25e308..dcba807a 100644
+--- a/crates/infra-ir/src/convert.rs
++++ b/crates/infra-ir/src/convert.rs
+@@ -62,10 +62,6 @@ fn node_id(value: &str, at: &str) -> Result<NodeId, IrError> {
+     NodeId::parse(value).map_err(|e| issue(at.to_owned(), e.to_string()))
+ }
+ 
+-fn expression(value: &str, at: &str) -> Result<Expression, IrError> {
+-    Expression::parse(value).map_err(|e| issue(at.to_owned(), e.to_string()))
+-}
+-
+ fn reference(node: &Map<String, Value>, field: &str, at: &str) -> Result<Option<NodeId>, IrError> {
+     optional_text(node, field, at)?
+         .map(|v| node_id(v, &format!("{at}/{field}")))
+@@ -222,7 +218,24 @@ fn secrets(node: &Map<String, Value>, at: &str) -> Result<Vec<SecretName>, IrErr
+     Ok(names)
+ }
+ 
+-fn kind_of(node: &Map<String, Value>, kind: &str, at: &str) -> Result<NodeKind, IrError> {
++fn kind_of(
++    node: &Map<String, Value>,
++    kind: &str,
++    at: &str,
++    id: &NodeId,
++    structured: bool,
++) -> Result<NodeKind, IrError> {
++    let expression = |value: &str, path: &str| {
++        // Reject the effective bound before the legacy 2048-byte wrapper can erase the cause.
++        // Schema maxLength counts characters, so a schema-valid multibyte value can exceed both.
++        if (structured || kind == "switch") && value.len() > 1024 {
++            return Err(IrError::Invalid(WorkflowError::ExpressionByteLimit {
++                node: id.clone(),
++                limit: 1024,
++            }));
++        }
++        Expression::parse(value).map_err(|error| issue(path.to_owned(), error.to_string()))
++    };
+     Ok(match kind {
+         "activity" => NodeKind::Activity {
+             activity: ActivityName::parse(text(node, "activity", at)?).map_err(IrError::Invalid)?,
+@@ -510,7 +523,8 @@ fn nodes(raw_nodes: &[Value], at: &str, structured: bool) -> Result<Vec<Node>, I
+         let mut built = if kind == "database" {
+             Node::database(id, crate::database::operation(node, &at)?)
+         } else {
+-            Node::new(id, kind_of(node, kind, &at)?)
++            let kind = kind_of(node, kind, &at, &id, structured)?;
++            Node::new(id, kind)
+         };
+         if let Some(next) = reference(node, "next", &at)? {
+             built = built.with_next(next);
+@@ -1048,7 +1062,18 @@ fn structured_definition_with_policy(
+                 .and_then(Value::as_array)
+                 .ok_or_else(|| issue(format!("{at}/nodes"), "expected an array"))?;
+             let nodes = nodes(raw_nodes, &format!("{at}/nodes"), true)?;
+-            bodies.push(BodyDefinition::new(name, entrypoint, nodes).map_err(IrError::Invalid)?);
++            bodies.push(
++                BodyDefinition::new(name.clone(), entrypoint, nodes).map_err(
++                    |error| match error {
++                        WorkflowError::UnknownTarget { from, to } => IrError::EscapingBodyEdge {
++                            body: name,
++                            from,
++                            to,
++                        },
++                        other => IrError::Invalid(other),
++                    },
++                )?,
++            );
+         }
+     }
+     let limits = document_limits(document)?;

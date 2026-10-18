@@ -241,7 +241,8 @@ fn structured_validation_enforces_closed_bodies_and_capability_boundaries() {
 
     assert!(matches!(
         JsonIrCodec.parse_structured(document.to_string().as_bytes()),
-        Err(IrError::Invalid(WorkflowError::UnknownTarget { .. }))
+        Err(IrError::EscapingBodyEdge { body, from, to })
+            if body.as_str() == "line" && from.as_str() == "work" && to.as_str() == "done"
     ));
 
     document["bodies"]["line"]["nodes"] = json!([
@@ -479,8 +480,8 @@ fn structured_loop_limits_and_body_boundaries_fail_before_runtime() {
     oversized_expression["nodes"][0]["condition"] = json!("é".repeat(513));
     assert!(matches!(
         JsonIrCodec.parse_structured(oversized_expression.to_string().as_bytes()),
-        Err(IrError::Invalid(WorkflowError::InvalidScope { node, reason }))
-            if node.as_str() == "poll" && reason.contains("expression")
+        Err(IrError::Invalid(WorkflowError::ExpressionByteLimit { node, limit: 1024 }))
+            if node.as_str() == "poll"
     ));
 }
 

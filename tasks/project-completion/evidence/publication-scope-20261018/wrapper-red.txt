@@ -1,0 +1,21 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 35.47s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 1 test
+test publication_rejections::a_multibyte_expression_above_the_legacy_wrapper_limit_returns_expression ... 
+thread 'publication_rejections::a_multibyte_expression_above_the_legacy_wrapper_limit_returns_expression' (77238326) panicked at tests/integration/workflow-primitives/publication_rejections.rs:112:5:
+assertion `left == right` failed: {"code":"VALIDATION_FAILED","details":{"issues":[{"message":"invalid expression: must be at most 2048 bytes","path":"/bodies/line/nodes/1/result"}],"reason":"SCHEMA"},"message":"the document does not match the workflow schema (1 problem(s))","remediation":"Correct what `details` names (a problem, a path) and send the request again.","requestId":"45353879f9064e7db538cf1f068f6ef0","retryable":false,"traceId":"40dfac5243eb4494b1f7dbd7076b8376"}
+  left: String("SCHEMA")
+ right: "EXPRESSION"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    publication_rejections::a_multibyte_expression_above_the_legacy_wrapper_limit_returns_expression
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 379 filtered out; finished in 2.15s
+
+error: test failed, to rerun pass `-p sagat-tests --test integration_workflow_primitives`

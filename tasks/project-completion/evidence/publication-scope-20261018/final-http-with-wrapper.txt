@@ -1,0 +1,23 @@
+   Compiling sagat-infra-ir v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-ir)
+   Compiling sagat-control-plane v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/control-plane)
+   Compiling sagat-cli v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/cli)
+   Compiling sagat-sandbox-runner v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/sandbox-runner)
+   Compiling sagat-execution-engine v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/execution-engine)
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 40.06s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 10 tests
+test publication_rejections::a_body_route_into_the_root_returns_invalid_scope_over_http ... ok
+test publication_rejections::a_multibyte_expression_above_the_legacy_wrapper_limit_returns_expression ... ok
+test publication_rejections::a_body_edge_cycle_returns_invalid_scope_over_http ... ok
+test publication_rejections::a_recursive_body_returns_invalid_scope_over_http ... ok
+test publication_rejections::an_object_literal_is_rejected_at_http_publication_before_execution ... ok
+test publication_rejections::a_terminal_body_node_is_rejected_by_the_canonical_schema_over_http ... ok
+test publication_rejections::an_ordinary_missing_root_target_keeps_the_existing_graph_reason ... ok
+test publication_rejections::an_oversized_multibyte_expression_returns_expression_instead_of_scope ... ok
+test publication_rejections::an_oversized_multibyte_switch_predicate_returns_expression_over_http ... ok
+test publication_rejections::overlapping_parallel_branches_return_invalid_scope_over_http ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 370 filtered out; finished in 9.83s
+

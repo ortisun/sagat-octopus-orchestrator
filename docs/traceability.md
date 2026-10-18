@@ -456,3 +456,18 @@ in feature014's spec/plan/data model; reproduction is in the workflow-primitives
 The validation report and `tasks/project-completion/evidence/child-root-fk-20261018/` retain
 failed fixtures separately from behavioral RED and subsequent GREEN. B0's complete lock graph,
 nested capacity and canonical release tasks remain open.
+
+
+### Public publication fixture checkpoint — 2026-10-18
+
+FR-014-003/015/016, T014-004: the 47 native primitive contracts and 10 public HTTP draft/publication
+rejections pass. Scope errors retain named-body provenance; ordinary root dangling edges retain
+GRAPH. Unsupported object literals and 1024-byte effective expression failures use EXPRESSION,
+including schema-valid multibyte strings above the legacy wrapper limit. Trace/header correlation
+and independent no-version SQL assertions accompany every HTTP case; the byte-limit diagnostic
+contains no expression content. The public reproduction command and operator remediation are in
+`docs/runbooks/workflow-primitives.md`. Three bounded review findings and exact failures/source/
+results are in `tasks/project-completion/evidence/publication-scope-20261018/manifest.json`.
+Together with existing five-SDK instance-limit evidence and fresh ordered10,000-reference
+materialization in the379-test runtime-role regression,
+this closes the fixture task; broader runtime and shared release tasks remain unchecked.

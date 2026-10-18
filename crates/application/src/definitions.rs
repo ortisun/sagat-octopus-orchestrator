@@ -13,7 +13,7 @@ use sagat_domain::definition::{Workflow, WorkflowId, WorkflowVersion, WorkflowVe
 use sagat_domain::identity::{Namespace, NamespaceId, Permission, Principal, Slug, TenantId};
 use sagat_domain::saga::{SagaPlan, compensation_plans};
 use sagat_domain::workflow::{
-    DefinitionWarning, Digest, NodeKind, WorkflowDefinition, WorkflowError,
+    DefinitionWarning, Digest, NodeId, NodeKind, WorkflowDefinition, WorkflowError,
 };
 use time::OffsetDateTime;
 
@@ -125,6 +125,13 @@ pub enum IrError {
     },
     #[error("{0}")]
     Invalid(WorkflowError),
+    /// Unlike an ordinary missing root target, this edge leaves its named body's closed graph.
+    #[error("body '{body}': node '{from}' references '{to}' outside its declared body")]
+    EscapingBodyEdge {
+        body: NodeId,
+        from: NodeId,
+        to: NodeId,
+    },
     #[error("node '{node}', field '{field}': {message}")]
     Expression {
         node: String,
@@ -262,6 +269,11 @@ pub fn problems_of(error: &IrError) -> Vec<Problem> {
                 None => problem,
             }]
         }
+        IrError::EscapingBodyEdge { body, from, .. } => vec![
+            Problem::error("UNKNOWN_TARGET", error.to_string())
+                .at_node(from.to_string())
+                .at_path(format!("/bodies/{body}")),
+        ],
     }
 }
 
@@ -274,6 +286,7 @@ fn graph_rule(error: &WorkflowError) -> (&'static str, Option<String>) {
         E::InvalidActivityName(_) => ("INVALID_ACTIVITY_NAME", None),
         E::InvalidEventType(_) => ("INVALID_EVENT_TYPE", None),
         E::InvalidExpression(_) => ("INVALID_EXPRESSION", None),
+        E::ExpressionByteLimit { node, .. } => ("EXPRESSION", Some(node.to_string())),
         E::NoNodes => ("NO_NODES", None),
         E::TooManyNodes(_) => ("TOO_MANY_NODES", None),
         E::TooManyParallels(_) => ("TOO_MANY_PARALLELS", None),

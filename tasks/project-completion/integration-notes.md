@@ -1601,3 +1601,40 @@ registry preflight passed1/1 with58 scenarios. This is focused evidence, not an 
 Exact commands/hashes/results are in tasks/project-completion/evidence/sdk-instance-limits-20261018/manifest.json.
 T014-004 still needs its public HTTP malformed-scope/object-literal evidence; canonical broader
 runtime, nesting and release tasks remain open. G425's old SDK-authoring limitation is resolved.
+
+
+## 2026-10-18 — Public publication diagnostics and T014-004 fixtures
+
+Public HTTP rejection coverage passes 10/10 under the real PostgreSQL application role. Each
+case validates the saved draft, attempts publication, checks 422/VALIDATION_FAILED/retryable=false,
+asserts response/header trace identity and independently verifies no active/published version.
+Cases cover schema-forbidden terminal body nodes, escaping and recursive bodies, body-edge
+cycles, overlapping parallel branches, unsupported object literals and ordinary root dangling
+edges. Named-body escapes retain provenance and use INVALID_SCOPE; root dangling edges keep
+GRAPH and dry-run UNKNOWN_TARGET remains stable with an additive body path.
+
+Effective expression byte-limit failures are typed separately from scope rules. The suite
+reproduced and fixed both 1202-byte body/switch expressions and a 2102-byte schema-valid body
+expression rejected by the legacy 2048-byte wrapper before domain validation. All use EXPRESSION
+with no expression content in the byte diagnostic. Schema validation remains first.
+
+The three bounded independent reviews found these provenance/byte-boundary issues. Their exact
+findings and reconciliation are retained; no fourth or external review was run. The final adapter
+precheck was verified by tests, not another independent verdict. The initial mixed oracle log
+contains a mistaken expected reason for a schema-forbidden body end, retained separately from
+the corrected behavioral failures.
+
+The four native packages passed 971 tests before the final adapter precheck; after that precheck,
+all 169 infra-ir tests passed again. The47 primitive contracts passed. These counts overlap and
+are not summed as unique tests. T014-004 closes its fixture scope together with the existing
+all-five instance-limit evidence and the fresh10,000-reference materialization test.
+Nested runtime/capacity and T014-040–044 remain open. This is not the full all 58 SDK matrix or
+the workspace/Compose/advisory release gate. Exact commands, source hashes, failures and final
+gate results: `tasks/project-completion/evidence/publication-scope-20261018/manifest.json`.
+
+The final runtime-role workflow regression passed379 tests in246.25s, including exact ordered
+materialization of10,000 blob references and refusal of10,001 before retaining a scope. The
+separate long10,000-completion case remained ignored and is not counted as a fresh pass.
+
+Strict locked workspace/all-target Clippy passed in1m43s. Formatting, diff and24-crate
+architecture checks passed. These are local gates; shared release tasks remain unchecked.

@@ -1226,7 +1226,10 @@ O420-O421 (D410+ and G410+ are free for the peer increments).
   separate evidence.
 - **G426 — WP-02 server-side rejection and WP-13 object-literal rejection are not SDK-visible.** Publishing a
   document is not an SDK operation (the harness publishes), so rejection of invalid, cyclic or escaping bodies
-  and of unsupported expressions is proven by the Rust contract suites, not by the five SDKs.
+  and of unsupported expressions is proven by native contracts and the public HTTP
+  `publication_rejections` suite (10/10,2026-10-18), not by the five SDKs. Schema-forbidden body
+  kinds return SCHEMA first; schema-valid cycles/escapes/overlap/recursion return INVALID_SCOPE.
+  Object literals and effective UTF-8 expression byte limits return EXPRESSION.
 - **G427 — Nested descendants at low capacity are not exercised** because nested scopes are closed (O383); the
   low-quota case covers the iteration's own instances (a capacity of one runs four iterations to the end).
 
@@ -1735,3 +1738,22 @@ integrated gates pass. In particular, partial public shapes do not close accepte
 or the unimplemented bounded worker/control/compensation/blob/root-finalization paths. The new
 open-step index migration uses 20261206000000 here (source name 20261122000000 collides with
 OpenBao), as recorded in ADR-0036. No deployed SQLx ledger is rewritten.
+
+
+## 2026-10-18 — T014-004 fixture completion
+
+The historical remainder above is superseded for fixtures: G425 authoring and bounded instance
+admission pass in all five SDKs (`workflow-instance-limits`), while G426 public server rejections
+pass 10/10 in `publication_rejections`. The47 primitive contracts pass, covering the quoted
+node/depth/effective-expression/list boundaries. The 1024-byte bound is unchanged: 602-character/
+1202-byte body and switch expressions and a 702-character/2102-byte body expression return
+EXPRESSION. The latter previously escaped to a legacy 2048-byte wrapper and incorrectly returned
+SCHEMA; the adapter now retains the typed cause before that wrapper. The original wrong terminal
+body oracle, all real failing regressions and the three bounded review findings are retained.
+
+T014-004 is closed for these fixtures and the fresh10,000-reference materialization test in
+the379-test runtime-role regression (every stored index checked;10,001 refused). The separate
+historical full-completion D429 run is retained and not claimed as a fresh pass.
+This does not close nested execution, quota composition, the 100k resource gate or T014-041's
+complete all 58 matrix. Current normal regressions still skip the separate long 10k source test.
+Exact commands, source hashes and limits: `tasks/project-completion/evidence/publication-scope-20261018/manifest.json`.

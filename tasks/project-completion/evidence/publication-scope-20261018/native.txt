@@ -1,0 +1,1463 @@
+   Compiling sagat-domain v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/domain)
+   Compiling serde v1.0.229
+   Compiling rustls v0.23.46
+   Compiling tracing-serde v0.2.0
+   Compiling tracing-subscriber v0.3.23
+   Compiling tokio-rustls v0.26.6
+   Compiling rustls-platform-verifier v0.7.1
+   Compiling metrics-exporter-prometheus v0.18.3
+   Compiling hyper-rustls v0.27.10
+   Compiling ahash v0.8.12
+   Compiling reqwest v0.13.5
+   Compiling fluent-uri v0.4.1
+   Compiling jsonschema-value v0.58.6
+   Compiling email_address v0.2.9
+   Compiling derive_builder v0.20.2
+   Compiling referencing v0.58.6
+   Compiling jsonschema v0.58.6
+   Compiling croner v4.0.1
+   Compiling sagat-infra-expr v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-expr)
+   Compiling serde_urlencoded v0.7.1
+   Compiling sagat-telemetry v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/telemetry)
+   Compiling axum v0.8.9
+   Compiling sagat-application v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/application)
+   Compiling jsonwebtoken v11.1.0
+   Compiling sagat-infra-schema v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-schema)
+   Compiling yasna v0.5.2
+   Compiling sagat-api-http v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/api-http)
+   Compiling sagat-infra-ir v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-ir)
+   Compiling rcgen v0.13.2
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 54.42s
+     Running unittests src/lib.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/sagat_api_http-385fa38fa2674375)
+
+running 22 tests
+test dto_exec::switch_graph_tests::scoped_graph_ids_distinguish_equal_local_names_and_iterations ... ok
+test reveal_grants::tests::cursor_round_trips_non_uuid_subjects_without_exposing_the_value ... ok
+test routes::payload_disclosure::tests::exact_numbers_and_escaped_names_are_encoded_without_rounding ... ok
+test dto_exec::switch_graph_tests::approval_routes_are_edges_and_the_decision_names_no_one ... ok
+test dto_exec::switch_graph_tests::switch_graph_exposes_persisted_selection_and_ordered_routes ... ok
+test routes::payload_disclosure::tests::request_validation_keeps_selectors_closed ... ok
+test reveal_grants::tests::response_uses_camel_case_rfc3339_and_an_empty_revoke_object ... ok
+test reveal_grants::tests::closed_grant_errors_use_the_contract_status_and_reason ... ok
+test dto_exec::switch_graph_tests::runtime_graph_projects_scoped_steps_and_precise_deltas ... ok
+test routes::payload_disclosure::tests::unknown_fields_are_bad_requests_without_echoing_their_names ... ok
+test streams::tests::one_tenant_cannot_use_another_tenants_share_and_the_table_empties ... ok
+test streams::tests::a_subject_and_a_tenant_each_have_a_cap_and_a_dropped_slot_frees_it ... ok
+test streams::tests::a_cap_of_zero_still_allows_one ... ok
+test denial::tests::a_failing_store_is_a_failed_outcome ... ok
+test context::tests::requests_with_the_same_parent_get_distinct_server_ids_on_every_response ... ok
+test routes::payload_disclosure::tests::final_envelope_is_bounded_and_successes_are_private_no_store ... ok
+test denial::tests::the_write_goes_on_when_whoever_waits_for_it_is_dropped ... ok
+test denial::tests::writes_in_flight_never_exceed_the_bound_and_none_is_lost ... ok
+test denial::tests::a_write_that_cannot_get_a_place_in_time_fails_explicitly_instead_of_vanishing ... ok
+test server::deadline_tests::absolute_deadline_drops_buffered_bytes_and_recovers_slot_for_a_slow_reader ... ok
+test server::tls_tests::only_verified_native_certificates_produce_an_identity ... ok
+test server::tls_tests::certificate_expiry_is_rechecked_on_a_keep_alive_connection ... ok
+
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.59s
+
+     Running tests/rate_limiter.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/rate_limiter-97a381825b8337d7)
+
+running 12 tests
+test a_clock_that_goes_backwards_cannot_mint_tokens ... ok
+test a_full_table_recovers_once_idle_keys_are_swept ... ok
+test a_late_stale_timestamp_cannot_rewind_the_refill_clock ... ok
+test a_tenant_may_burst_up_to_its_budget_and_then_is_refused ... ok
+test keys_beyond_the_capacity_share_one_overflow_bucket ... ok
+test tenants_have_independent_budgets ... ok
+test the_slowest_accepted_rate_never_panics_and_caps_retry_after ... ok
+test the_limiter_works_for_string_keys_too ... ok
+test tokens_come_back_at_the_sustained_rate_and_never_beyond_the_burst ... ok
+test unusable_budgets_are_refused_with_a_typed_error ... ok
+test pruning_is_throttled_to_once_per_interval_not_once_per_call ... ok
+test idle_tenants_are_forgotten_once_the_table_grows ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/studio.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/studio-d686e08c7947c4c6)
+
+running 15 tests
+test a_directory_without_an_index_is_refused_at_start_up ... ok
+test the_config_publishes_an_optional_safe_trace_url_template ... ok
+test unsafe_trace_url_templates_are_refused_before_the_studio_is_served ... ok
+test the_app_is_served_with_the_headers_that_keep_foreign_scripts_out ... ok
+test the_config_says_where_to_sign_in_and_allows_only_that_origin_to_be_called ... ok
+test a_file_is_sent_with_its_length_and_a_head_says_the_same_without_the_body ... ok
+test dot_segments_a_client_library_would_tidy_away_still_get_nothing_when_sent_as_they_are ... ok
+test only_reads_are_served_and_the_folder_form_redirects ... ok
+test an_index_that_becomes_missing_oversized_or_unsafe_is_unavailable_without_a_stale_page ... ok
+test nothing_outside_the_directory_nor_any_hidden_file_can_be_read ... ok
+test built_assets_are_typed_and_cached_for_good_and_the_page_never_is ... ok
+test a_route_of_the_app_gets_the_page_and_a_missing_file_gets_a_404_not_the_page ... ok
+test a_rebuild_replaces_the_page_without_restarting_the_server ... ok
+test clients_that_read_nothing_cannot_hold_more_than_the_transfers_the_server_allows ... ok
+test a_client_that_takes_a_file_a_few_bytes_at_a_time_is_cut_after_the_longest_transfer ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.73s
+
+     Running tests/tenant_concurrency.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/tenant_concurrency-ce5c5905ddc61a83)
+
+running 6 tests
+test the_default_cap_is_a_quarter_of_the_global_cap_and_at_least_one ... ok
+test a_tenant_gets_exactly_its_cap_and_others_are_unaffected ... ok
+test finishing_a_request_frees_its_slot ... ok
+test a_cap_of_zero_is_raised_to_one_instead_of_refusing_everybody ... ok
+test a_refused_request_leaves_no_residue ... ok
+test the_table_only_holds_tenants_with_requests_in_flight ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/versioning_errors.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/versioning_errors-72514f1053991695)
+
+running 1 test
+test a_request_that_stopped_being_approved_while_it_was_published_says_so ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/webhook_oidc.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/webhook_oidc-c8d9fc9b4212c8d4)
+
+running 2 tests
+test profiles_isolate_equal_key_ids_and_jwks_failure_is_retryable ... ok
+test external_subject_needs_no_platform_tenant_but_api_tokens_still_do ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running unittests src/lib.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/sagat_application-9bdfa2e7e0dc1fed)
+
+running 67 tests
+test classification::tests::an_omitted_root_has_an_explicit_value_free_result ... ok
+test classification::tests::reveal_facts_distinguish_an_omitted_request_from_a_missing_grant ... ok
+test classification::tests::authoring_location_identity_keeps_literals_separate_from_applicators ... ok
+test classification::tests::finding_codes_have_closed_safe_messages_and_severities ... ok
+test classification::tests::exact_json_number_text_is_kept_without_a_float_conversion ... ok
+test api_admission::tests::refusal_and_storage_failure_are_closed_typed_errors ... ok
+test api_admission::tests::denied_permission_does_not_consume_a_token ... ok
+test classification::tests::payload_carrying_debug_output_never_contains_values_or_names ... ok
+test api_admission::tests::run_is_charged_once_to_its_stored_namespace ... ok
+test api_admission::tests::foreign_resource_is_opaque_audited_and_not_charged ... ok
+test api_admission::tests::foreign_approval_is_not_disclosed_to_a_caller_without_permission ... ok
+test classification::tests::root_and_body_node_carriers_have_distinct_cache_identities ... ok
+test api_admission::tests::approval_permission_denial_is_audited_without_charging ... ok
+test api_admission::tests::promotion_charges_only_the_authorized_destination ... ok
+test api_admission::tests::approval_permission_denial_fails_closed_when_audit_cannot_commit ... ok
+test collection_source::tests::a_manifest_round_trips_and_an_inline_array_is_not_one ... ok
+test collection_source::tests::the_items_digest_pins_order_and_content ... ok
+test collection_source::tests::only_an_exact_descriptor_is_a_blob_reference ... ok
+test execution::instance_port_tests::root_events_retain_their_existing_shape_for_legacy_adapters ... ok
+test execution::instance_port_tests::scoped_events_fail_instead_of_becoming_root_events ... ok
+test execution::instance_port_tests::root_outputs_keep_the_existing_node_key ... ok
+test execution::instance_port_tests::scoped_outputs_fail_instead_of_colliding_by_local_node_id ... ok
+test execution::collection_plan::tests::empty_collection_enters_and_finishes_without_body_work ... ok
+test execution::collection_plan::tests::collection_owner_waits_for_the_atomic_store_path ... ok
+test primitives::tests::admission_requires_the_exact_member_path_and_a_return_reservation ... ok
+test primitives::tests::empty_collection_is_valid_when_atomic_finish_is_available ... ok
+test execution::collection_plan::tests::entry_admits_only_the_window_and_keeps_more_work_explicit ... ok
+test execution::collection_plan::tests::changed_snapshot_is_rejected_before_another_admission ... ok
+test execution::collection_plan::tests::return_checkpoint_and_next_admission_are_one_ordered_plan ... ok
+test primitives::tests::every_effective_limit_is_bounded ... ok
+test loop_progress::tests::continuation_requires_exactly_one_matching_durable_effect ... ok
+test loop_progress::tests::entry_requires_the_declared_predicate_phase_and_first_iteration ... ok
+test primitives::tests::runtime_commands_pin_the_digest_to_their_inline_content ... ok
+test sandbox::tests::a_digest_is_the_sha256_of_the_bytes ... ok
+test sandbox::tests::a_schema_is_part_of_the_build_and_cannot_be_shifted_into_the_other ... ok
+test sandbox::tests::a_build_is_the_same_build_only_if_everything_that_matters_is ... ok
+test sandbox::tests::the_fields_of_a_key_cannot_be_shifted_into_one_another ... ok
+test scripts::tests::a_policy_request_fills_in_the_defaults_and_stops_at_the_ceiling ... ok
+test scripts::tests::a_ceiling_below_the_defaults_refuses_what_is_asked_not_what_is_left_out ... ok
+test scripts::tests::a_text_is_cut_on_a_character ... ok
+test scripts::tests::two_drafts_are_one_version_only_if_every_field_is_the_same ... ok
+test signing::tests::the_known_vectors_stay_the_same ... ok
+test script_signing::tests::the_key_id_follows_the_public_key ... ok
+test script_signing::tests::what_is_not_a_key_is_refused_and_a_key_is_never_printed ... ok
+test signing::tests::a_malformed_header_is_refused_without_looking_at_the_secrets ... ok
+test signing::tests::a_secret_too_short_to_mean_anything_signs_and_verifies_nothing ... ok
+test signing::tests::a_signature_verifies_for_what_it_covers_and_nothing_else ... ok
+test signing::tests::a_timestamp_outside_the_window_is_stale_in_either_direction ... ok
+test signing::tests::staleness_is_judged_before_the_signature_so_a_replay_costs_nothing ... ok
+test signing::tests::the_fields_cannot_be_shifted_into_one_another ... ok
+test signing::tests::what_the_platform_sends_cannot_pass_for_what_a_provider_sent ... ok
+test signing::tests::during_a_rotation_any_signature_against_any_secret_in_force_is_enough ... ok
+test telemetry::primitive_tests::collection_admission_and_continuation_have_stable_redacted_spans ... ok
+test signing::tests::a_header_is_bounded_before_a_single_hash_is_computed ... ok
+test worker::tests::a_value_is_searched_for_as_it_would_be_written_in_json ... ok
+test telemetry::primitive_tests::switch_default_has_no_case_identifier_and_is_not_reprojected ... ok
+test worker::tests::anything_else_is_not_a_version_this_server_speaks ... ok
+test worker::tests::blob_report_identity_normalizes_sha256_hex_case ... ok
+test telemetry::primitive_tests::switch_case_is_a_stable_span_and_bounded_observation ... ok
+test worker::tests::legacy_task_ids_and_worker_entry_points_are_root_only ... ok
+test worker::tests::managed_support_does_not_enable_scoped_protocol_for_ordinary_workers ... ok
+test worker::tests::report_identity_keeps_root_keys_and_separates_scoped_members ... ok
+test worker::tests::scoped_identity_negotiation_is_gated_by_storage_support ... ok
+test worker::tests::the_newest_version_both_sides_speak_is_agreed ... ok
+test script_signing::tests::a_key_that_is_not_trusted_signs_nothing_the_verifier_accepts ... ok
+test script_signing::tests::a_signature_verifies_only_for_the_tenant_digest_and_language_it_was_made_for ... ok
+test collection_source::tests::items_are_canonical_ordered_and_bounded ... ok
+
+test result: ok. 67 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
+
+     Running tests/blobs.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/blobs-97111e7efe60fc27)
+
+running 22 tests
+test a_declared_size_is_the_stream_bound_and_an_oversized_declaration_reserves_nothing ... ok
+test a_body_exactly_at_the_limit_is_accepted ... ok
+test a_producer_that_fails_half_way_leaves_nothing_behind ... ok
+test a_blob_is_read_back_whole_and_verified ... ok
+test a_blob_whose_upload_never_finished_cannot_be_read ... ok
+test a_body_over_the_limit_is_refused_and_leaves_nothing_behind ... ok
+test a_put_finishing_after_cleanup_remains_tracked_and_is_deleted_again ... ok
+test a_store_that_is_down_is_unavailable_and_leaves_no_reservation ... ok
+test an_abandoned_upload_is_swept_much_sooner_than_an_uploaded_blob_nobody_used ... ok
+test another_tenants_blob_is_exactly_as_missing_as_one_that_does_not_exist ... ok
+test a_written_blob_is_measured_stored_under_its_tenant_and_described ... ok
+test a_failed_backend_delete_retains_attempt_evidence_and_is_retried ... ok
+test a_run_input_is_private_until_bound_and_only_its_creator_can_bind_it ... ok
+test a_stated_size_or_digest_that_does_not_match_the_bytes_is_refused_and_cleaned_up ... ok
+test completion_can_only_describe_the_exact_uploading_attempt_and_its_replay ... ok
+test the_descriptor_a_workflow_carries_has_one_documented_shape ... ok
+test bytes_that_changed_in_the_store_are_reported_not_served_as_good ... ok
+test the_sweep_never_touches_a_blob_something_refers_to ... ok
+test the_key_in_the_store_is_scoped_by_tenant_and_namespace_and_made_only_of_ids ... ok
+test the_sweep_is_bounded_per_pass ... ok
+test the_sweep_removes_uncommitted_blobs_that_are_old_enough_and_their_bytes ... ok
+test too_many_uncommitted_blobs_refuse_the_next_one_before_any_byte_is_stored ... ok
+
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/chain_handoff_preparation.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/chain_handoff_preparation-467b2065f6ccca7e)
+
+running 2 tests
+test evaluated_handoff_binds_bytes_digests_and_state_revision ... ok
+test evaluated_handoff_rejects_changed_content_or_unpinned_state ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/clock.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/clock-cb1963f7249a6392)
+
+running 2 tests
+test a_time_is_cut_to_the_microsecond_the_store_keeps ... ok
+test the_system_clock_never_gives_a_nanosecond ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/definition_service.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/definition_service-efb72ffca27b1dfa)
+
+running 39 tests
+test a_document_that_does_not_validate_is_an_answer_with_problems_and_stores_nothing ... ok
+test a_retried_create_returns_the_same_workflow_and_audits_once ... ok
+test a_draft_must_be_a_json_object_of_bounded_size ... ok
+test a_bad_name_is_invalid_and_a_taken_name_conflicts ... ok
+test an_unknown_or_foreign_namespace_is_not_found ... ok
+test a_valid_document_gets_its_digest_and_the_warnings_publish_would_return ... ok
+test a_secret_the_author_may_not_use_is_a_problem_on_its_node_and_leaves_no_denial ... ok
+test a_workflow_without_secrets_never_asks_the_store_about_them ... ok
+test a_stale_revision_is_reported_before_the_document_is_validated ... ok
+test authorization_comes_before_any_storage_access ... ok
+test a_workflow_without_a_saga_is_published_with_no_plan ... ok
+test any_two_versions_and_the_draft_can_be_compared ... ok
+test a_workflow_with_no_version_compares_nothing_with_its_draft ... ok
+test a_retried_publish_replays_the_original_result ... ok
+test a_document_that_names_another_workflow_is_a_problem ... ok
+test an_unpublishable_document_is_reported_and_nothing_is_stored ... ok
+test by_default_the_active_version_is_compared_with_the_draft ... ok
+test creating_a_workflow_stores_the_draft_and_audits_it ... ok
+test diffing_needs_definition_read_and_a_workflow_of_the_callers_tenant ... ok
+test editing_is_compare_and_swap_on_the_revision ... ok
+test every_error_of_the_codec_maps_to_a_stable_code_that_says_where ... ok
+test listing_is_paginated_and_scoped_to_the_namespace_and_tenant ... ok
+test publishing_a_stale_revision_conflicts_without_validating ... ok
+test reading_needs_definition_read ... ok
+test publishing_freezes_the_draft_as_numbered_versions ... ok
+test publishing_an_identical_document_reuses_the_version ... ok
+test reading_plans_needs_definition_read_and_a_version_that_exists ... ok
+test publishing_needs_definition_publish ... ok
+test publishing_a_workflow_that_declares_a_secret_needs_a_publisher_who_may_use_it ... ok
+test release_notes_are_bounded ... ok
+test publishing_a_saga_hands_its_compensation_plan_to_the_store_with_the_version ... ok
+test reading_another_tenants_workflow_is_not_found_and_audited_in_the_actors_tenant ... ok
+test the_same_key_for_a_different_request_is_refused ... ok
+test the_workflow_quota_in_force_is_passed_to_the_store_and_refuses_the_next_workflow ... ok
+test the_document_must_name_the_workflow_it_belongs_to ... ok
+test validating_needs_definition_write_and_asks_the_store_for_nothing_before ... ok
+test validating_another_tenants_workflow_is_not_found ... ok
+test versions_of_another_tenant_are_invisible ... ok
+test eight_thousand_unknown_artifacts_are_found_in_one_pass ... ok
+
+test result: ok. 39 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+     Running tests/event_payloads.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/event_payloads-54119bc3386a8e42)
+
+running 6 tests
+test roles_without_event_read_are_refused_before_lookup ... ok
+test an_unsupported_list_body_is_opaque_without_revealing_headers_or_auditing ... ok
+test default_event_read_is_structure_only_and_debug_redacts_values ... ok
+test truncated_dead_letter_is_opaque_and_list_ignores_reveal ... ok
+test pii_reveal_requires_internal_role_and_namespace_grant ... ok
+test event_and_letter_values_require_the_mandatory_audit_write_to_succeed ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/identity_service.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/identity_service-20b37157e33e9ed5)
+
+running 34 tests
+test a_key_does_not_skip_authorization_or_validation ... ok
+test a_denial_is_recorded_in_the_callers_tenant_with_the_permission_and_the_call ... ok
+test a_failed_write_is_reported_to_the_caller_of_the_use_case_and_leaves_nothing ... ok
+test a_failed_create_leaves_no_audit_record_behind ... ok
+test any_role_with_workspace_read_can_get_a_workspace ... ok
+test a_token_cannot_authenticate_as_the_platform_actor_even_if_a_membership_exists ... ok
+test a_caller_without_permission_is_refused_before_any_storage_access ... ok
+test a_key_means_one_thing_per_tenant ... ok
+test authenticate_resolves_tenant_and_role_from_membership ... ok
+test authenticate_gives_the_same_answer_for_every_kind_of_failure ... ok
+test an_exact_multiple_of_the_page_size_has_no_phantom_next_page ... ok
+test authenticate_reports_a_storage_outage_as_unavailable_not_as_a_denial ... ok
+test authorization_is_evaluated_before_input_validation ... ok
+test creating_a_workspace_persists_it_with_an_audit_record_in_the_callers_tenant ... ok
+test developers_cannot_create_namespaces_and_learn_nothing_about_foreign_workspaces ... ok
+test creating_a_namespace_binds_it_to_the_workspace_and_audits_it ... ok
+test duplicate_workspace_slug_conflicts_inside_a_tenant_but_not_across_tenants ... ok
+test getting_a_missing_workspace_is_not_found_and_not_audited ... ok
+test getting_another_tenants_namespace_is_not_found_and_audited ... ok
+test getting_another_tenants_workspace_is_not_found_and_audited_without_leaking_it ... ok
+test invalid_slug_is_a_validation_error_and_stores_nothing ... ok
+test invalid_environment_and_duplicate_namespace_slug_are_reported_distinctly ... ok
+test listing_namespaces_is_scoped_to_the_callers_tenant ... ok
+test only_403_errors_carry_a_denial_and_a_hidden_foreign_resource_does_not ... ok
+test listing_pages_through_all_items_in_order_and_only_for_the_callers_tenant ... ok
+test namespace_creation_in_a_foreign_workspace_is_not_found_and_audited ... ok
+test page_size_is_clamped_and_bad_cursors_are_rejected ... ok
+test ping_reflects_storage_health ... ok
+test repeating_a_namespace_creation_with_the_same_key_returns_the_first_one ... ok
+test repeating_a_workspace_creation_with_the_same_key_returns_the_first_one_and_audits_once ... ok
+test the_denial_stands_even_when_the_audit_write_fails ... ok
+test the_same_denial_twice_is_two_records ... ok
+test the_same_key_for_a_different_request_is_refused_and_changes_nothing ... ok
+test without_a_key_a_repeat_still_conflicts_on_the_slug ... ok
+
+test result: ok. 34 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/instance_identity.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/instance_identity-a6689781fd5da278)
+
+running 4 tests
+test root_output_helpers_use_the_empty_instance_path ... ok
+test outputs_of_equal_local_nodes_in_separate_paths_remain_independent ... ok
+test root_step_ids_remain_byte_identical_to_legacy_derivation ... ok
+test repeated_nodes_have_distinct_stable_ids_and_derived_work_keeps_its_path ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/payload_disclosure.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/payload_disclosure-e7946c9337cd601e)
+
+running 10 tests
+test a_stored_grant_is_inert_when_the_current_role_cannot_read_internal_values ... ok
+test prepare_needs_only_run_read_and_binds_the_resolved_namespace ... ok
+test reveal_without_an_effective_grant_is_refused_and_audited_without_projection ... ok
+test audit_failure_prevents_a_projected_internal_value_from_returning ... ok
+test selected_payload_and_definition_debug_never_print_values_keys_or_schema_fragments ... ok
+test schema_mismatch_is_structure_only_for_inspector_and_opaque_for_developer ... ok
+test a_non_carrier_journal_event_never_borrows_another_nodes_schema ... ok
+test closed_projector_failures_never_authorize_values_or_emit_a_success_audit ... ok
+test forbidden_callers_never_lookup_and_missing_and_foreign_runs_stay_opaque ... ok
+test current_role_and_namespace_grant_build_the_effective_audience ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/payloads.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/payloads-b74bb6633848f673)
+
+running 6 tests
+test the_dedicated_permission_is_never_implied_for_non_operator_roles ... ok
+test raw_byte_debug_never_contains_the_payload ... ok
+test success_uses_the_server_selector_in_the_audit_and_returns_provenance ... ok
+test an_oversized_inline_value_is_unavailable_without_reaching_the_projector ... ok
+test an_audit_failure_returns_unavailable_before_projection_sees_bytes ... ok
+test only_admin_and_operator_prepare_an_inspection_and_denials_are_audited ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/primitive_telemetry.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/primitive_telemetry-0f5f96310e57b86a)
+
+running 5 tests
+test failed_primitive_span_uses_a_closed_error_without_leaking_failure_data ... ok
+test continuation_links_predecessor_and_successor_without_transfer_values ... ok
+test approval_span_covers_the_durable_wait_without_identity_or_reason ... ok
+test loop_checkpoint_reports_only_closed_lifecycle_outcomes ... ok
+test collection_lifecycle_projects_closed_outcomes_and_scoped_identity ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/reveal_grants.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/reveal_grants-087dc77dafda44c2)
+
+running 6 tests
+test only_membership_managers_prepare_a_namespace ... ok
+test a_created_grant_uses_the_approved_audit_identity_and_fixed_reason ... ok
+test list_is_stable_and_returns_an_opaque_boundary_to_the_http_adapter ... ok
+test grant_maps_closed_store_outcomes_and_allows_self_grant ... ok
+test revoke_is_idempotent_for_an_absent_or_malformed_subject ... ok
+test a_role_snapshot_cannot_authorize_after_the_store_sees_demotion ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/telemetry_derive.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/telemetry_derive-eb6c54af4373c2cf)
+
+running 20 tests
+test a_step_cancelled_while_it_held_the_lease_ends_its_attempt_as_cancelled ... ok
+test a_lost_lease_is_an_error_attempt_with_its_code ... ok
+test a_wait_that_starts_in_one_batch_and_is_satisfied_in_a_later_one_gets_its_span ... ok
+test an_attempt_that_has_not_ended_is_not_exported_and_is_when_it_does ... ok
+test a_step_cancelled_between_attempts_does_not_close_an_attempt_that_already_ended ... ok
+test a_timer_that_starts_in_one_batch_and_fires_in_a_later_one_gets_its_span ... ok
+test a_run_with_three_attempts_has_three_attempt_spans_and_a_run_span ... ok
+test a_run_finished_is_counted_with_its_duration ... ok
+test a_failed_run_is_an_error_span_and_a_cancelled_one_is_not ... ok
+test scoped_switch_selection_carries_its_instance_identity ... ok
+test the_attempts_of_two_steps_do_not_get_each_others_ends ... ok
+test the_duration_of_an_attempt_is_from_its_lease_to_its_end ... ok
+test equal_local_timers_in_two_scopes_project_independently ... ok
+test equal_local_nodes_in_two_iterations_have_distinct_attempt_spans ... ok
+test the_run_span_hangs_from_the_request_the_parent_run_or_nothing ... ok
+test the_wait_between_ready_and_leased_is_the_schedule_latency_of_each_attempt ... ok
+test timers_and_waits_are_spans_of_the_time_a_run_spent_not_working ... ok
+test what_an_operator_did_is_on_the_run_span_without_saying_who ... ok
+test the_attempts_of_a_journal_longer_than_a_batch_are_all_there_and_all_closed ... ok
+test deriving_in_two_batches_gives_the_same_spans_as_deriving_at_once_and_none_twice ... ok
+
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/sagat_domain-6166105513856d07)
+
+running 74 tests
+test binding::tests::a_prefix_pattern_stops_at_the_dot ... ok
+test binding::tests::an_exact_pattern_matches_that_activity_and_nothing_else ... ok
+test binding::tests::a_secret_without_a_pool_list_goes_to_anyone_and_with_one_only_to_its_pools ... ok
+test binding::tests::a_pool_list_is_bounded_sorted_and_without_repeats_and_may_be_empty ... ok
+test binding::tests::a_pool_name_is_a_short_label_in_a_closed_alphabet ... ok
+test binding::tests::a_list_is_bounded_sorted_and_without_repeats ... ok
+test binding::tests::the_first_activity_nothing_covers_is_named ... ok
+test binding::tests::the_wildcard_matches_everything_and_only_when_it_stands_alone ... ok
+test binding::tests::patterns_round_trip_through_their_text ... ok
+test binding::tests::what_is_not_an_activity_name_is_not_a_pattern ... ok
+test connectors::tests::a_server_is_a_host_and_a_port_and_says_whether_it_is_encrypted ... ok
+test connectors::tests::rates_and_reserved_names_are_bounded ... ok
+test egress::tests::a_literal_address_needs_a_network_rule_to_be_reached_by_literal ... ok
+test egress::tests::denials_have_stable_codes_and_never_carry_the_address ... ok
+test egress::tests::an_ipv4_address_hidden_inside_ipv6_is_judged_as_the_ipv4_address ... ok
+test egress::tests::a_rule_prints_the_way_it_is_written_and_parses_back_to_itself ... ok
+test connectors::tests::the_settings_of_each_kind_are_checked ... ok
+test egress::tests::exact_and_wildcard_rules_match_whole_labels_only ... ok
+test egress::tests::nothing_is_allowed_by_default ... ok
+test egress::tests::private_space_needs_an_explicit_network_rule_but_the_forbidden_space_never_does ... ok
+test egress::tests::scheme_and_port_are_part_of_the_policy ... ok
+test egress::tests::numbers_in_disguise_are_not_host_names ... ok
+test egress::tests::rules_are_validated_and_bounded ... ok
+test egress::tests::special_addresses_are_classified ... ok
+test events::profile_tests::identity_profiles_are_exact_and_bounded ... ok
+test events::tests::a_subject_has_no_control_characters ... ok
+test events::tests::a_window_for_events_nobody_signs_only_has_to_be_a_window ... ok
+test events::tests::an_event_id_is_graphic_ascii_without_spaces ... ok
+test events::tests::the_limits_of_an_endpoint_are_checked_together ... ok
+test events::tests::dispatch_backs_off_exponentially_to_a_ceiling_with_jitter ... ok
+test execution::capacity::tests::exhausted_revision_or_epoch_does_not_partially_vacate ... ok
+test execution::capacity::tests::exhausted_membership_count_does_not_advance_revision ... ok
+test outbound::tests::a_2xx_is_delivered_and_a_server_error_or_a_request_for_patience_is_retried ... ok
+test outbound::tests::a_delivery_gets_a_fixed_number_of_attempts ... ok
+test outbound::tests::a_refusal_that_retrying_cannot_change_is_dead_and_so_is_a_redirect ... ok
+test execution::state::continuation_tests::continuation_closes_a_quiescent_segment_and_links_the_successor ... ok
+test execution::state::continuation_tests::continuation_refuses_an_active_step ... ok
+test execution::state::continuation_tests::typed_continuation_refuses_an_unsettled_sibling_without_mutation ... ok
+test execution::state::continuation_tests::typed_continuation_closes_its_pending_boundary ... ok
+test outbound::tests::rates_timeouts_and_kinds_are_bounded ... ok
+test outbound::tests::the_backoff_grows_along_the_schedule_with_jitter_and_honours_retry_after ... ok
+test outbound::tests::a_target_is_an_http_url_with_a_host_and_nothing_that_hides_another ... ok
+test quota::tests::a_setting_above_a_lowered_ceiling_is_clamped_to_it ... ok
+test quota::tests::a_tenant_wide_resource_ignores_a_namespace_setting ... ok
+test outbound::tests::what_the_receiver_asks_to_wait_is_capped ... ok
+test quota::tests::database_policy_bounds_are_positive_but_zero_counts_disable_admission ... ok
+test quota::tests::durable_resources_have_explicit_scope_kind_unit_range_and_usage_semantics ... ok
+test quota::tests::every_default_is_inside_the_range_a_limit_may_take ... ok
+test quota::tests::iteration_capacity_stays_closed_until_the_tenant_sets_it ... ok
+test quota::tests::resource_specific_ranges_do_not_expand_legacy_count_limits ... ok
+test quota::tests::names_round_trip_and_unknown_names_are_refused ... ok
+test quota::tests::the_namespace_wins_over_the_tenant_which_wins_over_the_ceiling ... ok
+test quota::tests::the_ceiling_is_what_an_operator_granted_or_the_default ... ok
+test scripts::tests::a_change_of_policy_is_a_change_of_its_text ... ok
+test quota::tests::values_are_bounded_by_the_range_the_level_and_the_ceiling ... ok
+test scripts::tests::a_digest_is_sha256_in_lower_case_hex_and_round_trips ... ok
+test scripts::tests::a_language_round_trips_and_only_some_are_built ... ok
+test scripts::tests::a_policy_asked_for_under_a_ceiling_is_the_smaller_of_both ... ok
+test scripts::tests::a_policy_reads_back_exactly_what_it_wrote_and_nothing_else ... ok
+test scripts::tests::a_secret_that_is_the_start_of_another_does_not_leave_the_rest_of_it_in_view ... ok
+test scripts::tests::a_script_activity_carries_its_digest_and_only_a_digest ... ok
+test scripts::tests::a_version_only_goes_forward_once ... ok
+test scripts::tests::a_wall_time_in_fractions_of_a_second_is_the_whole_second_the_policy_will_say ... ok
+test scripts::tests::cpu_time_follows_the_wall_clock_and_the_share_of_a_core ... ok
+test scripts::tests::a_source_has_text_and_a_bound_and_never_prints_itself ... ok
+test scripts::tests::jobs_move_forward_and_a_lost_lease_puts_one_back ... ok
+test scripts::tests::limits_have_a_floor_and_a_ceiling_each ... ok
+test scripts::tests::the_secrets_a_run_was_given_do_not_reach_its_output ... ok
+test scripts::tests::what_a_script_cannot_do_twice_the_same_way_is_not_retried ... ok
+test secrets::tests::a_value_is_bounded_redacted_and_compared_in_full ... ok
+test secrets::tests::names_are_lower_case_and_bounded ... ok
+test secrets::tests::associated_data_binds_every_coordinate_without_ambiguity ... ok
+test scripts::tests::what_looks_like_a_credential_is_redacted_without_knowing_it ... ok
+test secrets::tests::using_a_secret_needs_the_role_and_the_secrets_own_list ... ok
+
+test result: ok. 74 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/approval.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/approval-e0c9ca728693c9a6)
+
+running 11 tests
+test an_explicit_policy_may_allow_the_initiator_to_decide ... ok
+test an_eligible_subject_commits_one_approval_receipt ... ok
+test committed_expiry_wins_over_a_later_response_and_early_expiry_is_refused ... ok
+test a_response_after_the_deadline_wins_when_expiry_has_not_committed ... ok
+test cancellation_settles_pending_once_and_losing_internal_transitions_are_no_ops ... ok
+test current_permission_tenant_eligibility_and_initiator_exclusion_are_checked_before_mutation ... ok
+test decision_keys_and_reason_codes_are_machine_values_with_finite_bounds ... ok
+test identical_retry_replays_the_receipt_but_changed_content_or_key_conflicts ... ok
+test replay_rechecks_current_authorization_and_policy_membership ... ok
+test restored_state_replays_the_winning_receipt_without_reevaluating_the_race ... ok
+test policy_is_non_empty_unique_bounded_and_limited_to_human_decision_roles ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/audit.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/audit-12b908c3b0924310)
+
+running 6 tests
+test payload_disclosure_audits_have_the_decided_repeat_semantics ... ok
+test provisioning_records_are_attributed_to_the_system_and_cannot_be_mistaken_for_a_user ... ok
+test reason_is_optional_and_attached_on_request ... ok
+test each_record_gets_a_distinct_id ... ok
+test stored_names_are_a_stable_contract ... ok
+test tenant_and_actor_come_from_the_principal ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/blobs.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/blobs-0079aba816f5f9ea)
+
+running 8 tests
+test a_blob_goes_forward_only_and_only_an_uploaded_one_can_be_committed ... ok
+test a_content_type_is_a_normalized_media_type_without_parameters ... ok
+test anything_that_is_not_a_media_type_is_refused ... ok
+test a_descriptor_keeps_what_identifies_the_content ... ok
+test a_blob_id_round_trips_through_its_text_form ... ok
+test the_default_content_type_is_opaque_bytes ... ok
+test only_a_committed_blob_is_referenced_by_the_system ... ok
+test the_stored_form_of_a_state_is_stable ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/bounded_path_planning.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/bounded_path_planning-8bdf76f3a05611e1)
+
+running 12 tests
+test global_work_summary_rejects_contradictory_facts ... ok
+test bounded_effect_events_preserve_stale_fences_and_rejected_state ... ok
+test bounded_worker_lifecycle_matches_the_full_run_oracle ... ok
+test bounded_planner_matches_the_full_run_oracle ... ok
+test global_pause_fences_both_bounded_and_oracle_planners ... ok
+test bounded_status_keeps_reviews_and_live_work_in_other_paths ... ok
+test bounded_reconciliation_and_review_reduce_like_the_full_run ... ok
+test bounded_failed_attempt_commands_match_full_replay_for_retry_cancel_and_unknown_effects ... ok
+test bounded_lookup_verdict_and_operator_commands_match_full_replay ... ok
+test bounded_expiry_matches_full_policy_for_ambiguity_cancellation_and_stale_fences ... ok
+test one_path_snapshot_excludes_every_unrelated_iteration ... ok
+test local_collection_is_a_scalar_projection_without_member_history ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/capacity_groups.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/capacity_groups-9a15c381cb13db25)
+
+running 6 tests
+test a_parked_child_can_yield_before_logical_completion ... ok
+test final_holder_leaves_a_vacancy_for_surviving_detached_members ... ok
+test finished_membership_facts_cannot_be_rejoined ... ok
+test intermediate_nonholder_finality_preserves_the_childs_possession_epoch ... ok
+test stale_and_foreign_commands_leave_the_header_unchanged ... ok
+test bounded_commands_match_an_independent_registry ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.22s
+
+     Running tests/classification.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/classification-2d3e53fd3d1ee553)
+
+running 5 tests
+test classification_rule_versions_are_stable_and_closed ... ok
+test levels_parse_only_the_four_case_sensitive_contract_names ... ok
+test level_order_and_unmarked_default_are_fail_closed ... ok
+test visibility_covers_every_valid_audience_cell ... ok
+test effective_level_never_decreases_down_a_path ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/collection_reducer.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/collection_reducer-99d4262281879d75)
+
+running 15 tests
+test empty_collection_finishes_without_allocating_an_iteration ... ok
+test replay_rejects_a_return_without_its_admission_event ... ok
+test duplicate_admission_is_rejected_without_changing_state ... ok
+test collection_finish_requires_a_digest_only_for_success ... ok
+test concurrency_one_requires_a_durable_checkpoint_before_next_admission ... ok
+test equal_body_nodes_at_separate_indices_have_distinct_instances ... ok
+test cancellation_drains_only_admitted_work_before_finishing ... ok
+test storage_quota_failure_drains_admitted_work_and_replays_without_an_iteration_cause ... ok
+test drain_refuses_to_hide_an_attempt_that_is_still_in_flight ... ok
+test permanent_failure_stops_admission_and_finishes_only_after_drain ... ok
+test replay_uses_only_admitted_instances_and_recorded_checkpoints ... ok
+test checkpoint_results_remain_in_input_order_after_reverse_completion ... ok
+test drain_refuses_to_hide_failed_derived_obligations ... ok
+test starting_a_collection_parks_the_owner_for_its_transactional_scheduler ... ok
+test run_cancellation_leaves_the_collection_owner_for_transactional_drain ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/collection_restore_state.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/collection_restore_state-790cef148b8cc7b6)
+
+running 5 tests
+test draining_projection_equals_its_addressed_journal ... ok
+test failed_projection_equals_its_addressed_journal ... ok
+test succeeded_projection_equals_its_addressed_journal ... ok
+test cancelled_projection_equals_its_addressed_journal ... ok
+test checkpointed_open_projection_equals_its_addressed_journal ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/continuation.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/continuation-7f8192813f4beeda)
+
+running 14 tests
+test an_existing_run_cannot_be_inserted_as_another_successor ... ok
+test child_cancellation_latch_blocks_handoff_even_before_chain_cancel_is_applied ... ok
+test child_link_rejects_cross_tenant_and_cross_namespace_chains ... ok
+test current_head_and_revision_are_compare_and_swap_inputs ... ok
+test child_link_waits_across_continued_segments_and_settles_final_once ... ok
+test cancellation_committed_before_handoff_prevents_a_successor ... ok
+test cancellation_after_handoff_targets_the_new_head_and_latches_future_handoffs ... ok
+test duplicate_handoff_replays_the_first_successor_and_conflicts_on_changed_content ... ok
+test every_unresolved_obligation_blocks_handoff_without_mutation ... ok
+test finalization_is_first_commit_and_a_terminal_chain_never_reopens ... ok
+test handoff_advances_one_head_and_retains_lineage_and_transfer ... ok
+test policy_and_segment_indices_are_bounded ... ok
+test scope_version_and_original_deadline_cannot_change_at_handoff ... ok
+test the_global_segment_ceiling_stops_before_index_ten_thousand ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.30s
+
+     Running tests/continuation_quiescence.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/continuation_quiescence-7a44a40aa35cc470)
+
+running 7 tests
+test an_unresolved_obligation_is_a_reason_to_wait_and_not_a_terminal_error ... ok
+test blocker_labels_are_distinct ... ok
+test compensation_outranks_other_work_so_the_reported_blocker_is_stable ... ok
+test the_boundary_step_itself_never_blocks_its_own_handoff ... ok
+test a_run_whose_other_steps_are_finished_and_routed_is_quiescent ... ok
+test a_saga_that_is_not_done_blocks_as_compensation_and_a_done_saga_does_not ... ok
+test every_kind_of_open_work_maps_to_its_own_blocker ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/continuation_workflow.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/continuation_workflow-fe7ee59a7c7470c6)
+
+running 3 tests
+test ordinary_structured_definitions_and_named_bodies_reject_continuation ... ok
+test continuation_policy_and_terminal_shape_are_bounded ... ok
+test continuation_is_forbidden_inside_parallel_and_saga_regions ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/database_connections.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/database_connections-3062c10daf67f5c5)
+
+running 4 tests
+test finite_limits_are_intersected_and_never_interpreted_as_unlimited ... ok
+test target_is_a_bare_host_and_never_a_credential_url_or_driver_options ... ok
+test operation_content_is_bounded_and_never_in_debug_or_validation_errors ... ok
+test managed_node_policies_and_cache_weight_cannot_be_bypassed ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/declared_operations.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/declared_operations-8f2d5bde51b15d43)
+
+running 11 tests
+test a_chain_key_replays_its_original_receipt_after_head_resolution_changes ... ok
+test disclosure_operation_names_keys_and_values_are_closed_and_bounded ... ok
+test evaluator_failure_leaves_no_state_or_receipt_to_fake_a_commit ... ok
+test applied_update_changes_state_once_and_lost_response_replays_the_receipt ... ok
+test new_updates_are_refused_outside_running_or_waiting_without_a_receipt ... ok
+test an_update_cannot_replace_the_pinned_state_schema ... ok
+test equal_expected_revisions_allow_one_update_and_reject_the_later_one ... ok
+test query_reads_one_snapshot_without_mutating_state_or_revision ... ok
+test same_key_with_changed_content_or_operation_conflicts_without_mutation ... ok
+test validator_rejection_is_durable_without_changing_business_state ... ok
+test revision_conflict_is_a_stable_rejected_receipt_and_does_not_evaluate ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/declared_operations_restore.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/declared_operations_restore-420b6edab8c6ef01)
+
+running 4 tests
+test durable_rejection_keeps_the_current_run_version ... ok
+test exhausted_run_version_still_allows_rejection_and_replay_but_not_apply ... ok
+test restored_receipt_replays_without_evaluation ... ok
+test restoration_rejects_inconsistent_receipts ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/definition.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/definition-4c2b8a2233a94723)
+
+running 8 tests
+test authorization_is_checked_before_the_tenant ... ok
+test a_version_records_who_published_what ... ok
+test a_draft_starts_at_revision_one_in_the_principals_tenant_and_namespace ... ok
+test a_namespace_of_another_tenant_is_refused_as_a_tenant_mismatch ... ok
+test only_roles_that_write_definitions_can_create_one ... ok
+test only_roles_that_publish_can_publish_and_never_across_tenants ... ok
+test restoring_from_storage_keeps_every_field ... ok
+test the_new_audit_actions_have_stable_names ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/event_cause.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/event_cause-610d38108e1b17cd)
+
+running 6 tests
+test an_event_that_is_only_progress_has_no_cause ... ok
+test a_failure_a_retry_and_a_review_say_which_code_caused_them ... ok
+test a_reconciliation_says_what_the_provider_answered ... ok
+test the_clock_a_child_and_a_branch_are_causes_too ... ok
+test a_stop_says_the_code_when_there_is_one_and_the_reason_when_there_is_not ... ok
+test what_an_operator_decided_is_a_decision_and_what_they_asked_is_a_request ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/execution.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/execution-f6338cd07898dde9)
+
+running 67 tests
+test a_run_id_round_trips_through_text ... ok
+test a_non_retryable_failure_skips_the_remaining_attempts ... ok
+test a_run_cannot_finish_while_work_remains ... ok
+test a_deadline_ends_the_run_as_timed_out ... ok
+test a_run_can_be_stopped_only_once ... ok
+test a_paused_run_can_still_be_cancelled ... ok
+test a_definition_without_a_lowered_limit_never_pays_for_the_check ... ok
+test a_finished_run_refuses_everything ... ok
+test a_correlation_error_can_be_routed_through_on_error ... ok
+test a_result_that_cannot_be_kept_fails_the_run_with_its_code ... ok
+test a_retryable_failure_backs_off_then_retries_until_the_budget_is_spent ... ok
+test a_condition_routes_by_its_resolved_outcome ... ok
+test a_paused_run_grants_no_leases ... ok
+test a_branch_can_handle_its_own_failure_and_still_join ... ok
+test a_join_waits_for_the_whole_chain_of_every_branch ... ok
+test a_late_report_after_the_lease_was_reclaimed_is_rejected_without_a_trace ... ok
+test a_second_heartbeat_does_not_journal_again ... ok
+test a_run_that_exactly_fits_the_limit_succeeds ... ok
+test a_stale_generation_cannot_complete_a_step ... ok
+test a_stopping_run_cannot_finish_while_an_attempt_is_still_in_flight ... ok
+test a_stopping_run_finishes_only_with_the_status_its_reason_implies ... ok
+test a_stopping_run_cannot_be_paused ... ok
+test a_timer_can_fire_only_once ... ok
+test a_timer_parks_the_run_without_any_worker_until_it_is_due ... ok
+test a_wait_subscribes_under_the_evaluated_correlation_key ... ok
+test a_wait_that_times_out_without_a_route_fails_the_run ... ok
+test a_two_step_chain_runs_to_success_and_the_journal_tells_the_story ... ok
+test a_wait_that_times_out_takes_the_timeout_route ... ok
+test an_all_join_waits_for_every_branch ... ok
+test an_all_join_fails_fast_and_stops_the_siblings ... ok
+test an_any_join_does_not_wait_for_the_losing_chain ... ok
+test an_any_join_fails_only_when_every_branch_failed ... ok
+test an_attempt_that_vanishes_during_cancellation_is_cancelled_not_retried ... ok
+test an_any_join_takes_the_first_winner_and_cancels_the_rest ... ok
+test an_end_node_closes_the_run ... ok
+test an_end_with_a_result_expression_finishes_the_run_only_after_evaluating_it ... ok
+test an_end_without_a_result_expression_finishes_without_an_evaluation ... ok
+test an_expression_error_fails_the_node_without_retrying ... ok
+test an_event_cannot_satisfy_a_timer_and_a_timer_cannot_fire_a_wait ... ok
+test an_error_route_handles_a_failure_and_the_run_still_succeeds ... ok
+test cancelling_a_run_lets_the_worker_acknowledge_before_it_ends ... ok
+test cancelling_drops_timers_and_waits_and_a_late_timer_is_refused ... ok
+test cancelling_a_run_with_nothing_in_flight_finishes_at_once ... ok
+test children::a_child_that_cannot_be_reserved_fails_the_step_without_a_wait ... ok
+test children::a_child_that_ends_while_the_parent_is_paused_is_recorded_and_routed_on_resume ... ok
+test children::a_node_that_starts_its_own_workflow_is_flagged_but_accepted ... ok
+test children::a_child_step_reserves_its_run_then_parks_the_parent_without_a_worker ... ok
+test children::a_deadline_cancels_the_waiting_parent_like_any_other_stop ... ok
+test children::a_failed_child_takes_the_error_route_or_fails_the_run_with_its_code ... ok
+test children::a_successful_child_resumes_the_parent_on_its_next_step ... ok
+test children::only_the_child_the_step_waits_for_can_end_the_wait ... ok
+test failure_codes_and_keys_are_bounded_machine_values ... ok
+test children::stopping_the_parent_waits_for_a_child_whose_policy_is_request_cancel ... ok
+test heartbeats_and_reports_need_a_lease ... ok
+test children::stopping_the_parent_cancels_a_propagating_or_detached_wait_at_once ... ok
+test lease_expiry_and_attempt_timeout_consume_an_attempt_with_their_own_code ... ok
+test release_pending_continues_a_step_that_a_durable_transaction_activated ... ok
+test pausing_holds_back_new_work_and_resuming_catches_up ... ok
+test routing_cannot_activate_a_step_twice ... ok
+test storage_quota_failure_stops_before_on_error_can_release_more_work ... ok
+test the_reducer_itself_refuses_a_stale_fence_even_if_a_command_did_not ... ok
+test the_instance_that_would_pass_the_authors_limit_stops_the_run_with_instance_limit ... ok
+test the_first_commit_wins_the_race_between_an_event_and_its_timeout ... ok
+test nested_parallels_join_inside_out ... ok
+test the_reducer_rejects_illegal_events_and_leaves_the_state_alone ... ok
+test replaying_a_prefix_rebuilds_every_intermediate_state ... ok
+test storage_quota_failure_preserves_an_existing_stop_and_owed_compensation ... ok
+
+test result: ok. 67 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/execution_properties.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/execution_properties-472079cc9c8ccdbb)
+
+running 3 tests
+test every_shape_succeeds_when_nothing_goes_wrong ... ok
+test no_sequence_of_commands_breaks_the_state_machine ... ok
+test the_chaos_reaches_every_event_type_and_every_final_status ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 14.46s
+
+     Running tests/identity.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/identity-e4080a6e31c4ac85)
+
+running 30 tests
+test a_worker_can_execute_tasks_and_do_nothing_else ... ok
+test a_reserved_subject_violation_explains_itself ... ok
+test admin_grants_a_role_inside_their_own_tenant ... ok
+test admin_creates_workspace_in_their_own_tenant ... ok
+test admin_permissions_decide_every_catalog_entry_except_pii_reveal ... ok
+test admin_creates_namespace_inheriting_tenant_and_workspace ... ok
+test authorize_reports_role_and_permission_on_denial ... ok
+test bootstrap_admin_binds_the_first_admin_to_the_provisioned_tenant ... ok
+test database_executor_is_a_separate_machine_identity ... ok
+test generated_ids_are_unique_uuid_v7 ... ok
+test error_messages_never_disclose_identifiers ... ok
+test ids_round_trip_through_text_and_reject_garbage ... ok
+test namespace_in_a_foreign_workspace_is_rejected_as_tenant_mismatch ... ok
+test non_admin_roles_cannot_create_workspaces ... ok
+test only_admin_can_create_scopes_manage_members_or_read_audit ... ok
+test only_the_runner_reads_the_source_of_every_script_or_fetches_artifacts ... ok
+test only_admin_can_grant_memberships ... ok
+test only_operators_and_admins_can_operate_signal_or_inspect_run_payloads ... ok
+test payload_permissions_are_fail_closed_for_builtin_roles ... ok
+test permission_is_checked_before_tenant_so_denied_roles_learn_nothing ... ok
+test role_and_environment_round_trip_and_reject_unknown_values ... ok
+test rejected_values_are_clipped_in_error_messages ... ok
+test role_permission_matrix_is_exactly_as_specified ... ok
+test slug_rejects_path_and_injection_shapes ... ok
+test slug_accepts_dns_label_like_names ... ok
+test slug_reports_the_violated_rule ... ok
+test subject_accepts_typical_oidc_subjects ... ok
+test subject_rejects_empty_oversized_and_control_characters ... ok
+test the_platform_actor_exists_but_cannot_be_parsed_back_into_a_subject ... ok
+test the_system_namespace_is_reserved_for_platform_actors ... ok
+
+test result: ok. 30 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/instance_identity.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/instance_identity-0528026a0503d5e9)
+
+running 6 tests
+test a_typed_segment_does_not_concatenate_user_node_names ... ok
+test path_bounds_apply_at_each_nesting_boundary ... ok
+test repeated_definition_node_has_distinct_typed_instances ... ok
+test old_journal_events_replay_as_empty_path_instances ... ok
+test projection_restore_keeps_equal_definition_nodes_in_distinct_scopes ... ok
+test a_live_scoped_instance_prevents_run_finalization ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/operator_actions.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/operator_actions-b77ae1794b1a9bd4)
+
+running 10 tests
+test a_step_that_is_in_flight_or_already_held_or_finished_cannot_be_held ... ok
+test a_lookup_cannot_be_held_only_the_step_it_is_for ... ok
+test a_step_in_flight_or_done_cannot_be_retried_by_hand ... ok
+test a_step_waiting_out_a_retry_delay_can_be_held_and_then_settled_by_hand ... ok
+test an_operator_can_hold_a_step_that_has_not_started_and_the_run_waits_for_a_person ... ok
+test the_cause_of_holding_and_retrying_is_in_the_journal ... ok
+test a_held_step_whose_attempt_may_have_had_an_effect_is_still_undone_when_the_saga_is_stopped ... ok
+test the_scheduler_and_the_operator_cannot_both_start_an_attempt_whichever_is_first ... ok
+test an_operator_does_not_have_to_wait_for_the_delay_of_a_retry ... ok
+test holding_a_step_does_not_forget_that_its_last_attempt_may_have_had_an_effect ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/primitive_collections.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/primitive_collections-a5f489a3cfd70830)
+
+running 3 tests
+test max_items_is_an_integer_from_one_to_ten_thousand ... ok
+test max_concurrency_is_an_integer_from_one_to_256 ... ok
+test max_iterations_is_an_integer_from_one_to_ten_thousand ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/primitive_loops.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/primitive_loops-c5fc7ed240955018)
+
+running 28 tests
+test a_loop_timeout_with_an_error_edge_retains_its_code_and_routes ... ok
+test a_failed_body_drains_and_retains_its_failure_code ... ok
+test a_deadline_can_drain_a_suspended_loop_without_an_active_iteration ... ok
+test a_checkpoint_after_the_deadline_loses_the_race_without_mutation ... ok
+test an_instance_budget_stop_is_a_distinct_durable_failure_that_replays ... ok
+test an_outer_cancel_over_an_iteration_in_flight_ends_the_run_cancelled ... ok
+test a_failed_body_with_an_error_edge_drains_without_stopping_the_run ... ok
+test an_outer_cancel_before_the_loop_is_entered_cancels_its_owner ... ok
+test an_iteration_index_is_admitted_once_per_loop_instance ... ok
+test a_cancel_during_a_failure_drain_finishes_the_run_cancelled ... ok
+test budget_exhaustion_fails_before_a_delay_can_be_scheduled ... ok
+test cancellation_leaves_an_active_loop_to_the_scheduler_that_drains_it ... ok
+test an_unreadable_entry_fails_the_unentered_owner_and_takes_the_error_edge ... ok
+test an_unreadable_entry_to_an_end_finishes_the_run_succeeded_and_replays ... ok
+test an_outer_cancel_over_a_delaying_loop_ends_the_run_cancelled ... ok
+test cancellation_still_cancels_a_loop_that_declares_an_error_edge ... ok
+test cancellation_stops_admission_and_finishes_after_active_work_drains ... ok
+test checkpoints_replay_carry_and_delay_without_reevaluating ... ok
+test drain_refuses_to_hide_an_iteration_with_an_active_lease ... ok
+test pre_and_post_test_entry_forms_are_not_interchangeable ... ok
+test repeat_until_executes_once_before_its_first_condition ... ok
+test restart_rebuilds_the_last_committed_checkpoint_from_events ... ok
+test only_a_pending_loop_with_an_error_edge_fails_before_entry ... ok
+test starting_a_loop_parks_its_owner_for_the_transactional_scheduler ... ok
+test the_error_edge_activates_a_recovery_activity_and_the_run_replays_exactly ... ok
+test the_run_deadline_over_an_active_loop_still_fails_closed ... ok
+test while_false_at_entry_completes_without_a_body ... ok
+test the_error_edge_to_an_end_finishes_the_run_through_the_normal_terminal_path ... ok
+
+test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/reveal_grants.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/reveal_grants-27965c9845d82285)
+
+running 2 tests
+test grant_audit_vocabulary_is_explicit_and_never_collapses ... ok
+test reveal_is_never_inherited_from_a_role_and_only_eligible_roles_read_internal_values ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/sagas.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/sagas-23c0913004649022)
+
+running 60 tests
+test a_compensation_and_a_reconciliation_are_derived_nodes_that_nothing_routes_to ... ok
+test a_deadline_compensates_and_the_run_times_out_only_when_that_is_done ... ok
+test a_double_manual_command_is_refused_and_changes_nothing ... ok
+test a_failed_compensation_does_not_hold_back_an_independent_one ... ok
+test a_failure_that_something_inside_handles_does_not_start_a_compensation ... ok
+test a_high_risk_step_with_an_unknown_outcome_waits_for_an_operator_instead_of_retrying ... ok
+test a_reconciled_step_can_be_reconciled_again_after_a_retry ... ok
+test a_reconciliation_is_completed_with_its_verdict_and_nothing_else ... ok
+test a_provider_that_cannot_say_is_never_assumed_either_way ... ok
+test a_reconciliation_that_cannot_be_completed_sends_the_step_to_an_operator ... ok
+test a_compensation_that_exhausts_its_retries_waits_for_an_operator ... ok
+test a_cancellation_whose_compensation_fails_is_not_a_clean_cancellation ... ok
+test a_retry_is_refused_on_a_step_of_a_saga_that_stopped_going_forward ... ok
+test a_compensation_that_fails_is_retried_with_its_own_budget ... ok
+test a_decision_cannot_be_forced_on_a_step_that_waits_for_something_other_than_a_person ... ok
+test a_lookup_that_found_nothing_leaves_the_step_known_not_to_have_happened ... ok
+test a_saga_body_is_a_closed_region_without_an_end ... ok
+test a_saga_in_a_branch_that_loses_the_join_compensates_what_it_did ... ok
+test a_saga_that_completed_before_the_join_failed_is_not_compensated_by_it ... ok
+test a_saga_that_completes_just_continues ... ok
+test a_worker_can_say_it_does_not_know_what_happened ... ok
+test a_sibling_saga_whose_compensation_failed_is_not_hidden_by_the_one_that_ended_the_run ... ok
+test a_saga_that_could_not_undo_everything_does_not_let_its_error_route_end_the_run_successfully ... ok
+test aborting_without_compensation_just_stops ... ok
+test an_attempt_with_an_unknown_outcome_is_reconciled_before_anything_else ... ok
+test an_effect_cannot_be_both_irreversible_and_compensated_and_only_an_activity_has_one ... ok
+test an_effect_that_may_have_happened_is_compensated_defensively ... ok
+test an_inner_saga_that_fails_is_compensated_and_then_the_outer_one_compensates_the_rest ... ok
+test an_attempt_whose_outcome_became_unknown_while_the_run_was_being_cancelled_is_still_undone ... ok
+test an_irreversible_effect_makes_the_outcome_partial_even_when_everything_else_is_undone ... ok
+test an_operator_can_have_a_step_that_waited_tried_again_or_failed ... ok
+test an_operator_can_declare_a_compensation_done_outside_the_platform ... ok
+test an_ordinary_failure_is_not_reconciled ... ok
+test an_unhandled_failure_of_a_saga_goes_to_the_error_route_of_the_saga ... ok
+test branches_of_a_parallel_node_are_independent_in_the_plan ... ok
+test cancelling_a_paused_run_still_undoes_what_it_did ... ok
+test cancelling_a_run_that_waits_for_an_operator_gives_up_on_the_review ... ok
+test cancelling_compensates_what_completed_and_ends_cancelled ... ok
+test an_unknown_outcome_is_reconciled_before_a_saga_that_is_being_stopped_compensates ... ok
+test an_unknown_outcome_only_makes_the_saga_partial_when_nothing_can_undo_what_may_have_happened ... ok
+test cancelling_a_run_whose_forward_step_waits_for_an_operator_gives_up_and_compensates_defensively ... ok
+test compensations_run_in_reverse_order_and_each_waits_for_the_one_after_it ... ok
+test every_way_an_outcome_can_be_unknown_makes_the_effect_compensated_defensively ... ok
+test neither_a_lookup_nor_a_compensation_in_flight_is_asked_to_stop_when_the_run_is_cancelled ... ok
+test independent_branches_are_compensated_at_the_same_time ... ok
+test nested_outcomes_are_not_hidden_by_the_outer_saga ... ok
+test reserve_completed_and_submit_failed_for_good_compensates_the_reservation ... ok
+test only_a_compensation_can_be_skipped ... ok
+test scopes_nest_and_the_innermost_one_decides ... ok
+test the_author_cannot_write_an_id_that_collides_with_a_derived_one ... ok
+test skipping_a_compensation_ends_the_saga_as_partial ... ok
+test the_plan_is_the_reverse_of_the_forward_order ... ok
+test the_provider_says_the_effect_did_not_happen_so_the_step_is_tried_again ... ok
+test the_provider_says_the_effect_happened_so_the_step_succeeds_without_a_second_attempt ... ok
+test the_plan_is_the_same_as_the_one_worked_out_the_long_way ... ok
+test waiting_for_what_is_in_flight_then_compensating_everything_that_completed ... ok
+test what_ran_after_a_join_is_undone_before_the_branches_that_fed_it ... ok
+test skipping_a_compensation_lets_the_ones_that_waited_for_it_go_on ... ok
+test when_the_saga_does_not_wait_for_a_human_a_failed_compensation_ends_it_and_the_run ... ok
+test when_the_effect_did_not_happen_and_no_attempt_is_left_the_saga_compensates ... ok
+
+test result: ok. 60 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/scoped_compensation.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/scoped_compensation-7beb41dfb949c468)
+
+running 29 tests
+test a_lookup_that_cannot_say_waits_for_a_person ... ok
+test a_lookup_that_found_nothing_does_not_retry_a_stopping_scope_and_compensates_nothing ... ok
+test a_scope_that_declares_nothing_to_compensate_plans_nothing ... ok
+test a_loop_that_timed_out_compensates_and_ends_timed_out_only_if_everything_was_undone ... ok
+test a_compensation_that_keeps_failing_waits_for_a_person_and_is_never_assumed_done ... ok
+test a_collection_cannot_finish_while_its_compensation_is_open ... ok
+test a_stop_from_outside_never_gives_up_on_a_compensation_that_waits_for_a_person ... ok
+test a_plan_must_name_real_completed_members_and_be_made_after_the_drain ... ok
+test an_attempt_with_an_unknown_outcome_is_looked_up_before_anything_is_repeated ... ok
+test an_irreversible_effect_ends_the_scope_partial_after_the_rest_is_undone ... ok
+test a_bounded_path_derives_only_its_scope_compensation_authority_from_the_oracle ... ok
+test a_cancellation_whose_completed_iterations_were_all_undone_ends_cancelled ... ok
+test a_cancellation_that_lands_during_compensation_changes_nothing ... ok
+test a_lookup_that_found_the_effect_makes_the_step_compensable ... ok
+test a_failure_whose_completed_iterations_were_all_undone_ends_compensated ... ok
+test a_collection_stopped_by_the_storage_quota_still_undoes_its_completed_iterations ... ok
+test an_iteration_whose_member_is_being_looked_up_cannot_be_drained ... ok
+test an_operator_declaring_the_compensation_failed_ends_the_scope_compensation_failed ... ok
+test an_operator_skip_leaves_the_scope_partial ... ok
+test an_operator_retry_runs_the_same_compensation_again ... ok
+test compensation_fan_out_is_bounded_by_the_scope_concurrency ... ok
+test bounded_operator_decisions_keep_failed_compensation_semantics ... ok
+test bounded_derived_expiry_keeps_compensation_and_lookup_policy ... ok
+test iterations_of_a_collection_are_independent_branches ... ok
+test the_branches_of_a_parallel_node_inside_a_body_are_independent_in_the_order ... ok
+test stopping_compensation_completion_retains_empty_routing_without_forward_work ... ok
+test completed_iterations_of_a_loop_compensate_in_reverse_iteration_order ... ok
+test an_unknown_outcome_is_compensated_defensively_when_the_scope_stops ... ok
+test compensation_in_one_iteration_runs_in_reverse_topological_order ... ok
+
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/scoped_reducer.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/scoped_reducer-ef20a98559cd1ebe)
+
+running 7 tests
+test fence_validation_is_scoped_to_the_addressed_instance ... ok
+test run_level_events_reject_a_scoped_address ... ok
+test addressed_cancellation_replays_only_for_the_leased_instance ... ok
+test unsupported_scoped_condition_is_rejected_without_mutation ... ok
+test addressed_transitions_preserve_paths_and_changed_instances ... ok
+test addressed_events_keep_equal_definition_nodes_independent ... ok
+test root_instance_commands_preserve_legacy_events ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/scoped_step_lifecycle.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/scoped_step_lifecycle-8c1b8ba59add16bf)
+
+running 3 tests
+test retry_schedule_and_due_are_isolated_by_path_and_fence ... ok
+test a_fenced_failure_changes_only_its_addressed_iteration ... ok
+test completion_and_routing_keep_equal_local_nodes_in_separate_iterations ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/sharding.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/sharding-ff409488d4038076)
+
+running 7 tests
+test a_shard_is_a_function_of_the_identifier_and_the_sql_function_is_the_same ... ok
+test the_share_covers_every_shard_even_when_the_replicas_do_not_divide_them ... ok
+test a_set_of_shards_holds_what_was_put_in_it ... ok
+test a_lease_that_ran_out_is_free_whoever_the_owner_was ... ok
+test an_alone_replica_takes_everything_and_a_late_one_waits_for_what_is_given_back ... ok
+test the_ids_the_platform_makes_fill_the_shards_evenly ... ok
+test replicas_that_come_and_go_always_settle_with_every_shard_owned_once ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.38s
+
+     Running tests/state_updated_event.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/state_updated_event-d7fb2d32e59aee18)
+
+running 2 tests
+test state_update_rejects_a_non_consecutive_revision_without_advancing ... ok
+test state_update_advances_only_the_journal_projection ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/structured_workflow.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/structured_workflow-63dda90ca41b3e87)
+
+running 8 tests
+test legacy_constructor_remains_root_only ... ok
+test body_rejects_missing_multiple_or_escaping_returns_and_workflow_end ... ok
+test closed_collection_body_keeps_definition_names_local ... ok
+test instance_paths_resolve_nodes_in_their_declared_body ... ok
+test an_author_can_lower_the_limits_of_a_built_definition_but_not_below_its_nesting ... ok
+test collection_limits_and_effective_expression_bytes_are_validated ... ok
+test body_reference_graph_rejects_missing_duplicate_unused_and_recursive_bodies ... ok
+test shared_limits_bound_depth_and_total_definition_nodes ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+     Running tests/switch.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/switch-ae56ad5acf474929)
+
+running 4 tests
+test switch_targets_are_ordered_and_part_of_the_graph ... ok
+test a_switch_predicate_reports_its_effective_expression_byte_limit ... ok
+test a_switch_has_at_least_one_case_and_cannot_declare_an_error_route ... ok
+test duplicate_case_ids_and_an_undefined_target_are_rejected ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/switch_execution.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/switch_execution-022d4678f22675b7)
+
+running 3 tests
+test predicate_error_fails_instead_of_trying_another_case ... ok
+test no_matching_case_uses_the_recorded_default ... ok
+test one_recorded_case_routes_once_and_replays_without_reevaluation ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/versioning.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/versioning-f88f472afe025d26)
+
+running 12 tests
+test a_draft_that_moved_supersedes_an_open_request_and_nothing_else ... ok
+test a_namespace_that_asks_for_nothing_opens_requests_already_approved ... ok
+test a_policy_raised_after_the_approvals_asks_for_more_before_it_publishes ... ok
+test names_survive_the_round_trip_through_storage ... ok
+test a_request_is_published_only_when_approved_and_only_once ... ok
+test one_rejection_ends_the_request_whatever_the_others_said ... ok
+test a_switch_by_hand_is_a_rollback_going_back_and_an_activation_going_forward ... ok
+test production_asks_for_one_approval_by_default_and_the_others_for_none ... ok
+test only_the_author_withdraws_and_only_while_the_request_is_open ... ok
+test the_author_never_decides_their_own_request_and_nobody_decides_twice ... ok
+test the_request_is_approved_exactly_when_it_has_as_many_approvals_as_were_asked ... ok
+test whoever_saved_the_document_cannot_approve_it_even_when_somebody_else_asked ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/workflow.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/workflow-a8396b49e35891d4)
+
+running 37 tests
+test activity_and_event_names_allow_namespacing_but_not_separators ... ok
+test a_branch_may_not_run_into_the_continuation_of_the_join ... ok
+test a_compensation_outside_a_saga_is_reported_because_it_will_never_run ... ok
+test a_fork_and_join_has_one_region_per_branch ... ok
+test attempts_left_counts_attempts_already_used ... ok
+test an_error_edge_inside_a_branch_must_stay_inside_it ... ok
+test a_workflow_end_cannot_sit_inside_a_branch ... ok
+test conditions_route_to_two_existing_nodes ... ok
+test cycles_are_rejected_including_self_loops_and_error_edges ... ok
+test digests_round_trip_through_hex ... ok
+test delays_and_timeouts_must_be_positive_and_bounded ... ok
+test a_parallel_needs_two_to_max_distinct_branches ... ok
+test branches_may_not_share_nodes ... ok
+test duplicate_ids_and_unknown_entrypoints_are_rejected ... ok
+test every_kind_of_dangling_reference_is_reported ... ok
+test exponential_backoff_cannot_overflow ... ok
+test exponential_backoff_doubles_and_is_capped ... ok
+test expressions_are_bounded_text ... ok
+test fixed_backoff_is_constant ... ok
+test jitter_ignores_a_nonsensical_sample ... ok
+test declared_secrets::a_workflow_may_not_declare_more_distinct_secrets_than_the_limit ... ok
+test jitter_stays_between_half_and_the_whole_base_delay ... ok
+test node_ids_are_path_safe_and_bounded ... ok
+test nodes_that_cannot_be_reached_are_rejected ... ok
+test non_activities_never_retry ... ok
+test nothing_outside_may_jump_into_a_branch ... ok
+test parallels_can_nest_when_each_region_is_closed ... ok
+test rejected_names_are_clipped_in_the_error ... ok
+test retry_policy_enforces_its_bounds ... ok
+test successors_list_every_edge_in_a_stable_order ... ok
+test the_documented_payment_flow_is_valid_and_chains_may_end_without_an_end_node ... ok
+test cost::a_workflow_may_not_hold_more_parallel_nodes_than_the_limit ... ok
+test an_empty_or_oversized_graph_is_rejected ... ok
+test declared_secrets::the_limit_counts_distinct_names_and_not_how_often_they_are_used ... ok
+test cost::a_plain_chain_of_ten_thousand_nodes_is_valid_and_weighs_what_it_should ... ok
+test a_long_chain_is_validated_without_recursion ... ok
+test cost::the_largest_allowed_shape_validates_in_bounded_time_and_reports_its_weight ... ok
+
+test result: ok. 37 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.32s
+
+     Running tests/workflow_permissions.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/workflow_permissions-de3a71fe18ff6a6c)
+
+running 1 test
+test declared_operations_and_human_decisions_have_explicit_role_grants ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/sagat_infra_ir-3b683542b633cf54)
+
+running 6 tests
+test canonical::tests::keys_are_sorted_even_when_the_entries_arrive_in_another_order ... ok
+test canonical::tests::sorting_is_by_bytes_not_by_locale ... ok
+test schema::embedded_contract_tests::embedded_workflow_schema_matches_the_canonical_contract_bytes ... ok
+test cron::tests::the_next_time_is_the_first_strictly_after ... ok
+test cron::tests::the_time_zone_decides_what_nine_in_the_morning_is ... ok
+test cron::tests::a_schedule_that_means_nothing_is_refused ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests/cache.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/cache-e3113f07110d18fb)
+
+running 4 tests
+test stored_legacy_schema_extensions_do_not_change_execution_restore ... ok
+test stored_parsing_keeps_structural_validation_and_current_canonical_bytes ... ok
+test a_definition_heavier_than_the_whole_budget_still_works_and_is_the_only_one_kept ... ok
+test old_entries_are_evicted_by_weight_not_only_by_count ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+
+     Running tests/classification.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/classification-21f1169177d4ef7d)
+
+running 14 tests
+test failed_carrier_emits_no_partial_locations_and_returns_a_safe_status ... ok
+test an_unannotated_document_reports_pii_roots_without_publication_errors ... ok
+test items_and_additional_properties_participate_in_monotonic_publication_walks ... ok
+test all_of_fallbacks_govern_properties_and_prefix_items_from_other_branches ... ok
+test annotations_reached_by_refs_under_unsupported_applicators_are_refused ... ok
+test named_body_output_schemas_are_carriers_only_on_output_producers ... ok
+test publication_findings_are_closed_bounded_and_point_to_the_defect ... ok
+test report_lists_effective_declared_paths_and_open_inheritance_warning ... ok
+test unsupported_applicator_annotation_reachability_follows_two_local_refs ... ok
+test supported_all_of_refs_remain_valid_controls ... ok
+test warning_caps_and_unrepresentable_paths_cannot_hide_publication_errors ... ok
+test defect_corpus_covers_every_closed_publication_code ... ok
+test named_body_carriers_use_the_same_size_depth_and_reference_bounds ... ok
+test location_visitor_is_not_limited_by_the_human_report_cap ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/classification_diff.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/classification_diff-4a3a1de4ec123130)
+
+running 14 tests
+test exact_json_pointer_source_paths_escape_slashes_and_tildes ... ok
+test removed_locations_use_object_and_array_fallbacks ... ok
+test absent_carrier_is_not_treated_as_an_implicit_pii_carrier ... ok
+test missing_location_floor_keeps_a_secret_ancestor ... ok
+test node_and_combiner_reordering_do_not_create_classification_findings ... ok
+test incomplete_carrier_is_reported_once_and_its_prefix_is_not_compared ... ok
+test array_fallback_does_not_jump_past_an_explicit_ancestor ... ok
+test effective_levels_are_compared_per_path_with_inherited_children ... ok
+test named_body_carriers_with_the_same_node_id_remain_independent ... ok
+test object_fallback_does_not_jump_past_an_explicit_ancestor ... ok
+test a_shared_reference_is_resolved_in_each_inherited_context ... ok
+test wildcard_and_numeric_property_names_do_not_collide_with_applicators ... ok
+test classification_findings_are_bounded_and_the_more_count_is_exact ... ok
+test classification_after_the_human_report_cap_is_still_compared ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 11.28s
+
+     Running tests/classification_publication.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/classification_publication-998221fb600a1e44)
+
+running 3 tests
+test production_codec_refuses_unsupported_annotations_with_closed_classification_problems ... ok
+test production_compiles_annotated_root_schemas_but_preserves_unannotated_legacy_roots ... ok
+test production_codec_refuses_lowered_levels_and_keeps_sound_digests_stable ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/classification_schema_compile.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/classification_schema_compile-9b3453b253e41ee4)
+
+running 2 tests
+test annotated_root_refs_are_compiled_without_network_access_or_value_diagnostics ... ok
+test annotated_root_and_every_supported_node_output_schema_are_compiled ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/codec.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/codec-16345e800dd59512)
+
+running 50 tests
+test a_timer_beyond_a_year_is_rejected ... ok
+test a_child_node_defaults_to_the_active_version_the_parents_input_and_propagation ... ok
+test a_compensation_outside_a_saga_is_a_warning ... ok
+test a_child_node_carries_its_workflow_version_input_and_cancel_policy ... ok
+test a_script_node_runs_as_the_activity_named_after_its_digest ... ok
+test a_saga_node_defaults_to_waiting_for_an_operator_and_compensating_on_cancel ... ok
+test a_hostile_expression_is_refused_not_evaluated ... ok
+test a_node_with_an_unknown_or_missing_type_says_so_and_lists_the_types ... ok
+test an_activity_declares_secrets_by_name_and_the_definition_lists_them ... ok
+test a_hostile_node_cannot_make_the_message_long ... ok
+test an_inconsistent_retry_policy_is_rejected_by_the_domain ... ok
+test expressions_must_compile_in_the_bounded_subset ... ok
+test graph_violations_are_reported_by_the_domain ... ok
+test node_kinds_without_an_engine_are_refused_with_the_reason ... ok
+test native_approval_is_publishable_beside_declared_state_and_apart_from_parallel ... ok
+test an_approval_in_a_collection_or_loop_body_waits_for_scoped_compensation ... ok
+test correlation_end_output_and_idempotency_templates_are_checked_too ... ok
+test only_an_activity_can_declare_secrets ... ok
+test oversized_malformed_and_deeply_nested_documents_are_refused_safely ... ok
+test any_change_of_meaning_changes_the_digest ... ok
+test omitted_retry_fields_take_the_documented_defaults ... ok
+test strings_with_unusual_characters_survive_canonicalisation ... ok
+test structured_collection_can_be_validated_canonicalized_and_published ... ok
+test structured_loops_match_the_reviewed_sdk_golden_and_publish ... ok
+test structured_loops_compile_all_expressions_and_validate_their_body ... ok
+test structured_validation_compiles_collection_and_body_expressions ... ok
+test switch_cases_keep_declaration_order_and_reject_an_undefined_target ... ok
+test structured_validation_enforces_closed_bodies_and_capability_boundaries ... ok
+test the_effect_of_an_activity_is_read_with_its_defaults ... ok
+test the_example_digest_is_pinned ... ok
+test the_example_saga_compensates_its_steps_and_has_nothing_to_warn_about ... ok
+test the_idempotency_templates_of_the_example_compile ... ok
+test the_canonical_form_is_compact_sorted_and_stable_under_reparsing ... ok
+test the_repository_example_is_a_valid_definition ... ok
+test unsupported_additive_declarations_remain_unpublishable ... ok
+test whitespace_and_key_order_do_not_change_the_digest ... ok
+test a_wide_but_valid_document_is_accepted ... ok
+test the_number_and_size_of_reported_issues_is_bounded ... ok
+test arbitrary_bytes_never_panic ... ok
+test schema_problems_are_reported_with_json_pointers ... ok
+test structured_schema_errors_identify_the_offending_fields ... ok
+test nonsense_in_a_saga_definition_is_refused_where_it_is ... ok
+test a_saga_node_reads_its_policies ... ok
+test a_node_that_fits_no_type_is_reported_against_the_type_it_says_it_is ... ok
+test structural_schema_violations_are_rejected ... ok
+test a_script_node_pins_a_digest_and_nothing_else ... ok
+test a_malformed_child_node_is_reported_at_the_offending_field ... ok
+test structured_loop_limits_and_body_boundaries_fail_before_runtime ... ok
+test a_secret_declaration_that_is_not_a_list_of_names_is_refused_with_its_path ... ok
+test a_corrupted_example_never_panics_and_never_yields_a_different_valid_digest_silently ... ok
+
+test result: ok. 50 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.25s
+
+     Running tests/collection_sources.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/collection_sources-e09a7e82ccfb19f7)
+
+running 2 tests
+test accepting_a_source_prefix_does_not_enable_activity_successors_of_collections ... ok
+test source_activity_effect_and_error_combinations_remain_explicitly_unsupported ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/continuation.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/continuation-9a2308afe6bbff0e)
+
+running 15 tests
+test publishes_only_the_proven_activity_to_continuation_shape ... ok
+test publication_keeps_other_waiting_continuation_shapes_closed ... ok
+test publishes_a_single_condition_between_continuation_and_successful_end ... ok
+test input_only_sdk_golden_reparses_to_the_reviewed_canonical_v1_bytes ... ok
+test publishes_an_event_wait_after_an_activity_followed_by_continuation ... ok
+test publishes_direct_continuation_with_exact_declared_state_transfer ... ok
+test publication_rejects_unproven_continuation_combinations ... ok
+test publishes_an_event_wait_entrypoint_followed_by_a_continuation_or_one_condition ... ok
+test rejects_unavailable_transfer_variables_and_invalid_graphs ... ok
+test publishes_an_approval_that_rolls_the_chain_over_and_ends_it_on_rejection_or_expiry ... ok
+test stateful_sdk_golden_reparses_to_the_reviewed_canonical_v1_bytes ... ok
+test validates_and_preserves_policy_transfer_and_graph ... ok
+test publishes_conditional_continuation_with_exact_declared_state_transfer ... ok
+test publication_keeps_other_approval_continuation_shapes_closed ... ok
+test publication_keeps_every_other_wait_entrypoint_shape_closed_with_a_typed_refusal ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/database.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/database-89c39c025d9fc03e)
+
+running 8 tests
+test expression_parameters_preserve_precision_and_never_report_sensitive_input ... ok
+test canonical_database_node_is_supported ... ok
+test ordinary_activities_cannot_forge_managed_database_names ... ok
+test shared_lossless_value_fixture_and_write_policy ... ok
+test managed_database_composition_requires_proven_scoped_capabilities ... ok
+test database_schema_errors_do_not_echo_sql_or_parameters ... ok
+test database_writes_cannot_override_retry_or_effect_safety ... ok
+test typed_parameters_and_utf8_byte_ceilings_fail_closed ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
+
+     Running tests/database_result.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/database_result-5a9da33ce8840613)
+
+running 2 tests
+test retained_database_result_has_one_bounded_closed_lossless_shape ... ok
+test published_result_schema_agrees_with_the_retained_result_contract ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/declared_state.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/declared_state-ec6f733f092055de)
+
+running 5 tests
+test stored_state_operations_ignore_new_classification_metadata_but_keep_business_checks ... ok
+test publication_rejects_unreleased_capabilities_combined_with_declared_state ... ok
+test preserves_typed_state_and_operation_metadata_for_publication ... ok
+test compiles_expressions_in_their_exact_data_environments ... ok
+test rejects_uncompiled_oversized_deep_referenced_or_incoherent_schemas ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/diff.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/diff-e82cf666927e01d6)
+
+running 18 tests
+test a_workflow_with_no_version_compares_an_empty_document_with_its_draft ... ok
+test findings_never_repeat_a_value_of_the_document_only_names_and_paths ... ok
+test the_same_document_twice_is_identical_whatever_the_order_of_its_keys ... ok
+test edges_are_read_from_every_field_that_points_at_another_node ... ok
+test nodes_added_removed_and_changed_are_listed_with_the_fields_that_differ ... ok
+test a_side_that_is_not_a_json_object_or_is_too_large_cannot_be_compared ... ok
+test a_draft_that_does_not_validate_can_still_be_compared ... ok
+test the_output_contract_breaks_when_a_property_goes_or_changes_type ... ok
+test a_required_input_added_to_a_workflow_that_took_anything_breaks_its_callers ... ok
+test what_is_outside_the_nodes_is_listed_by_path ... ok
+test what_somebody_must_prepare_is_flagged_but_does_not_break_the_contract ... ok
+test removing_or_changing_a_trigger_breaks_the_contract_adding_one_does_not ... ok
+test the_input_contract_breaks_when_a_property_goes_changes_type_or_becomes_required ... ok
+test an_awaited_event_type_that_disappears_breaks_its_emitters ... ok
+test a_draft_full_of_triggers_is_compared_in_the_time_it_takes_to_read_it ... ok
+test an_answer_about_tens_of_thousands_of_differences_is_bounded_and_says_how_many_it_left_out ... ok
+test comparing_a_document_with_itself_is_identical_and_the_other_way_round_swaps_added_and_removed ... ok
+test thousands_of_differences_deep_in_a_nested_document_cost_what_reading_it_costs_and_the_answer_stays_small ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.27s
+
+     Running tests/evaluator.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/evaluator-56421f1958d532ba)
+
+running 9 tests
+test loop_checkpoint_fails_without_the_exact_iteration_context ... ok
+test loop_instance_receives_its_iteration_and_carry ... ok
+test root_task_context_remains_byte_identical_when_scoped_outputs_exist ... ok
+test collection_instances_receive_only_their_item_and_local_outputs ... ok
+test scoped_idempotency_uses_the_exact_iteration_context ... ok
+test collection_expressions_keep_item_order_and_exact_scope ... ok
+test continuation_value_uses_the_locked_run_snapshot ... ok
+test scoped_materialization_fails_closed_without_an_admission_input ... ok
+test loop_decisions_bind_the_condition_to_the_new_carry ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/limits.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/limits-fff3cf4f9b0cd037)
+
+running 6 tests
+test a_lowered_limit_is_published_with_the_definition ... ok
+test a_document_without_limits_is_unchanged ... ok
+test the_other_declarations_stay_closed_when_limits_are_present ... ok
+test an_omitted_field_keeps_its_platform_ceiling ... ok
+test a_limit_can_never_be_raised_above_the_platform_ceiling ... ok
+test every_publishable_shape_accepts_and_carries_the_block ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/operation_evaluator.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/operation_evaluator-3bdaf4cb2cd52060)
+
+running 7 tests
+test initial_state_rejects_a_value_that_does_not_match_the_published_schema ... ok
+test initial_state_is_schema_checked_canonical_and_ready_for_transactional_retention ... ok
+test update_uses_one_pre_state_and_validates_new_state_before_its_result ... ok
+test validator_rejection_does_not_evaluate_the_state_or_result_expressions ... ok
+test query_validates_inputs_and_result_then_binds_it_to_the_observed_snapshot ... ok
+test malformed_oversized_or_mismatched_contexts_fail_without_disclosing_values ... ok
+test schema_failures_are_typed_and_never_return_unchecked_values ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/payload_projection.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/payload_projection-b1ea25d65624214a)
+
+running 4 tests
+test the_global_node_cap_is_applied_before_a_projection_can_grow ... ok
+test wide_and_deep_documents_are_truncated_during_traversal ... ok
+test every_key_and_scalar_is_absent_while_shape_and_counts_remain ... ok
+test malformed_or_overly_nested_json_is_an_opaque_unsupported_format ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sagat_api_http
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sagat_application
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sagat_domain
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sagat_infra_ir
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

@@ -416,3 +416,21 @@ The depth-two case includes aborted admission and a real scheduler retry; the qu
 commits a new root alongside continuation. Their focused results do not establish the complete
 child-link lock graph or nested collection capacity; see the
 [working lock inventory](../../tasks/project-completion/capacity-lock-inventory.md).
+
+### Publication diagnostic checks
+
+Validate an editable draft before publishing. Canonical schema errors have precedence (`SCHEMA`);
+schema-valid cycle/escape/overlap/recursion failures use `INVALID_SCOPE`. Body escapes include the
+body and source node. An ordinary missing root target retains `GRAPH`. Correct unsupported
+object literals or expressions above 1024 UTF-8 bytes when the reason is `EXPRESSION`; the byte
+limit can be exceeded even when the character count passes the schema. Rejection creates no
+published version. Use the response trace ID for diagnosis; do not log expression contents.
+
+```sh
+SAGAT_TEST_AS_RUNTIME_ROLE=1 cargo test --locked -p sagat-tests \
+  --test integration_workflow_primitives publication_rejections -- --test-threads=3 --nocapture
+```
+
+The repository fixture starts its own PostgreSQL and exercises both draft validation and public
+publication with the application runtime role. See the exact failures and bounded review in
+`tasks/project-completion/evidence/publication-scope-20261018/`.
