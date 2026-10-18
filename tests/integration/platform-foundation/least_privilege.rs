@@ -210,7 +210,12 @@ async fn the_refusal_names_the_problem_and_never_a_credential() {
 
 #[tokio::test]
 async fn each_append_only_table_of_the_execution_plane_is_guarded_too() {
-    for table in ["run_events", "payloads", "workflow_versions"] {
+    for table in [
+        "run_events",
+        "payloads",
+        "workflow_versions",
+        "leaf_collection_success_certifications",
+    ] {
         for (privilege, finding) in [
             ("UPDATE", PrivilegeFinding::CanRewriteAppendOnly(table)),
             ("DELETE", PrivilegeFinding::CanRewriteAppendOnly(table)),

@@ -1,0 +1,16 @@
+   Compiling sagat-infra-postgres v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-postgres)
+   Compiling sagat-control-plane v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/control-plane)
+   Compiling sagat-sandbox-runner v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/sandbox-runner)
+   Compiling sagat-execution-engine v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/execution-engine)
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 38.39s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 4 tests
+test leaf_certification::dormant_runtime_cannot_create_or_rewrite_certifications ... ok
+test leaf_certification::dormant_snapshot_constraints_and_namespace_binding_are_real ... ok
+test leaf_certification::empty_schema_reverses_but_any_retained_fact_refuses_down ... ok
+test leaf_certification::retained_fact_and_original_run_survive_owner_replication_role_bypass ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 428 filtered out; finished in 7.72s
+

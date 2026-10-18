@@ -1,0 +1,280 @@
+[
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "leaf_certification::",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 101,
+    "seconds": 57.33,
+    "log": "absence.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "leaf_certification::",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "seconds": 48.2,
+    "log": "first.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "leaf_certification::",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "seconds": 42.23,
+    "log": "second.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "leaf_certification::",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "seconds": 10.26,
+    "log": "runtime.txt",
+    "runtime_role_suite": true
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_security_multitenancy",
+      "manifest_covers_every_variable_size_column",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "seconds": 25.51,
+    "log": "classification.txt",
+    "runtime_role_suite": false
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_platform_foundation",
+      "each_append_only_table_of_the_execution_plane_is_guarded_too",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "seconds": 42.32,
+    "log": "least-privilege.txt",
+    "runtime_role_suite": false
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "capacity_finish::",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "seconds": 64.03,
+    "log": "native-finish-regression.txt",
+    "runtime_role_suite": false
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "no_maintenance_job_removes_primitive_data",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "seconds": 2.65,
+    "log": "retention-regression.txt",
+    "runtime_role_suite": false
+  },
+  {
+    "command": [
+      "cargo",
+      "clippy",
+      "--workspace",
+      "--all-targets",
+      "--locked",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit_code": 0,
+    "seconds": 84.25,
+    "log": "clippy.txt",
+    "runtime_role_suite": false
+  },
+  {
+    "command": [
+      "cargo",
+      "fmt",
+      "--all",
+      "--",
+      "--check"
+    ],
+    "exit_code": 0,
+    "seconds": 4.06,
+    "log": "fmt.txt",
+    "runtime_role_suite": false
+  },
+  {
+    "command": [
+      "python3",
+      "scripts/check-architecture.py"
+    ],
+    "exit_code": 0,
+    "seconds": 0.32,
+    "log": "architecture.txt",
+    "runtime_role_suite": false
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "chains::a_boundary_with_open_work_waits_without_failing_and_hands_off_once_it_settles",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "seconds": 35.42,
+    "log": "chain-fixture-green.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_workflow_primitives",
+      "chains::the_write_proves_quiescence_again_under_the_locks_and_names_the_blocker",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "seconds": 2.21,
+    "log": "chain-write-green.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_platform_foundation",
+      "every_statement_the_stores_issue_is_within_the_runtime_roles_privileges",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "seconds": 4.48,
+    "log": "runtime-sql-audit.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "clippy",
+      "--workspace",
+      "--all-targets",
+      "--locked",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit_code": 0,
+    "seconds": 8.35,
+    "log": "clippy-postfixture.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "fmt",
+      "--all",
+      "--",
+      "--check"
+    ],
+    "exit_code": 0,
+    "seconds": 4.08,
+    "log": "fmt-postfixture.txt"
+  },
+  {
+    "command": [
+      "python3",
+      "scripts/check-architecture.py"
+    ],
+    "exit_code": 0,
+    "seconds": 0.31,
+    "log": "architecture-postfixture.txt"
+  }
+]

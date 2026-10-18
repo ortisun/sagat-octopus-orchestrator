@@ -1,0 +1,7 @@
+{
+  "crates/infra-postgres/migrations/20261211000000_leaf_success_certification.up.sql": "411f1b67a3299917d3bd7bdd9009819bac93846e02678f20e125908221ff089d",
+  "crates/infra-postgres/migrations/20261211000000_leaf_success_certification.down.sql": "cbf72a58d2867dba4d7d4fcbe97766b7cd95c5ed02942936f197f4caf5c1c651",
+  "crates/infra-postgres/src/privilege.rs": "4b30b1164ff5e2d394a8007cb31d9b6c260c034760b44653962ec61de29e2b4f",
+  "crates/infra-postgres/storage-classification.json": "cd0f801550f8ee2e1302fecb2701b87e2f8e62067b64831d5e65c63efcd64dca",
+  "tests/integration/workflow-primitives/leaf_certification.rs": "18373a380d3e05c06c0091569f43b3ef826327fbc3f1a0176c29e422aa5f86ba"
+}

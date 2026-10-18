@@ -478,3 +478,9 @@ audit action and injective natural resource identity commit with first certifica
 or execution journal event is introduced. Guarded down takes runs before the certificate table and
 refuses retained rows. Schema/audit implementation and real tests are next; see
 tasks/project-completion/leaf-certification-storage.md and leaf-source-retention-inventory.md.
+
+B1b.2a.1c.3a now implements dormant migration20261211000000, bounded storage classification,
+startup append-only role checks and five real PostgreSQL schema/retention/downgrade tests in
+default/runtime-role modes. Existing chain obstruction fixtures reuse retained rows. Dedicated
+audit vocabulary and the real bounded source certifier/producer proofs remain next. No source
+adapter, INSERT runtime grant, production caller, scoped Finish or nested execution is enabled.

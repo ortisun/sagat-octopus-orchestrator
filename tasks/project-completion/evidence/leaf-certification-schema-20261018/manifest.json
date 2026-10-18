@@ -1,0 +1,343 @@
+{
+  "base": "9ffedfd4",
+  "scope": "B1b.2a.1c.3a dormant schema only; no adapter/sourcewriter",
+  "commands": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "leaf_certification::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 101,
+      "seconds": 57.33,
+      "log": "absence.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "leaf_certification::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 48.2,
+      "log": "first.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "leaf_certification::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 42.23,
+      "log": "second.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "leaf_certification::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 10.26,
+      "log": "runtime.txt",
+      "runtime_role_suite": true
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_security_multitenancy",
+        "manifest_covers_every_variable_size_column",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 25.51,
+      "log": "classification.txt",
+      "runtime_role_suite": false
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_platform_foundation",
+        "each_append_only_table_of_the_execution_plane_is_guarded_too",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 42.32,
+      "log": "least-privilege.txt",
+      "runtime_role_suite": false
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "capacity_finish::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 64.03,
+      "log": "native-finish-regression.txt",
+      "runtime_role_suite": false
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "no_maintenance_job_removes_primitive_data",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 2.65,
+      "log": "retention-regression.txt",
+      "runtime_role_suite": false
+    },
+    {
+      "command": [
+        "cargo",
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "seconds": 84.25,
+      "log": "clippy.txt",
+      "runtime_role_suite": false
+    },
+    {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "seconds": 4.06,
+      "log": "fmt.txt",
+      "runtime_role_suite": false
+    },
+    {
+      "command": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "exit_code": 0,
+      "seconds": 0.32,
+      "log": "architecture.txt",
+      "runtime_role_suite": false
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "chains::a_boundary_with_open_work_waits_without_failing_and_hands_off_once_it_settles",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 35.42,
+      "log": "chain-fixture-green.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "chains::the_write_proves_quiescence_again_under_the_locks_and_names_the_blocker",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 2.21,
+      "log": "chain-write-green.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_platform_foundation",
+        "every_statement_the_stores_issue_is_within_the_runtime_roles_privileges",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 4.48,
+      "log": "runtime-sql-audit.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "seconds": 8.35,
+      "log": "clippy-postfixture.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "seconds": 4.08,
+      "log": "fmt-postfixture.txt"
+    },
+    {
+      "command": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "exit_code": 0,
+      "seconds": 0.31,
+      "log": "architecture-postfixture.txt"
+    }
+  ],
+  "behavior_red": {
+    "command": [
+      "/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196",
+      "chains::a_boundary_with_open_work_waits_without_failing_and_hands_off_once_it_settles",
+      "--exact",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 101,
+    "seconds": 1.95,
+    "log": "chain-fixture-red.txt",
+    "binary_sha256": "0de7cea5a25b9061927b590ea719f013c08f6005a3bd7b47de665d1c1dae9c9b",
+    "source_sha256": "1e739bb15fcc3f0a995e3eaedf03092702f2e72734a06240b981e7a691514d4d"
+  },
+  "final_schema_tests": {
+    "default": 5,
+    "runtime": 5,
+    "failed": 0
+  },
+  "regressions": {
+    "native_finish": 25,
+    "chain_boundaries": 2,
+    "D298": 1,
+    "classification": 1,
+    "least_privilege_12_grant_cases": 1,
+    "runtime_sql_privilege_audit": 1
+  },
+  "source_final": "source-final.json",
+  "no_source_certifier_or_runtime_activation": true,
+  "evidence_sha256": {
+    "absence.txt": "f1737d62944a13a1e57680ee9701f020d8dc8a04fbb8fbdfc18089b0cc1e9b8e",
+    "architecture-postfixture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "chain-fixture-green.txt": "dfd3d57a10b7f21a10e15deab5b89a3fda1645112737952b46b6bdab513a9c3f",
+    "chain-fixture-red-command.json": "6c3e0fdca85b866dfc840cd9de11b74fa467367505eb2305fc6b662c49221cd3",
+    "chain-fixture-red.txt": "bc5197b084b85824ba135604805c79092a86204e5c0804a251d6390dd4887fc5",
+    "chain-write-green.txt": "631fcdd8132d33cf202d87da7cb9563acb125a34dab171209a3ec8f2067b5ce7",
+    "classification.txt": "24061134ecdd4ad39ef5fb6ef1999cf6b39f66b4c8e2ae973db19d9a5066bef6",
+    "clippy-postfixture.txt": "cf70c1b2c6aaf00fc5ca4d0c0bd02ec5cf7fa8cccdd8e0befa0a6b7fb21b72ea",
+    "clippy.txt": "430220d9d06cbf369a3e6c20090d7fbcf2330ca74a17a0ecc26d158b8a6a0362",
+    "commands.json": "4990e5e85261a6fffbf3ea2049b77a60f81838aa2e550c591d0d1267fafc0d0f",
+    "first.txt": "6cdbeeaf1246104fb77d83dff1d91109cff242aca53fd1df204bc93fb8035bb7",
+    "fmt-postfixture.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "implementation.diff": "0eb0f07c168e30e1e5f8c610d153c7b49be5c5ea0b8251c5e88b564a9b0f8610",
+    "least-privilege.txt": "871702f1136db283cbf565fff7f8ee2c334528fa1389dd7d908168d7a0b5e04c",
+    "native-finish-regression.txt": "aac4da9a24673e49faf6b00bbfded8078ba5c87df61b923f6321d3c7d885c8df",
+    "reproduce.md": "78844941b33542b29d22988339445b247a91a2498130dfc5bab45033099303f4",
+    "retention-regression.txt": "424d3bc196c899378047ce0199cdf5f59ab4b070306436be202e53589d4dd050",
+    "review.md": "793db1d29b64e460642d195ed9751d86f99e268dbdb28c60c9cc4911401f99a2",
+    "runtime-sql-audit.txt": "75f63975c3db925e51e8b04368e9226f93b59838bbc986c3e00b87888c043392",
+    "runtime.txt": "c90cbfee3a0128d5690c63c160cbb81709bd46c02667a1b2de6600f80f3884a1",
+    "second.txt": "a19511f69499e2610fb088b4235384359c950d533c277ccff883514dff0210bf",
+    "source-absence.json": "27c5b0d006d97700b5ed38b80ad4776406d6b45f4bf27e03a4fe7da6164dba82",
+    "source-before-chain-fixture.json": "3eaf16c1e977335f2af31df02bd91e57d745d6248afb9542ad5d43a0b8ca6208",
+    "source-final.json": "da40ffd93f33480947688e5c03e6bd31647b2c8e5e1af77c97f8e4426a835bf9",
+    "source-first.json": "add8b76e8f0500bf695a13f8e981bb968b6b8939010c7038417d142e62874394",
+    "source-second.json": "3875267b70865fc8d4400860b432eb546815cfb2cd0fd8688da2970de451ff41"
+  }
+}

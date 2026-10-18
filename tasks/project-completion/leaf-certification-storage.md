@@ -1,6 +1,7 @@
 # Dormant ordinary-leaf certification storage — B1b.2a.1c.3
 
-Status: reviewed bounded decision; no schema or source adapter implemented.
+Status: reviewed bounded decision; dormant schema/retention guards implemented and tested;
+audit vocabulary/source adapter remain pending.
 Refs:T014-014/017/040, ADR-0030, D298, leaf-certification-port.md,
 leaf-source-retention-inventory.md. Fixed OrdinaryLeafV1 only; no capacity mutation/caller.
 
@@ -107,4 +108,13 @@ decision. B1b.2a.1/B1b.2/B1/B2, old-writer fencing/C0, scoped Finish and nesting
 
 Two fresh Astra/xhigh review cycles: cycle1 found the ordinary-FK replication-role retention gap;
 the contract now includes always-enabled run DELETE/TRUNCATE and id immutability guards.
-Cycle2 found no concrete issue in this bounded decision. This is no SQL/test acceptance.
+Cycle2 found no concrete issue in this bounded decision. This decision review is no SQL/test acceptance.
+
+Implementation checkpoint: migration20261211000000 adds the dormant table and retention/key guards;
+runtime has SELECT only. Five real PostgreSQL schema tests pass in default and runtime-role modes,
+including populated source DELETE rejection, a rollback-only parent-guard bypass reaching an actual
+FK cascade, and run-prefix/downgrade race. Two implementation review findings about discriminating
+identity/source tests were fixed; the next review found the existing chain fixture's DELETE/reseed
+incompatibility, reproduced as23001 and fixed by reusing its row. Third implementation review found
+none. Final gates and exact limits are in evidence/leaf-certification-schema-20261018/manifest.json.
+This is schema/lifetime proof, not actual source certification or UPDATE producer preservation.

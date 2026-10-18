@@ -99,12 +99,6 @@ impl Boundary {
             QuiescenceBlocker::Lease => ("LEASED", None),
             other => panic!("{other:?} is not seeded by this helper"),
         };
-        sqlx::query("DELETE FROM steps WHERE tenant_id=$1 AND run_id=$2 AND node='ghost'")
-            .bind(self.world.admin.tenant_id().as_uuid())
-            .bind(self.chain.as_uuid())
-            .execute(&self.world.db.pool)
-            .await
-            .expect("clear the previous obstruction");
         let leased = status == "LEASED";
         sqlx::query(
             "INSERT INTO steps (tenant_id,run_id,node,step_id,namespace_id,status,waiting_kind, \
@@ -118,7 +112,13 @@ impl Boundary {
                      CASE WHEN $5='EVENT' THEN 'k' END, \
                      CASE WHEN $6 THEN decode('00','hex') END, \
                      CASE WHEN $6 THEN now()+interval '1 day' END, \
-                     CASE WHEN $6 THEN 'w' END, false, now(), '{}', '{}')",
+                     CASE WHEN $6 THEN 'w' END, false, now(), '{}', '{}') \
+             ON CONFLICT ON CONSTRAINT steps_pkey DO UPDATE SET \
+                status=EXCLUDED.status,waiting_kind=EXCLUDED.waiting_kind, \
+                activity=EXCLUDED.activity,ready_at=EXCLUDED.ready_at,due_at=EXCLUDED.due_at, \
+                event_type=EXCLUDED.event_type,correlation_key=EXCLUDED.correlation_key, \
+                lease_token_hash=EXCLUDED.lease_token_hash,lease_expires_at=EXCLUDED.lease_expires_at, \
+                leased_by=EXCLUDED.leased_by,routed=false,updated_at=EXCLUDED.updated_at",
         )
         .bind(self.world.admin.tenant_id().as_uuid())
         .bind(self.chain.as_uuid())

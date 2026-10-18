@@ -1,0 +1,62 @@
+   Compiling sagat-domain v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/domain)
+   Compiling sagat-application v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/application)
+   Compiling sagat-infra-egress v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-egress)
+   Compiling sagat-dev-idp v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/dev-idp)
+   Compiling sagat-infra-schema v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-schema)
+   Compiling sagat-api-http v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/api-http)
+   Compiling sagat-infra-ir v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-ir)
+   Compiling sagat-infra-secrets v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-secrets)
+   Compiling sagat-infra-blobstore v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-blobstore)
+   Compiling sagat-infra-postgres v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-postgres)
+   Compiling sagat-infra-sandbox v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-sandbox)
+   Compiling sagat-api-grpc v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/api-grpc)
+   Compiling sagat-scheduler v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/scheduler)
+   Compiling sagat-infra-connectors v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-connectors)
+   Compiling sagat-infra-nats v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/crates/infra-nats)
+   Compiling sagat-cli v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/cli)
+   Compiling sagat-control-plane v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/control-plane)
+   Compiling sagat-execution-engine v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/execution-engine)
+   Compiling sagat-sandbox-runner v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/apps/sandbox-runner)
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+warning: constant `TABLE` is never used
+ --> tests/integration/workflow-primitives/leaf_certification.rs:9:7
+  |
+9 | const TABLE: &str = "leaf_collection_success_certifications";
+  |       ^^^^^
+  |
+  = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `sagat-tests` (test "integration_workflow_primitives") generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 47.42s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 4 tests
+test leaf_certification::dormant_runtime_cannot_create_or_rewrite_certifications ... 
+thread 'leaf_certification::dormant_runtime_cannot_create_or_rewrite_certifications' (96921810) panicked at tests/integration/workflow-primitives/leaf_certification.rs:84:81:
+owner fixture: Database(PgDatabaseError { severity: Error, code: "42P01", message: "relation \"leaf_collection_success_certifications\" does not exist", detail: None, hint: None, position: Some(Original(13)), where: None, schema: None, table: None, column: None, data_type: None, constraint: None, file: Some("parse_relation.c"), line: Some(1449), routine: Some("parserOpenTable") })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test leaf_certification::dormant_snapshot_constraints_and_namespace_binding_are_real ... 
+thread 'leaf_certification::dormant_snapshot_constraints_and_namespace_binding_are_real' (96923552) panicked at tests/integration/workflow-primitives/leaf_certification.rs:49:36:
+owner fixture is structurally valid, not source proof: Database(PgDatabaseError { severity: Error, code: "42P01", message: "relation \"leaf_collection_success_certifications\" does not exist", detail: None, hint: None, position: Some(Original(13)), where: None, schema: None, table: None, column: None, data_type: None, constraint: None, file: Some("parse_relation.c"), line: Some(1449), routine: Some("parserOpenTable") })
+FAILED
+test leaf_certification::empty_schema_reverses_but_any_retained_fact_refuses_down ... 
+thread 'leaf_certification::empty_schema_reverses_but_any_retained_fact_refuses_down' (96925205) panicked at tests/integration/workflow-primitives/leaf_certification.rs:132:72:
+retained fact: Database(PgDatabaseError { severity: Error, code: "42P01", message: "relation \"leaf_collection_success_certifications\" does not exist", detail: None, hint: None, position: Some(Original(13)), where: None, schema: None, table: None, column: None, data_type: None, constraint: None, file: Some("parse_relation.c"), line: Some(1449), routine: Some("parserOpenTable") })
+FAILED
+test leaf_certification::retained_fact_and_original_run_survive_owner_replication_role_bypass ... 
+thread 'leaf_certification::retained_fact_and_original_run_survive_owner_replication_role_bypass' (96927317) panicked at tests/integration/workflow-primitives/leaf_certification.rs:99:81:
+owner fixture: Database(PgDatabaseError { severity: Error, code: "42P01", message: "relation \"leaf_collection_success_certifications\" does not exist", detail: None, hint: None, position: Some(Original(13)), where: None, schema: None, table: None, column: None, data_type: None, constraint: None, file: Some("parse_relation.c"), line: Some(1449), routine: Some("parserOpenTable") })
+FAILED
+
+failures:
+
+failures:
+    leaf_certification::dormant_runtime_cannot_create_or_rewrite_certifications
+    leaf_certification::dormant_snapshot_constraints_and_namespace_binding_are_real
+    leaf_certification::empty_schema_reverses_but_any_retained_fact_refuses_down
+    leaf_certification::retained_fact_and_original_run_survive_owner_replication_role_bypass
+
+test result: FAILED. 0 passed; 4 failed; 0 ignored; 0 measured; 428 filtered out; finished in 7.70s
+
+error: test failed, to rerun pass `-p sagat-tests --test integration_workflow_primitives`

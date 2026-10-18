@@ -1,0 +1,14 @@
+{
+  "command": [
+    "/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196",
+    "chains::a_boundary_with_open_work_waits_without_failing_and_hands_off_once_it_settles",
+    "--exact",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "exit_code": 101,
+  "seconds": 1.95,
+  "log": "chain-fixture-red.txt",
+  "binary_sha256": "0de7cea5a25b9061927b590ea719f013c08f6005a3bd7b47de665d1c1dae9c9b",
+  "source_sha256": "1e739bb15fcc3f0a995e3eaedf03092702f2e72734a06240b981e7a691514d4d"
+}

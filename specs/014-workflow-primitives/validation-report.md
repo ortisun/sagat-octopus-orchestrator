@@ -2651,3 +2651,31 @@ strict application/all-target Clippy6.76s, fmt4.10s and24-crate architecture pas
 Bao, S3, scheduler, SDK or restart execution by this unit. Source schema/retention/audit/writer
 and broader B1/B2/runtime gates remain open. Evidence:
 tasks/project-completion/evidence/leaf-certification-api-20261018/manifest.json.
+
+## Dormant leaf certification storage — 2026-10-18
+
+Refs:T014-014/017/040. Migration20261211000000 adds one immutable scalar metadata table, an exact
+namespace/original-run FK, source DELETE/TRUNCATE retention under D298 and original-run key
+immutability, including privileged replication-role bypass. All six variable-length columns have
+concrete bounded protected-system classification. Runtime has SELECT only; no source INSERT
+adapter/caller. Copied fields and retained projections do not establish source UPDATE closure.
+
+Initial4/4 fail on real missing schema42P01, retained separately from behavioral regression RED.
+First4/4 pass48.20s; review identified non-discriminating identity/source coverage. Final5/5 default
+42.23s and5/5 runtime10.26s verify fresh-audit duplicate identity, same-tenant namespace binding,
+constraints/privileges/ALWAYS immutability, populated direct DELETE rejection for all8sources,
+actual cascade isolation and own-run-before-down race. The cascade probe disables only the parent
+DELETE guard in a rollback-only owner transaction; production guards remain enabled. Exact
+TRUNCATE trigger kind/function/ALWAYS binding is also checked because CASCADE refusal can originate
+at a descendant. Owner-created snapshots/source rows are relational fixtures, not source proofs.
+
+Implementation review cycle2 found existing Boundary::obstruct DELETE/reseed incompatible with
+retention. Direct execution of the already built test binary reproduced23001 (1.95s, binary/source
+hashes retained). The fixture now reuses its row; both chain tests pass35.42s/2.21s. Final cycle3
+found none. Native Finish25/25 (64.03s), classification1/1 (25.51s), startup append-only privilege
+test1/1 with12grant probes (42.32s), runtime SQL/trigger privilege audit1/1 (4.48s), D298 maintenance
+retention1/1 (2.65s), postfixture strict workspace/all-targetClippy8.35s, fmt4.08s and architecture
+24crates0.31s pass. Native/D298/classification results precede the isolated chain-fixture-only fix;
+their production sources are unchanged. No full-workspace test run, SDK/Bao/S3/100k/restart or
+source-certifier acceptance follows. Evidence:
+tasks/project-completion/evidence/leaf-certification-schema-20261018/manifest.json.

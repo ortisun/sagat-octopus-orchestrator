@@ -1,0 +1,12 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.23s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_workflow_primitives-44ad8b9413703196)
+
+running 5 tests
+test leaf_certification::dormant_runtime_cannot_create_or_rewrite_certifications ... ok
+test leaf_certification::dormant_snapshot_constraints_and_namespace_binding_are_real ... ok
+test leaf_certification::downgrade_waits_on_actual_own_run_prefix_before_retained_fact_check ... ok
+test leaf_certification::empty_schema_reverses_but_any_retained_fact_refuses_down ... ok
+test leaf_certification::retained_fact_and_original_run_survive_owner_replication_role_bypass ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 428 filtered out; finished in 9.98s
+

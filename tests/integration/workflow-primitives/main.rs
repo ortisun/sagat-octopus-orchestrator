@@ -34,6 +34,7 @@ mod compatibility;
 mod hint_contract;
 mod identity_storage;
 mod journal_identity;
+mod leaf_certification;
 mod limits;
 mod loop_progress;
 mod loops_http;
