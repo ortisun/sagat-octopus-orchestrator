@@ -1,0 +1,27 @@
+[
+  {
+    "source": "tests/integration/workflow-primitives/legacy_collection_inflight_report_v1.rs",
+    "snapshot": "source-snapshots/legacy_collection_inflight_report_v1.rs.snapshot",
+    "sha256": "89f0e312b10151f384d7686bbbf84bca7ef1093a970a55174676eafd7d1c0e9b"
+  },
+  {
+    "source": "tests/integration/workflow-primitives/main.rs",
+    "snapshot": "source-snapshots/main.rs.snapshot",
+    "sha256": "6cdc1b0c93cc2f897a6bed55ac8948f1228880b5d2ed076f4b5a72ceab71d693"
+  },
+  {
+    "source": "tests/fixtures/legacy-collection-inflight-report-v1/producer.rs",
+    "snapshot": "source-snapshots/producer.rs.snapshot",
+    "sha256": "c12a5986c7561fb27c711c505c1fad1da17d2e751fefeb2301d2231cbca616e4"
+  },
+  {
+    "source": "scripts/test-legacy-collection-inflight-report-v1.sh",
+    "snapshot": "source-snapshots/test-legacy-collection-inflight-report-v1.sh.snapshot",
+    "sha256": "051ab84196901db41a92be07952ead2bda47ac08b0e39cebbef48df9cd7b057a"
+  },
+  {
+    "source": "tests/fixtures/legacy-collection-inflight-report-v1/README.md",
+    "snapshot": "source-snapshots/README.md.snapshot",
+    "sha256": "ef40b425ca65844f589d4121ab2d1fcae9a1ba2d704666b2b4314371a464d3e7"
+  }
+]

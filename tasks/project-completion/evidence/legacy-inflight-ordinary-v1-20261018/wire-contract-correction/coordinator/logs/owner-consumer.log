@@ -1,0 +1,18 @@
+
+running 1 test
+q10c ordinary-before-drain API roles: producer=postgres, consumer=postgres
+
+thread 'legacy_collection_inflight_report_v1::old_ordinary_success_before_drain_preserves_the_report_and_compensation' (135580495) panicked at tests/integration/workflow-primitives/legacy_collection_inflight_report_v1.rs:1062:5:
+assertion `left == right` failed
+  left: "COMPENSATING"
+ right: "CANCELLING"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test legacy_collection_inflight_report_v1::old_ordinary_success_before_drain_preserves_the_report_and_compensation ... FAILED
+
+failures:
+
+failures:
+    legacy_collection_inflight_report_v1::old_ordinary_success_before_drain_preserves_the_report_and_compensation
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 535 filtered out; finished in 0.95s
+

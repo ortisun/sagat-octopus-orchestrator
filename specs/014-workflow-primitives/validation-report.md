@@ -3353,3 +3353,18 @@ strict integration Clippy/fmt/architecture and 1122 matching source inputs.
 Evidence: `tasks/project-completion/evidence/refusal-fresh-binding-20261018/README.md`.
 Two failed fixture contracts are retained and explained. This does not close other authority,
 secret, fence, cold-process, legacy or nested capacity cases, nor canonical task checkboxes.
+
+
+### Immutable-old ordinary success before current drain — 2026-10-18
+
+The real frozen 6c44a0e4 producer/current consumer coordinator now passes all four phases
+(owner and actual sagat_app). An original still-leased compensable member reports success
+with its original authority/request before any current scheduler tick, at legacy E=4,200,020.
+Current success is retained without output, exact receipt/replay is stable, durable discovery
+starts the genuine drain and real compensation reaches COMPENSATED with matching target/key.
+Closed old source witnesses and fresh native journal reconstruction pass. Final strict
+Clippy/fmt/architecture and 1124 matching input hashes; two failed fixture expectations are
+retained separately. Evidence: `tasks/project-completion/evidence/legacy-inflight-ordinary-v1-20261018/README.md`.
+This closes only ordinary report-before-drain at E>limit. Drain-first, Applied, the other byte
+condition, cold post-ACK process/unknown-COMMIT, external effects and the full Q10c/canonical
+014 release gates remain open. No production nesting activation is inferred.

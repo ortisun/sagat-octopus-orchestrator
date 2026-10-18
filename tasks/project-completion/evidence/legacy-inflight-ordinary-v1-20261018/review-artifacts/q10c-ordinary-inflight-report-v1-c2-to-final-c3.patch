@@ -1,0 +1,89 @@
+diff --git a/tests/integration/workflow-primitives/legacy_collection_inflight_report_v1.rs b/tests/integration/workflow-primitives/legacy_collection_inflight_report_v1.rs
+--- a/tests/integration/workflow-primitives/legacy_collection_inflight_report_v1.rs
++++ b/tests/integration/workflow-primitives/legacy_collection_inflight_report_v1.rs
+@@ -1,6 +1,6 @@
+ //! One bounded old/current acceptance case: a genuine immutable-old ordinary success is reported
+ //! before any current scheduler advancement, then the engine's real compensation task is completed.
+-#![allow(clippy::expect_used, clippy::panic, clippy::type_complexity)]
++#![allow(clippy::expect_used, clippy::panic)]
+ 
+ use std::os::unix::fs::PermissionsExt as _;
+ use std::sync::Arc;
+@@ -180,6 +180,35 @@
+     resource: String,
+     created_at: time::OffsetDateTime,
+ }
++
++type SuccessfulRefusalState = (
++    String,
++    Option<String>,
++    Option<String>,
++    String,
++    String,
++    bool,
++    bool,
++    bool,
++    i64,
++    i64,
++);
++
++type FinalCompensationState = (
++    String,
++    String,
++    String,
++    Option<String>,
++    String,
++    Option<String>,
++    String,
++    bool,
++    String,
++    i64,
++    i64,
++    i64,
++    i64,
++);
+ 
+ impl Receipt {
+     fn parse(bytes: &[u8]) -> Self {
+@@ -583,9 +612,8 @@
+     outboxes_before: i64,
+     payloads_before: i64,
+ ) {
+-    let state: (String, Option<String>, Option<String>, String, String, bool, bool, bool, i64, i64) =
+-        sqlx::query_as(
+-            "SELECT run.status,run.stop_reason,run.stop_code,scope.lifecycle,step.status, \
++    let state: SuccessfulRefusalState = sqlx::query_as(
++        "SELECT run.status,run.stop_reason,run.stop_code,scope.lifecycle,step.status, \
+                     step.output_digest IS NULL,step.reported_lease_token_hash=$4, \
+                     step.attempt=$5 AND step.generation=$6, \
+                     telemetry.head_seq,run.run_version \
+@@ -704,10 +732,13 @@
+     let pool = connect(&PoolConfig::new(url)).await.expect("fresh verification pool");
+     let store = PgRunStore::new(pool, DefinitionCache::new(Arc::new(JsonIrCodec), 8))
+         .with_scoped_worker_protocol();
+-    store
+-        .verify_run(receipt.tenant, receipt.run)
+-        .await
+-        .expect("cold journal projection replay");
++    assert!(
++        store
++            .verify_run(receipt.tenant, receipt.run)
++            .await
++            .is_ok(),
++        "cold journal projection replay"
++    );
+ }
+ 
+ async fn poll_compensation(
+@@ -1000,9 +1031,8 @@
+     assert_eq!(compensation_ack.step_status, "SUCCEEDED");
+     finish_after_compensation(&scheduler, &platform.api, &receipt).await;
+ 
+-    let final_state: (String, String, String, Option<String>, String, Option<String>, String, bool, String, i64, i64, i64, i64) =
+-        sqlx::query_as(
+-            "SELECT run.status,scope.lifecycle,scope.drain_kind,scope.drain_failure_code, \
++    let final_state: FinalCompensationState = sqlx::query_as(
++        "SELECT run.status,scope.lifecycle,scope.drain_kind,scope.drain_failure_code, \
+                     saga.phase,saga.outcome,forward.status,forward.output_digest IS NULL, \
+                     compensation.status, \
+                     (SELECT count(*) FROM scope_saga_entries entry \

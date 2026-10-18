@@ -1,0 +1,27 @@
+{
+  "phase_count": 4,
+  "source_input_count": 1124,
+  "identical_native_inputs": true,
+  "phases": [
+    {
+      "phase": "owner-consumer.log",
+      "one_test_passed": true,
+      "sha256": "0a8fab648c57c1f27f40eb53bc8d7b1f744654fa2e200e5427a98edb5acaef96"
+    },
+    {
+      "phase": "owner-producer.log",
+      "one_test_passed": true,
+      "sha256": "f0c2d5cb517354cf8cb8deeef45db91e2ea44402f41406afb9521827d97e9c1c"
+    },
+    {
+      "phase": "runtime-consumer.log",
+      "one_test_passed": true,
+      "sha256": "b9125d0419407b49fae41161e13b48c6a0deb67f213d1fa260a5263ec0424673"
+    },
+    {
+      "phase": "runtime-producer.log",
+      "one_test_passed": true,
+      "sha256": "da1e28b82d49f4f9a683f07375cc15e172d0f57c11ebb76c40f7eb256225510c"
+    }
+  ]
+}

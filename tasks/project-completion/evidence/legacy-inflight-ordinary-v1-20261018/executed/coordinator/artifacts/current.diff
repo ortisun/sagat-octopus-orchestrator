@@ -1,0 +1,12 @@
+diff --git a/tests/integration/workflow-primitives/main.rs b/tests/integration/workflow-primitives/main.rs
+index 94b20335..7211ec3b 100644
+--- a/tests/integration/workflow-primitives/main.rs
++++ b/tests/integration/workflow-primitives/main.rs
+@@ -43,6 +43,7 @@ mod identity_storage;
+ mod journal_identity;
+ mod leaf_certification;
+ mod leaf_certification_native;
++mod legacy_collection_inflight_report_v1;
+ mod legacy_collection_output_view;
+ mod limits;
+ mod loop_progress;

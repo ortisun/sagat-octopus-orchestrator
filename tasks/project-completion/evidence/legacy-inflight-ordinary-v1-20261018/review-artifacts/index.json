@@ -1,0 +1,30 @@
+[
+  {
+    "file": "q10c-ordinary-inflight-report-fixture-plan.md",
+    "sha256": "fb7fb20ce8bd183e31ab87db069073872dd03e07948acb47fe8cdabef1390b97"
+  },
+  {
+    "file": "q10c-ordinary-inflight-report-v1.patch",
+    "sha256": "11b5d9accb012d47bdcb1a5845c2396cfb477cb3fcad49f6d7a8507f90082435"
+  },
+  {
+    "file": "q10c-ordinary-inflight-report-v1-c2.patch",
+    "sha256": "9450d16aabf1e62035735c18e72b50dd13a89d47aad0bc92f27693b4e8bf073f"
+  },
+  {
+    "file": "q10c-ordinary-inflight-report-v1-final-c3.patch",
+    "sha256": "eee4285e806fcdfd05dafae3f4a055416b425a761ff7857e526f1a6ae22bf8f4"
+  },
+  {
+    "file": "q10c-ordinary-inflight-report-v1-c2-to-final-c3.patch",
+    "sha256": "d8df56aaefbe2e1268f85e85b35e4527f974fe34c0d85055ca78b96048f7aea8"
+  },
+  {
+    "file": "q10c-ordinary-inflight-report-v1.NOTES.md",
+    "sha256": "66f603ba210c821f9b3e06ac716497baea2781f9582dfbf384905b7566963986"
+  },
+  {
+    "file": "q10c-ordinary-inflight-report-v1-c2.NOTES.md",
+    "sha256": "2682a4ef9d682760cf39b06a14f944f3dce47584fb9b7ee72a21a8d0285ffe8d"
+  }
+]
