@@ -1,0 +1,34 @@
+[
+  {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "sagat-tests",
+      "--test",
+      "integration_security_multitenancy",
+      "--",
+      "--nocapture",
+      "--test-threads=3"
+    ],
+    "exit_code": 0,
+    "seconds": 97.43,
+    "log": "security-all.txt"
+  },
+  {
+    "command": [
+      "cargo",
+      "clippy",
+      "--workspace",
+      "--all-targets",
+      "--locked",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit_code": 0,
+    "seconds": 80.91,
+    "log": "clippy.txt"
+  }
+]

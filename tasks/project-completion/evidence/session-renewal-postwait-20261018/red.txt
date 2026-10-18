@@ -1,0 +1,19 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 25.69s
+     Running integration/security-multitenancy/main.rs (/Users/marcelo/Documents/Projects/sagat-octopus-database-connections/target/debug/deps/integration_security_multitenancy-22d3495e7a6da0c5)
+
+running 1 test
+
+thread 'bindings::session_renewal_post_wait_cannot_revive_an_expired_worker_session' (85003656) panicked at tests/integration/security-multitenancy/bindings.rs:791:5:
+expired renewal must be unauthenticated; outcome=1 leased tasks, expiry_refreshed=true
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test bindings::session_renewal_post_wait_cannot_revive_an_expired_worker_session ... FAILED
+
+failures:
+
+failures:
+    bindings::session_renewal_post_wait_cannot_revive_an_expired_worker_session
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 125 filtered out; finished in 5.10s
+
+error: test failed, to rerun pass `-p sagat-tests --test integration_security_multitenancy`

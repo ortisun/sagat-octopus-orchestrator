@@ -323,6 +323,27 @@ impl WorkerStore for PgRunStore {
         token_hash: &[u8],
         ttl: Duration,
     ) -> Result<Option<SessionRecord>, StoreError> {
+        let mut tx = self.pool().begin_safely().await.map_err(store_error)?;
+        let expires_at: Option<time::OffsetDateTime> = sqlx::query_scalar(
+            "SELECT expires_at FROM worker_sessions \
+             WHERE tenant_id = $1 AND id = $2 AND token_hash = $3 FOR UPDATE",
+        )
+        .bind(tenant.as_uuid())
+        .bind(id)
+        .bind(token_hash)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        let Some(expires_at) = expires_at else {
+            return Ok(None);
+        };
+        let now: time::OffsetDateTime = sqlx::query_scalar("SELECT clock_timestamp()")
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(store_error)?;
+        if expires_at <= now {
+            return Ok(None);
+        }
         let row = sqlx::query(
             "UPDATE worker_sessions SET expires_at = clock_timestamp() + $4 * interval '1 microsecond' \
              WHERE tenant_id = $1 AND id = $2 AND token_hash = $3 AND expires_at > clock_timestamp() \
@@ -337,27 +358,30 @@ impl WorkerStore for PgRunStore {
         .bind(id)
         .bind(token_hash)
         .bind(micros(ttl))
-        .fetch_optional(self.pool())
+        .fetch_optional(&mut *tx)
         .await
         .map_err(store_error)?;
-        row.map(|row| {
-            let inflight: i32 = col(&row, "max_inflight")?;
-            let protocol_minor: i32 = col(&row, "accepted_protocol_minor")?;
-            Ok(SessionRecord {
-                id: col(&row, "id")?,
-                tenant_id: TenantId::new(col::<Uuid>(&row, "tenant_id")?),
-                namespace_id: NamespaceId::new(col::<Uuid>(&row, "namespace_id")?),
-                subject: col(&row, "subject")?,
-                worker_name: col(&row, "worker_name")?,
-                activities: col(&row, "activities")?,
-                max_inflight: u32::try_from(inflight).map_err(|_| corrupt("max inflight"))?,
-                accepted_protocol_minor: u32::try_from(protocol_minor)
-                    .map_err(|_| corrupt("accepted protocol minor"))?,
-                expires_at: col(&row, "expires_at")?,
-                draining: col(&row, "draining")?,
+        let session = row
+            .map(|row| {
+                let inflight: i32 = col(&row, "max_inflight")?;
+                let protocol_minor: i32 = col(&row, "accepted_protocol_minor")?;
+                Ok(SessionRecord {
+                    id: col(&row, "id")?,
+                    tenant_id: TenantId::new(col::<Uuid>(&row, "tenant_id")?),
+                    namespace_id: NamespaceId::new(col::<Uuid>(&row, "namespace_id")?),
+                    subject: col(&row, "subject")?,
+                    worker_name: col(&row, "worker_name")?,
+                    activities: col(&row, "activities")?,
+                    max_inflight: u32::try_from(inflight).map_err(|_| corrupt("max inflight"))?,
+                    accepted_protocol_minor: u32::try_from(protocol_minor)
+                        .map_err(|_| corrupt("accepted protocol minor"))?,
+                    expires_at: col(&row, "expires_at")?,
+                    draining: col(&row, "draining")?,
+                })
             })
-        })
-        .transpose()
+            .transpose()?;
+        tx.commit().await.map_err(store_error)?;
+        Ok(session)
     }
 
     async fn claimable_paths(

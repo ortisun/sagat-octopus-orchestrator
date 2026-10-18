@@ -1,0 +1,4 @@
+{
+  "crates/infra-postgres/src/workers.rs": "b27d32ca06eedfee33586ca09ae5cd6d2a786cefee1e9207a6926ad18fcdaa0e",
+  "tests/integration/security-multitenancy/bindings.rs": "e016324a0550376168926f0fe9e94135c5af6e79c162ff62997215e559f0af8a"
+}

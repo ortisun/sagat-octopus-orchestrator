@@ -256,6 +256,8 @@ pub trait WorkerStore: QuotaLookup + Send + Sync {
     ) -> impl Future<Output = Result<Option<Uuid>, StoreError>> + Send;
 
     /// The live session `id` of `tenant` whose token hashes to `token_hash`, renewing its expiry.
+    /// Acquire the session guard before sampling the database clock; a session that expired while
+    /// waiting must return `None` without renewal. Keep the guard through renewal commit.
     fn use_session(
         &self,
         tenant: TenantId,

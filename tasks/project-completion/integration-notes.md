@@ -1957,3 +1957,25 @@ and newADR refinement, then found no concrete code/document defects; reviewers r
 Exact tree/commands/limits: tasks/project-completion/evidence/incident-lock-order-20261018/manifest.json.
 No new all-workspace/SDK58/Compose/advisory/resource gate is claimed. B0/group and remaining
 worker-session post-wait source/test gaps remain open; no canonical checkbox closes.
+
+
+## Worker session renewal freshness — 2026-10-18
+
+Refs:T014-040/044, FR-009-001/003, FR-014-014. WorkerStore.use_session locks only the matching
+tenant/id/token row, then samples database clock and renews in the same transaction if live.
+Missing/expired sessions retain the existing unauthenticated mapping. No session expired during
+an unchanged-row wait may extend its TTL or claim work. Existing TTL, caller-subject check and
+wire remain unchanged; this sample is not continuous authority through commit. No run/group
+lock or new API is added. Separate full/path claim-room and managed-database checks stay open.
+
+Actual public-poll RED renewed an expired session and leased1 task (0/1,5.10s). GREEN1/1,5.82s
+observes an actual sagat_app session wait while live, releases only after database expiry and
+compares one atomic checkpoint of expiry/run version/events/outbox/active leases. A fresh
+session claims successfully; old authority remains refused. No token/hash/task debug is logged.
+The entire security integration passes126/126 (81.09s); strict locked workspace/all-target
+Clippy (80.91s), format/diff and24-crate architecture pass. Two bounded plan/code reviews ended
+with no concrete defects; reviewers ran no tests. Owner's current-review selection applies,
+with no external CLI. Existing worker authentication/transport error and trace mapping is used;
+these integration tests do not assert telemetry counters. No all-workspace/SDK58/Compose/advisory/
+resource/nesting acceptance or canonical checkbox closure is claimed. Exact source/commands/
+limits: tasks/project-completion/evidence/session-renewal-postwait-20261018/manifest.json.

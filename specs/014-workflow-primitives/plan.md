@@ -326,3 +326,15 @@ B0 includes the existing009 production incident writer. ADR-0038 refines ADR-002
 serialization clause after a deterministic incident/report storage deadlock. Correct only
 chain→ownrun→binding→ownstep order; preserve attribution and after-commit ACK semantics.
 Require both native report-prefix counterexample and a real public leased script-chain barrier.
+
+
+## Worker session renewal after lock waits (2026-10-18)
+
+The existing009 WorkerStore renewal acquires its matching tenant/id/token session row before
+sampling the database clock, then renews in the same transaction only if still live. A session
+that expires during an unchanged-row wait returns the existing unauthenticated outcome without
+changing expiry, leases, run version, journal or outbox. Fresh registration remains supported.
+This is post-lock freshness, not continuous validity through commit; TTL/wire policy is unchanged.
+The separate full/path claim-room and managed-database session checks remain pending B0 units.
+Runtime-role public-poll RED/GREEN and exact source/commands are retained under
+`tasks/project-completion/evidence/session-renewal-postwait-20261018/`. No canonical task closes.

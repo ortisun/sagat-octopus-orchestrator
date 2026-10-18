@@ -1,0 +1,183 @@
+{
+  "source_base": "68857f2e9f60d779c54994a3f87c8e7a59dce740",
+  "recorded_utc": "2026-10-18T06:04:33.309391+00:00",
+  "scope": "WorkerStore session renewal post-lock database expiry check",
+  "commands": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_security_multitenancy",
+        "session_renewal_post_wait_",
+        "--",
+        "--nocapture",
+        "--test-threads=3"
+      ],
+      "exit_code": 101,
+      "seconds": 32.69,
+      "log": "red.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_security_multitenancy",
+        "session_renewal_post_wait_",
+        "--",
+        "--nocapture",
+        "--test-threads=3"
+      ],
+      "exit_code": 0,
+      "seconds": 42.55,
+      "log": "green.txt"
+    }
+  ],
+  "regression_commands": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_security_multitenancy",
+        "--",
+        "--nocapture",
+        "--test-threads=3"
+      ],
+      "exit_code": 0,
+      "seconds": 97.43,
+      "log": "security-all.txt"
+    },
+    {
+      "command": [
+        "cargo",
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "seconds": 80.91,
+      "log": "clippy.txt"
+    }
+  ],
+  "gates": [
+    {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "seconds": 4.4,
+      "log": "fmt.txt"
+    },
+    {
+      "command": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "exit_code": 0,
+      "seconds": 0.35,
+      "log": "architecture.txt"
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit_code": 0,
+      "seconds": 0.04,
+      "log": "diff-check.txt"
+    }
+  ],
+  "results": {
+    "red.txt": [
+      {
+        "passed": 0,
+        "failed": 1,
+        "ignored": 0,
+        "seconds": 5.1
+      }
+    ],
+    "green.txt": [
+      {
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 5.82
+      }
+    ],
+    "security-all.txt": [
+      {
+        "passed": 126,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 81.09
+      }
+    ]
+  },
+  "review": {
+    "cycles": 2,
+    "model": "gpt-6-astra",
+    "reasoning": "xhigh",
+    "external_cli": false,
+    "final": "no concrete scoped defects; reviewers ran no tests"
+  },
+  "limits": [
+    "Actual public expired renewal+1lease RED; no fixture failure",
+    "Actual known-blocker sagat_app wait, unchanged tuple; DB-clock expiry",
+    "Post-lock sample, not continuously live until commit",
+    "Full/path room and database session guards remain pending",
+    "No all-workspace/SDK58/Compose/advisory/resource/group gate or checkbox closure"
+  ],
+  "source_sha256": {
+    ".gitattributes": "96b34b1169197f62c93b3d1ec9262c952c75cc997a98f1c53a159c479b664de1",
+    "crates/application/src/worker.rs": "c0c3c1e15417b2738a96a7e594855cdb4852d8ffc4a969c87cf337092e8ce4f4",
+    "crates/infra-postgres/src/workers.rs": "69f9c0ec6fd70b720d8744ddf4839de738981ad52c773995787c0a7bfc28350e",
+    "docs/architecture/worker-runtime-protocol.md": "6cb596b5859e792d54529854f81607f90919ad71312227d00c89cbae72e57dea",
+    "docs/traceability.md": "f98581133c74164eb9d5d68d1c30b9a0c39e00b3d849196bc320f8e65a90a2e6",
+    "specs/009-security-multitenancy/plan.md": "68b8945e3468e5b209ffc0eabee778549590cac406030025f8861df11d1298b9",
+    "specs/009-security-multitenancy/spec.md": "0e8f5f76800825871640519230d356700afa870b7ff7c5b26747f99e90175829",
+    "specs/014-workflow-primitives/plan.md": "b94eed6d23088d25981f5aa6e9609988f282c28a26fb165d853082cc7fb6614b",
+    "specs/014-workflow-primitives/spec.md": "5f140729ce0caa101c40646b2e949b58c6f21ffc63769c67fb22a7061d0141b0",
+    "specs/014-workflow-primitives/validation-report.md": "ab630bd78aca1f2d600487acbadb9cee396342f495f45f977484b6cd7ee9bb40",
+    "tasks/project-completion/capacity-lock-inventory.md": "66738ff5ce36f022850f6b7b79ffd470d0a9e506292166aa4b4998d93a98e983",
+    "tasks/project-completion/integration-notes.md": "72d05f798e898713e5d138ce98c37f9989f1d0696ac07d5e5657395abc2b4c43",
+    "tests/integration/security-multitenancy/bindings.rs": "e016324a0550376168926f0fe9e94135c5af6e79c162ff62997215e559f0af8a"
+  },
+  "evidence_sha256": {
+    "architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "clippy.txt": "99c70b9768f7484c28385b5b7f9ecbcc98318bdc62b18ab83a6ee2c972cdfd6c",
+    "commands.json": "c3e5e7ff377bf3b475af2278e7c3825f029d0b7efe332e1ae89b44e16452fdac",
+    "diff-check.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "gates.json": "13532c550005be60069ac0770717bf3816263e4e14f5d0d671b67d01d2bcb724",
+    "green.txt": "f53cc4dbe7110c258694f13d7797548c77d3c6297525cba15bcad4cbc28521b4",
+    "production.diff": "77965cf0694c152306982851ef139fe9f61ac1f916a1e60a7de57cd0e4e5464a",
+    "red-source.json": "780f9d752bc783cd5bd272409893daccc89b6a35240db0382f5947d597d34ccb",
+    "red.txt": "7cd301a102097d44415a90fadc3c8dc8302741ee98a13cac39fb12f1305f5eb1",
+    "regression-commands.json": "10e45041db64ae84dab35dfe8d1e745e2b483c8f2ca0893c499daff658a6e7c9",
+    "reproduce.md": "eeb9658cdda18c311666ecda7389e4f4b7b767b0932e2c6e53f2e4cff1febfb4",
+    "review.md": "6fc628b2d1537c7431912c989f9ddaa72f1529e8fd5435d768b981c27338919b",
+    "security-all.txt": "8cfb375481aa7ab4f7bf4c8cdd286e28ed1905cbfb6a5a20337c8de2aaae0470",
+    "test-red.diff": "fba96702c3d7d964b471242de660f2afa817f82eb63667bd927d759f25588509",
+    "tested-source.json": "5086147ab98b91d41d770177210caf927f8c363bd3e3aa9b24c07c78a8617a03"
+  }
+}

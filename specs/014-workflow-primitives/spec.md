@@ -452,3 +452,8 @@ ADR-0038, then retains its existing binding EXCLUSIVE and own-step guards throug
 This refines ADR-0022's reproduced opposite binding/run edge. Incident wire, current fenced
 validation and audit-only semantics remain the existing feature009 dependency; no nested
 execution capability or complete group lock graph is accepted.
+
+
+Existing009 worker renewal must sample expiry after acquiring its session row, retaining the
+guard through renewal commit. The public poll counterexample and correction are tracked in
+B0; separate claim-room/database checks and the complete group lock graph remain pending.
