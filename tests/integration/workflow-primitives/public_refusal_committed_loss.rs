@@ -120,7 +120,7 @@ async fn committed_loss_scenario() {
         before,
         lease,
         backend_pid,
-    } = reopened_refusal_fixture().await;
+    } = reopened_refusal_fixture(CommitResolution::Committed).await;
     let tenant = reopened.tenant;
     let tenant_uuid = tenant.as_uuid();
     let other_tenant = reopened.other_tenant;

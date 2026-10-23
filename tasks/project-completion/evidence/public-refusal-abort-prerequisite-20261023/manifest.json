@@ -1,0 +1,57 @@
+{
+  "baseline": "997b0335",
+  "decision_only_commit": "d614b2a5",
+  "review_result": "None",
+  "native_input_count": 1127,
+  "before_after_equal": true,
+  "results": {
+    "default": {
+      "command": [
+        "gtimeout",
+        "--signal=TERM",
+        "--kill-after=5s",
+        "180s",
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "public_refusal_commit_loss::",
+        "--",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "seconds": 52.25,
+      "started_utc": "2026-10-23T22:54:33.874376+00:00",
+      "log": "default.txt"
+    },
+    "runtime": {
+      "command": [
+        "gtimeout",
+        "--signal=TERM",
+        "--kill-after=5s",
+        "180s",
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "public_refusal_commit_loss::",
+        "--",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "seconds": 11.74,
+      "started_utc": "2026-10-23T22:56:18.930001+00:00",
+      "log": "runtime.txt"
+    }
+  },
+  "sources": {
+    "tests/integration/workflow-primitives/public_refusal_commit_loss.rs": "b39950102e578a76c4eba412330d1b64991192df879e49266867e87255220acd",
+    "tests/integration/workflow-primitives/public_refusal_committed_loss.rs": "dff14cc288528488858545a478828bc96a4b5bacadf67288340b9bd95ed976c2"
+  }
+}

@@ -222,6 +222,14 @@ async fn durable_snapshot(
           'chains',(SELECT coalesce(jsonb_agg(to_jsonb(segment) ORDER BY segment.segment_index),'[]')
                     FROM chain_segments segment
                     WHERE segment.tenant_id=run.tenant_id AND segment.run_id=run.id),
+          'capacityGroups',(SELECT coalesce(jsonb_agg(to_jsonb(g) ORDER BY g.group_id),'[]')
+                            FROM capacity_groups g WHERE g.tenant_id=run.tenant_id),
+          'capacityMembers',(SELECT coalesce(jsonb_agg(to_jsonb(m) ORDER BY m.group_id,m.member_id),'[]')
+                             FROM capacity_group_members m WHERE m.tenant_id=run.tenant_id),
+          'capacityReceipts',(SELECT coalesce(jsonb_agg(to_jsonb(r) ORDER BY r.group_id,r.operation_key),'[]')
+                              FROM capacity_group_finish_receipts r WHERE r.tenant_id=run.tenant_id),
+          'quotaDeltas',(SELECT coalesce(jsonb_agg(to_jsonb(d) ORDER BY d.transaction_id,d.tenant_id),'[]')
+                        FROM quota_transaction_deltas d WHERE d.tenant_id=run.tenant_id),
           'authority',jsonb_build_object(
             'memberships',(SELECT coalesce(jsonb_agg(to_jsonb(membership) ORDER BY membership.subject),'[]')
                            FROM memberships membership WHERE membership.tenant_id=run.tenant_id),
@@ -419,7 +427,7 @@ struct ReopenedRefusalFixture {
     backend_pid: i32,
 }
 
-async fn reopened_refusal_fixture() -> ReopenedRefusalFixture {
+async fn reopened_refusal_fixture(resolution: CommitResolution) -> ReopenedRefusalFixture {
     let _server = hold_server();
     let original = crate::support::worker::platform_with(runtime_options()).await;
     let namespace = original.namespace_id().await;
@@ -611,6 +619,18 @@ async fn reopened_refusal_fixture() -> ReopenedRefusalFixture {
         "the original seventeenth member holds exactly one tenant iteration slot"
     );
 
+    for key in [
+        "capacityGroups",
+        "capacityMembers",
+        "capacityReceipts",
+        "quotaDeltas",
+    ] {
+        assert!(
+            before[key].as_array().is_some_and(Vec::is_empty),
+            "ordinary fixture has no capacity groups or committed quota delta residue"
+        );
+    }
+
     let database_name = original.api.db.name.clone();
     let admin_url = original.api.db.admin_url.clone();
     let old_runtime_pool = original.api.api_pool.clone();
@@ -644,7 +664,7 @@ async fn reopened_refusal_fixture() -> ReopenedRefusalFixture {
     .await;
 
     let db = attach_existing_db(&admin_url, &database_name).await;
-    let proxy = CommitAckLossProxy::start(&db, CommitResolution::Committed).await;
+    let proxy = CommitAckLossProxy::start(&db, resolution).await;
     assert!(
         proxy.pool.options().get_max_connections() == 1,
         "supplied pool has one connection"
@@ -888,6 +908,10 @@ async fn inspect_committed_refusal(
         "iterations",
         "chains",
         "sagaEntries",
+        "capacityGroups",
+        "capacityMembers",
+        "capacityReceipts",
+        "quotaDeltas",
     ] {
         assert!(
             before[key] == after_first[key],
@@ -941,7 +965,7 @@ async fn ordinary_public_scoped_refusal_scenario() {
         before,
         lease: reopened_lease,
         backend_pid,
-    } = reopened_refusal_fixture().await;
+    } = reopened_refusal_fixture(CommitResolution::Committed).await;
     let database_name = reopened.api.db.name.clone();
     let tenant = reopened.tenant;
     let tenant_uuid = tenant.as_uuid();
