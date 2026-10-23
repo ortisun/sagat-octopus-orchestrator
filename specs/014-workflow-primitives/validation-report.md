@@ -3508,3 +3508,22 @@ and a fresh private target outside all checkouts. Evidence/reproduction:
 `tasks/project-completion/evidence/public-scoped-reopen-baseline-20261018/README.md`.
 Local .5b closes only the unarmed reopener prerequisite. Actual committed/aborted COMMIT reply loss,
 post-ACK process recovery, Q7b.5/master quota correction and all canonical task gates remain open.
+
+
+### Actual committed public refusal response loss — 2026-10-23
+
+Source/evidence ef12c32c accepts only current ordinary inline committed response loss. Exact receipt
+Gate A selects the writer before arming; SAME supplied sagat_app PID is observed at actual COMMIT
+behind deferred Gate B. After client EOF produces existing safe UNAVAILABLE/retry5000, the same
+COMMIT remains unresolved, Run locked and complete pre-state invisible. Actual server COMMIT/idle
+resolution precedes independent canonical receipt/Run+telemetry+journal-head/original-trace audit
+inspection. The receipt-derived ACK is frozen BEFORE a second full API/direct runtime-pool reopen;
+original-capability/protobuf/key replay is already-applied and leaves the full durable snapshot intact.
+Exact fault default1/1 (10.03s), runtime1/1 (7.74s); preserved P0b final1/1 (48.53s including compilation),
+all0ignored. Strict Clippy15.47s/fmt4.77s/architecture0.47s and1127equal native input pins pass. Root SQL
+independently verifies both positive databases and removed gates/functions/proxy connections.
+Evidence/reproduction: `tasks/project-completion/evidence/ordinary-public-committed-loss-20261023/README.md`.
+No production change or manufactured RED; two C1 witness gaps were fixed and fresh C2 review is None.
+Only local .5c closes; actual abort, OS/post-ACK recovery, wider report shapes, full Q7b.5/quota/nesting
+and canonical feature acceptance remain open. A lost commit ACK may omit the acknowledgement-dependent
+counter increment; no exactly-once metric or external undo guarantee is inferred.

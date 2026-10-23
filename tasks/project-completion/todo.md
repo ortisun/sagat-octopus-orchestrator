@@ -227,6 +227,7 @@ See evidence/leaf-certification-process-20261018. Other producer/observation/rel
 - [ ] B1b.2c.1d.0Q7b.5: Prove public scoped refusal recovery across actual committed/aborted COMMIT response loss, preserving original capability and current authority; no public unknown-outcome enum is invented.
 - [x] B1b.2c.1d.0Q7b.5a: Prove supplied max1 runtime pool backs the full public API/Worker stack on the original owned DB with real250000-byte persistence and exact receipt replay; c7f62b4a, evidence/public-pool-bootstrap-20261018. Scoped rollback/full reopen has separate .5b evidence; fault injection remains pending.
 - [x] B1b.2c.1d.0Q7b.5b: Prove one genuine public scoped refusal after full API/store/pool reopen through a supplied max1 sagat_app pool, with active receipt-writer PID, complete authority/source/retained-output/iteration-ledger witness and exact canonical replay;98a1247a, evidence/public-scoped-reopen-baseline-20261018. Default1/1/runtime1/1 plus three regression cases pass; committed/aborted COMMIT reply loss remains pending.
+- [x] B1b.2c.1d.0Q7b.5c: Prove actual committed public scoped-refusal COMMIT response loss through exact receipt/COMMIT gates and PID continuity, invisible locked pre-state after typed UNAVAILABLE, independently frozen canonical receipt/ACK, full second API reopen and exact no-effect replay;ef12c32c, evidence/ordinary-public-committed-loss-20261023. Default1/1/runtime1/1 and preserved P0b1/1 pass; aborted outcome and full .5 remain pending.
 - [ ] B1b.2c.1d.0Q10c: Complete genuine old in-flight compatibility: both byte conditions/orderings, cancellation precedence, Applied, output-dependent old worker and post-ACK process/uncertain-COMMIT controls. No external-provider undo guarantee is inferred.
 - [x] B1b.2c.1d.0Q10c.1: Prove ordinary E>limit report-before-drain through separate immutable-old/current processes with original worker/session/lease/request, owner and actual sagat_app, exact receipt/replay and real compensation;f026e928, evidence/legacy-inflight-ordinary-v1-20261018.
 - [x] B1b.2c.1d.0Q10c.2: Prove ordinary E>limit drain-before-report with a still-live cancellation-requested lease and unchanged first stop/drain; four old/current phases pass, plus four default report-first regression phases. Evidence/legacy-inflight-drain-first-20261018; cancellation-first has separate evidence in .3.
@@ -467,3 +468,22 @@ and a fresh private target outside all checkouts. Evidence/reproduction:
 `tasks/project-completion/evidence/public-scoped-reopen-baseline-20261018/README.md`.
 Local .5b closes only the unarmed reopener prerequisite. Actual committed/aborted COMMIT reply loss,
 post-ACK process recovery, Q7b.5/master quota correction and all canonical task gates remain open.
+
+
+### Actual committed public refusal response loss — 2026-10-23
+
+Source/evidence ef12c32c accepts only current ordinary inline committed response loss. Exact receipt
+Gate A selects the writer before arming; SAME supplied sagat_app PID is observed at actual COMMIT
+behind deferred Gate B. After client EOF produces existing safe UNAVAILABLE/retry5000, the same
+COMMIT remains unresolved, Run locked and complete pre-state invisible. Actual server COMMIT/idle
+resolution precedes independent canonical receipt/Run+telemetry+journal-head/original-trace audit
+inspection. The receipt-derived ACK is frozen BEFORE a second full API/direct runtime-pool reopen;
+original-capability/protobuf/key replay is already-applied and leaves the full durable snapshot intact.
+Exact fault default1/1 (10.03s), runtime1/1 (7.74s); preserved P0b final1/1 (48.53s including compilation),
+all0ignored. Strict Clippy15.47s/fmt4.77s/architecture0.47s and1127equal native input pins pass. Root SQL
+independently verifies both positive databases and removed gates/functions/proxy connections.
+Evidence/reproduction: `tasks/project-completion/evidence/ordinary-public-committed-loss-20261023/README.md`.
+No production change or manufactured RED; two C1 witness gaps were fixed and fresh C2 review is None.
+Only local .5c closes; actual abort, OS/post-ACK recovery, wider report shapes, full Q7b.5/quota/nesting
+and canonical feature acceptance remain open. A lost commit ACK may omit the acknowledgement-dependent
+counter increment; no exactly-once metric or external undo guarantee is inferred.
