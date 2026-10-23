@@ -1,0 +1,23 @@
+{
+  "command": [
+    "gtimeout",
+    "--signal=TERM",
+    "--kill-after=5s",
+    "180s",
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "integration_workflow_primitives",
+    "byte_ceilings::a_known_successful_seventeenth_member_is_preserved_without_its_refused_output",
+    "--",
+    "--exact",
+    "--nocapture"
+  ],
+  "exit_code": 0,
+  "seconds": 9.59,
+  "started_utc": "2026-10-23T22:31:31.562782+00:00",
+  "log": "ordinary-refusal-regression.txt"
+}

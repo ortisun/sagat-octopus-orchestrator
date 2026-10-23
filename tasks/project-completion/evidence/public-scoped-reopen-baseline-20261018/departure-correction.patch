@@ -1,0 +1,22 @@
+--- C2
++++ accepted
+@@ -601,7 +601,7 @@
+     drop(worker);
+     keeper.leave().await;
+     let departed: (i64, i64) = sqlx::query_as(
+-        "SELECT (SELECT count(*) FROM scheduler_shards WHERE owner=$1), \
++        "SELECT (SELECT count(*) FROM scheduler_shards WHERE owner=$1 AND expires_at>clock_timestamp()), \
+                 (SELECT count(*) FROM scheduler_members WHERE owner=$1)",
+     )
+     .bind(placement.owner())
+@@ -609,8 +609,8 @@
+     .await
+     .expect("observe clean scheduler departure");
+     assert!(
+-        departed == (0, 0),
+-        "setup keeper durably leaves its shards and membership"
++        departed == (0, 0) && placement.snapshot().leases().is_empty(),
++        "setup keeper releases all active shards and withdraws membership"
+     );
+     drop(scheduler);
+     drop(keeper);

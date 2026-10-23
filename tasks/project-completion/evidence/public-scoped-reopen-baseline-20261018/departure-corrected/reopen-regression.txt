@@ -1,0 +1,9 @@
+    Finished `test` profile [unoptimized] target(s) in 1.05s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/.cache/sagat-project-completion-20261023-target/debug/deps/integration_workflow_primitives-e4da7cb26c8c0369)
+
+running 2 tests
+test api_reopen::current_api_reopens_owned_database_and_resumes_original_public_worker ... ok
+test api_reopen::supplied_single_connection_pool_backs_actual_public_completion_after_reopen ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 541 filtered out; finished in 3.41s
+

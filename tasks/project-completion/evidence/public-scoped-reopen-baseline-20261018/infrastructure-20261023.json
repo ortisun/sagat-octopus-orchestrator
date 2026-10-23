@@ -1,0 +1,42 @@
+{
+  "project": "sagat-completion-20261023",
+  "declaration": "infra/docker/compose.yaml",
+  "declaration_sha256": "f93ea5007c7dbd479120fed51a54f65bb0ceba5af4fdcd525e2865eb851d57ce",
+  "service": "postgres",
+  "health": "healthy",
+  "image": "postgres:16-alpine",
+  "image_id": "sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685",
+  "ports": {
+    "5432/tcp": [
+      {
+        "HostIp": "127.0.0.1",
+        "HostPort": "65118"
+      }
+    ]
+  },
+  "config_hash": "d8542581594d452014dbc66c90375e2b0e0f96159977ab2451b463140ab77f23",
+  "postgres_version": "16.15/aarch64-alpine",
+  "compose_version": "5.6.0",
+  "create_command": [
+    "docker",
+    "compose",
+    "-p",
+    "sagat-completion-20261023",
+    "-f",
+    "infra/docker/compose.yaml",
+    "up",
+    "-d",
+    "--wait",
+    "postgres"
+  ],
+  "environment": "Compose-required settings are exclusively local test configuration; no external credentials or environment dump recorded",
+  "prior_manual_server_used": false,
+  "build_target": "/Users/marcelo/.cache/sagat-project-completion-20261023-target",
+  "build_profile": {
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_BUILD_JOBS": "3",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "CARGO_PROFILE_TEST_DEBUG": "0",
+    "RUST_MIN_STACK": "16777216"
+  }
+}

@@ -1,0 +1,8 @@
+    Finished `test` profile [unoptimized] target(s) in 0.36s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/.cache/sagat-project-completion-20261023-target/debug/deps/integration_workflow_primitives-e4da7cb26c8c0369)
+
+running 1 test
+test byte_ceilings::a_known_successful_seventeenth_member_is_preserved_without_its_refused_output ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 542 filtered out; finished in 9.12s
+

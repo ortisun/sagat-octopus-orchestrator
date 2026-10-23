@@ -1,0 +1,12 @@
+{
+  "database": "t_01a16adc397c71a58877a1f8095f31ed",
+  "query": "SELECT json_build_object('owned_rows',count(*),'live_rows',count(*) FILTER (WHERE expires_at>clock_timestamp()),'members',(SELECT count(*) FROM scheduler_members),'run_status',(SELECT status FROM runs LIMIT 1),'leased_reserve',(SELECT count(*) FROM steps WHERE node='reserve' AND status='LEASED')) FROM scheduler_shards WHERE owner IS NOT NULL",
+  "observed": {
+    "owned_rows": 64,
+    "live_rows": 0,
+    "members": 0,
+    "run_status": "RUNNING",
+    "leased_reserve": 1
+  },
+  "diagnosis": "Fixture oracle counted retained expired shard-owner rows as active ownership. Native release expires rows; withdraw removes membership. No production defect or refusal execution was observed."
+}

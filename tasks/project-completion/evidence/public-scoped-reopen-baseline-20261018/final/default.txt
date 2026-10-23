@@ -1,0 +1,18 @@
+    Finished `test` profile [unoptimized] target(s) in 0.74s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/.cache/sagat-project-completion-20261023-target/debug/deps/integration_workflow_primitives-e4da7cb26c8c0369)
+
+running 1 test
+test public_refusal_commit_loss::ordinary_public_scoped_refusal_reopens_on_supplied_runtime_pool ... 
+thread 'public_refusal_commit_loss::ordinary_public_scoped_refusal_reopens_on_supplied_runtime_pool' (228610677) panicked at tests/integration/workflow-primitives/public_refusal_commit_loss.rs:611:5:
+setup keeper durably leaves its shards and membership
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    public_refusal_commit_loss::ordinary_public_scoped_refusal_reopens_on_supplied_runtime_pool
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 542 filtered out; finished in 6.32s
+
+error: test failed, to rerun pass `-p sagat-tests --test integration_workflow_primitives`

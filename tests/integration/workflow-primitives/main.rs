@@ -53,6 +53,7 @@ mod operations;
 mod operations_http;
 mod primitive_transactions;
 mod projection;
+mod public_refusal_commit_loss;
 mod publication_rejections;
 mod refusal_secret_versions;
 mod scope_compensation_http;

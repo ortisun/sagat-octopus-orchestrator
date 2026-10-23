@@ -1,0 +1,10 @@
+from pathlib import Path
+import sys,subprocess,time,json,datetime
+root=Path(sys.argv[1]);name=sys.argv[2];cmd=sys.argv[3:];root.mkdir(parents=True,exist_ok=True)
+start=time.monotonic();stamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
+with (root/(name+'.txt')).open('wb') as out:
+ result=subprocess.run(cmd,stdout=out,stderr=subprocess.STDOUT)
+record={'command':cmd,'exit_code':result.returncode,'seconds':round(time.monotonic()-start,2),'started_utc':stamp,'log':name+'.txt'}
+(root/(name+'.json')).write_text(json.dumps(record,indent=2)+'\n')
+print(json.dumps(record));print('\n'.join(line if len(line)<500 else '[long diagnostic retained in raw log]' for line in (root/(name+'.txt')).read_text(errors='replace').splitlines()[-18:]))
+sys.exit(result.returncode)

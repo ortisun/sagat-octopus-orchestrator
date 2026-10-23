@@ -1,0 +1,647 @@
+--- a/tests/integration/workflow-primitives/public_refusal_commit_loss.rs
++++ b/tests/integration/workflow-primitives/public_refusal_commit_loss.rs
+@@ -3,10 +3,11 @@
+ 
+ use std::{sync::Arc, time::Duration};
+ 
++use prost::Message as _;
+ use sagat_api_grpc::pb::{CompleteStepRequest, TaskLease};
+ use sagat_application::{
+     entropy::{SystemEntropy, Token},
+-    execution::{DefinitionCache, Engine, PathExecutionStore, MAX_RUN_OUTPUT_BYTES},
++    execution::{DefinitionCache, Engine, MAX_RUN_OUTPUT_BYTES, PathExecutionStore},
+     worker::WorkerSettings,
+ };
+ use sagat_domain::{
+@@ -16,16 +17,15 @@
+ use sagat_infra_ir::JsonEvaluator;
+ use sagat_infra_postgres::PgRunStore;
+ use sagat_scheduler::{Keeper, KeeperSettings, Placement, Scheduler, SchedulerSettings};
+-use prost::Message as _;
+-use serde_json::{json, Value};
++use serde_json::{Value, json};
+ use sha2::{Digest, Sha256};
+ use sqlx::PgPool;
+ use tokio::time::timeout;
+ 
+ use crate::capacity_finish::commit_proxy::{CommitAckLossProxy, CommitResolution};
+-use crate::support::{attach_existing_db, hold_server, RUNTIME_ROLE};
+-use crate::support::api::{start_on_db_with_pool, Options};
+-use crate::support::worker::{Platform, Worker, TENANT};
++use crate::support::api::{Options, start_on_db_with_pool};
++use crate::support::worker::{Platform, TENANT, Worker};
++use crate::support::{RUNTIME_ROLE, attach_existing_db, eventually, hold_server};
+ 
+ const WORKER: &str = "public-scoped-refusal-worker";
+ const PROXY_APPLICATION: &str = "sagat-test-capacity-commit-loss";
+@@ -78,6 +78,7 @@
+     success_seq: Option<i64>,
+     candidate_payloads: i64,
+     candidate_event_payloads: i64,
++    completion_payloads: i64,
+ }
+ 
+ fn runtime_options() -> Options {
+@@ -128,7 +129,10 @@
+         if !tasks.is_empty() {
+             assert!(tasks.len() == 1, "concurrency-one fixture leases one task");
+             let task = tasks.remove(0);
+-            assert!(task.activity_name == "line.reserve", "fixture leases reserve activity");
++            assert!(
++                task.activity_name == "line.reserve",
++                "fixture leases reserve activity"
++            );
+             return task;
+         }
+     }
+@@ -149,12 +153,17 @@
+     .expect("read exact original scoped lease")
+ }
+ 
+-async fn durable_snapshot(pool: &PgPool, tenant: uuid::Uuid, run: uuid::Uuid, worker: &str) -> Value {
++async fn durable_snapshot(
++    pool: &PgPool,
++    tenant: uuid::Uuid,
++    run: uuid::Uuid,
++    worker: &str,
++) -> Value {
+     sqlx::query_scalar(
+         r#"SELECT jsonb_build_object(
+           'run',to_jsonb(run),
+-          'version',(SELECT to_jsonb(version) FROM workflow_versions version
+-                     WHERE version.tenant_id=run.tenant_id AND version.id=run.workflow_version_id),
++          'version',(SELECT to_jsonb(version_row) FROM workflow_versions version_row
++                     WHERE version_row.tenant_id=run.tenant_id AND version_row.id=run.workflow_version_id),
+           'scope',(SELECT to_jsonb(scope) FROM iteration_scopes scope
+                    WHERE scope.tenant_id=run.tenant_id AND scope.run_id=run.id),
+           'items',(SELECT coalesce(jsonb_agg(to_jsonb(item) ORDER BY item.iteration_index),'[]')
+@@ -169,6 +178,11 @@
+           'steps',(SELECT coalesce(jsonb_agg(to_jsonb(step)
+                     ORDER BY step.instance_path_nodes,step.instance_path_indices,step.node),'[]')
+                    FROM steps step WHERE step.tenant_id=run.tenant_id AND step.run_id=run.id),
++          'retainedSteps',(SELECT coalesce(jsonb_agg(to_jsonb(step)
++                            ORDER BY step.instance_path_indices),'[]')
++                           FROM steps step WHERE step.tenant_id=run.tenant_id AND step.run_id=run.id
++                             AND step.instance_path_nodes=ARRAY['lines']::text[]
++                             AND step.instance_path_indices[1]<16 AND step.node='reserve'),
+           'journal',(SELECT coalesce(jsonb_agg(jsonb_build_object(
+                     'row',to_jsonb(event),'payload',encode(payload.content,'hex')) ORDER BY event.seq),'[]')
+                      FROM run_events event LEFT JOIN payloads payload
+@@ -176,6 +190,8 @@
+                      WHERE event.tenant_id=run.tenant_id AND event.run_id=run.id),
+           'usage',(SELECT to_jsonb(usage) FROM run_instance_usage usage
+                    WHERE usage.tenant_id=run.tenant_id AND usage.run_id=run.id),
++          'iterationUsage',(SELECT to_jsonb(usage) FROM tenant_iteration_usage usage
++                            WHERE usage.tenant_id=run.tenant_id),
+           'telemetry',(SELECT to_jsonb(head) FROM telemetry_pending head
+                        WHERE head.tenant_id=run.tenant_id AND head.run_id=run.id),
+           'payloads',(SELECT coalesce(jsonb_agg(to_jsonb(payload) ORDER BY encode(payload.digest,'hex')),'[]')
+@@ -208,14 +224,13 @@
+             'bindings',(SELECT coalesce(jsonb_agg(to_jsonb(binding)
+                         ORDER BY binding.namespace_id,binding.subject,binding.pattern),'[]')
+                         FROM worker_bindings binding WHERE binding.tenant_id=run.tenant_id),
+-            'sessions',(SELECT coalesce(jsonb_agg(jsonb_build_object(
+-                         'id',session.id,'tenant_id',session.tenant_id,
+-                         'namespace_id',session.namespace_id,'subject',session.subject,
+-                         'worker_name',session.worker_name,'token_hash',encode(session.token_hash,'hex'),
+-                         'activities',session.activities,'languages',session.languages,
+-                         'pools',session.pools,'max_inflight',session.max_inflight,
+-                         'accepted_protocol_minor',session.accepted_protocol_minor,
+-                         'created_at',session.created_at) ORDER BY session.id),'[]')
++            'bindingPools',(SELECT coalesce(jsonb_agg(to_jsonb(grant_row)
++                             ORDER BY grant_row.namespace_id,grant_row.subject,grant_row.pool),'[]')
++                            FROM worker_binding_pools grant_row WHERE grant_row.tenant_id=run.tenant_id),
++            'drains',(SELECT coalesce(jsonb_agg(to_jsonb(drain)
++                        ORDER BY drain.namespace_id,drain.subject),'[]')
++                      FROM worker_drains drain WHERE drain.tenant_id=run.tenant_id),
++            'sessions',(SELECT coalesce(jsonb_agg(to_jsonb(session) ORDER BY session.id),'[]')
+                         FROM worker_sessions session
+                         WHERE session.tenant_id=run.tenant_id AND session.subject=$3)))
+         FROM runs run WHERE run.tenant_id=$1 AND run.id=$2"#,
+@@ -229,7 +244,10 @@
+ }
+ 
+ fn receipt_scope(completion: &CompleteStepRequest) -> String {
+-    let identity = completion.instance.as_ref().expect("scoped instance identity");
++    let identity = completion
++        .instance
++        .as_ref()
++        .expect("scoped instance identity");
+     assert!(
+         identity.definition_node_id == "reserve"
+             && identity.instance_path.len() == 1
+@@ -275,12 +293,7 @@
+     Sha256::digest(fingerprint).to_vec()
+ }
+ 
+-async fn receipt(
+-    pool: &PgPool,
+-    tenant: uuid::Uuid,
+-    scope: &str,
+-    key: &str,
+-) -> ReceiptWitness {
++async fn receipt(pool: &PgPool, tenant: uuid::Uuid, scope: &str, key: &str) -> ReceiptWitness {
+     sqlx::query_as(
+         "SELECT tenant_id::text AS tenant_id,scope,idempotency_key,request_hash,resource_id,created_at \
+          FROM command_dedupe WHERE tenant_id=$1 AND scope=$2 AND idempotency_key=$3",
+@@ -293,6 +306,81 @@
+     .expect("read exact public refusal receipt")
+ }
+ 
++fn positive_advisory_key() -> i64 {
++    i64::try_from(uuid::Uuid::new_v4().as_u128() & ((1_u128 << 63) - 1))
++        .expect("positive advisory key")
++}
++
++async fn install_exact_receipt_gate(
++    pool: &PgPool,
++    tenant: uuid::Uuid,
++    scope: &str,
++    idempotency_key: &str,
++    advisory_key: i64,
++) {
++    assert!(
++        !scope.contains('\'') && !idempotency_key.contains('\''),
++        "generated receipt identity must be safe for fixed test DDL"
++    );
++    let ddl = format!(
++        "CREATE FUNCTION public_refusal_receipt_gate() RETURNS trigger LANGUAGE plpgsql AS $$ \
++         BEGIN \
++           IF NEW.tenant_id='{tenant}'::uuid AND NEW.scope='{scope}' \
++              AND NEW.idempotency_key='{idempotency_key}' THEN \
++             PERFORM pg_advisory_xact_lock({advisory_key}); \
++           END IF; \
++           RETURN NEW; \
++         END $$; \
++         CREATE TRIGGER public_refusal_receipt_gate BEFORE INSERT ON command_dedupe \
++         FOR EACH ROW EXECUTE FUNCTION public_refusal_receipt_gate();"
++    );
++    sqlx::raw_sql(sqlx::AssertSqlSafe(ddl))
++        .execute(pool)
++        .await
++        .expect("install exact public receipt gate");
++}
++
++async fn remove_exact_receipt_gate(pool: &PgPool) {
++    sqlx::raw_sql(
++        "DROP TRIGGER public_refusal_receipt_gate ON command_dedupe; \
++         DROP FUNCTION public_refusal_receipt_gate();",
++    )
++    .execute(pool)
++    .await
++    .expect("remove exact public receipt gate");
++}
++
++async fn wait_for_exact_public_writer(
++    pool: &PgPool,
++    backend_pid: i32,
++    gate_pid: i32,
++    database_name: &str,
++) -> i32 {
++    eventually(
++        "captured supplied-pool backend executes the exact public receipt insert",
++        || async {
++            sqlx::query_scalar::<_, i32>(
++                "SELECT writer.pid FROM pg_stat_activity writer \
++                 JOIN pg_stat_activity blocker ON blocker.pid=$2 \
++                 WHERE writer.pid=$1 AND writer.datname=$3 AND blocker.datname=writer.datname \
++                   AND writer.usename='sagat_app' AND writer.application_name=$4 \
++                   AND writer.state='active' AND writer.wait_event_type='Lock' \
++                   AND $2=ANY(pg_blocking_pids(writer.pid)) \
++                   AND position('INSERT INTO command_dedupe' in writer.query)>0 \
++                   AND position('pg_advisory_xact_lock' in blocker.query)>0",
++            )
++            .bind(backend_pid)
++            .bind(gate_pid)
++            .bind(database_name)
++            .bind(PROXY_APPLICATION)
++            .fetch_optional(pool)
++            .await
++            .expect("observe exact public receipt writer")
++        },
++    )
++    .await
++}
++
+ async fn close_pool(pool: PgPool, message: &'static str) {
+     assert!(
+         timeout(Duration::from_secs(5), pool.close()).await.is_ok(),
+@@ -303,9 +391,12 @@
+ #[tokio::test(flavor = "current_thread")]
+ async fn ordinary_public_scoped_refusal_reopens_on_supplied_runtime_pool() {
+     assert!(
+-        timeout(Duration::from_secs(90), ordinary_public_scoped_refusal_scenario())
+-            .await
+-            .is_ok(),
++        timeout(
++            Duration::from_secs(90),
++            ordinary_public_scoped_refusal_scenario()
++        )
++        .await
++        .is_ok(),
+         "public scoped refusal supplied-pool scenario deadline"
+     );
+ }
+@@ -321,12 +412,18 @@
+             Some(&json!({"limit": 1})),
+         )
+         .await;
+-    assert!(quota_status == 200, "public iteration quota configuration succeeds");
++    assert!(
++        quota_status == 200,
++        "public iteration quota configuration succeeds"
++    );
+ 
+     let name = format!("public-refusal-reopen-{}", uuid::Uuid::now_v7());
+     let workflow = original.publish(&name, &collection_document(&name)).await;
+     let run = original
+-        .start(&workflow, &json!({"lines": (0_u32..17).collect::<Vec<_>>()}))
++        .start(
++            &workflow,
++            &json!({"lines": (0_u32..17).collect::<Vec<_>>()}),
++        )
+         .await;
+     let run_uuid = uuid::Uuid::parse_str(&run).expect("public run id");
+     let run_id = RunId::new(run_uuid);
+@@ -339,18 +436,26 @@
+             ttl: Duration::from_secs(60),
+         },
+     );
+-    assert!(keeper.round().await.is_ok(), "setup keeper acquires scheduler shards");
++    assert!(
++        keeper.round().await.is_ok(),
++        "setup keeper acquires scheduler shards"
++    );
+     let scheduler = Scheduler::new(
+         original.api.executions.clone(),
+         Engine::new(JsonEvaluator),
+         SystemEntropy,
+         SchedulerSettings::default(),
+     )
+-    .with_children(DefinitionCache::new(Arc::new(sagat_infra_ir::JsonIrCodec), 64))
++    .with_children(DefinitionCache::new(
++        Arc::new(sagat_infra_ir::JsonIrCodec),
++        64,
++    ))
+     .with_placement(placement.clone());
+ 
+     let mut worker = original.worker(WORKER).await;
+-    worker.register_version(&["line.reserve", "line.release"], "1.5").await;
++    worker
++        .register_version(&["line.reserve", "line.release"], "1.5")
++        .await;
+     let retained = json_text('x');
+     for index in 0..16 {
+         let task = next_reserve(&scheduler, &mut worker).await;
+@@ -413,7 +518,10 @@
+     .fetch_one(&original.api.db.pool)
+     .await
+     .expect("original durable session token hash");
+-    assert!(session_hash == expected_session_hash, "original session hash matches saved capability");
++    assert!(
++        session_hash == expected_session_hash,
++        "original session hash matches saved capability"
++    );
+ 
+     let candidate_digest = Sha256::digest(candidate.as_bytes()).to_vec();
+     let premise: (i64, i64, i64, i64, i64, i64, String, String, bool, i64, i64) = sqlx::query_as(
+@@ -475,6 +583,16 @@
+         "candidate crosses the retained run-output ceiling"
+     );
+     let before = durable_snapshot(&original.api.db.pool, tenant_uuid, run_uuid, WORKER).await;
++    assert!(
++        before["version"].is_object()
++            && before["version"]["id"] == before["run"]["workflow_version_id"]
++            && before["version"]["document"].is_string(),
++        "snapshot contains the complete pinned published version and document"
++    );
++    assert!(
++        before["iterationUsage"]["active_iterations"] == 1,
++        "the original seventeenth member holds exactly one tenant iteration slot"
++    );
+ 
+     let database_name = original.api.db.name.clone();
+     let admin_url = original.api.db.admin_url.clone();
+@@ -490,16 +608,30 @@
+     .fetch_one(&original.api.db.pool)
+     .await
+     .expect("observe clean scheduler departure");
+-    assert!(departed == (0, 0), "setup keeper durably leaves its shards and membership");
++    assert!(
++        departed == (0, 0),
++        "setup keeper durably leaves its shards and membership"
++    );
+     drop(scheduler);
+     drop(keeper);
+     drop(original);
+-    close_pool(old_runtime_pool, "setup runtime pool closes within its deadline").await;
+-    close_pool(old_owner_pool, "setup owner pool closes within its deadline").await;
++    close_pool(
++        old_runtime_pool,
++        "setup runtime pool closes within its deadline",
++    )
++    .await;
++    close_pool(
++        old_owner_pool,
++        "setup owner pool closes within its deadline",
++    )
++    .await;
+ 
+     let db = attach_existing_db(&admin_url, &database_name).await;
+     let proxy = CommitAckLossProxy::start(&db, CommitResolution::Committed).await;
+-    assert!(proxy.pool.options().get_max_connections() == 1, "supplied pool has one connection");
++    assert!(
++        proxy.pool.options().get_max_connections() == 1,
++        "supplied pool has one connection"
++    );
+     sqlx::query("SET statement_timeout='30s'")
+         .execute(&proxy.pool)
+         .await
+@@ -510,7 +642,11 @@
+         .expect("set supplied idle transaction timeout");
+ 
+     let api = start_on_db_with_pool(db, runtime_options(), proxy.pool.clone()).await;
+-    let reopened = Platform { api, tenant, other_tenant };
++    let reopened = Platform {
++        api,
++        tenant,
++        other_tenant,
++    };
+     let backend: (String, String, i32, String, bool, bool) = sqlx::query_as(
+         "SELECT current_database()::text,current_user::text,pg_backend_pid(), \
+                 current_setting('application_name'),current_setting('statement_timeout')='30s', \
+@@ -528,10 +664,17 @@
+             && backend.5,
+         "reopened public API uses the exact bounded sagat_app proxy connection"
+     );
+-    let reopened_before = durable_snapshot(&reopened.api.db.pool, tenant_uuid, run_uuid, WORKER).await;
+-    assert!(reopened_before == before, "reopen performs no durable execution or authority write");
++    let reopened_before =
++        durable_snapshot(&reopened.api.db.pool, tenant_uuid, run_uuid, WORKER).await;
++    assert!(
++        reopened_before == before,
++        "reopen performs no durable execution or authority write"
++    );
+     let reopened_lease = lease_witness(&reopened.api.db.pool, tenant_uuid, run_uuid).await;
+-    assert!(reopened_lease == original_lease_witness, "reopen preserves the exact original lease row");
++    assert!(
++        reopened_lease == original_lease_witness,
++        "reopen preserves the exact original lease row"
++    );
+     let live: bool = sqlx::query_scalar(
+         "SELECT lease_expires_at>clock_timestamp() FROM steps \
+          WHERE tenant_id=$1 AND run_id=$2 AND step_id=$3",
+@@ -543,19 +686,71 @@
+     .await
+     .expect("check current original lease deadline");
+     assert!(live, "original lease remains live without expiry rewriting");
++    let session_live: bool = sqlx::query_scalar(
++        "SELECT expires_at>clock_timestamp() FROM worker_sessions WHERE tenant_id=$1 AND id=$2",
++    )
++    .bind(tenant_uuid)
++    .bind(uuid::Uuid::parse_str(&worker_id).expect("original worker id"))
++    .fetch_one(&reopened.api.db.pool)
++    .await
++    .expect("check original session deadline");
++    assert!(
++        session_live,
++        "the original session remains live without expiry rewriting"
++    );
+ 
+     let lookups_before = reopened.api.authentication_lookups();
+     let mut resumed = reopened.connect(WORKER, TENANT).await;
+     resumed.worker_id = worker_id;
+     resumed.session = session;
++    let report_scope = receipt_scope(&completion);
++    let advisory_key = positive_advisory_key();
++    install_exact_receipt_gate(
++        &reopened.api.db.pool,
++        tenant_uuid,
++        &report_scope,
++        &completion.idempotency_key,
++        advisory_key,
++    )
++    .await;
++    let mut gate = reopened
++        .api
++        .db
++        .pool
++        .begin()
++        .await
++        .expect("begin exact receipt gate");
++    let gate_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
++        .fetch_one(&mut *gate)
++        .await
++        .expect("exact receipt gate backend");
++    sqlx::query("SELECT pg_advisory_xact_lock($1)")
++        .bind(advisory_key)
++        .execute(&mut *gate)
++        .await
++        .expect("hold exact receipt gate");
+     let first_request = resumed.req(completion.clone());
+-    let first = resumed.client.complete_step(first_request).await;
+-    let first = match first {
+-        Ok(response) => response.into_inner(),
+-        Err(_) => panic!("original public scoped completion returns an acknowledgement"),
++    let mut report_client = resumed.client.clone();
++    let reporting = tokio::spawn(async move { report_client.complete_step(first_request).await });
++    let observed =
++        wait_for_exact_public_writer(&reopened.api.db.pool, backend.2, gate_pid, &database_name)
++            .await;
++    assert!(
++        observed == backend.2,
++        "exact supplied backend executes the public refusal receipt insert"
++    );
++    gate.rollback().await.expect("release exact receipt gate");
++    let first = match timeout(Duration::from_secs(5), reporting).await {
++        Ok(Ok(Ok(response))) => response.into_inner(),
++        _ => panic!(
++            "original public scoped completion returns an acknowledgement within its deadline"
++        ),
+     };
+-    assert!(
+-        !first.already_applied && first.step_status == "SUCCEEDED" && first.run_status == "CANCELLING",
++    remove_exact_receipt_gate(&reopened.api.db.pool).await;
++    assert!(
++        !first.already_applied
++            && first.step_status == "SUCCEEDED"
++            && first.run_status == "CANCELLING",
+         "first original report is the genuine successful-output refusal"
+     );
+     assert!(
+@@ -593,7 +788,12 @@
+           (SELECT count(*) FROM payloads
+            WHERE tenant_id=run.tenant_id AND digest=$4) AS candidate_payloads,
+           (SELECT count(*) FROM run_events WHERE tenant_id=run.tenant_id AND run_id=run.id
+-             AND payload_digest=$4) AS candidate_event_payloads
++             AND payload_digest=$4) AS candidate_event_payloads,
++          (SELECT count(*) FROM run_events WHERE tenant_id=run.tenant_id AND run_id=run.id
++             AND event_type='step.completed' AND node='reserve'
++             AND instance_path_nodes=ARRAY['lines']::text[]
++             AND instance_path_indices=ARRAY[16]::integer[]
++             AND payload_digest IS NOT NULL) AS completion_payloads
+         FROM runs run JOIN iteration_scopes scope
+           ON scope.tenant_id=run.tenant_id AND scope.run_id=run.id
+         JOIN collection_iterations member
+@@ -613,14 +813,25 @@
+     .await
+     .expect("read committed public refusal state");
+     assert!(
+-        post.run_status == "CANCELLING" && post.stop_reason.as_deref() == Some("FAILED")
++        post.run_status == "CANCELLING"
++            && post.stop_reason.as_deref() == Some("FAILED")
+             && post.stop_code.as_deref() == Some("RUN_DATA_LIMIT")
+-            && post.scope_lifecycle == "OPEN" && post.member_lifecycle == "ADMITTED"
+-            && post.slot_held && post.step_status == "SUCCEEDED" && post.output_absent
+-            && post.logical_output_bytes == 4_000_000 && post.run_version == post.head_seq
+-            && post.checkpoints == 16 && post.returns == 0 && post.terminal_steps == 0
+-            && post.sagas == 0 && post.stops == 1 && post.successes == 1
+-            && post.candidate_payloads == 0 && post.candidate_event_payloads == 0,
++            && post.scope_lifecycle == "OPEN"
++            && post.member_lifecycle == "ADMITTED"
++            && post.slot_held
++            && post.step_status == "SUCCEEDED"
++            && post.output_absent
++            && post.logical_output_bytes == 4_000_000
++            && post.run_version == post.head_seq
++            && post.checkpoints == 16
++            && post.returns == 0
++            && post.terminal_steps == 0
++            && post.sagas == 0
++            && post.stops == 1
++            && post.successes == 1
++            && post.candidate_payloads == 0
++            && post.candidate_event_payloads == 0
++            && post.completion_payloads == 0,
+         "first report persists only the bounded successful-refusal state"
+     );
+     assert!(
+@@ -647,7 +858,6 @@
+         "successful metadata records the exact original reported fence"
+     );
+ 
+-    let report_scope = receipt_scope(&completion);
+     let expected_hash = request_hash(&completion);
+     let original_receipt = receipt(
+         &reopened.api.db.pool,
+@@ -661,8 +871,7 @@
+             && original_receipt.scope == report_scope
+             && original_receipt.idempotency_key == completion.idempotency_key
+             && original_receipt.request_hash == expected_hash
+-            && original_receipt.resource_id
+-                == format!("SUCCEEDED|CANCELLING|{}", post.run_version),
++            && original_receipt.resource_id == format!("SUCCEEDED|CANCELLING|{}", post.run_version),
+         "receipt is the canonical full original public command identity"
+     );
+     let audit: (i64, bool, bool, bool) = sqlx::query_as(
+@@ -679,17 +888,58 @@
+     .fetch_one(&reopened.api.db.pool)
+     .await
+     .expect("read exact refusal audit");
+-    assert!(audit == (1, true, true, true), "one truthful refusal audit carries the run trace");
++    assert!(
++        audit == (1, true, true, true),
++        "one truthful refusal audit carries the run trace"
++    );
+ 
+     let after_first = durable_snapshot(&reopened.api.db.pool, tenant_uuid, run_uuid, WORKER).await;
+-    assert!(before["items"] == after_first["items"], "collection source identities stay unchanged");
+-    assert!(before["checkpoints"] == after_first["checkpoints"], "sixteen source checkpoints stay unchanged");
+-    assert!(before["scope"] == after_first["scope"], "report does not drain or close the scope");
+-    assert!(before["authority"] == after_first["authority"], "report preserves durable worker authority");
+-    assert!(before["version"] == after_first["version"], "report preserves the immutable pinned version");
+-    assert!(before["outbox"] == after_first["outbox"], "report appends exactly zero outbox rows");
+-    assert!(after_first["blobs"].as_array().is_some_and(Vec::is_empty), "candidate creates no blob row");
+-    assert!(after_first["sagas"].as_array().is_some_and(Vec::is_empty), "candidate creates no scope saga");
++    for key in [
++        "retainedSteps",
++        "payloads",
++        "retainedUsage",
++        "iterationUsage",
++        "iterations",
++        "chains",
++        "sagaEntries",
++    ] {
++        assert!(
++            before[key] == after_first[key],
++            "report preserves retained outputs, payload bytes, reservations and source metadata"
++        );
++    }
++    assert!(
++        before["items"] == after_first["items"],
++        "collection source identities stay unchanged"
++    );
++    assert!(
++        before["checkpoints"] == after_first["checkpoints"],
++        "sixteen source checkpoints stay unchanged"
++    );
++    assert!(
++        before["scope"] == after_first["scope"],
++        "report does not drain or close the scope"
++    );
++    assert!(
++        before["authority"] == after_first["authority"],
++        "report preserves durable worker authority"
++    );
++    assert!(
++        before["version"] == after_first["version"],
++        "report preserves the immutable pinned version"
++    );
++    assert!(
++        before["outbox"] == after_first["outbox"],
++        "report appends exactly zero outbox rows"
++    );
++    assert!(
++        after_first["blobs"].as_array().is_some_and(Vec::is_empty),
++        "candidate creates no blob row"
++    );
++    assert!(
++        after_first["sagas"].as_array().is_some_and(Vec::is_empty),
++        "candidate creates no scope saga"
++    );
+ 
+     let replay_lookups_before = reopened.api.authentication_lookups();
+     let replay_request = resumed.req(completion.clone());
+@@ -716,9 +966,15 @@
+         &completion.idempotency_key,
+     )
+     .await;
+-    assert!(replay_receipt == original_receipt, "replay preserves the complete original receipt row");
++    assert!(
++        replay_receipt == original_receipt,
++        "replay preserves the complete original receipt row"
++    );
+     let after_replay = durable_snapshot(&reopened.api.db.pool, tenant_uuid, run_uuid, WORKER).await;
+-    assert!(after_replay == after_first, "replay leaves execution, payload, quota, audit, outbox, source, and authority bytes unchanged");
++    assert!(
++        after_replay == after_first,
++        "replay leaves execution, payload, quota, audit, outbox, source, and authority bytes unchanged"
++    );
+ 
+     let cold_store = PgRunStore::new(
+         reopened.api.db.pool.clone(),
+@@ -733,7 +989,10 @@
+         .child(NodeId::parse("lines").expect("owner node"), 16)
+         .expect("bounded original path");
+     assert!(
+-        matches!(cold_store.load_path(tenant, run_id, path).await, Ok(Some(_))),
++        matches!(
++            cold_store.load_path(tenant, run_id, path).await,
++            Ok(Some(_))
++        ),
+         "fresh direct store reads the exact committed seventeenth path"
+     );
+ 
+@@ -742,7 +1001,11 @@
+     let runtime_pool = reopened.api.api_pool.clone();
+     let owner_pool = reopened.api.db.pool.clone();
+     drop(reopened);
+-    close_pool(runtime_pool, "reopened runtime pool closes within its deadline").await;
++    close_pool(
++        runtime_pool,
++        "reopened runtime pool closes within its deadline",
++    )
++    .await;
+     close_pool(owner_pool, "reopened owner pool closes within its deadline").await;
+     drop(proxy);
+ }

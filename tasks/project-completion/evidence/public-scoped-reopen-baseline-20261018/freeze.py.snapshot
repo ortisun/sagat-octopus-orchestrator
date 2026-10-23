@@ -1,0 +1,12 @@
+from pathlib import Path
+import sys,json,hashlib,subprocess
+root=Path(sys.argv[1]);mode=sys.argv[2];root.mkdir(parents=True,exist_ok=True)
+prior=json.loads(Path('tasks/project-completion/evidence/public-scoped-reopen-baseline-20261018/c1-preflight/source-before.json').read_text())
+paths=set(prior)
+for name in subprocess.check_output(['git','ls-files','-co','--exclude-standard','-z']).decode().split('\0'):
+ p=Path(name)
+ if name and (p.suffix in ('.rs','.sql','.proto') or p.name in ('Cargo.toml','Cargo.lock','rust-toolchain.toml')): paths.add(name)
+data={n:hashlib.sha256(Path(n).read_bytes()).hexdigest() for n in sorted(paths)}
+(root/('source-'+mode+'.json')).write_text(json.dumps(data,indent=2)+'\n')
+if mode=='after': assert data==json.loads((root/'source-before.json').read_text()),'native source changed during gate'
+print('native inputs',mode,len(data))
