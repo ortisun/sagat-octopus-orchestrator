@@ -225,7 +225,8 @@ See evidence/leaf-certification-process-20261018. Other producer/observation/rel
 - [x] B1b.2c.1d.0Q7b.3: Prove actual OpenBao public version rotation rejects the stale scanned vector without execution effects; original-key/lease retry and replay pass with exact provider catalog/audit/quota oracles;8d07b0d3, evidence/refusal-secret-versions-20261018.
 - [x] B1b.2c.1d.0Q7b.4: Prove actual native expiry of the original scanned inline lease while its activity stays bound; exact post-mutation execution and complete authority remain unchanged after STALE_ATTEMPT. Evidence/refusal-current-lease-20261018; generation/terminal/pre-begin controls remain separate.
 - [ ] B1b.2c.1d.0Q7b.5: Prove public scoped refusal recovery across actual committed/aborted COMMIT response loss, preserving original capability and current authority; no public unknown-outcome enum is invented.
-- [x] B1b.2c.1d.0Q7b.5a: Prove supplied max1 runtime pool backs the full public API/Worker stack on the original owned DB with real250000-byte persistence and exact receipt replay; c7f62b4a, evidence/public-pool-bootstrap-20261018. Scoped rollback/full reopen and fault injection remain pending.
+- [x] B1b.2c.1d.0Q7b.5a: Prove supplied max1 runtime pool backs the full public API/Worker stack on the original owned DB with real250000-byte persistence and exact receipt replay; c7f62b4a, evidence/public-pool-bootstrap-20261018. Scoped rollback/full reopen has separate .5b evidence; fault injection remains pending.
+- [x] B1b.2c.1d.0Q7b.5b: Prove one genuine public scoped refusal after full API/store/pool reopen through a supplied max1 sagat_app pool, with active receipt-writer PID, complete authority/source/retained-output/iteration-ledger witness and exact canonical replay;98a1247a, evidence/public-scoped-reopen-baseline-20261018. Default1/1/runtime1/1 plus three regression cases pass; committed/aborted COMMIT reply loss remains pending.
 - [ ] B1b.2c.1d.0Q10c: Complete genuine old in-flight compatibility: both byte conditions/orderings, cancellation precedence, Applied, output-dependent old worker and post-ACK process/uncertain-COMMIT controls. No external-provider undo guarantee is inferred.
 - [x] B1b.2c.1d.0Q10c.1: Prove ordinary E>limit report-before-drain through separate immutable-old/current processes with original worker/session/lease/request, owner and actual sagat_app, exact receipt/replay and real compensation;f026e928, evidence/legacy-inflight-ordinary-v1-20261018.
 - [x] B1b.2c.1d.0Q10c.2: Prove ordinary E>limit drain-before-report with a still-live cancellation-requested lease and unchanged first stop/drain; four old/current phases pass, plus four default report-first regression phases. Evidence/legacy-inflight-drain-first-20261018; cancellation-first has separate evidence in .3.
@@ -447,3 +448,22 @@ Strict Clippy42.33s/fmt5.74s/architecture0.76s/shellsyntax pass. Evidence:
 `tasks/project-completion/evidence/legacy-underlimit-increment-20261018/README.md`.
 Only this report-first byte condition closes locally. Under-limit prior cancellation/drain, Applied,
 post-ACK OS/uncertainCOMMIT, frontier/CAS/rollout/general nesting and full Q10c/canonical014 stay open.
+
+
+### Public scoped refusal after complete API reopen — 2026-10-23
+
+Source/evidence98a1247a accepts P0b only. Real public17-member setup retains4M of sixteen outputs;
+the original seventeenth250000-byte command is submitted after exact owned-DB/capability reconstruction.
+An actual receipt advisory barrier ties its write to the supplied max1 sagat_app backend. First
+FAILED/RUN_DATA_LIMIT plus SUCCEEDED/nooutput, original canonical receipt/ACK and byte-identical replay
+preserve complete session/expiry/authority, tenant iteration ledger and retained source/payload rows.
+Default1/1 (47.69s including compilation), runtime1/1 (6.63s), api_reopen2/2 (4.58s), ordinary-refusal1/1
+(9.59s); no ignored tests. Root SQL independently verifies both positive databases. Final Clippy17.99s,
+fmt4.89s/architecture0.39s pass;1126native hashes match all before/after pairs. The first actual0/1
+fixture failure is retained: shard release expires rows instead of deleting owner history; the corrected
+oracle requires0liveleases/0members and empty Placement. No production state was patched.
+The2026-10-23 executions use only repository-declared Compose PostgreSQL on exclusive loopback65118
+and a fresh private target outside all checkouts. Evidence/reproduction:
+`tasks/project-completion/evidence/public-scoped-reopen-baseline-20261018/README.md`.
+Local .5b closes only the unarmed reopener prerequisite. Actual committed/aborted COMMIT reply loss,
+post-ACK process recovery, Q7b.5/master quota correction and all canonical task gates remain open.

@@ -3489,3 +3489,22 @@ Strict Clippy42.33s/fmt5.74s/architecture0.76s/shellsyntax pass. Evidence:
 `tasks/project-completion/evidence/legacy-underlimit-increment-20261018/README.md`.
 Only this report-first byte condition closes locally. Under-limit prior cancellation/drain, Applied,
 post-ACK OS/uncertainCOMMIT, frontier/CAS/rollout/general nesting and full Q10c/canonical014 stay open.
+
+
+### Public scoped refusal after complete API reopen — 2026-10-23
+
+Source/evidence98a1247a accepts P0b only. Real public17-member setup retains4M of sixteen outputs;
+the original seventeenth250000-byte command is submitted after exact owned-DB/capability reconstruction.
+An actual receipt advisory barrier ties its write to the supplied max1 sagat_app backend. First
+FAILED/RUN_DATA_LIMIT plus SUCCEEDED/nooutput, original canonical receipt/ACK and byte-identical replay
+preserve complete session/expiry/authority, tenant iteration ledger and retained source/payload rows.
+Default1/1 (47.69s including compilation), runtime1/1 (6.63s), api_reopen2/2 (4.58s), ordinary-refusal1/1
+(9.59s); no ignored tests. Root SQL independently verifies both positive databases. Final Clippy17.99s,
+fmt4.89s/architecture0.39s pass;1126native hashes match all before/after pairs. The first actual0/1
+fixture failure is retained: shard release expires rows instead of deleting owner history; the corrected
+oracle requires0liveleases/0members and empty Placement. No production state was patched.
+The2026-10-23 executions use only repository-declared Compose PostgreSQL on exclusive loopback65118
+and a fresh private target outside all checkouts. Evidence/reproduction:
+`tasks/project-completion/evidence/public-scoped-reopen-baseline-20261018/README.md`.
+Local .5b closes only the unarmed reopener prerequisite. Actual committed/aborted COMMIT reply loss,
+post-ACK process recovery, Q7b.5/master quota correction and all canonical task gates remain open.
