@@ -1,0 +1,10 @@
+{
+  "command": [
+    "python3",
+    "scripts/check-architecture.py"
+  ],
+  "exit_code": 0,
+  "seconds": 0.33,
+  "started_utc": "2026-10-23T22:35:17.767942+00:00",
+  "log": "architecture.txt"
+}

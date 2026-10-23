@@ -1,0 +1,97 @@
+diff --git a/tests/integration/workflow-primitives/public_refusal_commit_loss.rs b/tests/integration/workflow-primitives/public_refusal_commit_loss.rs
+index a77c8926..5a710bdc 100644
+--- a/tests/integration/workflow-primitives/public_refusal_commit_loss.rs
++++ b/tests/integration/workflow-primitives/public_refusal_commit_loss.rs
+@@ -25,7 +25,7 @@ use tokio::time::timeout;
+ use crate::capacity_finish::commit_proxy::{CommitAckLossProxy, CommitResolution};
+ use crate::support::api::{Options, start_on_db_with_pool};
+ use crate::support::worker::{Platform, TENANT, Worker};
+-use crate::support::{RUNTIME_ROLE, attach_existing_db, eventually, hold_server};
++use crate::support::{HeldServer, RUNTIME_ROLE, attach_existing_db, eventually, hold_server};
+ 
+ const WORKER: &str = "public-scoped-refusal-worker";
+ const PROXY_APPLICATION: &str = "sagat-test-capacity-commit-loss";
+@@ -401,7 +401,21 @@ async fn ordinary_public_scoped_refusal_reopens_on_supplied_runtime_pool() {
+     );
+ }
+ 
+-async fn ordinary_public_scoped_refusal_scenario() {
++// Owns the original capability and the reopened API; a borrowing Worker is created by each test.
++// Do not derive Debug: the saved command/session carry private execution capabilities.
++struct ReopenedRefusalFixture {
++    _server: HeldServer,
++    reopened: Platform,
++    proxy: CommitAckLossProxy,
++    completion: CompleteStepRequest,
++    worker_id: String,
++    session: String,
++    before: Value,
++    lease: LeaseWitness,
++    backend_pid: i32,
++}
++
++async fn reopened_refusal_fixture() -> ReopenedRefusalFixture {
+     let _server = hold_server();
+     let original = crate::support::worker::platform_with(runtime_options()).await;
+     let namespace = original.namespace_id().await;
+@@ -426,7 +440,6 @@ async fn ordinary_public_scoped_refusal_scenario() {
+         )
+         .await;
+     let run_uuid = uuid::Uuid::parse_str(&run).expect("public run id");
+-    let run_id = RunId::new(run_uuid);
+ 
+     let placement = Placement::new(format!("{name}-scheduler"));
+     let keeper = Keeper::new(
+@@ -699,6 +712,39 @@ async fn ordinary_public_scoped_refusal_scenario() {
+         "the original session remains live without expiry rewriting"
+     );
+ 
++    ReopenedRefusalFixture {
++        _server,
++        reopened,
++        proxy,
++        completion,
++        worker_id,
++        session,
++        before,
++        lease: reopened_lease,
++        backend_pid: backend.2,
++    }
++}
++
++async fn ordinary_public_scoped_refusal_scenario() {
++    let ReopenedRefusalFixture {
++        _server,
++        reopened,
++        proxy,
++        completion,
++        worker_id,
++        session,
++        before,
++        lease: reopened_lease,
++        backend_pid,
++    } = reopened_refusal_fixture().await;
++    let database_name = reopened.api.db.name.clone();
++    let tenant = reopened.tenant;
++    let tenant_uuid = tenant.as_uuid();
++    let run = completion.run_id.clone();
++    let run_uuid = uuid::Uuid::parse_str(&run).expect("original run id");
++    let run_id = RunId::new(run_uuid);
++    let candidate_digest = Sha256::digest(completion.output_json.as_bytes()).to_vec();
++
+     let lookups_before = reopened.api.authentication_lookups();
+     let mut resumed = reopened.connect(WORKER, TENANT).await;
+     resumed.worker_id = worker_id;
+@@ -733,10 +779,10 @@ async fn ordinary_public_scoped_refusal_scenario() {
+     let mut report_client = resumed.client.clone();
+     let reporting = tokio::spawn(async move { report_client.complete_step(first_request).await });
+     let observed =
+-        wait_for_exact_public_writer(&reopened.api.db.pool, backend.2, gate_pid, &database_name)
++        wait_for_exact_public_writer(&reopened.api.db.pool, backend_pid, gate_pid, &database_name)
+             .await;
+     assert!(
+-        observed == backend.2,
++        observed == backend_pid,
+         "exact supplied backend executes the public refusal receipt insert"
+     );
+     gate.rollback().await.expect("release exact receipt gate");

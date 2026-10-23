@@ -1,0 +1,23 @@
+{
+  "command": [
+    "gtimeout",
+    "--signal=TERM",
+    "--kill-after=5s",
+    "180s",
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "integration_workflow_primitives",
+    "public_refusal_commit_loss::ordinary_public_scoped_refusal_reopens_on_supplied_runtime_pool",
+    "--",
+    "--exact",
+    "--nocapture"
+  ],
+  "exit_code": 0,
+  "seconds": 45.46,
+  "started_utc": "2026-10-23T22:35:57.904725+00:00",
+  "log": "default.txt"
+}
