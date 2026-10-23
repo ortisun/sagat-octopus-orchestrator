@@ -19,17 +19,24 @@ async fn install_commit_gate(
     scope: &str,
     key: &str,
     advisory_key: i64,
+    resolution: CommitResolution,
 ) {
     assert!(
         !scope.contains('\'') && !key.contains('\''),
         "fixed receipt identity is safe for test-only DDL"
     );
+    let outcome = match resolution {
+        CommitResolution::Committed => "",
+        CommitResolution::Aborted23514 => {
+            "RAISE EXCEPTION USING ERRCODE='23514',CONSTRAINT='capacity_finish_proxy_forced_abort',MESSAGE='test-only forced public refusal commit abort';"
+        }
+    };
     let ddl = format!(
         "CREATE FUNCTION public_refusal_commit_probe() RETURNS trigger LANGUAGE plpgsql AS $$ \
          BEGIN \
            IF NEW.tenant_id='{tenant}'::uuid AND NEW.scope='{scope}' \
               AND NEW.idempotency_key='{key}' THEN \
-             PERFORM pg_advisory_xact_lock({advisory_key}); \
+             PERFORM pg_advisory_xact_lock({advisory_key}); {outcome} \
            END IF; \
            RETURN NEW; \
          END $$; \
@@ -99,17 +106,127 @@ async fn assert_unresolved(platform: &Platform, run: uuid::Uuid, before: &Value)
     );
 }
 
+async fn assert_rolled_back(
+    platform: &Platform,
+    completion: &CompleteStepRequest,
+    before: &Value,
+    lease: &LeaseWitness,
+    original_bytes: &[u8],
+    phase: &'static str,
+) {
+    let tenant = platform.tenant.as_uuid();
+    let run = uuid::Uuid::parse_str(&completion.run_id).expect("original run id");
+    let after = durable_snapshot(&platform.api.db.pool, tenant, run, WORKER).await;
+    let before_bytes = serde_json::to_vec(before).expect("serialize original snapshot");
+    let after_bytes = serde_json::to_vec(&after).expect("serialize actual rollback snapshot");
+    assert!(
+        before_bytes == after_bytes,
+        "actual aborted COMMIT restores every canonical snapshot byte"
+    );
+    let original_lease = lease_witness(&platform.api.db.pool, tenant, run).await;
+    let lease_unchanged = original_lease == *lease;
+    assert!(
+        lease_unchanged && original_lease.status == "LEASED",
+        "abort preserves every original leased-row field"
+    );
+    assert!(
+        completion.encode_to_vec() == original_bytes,
+        "aborted original command remains byte-identical"
+    );
+    let counts: (i64, i64, i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM command_dedupe WHERE tenant_id=$1 AND scope=$3 AND idempotency_key=$4), \
+                (SELECT count(*) FROM run_events WHERE tenant_id=$1 AND run_id=$2 AND event_type='run.stop_requested' AND detail->>'code'='RUN_DATA_LIMIT'), \
+                (SELECT count(*) FROM run_events WHERE tenant_id=$1 AND run_id=$2 AND event_type='step.completed' AND node='reserve' AND instance_path_nodes=ARRAY['lines']::text[] AND instance_path_indices=ARRAY[16]::integer[]), \
+                (SELECT count(*) FROM audit_records WHERE tenant_id=$1 AND resource_id=$2::text AND action='run.data_limit_exceeded')",
+    ).bind(tenant).bind(run).bind(receipt_scope(completion)).bind(&completion.idempotency_key)
+        .fetch_one(&platform.api.db.pool).await.expect("read exact absent aborted report effects");
+    assert!(
+        counts == (0, 0, 0, 0),
+        "aborted report has no receipt, stop, success or refusal audit"
+    );
+    let live: (bool, bool) = sqlx::query_as(
+        "SELECT (SELECT lease_expires_at>clock_timestamp() FROM steps WHERE tenant_id=$1 AND run_id=$2 AND step_id=$3), \
+                (SELECT expires_at>clock_timestamp() FROM worker_sessions WHERE tenant_id=$1 AND id=$4)",
+    ).bind(tenant).bind(run).bind(lease.step_id)
+        .bind(uuid::Uuid::parse_str(&lease.leased_by).expect("original worker id"))
+        .fetch_one(&platform.api.db.pool).await.expect("read unchanged live original authority");
+    assert!(
+        live == (true, true),
+        "original session and lease stay live without expiry rewriting"
+    );
+    let heads: (i64, i64, i64) = sqlx::query_as(
+        "SELECT run_version,(SELECT max(seq) FROM run_events WHERE tenant_id=$1 AND run_id=$2), \
+                (SELECT head_seq FROM telemetry_pending WHERE tenant_id=$1 AND run_id=$2) \
+         FROM runs WHERE tenant_id=$1 AND id=$2",
+    )
+    .bind(tenant)
+    .bind(run)
+    .fetch_one(&platform.api.db.pool)
+    .await
+    .expect("read original rollback heads");
+    let original_head = before["run"]["run_version"]
+        .as_i64()
+        .expect("original persisted revision");
+    assert!(
+        heads == (original_head, original_head, original_head),
+        "abort preserves Run, journal and telemetry heads"
+    );
+    let unlocked: uuid::Uuid =
+        sqlx::query_scalar("SELECT id FROM runs WHERE tenant_id=$1 AND id=$2 FOR UPDATE NOWAIT")
+            .bind(tenant)
+            .bind(run)
+            .fetch_one(&platform.api.db.pool)
+            .await
+            .expect("confirmed abort releases the Run guard");
+    assert!(
+        unlocked == run,
+        "independent no-write Run guard probe addresses the exact original Run"
+    );
+    // Only safe digests/counts are retained before recovery overwrites the rollback state.
+    let digest = |bytes: &[u8]| {
+        Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    println!(
+        "public_refusal_abort_rollback={}",
+        json!({
+            "phase": phase, "before_sha256": digest(&before_bytes), "after_sha256": digest(&after_bytes),
+            "lease_unchanged": lease_unchanged, "receipt_count": counts.0, "stop_count": counts.1,
+            "success_count": counts.2, "audit_count": counts.3, "session_and_lease_live": live.0 && live.1,
+            "original_journal_head": original_head, "run_guard_released": unlocked == run
+        })
+    );
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn ordinary_public_scoped_refusal_commit_reply_loss_replays_after_api_reopen() {
     assert!(
-        timeout(Duration::from_secs(90), committed_loss_scenario())
-            .await
-            .is_ok(),
+        timeout(
+            Duration::from_secs(90),
+            reply_loss_scenario(CommitResolution::Committed)
+        )
+        .await
+        .is_ok(),
         "public committed refusal response-loss scenario deadline"
     );
 }
 
-async fn committed_loss_scenario() {
+#[tokio::test(flavor = "current_thread")]
+async fn ordinary_public_scoped_refusal_aborted_commit_reply_loss_applies_after_api_reopen() {
+    assert!(
+        timeout(
+            Duration::from_secs(90),
+            reply_loss_scenario(CommitResolution::Aborted23514)
+        )
+        .await
+        .is_ok(),
+        "public aborted refusal response-loss scenario deadline"
+    );
+}
+
+async fn reply_loss_scenario(resolution: CommitResolution) {
     let ReopenedRefusalFixture {
         _server,
         reopened,
@@ -120,7 +237,7 @@ async fn committed_loss_scenario() {
         before,
         lease,
         backend_pid,
-    } = reopened_refusal_fixture(CommitResolution::Committed).await;
+    } = reopened_refusal_fixture(resolution).await;
     let tenant = reopened.tenant;
     let tenant_uuid = tenant.as_uuid();
     let other_tenant = reopened.other_tenant;
@@ -146,6 +263,7 @@ async fn committed_loss_scenario() {
         &scope,
         &completion.idempotency_key,
         key_b,
+        resolution,
     )
     .await;
 
@@ -253,19 +371,47 @@ async fn committed_loss_scenario() {
         .await
         .expect("release deferred COMMIT gate B after observing client failure");
     assert!(
-        proxy.resolution().await == CommitResolution::Committed,
-        "backend COMMIT and idle resolution are independently observed"
+        proxy.resolution().await == resolution,
+        "actual backend result and idle resolution are independently observed"
     );
-    let (post, committed_receipt, committed_snapshot) =
-        inspect_committed_refusal(&reopened, &completion, &before, &lease).await;
-    // Freeze the expected original ACK from independently verified persistence, before any retry.
-    let expected_command = format!("{}:{}", completion.run_id, post.run_version);
-    let expected_step_status = post.step_status.clone();
-    let expected_run_status = post.run_status.clone();
+    // The committed branch freezes its independent ACK BEFORE any recovery request.
+    let frozen = match resolution {
+        CommitResolution::Committed => {
+            let (post, receipt, snapshot) =
+                inspect_committed_refusal(&reopened, &completion, &before, &lease).await;
+            Some((
+                format!("{}:{}", completion.run_id, post.run_version),
+                post.step_status,
+                post.run_status,
+                receipt,
+                snapshot,
+            ))
+        }
+        CommitResolution::Aborted23514 => {
+            assert_rolled_back(
+                &reopened,
+                &completion,
+                &before,
+                &lease,
+                &original_bytes,
+                "after_abort",
+            )
+            .await;
+            None
+        }
+    };
     sqlx::raw_sql(
         "DROP TRIGGER public_refusal_commit_gate ON command_dedupe; DROP FUNCTION public_refusal_commit_probe();",
     ).execute(&reopened.api.db.pool).await.expect("remove resolved COMMIT probe");
     remove_exact_receipt_gate(&reopened.api.db.pool).await;
+    let probes_absent: bool = sqlx::query_scalar(
+        "SELECT NOT EXISTS(SELECT 1 FROM pg_trigger WHERE tgname IN ('public_refusal_receipt_gate','public_refusal_commit_gate')) \
+            AND NOT EXISTS(SELECT 1 FROM pg_proc WHERE proname IN ('public_refusal_receipt_gate','public_refusal_commit_probe'))",
+    ).fetch_one(&reopened.api.db.pool).await.expect("inspect resolved test probe removal");
+    assert!(
+        probes_absent,
+        "all receipt and deferred COMMIT probes are absent before recovery"
+    );
     drop(reporting);
     drop(worker);
     let owner_pool = reopened.api.db.pool.clone();
@@ -294,13 +440,29 @@ async fn committed_loss_scenario() {
     );
     let restored = durable_snapshot(&recovery.api.db.pool, tenant_uuid, run_uuid, WORKER).await;
     assert!(
-        restored == committed_snapshot,
+        restored
+            == *frozen
+                .as_ref()
+                .map(|(_, _, _, _, snapshot)| snapshot)
+                .unwrap_or(&before),
         "complete second API reopen performs no durable mutation"
     );
     assert!(
         completion.encode_to_vec() == original_bytes,
         "every original public command byte is retained"
     );
+
+    if resolution == CommitResolution::Aborted23514 {
+        assert_rolled_back(
+            &recovery,
+            &completion,
+            &before,
+            &lease,
+            &original_bytes,
+            "after_reopen",
+        )
+        .await;
+    }
 
     let auth_before = recovery.api.authentication_lookups();
     let mut resumed = recovery.connect(WORKER, TENANT).await;
@@ -310,20 +472,65 @@ async fn committed_loss_scenario() {
     let ack = match resumed.client.complete_step(request).await {
         Ok(response) => response.into_inner(),
         Err(_) => {
-            panic!("original command replays after confirmed commit and full API reconstruction")
+            panic!(
+                "original command recovers after confirmed backend resolution and full API reconstruction"
+            )
         }
     };
     assert!(
-        ack.already_applied
-            && ack.command_id == expected_command
-            && ack.step_status == expected_step_status
-            && ack.run_status == expected_run_status,
-        "first delivered ACK exactly matches the independently frozen committed receipt"
+        ack.already_applied == (resolution == CommitResolution::Committed),
+        "committed recovery replays while aborted recovery newly applies the original command"
     );
     assert!(
         recovery.api.authentication_lookups() > auth_before,
-        "recovery replay rechecks current authentication"
+        "first recovery command uses current authentication"
     );
+    let (
+        expected_command,
+        expected_step_status,
+        expected_run_status,
+        committed_receipt,
+        committed_snapshot,
+    ) = match frozen {
+        Some(witness) => witness,
+        None => {
+            // The newly applied ACK is retained as actual output; expectation comes from owner SQL.
+            let (post, receipt, snapshot) =
+                inspect_committed_refusal(&recovery, &completion, &before, &lease).await;
+            (
+                format!("{}:{}", completion.run_id, post.run_version),
+                post.step_status,
+                post.run_status,
+                receipt,
+                snapshot,
+            )
+        }
+    };
+    assert!(
+        ack.command_id == expected_command
+            && ack.step_status == expected_step_status
+            && ack.run_status == expected_run_status,
+        "first delivered ACK matches independently verified receipt and journal head"
+    );
+    if resolution == CommitResolution::Aborted23514 {
+        let lookups = recovery.api.authentication_lookups();
+        let request = resumed.req(completion.clone());
+        let replay = match resumed.client.complete_step(request).await {
+            Ok(response) => response.into_inner(),
+            Err(_) => panic!("the original command replays after its first successful recovery"),
+        };
+        assert!(
+            replay.already_applied
+                && replay.command_id == expected_command
+                && replay.step_status == expected_step_status
+                && replay.run_status == expected_run_status,
+            "second exact command replays the independently validated new receipt"
+        );
+        assert!(
+            recovery.api.authentication_lookups() > lookups,
+            "second recovery command also uses current authentication"
+        );
+    }
     let replay_receipt = receipt(
         &recovery.api.db.pool,
         tenant_uuid,

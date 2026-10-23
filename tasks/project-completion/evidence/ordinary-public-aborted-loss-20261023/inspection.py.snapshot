@@ -1,0 +1,17 @@
+from pathlib import Path
+import sys,json,hashlib,subprocess,os
+root=Path(sys.argv[1]);profile=sys.argv[2]
+before=json.loads((root/(profile+'-databases-before.json')).read_text());after=json.loads((root/(profile+'-databases-after.json')).read_text());new=set(after)-set(before);assert len(new)==1;db=new.pop()
+query=Path('tasks/project-completion/evidence/public-scoped-reopen-baseline-20261018/departure-corrected/independent-inspection.sql.snapshot').read_text()
+url=os.environ['SAGAT_TEST_DATABASE_URL'].rsplit('/',1)[0]+'/'+db
+args=['/opt/homebrew/bin/psql',url,'-X','-A','-t','-v','ON_ERROR_STOP=1','-c']
+env={**os.environ,'PGCONNECT_TIMEOUT':'5','PGOPTIONS':'-c statement_timeout=5000'}
+r=json.loads(subprocess.check_output(args+[query],env=env))
+parts=[b'complete',r['original_attempt'].to_bytes(4,'big'),r['original_generation'].to_bytes(8,'big'),('"'+'y'*249998+'"').encode()]
+assert r.pop('receipt_hash')==hashlib.sha256(b''.join(len(n).to_bytes(8,'big')+n for n in parts)).hexdigest();r['canonical_receipt_hash_matches']=True
+expected=json.loads(Path('tasks/project-completion/evidence/public-scoped-reopen-baseline-20261018/departure-corrected/default-independent-inspection.json').read_text());expected['database']=db;assert r==expected
+extra_sql="SELECT json_build_object('journal_head',(SELECT max(seq) FROM run_events),'gate_triggers',(SELECT count(*) FROM pg_trigger WHERE tgname IN ('public_refusal_receipt_gate','public_refusal_commit_gate')),'gate_functions',(SELECT count(*) FROM pg_proc WHERE proname IN ('public_refusal_receipt_gate','public_refusal_commit_probe')),'capacity_groups',(SELECT count(*) FROM capacity_groups),'capacity_members',(SELECT count(*) FROM capacity_group_members),'capacity_receipts',(SELECT count(*) FROM capacity_group_finish_receipts),'quota_deltas',(SELECT count(*) FROM quota_transaction_deltas),'proxy_connections',(SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND application_name='sagat-test-capacity-commit-loss'))"
+extra=json.loads(subprocess.check_output(args+[extra_sql],env=env));assert extra=={'journal_head':r['run_version'],'gate_triggers':0,'gate_functions':0,'proxy_connections':0,'capacity_groups':0,'capacity_members':0,'capacity_receipts':0,'quota_deltas':0};r.update(extra)
+(root/(profile+'-independent-inspection.json')).write_text(json.dumps(r,indent=2)+'\n')
+(root/(profile+'-additional-inspection.sql.snapshot')).write_text(extra_sql+'\n')
+print(profile+': independent receipt/hash/head/quota/payload/cleanup inspection passed')

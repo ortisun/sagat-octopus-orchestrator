@@ -1,0 +1,245 @@
+{
+  "baseline": "16ea6a37",
+  "decision": "d614b2a5",
+  "source": "tests/integration/workflow-primitives/public_refusal_committed_loss.rs",
+  "source_sha256": "b7f14abab58d6c0e6d67ef8ef8e83ca59fd7adc2aeef3c65a79213535ff07aee",
+  "native_input_count": 1127,
+  "both_source_freeze_pairs_equal": true,
+  "review_result": "three bounded fresh reviews None",
+  "results": {
+    "aborted-default": {
+      "command": [
+        "gtimeout",
+        "--signal=TERM",
+        "--kill-after=5s",
+        "180s",
+        "/Users/marcelo/.cache/sagat-project-completion-20261023-target/debug/deps/integration_workflow_primitives-e4da7cb26c8c0369",
+        "--exact",
+        "public_refusal_commit_loss::committed_loss::ordinary_public_scoped_refusal_aborted_commit_reply_loss_applies_after_api_reopen",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 10.9,
+      "started_utc": "2026-10-23T23:02:43.686963+00:00",
+      "log": "aborted-default.txt"
+    },
+    "aborted-runtime": {
+      "command": [
+        "gtimeout",
+        "--signal=TERM",
+        "--kill-after=5s",
+        "180s",
+        "/Users/marcelo/.cache/sagat-project-completion-20261023-target/debug/deps/integration_workflow_primitives-e4da7cb26c8c0369",
+        "--exact",
+        "public_refusal_commit_loss::committed_loss::ordinary_public_scoped_refusal_aborted_commit_reply_loss_applies_after_api_reopen",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 9.26,
+      "started_utc": "2026-10-23T23:03:42.625567+00:00",
+      "log": "aborted-runtime.txt"
+    },
+    "committed-default": {
+      "command": [
+        "gtimeout",
+        "--signal=TERM",
+        "--kill-after=5s",
+        "180s",
+        "/Users/marcelo/.cache/sagat-project-completion-20261023-target/debug/deps/integration_workflow_primitives-e4da7cb26c8c0369",
+        "--exact",
+        "public_refusal_commit_loss::committed_loss::ordinary_public_scoped_refusal_commit_reply_loss_replays_after_api_reopen",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 8.11,
+      "started_utc": "2026-10-23T23:03:52.131153+00:00",
+      "log": "committed-default.txt"
+    },
+    "committed-runtime": {
+      "command": [
+        "gtimeout",
+        "--signal=TERM",
+        "--kill-after=5s",
+        "180s",
+        "/Users/marcelo/.cache/sagat-project-completion-20261023-target/debug/deps/integration_workflow_primitives-e4da7cb26c8c0369",
+        "--exact",
+        "public_refusal_commit_loss::committed_loss::ordinary_public_scoped_refusal_commit_reply_loss_replays_after_api_reopen",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 8.02,
+      "started_utc": "2026-10-23T23:04:00.536794+00:00",
+      "log": "committed-runtime.txt"
+    },
+    "baseline-default": {
+      "command": [
+        "gtimeout",
+        "--signal=TERM",
+        "--kill-after=5s",
+        "180s",
+        "/Users/marcelo/.cache/sagat-project-completion-20261023-target/debug/deps/integration_workflow_primitives-e4da7cb26c8c0369",
+        "--exact",
+        "public_refusal_commit_loss::ordinary_public_scoped_refusal_reopens_on_supplied_runtime_pool",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 7.0,
+      "started_utc": "2026-10-23T23:04:08.853983+00:00",
+      "log": "baseline-default.txt"
+    },
+    "baseline-runtime": {
+      "command": [
+        "gtimeout",
+        "--signal=TERM",
+        "--kill-after=5s",
+        "180s",
+        "/Users/marcelo/.cache/sagat-project-completion-20261023-target/debug/deps/integration_workflow_primitives-e4da7cb26c8c0369",
+        "--exact",
+        "public_refusal_commit_loss::ordinary_public_scoped_refusal_reopens_on_supplied_runtime_pool",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 7.14,
+      "started_utc": "2026-10-23T23:04:16.128420+00:00",
+      "log": "baseline-runtime.txt"
+    }
+  },
+  "first_abort_execution_passed": true,
+  "failed_or_ignored_runtime_cases": 0,
+  "binary": {
+    "path": "/Users/marcelo/.cache/sagat-project-completion-20261023-target/debug/deps/integration_workflow_primitives-e4da7cb26c8c0369",
+    "sha256": "0029cc795414a7639f0d56484d3846434c6b9e276cf6f99657d2e120c323abd6"
+  },
+  "pre_retry_rollback_evidence": "final/pre-retry-rollback-evidence.json",
+  "quality": {
+    "clippy": {
+      "command": [
+        "gtimeout",
+        "--signal=TERM",
+        "--kill-after=5s",
+        "240s",
+        "cargo",
+        "clippy",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "seconds": 18.17,
+      "started_utc": "2026-10-23T22:59:14.558545+00:00",
+      "log": "clippy.txt"
+    },
+    "build": {
+      "command": [
+        "gtimeout",
+        "--signal=TERM",
+        "--kill-after=5s",
+        "900s",
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "--no-run"
+      ],
+      "exit_code": 0,
+      "seconds": 40.18,
+      "started_utc": "2026-10-23T23:00:39.451454+00:00",
+      "log": "build.txt"
+    },
+    "fmt": {
+      "command": [
+        "cargo",
+        "fmt",
+        "--check"
+      ],
+      "exit_code": 0,
+      "seconds": 5.07,
+      "started_utc": "2026-10-23T23:00:40.642603+00:00",
+      "log": "fmt.txt"
+    },
+    "architecture": {
+      "command": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "exit_code": 0,
+      "seconds": 0.46,
+      "started_utc": "2026-10-23T23:00:40.644035+00:00",
+      "log": "architecture.txt"
+    }
+  },
+  "production_changed": false,
+  "artifacts": {
+    "before.rs.snapshot": "dff14cc288528488858545a478828bc96a4b5bacadf67288340b9bd95ed976c2",
+    "c1-preflight/clippy.json": "11a7fa2709bad6397e0c5f3d2f5a06d769e93706cc2f3ec5623c709ec2183e2b",
+    "c1-preflight/clippy.txt": "12745d0a77de9230fc305e165817b40780cf2f1672db5d5a0d3acbac4513a23f",
+    "c1-preflight/source-after.json": "bc958caa3cf5a6c3457ff9c1359ac81022539fde07aff38ebbc179b809fd7722",
+    "c1-preflight/source-before.json": "bc958caa3cf5a6c3457ff9c1359ac81022539fde07aff38ebbc179b809fd7722",
+    "c1.patch": "bfe0ae7f2d9306fd6292a6909baf2ce760442b8d8335d1ec6593026d346620c2",
+    "c1.rs.snapshot": "b7f14abab58d6c0e6d67ef8ef8e83ca59fd7adc2aeef3c65a79213535ff07aee",
+    "final/aborted-default-additional-inspection.sql.snapshot": "bbe9e4a05862ced442d5d41441dce2e59f741a3338372406417d092df95b3de9",
+    "final/aborted-default-databases-after.json": "5a3c96857fbe63dc6aae41436cf45a343f8ad331ac4dfeccd23f5e4c01e945c9",
+    "final/aborted-default-databases-before.json": "9a873d11a8a1693e52d2676e2908375be77adb10afe25e7c3977d793d704c787",
+    "final/aborted-default-independent-inspection.json": "19a4a84b2e9e5b36d51e92c28c34121e289d18f164dc1b81c8acb883bea68dfb",
+    "final/aborted-default.json": "58ebc0fb691db26f14750af5b8f218c160af777b0c57f5c5c0b86ce81b2e4e9c",
+    "final/aborted-default.txt": "f8422eedfec82b97b3b562c9f0524d6343c33353b855b02f1fd3a5e2efdc07cb",
+    "final/aborted-runtime-additional-inspection.sql.snapshot": "bbe9e4a05862ced442d5d41441dce2e59f741a3338372406417d092df95b3de9",
+    "final/aborted-runtime-databases-after.json": "ea14b48b1e92233d3740d1d53fbd2898f52e086926670d32010351490869278a",
+    "final/aborted-runtime-databases-before.json": "5a3c96857fbe63dc6aae41436cf45a343f8ad331ac4dfeccd23f5e4c01e945c9",
+    "final/aborted-runtime-independent-inspection.json": "a8184c379e3e3b087cd77ab425083888f2ad52f5b012b272802aa449ada14bd2",
+    "final/aborted-runtime.json": "1e18f513bed0dbe6d04df1f6e50f4b4bb6d4ec71d1a4093b906a4022d86c457d",
+    "final/aborted-runtime.txt": "05deb4f09f6d94621504cdd6f27d39608fc59552a7aec7481c23c78c2bd96a91",
+    "final/architecture.json": "2048c1b16c180730e3c1edaa1953b030cde1ae2d5951b99eb9711ee4d013aa8b",
+    "final/architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "final/baseline-default-additional-inspection.sql.snapshot": "bbe9e4a05862ced442d5d41441dce2e59f741a3338372406417d092df95b3de9",
+    "final/baseline-default-databases-after.json": "a9d4fc3ae882ee634592f96292f08d02e992909df61671e8a7412519d45ebc49",
+    "final/baseline-default-databases-before.json": "afa064b3f800c1b2daf910714d06093333e77f501d3fbb86dba059e6bf5f45b0",
+    "final/baseline-default-independent-inspection.json": "56f7e80e183bdca355f8b31c55ad119e4803a85c021985cf87de9095a7161152",
+    "final/baseline-default.json": "930aaa8cf473fbd069a27c3922efaa57a07bec834bd2ea62deb46d8339bc8251",
+    "final/baseline-default.txt": "18bd189c3449ae2724346ecdb51c83d8973d295a9ed20ed02aef1f181d3e7d9c",
+    "final/baseline-runtime-additional-inspection.sql.snapshot": "bbe9e4a05862ced442d5d41441dce2e59f741a3338372406417d092df95b3de9",
+    "final/baseline-runtime-databases-after.json": "f9383d2d6904ecd3198e12137ee0d8bc413da6351e689cb93a57635d9be3c063",
+    "final/baseline-runtime-databases-before.json": "a9d4fc3ae882ee634592f96292f08d02e992909df61671e8a7412519d45ebc49",
+    "final/baseline-runtime-independent-inspection.json": "9af90135f87219024172f5cd411fba5cdf0017c06cb48da1c75b02e82c49a18e",
+    "final/baseline-runtime.json": "c9d565979ad00638c6546b59864a2f5bb41251fb9506a90e0bffb9d0744dfd55",
+    "final/baseline-runtime.txt": "9259dc5b7e65c9194424dd71e77141d89ac5f9300b482dcbebac8ca1c89a9dc2",
+    "final/binary-after.json": "5deb4b86b1fd06675a7441ee6b9149b44fb23f15e2c8135eb2e10a1a7b161da9",
+    "final/binary-before.json": "5deb4b86b1fd06675a7441ee6b9149b44fb23f15e2c8135eb2e10a1a7b161da9",
+    "final/build.json": "82e36fd0192a8bcd659e1bd19502e63fb9d7b62086aaf13bbe611cf9b7bc872f",
+    "final/build.txt": "055c00098c4f89aba7b10710c46d7a5f20ae8e0c684635120781197ddf9edf29",
+    "final/committed-default-additional-inspection.sql.snapshot": "bbe9e4a05862ced442d5d41441dce2e59f741a3338372406417d092df95b3de9",
+    "final/committed-default-databases-after.json": "a34c6cb4cf21ad1928593c36638e592888092be33077fa34f2c5f126dc171660",
+    "final/committed-default-databases-before.json": "ea14b48b1e92233d3740d1d53fbd2898f52e086926670d32010351490869278a",
+    "final/committed-default-independent-inspection.json": "f6fc7f0b50be071eeb550219cc6a5bf461cc85dfa74ba65abf1d595aa9c97b2d",
+    "final/committed-default.json": "6fb0bab8513b36a21009b1c2b341afe1e4cc867a2e41e1e1df2d5528fe73bbbf",
+    "final/committed-default.txt": "8811fb3085d5a0d681708d03d173cbe22a5c0f409242ec6076c6f17fb2162df0",
+    "final/committed-runtime-additional-inspection.sql.snapshot": "bbe9e4a05862ced442d5d41441dce2e59f741a3338372406417d092df95b3de9",
+    "final/committed-runtime-databases-after.json": "afa064b3f800c1b2daf910714d06093333e77f501d3fbb86dba059e6bf5f45b0",
+    "final/committed-runtime-databases-before.json": "a34c6cb4cf21ad1928593c36638e592888092be33077fa34f2c5f126dc171660",
+    "final/committed-runtime-independent-inspection.json": "540aaeadcf7d3b026a4bd8d89c936a0246ea01889c3f69ca665e1dd40b2fd9bb",
+    "final/committed-runtime.json": "f02f79f9b9d97345a1e77f88ddb293fc4b6483e0cce90a75daff86950c5192ab",
+    "final/committed-runtime.txt": "579a8eae9ce0d2e1b02cfa5210b221216978cc4e8bcefda8b3e7398869d5b4a9",
+    "final/fmt.json": "8234ddfcdf838c3c9081c2de88f86816afd82e03beed2bcdc71713688a20dc0c",
+    "final/fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "final/pre-retry-rollback-evidence.json": "be33e089a0b27ee12bd02f308d8d077d60516f3ed86c650a9b012db9bb5e278c",
+    "final/source-after.json": "bc958caa3cf5a6c3457ff9c1359ac81022539fde07aff38ebbc179b809fd7722",
+    "final/source-before.json": "bc958caa3cf5a6c3457ff9c1359ac81022539fde07aff38ebbc179b809fd7722",
+    "inspection.py.snapshot": "66eac70b2385c762d4fdc4df79d76d023a5627c67f028eba2b7b3128fe80a0ab",
+    "matrix.py.snapshot": "e8204f1450fff16b03afcc25c3706b9845b0497c3ccf0b2c699083a4157ef7d9",
+    "review.md": "c8f2fa3a5cf0ce3ab9a5e1be9d218bca0e441975d7a947365b52c74631dfd6a4"
+  }
+}

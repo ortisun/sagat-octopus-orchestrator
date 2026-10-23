@@ -1,0 +1,17 @@
+{
+  "command": [
+    "gtimeout",
+    "--signal=TERM",
+    "--kill-after=5s",
+    "180s",
+    "/Users/marcelo/.cache/sagat-project-completion-20261023-target/debug/deps/integration_workflow_primitives-e4da7cb26c8c0369",
+    "--exact",
+    "public_refusal_commit_loss::ordinary_public_scoped_refusal_reopens_on_supplied_runtime_pool",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "exit_code": 0,
+  "seconds": 7.0,
+  "started_utc": "2026-10-23T23:04:08.853983+00:00",
+  "log": "baseline-default.txt"
+}

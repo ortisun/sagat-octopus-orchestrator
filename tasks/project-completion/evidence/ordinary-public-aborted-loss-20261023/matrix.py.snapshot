@@ -1,0 +1,22 @@
+from pathlib import Path
+import subprocess,os,sys,hashlib,json
+root=Path('tasks/project-completion/evidence/ordinary-public-aborted-loss-20261023/final')
+binary=Path('/Users/marcelo/.cache/sagat-project-completion-20261023-target/debug/deps/integration_workflow_primitives-e4da7cb26c8c0369')
+digest=hashlib.sha256(binary.read_bytes()).hexdigest()
+(root/'binary-before.json').write_text(json.dumps({'path':str(binary),'sha256':digest},indent=2)+'\n')
+prefix='public_refusal_commit_loss::'
+cases=[('aborted-runtime',True,prefix+'committed_loss::ordinary_public_scoped_refusal_aborted_commit_reply_loss_applies_after_api_reopen'),('committed-default',False,prefix+'committed_loss::ordinary_public_scoped_refusal_commit_reply_loss_replays_after_api_reopen'),('committed-runtime',True,prefix+'committed_loss::ordinary_public_scoped_refusal_commit_reply_loss_replays_after_api_reopen'),('baseline-default',False,prefix+'ordinary_public_scoped_refusal_reopens_on_supplied_runtime_pool'),('baseline-runtime',True,prefix+'ordinary_public_scoped_refusal_reopens_on_supplied_runtime_pool')]
+for name,runtime,test in cases:
+ env=dict(os.environ)
+ if runtime:env['SAGAT_TEST_AS_RUNTIME_ROLE']='1'
+ else:env.pop('SAGAT_TEST_AS_RUNTIME_ROLE',None)
+ env['RUST_MIN_STACK']='16777216'
+ assert hashlib.sha256(binary.read_bytes()).hexdigest()==digest
+ subprocess.run([sys.executable,'/tmp/sagat-completion-20261023/database_snapshot.py',str(root/(name+'-databases-before.json'))],env=env,check=True)
+ command=[sys.executable,'/tmp/sagat-completion-20261023/gate.py',str(root),name,'gtimeout','--signal=TERM','--kill-after=5s','180s',str(binary),'--exact',test,'--nocapture','--test-threads=1']
+ result=subprocess.run(command,env=env)
+ subprocess.run([sys.executable,'/tmp/sagat-completion-20261023/database_snapshot.py',str(root/(name+'-databases-after.json'))],env=env,check=True)
+ if result.returncode:sys.exit(result.returncode)
+print('all five remaining exact cases passed')
+assert hashlib.sha256(binary.read_bytes()).hexdigest()==digest
+(root/'binary-after.json').write_text(json.dumps({'path':str(binary),'sha256':digest},indent=2)+'\n')

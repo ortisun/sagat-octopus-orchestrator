@@ -1,0 +1,8 @@
+
+running 1 test
+test public_refusal_commit_loss::committed_loss::ordinary_public_scoped_refusal_aborted_commit_reply_loss_applies_after_api_reopen ... public_refusal_abort_rollback={"after_sha256":"486f2fd9292815c5d7bbafe7b151f9f0cf7e94f66f24189ba4df74be36cbb714","audit_count":0,"before_sha256":"486f2fd9292815c5d7bbafe7b151f9f0cf7e94f66f24189ba4df74be36cbb714","lease_unchanged":true,"original_journal_head":117,"phase":"after_abort","receipt_count":0,"run_guard_released":true,"session_and_lease_live":true,"stop_count":0,"success_count":0}
+public_refusal_abort_rollback={"after_sha256":"486f2fd9292815c5d7bbafe7b151f9f0cf7e94f66f24189ba4df74be36cbb714","audit_count":0,"before_sha256":"486f2fd9292815c5d7bbafe7b151f9f0cf7e94f66f24189ba4df74be36cbb714","lease_unchanged":true,"original_journal_head":117,"phase":"after_reopen","receipt_count":0,"run_guard_released":true,"session_and_lease_live":true,"stop_count":0,"success_count":0}
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 544 filtered out; finished in 9.25s
+
