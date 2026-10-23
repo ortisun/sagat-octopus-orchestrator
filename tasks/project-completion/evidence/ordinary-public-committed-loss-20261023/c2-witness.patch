@@ -1,0 +1,54 @@
+--- C1
++++ C2
+@@ -71,6 +71,7 @@
+     logical_output_bytes: i64,
+     run_version: i64,
+     head_seq: i64,
++    journal_head: i64,
+     checkpoints: i64,
+     returns: i64,
+     terminal_steps: i64,
+@@ -745,6 +746,7 @@
+           scope.lifecycle AS scope_lifecycle,member.lifecycle AS member_lifecycle,
+           member.slot_held,step.status AS step_status,step.output_digest IS NULL AS output_absent,
+           usage.logical_output_bytes,run.run_version,head.head_seq,
++          (SELECT max(seq) FROM run_events WHERE tenant_id=run.tenant_id AND run_id=run.id) AS journal_head,
+           (SELECT count(*) FROM iteration_checkpoints
+            WHERE tenant_id=run.tenant_id AND run_id=run.id) AS checkpoints,
+           (SELECT count(*) FROM steps WHERE tenant_id=run.tenant_id AND run_id=run.id
+@@ -805,6 +807,7 @@
+             && post.output_absent
+             && post.logical_output_bytes == 4_000_000
+             && post.run_version == post.head_seq
++            && post.run_version == post.journal_head
+             && post.checkpoints == 16
+             && post.returns == 0
+             && post.terminal_steps == 0
+@@ -855,7 +858,7 @@
+     let audit: (i64, bool, bool, bool) = sqlx::query_as(
+         "SELECT count(*),bool_and(actor='system:engine'), \
+                 bool_and(reason='successful scoped output refused by run data limit'), \
+-                bool_and(audit.trace_id IS NOT DISTINCT FROM run.trace_id) \
++                bool_and(audit.trace_id IS NOT DISTINCT FROM $3::text) \
+          FROM audit_records audit JOIN runs run \
+            ON run.tenant_id=audit.tenant_id AND run.id=$2 \
+          WHERE audit.tenant_id=$1 AND audit.resource_type='run' \
+@@ -863,6 +866,7 @@
+     )
+     .bind(tenant_uuid)
+     .bind(run_uuid)
++    .bind(before["run"]["trace_id"].as_str())
+     .fetch_one(&reopened.api.db.pool)
+     .await
+     .expect("read exact refusal audit");
+@@ -872,6 +876,10 @@
+     );
+ 
+     let after_first = durable_snapshot(&reopened.api.db.pool, tenant_uuid, run_uuid, WORKER).await;
++    assert!(
++        after_first["run"]["trace_id"] == before["run"]["trace_id"],
++        "committed refusal preserves the original Run trace"
++    );
+     for key in [
+         "retainedSteps",
+         "payloads",

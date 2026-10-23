@@ -27,6 +27,9 @@ use crate::support::api::{Options, start_on_db_with_pool};
 use crate::support::worker::{Platform, TENANT, Worker};
 use crate::support::{HeldServer, RUNTIME_ROLE, attach_existing_db, eventually, hold_server};
 
+#[path = "public_refusal_committed_loss.rs"]
+mod committed_loss;
+
 const WORKER: &str = "public-scoped-refusal-worker";
 const PROXY_APPLICATION: &str = "sagat-test-capacity-commit-loss";
 const OUTPUT_BYTES: usize = 250_000;
@@ -68,6 +71,7 @@ struct RefusalState {
     logical_output_bytes: i64,
     run_version: i64,
     head_seq: i64,
+    journal_head: i64,
     checkpoints: i64,
     returns: i64,
     terminal_steps: i64,
@@ -725,90 +729,24 @@ async fn reopened_refusal_fixture() -> ReopenedRefusalFixture {
     }
 }
 
-async fn ordinary_public_scoped_refusal_scenario() {
-    let ReopenedRefusalFixture {
-        _server,
-        reopened,
-        proxy,
-        completion,
-        worker_id,
-        session,
-        before,
-        lease: reopened_lease,
-        backend_pid,
-    } = reopened_refusal_fixture().await;
-    let database_name = reopened.api.db.name.clone();
+// Reads committed state independently of any delivered acknowledgement.
+async fn inspect_committed_refusal(
+    reopened: &Platform,
+    completion: &CompleteStepRequest,
+    before: &Value,
+    reopened_lease: &LeaseWitness,
+) -> (RefusalState, ReceiptWitness, Value) {
     let tenant = reopened.tenant;
     let tenant_uuid = tenant.as_uuid();
-    let run = completion.run_id.clone();
-    let run_uuid = uuid::Uuid::parse_str(&run).expect("original run id");
-    let run_id = RunId::new(run_uuid);
+    let run_uuid = uuid::Uuid::parse_str(&completion.run_id).expect("original run id");
+    let report_scope = receipt_scope(completion);
     let candidate_digest = Sha256::digest(completion.output_json.as_bytes()).to_vec();
-
-    let lookups_before = reopened.api.authentication_lookups();
-    let mut resumed = reopened.connect(WORKER, TENANT).await;
-    resumed.worker_id = worker_id;
-    resumed.session = session;
-    let report_scope = receipt_scope(&completion);
-    let advisory_key = positive_advisory_key();
-    install_exact_receipt_gate(
-        &reopened.api.db.pool,
-        tenant_uuid,
-        &report_scope,
-        &completion.idempotency_key,
-        advisory_key,
-    )
-    .await;
-    let mut gate = reopened
-        .api
-        .db
-        .pool
-        .begin()
-        .await
-        .expect("begin exact receipt gate");
-    let gate_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
-        .fetch_one(&mut *gate)
-        .await
-        .expect("exact receipt gate backend");
-    sqlx::query("SELECT pg_advisory_xact_lock($1)")
-        .bind(advisory_key)
-        .execute(&mut *gate)
-        .await
-        .expect("hold exact receipt gate");
-    let first_request = resumed.req(completion.clone());
-    let mut report_client = resumed.client.clone();
-    let reporting = tokio::spawn(async move { report_client.complete_step(first_request).await });
-    let observed =
-        wait_for_exact_public_writer(&reopened.api.db.pool, backend_pid, gate_pid, &database_name)
-            .await;
-    assert!(
-        observed == backend_pid,
-        "exact supplied backend executes the public refusal receipt insert"
-    );
-    gate.rollback().await.expect("release exact receipt gate");
-    let first = match timeout(Duration::from_secs(5), reporting).await {
-        Ok(Ok(Ok(response))) => response.into_inner(),
-        _ => panic!(
-            "original public scoped completion returns an acknowledgement within its deadline"
-        ),
-    };
-    remove_exact_receipt_gate(&reopened.api.db.pool).await;
-    assert!(
-        !first.already_applied
-            && first.step_status == "SUCCEEDED"
-            && first.run_status == "CANCELLING",
-        "first original report is the genuine successful-output refusal"
-    );
-    assert!(
-        reopened.api.authentication_lookups() > lookups_before,
-        "reopened API performs current authentication for the report"
-    );
-
     let post: RefusalState = sqlx::query_as(
         r#"SELECT run.status AS run_status,run.stop_reason,run.stop_code,
           scope.lifecycle AS scope_lifecycle,member.lifecycle AS member_lifecycle,
           member.slot_held,step.status AS step_status,step.output_digest IS NULL AS output_absent,
           usage.logical_output_bytes,run.run_version,head.head_seq,
+          (SELECT max(seq) FROM run_events WHERE tenant_id=run.tenant_id AND run_id=run.id) AS journal_head,
           (SELECT count(*) FROM iteration_checkpoints
            WHERE tenant_id=run.tenant_id AND run_id=run.id) AS checkpoints,
           (SELECT count(*) FROM steps WHERE tenant_id=run.tenant_id AND run_id=run.id
@@ -869,6 +807,7 @@ async fn ordinary_public_scoped_refusal_scenario() {
             && post.output_absent
             && post.logical_output_bytes == 4_000_000
             && post.run_version == post.head_seq
+            && post.run_version == post.journal_head
             && post.checkpoints == 16
             && post.returns == 0
             && post.terminal_steps == 0
@@ -883,10 +822,6 @@ async fn ordinary_public_scoped_refusal_scenario() {
     assert!(
         post.stop_seq.is_some() && post.success_seq.is_some() && post.stop_seq < post.success_seq,
         "the one RUN_DATA_LIMIT stop precedes the genuine scoped success"
-    );
-    assert!(
-        first.command_id == format!("{run}:{}", post.run_version),
-        "acknowledgement names the actual committed head"
     );
     let reported: (bool, i32, i64) = sqlx::query_as(
         "SELECT reported_lease_token_hash=$4,attempt,generation FROM steps \
@@ -904,7 +839,7 @@ async fn ordinary_public_scoped_refusal_scenario() {
         "successful metadata records the exact original reported fence"
     );
 
-    let expected_hash = request_hash(&completion);
+    let expected_hash = request_hash(completion);
     let original_receipt = receipt(
         &reopened.api.db.pool,
         tenant_uuid,
@@ -923,7 +858,7 @@ async fn ordinary_public_scoped_refusal_scenario() {
     let audit: (i64, bool, bool, bool) = sqlx::query_as(
         "SELECT count(*),bool_and(actor='system:engine'), \
                 bool_and(reason='successful scoped output refused by run data limit'), \
-                bool_and(audit.trace_id IS NOT DISTINCT FROM run.trace_id) \
+                bool_and(audit.trace_id IS NOT DISTINCT FROM $3::text) \
          FROM audit_records audit JOIN runs run \
            ON run.tenant_id=audit.tenant_id AND run.id=$2 \
          WHERE audit.tenant_id=$1 AND audit.resource_type='run' \
@@ -931,6 +866,7 @@ async fn ordinary_public_scoped_refusal_scenario() {
     )
     .bind(tenant_uuid)
     .bind(run_uuid)
+    .bind(before["run"]["trace_id"].as_str())
     .fetch_one(&reopened.api.db.pool)
     .await
     .expect("read exact refusal audit");
@@ -940,6 +876,10 @@ async fn ordinary_public_scoped_refusal_scenario() {
     );
 
     let after_first = durable_snapshot(&reopened.api.db.pool, tenant_uuid, run_uuid, WORKER).await;
+    assert!(
+        after_first["run"]["trace_id"] == before["run"]["trace_id"],
+        "committed refusal preserves the original Run trace"
+    );
     for key in [
         "retainedSteps",
         "payloads",
@@ -985,6 +925,94 @@ async fn ordinary_public_scoped_refusal_scenario() {
     assert!(
         after_first["sagas"].as_array().is_some_and(Vec::is_empty),
         "candidate creates no scope saga"
+    );
+
+    (post, original_receipt, after_first)
+}
+
+async fn ordinary_public_scoped_refusal_scenario() {
+    let ReopenedRefusalFixture {
+        _server,
+        reopened,
+        proxy,
+        completion,
+        worker_id,
+        session,
+        before,
+        lease: reopened_lease,
+        backend_pid,
+    } = reopened_refusal_fixture().await;
+    let database_name = reopened.api.db.name.clone();
+    let tenant = reopened.tenant;
+    let tenant_uuid = tenant.as_uuid();
+    let run = completion.run_id.clone();
+    let run_uuid = uuid::Uuid::parse_str(&run).expect("original run id");
+    let run_id = RunId::new(run_uuid);
+
+    let lookups_before = reopened.api.authentication_lookups();
+    let mut resumed = reopened.connect(WORKER, TENANT).await;
+    resumed.worker_id = worker_id;
+    resumed.session = session;
+    let report_scope = receipt_scope(&completion);
+    let advisory_key = positive_advisory_key();
+    install_exact_receipt_gate(
+        &reopened.api.db.pool,
+        tenant_uuid,
+        &report_scope,
+        &completion.idempotency_key,
+        advisory_key,
+    )
+    .await;
+    let mut gate = reopened
+        .api
+        .db
+        .pool
+        .begin()
+        .await
+        .expect("begin exact receipt gate");
+    let gate_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *gate)
+        .await
+        .expect("exact receipt gate backend");
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(advisory_key)
+        .execute(&mut *gate)
+        .await
+        .expect("hold exact receipt gate");
+    let first_request = resumed.req(completion.clone());
+    let mut report_client = resumed.client.clone();
+    let reporting = tokio::spawn(async move { report_client.complete_step(first_request).await });
+    let observed =
+        wait_for_exact_public_writer(&reopened.api.db.pool, backend_pid, gate_pid, &database_name)
+            .await;
+    assert!(
+        observed == backend_pid,
+        "exact supplied backend executes the public refusal receipt insert"
+    );
+    gate.rollback().await.expect("release exact receipt gate");
+    let first = match timeout(Duration::from_secs(5), reporting).await {
+        Ok(Ok(Ok(response))) => response.into_inner(),
+        _ => panic!(
+            "original public scoped completion returns an acknowledgement within its deadline"
+        ),
+    };
+    remove_exact_receipt_gate(&reopened.api.db.pool).await;
+    assert!(
+        !first.already_applied
+            && first.step_status == "SUCCEEDED"
+            && first.run_status == "CANCELLING",
+        "first original report is the genuine successful-output refusal"
+    );
+    assert!(
+        reopened.api.authentication_lookups() > lookups_before,
+        "reopened API performs current authentication for the report"
+    );
+
+    let (post, original_receipt, after_first) =
+        inspect_committed_refusal(&reopened, &completion, &before, &reopened_lease).await;
+    assert!(
+        first.command_id == format!("{run}:{}", post.run_version),
+        "acknowledgement names the actual committed head"
     );
 
     let replay_lookups_before = reopened.api.authentication_lookups();

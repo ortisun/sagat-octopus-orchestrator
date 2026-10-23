@@ -1,0 +1,9 @@
+   Compiling sagat-tests v0.1.0 (/Users/marcelo/Documents/Projects/sagat-octopus-project-completion/tests)
+    Finished `test` profile [unoptimized] target(s) in 34.19s
+     Running integration/workflow-primitives/main.rs (/Users/marcelo/.cache/sagat-project-completion-20261023-target/debug/deps/integration_workflow_primitives-e4da7cb26c8c0369)
+
+running 1 test
+test public_refusal_commit_loss::ordinary_public_scoped_refusal_reopens_on_supplied_runtime_pool ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 543 filtered out; finished in 5.37s
+

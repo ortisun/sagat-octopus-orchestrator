@@ -1,0 +1,23 @@
+{
+  "command": [
+    "gtimeout",
+    "--signal=TERM",
+    "--kill-after=5s",
+    "180s",
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "integration_workflow_primitives",
+    "public_refusal_commit_loss::committed_loss::ordinary_public_scoped_refusal_commit_reply_loss_replays_after_api_reopen",
+    "--",
+    "--exact",
+    "--nocapture"
+  ],
+  "exit_code": 0,
+  "seconds": 7.74,
+  "started_utc": "2026-10-23T22:48:02.870924+00:00",
+  "log": "runtime.txt"
+}

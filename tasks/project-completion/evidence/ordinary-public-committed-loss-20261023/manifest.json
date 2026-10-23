@@ -1,0 +1,176 @@
+{
+  "baseline": "9b922d0e",
+  "decision": "c205f5f9",
+  "sources": {
+    "tests/integration/workflow-primitives/public_refusal_commit_loss.rs": "8fb2cb125db9bda4984a94163ad10ef52891a04ae0e2543f45febf37480e267e",
+    "tests/integration/workflow-primitives/public_refusal_committed_loss.rs": "31f698c6563ad7f89a72af1ac75842897d39bec00e058c48ac904b4b42e103eb"
+  },
+  "native_input_count": 1127,
+  "four_source_freezes_equal": true,
+  "results": {
+    "baseline": {
+      "command": [
+        "gtimeout",
+        "--signal=TERM",
+        "--kill-after=5s",
+        "180s",
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "public_refusal_commit_loss::ordinary_public_scoped_refusal_reopens_on_supplied_runtime_pool",
+        "--",
+        "--exact",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "seconds": 48.53,
+      "started_utc": "2026-10-23T22:45:57.424143+00:00",
+      "log": "baseline.txt"
+    },
+    "default": {
+      "command": [
+        "gtimeout",
+        "--signal=TERM",
+        "--kill-after=5s",
+        "180s",
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "public_refusal_commit_loss::committed_loss::ordinary_public_scoped_refusal_commit_reply_loss_replays_after_api_reopen",
+        "--",
+        "--exact",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "seconds": 10.03,
+      "started_utc": "2026-10-23T22:47:06.724161+00:00",
+      "log": "default.txt"
+    },
+    "runtime": {
+      "command": [
+        "gtimeout",
+        "--signal=TERM",
+        "--kill-after=5s",
+        "180s",
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "public_refusal_commit_loss::committed_loss::ordinary_public_scoped_refusal_commit_reply_loss_replays_after_api_reopen",
+        "--",
+        "--exact",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "seconds": 7.74,
+      "started_utc": "2026-10-23T22:48:02.870924+00:00",
+      "log": "runtime.txt"
+    }
+  },
+  "quality": {
+    "clippy": {
+      "command": [
+        "gtimeout",
+        "--signal=TERM",
+        "--kill-after=5s",
+        "240s",
+        "cargo",
+        "clippy",
+        "--locked",
+        "-p",
+        "sagat-tests",
+        "--test",
+        "integration_workflow_primitives",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "seconds": 15.47,
+      "started_utc": "2026-10-23T22:45:06.538206+00:00",
+      "log": "clippy.txt"
+    },
+    "fmt": {
+      "command": [
+        "cargo",
+        "fmt",
+        "--check"
+      ],
+      "exit_code": 0,
+      "seconds": 4.77,
+      "started_utc": "2026-10-23T22:45:07.725986+00:00",
+      "log": "fmt.txt"
+    },
+    "architecture": {
+      "command": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "exit_code": 0,
+      "seconds": 0.47,
+      "started_utc": "2026-10-23T22:45:07.728420+00:00",
+      "log": "architecture.txt"
+    }
+  },
+  "binary_sha256": "50a010aa0a9d747e305ae8e3af37a390b4ec09eb869fd84afc5be6e5a3aaa88c",
+  "review": "C1 witness-extraction/gate reviews None; recovery two actionable head/trace findings fixed C2, fresh C2 None",
+  "runtime_failures": [],
+  "first_fault_execution_passed": true,
+  "production_changed": false,
+  "scope": "current ordinary inline successful scoped refusal, actual committed COMMIT reply loss and full API recovery only",
+  "artifacts": {
+    "c1-preflight/clippy.json": "025ef17e38bc3277596a9a0faacd06e91fb65cad06eade390452a71153ba3256",
+    "c1-preflight/clippy.txt": "6c9661abc74176fcf6114fe3121d5ea305b090a187cf81828bdf277c393e6e38",
+    "c1-preflight/source-after.json": "4698edf71b44d13030decac1880fa6d393e1df936803461da18814b1b488aae8",
+    "c1-preflight/source-before.json": "4698edf71b44d13030decac1880fa6d393e1df936803461da18814b1b488aae8",
+    "c1-public_refusal_commit_loss.rs.snapshot": "58770dc112fa7a0ee60be40c53654c6200799734ca973d1030e72ee870b9bc8a",
+    "c1-public_refusal_committed_loss.rs.snapshot": "31f698c6563ad7f89a72af1ac75842897d39bec00e058c48ac904b4b42e103eb",
+    "c1-runtime/baseline.json": "9adbbf4bafe0608fcb694601337da5e568baaf3d45c322df0d72c012435d05e8",
+    "c1-runtime/baseline.txt": "10f58abe2ad6b51e747713dec6d7c2a6a84b4fb33084e5b606b69dc734bb7ed0",
+    "c1-runtime/source-after.json": "4698edf71b44d13030decac1880fa6d393e1df936803461da18814b1b488aae8",
+    "c1-runtime/source-before.json": "4698edf71b44d13030decac1880fa6d393e1df936803461da18814b1b488aae8",
+    "c2-preflight/architecture.json": "8f2816e859cd97de6cb28a8184c2a969060fa28b556b1098aabb5cebb3403774",
+    "c2-preflight/architecture.txt": "25234bc56e0de4c2e946e34101c2563b54eb1110f138212dfe56c89c5fe54db7",
+    "c2-preflight/clippy.json": "a9f58ec3079934449678d0521f699f201cf277939ec8bd77c04e3cdce81f4082",
+    "c2-preflight/clippy.txt": "27d246e3bc934f4d6315bbc112dfb00298b24d07c6d359591f74c6176fb1de2d",
+    "c2-preflight/fmt.json": "dd34d4595b1131ccc213325003130c9a548d2d4ef0aaa84c8ba5d346781cc95c",
+    "c2-preflight/fmt.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "c2-preflight/source-after.json": "7830e5636ef932fb1ba618ae5622f09f10c88bbce32e8a09331ad107e896ebf6",
+    "c2-preflight/source-before.json": "7830e5636ef932fb1ba618ae5622f09f10c88bbce32e8a09331ad107e896ebf6",
+    "c2-public_refusal_commit_loss.rs.snapshot": "8fb2cb125db9bda4984a94163ad10ef52891a04ae0e2543f45febf37480e267e",
+    "c2-public_refusal_committed_loss.rs.snapshot": "31f698c6563ad7f89a72af1ac75842897d39bec00e058c48ac904b4b42e103eb",
+    "c2-witness.patch": "452d98f42abc7e9671aa31ac5778871ea776402bbd4017ead28af9a1964a5396",
+    "final/additional-inspection.sql.snapshot": "67bd9eedb4b29eb778fce3312cc3536be074e4250bc850fb92d403adf49f39a5",
+    "final/baseline.json": "79889401ec8d5cce31f1f08fe4b5de5a967c2c4a351143caed67d5013066c65b",
+    "final/baseline.txt": "040a801e0157518e171df320a94ff2700ac14e3e8f76515997e1332a5efac829",
+    "final/default-databases-after.json": "3c1752cf4bc915e079e7b72a43063c9793433b731156b63f211caa6b9fab8937",
+    "final/default-databases-before.json": "bcb719a7bffdc6c7b6aa36dce4a59836cec2d5d1af283fcf31412668cf337fdf",
+    "final/default-independent-inspection.json": "c801e7a2439fd6f4965f3738c6ebc0de6d9c3ae21efa74891dbff6ef13eb3088",
+    "final/default.json": "d55a02309cf126bf4580e9ee51fa0482aea3229417baa015f73300e76ca3c752",
+    "final/default.txt": "d21b328037b7ac76a03b051e29695b5e6de53dc76bb29d808351ec93aa421544",
+    "final/runtime-databases-after.json": "edbf602c9c412f427cbce0a3ed43688d035fb8bbb00204f39d55d250dbe27024",
+    "final/runtime-databases-before.json": "3c1752cf4bc915e079e7b72a43063c9793433b731156b63f211caa6b9fab8937",
+    "final/runtime-independent-inspection.json": "3c7287cbf0f2bfdc7f45cae3a37c96ea8d70d5ceefc14547414ce27c0866f35d",
+    "final/runtime.json": "29b93256abe25cde12619c12abb0da764e7fa0d58d5d5f580c616ebda70429ae",
+    "final/runtime.txt": "65008dc96fad0ce1b70c12519d39d10a338d7afaca80a9fce38841beeb6d2d37",
+    "final/source-after.json": "7830e5636ef932fb1ba618ae5622f09f10c88bbce32e8a09331ad107e896ebf6",
+    "final/source-before.json": "7830e5636ef932fb1ba618ae5622f09f10c88bbce32e8a09331ad107e896ebf6",
+    "final-source.patch": "7cf68545a76efb23bffdae48d9a7949a8c3e2fd5a414ee01556986c40b74fc13",
+    "independent-inspection.py.snapshot": "b5dbe61e48f94f989c1f4861d92c5bb11ac0d57bcfe88fd32bd111ab86a8233f",
+    "parent-before.rs.snapshot": "af476c68e3bdecf2f850241812f8812bf6d54717b87c48abe856993ecd687f6d",
+    "parent-extraction.patch": "424beba26d1a8ad1fcbdbdcdba811c052827b012d0f18fa5ca2adf94de5fb49f",
+    "review-c1.md": "c356c0667c3bc176899d9091c1858eaa1cd276a8df99ad820594fd9cee130ae4",
+    "review-c2.md": "d40da61ed4d69bb12f5320a36b2622de24f87776b5292d3d8bce1f815f72930a"
+  }
+}
