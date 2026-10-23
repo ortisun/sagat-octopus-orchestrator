@@ -1,0 +1,9 @@
+{
+  "plan_sha256": "bf05ec296fec5cd1bb1f075ccb6d969bc0ac2af0802181344c8773560a1cad31",
+  "source_at_review": "98a1247a",
+  "p0b_accepted": "98a1247a",
+  "p0b_trace": "8dbc376b",
+  "review_result": "None",
+  "fixture_extraction_accepted": false,
+  "fault_execution_claimed": false
+}
