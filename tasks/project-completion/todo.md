@@ -228,6 +228,7 @@ See evidence/leaf-certification-process-20261018. Other producer/observation/rel
 - [x] B1b.2c.1d.0Q7b.5a: Prove supplied max1 runtime pool backs the full public API/Worker stack on the original owned DB with real250000-byte persistence and exact receipt replay; c7f62b4a, evidence/public-pool-bootstrap-20261018. Scoped rollback/full reopen has separate .5b evidence; fault injection remains pending.
 - [x] B1b.2c.1d.0Q7b.5b: Prove one genuine public scoped refusal after full API/store/pool reopen through a supplied max1 sagat_app pool, with active receipt-writer PID, complete authority/source/retained-output/iteration-ledger witness and exact canonical replay;98a1247a, evidence/public-scoped-reopen-baseline-20261018. Default1/1/runtime1/1 plus three regression cases pass; committed/aborted COMMIT reply loss remains pending.
 - [x] B1b.2c.1d.0Q7b.5c: Prove actual committed public scoped-refusal COMMIT response loss through exact receipt/COMMIT gates and PID continuity, invisible locked pre-state after typed UNAVAILABLE, independently frozen canonical receipt/ACK, full second API reopen and exact no-effect replay;ef12c32c, evidence/ordinary-public-committed-loss-20261023. Default1/1/runtime1/1 and preserved P0b1/1 pass; aborted outcome and full .5 remain pending.
+- [x] B1b.2c.1d.0Q7b.5d: Prove actual deferred-aborted public scoped-refusal COMMIT reply loss, complete pre-retry rollback/unchanged live capability and first-new-apply then exact no-effect replay after full API reopen;426629d1, evidence/ordinary-public-aborted-loss-20261023. New abort, existing committed and P0b each pass separately in both profiles (six exact processes); broad .5/report/old-producer/process-recovery controls remain open.
 - [ ] B1b.2c.1d.0Q10c: Complete genuine old in-flight compatibility: both byte conditions/orderings, cancellation precedence, Applied, output-dependent old worker and post-ACK process/uncertain-COMMIT controls. No external-provider undo guarantee is inferred.
 - [x] B1b.2c.1d.0Q10c.1: Prove ordinary E>limit report-before-drain through separate immutable-old/current processes with original worker/session/lease/request, owner and actual sagat_app, exact receipt/replay and real compensation;f026e928, evidence/legacy-inflight-ordinary-v1-20261018.
 - [x] B1b.2c.1d.0Q10c.2: Prove ordinary E>limit drain-before-report with a still-live cancellation-requested lease and unchanged first stop/drain; four old/current phases pass, plus four default report-first regression phases. Evidence/legacy-inflight-drain-first-20261018; cancellation-first has separate evidence in .3.
@@ -487,3 +488,24 @@ No production change or manufactured RED; two C1 witness gaps were fixed and fre
 Only local .5c closes; actual abort, OS/post-ACK recovery, wider report shapes, full Q7b.5/quota/nesting
 and canonical feature acceptance remain open. A lost commit ACK may omit the acknowledgement-dependent
 counter increment; no exactly-once metric or external undo guarantee is inferred.
+
+
+### Actual aborted public refusal response loss — 2026-10-23
+
+Source/evidence426629d1 accepts the current ordinary inline aborted counterpart. Exact Gate A/B/PID
+selection and client UNAVAILABLE occur while actual COMMIT remains unresolved; only afterward does
+the fixed deferred23514 probe abort, validated by server ErrorResponse/constraint/idle wire evidence.
+Owner canonical snapshots and exact original live lease/session/head prove complete rollback BEFORE
+retry and again after full API/direct-runtime-pool reconstruction. Safe actual before/after hashes and
+zero receipt/stop/success/audit counts are retained before recovery changes the state. Original
+protobuf/key/capability first applies once; fresh independent journal/head/trace/canonical receipt
+inspection validates that ACK, then the second exact replay preserves all durable bytes. Capacity
+and private quota deltas stay absent without new runtime grants. No scheduler/drain occurs.
+Six separate exact cases pass with0ignored: aborted10.90/9.26s, committed8.11/8.02s, P0b7.00/7.14s
+(default/runtime labels, both actual sagat_app). Clippy18.17s/separate locked build40.18s/fmt5.07s/
+architecture0.46s pass;1127input hashes and executable before/after match. Root SQL independently
+verifies all six final DBs and removed probes/connections. Evidence/reproduction:
+`tasks/project-completion/evidence/ordinary-public-aborted-loss-20261023/README.md`.
+Three fresh bounded reviews None; first actual new fault passes, with no manufactured production RED
+or production/proxy/schema/grant change. Only local .5d closes. OS/post-ACK recovery, broader report
+shapes, genuine-old/frontier/rollout/nesting and canonical feature acceptance remain separate.

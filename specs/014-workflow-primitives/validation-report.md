@@ -3527,3 +3527,24 @@ No production change or manufactured RED; two C1 witness gaps were fixed and fre
 Only local .5c closes; actual abort, OS/post-ACK recovery, wider report shapes, full Q7b.5/quota/nesting
 and canonical feature acceptance remain open. A lost commit ACK may omit the acknowledgement-dependent
 counter increment; no exactly-once metric or external undo guarantee is inferred.
+
+
+### Actual aborted public refusal response loss — 2026-10-23
+
+Source/evidence426629d1 accepts the current ordinary inline aborted counterpart. Exact Gate A/B/PID
+selection and client UNAVAILABLE occur while actual COMMIT remains unresolved; only afterward does
+the fixed deferred23514 probe abort, validated by server ErrorResponse/constraint/idle wire evidence.
+Owner canonical snapshots and exact original live lease/session/head prove complete rollback BEFORE
+retry and again after full API/direct-runtime-pool reconstruction. Safe actual before/after hashes and
+zero receipt/stop/success/audit counts are retained before recovery changes the state. Original
+protobuf/key/capability first applies once; fresh independent journal/head/trace/canonical receipt
+inspection validates that ACK, then the second exact replay preserves all durable bytes. Capacity
+and private quota deltas stay absent without new runtime grants. No scheduler/drain occurs.
+Six separate exact cases pass with0ignored: aborted10.90/9.26s, committed8.11/8.02s, P0b7.00/7.14s
+(default/runtime labels, both actual sagat_app). Clippy18.17s/separate locked build40.18s/fmt5.07s/
+architecture0.46s pass;1127input hashes and executable before/after match. Root SQL independently
+verifies all six final DBs and removed probes/connections. Evidence/reproduction:
+`tasks/project-completion/evidence/ordinary-public-aborted-loss-20261023/README.md`.
+Three fresh bounded reviews None; first actual new fault passes, with no manufactured production RED
+or production/proxy/schema/grant change. Only local .5d closes. OS/post-ACK recovery, broader report
+shapes, genuine-old/frontier/rollout/nesting and canonical feature acceptance remain separate.
