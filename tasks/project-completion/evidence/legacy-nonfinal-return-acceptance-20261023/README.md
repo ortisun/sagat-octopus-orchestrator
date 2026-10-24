@@ -90,3 +90,9 @@ and bounds are in the JSON gate metadata. Parent Q7c/Q8/Q9/master quota correcti
 other frontier/CAS/competing-stop/rollout/nesting cases and the eight canonical014
 checkboxes remain open. This does not establish provider-side undo or O(window)
 performance, and does not activate source certification/scoped Finish production.
+
+After final coordinator inventories were sealed, root separately removed the five
+exact owned exploratory databases and their private handoffs (27→22, every other
+database unchanged). Only this unit's archived source/binary copies were deleted;
+source manifests, logs and hashes remain. The private ongoing-task target remains
+available for the next authorized increment. See exploratory-owned-cleanup.json.

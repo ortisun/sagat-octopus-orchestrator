@@ -1,0 +1,48 @@
+{
+  "before_count": 27,
+  "after_count": 22,
+  "exact_owned_databases_removed": {
+    "t_01a16b19e41973aab43c4481cb485c8d": "owner",
+    "t_01a16b1dee2b739e96949eee447a60ad": "owner-positive-c3",
+    "t_01a16b1e0d67750b89fb43c8c929f3ae": "runtime-positive-c3",
+    "t_01a16b1e2c8973d6a6ef831ac474ace3": "owner-red-c3",
+    "t_01a16b1e4c3d747b8fada6efa32d426c": "runtime-red-c3"
+  },
+  "private_receipt_hashes": [
+    {
+      "phase": "owner",
+      "sha256": "1716ba0706412686dd409e8d9a5055fff136e8ca36b39ad85f96dc29a079f21d"
+    },
+    {
+      "phase": "owner-positive-c3",
+      "sha256": "5d536f68a650154fc114509911eed2068d35737d81a70c315fd053f730f2dbd4"
+    },
+    {
+      "phase": "runtime-positive-c3",
+      "sha256": "e24e5dafe8df3ce5debde841ecf9fbf3345fe337ecb9cadd7567f72ba95fe989"
+    }
+  ],
+  "private_files_removed_before_drop": true,
+  "owned_temporary_source_and_binary_paths_removed": [
+    "nonfinal-producer-gate/old-source.tar",
+    "nonfinal-producer-gate/old-c1-binary",
+    "nonfinal-producer-gate/old-c2-binary",
+    "nonfinal-producer-gate/old-c3-binary",
+    "nonfinal-producer-gate/old-source",
+    "official-nonfinal/run.yaJsHK/artifacts/old-source.tar",
+    "official-nonfinal/run.yaJsHK/artifacts/integration-workflow-primitives-old",
+    "official-nonfinal/run.yaJsHK/artifacts/integration-workflow-primitives-current",
+    "official-nonfinal-red/run.QVAJZG/artifacts/old-source.tar",
+    "official-nonfinal-red/run.QVAJZG/artifacts/integration-workflow-primitives-old",
+    "official-nonfinal-red/run.QVAJZG/artifacts/integration-workflow-primitives-current",
+    "official-nonfinal-hardened/run.MHAxiy/artifacts/old-source.tar",
+    "official-nonfinal-hardened/run.MHAxiy/artifacts/integration-workflow-primitives-old",
+    "official-nonfinal-hardened/run.MHAxiy/artifacts/integration-workflow-primitives-current",
+    "official-output-view-hardened/run.upSFKB/artifacts/old-source.tar",
+    "official-output-view-hardened/run.upSFKB/artifacts/integration-workflow-primitives-old",
+    "official-output-view-hardened/run.upSFKB/artifacts/integration-workflow-primitives-current",
+    "official-nonfinal-red-hardened/run.yaymXF/artifacts/old-source.tar",
+    "official-nonfinal-red-hardened/run.yaymXF/artifacts/integration-workflow-primitives-old",
+    "official-nonfinal-red-hardened/run.yaymXF/artifacts/integration-workflow-primitives-current"
+  ]
+}
