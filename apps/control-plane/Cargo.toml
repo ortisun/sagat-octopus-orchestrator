@@ -20,6 +20,7 @@ name = "control-plane"
 path = "src/main.rs"
 
 [dependencies]
+metrics.workspace = true
 serde_json.workspace = true
 axum.workspace = true
 base64 = "0.23"

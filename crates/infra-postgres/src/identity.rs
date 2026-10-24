@@ -716,7 +716,10 @@ fn record(mapped: StoreError) -> StoreError {
         | StoreError::RevisionConflict { .. }
         | StoreError::QuotaExceeded { .. }
         | StoreError::UnreadableDefinition
-        | StoreError::IdempotencyKeyReused => {}
+        | StoreError::IdempotencyKeyReused
+        | StoreError::StateConflict(_)
+        | StoreError::DatabaseUnavailable
+        | StoreError::DatabaseLimit => {}
     }
     mapped
 }

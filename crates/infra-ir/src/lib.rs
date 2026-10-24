@@ -11,6 +11,9 @@ mod canonical;
 mod continuation;
 mod convert;
 pub mod cron;
+mod database;
+mod database_result;
+pub use database_result::JsonDatabaseResultValidator;
 mod declared_state;
 mod diff;
 mod evaluator;
@@ -283,6 +286,16 @@ fn check_node_expressions<'a>(
 ) -> Result<(), IrError> {
     for node in nodes {
         let id = node.id().as_str();
+        if let Some(operation) = node.database_operation() {
+            for parameter in operation.parameters() {
+                if let sagat_domain::database::Parameter::Expression { expression, .. } = parameter
+                {
+                    Compiled::compile(expression.as_str()).map_err(|_| {
+                        expression_error(id, "parameters", "invalid database parameter expression")
+                    })?;
+                }
+            }
+        }
         match node.kind() {
             NodeKind::Condition { expression, .. } => {
                 Compiled::compile(expression.as_str())

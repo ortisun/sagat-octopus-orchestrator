@@ -127,3 +127,30 @@ locked-run transaction checks it again before consuming an attempt. Incompatible
 `READY`; an inline run behind it is still discoverable. Admission uses only `runs.input_blob_id`
 and committed `STEP_OUTPUT` catalog rows, so inline JSON that resembles a blob descriptor does not
 silently become a 1.3-only capability.
+
+## Managed database capability (protocol 1.6, feature 017)
+
+The reserved `sagat.database.postgresql` activity is created only by a typed database IR node.
+Registration and claiming require the current `database-runner` machine role and protocol 1.6. Minor 1.5 is the scoped execution identity of feature 014 and keeps its meaning; 1.6 is a superset of 1.5 for ordinary workers (so it is offered only by a store that proves the scoped path), while the database runner, which handles root work only, reaches 1.6 on the database proof alone. A worker that offers 1.4 or 1.5 is served at that version (D600).
+This role grants only `worker:execute` and `database:execute`, plus a namespace/activity binding.
+Human administrators and ordinary workers cannot claim or resolve these tasks through a wildcard.
+
+`ResolveDatabase` uses the ordinary task identity, attempt/generation and lease token. The server
+also checks that the session that owns the lease belongs to this machine in this namespace. It
+loads the pinned connection revision and checks current connection status, publisher/initiator
+rights and secret ACLs. It closes the transaction before reading OpenBao, then repeats the fences
+in a new transaction. Cancellation, expiry, revocation or a concurrent rotation discards the value.
+The audit and metadata-only per-attempt credential pin commit before the value is returned.
+Repeated disclosures of the same attempt/generation/version share the existing bounded audit
+record; capability counters include every call.
+
+The response carries typed literal parameters evaluated by the server, finite effective limits,
+PostgreSQL/TLS settings and the one selected credential. Integer and decimal strings preserve
+precision across SDKs. It contains no OpenBao address/token, platform database URL or signing key.
+The selected immutable provider object remains pinned for attempt-output checks after logical
+credential rotation. Cleanup must preserve objects needed by active pins.
+
+Claim concurrency is counted in the lease transaction under a tenant-scoped lock, including every
+live managed step across sessions, namespaces and revisions of a connection. SQL execution,
+network destination enforcement, result inspection and deployment isolation belong to the
+separate feature-017 driver/runner delivery gates; this protocol contract alone proves none of them.

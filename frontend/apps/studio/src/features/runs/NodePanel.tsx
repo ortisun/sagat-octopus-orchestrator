@@ -18,6 +18,7 @@ import { OperationList } from './Operations';
 import type { Operation } from './ops';
 import { childPath, sagaWords } from './RunNodeCard';
 import { clip, formatDuration } from './time';
+import { DatabaseResultViewer } from '../database/DatabaseResultViewer';
 import { PayloadInspector } from './PayloadInspection';
 
 function detailedKind(node: RuntimeNode): string {
@@ -293,6 +294,8 @@ export function NodePanel({
               ))}
             </div>
           ) : null}
+
+          {node.type === 'database' && node.status === 'SUCCEEDED' ? <DatabaseResultViewer runId={runId} nodeId={selectedId} /> : null}
 
           <h3>Structure</h3>
           <Links edges={model.edges} model={model} id={selectedId} onSelect={onSelect} />

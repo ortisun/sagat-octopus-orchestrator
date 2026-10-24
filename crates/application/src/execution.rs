@@ -419,6 +419,20 @@ pub trait ExpressionEvaluator: Send + Sync {
         expression: &Expression,
         data: &RunData,
     ) -> Result<Vec<u8>, ExpressionFailure>;
+    /// Evaluates a typed database parameter with the same bounded expression semantics as the
+    /// workflow. Integer/decimal inputs must be strings so SDK numeric coercion cannot lose bits.
+    fn database_parameter(
+        &self,
+        parameter: &sagat_domain::database::Parameter,
+        _data: &RunData,
+    ) -> Result<sagat_domain::database::TypedValue, ExpressionFailure> {
+        match parameter {
+            sagat_domain::database::Parameter::Literal(value) => Ok(value.clone()),
+            sagat_domain::database::Parameter::Expression { .. } => Err(ExpressionFailure(
+                "database parameter evaluation unavailable".into(),
+            )),
+        }
+    }
 
     /// The JSON document a worker receives as the input of `node`.
     fn task_input(&self, data: &RunData, node: &NodeId) -> Vec<u8>;
@@ -546,6 +560,8 @@ pub struct ChildSpawn {
 /// Everything about a run that does not change after it is created.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunInfo {
+    /// Private managed execution provenance; ordinary published runs omit it.
+    pub origin: Option<crate::runs::RunOrigin>,
     pub run_id: RunId,
     pub tenant_id: TenantId,
     pub namespace_id: NamespaceId,
@@ -862,6 +878,72 @@ pub trait RunTx: Send {
             }
             self.lease_unexpired(instance.node(), token_hash).await
         }
+    }
+
+    /// Exact current machine role/session ownership; ordinary workers cannot borrow a managed lease.
+    fn database_executor_owns(
+        &mut self,
+        _node: &NodeId,
+        _subject: &str,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
+        async { Ok(false) }
+    }
+
+    /// Current dedicated role and durable owner of a previously leased managed attempt. Used only
+    /// to return an existing report receipt after its live session linkage has been cleared.
+    fn database_report_owns(
+        &mut self,
+        _node: &NodeId,
+        _fence: sagat_domain::execution::Fence,
+        _subject: &str,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
+        async { Ok(false) }
+    }
+
+    /// Current connection/publisher/initiator admission and exact connection/namespace/tenant
+    /// concurrency reservation in the lease transaction. Unsupported stores fail closed.
+    fn database_claim(
+        &mut self,
+        _node: &NodeId,
+        _subject: &str,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
+        async { Ok(false) }
+    }
+
+    /// Selected immutable connection and credential metadata; no provider I/O occurs here.
+    fn database_input(
+        &mut self,
+        _node: &NodeId,
+        _subject: &str,
+    ) -> impl Future<Output = Result<crate::database::DatabaseInput, StoreError>> + Send {
+        async { Err(StoreError::DatabaseUnavailable) }
+    }
+
+    /// Records the credential before returning its value. The pin is immutable for this attempt.
+    fn pin_database_credential(
+        &mut self,
+        _node: &NodeId,
+        _secret: &StoredSecret,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        async { Err(StoreError::DatabaseUnavailable) }
+    }
+
+    /// Frozen connection/operation ceilings for retained output. Pause/revocation blocks new
+    /// capability delivery, but cannot discard evidence of an already delivered attempt.
+    fn database_result_limits(
+        &mut self,
+        _node: &NodeId,
+    ) -> impl Future<Output = Result<sagat_domain::database::DatabaseLimits, StoreError>> + Send
+    {
+        async { Err(StoreError::DatabaseUnavailable) }
+    }
+
+    /// Credential evidence survives logical rotation/deletion until attempt/result retention ends.
+    fn database_credential(
+        &mut self,
+        _node: &NodeId,
+    ) -> impl Future<Output = Result<Option<StoredSecret>, StoreError>> + Send {
+        async { Ok(None) }
     }
 
     /// Whether the circuit breaker of the compensations of `activity` lets one be leased now.
@@ -1354,6 +1436,14 @@ impl DefinitionCache {
             capacity: capacity.max(1),
             max_bytes,
         }
+    }
+
+    /// Validates/canonicalizes a new document through the same codec used by published runs.
+    pub fn parse_document(
+        &self,
+        document: &[u8],
+    ) -> Result<crate::definitions::ParsedDefinition, IrError> {
+        self.codec.parse(document)
     }
 
     /// The parsed definition of `version` if it is cached.

@@ -1,0 +1,113 @@
+# Official openbao/openbao chart 0.30.0. Install as release openbao in namespace openbao.
+# Supply Secret openbao-tls (tls.crt, tls.key, ca.crt), persistent storage and three worker nodes.
+# Certificates need openbao.openbao.svc and *.openbao-internal.openbao.svc SANs.
+global:
+  tlsDisable: false
+injector:
+  enabled: false
+csi:
+  enabled: false
+ui:
+  enabled: false
+server:
+  image:
+    registry: docker.io
+    repository: openbao/openbao
+    tag: "2.7.1@sha256:6d2b93856e3fcf7b18ad855a0b51eaba474dc8b79cf554379ea32034797d2acf"
+  logLevel: info
+  logFormat: json
+  dev:
+    enabled: false
+  standalone:
+    enabled: false
+  resources:
+    requests: {cpu: 250m, memory: 512Mi}
+    limits: {cpu: "2", memory: 1Gi}
+  podManagementPolicy: Parallel
+  updateStrategyType: OnDelete
+  persistentVolumeClaimRetentionPolicy: {whenDeleted: Retain, whenScaled: Retain}
+  dataStorage: {enabled: true, size: 10Gi}
+  auditStorage: {enabled: true, size: 10Gi}
+  readinessProbe:
+    enabled: true
+    path: /v1/sys/health?standbyok=true
+    timeoutSeconds: 3
+  livenessProbe:
+    enabled: true
+    path: /v1/sys/health?standbyok=true&sealedcode=204&uninitcode=204
+    # Raft initialization/unseal can hold the health lock. Do not kill a healthy
+    # node while that bounded operator operation is still completing.
+    initialDelaySeconds: 60
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 12
+  authDelegator:
+    enabled: true
+  serviceAccount:
+    createSecret: false
+  extraEnvironmentVars:
+    BAO_CACERT: /openbao/tls/ca.crt
+    BAO_TLS_SERVER_NAME: openbao.openbao.svc
+  volumes:
+    - name: tls
+      secret: {secretName: openbao-tls, defaultMode: 288}
+    - name: tmp
+      emptyDir: {medium: Memory, sizeLimit: 16Mi}
+  volumeMounts:
+    - {name: tls, mountPath: /openbao/tls, readOnly: true}
+    - {name: tmp, mountPath: /tmp}
+  statefulSet:
+    securityContext:
+      pod:
+        runAsNonRoot: true
+        runAsUser: 100
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: {type: RuntimeDefault}
+      container:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities: {drop: [ALL]}
+  ha:
+    enabled: true
+    replicas: 3
+    apiAddr: "https://$(BAO_K8S_POD_NAME).openbao-internal.openbao.svc:8200"
+    raft:
+      enabled: true
+      setNodeId: true
+      config: |
+        ui = false
+        disable_mlock = true
+        listener "tcp" {
+          address = "[::]:8200"
+          cluster_address = "[::]:8201"
+          tls_cert_file = "/openbao/tls/tls.crt"
+          tls_key_file = "/openbao/tls/tls.key"
+          tls_min_version = "tls12"
+        }
+        storage "raft" {
+          path = "/openbao/data"
+          retry_join {
+            leader_api_addr = "https://openbao-0.openbao-internal.openbao.svc:8200"
+            leader_ca_cert_file = "/openbao/tls/ca.crt"
+          }
+          retry_join {
+            leader_api_addr = "https://openbao-1.openbao-internal.openbao.svc:8200"
+            leader_ca_cert_file = "/openbao/tls/ca.crt"
+          }
+          retry_join {
+            leader_api_addr = "https://openbao-2.openbao-internal.openbao.svc:8200"
+            leader_ca_cert_file = "/openbao/tls/ca.crt"
+          }
+        }
+        service_registration "kubernetes" {}
+        audit "file" "sagat" {
+          options {
+            file_path = "/openbao/audit/audit.log"
+            log_raw = "false"
+          }
+        }
+        telemetry {
+          prometheus_retention_time = "30s"
+          disable_hostname = true
+        }

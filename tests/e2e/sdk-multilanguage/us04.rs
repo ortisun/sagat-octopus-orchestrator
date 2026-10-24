@@ -26,7 +26,7 @@ fn workers_of_an_older_and_of_a_newer_minor_version_are_both_served_and_another_
                 ("1.3", "1.3"),
                 ("1.4", "1.4"),
                 ("1.5", "1.5"),
-                ("1.9", "1.5"),
+                ("1.9", "1.6"),
             ] {
                 let step = observation(doc, &format!("offer-{offer}"));
                 assert_eq!(

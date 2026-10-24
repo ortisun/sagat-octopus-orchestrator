@@ -924,3 +924,17 @@ fn native_http_timers_and_permits_are_bounded_before_runtime_creation() {
         assert!(ServeConfig::from_lookup(&env(&pairs)).is_err(), "{name}");
     }
 }
+
+#[test]
+fn openbao_alone_requires_secret_transport_protection() {
+    let mut pairs = OIDC.to_vec();
+    pairs.extend([
+        ("SAGAT_OPENBAO_ADDRESS", "https://bao:8200"),
+        ("SAGAT_OPENBAO_TOKEN_FILE", "/run/openbao/token"),
+    ]);
+    assert!(ServeConfig::from_lookup(&env(&pairs)).is_err());
+    pairs.push(("SAGAT_API_ALLOW_PLAINTEXT_SECRETS", "true"));
+    let config = ServeConfig::from_lookup(&env(&pairs)).expect("TLS terminated at ingress");
+    assert!(config.openbao.is_some());
+    assert!(config.secrets.is_none());
+}

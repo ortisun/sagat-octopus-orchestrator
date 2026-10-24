@@ -329,6 +329,7 @@ async fn runs_are_listed_newest_first_with_filters_and_stable_pages() {
 
     assert_eq!(
         w.runs_of(&RunFilter {
+            origin: None,
             workflow: Some(other),
             status: None
         })
@@ -337,6 +338,7 @@ async fn runs_are_listed_newest_first_with_filters_and_stable_pages() {
     );
     let cancelled = w
         .runs_of(&RunFilter {
+            origin: None,
             workflow: None,
             status: Some(RunStatus::Cancelled),
         })

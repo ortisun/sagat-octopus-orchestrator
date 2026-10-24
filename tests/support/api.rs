@@ -224,6 +224,7 @@ impl IdentityStore for CountingStore {
 
 /// Settings tests may tighten before the API starts.
 pub struct Options {
+    pub secret_provider: Option<Arc<dyn sagat_application::secret_provider::SecretProvider>>,
     pub http_tls: Option<sagat_api_http::HttpTlsConfig>,
     pub http_tls_ca: Option<Vec<u8>>,
     pub webhook_oidc_profiles: Vec<sagat_api_http::auth::WebhookOidcConfig>,
@@ -248,6 +249,7 @@ pub struct Options {
     /// Storage shared with another process when a test starts an execution engine separately.
     /// Blob-enabled tests use the in-process memory backend unless they opt in here.
     pub blob_store: Option<BlobStoreConfig>,
+    pub blob_backend: Option<Arc<dyn BlobBackend>>,
     pub blob_transfer: BlobTransfer,
     pub grpc: GrpcConfig,
     /// The most any script may be given.
@@ -261,6 +263,7 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
+            secret_provider: None,
             http_tls: None,
             http_tls_ca: None,
             webhook_oidc_profiles: Vec::new(),
@@ -280,6 +283,7 @@ impl Default for Options {
             worker: WorkerSettings::default(),
             blobs: None,
             blob_store: None,
+            blob_backend: None,
             blob_transfer: BlobTransfer::default(),
             grpc: GrpcConfig::default(),
             script_ceiling: sagat_domain::scripts::Policy::default(),
@@ -341,7 +345,7 @@ pub async fn start_with(options: Options) -> TestApi {
     let signer =
         Signer::from_pkcs8(&Signer::generate_pkcs8().expect("a signing key")).expect("a signer");
     let script_key = signer.public_key();
-    let governance = GovState::new(
+    let mut governance = GovState::new(
         state.clone(),
         sagat_application::api_admission::ApiAdmissionService::new(executions.clone(), SystemClock),
         QuotaService::new(executions.clone(), SystemClock),
@@ -397,7 +401,26 @@ pub async fn start_with(options: Options) -> TestApi {
             options.script_ceiling,
         ),
     );
+    governance = governance.with_connections(sagat_application::database::ConnectionService::new(
+        executions.clone(),
+        SystemClock,
+    ));
+    if let Some(provider) = &options.secret_provider {
+        governance = governance.with_managed_secrets(
+            sagat_application::managed_secrets::ManagedSecretService::new(
+                executions.clone(),
+                SystemClock,
+                provider.clone(),
+                sagat_domain::secrets::SecretValue::new(vec![43; 32]).expect("fixture intent key"),
+            )
+            .expect("fixture managed secret service")
+            .with_legacy_cipher(keys.cipher()),
+        );
+    }
     let blob_backend = options.blobs.as_ref().map(|_| {
+        if let Some(backend) = &options.blob_backend {
+            return backend.clone();
+        }
         let store = options
             .blob_store
             .as_ref()
@@ -438,6 +461,14 @@ pub async fn start_with(options: Options) -> TestApi {
         SystemClock,
         JsonIrCodec,
     ))
+    .with_database_results(Arc::new(
+        sagat_application::database_results::DatabaseResultService::new(
+            executions.clone(),
+            SystemClock,
+            sagat_infra_ir::JsonDatabaseResultValidator,
+            blobs.clone(),
+        ),
+    ))
     .with_payload_inspections(Arc::new(PayloadInspectionService::new(
         executions.clone(),
         SystemClock,
@@ -447,17 +478,22 @@ pub async fn start_with(options: Options) -> TestApi {
         exec = exec.with_stream_limits(limits);
     }
     // The worker protocol shares the REST API's identity, budgets and database.
-    let mut grpc = WorkerGrpc::new(
-        exec.clone(),
-        WorkerService::new(
-            executions.clone(),
-            SystemClock,
-            Engine::new(JsonEvaluator),
-            SystemEntropy,
-            options.worker,
-        )
-        .with_vault(keys.cipher()),
+    let mut workers = WorkerService::new(
+        executions.clone(),
+        SystemClock,
+        Engine::new(JsonEvaluator),
+        SystemEntropy,
+        options.worker,
+    )
+    .with_vault(keys.cipher())
+    .with_database_content(
+        Arc::new(sagat_infra_secrets::database::JsonDatabaseCredentials),
+        Arc::new(sagat_infra_ir::JsonDatabaseResultValidator),
     );
+    if let Some(provider) = &options.secret_provider {
+        workers = workers.with_secret_provider(provider.clone());
+    }
+    let mut grpc = WorkerGrpc::new(exec.clone(), workers);
     if let Some(blobs) = &blobs {
         grpc = grpc.with_blobs(blobs.clone(), options.blob_transfer);
     }

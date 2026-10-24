@@ -111,9 +111,12 @@ export function renameNode(doc: IrDocument, from: string, to: string): IrDocumen
       next = { ...next, [link.field]: Array.isArray(value) ? value.map(rename) : to };
     }
     // The expressions that read the output of the step read the output of the renamed one.
-    for (const { field, template, value } of expressionFields(next)) {
+    for (const { field, template, value, parameterIndex } of expressionFields(next)) {
       const renamed = renameStepReference(value, from, to, template);
-      if (renamed !== value) next = { ...next, [field]: renamed };
+      if (renamed !== value) {
+        if (parameterIndex === undefined) next = { ...next, [field]: renamed };
+        else if (Array.isArray(next['parameters'])) next = { ...next, parameters: next['parameters'].map((p: unknown, i: number) => i === parameterIndex ? { ...(p as Record<string, unknown>), expression: renamed } : p) };
+      }
     }
     return next;
   });

@@ -209,6 +209,15 @@ pub(crate) async fn ensure_room_for_run(
     judge(QuotaResource::TenantActiveRuns, in_tenant, tenant_limit)
 }
 
+/// Serializes workflow retention/deduplication with ordinary workflow creation.
+pub(crate) async fn lock_workflows(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    namespace: NamespaceId,
+) -> Result<(), StoreError> {
+    lock(conn, QuotaResource::Workflows, tenant, Some(namespace)).await
+}
+
 /// A new workflow fits in its namespace.
 pub(crate) async fn ensure_room_for_workflow(
     conn: &mut PgConnection,
@@ -710,7 +719,9 @@ impl QuotaStore for PgRunStore {
         audit: &AuditRecord,
     ) -> Result<(), StoreError> {
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
-        if resource == QuotaResource::ActivityConcurrency {
+        if resource.is_database() {
+            crate::database::policy::change(&mut tx, tenant, None).await?;
+        } else if resource == QuotaResource::ActivityConcurrency {
             activity_policy_change(&mut tx, tenant, None).await?;
         } else if resource == QuotaResource::IterationConcurrency {
             iteration_policy_change(&mut tx, tenant).await?;
@@ -818,7 +829,9 @@ impl QuotaStore for PgRunStore {
             insert_audit(&mut tx, audit).await?;
             return tx.commit().await.map_err(store_error);
         }
-        if resource == QuotaResource::ActivityConcurrency {
+        if resource.is_database() {
+            crate::database::policy::change(&mut tx, tenant, namespace).await?;
+        } else if resource == QuotaResource::ActivityConcurrency {
             activity_policy_change(&mut tx, tenant, namespace).await?;
         } else if resource.kind() != QuotaKind::Count {
             content_usage::policy_change(&mut tx, tenant, namespace, resource).await?;
@@ -1027,10 +1040,30 @@ impl QuotaStore for PgRunStore {
             .fetch_optional(&self.pool)
             .await
             .map(|value| value.unwrap_or(0)),
+            QuotaResource::DatabaseConnections => sqlx::query_scalar(
+                "SELECT count(*) FROM database_connections WHERE tenant_id=$1 AND namespace_id=$2 AND status<>'DELETED'")
+                .bind(tenant.as_uuid()).bind(namespace).fetch_one(&self.pool).await,
+            QuotaResource::DatabaseConcurrency | QuotaResource::TenantDatabaseConcurrency => sqlx::query_scalar(
+                "SELECT count(*) FROM steps s JOIN run_database_connections b ON b.tenant_id=s.tenant_id AND b.run_id=s.run_id AND b.node_id=s.node
+                 WHERE s.tenant_id=$1 AND ($2::uuid IS NULL OR b.namespace_id=$2) AND s.status IN ('LEASED','RUNNING')")
+                .bind(tenant.as_uuid()).bind(if resource==QuotaResource::TenantDatabaseConcurrency {None} else {namespace}).fetch_one(&self.pool).await,
+            QuotaResource::SecretProviderOperations => sqlx::query_scalar(
+                "SELECT count(*) FROM secret_provider_operations WHERE tenant_id=$1 AND namespace_id=$2 AND state='pending'")
+                .bind(tenant.as_uuid()).bind(namespace).fetch_one(&self.pool).await,
             QuotaResource::ApiRequestsPerSecond
             | QuotaResource::EventsPerSecond
             | QuotaResource::EventRetentionSeconds
-            | QuotaResource::ScriptRetentionDays => {
+            | QuotaResource::ScriptRetentionDays
+            | QuotaResource::DatabaseStatementBytes
+            | QuotaResource::DatabaseParameters
+            | QuotaResource::DatabaseParameterBytes
+            | QuotaResource::DatabaseRows
+            | QuotaResource::DatabaseResultBytes
+            | QuotaResource::DatabaseTimeoutMs
+            | QuotaResource::DatabaseConnectTimeoutMs
+            | QuotaResource::DatabasePoolSize
+            | QuotaResource::DatabaseIdleTimeoutMs
+            => {
                 return Err(StoreError::Internal {
                     detail: "an admission policy has no scalar usage".into(),
                 });

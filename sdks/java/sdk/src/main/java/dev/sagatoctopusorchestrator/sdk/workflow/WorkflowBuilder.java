@@ -137,6 +137,12 @@ public final class WorkflowBuilder {
         return this;
     }
 
+    /** A managed database operation. Credentials are resolved only by the dedicated executor. */
+    public WorkflowBuilder database(String id, DatabaseOptions options) {
+        body.database(id, options);
+        return this;
+    }
+
     public WorkflowBuilder sleep(String id, Duration duration) {
         body.sleep(id, duration);
         return this;

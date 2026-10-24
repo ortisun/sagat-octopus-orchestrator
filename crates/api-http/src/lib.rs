@@ -25,6 +25,7 @@ mod core;
 pub mod denial;
 mod dto;
 mod dto_chains;
+mod dto_database;
 mod dto_declared_operations;
 mod dto_events;
 mod dto_exec;
@@ -263,6 +264,8 @@ where
         + sagat_application::api_admission::ApiAdmissionStore
         + sagat_application::bindings::BindingStore
         + sagat_application::secrets::SecretStore
+        + sagat_application::managed_secrets::ManagedSecretStore
+        + sagat_application::database::ConnectionStore
         + sagat_application::egress::EgressStore
         + sagat_application::events::EventStore
         + sagat_application::outbound::OutboundStore
@@ -307,6 +310,8 @@ where
         + sagat_application::api_admission::ApiAdmissionStore
         + sagat_application::bindings::BindingStore
         + sagat_application::secrets::SecretStore
+        + sagat_application::managed_secrets::ManagedSecretStore
+        + sagat_application::database::ConnectionStore
         + sagat_application::egress::EgressStore
         + sagat_application::events::EventStore
         + sagat_application::outbound::OutboundStore
@@ -371,6 +376,8 @@ where
         + sagat_application::api_admission::ApiAdmissionStore
         + sagat_application::bindings::BindingStore
         + sagat_application::secrets::SecretStore
+        + sagat_application::managed_secrets::ManagedSecretStore
+        + sagat_application::database::ConnectionStore
         + sagat_application::egress::EgressStore
         + sagat_application::events::EventStore
         + sagat_application::outbound::OutboundStore
@@ -449,6 +456,23 @@ where
                 .delete(gov::reset_egress_policy::<B<S, C, G>>),
         );
     // Without a key ring there is nothing to seal with: the secret routes do not exist.
+    if state.connections().is_some() {
+        router = router
+            .route(
+                "/namespaces/{namespace_id}/database-drivers",
+                get(routes::database::drivers::<B<S, C, G>>),
+            )
+            .route(
+                "/namespaces/{namespace_id}/connections",
+                get(routes::database::list::<B<S, C, G>>),
+            )
+            .route(
+                "/namespaces/{namespace_id}/connections/{name}",
+                get(routes::database::get::<B<S, C, G>>)
+                    .put(routes::database::put::<B<S, C, G>>)
+                    .delete(routes::database::delete::<B<S, C, G>>),
+            );
+    }
     if serves_secrets {
         router = router
             .route(
@@ -472,6 +496,17 @@ where
                 "/namespaces/{namespace_id}/secrets/{name}/access/{subject}",
                 axum::routing::put(gov::grant_secret_access::<B<S, C, G>>)
                     .delete(gov::revoke_secret_access::<B<S, C, G>>),
+            );
+    }
+    if serves_secrets {
+        router = router
+            .route(
+                "/namespaces/{namespace_id}/secrets/{name}/migrate",
+                axum::routing::post(gov::migrate_secret::<B<S, C, G>>),
+            )
+            .route(
+                "/namespaces/{namespace_id}/secret-operations/{request_id}/reconcile",
+                axum::routing::post(gov::reconcile_secret::<B<S, C, G>>),
             );
     }
     let mut router = router.layer(RequestBodyLimitLayer::new(limits.max_body_bytes));
@@ -762,6 +797,35 @@ where
         Router::new()
     };
 
+    let database_executions = Router::new()
+        .route(
+            "/namespaces/{namespace_id}/database-executions",
+            axum::routing::post(routes::database_executions::create::<B<S, C, P, X, E>>),
+        )
+        .route(
+            "/namespaces/{namespace_id}/connections/{name}/probe",
+            axum::routing::post(routes::database_executions::probe::<B<S, C, P, X, E>>)
+                .get(routes::database_executions::latest_probe::<B<S, C, P, X, E>>),
+        )
+        .layer(RequestBodyLimitLayer::new(2 * 1024 * 1024))
+        .route_layer(shed())
+        .route_layer(from_fn(routes::database_results::no_store))
+        .with_state(state.clone());
+
+    let database_results = if state.database_results().is_some() {
+        Router::new()
+            .route(
+                "/namespaces/{namespace_id}/runs/{run_id}/database-results/{node_id}",
+                get(routes::database_results::read::<B<S, C, P, X, E>>),
+            )
+            .layer(RequestBodyLimitLayer::new(0))
+            .route_layer(shed())
+            .route_layer(from_fn(routes::database_results::no_store))
+            .with_state(state.clone())
+    } else {
+        Router::new()
+    };
+
     let payload_inspections = if state.payload_inspections().is_some() {
         Router::new()
             .route(
@@ -933,6 +997,8 @@ where
         .route("/ready", get(health::ready::<S, C>))
         .merge(identity_routes)
         .merge(payload_inspections)
+        .merge(database_results)
+        .merge(database_executions)
         .merge(exec_routes)
         .merge(extra_routes)
         .route_layer(from_fn(context::record_route))

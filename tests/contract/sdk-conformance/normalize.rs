@@ -160,6 +160,7 @@ pub fn compared(out: &Value, normalizer: &mut Normalizer) -> Value {
         "faultsApplied",
         "serverState",
         "blobEvidence",
+        "databaseEvidence",
         "runInputBlobEvidence",
         "scopeEvidence",
         "sourceEvidence",

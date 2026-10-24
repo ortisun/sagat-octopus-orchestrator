@@ -247,6 +247,7 @@ pub fn problems_of(error: &IrError) -> Vec<Problem> {
 fn graph_rule(error: &WorkflowError) -> (&'static str, Option<String>) {
     use WorkflowError as E;
     match error {
+        E::InvalidDatabaseNode => ("INVALID_DATABASE_NODE", None),
         E::InvalidNodeId(id) => ("INVALID_NODE_ID", Some(id.clone())),
         E::InvalidActivityName(_) => ("INVALID_ACTIVITY_NAME", None),
         E::InvalidEventType(_) => ("INVALID_EVENT_TYPE", None),
@@ -453,6 +454,25 @@ pub struct Published {
 ///
 /// Every method takes the tenant explicitly; adapters MUST apply it as a filter on every statement.
 pub trait DefinitionStore: QuotaLookup + SecretAccessLookup + ScriptLookup + Send + Sync {
+    /// Current connection/secret authority, for author feedback before publication. The publisher
+    /// repeats the check in its transaction. Adapters without managed support fail closed.
+    fn check_database_access(
+        &self,
+        _principal: &Principal,
+        _namespace: NamespaceId,
+        definition: &WorkflowDefinition,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        async move {
+            if definition
+                .nodes()
+                .any(|node| node.database_operation().is_some())
+            {
+                Err(StoreError::DatabaseUnavailable)
+            } else {
+                Ok(())
+            }
+        }
+    }
     /// Resolves a namespace by slug inside `tenant`.
     fn find_namespace_by_slug(
         &self,
@@ -525,6 +545,7 @@ pub trait DefinitionStore: QuotaLookup + SecretAccessLookup + ScriptLookup + Sen
         digest: Digest,
         document: &[u8],
         declared_state: Option<&crate::declared_operations::PublishedDeclaredState>,
+        definition: &WorkflowDefinition,
         release_notes: Option<&str>,
         plans: &[SagaPlan],
         triggers: &[TriggerRegistration],
@@ -841,6 +862,18 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
         }
         self.check_secrets(principal, &record, &parsed.definition, ctx)
             .await?;
+        let database_check = self
+            .store
+            .check_database_access(
+                principal,
+                record.workflow.namespace_id(),
+                &parsed.definition,
+            )
+            .await;
+        if let Err(error) = database_check {
+            self.audit_database_denial(principal, id, &error, ctx).await;
+            return Err(error.into());
+        }
         self.check_scripts(principal, &parsed.definition).await?;
         Ok((record, parsed))
     }
@@ -899,6 +932,7 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
                 parsed.digest,
                 &parsed.canonical,
                 declared_state.as_ref(),
+                &parsed.definition,
                 release_notes,
                 &compensation_plans(&parsed.definition),
                 &triggers_of(id, &parsed.definition),
@@ -907,7 +941,14 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
                 &idempotency,
                 now,
             )
-            .await?;
+            .await;
+        let outcome = match outcome {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                self.audit_database_denial(principal, id, &error, ctx).await;
+                return Err(error.into());
+            }
+        };
         match outcome {
             Some(Applied::Done((version, created))) => Ok(Published {
                 version,
@@ -970,6 +1011,26 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
                 .await?,
         );
         problems.extend(self.unknown_scripts(principal, &parsed.definition).await?);
+        match self
+            .store
+            .check_database_access(
+                principal,
+                record.workflow.namespace_id(),
+                &parsed.definition,
+            )
+            .await
+        {
+            Ok(()) => {}
+            Err(StoreError::DatabaseUnavailable) => problems.push(Problem::error(
+                "DATABASE_UNAVAILABLE",
+                "a database connection is inactive, unavailable or may not be used",
+            )),
+            Err(StoreError::DatabaseLimit) => problems.push(Problem::error(
+                "DATABASE_LIMIT_EXCEEDED",
+                "a database operation exceeds connection limits",
+            )),
+            Err(error) => return Err(error.into()),
+        }
         let valid = problems.is_empty();
         Ok(Validation {
             problems,
@@ -1156,6 +1217,33 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
             .list_versions(principal.tenant_id(), id, after, limit + 1)
             .await?;
         Ok(paginate(rows, limit, |r| r.version.number().to_string()))
+    }
+
+    pub(crate) async fn audit_database_denial(
+        &self,
+        principal: &Principal,
+        workflow: WorkflowId,
+        error: &StoreError,
+        ctx: &RequestContext,
+    ) {
+        if !matches!(
+            error,
+            StoreError::DatabaseUnavailable | StoreError::DatabaseLimit
+        ) {
+            return;
+        }
+        let audit = AuditRecord::by(
+            principal,
+            AuditAction::DatabaseDenied,
+            ResourceType::Workflow,
+            workflow.to_string(),
+            ctx.trace_id.clone(),
+            self.clock.now(),
+        )
+        .with_reason("database publication refused".to_owned());
+        if let Err(error) = self.store.record_denial(&audit).await {
+            tracing::error!(%error, "failed to record database denial");
+        }
     }
 
     /// A workflow that declares secrets can be published only by someone who may use every one of

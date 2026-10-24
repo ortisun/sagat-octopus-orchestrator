@@ -26,7 +26,7 @@ use sagat_domain::events::{
 use sagat_domain::execution::{CorrelationKey, RunId};
 use sagat_domain::identity::{Namespace, NamespaceId, Permission, Principal, Slug, TenantId};
 use sagat_domain::quota::QuotaResource;
-use sagat_domain::secrets::{SecretCipher, SecretName, associated_data};
+use sagat_domain::secrets::{SecretCipher, SecretName};
 use sagat_domain::workflow::EventType;
 use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
@@ -499,7 +499,7 @@ impl WebhookIdentityVerifier for NoWebhookIdentities {
 pub struct EventService<S, C> {
     store: S,
     clock: C,
-    cipher: Arc<dyn SecretCipher>,
+    cipher: crate::secrets::SecretReader,
     evaluator: Arc<dyn ExpressionEvaluator>,
     gate: Gate,
     identities: Arc<dyn WebhookIdentityVerifier>,
@@ -517,14 +517,36 @@ where
         cipher: Arc<dyn SecretCipher>,
         evaluator: Arc<dyn ExpressionEvaluator>,
     ) -> Self {
+        Self::with_reader(
+            store,
+            clock,
+            crate::secrets::SecretReader::local(cipher),
+            evaluator,
+        )
+    }
+
+    pub fn with_reader(
+        store: S,
+        clock: C,
+        reader: crate::secrets::SecretReader,
+        evaluator: Arc<dyn ExpressionEvaluator>,
+    ) -> Self {
         Self {
             store,
             clock,
-            cipher,
+            cipher: reader,
             evaluator,
             gate: Gate::default(),
             identities: Arc::new(NoWebhookIdentities),
         }
+    }
+
+    pub fn with_secret_provider(
+        mut self,
+        provider: Arc<dyn crate::secret_provider::SecretProvider>,
+    ) -> Self {
+        self.cipher = self.cipher.with_provider(provider);
+        self
     }
 
     #[must_use]
@@ -1029,18 +1051,16 @@ where
             })?;
         let mut values = Vec::with_capacity(versions.len());
         for stored in &versions {
-            let aad = associated_data(
-                record.tenant_id,
-                record.namespace_id,
-                &stored.meta.name,
-                stored.meta.id,
-                &stored.meta.key_id,
-            );
-            // A version no key opens is skipped, and so is one too short to mean anything: the
-            // others may still verify the request.
-            if let Ok(value) = self.cipher.open(&stored.sealed, &aad)
-                && signing::usable(value.expose())
-            {
+            let value = match self.cipher.resolve(stored).await {
+                Ok(value) => value,
+                // Migration grace must never turn an unavailable provider into local authority.
+                Err(_) if matches!(stored.value, crate::secrets::StoredValue::OpenBao(_)) => {
+                    return Err(Unverified::Store(AppError::Unavailable));
+                }
+                // Preserve the legacy key-ring grace behavior for local-only versions.
+                Err(_) => continue,
+            };
+            if signing::usable(value.expose()) {
                 values.push(value);
             }
         }

@@ -3,11 +3,9 @@
 //! The secret is a JSON document whose shape depends on the broker. Nothing here is ever logged or
 //! shown: `Debug` prints that a value exists and not what it is.
 
-use std::sync::Arc;
-
 use sagat_application::connectors::{ConnectorRecord, ConnectorRuntime};
+use sagat_application::secrets::SecretReader;
 use sagat_domain::connectors::ConnectorKind;
-use sagat_domain::secrets::{SecretCipher, associated_data};
 use serde_json::Value;
 
 /// The credentials document is not a JSON object.
@@ -66,7 +64,7 @@ pub enum CredentialsError {
 /// [`CredentialsError`].
 pub async fn open<R: ConnectorRuntime>(
     runtime: &R,
-    cipher: &Arc<dyn SecretCipher>,
+    cipher: &SecretReader,
     connector: &ConnectorRecord,
 ) -> Result<Credentials, CredentialsError> {
     if connector.secret_name.is_none() {
@@ -77,15 +75,9 @@ pub async fn open<R: ConnectorRuntime>(
         .await
         .map_err(|_| CredentialsError::Store)?
         .ok_or(CredentialsError::Unusable)?;
-    let aad = associated_data(
-        connector.tenant_id,
-        connector.namespace_id,
-        &stored.meta.name,
-        stored.meta.id,
-        &stored.meta.key_id,
-    );
     let value = cipher
-        .open(&stored.sealed, &aad)
+        .resolve(&stored)
+        .await
         .map_err(|_| CredentialsError::Unusable)?;
     Credentials::parse(value.expose()).map_err(|NotAnObject| CredentialsError::Unusable)
 }
