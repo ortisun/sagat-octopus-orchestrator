@@ -91,3 +91,8 @@ unavailable without substitution; optional external review previously declined.
 Reproduce via fixture README, repository-owned Compose65118/private outside target.
 Only localQ7c.5 closes; parentQ7c/Q8/quota/CAS/OS-restart/rollout/nesting and
 canonical014 remain open. No provider undo or production-capacity claim follows.
+
+After sealing, twenty-four invocation-owned archive/binary copies were checked
+against retained manifest hashes and removed. Logs/manifests/witnesses remain;
+ongoing private target stays for remaining work. No additional DB drop: all
+sixteen final DBs were already removed by the ownership-checked coordinators.
