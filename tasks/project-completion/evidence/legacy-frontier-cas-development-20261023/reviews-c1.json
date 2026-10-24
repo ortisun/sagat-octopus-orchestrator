@@ -1,0 +1,16 @@
+{
+  "model": "gpt-6-astra",
+  "reasoning_effort": "xhigh",
+  "barrier_cleanup_findings": [
+    "check emergency termination results and re-observe H release before normal joins, R/S release afterward",
+    "API pool close alone is not server acknowledgment; independently observe exact owned-role transactions"
+  ],
+  "lifecycle_selector_findings": [
+    "new selector missing closed receipt format map; actual C1 failed before consumer",
+    "explicit no-stop/OPEN/live-only frontier precondition missing",
+    "compare complete original reservations and run/tenant usage after report/CAS and replay before fresh scheduling",
+    "capture report-created stop before fresh drain; compare afterward plus completion/drain/trace ordering"
+  ],
+  "actual_c1_result": "old producer1/1; consumer not launched; outerexit1, cleanup safely refused invalid envelope; exact owned DB independently inspected then removed",
+  "source_changes_c2": "closed selector map; initial native frontier/original inventory checks; capacity and original-stop boundaries; verified server cleanup on all emergency paths"
+}

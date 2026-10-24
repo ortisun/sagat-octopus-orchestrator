@@ -1,0 +1,8 @@
+
+running 1 test
+q10c ordinary-before-drain API roles: producer=sagat_app, consumer=sagat_app
+observed_report_frontier_cas=true holder_pid=31280 report_pid=31283 scheduler_pid=31278 observer_pid=31277 original_revision=105 committed_revision=107
+test legacy_collection_inflight_report_v1::old_original_success_forces_frontier_cas_then_fresh_stopped_drain ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 550 filtered out; finished in 2.17s
+

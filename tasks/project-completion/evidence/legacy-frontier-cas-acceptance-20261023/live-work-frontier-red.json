@@ -1,0 +1,16 @@
+{
+  "command": [
+    "gtimeout",
+    "--signal=TERM",
+    "--kill-after=5s",
+    "2500s",
+    "bash",
+    "scripts/test-legacy-collection-inflight-report-v1.sh",
+    "--case",
+    "live-work-frontier-red"
+  ],
+  "exit_code": 0,
+  "seconds": 101.22,
+  "started_utc": "2026-10-24T02:59:45.926420+00:00",
+  "log": "live-work-frontier-red.txt"
+}

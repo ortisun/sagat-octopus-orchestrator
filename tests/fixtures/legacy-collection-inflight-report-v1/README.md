@@ -149,3 +149,41 @@ Use only the repository-declared healthchecked Compose fixture and an exclusive
 private CARGO_TARGET_DIR outside checkouts. This adds §11.4(c) observation only;
 CAS, equality/precedence, OS restart, rollout, provider undo and nesting remain
 separate. Source certification/scoped Finish production activation stays closed.
+
+## Original report versus stale frontier
+
+`--case report-frontier-cas` reuses the ordinary immutable-old producer and its
+unchanged private19-field session/lease/request handoff. No registration, repoll,
+renewal or rebuilt completion occurs. With E4200020 and a live original reserve,
+a dedicated owner transaction locks the existing telemetry row. The real public
+refusal report must be observed waiting there while it already owns the run;
+a role-correct one-connection scheduler then reads the old frontier and is
+observed waiting behind that report at the exact native drain run-lock query.
+A pinned, distinct API-role observer checks both edges in fresh autocommit reads.
+
+Only then does the holder roll back. Original success must commit and deliver its
+ACK; stale public advance must return exact native Primitive RevisionConflict with
+the independently persisted report revision and no drain effect/metric. Fresh
+store/cache advancement must select stopped_for_run_data_limit, preserving the
+original stop. The accepted original-target/key compensation, held nonfinality,
+terminal COMPENSATED state, original-ACK replay and fresh verification follow.
+Stronger existing under-limit lifecycle witnesses also apply to this ordinary CAS
+case, with ordinary totals. The refused-report counter advances once; only the
+fresh committed drain increments the primitive rejection counter.
+
+The new90-second proof budget does not cancel cleanup: holder and actor handles
+remain owned outside it. Holder begins cancel-safely; identities include backend
+start to prevent PID reuse. Owner cleanup observes owner holder; API-role observer
+observes same-role report/scheduler and is released before API-pool closure. Every
+error releases the row barrier, joins or cancels identified actors, checks server
+transaction closure and bounds pool shutdown before surfacing failure. Emergency
+termination targets only a verified owned identity and always fails acceptance.
+
+```sh
+bash scripts/test-legacy-collection-inflight-report-v1.sh --case report-frontier-cas
+```
+
+This selector has300s native phases and the existing2400s whole supervisor with5s
+termination grace. All seven selectors must be rerun after shared lifecycle edits.
+This establishes only original-success/frontier CAS and fresh recovery, with no
+production/producer/schema/grant/SDK change or broader recovery/nesting guarantee.

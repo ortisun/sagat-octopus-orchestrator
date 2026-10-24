@@ -1,0 +1,16 @@
+{
+  "command": [
+    "gtimeout",
+    "--signal=TERM",
+    "--kill-after=5s",
+    "2500s",
+    "bash",
+    "scripts/test-legacy-collection-inflight-report-v1.sh",
+    "--case",
+    "report-frontier-cas"
+  ],
+  "exit_code": 1,
+  "seconds": 94.46,
+  "started_utc": "2026-10-24T02:45:21.969879+00:00",
+  "log": "cas-c1.txt"
+}

@@ -1,0 +1,10 @@
+{
+  "tests/fixtures/legacy-collection-inflight-report-v1/producer.rs": "d8d3c91b73fc34d05b9d98089da1b176a82c23232b6770a2cee86d3adcbaa139",
+  "tests/integration/workflow-primitives/legacy_collection_inflight_report_v1.rs": "2e5e3d6a4861c3b0b0fc63008d271247adf195f59c2bd4bfcd04cc5fcc510ecb",
+  "scripts/test-legacy-collection-inflight-report-v1.sh": "9c91b667c03b32156a273b3ed65a91b8eef75c48631e236d85f18e455782194f",
+  "tests/fixtures/legacy-collection-inflight-report-v1/README.md": "7c198a73b708101afc03543cac03e6564dc3cef5e36cd164bb2e32563f8f1888",
+  "tests/fixtures/legacy-collection-output/producer.rs": "33fb1e78f859dd7bd52c40be952bc20a8435f187a7d8df285f32f9b29ffb3e39",
+  "tests/integration/workflow-primitives/legacy_collection_output_view.rs": "da87e07549e9d104d403aab08e477436472e9910fbee6a22ea040e4192e562fc",
+  "scripts/test-legacy-collection-output-view.sh": "d66ca68537582f17933e7784d57f6727670bfcc9669a8fde9bd985b2158a4c57",
+  "tests/fixtures/legacy-collection-output/README.md": "5373a528cbacf5ab2ae2887c6eda87ec4402ab95c81e7611fe716ce7d0584f5e"
+}

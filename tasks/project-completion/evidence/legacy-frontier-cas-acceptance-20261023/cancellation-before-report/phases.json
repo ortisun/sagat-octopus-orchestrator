@@ -1,0 +1,46 @@
+[
+  {
+    "case": "cancellation-before-report",
+    "role": "owner",
+    "phase": "producer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 4.99,
+    "artifact_run": "/tmp/sagat-completion-20261023/cas-final/artifacts-cancellation-before-report/run.o8J3v0"
+  },
+  {
+    "case": "cancellation-before-report",
+    "role": "owner",
+    "phase": "consumer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 1.83,
+    "artifact_run": "/tmp/sagat-completion-20261023/cas-final/artifacts-cancellation-before-report/run.o8J3v0"
+  },
+  {
+    "case": "cancellation-before-report",
+    "role": "runtime",
+    "phase": "producer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 4.99,
+    "artifact_run": "/tmp/sagat-completion-20261023/cas-final/artifacts-cancellation-before-report/run.o8J3v0"
+  },
+  {
+    "case": "cancellation-before-report",
+    "role": "runtime",
+    "phase": "consumer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 1.8,
+    "artifact_run": "/tmp/sagat-completion-20261023/cas-final/artifacts-cancellation-before-report/run.o8J3v0"
+  }
+]

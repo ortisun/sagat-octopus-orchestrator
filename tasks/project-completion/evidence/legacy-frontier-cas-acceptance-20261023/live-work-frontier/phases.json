@@ -1,0 +1,46 @@
+[
+  {
+    "case": "live-work-frontier",
+    "role": "owner",
+    "phase": "producer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 5.0,
+    "artifact_run": "/tmp/sagat-completion-20261023/cas-final/artifacts-live-work-frontier/run.cny5Fs"
+  },
+  {
+    "case": "live-work-frontier",
+    "role": "owner",
+    "phase": "consumer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 1.61,
+    "artifact_run": "/tmp/sagat-completion-20261023/cas-final/artifacts-live-work-frontier/run.cny5Fs"
+  },
+  {
+    "case": "live-work-frontier",
+    "role": "runtime",
+    "phase": "producer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 4.9,
+    "artifact_run": "/tmp/sagat-completion-20261023/cas-final/artifacts-live-work-frontier/run.cny5Fs"
+  },
+  {
+    "case": "live-work-frontier",
+    "role": "runtime",
+    "phase": "consumer",
+    "native_exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "test_harness_seconds": 1.61,
+    "artifact_run": "/tmp/sagat-completion-20261023/cas-final/artifacts-live-work-frontier/run.cny5Fs"
+  }
+]

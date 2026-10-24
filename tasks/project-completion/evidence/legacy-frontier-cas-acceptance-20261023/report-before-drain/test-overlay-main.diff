@@ -1,0 +1,10 @@
+--- /tmp/sagat-completion-20261023/cas-final/artifacts-report-before-drain/run.GFSVdi/artifacts/old-main.original.rs	2026-10-24 00:03:14
++++ /tmp/sagat-completion-20261023/cas-final/artifacts-report-before-drain/run.GFSVdi/old-source/tests/integration/workflow-primitives/main.rs	2026-10-24 00:03:14
+@@ -26,6 +26,7 @@
+ mod chains_http;
+ mod collection_10k;
+ mod collection_budgets;
++mod legacy_collection_inflight_report_producer_v1;
+ mod collection_pipeline;
+ mod collection_restore;
+ mod collection_sources;

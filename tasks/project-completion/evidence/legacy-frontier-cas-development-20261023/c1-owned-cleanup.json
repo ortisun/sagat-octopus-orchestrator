@@ -1,0 +1,26 @@
+{
+  "database": "t_01a16bcdc9d375fc809b7fd012a22603",
+  "phase_started_epoch": 1792810011.059129,
+  "phase_ended_epoch": 1792810016.429879,
+  "inspection": {
+    "run_count": 1,
+    "stop_absent": true,
+    "target_open": 1,
+    "closed_scopes": 10,
+    "created_epoch": 1792810012.057103,
+    "logical_bytes": 2100000,
+    "original_lease": 1,
+    "workflow_names": [
+      "q10c-ordinary-before-drain-v1"
+    ],
+    "worker_subjects": [
+      "q10c-ordinary-worker"
+    ]
+  },
+  "ownership_basis": "exclusive repository Compose fixture, exact one-new DB after producer marker plus creation interval and original ordinary fixture content/profile; not arbitrary difference deletion",
+  "private_credentials_already_removed_before_drop": true,
+  "coordinator_refused_cleanup_due_missing_selector_mapping": true,
+  "before_count": 23,
+  "after_count": 22,
+  "other22_unchanged": true
+}

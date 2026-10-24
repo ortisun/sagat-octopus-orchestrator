@@ -1,0 +1,874 @@
+diff --git a/scripts/test-legacy-collection-inflight-report-v1.sh b/scripts/test-legacy-collection-inflight-report-v1.sh
+index eca2c2c1..b781be5c 100755
+--- a/scripts/test-legacy-collection-inflight-report-v1.sh
++++ b/scripts/test-legacy-collection-inflight-report-v1.sh
+@@ -7,7 +7,7 @@ readonly old_commit="6c44a0e49670cf19660792cd1518d241e6c99b3b"
+ case_name="report-before-drain"
+ if (( $# != 0 )); then
+   if (( $# != 2 )) || [[ "$1" != "--case" ]]; then
+-    echo "usage: $0 [--case report-before-drain|drain-before-report|cancellation-before-report|under-limit-increment-before-drain|live-work-frontier|live-work-frontier-red]" >&2
++    echo "usage: $0 [--case report-before-drain|drain-before-report|cancellation-before-report|under-limit-increment-before-drain|live-work-frontier|live-work-frontier-red|report-frontier-cas]" >&2
+     exit 2
+   fi
+   case_name="$2"
+@@ -39,6 +39,13 @@ case "${case_name}" in
+     artifact_namespace="sagat-q10c-ordinary-under-limit-increment-v1"
+     log_label="ordinary-under-limit-increment-before-drain"
+     ;;
++  report-frontier-cas)
++    old_test="legacy_collection_inflight_report_producer_v1::frozen_old_ordinary_success_before_drain_producer"
++    current_test="legacy_collection_inflight_report_v1::old_original_success_forces_frontier_cas_then_fresh_stopped_drain"
++    artifact_namespace="sagat-q10c-report-frontier-cas"
++    log_label="report-frontier-cas"
++    phase_seconds=300
++    ;;
+   live-work-frontier|live-work-frontier-red)
+     old_test="legacy_collection_inflight_report_producer_v1::frozen_old_ordinary_success_before_drain_producer"
+     current_test="legacy_collection_inflight_report_v1::old_live_work_frontier_drains_before_waiting"
+@@ -57,7 +64,7 @@ case "${case_name}" in
+ esac
+ readonly case_name old_test current_test artifact_namespace log_label phase_seconds expected_red_marker
+ # Bound the entire new fixture, including builds and cleanup, in a separate process group.
+-if [[ "${case_name}" == live-work-frontier || "${case_name}" == live-work-frontier-red ]] && [[ "${SAGAT_Q10C_SUPERVISED:-}" != 1 ]]; then
++if [[ "${case_name}" == live-work-frontier || "${case_name}" == live-work-frontier-red || "${case_name}" == report-frontier-cas ]] && [[ "${SAGAT_Q10C_SUPERVISED:-}" != 1 ]]; then
+   exec python3 - "$0" "$@" <<'SUPERVISOR'
+ import os,select,signal,subprocess,sys,time
+ child=None
+@@ -435,7 +442,7 @@ p=Path(sys.argv[1])
+ if stat.S_IMODE(p.stat().st_mode)!=0o600:raise SystemExit('receipt is not private')
+ v=json.loads(p.read_text())
+ fields='format source_commit database_name producer_api_role tenant_id other_tenant_id namespace_id namespace_slug worker_subject tenant_alias worker_id session_token run_id selected_owner scheduler_owner task_lease_b64 completion_request_b64 producer_projection_witness_sha256 closed_source_witness_sha256'.split()
+-formats={'report-before-drain':'q10c-ordinary-before-drain-v1','drain-before-report':'q10c-ordinary-before-drain-v1','cancellation-before-report':'q10c-ordinary-before-drain-v1','under-limit-increment-before-drain':'q10c-ordinary-under-limit-increment-v1','live-work-frontier':'q10c-ordinary-before-drain-v1','live-work-frontier-red':'q10c-ordinary-before-drain-v1'}
++formats={'report-frontier-cas':'q10c-ordinary-before-drain-v1','report-before-drain':'q10c-ordinary-before-drain-v1','drain-before-report':'q10c-ordinary-before-drain-v1','cancellation-before-report':'q10c-ordinary-before-drain-v1','under-limit-increment-before-drain':'q10c-ordinary-under-limit-increment-v1','live-work-frontier':'q10c-ordinary-before-drain-v1','live-work-frontier-red':'q10c-ordinary-before-drain-v1'}
+ if sys.argv[2] not in formats or set(v)!=set(fields) or v['format']!=formats[sys.argv[2]] or v['source_commit']!='6c44a0e49670cf19660792cd1518d241e6c99b3b' or v['selected_owner']!='c10':raise SystemExit('invalid private in-flight envelope')
+ role=v['producer_api_role']
+ if not isinstance(role,str) or not role or (sys.argv[3]=='runtime' and role!='sagat_app') or (sys.argv[3]=='owner' and role=='sagat_app'):raise SystemExit('in-flight receipt role mismatch')
+diff --git a/tests/fixtures/legacy-collection-inflight-report-v1/README.md b/tests/fixtures/legacy-collection-inflight-report-v1/README.md
+index 7286b793..fbb8c798 100644
+--- a/tests/fixtures/legacy-collection-inflight-report-v1/README.md
++++ b/tests/fixtures/legacy-collection-inflight-report-v1/README.md
+@@ -149,3 +149,41 @@ Use only the repository-declared healthchecked Compose fixture and an exclusive
+ private CARGO_TARGET_DIR outside checkouts. This adds §11.4(c) observation only;
+ CAS, equality/precedence, OS restart, rollout, provider undo and nesting remain
+ separate. Source certification/scoped Finish production activation stays closed.
++
++## Original report versus stale frontier
++
++`--case report-frontier-cas` reuses the ordinary immutable-old producer and its
++unchanged private19-field session/lease/request handoff. No registration, repoll,
++renewal or rebuilt completion occurs. With E4200020 and a live original reserve,
++a dedicated owner transaction locks the existing telemetry row. The real public
++refusal report must be observed waiting there while it already owns the run;
++a role-correct one-connection scheduler then reads the old frontier and is
++observed waiting behind that report at the exact native drain run-lock query.
++A pinned, distinct API-role observer checks both edges in fresh autocommit reads.
++
++Only then does the holder roll back. Original success must commit and deliver its
++ACK; stale public advance must return exact native Primitive RevisionConflict with
++the independently persisted report revision and no drain effect/metric. Fresh
++store/cache advancement must select stopped_for_run_data_limit, preserving the
++original stop. The accepted original-target/key compensation, held nonfinality,
++terminal COMPENSATED state, original-ACK replay and fresh verification follow.
++Stronger existing under-limit lifecycle witnesses also apply to this ordinary CAS
++case, with ordinary totals. The refused-report counter advances once; only the
++fresh committed drain increments the primitive rejection counter.
++
++The new90-second proof budget does not cancel cleanup: holder and actor handles
++remain owned outside it. Holder begins cancel-safely; identities include backend
++start to prevent PID reuse. Owner cleanup observes owner holder; API-role observer
++observes same-role report/scheduler and is released before API-pool closure. Every
++error releases the row barrier, joins or cancels identified actors, checks server
++transaction closure and bounds pool shutdown before surfacing failure. Emergency
++termination targets only a verified owned identity and always fails acceptance.
++
++```sh
++bash scripts/test-legacy-collection-inflight-report-v1.sh --case report-frontier-cas
++```
++
++This selector has300s native phases and the existing2400s whole supervisor with5s
++termination grace. All seven selectors must be rerun after shared lifecycle edits.
++This establishes only original-success/frontier CAS and fresh recovery, with no
++production/producer/schema/grant/SDK change or broader recovery/nesting guarantee.
+diff --git a/tests/integration/workflow-primitives/legacy_collection_inflight_report_v1.rs b/tests/integration/workflow-primitives/legacy_collection_inflight_report_v1.rs
+index f71e89eb..8427e640 100644
+--- a/tests/integration/workflow-primitives/legacy_collection_inflight_report_v1.rs
++++ b/tests/integration/workflow-primitives/legacy_collection_inflight_report_v1.rs
+@@ -2203,7 +2203,32 @@ async fn finish_after_compensation(
+     panic!("the run did not reach its real terminal outcome after compensation");
+ }
+ 
++#[derive(Clone, Copy, PartialEq, Eq)]
++enum ReportDelivery {
++    Direct,
++    FrontierCas,
++}
++
+ async fn run_report_before_drain_case(preset: FixturePreset) {
++    run_report_before_drain_delivery(preset, ReportDelivery::Direct).await;
++}
++
++#[tokio::test(flavor = "current_thread")]
++#[ignore = "requires the separate immutable-old ordinary producer; see fixture README"]
++async fn old_original_success_forces_frontier_cas_then_fresh_stopped_drain() {
++    run_report_before_drain_delivery(FixturePreset::Ordinary, ReportDelivery::FrontierCas).await;
++}
++
++async fn run_report_before_drain_delivery(preset: FixturePreset, delivery: ReportDelivery) {
++    let cas = delivery == ReportDelivery::FrontierCas;
++    assert!(
++        !cas || preset == FixturePreset::Ordinary,
++        "CAS uses unchanged ordinary byte preset"
++    );
++    if cas {
++        let _ = sagat_telemetry::Metrics::global();
++    }
++    let strong = preset == FixturePreset::UnderLimitIncrement || cas;
+     let receipt_path = std::env::var_os("SAGAT_Q10C_ORDINARY_PHASE_RECEIPT")
+         .map(std::path::PathBuf::from)
+         .expect("phased runner receipt path");
+@@ -2215,10 +2240,10 @@ async fn run_report_before_drain_case(preset: FixturePreset) {
+             & 0o777,
+         0o600
+     );
+-    let receipt = Receipt::parse_for(
++    let receipt = Arc::new(Receipt::parse_for(
+         &std::fs::read(&receipt_path).expect("read private receipt"),
+         preset,
+-    );
++    ));
+     assert_wire_identity(&receipt);
+ 
+     let admin_url = std::env::var("SAGAT_TEST_DATABASE_URL")
+@@ -2252,7 +2277,11 @@ async fn run_report_before_drain_case(preset: FixturePreset) {
+         source_witness(&db.pool, receipt.tenant, receipt.run).await == receipt.source_witness,
+         "closed source witness changed during migration"
+     );
+-    let api = start_on_db(db, current_options()).await;
++    let mut options = current_options();
++    if cas {
++        options.statement_timeout = Duration::from_secs(30);
++    }
++    let api = start_on_db(db, options).await;
+     let platform = Platform {
+         api,
+         tenant: receipt.tenant,
+@@ -2308,16 +2337,27 @@ async fn run_report_before_drain_case(preset: FixturePreset) {
+     let footprint_before_report =
+         under_limit_execution_footprint(&platform.api.db.pool, &receipt).await;
+ 
++    let reservations_before_report =
++        reservation_usage_fingerprint(&platform.api.db.pool, &receipt).await;
+     let outboxes_before = outboxes(&platform.api.db.pool, &receipt).await;
+     let payloads_before = payloads(&platform.api.db.pool, &receipt).await;
+     let lookups_before = platform.api.authentication_lookups();
+-    let request = worker.req(receipt.completion.clone());
+-    let accepted = worker
+-        .client
+-        .complete_step(request)
+-        .await
+-        .expect("submit exact immutable-old completion under current authentication")
+-        .into_inner();
++    let cas_rejections_before = if cas {
++        Some(cas_primitive_rejections())
++    } else {
++        None
++    };
++    let accepted = if cas {
++        submit_original_report_with_frontier_cas(&platform.api, receipt.clone(), &mut worker).await
++    } else {
++        let request = worker.req(receipt.completion.clone());
++        worker
++            .client
++            .complete_step(request)
++            .await
++            .expect("submit exact immutable-old completion under current authentication")
++            .into_inner()
++    };
+     assert!(!accepted.already_applied);
+     assert_eq!(accepted.step_status, "SUCCEEDED");
+     assert_eq!(accepted.run_status, "CANCELLING");
+@@ -2332,7 +2372,7 @@ async fn run_report_before_drain_case(preset: FixturePreset) {
+         Some("RUN_DATA_LIMIT"),
+     )
+     .await;
+-    if preset == FixturePreset::UnderLimitIncrement {
++    if strong {
+         assert_under_limit_report_boundary(&platform.api.db.pool, &receipt).await;
+         assert!(
+             output_reference_fingerprint(&platform.api.db.pool, &receipt).await
+@@ -2341,7 +2381,7 @@ async fn run_report_before_drain_case(preset: FixturePreset) {
+         );
+         assert_eq!(
+             effective_totals(&platform.api.db.pool, &receipt).await,
+-            (2_000_000, 2_000_020, 4_000_020)
++            preset.expected_totals()
+         );
+     }
+     let original_report_receipt =
+@@ -2350,6 +2390,16 @@ async fn run_report_before_drain_case(preset: FixturePreset) {
+         identity_witness(&platform.api.db.pool, &receipt).await == authority_before,
+         "ordinary report changed persisted worker authority"
+     );
++    let original_cas_stop = if cas {
++        assert!(
++            reservation_usage_fingerprint(&platform.api.db.pool, &receipt).await
++                == reservations_before_report,
++            "committed report and rejected CAS preserve exact original reservations/run/tenant usage"
++        );
++        Some(cas_report_stop(&platform.api.db.pool, &receipt).await)
++    } else {
++        None
++    };
+     drop(pre_report_scheduler);
+ 
+     fresh_verify(&platform.api, &receipt).await;
+@@ -2384,6 +2434,16 @@ async fn run_report_before_drain_case(preset: FixturePreset) {
+         "exact replay changed persisted worker authority"
+     );
+ 
++    if cas {
++        assert!(
++            reservation_usage_fingerprint(&platform.api.db.pool, &receipt).await
++                == reservations_before_report
++                && cas_report_stop(&platform.api.db.pool, &receipt).await
++                    == *original_cas_stop.as_ref().expect("original CAS stop"),
++            "canonical report replay preserves original stop and capacity before any fresh scheduling"
++        );
++    }
++
+     let stored_owner: (i64, i64, Option<String>, Option<String>) = sqlx::query_as(
+         "SELECT count(*) FILTER (WHERE owner IS NOT NULL), \
+                 count(DISTINCT owner) FILTER (WHERE owner IS NOT NULL),min(owner),max(owner) \
+@@ -2403,7 +2463,7 @@ async fn run_report_before_drain_case(preset: FixturePreset) {
+         Some(receipt.scheduler_owner.as_str())
+     );
+ 
+-    let scheduler = if preset == FixturePreset::UnderLimitIncrement {
++    let scheduler = if strong {
+         fresh_scheduler(&platform.api, &receipt).await
+     } else {
+         let placement = Placement::new(receipt.scheduler_owner.clone());
+@@ -2432,12 +2492,38 @@ async fn run_report_before_drain_case(preset: FixturePreset) {
+         .with_placement(placement)
+     };
+ 
+-    let drain_report = scheduler.tick().await;
+-    assert_eq!(
+-        drain_report.failed, 0,
+-        "normal durable discovery: {drain_report:?}"
+-    );
+-    assert_eq!(drain_report.collections_advanced, 1, "{drain_report:?}");
++    if cas {
++        let owner = ExecutionInstanceId::root(NodeId::parse("c10").expect("target owner"));
++        assert!(
++            matches!(
++                scheduler
++                    .advance_collection(receipt.tenant, receipt.run, &owner)
++                    .await,
++                Ok(CollectionAdvance::DrainStarted)
++            ),
++            "fresh frontier selects stopped-for-limit drain"
++        );
++        assert!(
++            cas_primitive_rejections()
++                == cas_rejections_before.expect("captured rejection metric") + 1.0,
++            "only the fresh committed drain increments primitive rejection counter"
++        );
++    } else {
++        let drain_report = scheduler.tick().await;
++        assert_eq!(
++            drain_report.failed, 0,
++            "normal durable discovery: {drain_report:?}"
++        );
++        assert_eq!(drain_report.collections_advanced, 1, "{drain_report:?}");
++    }
++    if cas {
++        assert!(
++            cas_report_stop(&platform.api.db.pool, &receipt).await
++                == *original_cas_stop.as_ref().expect("original CAS stop"),
++            "fresh drain preserves complete original report-created stop identity"
++        );
++        assert_cas_fresh_drain_boundary(&platform.api.db.pool, &receipt).await;
++    }
+     let drain: (String, String, Option<String>, i64, i64, i64, i64, i64) = sqlx::query_as(
+         "SELECT scope.lifecycle,scope.drain_kind,scope.drain_failure_code, \
+           (SELECT count(*) FROM run_events WHERE tenant_id=$1 AND run_id=$2 \
+@@ -2477,7 +2563,7 @@ async fn run_report_before_drain_case(preset: FixturePreset) {
+         outboxes(&platform.api.db.pool, &receipt).await,
+         outboxes_before + 1
+     );
+-    let stopped_limit_identity = if preset == FixturePreset::UnderLimitIncrement {
++    let stopped_limit_identity = if strong {
+         let drain_evidence: (i64, i64, i64, i64, i64) = sqlx::query_as(
+             "SELECT \
+               count(*) FILTER (WHERE reason='stopped_for_run_data_limit'), \
+@@ -2500,7 +2586,7 @@ async fn run_report_before_drain_case(preset: FixturePreset) {
+         assert_eq!(drain_evidence, (1, 0, 0, 1, 1));
+         assert_eq!(
+             effective_totals(&platform.api.db.pool, &receipt).await,
+-            (2_000_000, 2_000_020, 4_000_020)
++            preset.expected_totals()
+         );
+         Some(stopped_limit_drain_fingerprint(&platform.api.db.pool, &receipt).await)
+     } else {
+@@ -2532,7 +2618,7 @@ async fn run_report_before_drain_case(preset: FixturePreset) {
+     assert_eq!(compensation_instance.instance_path.len(), 1);
+     assert_eq!(compensation_instance.instance_path[0].scope_node_id, "c10");
+     assert_eq!(compensation_instance.instance_path[0].iteration_index, 0);
+-    if preset == FixturePreset::UnderLimitIncrement {
++    if strong {
+         let input: Value = serde_json::from_str(&compensation.input_json)
+             .expect("ordinary compensation task context");
+         assert_eq!(input["item"], json!(1));
+@@ -2633,7 +2719,7 @@ async fn run_report_before_drain_case(preset: FixturePreset) {
+         identity_witness(&platform.api.db.pool, &receipt).await == authority_before,
+         "compensation changed persisted worker authority"
+     );
+-    if preset == FixturePreset::UnderLimitIncrement {
++    if strong {
+         let compensation_output_absent: bool = sqlx::query_scalar(
+             "SELECT output_digest IS NULL FROM steps WHERE tenant_id=$1 AND run_id=$2 \
+               AND node='reserve~c' AND instance_path_nodes=ARRAY['c10']::text[] \
+@@ -2697,7 +2783,7 @@ async fn run_report_before_drain_case(preset: FixturePreset) {
+         );
+         assert_eq!(
+             effective_totals(&platform.api.db.pool, &receipt).await,
+-            (2_000_000, 2_000_020, 4_000_020)
++            preset.expected_totals()
+         );
+         assert!(
+             footprint_before_report != before_terminal_replay,
+@@ -4023,3 +4109,533 @@ async fn old_ordinary_success_after_cancellation_drain_preserves_the_original_st
+     assert_cancellation_data_limit_audits(&platform.api.db.pool, &receipt, 1).await;
+     fresh_verify(&platform.api, &receipt).await;
+ }
++
++fn cas_counter(name: &str, labels: &[(&str, &str)]) -> f64 {
++    sagat_telemetry::Metrics::global()
++        .render()
++        .lines()
++        .filter(|line| {
++            line.starts_with(&format!("{name}{{"))
++                && labels
++                    .iter()
++                    .all(|(key, value)| line.contains(&format!("{key}=\"{value}\"")))
++        })
++        .filter_map(|line| line.split_whitespace().last()?.parse::<f64>().ok())
++        .sum()
++}
++
++fn cas_primitive_rejections() -> f64 {
++    cas_counter(
++        "workflow_primitive_rejections_total",
++        &[("kind", "collection"), ("code", "RUN_DATA_LIMIT")],
++    )
++}
++
++#[derive(Clone)]
++struct CasBackend {
++    pid: i32,
++    started: String,
++    role: String,
++    database: String,
++}
++
++async fn cas_backend(connection: &mut sqlx::PgConnection) -> Result<CasBackend, &'static str> {
++    let row=tokio::time::timeout(Duration::from_secs(3),sqlx::query(
++        "SELECT pid,backend_start::text,usename::text,datname::text FROM pg_stat_activity WHERE pid=pg_backend_pid()")
++        .fetch_one(connection)).await.map_err(|_|"backend identity deadline")?.map_err(|_|"backend identity query")?;
++    Ok(CasBackend {
++        pid: row.get("pid"),
++        started: row.get("backend_start"),
++        role: row.get("usename"),
++        database: row.get("datname"),
++    })
++}
++
++const CAS_DRAIN_LOCK: &str = "SELECT namespace_id,workflow_version_id,run_version,status,stop_reason,stop_code,paused FROM runs WHERE tenant_id=$1 AND id=$2 FOR UPDATE";
++
++async fn cas_wait_report(
++    observer: &mut sqlx::PgConnection,
++    holder: &CasBackend,
++    expected_role: &str,
++    report: &tokio::task::JoinHandle<
++        Result<sagat_api_grpc::pb::StepCommandResponse, tonic::Status>,
++    >,
++) -> Result<CasBackend, &'static str> {
++    tokio::time::timeout(Duration::from_secs(5),async {
++        loop {
++            let rows=sqlx::query("SELECT pid,backend_start::text,usename::text,datname::text FROM pg_stat_activity WHERE datname=$1 AND usename=$2 AND state='active' AND wait_event_type='Lock' AND query LIKE 'INSERT INTO telemetry_pending %' AND $3=ANY(pg_blocking_pids(pid))")
++                .bind(&holder.database).bind(expected_role).bind(holder.pid).fetch_all(&mut *observer).await.map_err(|_|"report wait observation query")?;
++            if rows.len()>1 {return Err("ambiguous report backend");}
++            if let Some(row)=rows.first() {return Ok(CasBackend{pid:row.get("pid"),started:row.get("backend_start"),role:row.get("usename"),database:row.get("datname")});}
++            if report.is_finished(){return Err("report ended before telemetry barrier");}
++            tokio::task::yield_now().await;
++        }
++    }).await.map_err(|_|"report wait observation deadline")?
++}
++
++async fn cas_wait_native_drain(
++    observer: &mut sqlx::PgConnection,
++    holder: &CasBackend,
++    report: &CasBackend,
++    scheduler: &CasBackend,
++) -> Result<(), &'static str> {
++    tokio::time::timeout(Duration::from_secs(5),async {
++        loop {
++            let blocked:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity s JOIN pg_stat_activity r ON r.pid=$2 WHERE s.pid=$1 AND s.backend_start::text=$3 AND r.backend_start::text=$4 AND s.datname=$5 AND r.datname=$5 AND s.usename=$6 AND r.usename=$6 AND s.state='active' AND r.state='active' AND s.wait_event_type='Lock' AND r.wait_event_type='Lock' AND s.query=$7 AND r.query LIKE 'INSERT INTO telemetry_pending %' AND r.pid=ANY(pg_blocking_pids(s.pid)) AND $8=ANY(pg_blocking_pids(r.pid)))")
++                .bind(scheduler.pid).bind(report.pid).bind(&scheduler.started).bind(&report.started)
++                .bind(&scheduler.database).bind(&scheduler.role).bind(CAS_DRAIN_LOCK).bind(holder.pid)
++                .fetch_one(&mut *observer).await.map_err(|_|"native drain wait observation query")?;
++            if blocked {return Ok(());}
++            tokio::task::yield_now().await;
++        }
++    }).await.map_err(|_|"native drain wait observation deadline")?
++}
++
++async fn cas_idle(
++    observer: &mut sqlx::PgConnection,
++    backend: &CasBackend,
++) -> Result<bool, &'static str> {
++    let idle:bool=tokio::time::timeout(Duration::from_secs(3),sqlx::query_scalar(
++        "SELECT NOT EXISTS(SELECT 1 FROM pg_stat_activity WHERE pid=$1 AND backend_start::text=$2 AND datname=$3 AND usename=$4 AND (xact_start IS NOT NULL OR state IS DISTINCT FROM 'idle'))")
++        .bind(backend.pid).bind(&backend.started).bind(&backend.database).bind(&backend.role).fetch_one(observer))
++        .await.map_err(|_|"backend idle deadline")?.map_err(|_|"backend idle query")?;
++    Ok(idle)
++}
++
++async fn cas_terminate_owned(pool: &PgPool, backend: &CasBackend) -> bool {
++    let result=tokio::time::timeout(Duration::from_secs(3),sqlx::query_scalar::<_,bool>(
++        "SELECT coalesce(bool_and(pg_terminate_backend(pid)),true) FROM pg_stat_activity WHERE pid=$1 AND backend_start::text=$2 AND datname=$3 AND usename=$4 AND pid<>pg_backend_pid()")
++        .bind(backend.pid).bind(&backend.started).bind(&backend.database).bind(&backend.role).fetch_one(pool)).await;
++    matches!(result, Ok(Ok(true)))
++}
++
++async fn cas_wait_idle(observer: &mut sqlx::PgConnection, backend: &CasBackend) -> bool {
++    matches!(
++        tokio::time::timeout(Duration::from_secs(5), async {
++            loop {
++                if cas_idle(observer, backend).await? {
++                    return Ok::<(), &'static str>(());
++                }
++                tokio::task::yield_now().await;
++            }
++        })
++        .await,
++        Ok(Ok(()))
++    )
++}
++
++async fn cas_footprint_matches(
++    pool: PgPool,
++    receipt: Arc<Receipt>,
++    expected: String,
++) -> Result<(), &'static str> {
++    let mut task =
++        tokio::spawn(
++            async move { under_limit_execution_footprint(&pool, &receipt).await == expected },
++        );
++    let result = tokio::time::timeout(Duration::from_secs(4), &mut task).await;
++    match result {
++        Ok(Ok(true)) => Ok(()),
++        Ok(Ok(false)) => Err("committed footprint changed while report blocked"),
++        Ok(Err(_)) => Err("footprint task failed"),
++        Err(_) => {
++            task.abort();
++            let _ = task.await;
++            Err("footprint task deadline")
++        }
++    }
++}
++
++async fn cas_join<T: Send + 'static>(handle: &mut tokio::task::JoinHandle<T>) -> Option<T> {
++    match tokio::time::timeout(Duration::from_secs(10), &mut *handle).await {
++        Ok(Ok(value)) => Some(value),
++        Ok(Err(_)) => None,
++        Err(_) => {
++            handle.abort();
++            let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
++            None
++        }
++    }
++}
++
++async fn cas_close(pool: &PgPool) -> bool {
++    tokio::time::timeout(Duration::from_secs(5), pool.close())
++        .await
++        .is_ok()
++}
++
++async fn submit_original_report_with_frontier_cas(
++    api: &TestApi,
++    receipt: Arc<Receipt>,
++    worker: &mut Worker<'_>,
++) -> sagat_api_grpc::pb::StepCommandResponse {
++    use sagat_infra_postgres::BeginSafely as _;
++    let role_url = if crate::support::as_runtime_role() {
++        api.db.url_for(RUNTIME_ROLE, RUNTIME_ROLE_PASSWORD)
++    } else {
++        api.db.url.clone()
++    };
++    let mut actor_config = PoolConfig::new(role_url);
++    actor_config.max_connections = 1;
++    actor_config.statement_timeout = Duration::from_secs(30);
++    let scheduler_pool = tokio::time::timeout(Duration::from_secs(5), connect(&actor_config))
++        .await
++        .expect("CAS actor connection deadline")
++        .expect("CAS actor pool");
++    let mut scheduler_connection = scheduler_pool
++        .acquire()
++        .await
++        .expect("CAS actor identity connection");
++    let scheduler_backend = cas_backend(&mut scheduler_connection)
++        .await
++        .expect("CAS actor identity");
++    assert!(
++        scheduler_backend.role == receipt.producer_api_role
++            && scheduler_backend.database == receipt.database_name,
++        "dedicated scheduler uses actual selected API role and exact retained database"
++    );
++    drop(scheduler_connection);
++    let store = PgRunStore::new(
++        scheduler_pool.clone(),
++        DefinitionCache::new(Arc::new(JsonIrCodec), 8),
++    )
++    .with_scoped_worker_protocol();
++    let placement = Placement::new(receipt.scheduler_owner.clone());
++    let keeper = Keeper::new(
++        store.clone(),
++        placement.clone(),
++        KeeperSettings {
++            ttl: Duration::from_secs(3_600),
++        },
++    );
++    let round = keeper
++        .round()
++        .await
++        .expect("normal pre-barrier Keeper renewal");
++    assert!(
++        round.replicas == 1
++            && round.held == usize::from(SHARDS)
++            && placement.owned().contains(Shard::of(receipt.run.as_uuid())),
++        "actual original scheduler authority before the race"
++    );
++    let scheduler = Scheduler::new(
++        store,
++        Engine::new(JsonEvaluator),
++        SystemEntropy,
++        SchedulerSettings {
++            discovery_rest: Duration::ZERO,
++            ..SchedulerSettings::default()
++        },
++    )
++    .with_placement(placement);
++    let mut inspection_config = PoolConfig::new(api.db.url.clone());
++    inspection_config.max_connections = 2;
++    inspection_config.statement_timeout = Duration::from_secs(3);
++    let inspection_pool = tokio::time::timeout(Duration::from_secs(5), connect(&inspection_config))
++        .await
++        .expect("bounded owner inspection connection")
++        .expect("owner inspection pool");
++    // Pin owner cleanup C before any barrier; the other inspection connection serves witnesses.
++    let mut cleanup_connection = inspection_pool
++        .acquire()
++        .await
++        .expect("owner cleanup connection");
++    let cleanup_backend = cas_backend(&mut cleanup_connection)
++        .await
++        .expect("owner cleanup identity");
++    assert!(
++        cleanup_backend.role != RUNTIME_ROLE && cleanup_backend.database == receipt.database_name,
++        "owner-only holder cleanup visibility"
++    );
++    let mut holder_config = PoolConfig::new(api.db.url.clone());
++    holder_config.max_connections = 1;
++    holder_config.statement_timeout = Duration::from_secs(30);
++    let holder_pool = tokio::time::timeout(Duration::from_secs(5), connect(&holder_config))
++        .await
++        .expect("holder connection deadline")
++        .expect("holder pool");
++    let mut warm = holder_pool
++        .acquire()
++        .await
++        .expect("holder identity connection");
++    let holder_backend = cas_backend(&mut warm).await.expect("holder identity");
++    drop(warm);
++    let mut observer = tokio::time::timeout(Duration::from_secs(5), api.api_pool.acquire())
++        .await
++        .expect("observer connection deadline")
++        .expect("pinned observer connection");
++    let observer_backend = cas_backend(&mut observer).await.expect("observer identity");
++    assert!(
++        observer_backend.role == receipt.producer_api_role
++            && observer_backend.database == receipt.database_name
++            && observer_backend.pid != holder_backend.pid
++            && observer_backend.pid != scheduler_backend.pid
++            && cleanup_backend.pid != holder_backend.pid
++            && cleanup_backend.pid != scheduler_backend.pid,
++        "independent pinned observer, owner holder/cleanup and scheduler sessions"
++    );
++    let baseline=sqlx::query("SELECT r.run_version,t.head_seq,(SELECT count(*) FROM chain_segments c WHERE c.tenant_id=r.tenant_id AND c.run_id=r.id) AS chains FROM runs r JOIN telemetry_pending t ON t.tenant_id=r.tenant_id AND t.run_id=r.id WHERE r.tenant_id=$1 AND r.id=$2")
++        .bind(receipt.tenant.as_uuid()).bind(receipt.run.as_uuid()).fetch_one(&inspection_pool).await.expect("actual old revision/telemetry/unchained source");
++    let v0 = baseline.get::<i64, _>("run_version");
++    assert!(
++        baseline.get::<i64, _>("head_seq") == v0 && baseline.get::<i64, _>("chains") == 0,
++        "existing original telemetry row and no chain prefix"
++    );
++    let original_outputs = output_reference_fingerprint(&inspection_pool, &receipt).await;
++    assert_initial_drain_first_state(&inspection_pool, &receipt, &original_outputs).await;
++    assert_cas_initial_frontier(api, &inspection_pool, &receipt, v0).await;
++    let before = under_limit_execution_footprint(&inspection_pool, &receipt).await;
++    let refusal_before = cas_counter(
++        "worker_scoped_output_refused_total",
++        &[("reason", "run_data_limit")],
++    );
++    let rejections_before = cas_primitive_rejections();
++    assert_live_target(&inspection_pool, &receipt, false).await;
++    assert_eq!(
++        effective_totals(&inspection_pool, &receipt).await,
++        FixturePreset::Ordinary.expected_totals()
++    );
++    let mut holder = tokio::time::timeout(Duration::from_secs(5), holder_pool.begin_safely())
++        .await
++        .expect("cancel-safe holder begin deadline")
++        .expect("cancel-safe holder begin");
++    let mut report_task = None;
++    let mut scheduler_task = None;
++    let mut report_backend = None;
++    let mut scheduler = Some(scheduler);
++    // Only this proof is cancelled at90s; holder and actor handles live outside it for cleanup.
++    let proof=tokio::time::timeout(Duration::from_secs(90),async {
++        let actual_holder=cas_backend(&mut holder).await?;
++        if actual_holder.pid!=holder_backend.pid || actual_holder.started!=holder_backend.started
++            || actual_holder.role!=holder_backend.role || actual_holder.database!=holder_backend.database {
++            return Err("holder connection identity changed before locking");
++        }
++        let existing=tokio::time::timeout(Duration::from_secs(5),sqlx::query_scalar::<_,i64>(
++            "SELECT head_seq FROM telemetry_pending WHERE tenant_id=$1 AND run_id=$2 FOR UPDATE")
++            .bind(receipt.tenant.as_uuid()).bind(receipt.run.as_uuid()).fetch_one(&mut *holder))
++            .await.map_err(|_|"telemetry holder lock deadline")?.map_err(|_|"telemetry holder lock query")?;
++        if existing!=v0 {return Err("telemetry changed before barrier");}
++        let mut client=worker.client.clone();let request=worker.req(receipt.completion.clone());
++        report_task=Some(tokio::spawn(async move{client.complete_step(request).await.map(tonic::Response::into_inner)}));
++        let reporter=cas_wait_report(&mut observer,&holder_backend,&receipt.producer_api_role,
++            report_task.as_ref().ok_or("missing report actor")?).await?;
++        if reporter.pid==observer_backend.pid || reporter.pid==scheduler_backend.pid || reporter.pid==holder_backend.pid {
++            return Err("report actor is not distinct");
++        }
++        report_backend=Some(reporter.clone());
++        cas_footprint_matches(inspection_pool.clone(),receipt.clone(),before.clone()).await?;
++        let actor=scheduler.take().ok_or("missing scheduler actor")?;
++        let tenant=receipt.tenant;let run=receipt.run;
++        let owner=ExecutionInstanceId::root(NodeId::parse("c10").map_err(|_|"fixed owner identity")?);
++        scheduler_task=Some(tokio::spawn(async move{actor.advance_collection(tenant,run,&owner).await}));
++        cas_wait_native_drain(&mut observer,&holder_backend,&reporter,&scheduler_backend).await?;
++        cas_footprint_matches(inspection_pool.clone(),receipt.clone(),before.clone()).await?;
++        cas_wait_native_drain(&mut observer,&holder_backend,&reporter,&scheduler_backend).await?;
++        Ok::<(),&'static str>(())
++    }).await.unwrap_or(Err("CAS proof budget exceeded"));
++    // No assertions are surfaced while a row barrier remains held.
++    let rolled_back = matches!(
++        tokio::time::timeout(Duration::from_secs(5), holder.rollback()).await,
++        Ok(Ok(()))
++    );
++    let mut cleanup_ok = rolled_back;
++    let mut emergency_release_verified = true;
++    if !rolled_back {
++        let _ = tokio::time::timeout(Duration::from_secs(1), holder_pool.close()).await;
++        cleanup_ok &= cas_terminate_owned(&inspection_pool, &holder_backend).await;
++    }
++    let holder_idle = cas_wait_idle(&mut cleanup_connection, &holder_backend).await;
++    let mut holder_release_verified = holder_idle;
++    cleanup_ok &= holder_idle;
++    if !holder_idle {
++        let terminated = cas_terminate_owned(&inspection_pool, &holder_backend).await;
++        let released = cas_wait_idle(&mut cleanup_connection, &holder_backend).await;
++        holder_release_verified = terminated && released;
++        cleanup_ok = false;
++    }
++    if !holder_release_verified {
++        // Never await normally blocked operations when holder release could not be proved.
++        // Abort/reap their client tasks; the server-state checks below remain mandatory.
++        if let Some(ref task) = report_task {
++            task.abort();
++        }
++        if let Some(ref task) = scheduler_task {
++            task.abort();
++        }
++    }
++    let report_result = if let Some(ref mut task) = report_task {
++        cas_join(task).await
++    } else {
++        None
++    };
++    let scheduler_result = if let Some(ref mut task) = scheduler_task {
++        cas_join(task).await
++    } else {
++        None
++    };
++    if let Some(ref reporter) = report_backend
++        && !cas_wait_idle(&mut observer, reporter).await
++    {
++        let terminated = cas_terminate_owned(&inspection_pool, reporter).await;
++        let released = cas_wait_idle(&mut observer, reporter).await;
++        emergency_release_verified &= terminated && released;
++        cleanup_ok = false;
++    }
++    if !cas_wait_idle(&mut observer, &scheduler_backend).await {
++        let terminated = cas_terminate_owned(&inspection_pool, &scheduler_backend).await;
++        let released = cas_wait_idle(&mut observer, &scheduler_backend).await;
++        emergency_release_verified &= terminated && released;
++        cleanup_ok = false;
++    }
++    cleanup_ok &= emergency_release_verified;
++    drop(observer); // Never close the API pool while its observer is pinned.
++    drop(scheduler);
++    drop(keeper);
++    cleanup_ok &= cas_close(&scheduler_pool).await;
++    cleanup_ok &= cas_close(&holder_pool).await;
++    if proof.is_err()
++        || report_result.as_ref().is_none_or(|result| result.is_err())
++        || scheduler_result.is_none()
++        || !cleanup_ok
++    {
++        // With an unidentified reporter, closing the whole owned API pool is the server cleanup proof.
++        cleanup_ok &= tokio::time::timeout(Duration::from_secs(35), api.api_pool.close())
++            .await
++            .is_ok();
++        cleanup_ok &= cas_wait_role_quiescent(
++            &mut cleanup_connection,
++            &receipt.database_name,
++            &receipt.producer_api_role,
++        )
++        .await;
++    }
++    drop(cleanup_connection);
++    cleanup_ok &= cas_close(&inspection_pool).await;
++    assert!(cleanup_ok, "CAS actors/holder did not close cleanly");
++    assert!(
++        proof.is_ok(),
++        "held telemetry/native frontier proof failed: {}",
++        proof.err().unwrap_or("none")
++    );
++    let accepted = match report_result {
++        Some(Ok(ack)) => ack,
++        _ => panic!("original report did not deliver its accepted ACK"),
++    };
++    let current = match scheduler_result {
++        Some(Err(sagat_scheduler::CollectionAdvanceError::Primitive(
++            PrimitiveStoreError::RevisionConflict { current },
++        ))) => current,
++        _ => panic!("stale public frontier did not return exact native RevisionConflict"),
++    };
++    let v1: i64 = sqlx::query_scalar("SELECT run_version FROM runs WHERE tenant_id=$1 AND id=$2")
++        .bind(receipt.tenant.as_uuid())
++        .bind(receipt.run.as_uuid())
++        .fetch_one(&api.db.pool)
++        .await
++        .expect("independent post-report revision");
++    assert!(
++        v1 > v0
++            && current == u64::try_from(v1).expect("positive committed revision")
++            && accepted.command_id == format!("{}:{v1}", receipt.run),
++        "native CAS current revision equals real committed report and ACK"
++    );
++    assert!(
++        cas_counter(
++            "worker_scoped_output_refused_total",
++            &[("reason", "run_data_limit")]
++        ) == refusal_before + 1.0
++            && cas_primitive_rejections() == rejections_before,
++        "report increments once; rejected stale drain emits no rejection metric"
++    );
++    println!(
++        "observed_report_frontier_cas=true holder_pid={} report_pid={} scheduler_pid={} observer_pid={} original_revision={} committed_revision={}",
++        holder_backend.pid,
++        report_backend.expect("observed original report actor").pid,
++        scheduler_backend.pid,
++        observer_backend.pid,
++        v0,
++        v1
++    );
++    accepted
++}
++
++async fn assert_cas_initial_frontier(api: &TestApi, pool: &PgPool, receipt: &Receipt, head: i64) {
++    use sagat_application::scope_frontier::ScopeFrontierStore as _;
++    let owner = ExecutionInstanceId::root(NodeId::parse("c10").expect("selected owner"));
++    let frontier = api
++        .executions
++        .collection_frontier(receipt.tenant, receipt.run, &owner)
++        .await
++        .expect("actual initial CAS frontier")
++        .expect("selected CAS scope");
++    let inventory = live_frontier_inventory(pool, receipt).await;
++    assert!(
++        frontier.phase == sagat_domain::execution::CollectionPhase::Open
++            && frontier.run.version == u64::try_from(head).expect("positive original revision")
++            && frontier.scope_id.as_uuid().to_string() == inventory["scope_id"]
++            && frontier.run.stop_reason.is_none()
++            && frontier.run.stop_code.is_none()
++            && frontier.run.effective_output_bytes == 4_200_020
++            && frontier.item_count == 1
++            && frontier.next_admission == 1
++            && frontier.completed == 0
++            && frontier.max_concurrency == 1
++            && frontier.active.len() == 1,
++        "actual v0 OPEN/no-stop over-budget CAS source with no admission capacity"
++    );
++    let member = &frontier.active[0];
++    assert!(
++        member.index == 0
++            && member.first_failure().is_none()
++            && member.pending_return(&frontier.run.definition).is_none()
++            && member.entry.node().as_str() == "reserve"
++            && member.entry.path().segments().len() == 1
++            && member.entry.path().segments()[0].scope_node().as_str() == "c10"
++            && member.entry.path().segments()[0].iteration_index() == 0
++            && member.steps.len() == 1
++            && member.steps.get(&member.entry).is_some_and(|s| s.status()
++                == sagat_domain::execution::StepStatus::Leased
++                && !s.cancel_requested()),
++        "one original live uncancelled member without failure or pending Return"
++    );
++}
++
++async fn cas_report_stop(pool: &PgPool, receipt: &Receipt) -> String {
++    let stop:Value=sqlx::query_scalar("SELECT jsonb_build_object('reason',r.stop_reason,'code',r.stop_code,'trace',r.trace_id,'events',(SELECT jsonb_agg(to_jsonb(e) ORDER BY e.seq) FROM run_events e WHERE e.tenant_id=r.tenant_id AND e.run_id=r.id AND e.event_type='run.stop_requested')) FROM runs r WHERE r.tenant_id=$1 AND r.id=$2")
++        .bind(receipt.tenant.as_uuid()).bind(receipt.run.as_uuid()).fetch_one(pool).await.expect("complete original report stop identity");
++    assert!(
++        stop["reason"] == "FAILED"
++            && stop["code"] == "RUN_DATA_LIMIT"
++            && stop["events"]
++                .as_array()
++                .is_some_and(|events| events.len() == 1
++                    && events[0]["detail"] == json!({"reason":"FAILED","code":"RUN_DATA_LIMIT"})
++                    && events[0]["trace_id"] == stop["trace"]),
++        "exact single original report-created stop and original trace"
++    );
++    sha(&stop)
++}
++
++async fn assert_cas_fresh_drain_boundary(pool: &PgPool, receipt: &Receipt) {
++    let valid:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM runs r JOIN iteration_scopes s ON s.tenant_id=r.tenant_id AND s.run_id=r.id AND s.owner_node='c10' AND s.owner_path_nodes='{}'::text[] JOIN run_events stop ON stop.tenant_id=r.tenant_id AND stop.run_id=r.id AND stop.event_type='run.stop_requested' JOIN run_events completed ON completed.tenant_id=r.tenant_id AND completed.run_id=r.id AND completed.event_type='step.completed' AND completed.node='reserve' AND completed.instance_path_nodes=ARRAY['c10']::text[] AND completed.instance_path_indices=ARRAY[0]::integer[] JOIN run_events drain ON drain.tenant_id=r.tenant_id AND drain.run_id=r.id AND drain.seq=s.drain_sequence AND drain.event_type='collection.drain_started' JOIN event_outbox hint ON hint.id=s.drain_outbox_id AND hint.tenant_id=r.tenant_id AND hint.aggregate_id=r.id JOIN audit_records audit ON audit.tenant_id=r.tenant_id AND audit.resource_id=r.id::text AND audit.action='run.data_limit_exceeded' AND audit.reason='stopped_for_run_data_limit' WHERE r.tenant_id=$1 AND r.id=$2 AND stop.seq<completed.seq AND completed.seq<drain.seq AND stop.trace_id IS NOT DISTINCT FROM r.trace_id AND completed.trace_id IS NOT DISTINCT FROM r.trace_id AND drain.trace_id IS NOT DISTINCT FROM r.trace_id AND audit.trace_id IS NOT DISTINCT FROM r.trace_id AND hint.payload->>'traceId' IS NOT DISTINCT FROM r.trace_id AND hint.event_type='collection.drain.started' AND hint.payload->>'reason'='FAILED')")
++        .bind(receipt.tenant.as_uuid()).bind(receipt.run.as_uuid()).fetch_one(pool).await.expect("original stop then completion then fresh drain trace/order");
++    assert!(
++        valid,
++        "fresh stopped-limit drain follows original completion and retains original trace in event/audit/hint"
++    );
++}
++
++async fn cas_wait_role_quiescent(
++    owner: &mut sqlx::PgConnection,
++    database: &str,
++    role: &str,
++) -> bool {
++    matches!(tokio::time::timeout(Duration::from_secs(5),async {
++        loop {
++            let quiet:bool=sqlx::query_scalar("SELECT NOT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=$1 AND usename=$2 AND backend_type='client backend' AND pid<>pg_backend_pid() AND xact_start IS NOT NULL)")
++                .bind(database).bind(role).fetch_one(&mut *owner).await.map_err(|_|"final owned-role server observation")?;
++            if quiet {return Ok::<(),&'static str>(());}
++            tokio::task::yield_now().await;
++        }
++    }).await,Ok(Ok(())))
++}

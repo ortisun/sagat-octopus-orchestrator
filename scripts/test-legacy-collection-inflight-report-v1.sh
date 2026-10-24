@@ -7,7 +7,7 @@ readonly old_commit="6c44a0e49670cf19660792cd1518d241e6c99b3b"
 case_name="report-before-drain"
 if (( $# != 0 )); then
   if (( $# != 2 )) || [[ "$1" != "--case" ]]; then
-    echo "usage: $0 [--case report-before-drain|drain-before-report|cancellation-before-report|under-limit-increment-before-drain|live-work-frontier|live-work-frontier-red]" >&2
+    echo "usage: $0 [--case report-before-drain|drain-before-report|cancellation-before-report|under-limit-increment-before-drain|live-work-frontier|live-work-frontier-red|report-frontier-cas]" >&2
     exit 2
   fi
   case_name="$2"
@@ -39,6 +39,13 @@ case "${case_name}" in
     artifact_namespace="sagat-q10c-ordinary-under-limit-increment-v1"
     log_label="ordinary-under-limit-increment-before-drain"
     ;;
+  report-frontier-cas)
+    old_test="legacy_collection_inflight_report_producer_v1::frozen_old_ordinary_success_before_drain_producer"
+    current_test="legacy_collection_inflight_report_v1::old_original_success_forces_frontier_cas_then_fresh_stopped_drain"
+    artifact_namespace="sagat-q10c-report-frontier-cas"
+    log_label="report-frontier-cas"
+    phase_seconds=300
+    ;;
   live-work-frontier|live-work-frontier-red)
     old_test="legacy_collection_inflight_report_producer_v1::frozen_old_ordinary_success_before_drain_producer"
     current_test="legacy_collection_inflight_report_v1::old_live_work_frontier_drains_before_waiting"
@@ -57,7 +64,7 @@ case "${case_name}" in
 esac
 readonly case_name old_test current_test artifact_namespace log_label phase_seconds expected_red_marker
 # Bound the entire new fixture, including builds and cleanup, in a separate process group.
-if [[ "${case_name}" == live-work-frontier || "${case_name}" == live-work-frontier-red ]] && [[ "${SAGAT_Q10C_SUPERVISED:-}" != 1 ]]; then
+if [[ "${case_name}" == live-work-frontier || "${case_name}" == live-work-frontier-red || "${case_name}" == report-frontier-cas ]] && [[ "${SAGAT_Q10C_SUPERVISED:-}" != 1 ]]; then
   exec python3 - "$0" "$@" <<'SUPERVISOR'
 import os,select,signal,subprocess,sys,time
 child=None
@@ -435,7 +442,7 @@ p=Path(sys.argv[1])
 if stat.S_IMODE(p.stat().st_mode)!=0o600:raise SystemExit('receipt is not private')
 v=json.loads(p.read_text())
 fields='format source_commit database_name producer_api_role tenant_id other_tenant_id namespace_id namespace_slug worker_subject tenant_alias worker_id session_token run_id selected_owner scheduler_owner task_lease_b64 completion_request_b64 producer_projection_witness_sha256 closed_source_witness_sha256'.split()
-formats={'report-before-drain':'q10c-ordinary-before-drain-v1','drain-before-report':'q10c-ordinary-before-drain-v1','cancellation-before-report':'q10c-ordinary-before-drain-v1','under-limit-increment-before-drain':'q10c-ordinary-under-limit-increment-v1','live-work-frontier':'q10c-ordinary-before-drain-v1','live-work-frontier-red':'q10c-ordinary-before-drain-v1'}
+formats={'report-frontier-cas':'q10c-ordinary-before-drain-v1','report-before-drain':'q10c-ordinary-before-drain-v1','drain-before-report':'q10c-ordinary-before-drain-v1','cancellation-before-report':'q10c-ordinary-before-drain-v1','under-limit-increment-before-drain':'q10c-ordinary-under-limit-increment-v1','live-work-frontier':'q10c-ordinary-before-drain-v1','live-work-frontier-red':'q10c-ordinary-before-drain-v1'}
 if sys.argv[2] not in formats or set(v)!=set(fields) or v['format']!=formats[sys.argv[2]] or v['source_commit']!='6c44a0e49670cf19660792cd1518d241e6c99b3b' or v['selected_owner']!='c10':raise SystemExit('invalid private in-flight envelope')
 role=v['producer_api_role']
 if not isinstance(role,str) or not role or (sys.argv[3]=='runtime' and role!='sagat_app') or (sys.argv[3]=='owner' and role=='sagat_app'):raise SystemExit('in-flight receipt role mismatch')

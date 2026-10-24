@@ -1,0 +1,59 @@
+{
+  "model": "gpt-6-astra",
+  "reasoning_effort": "xhigh",
+  "barrier_cleanup_c2": "None",
+  "lifecycle_selector_c2": "None",
+  "native_phases": [
+    {
+      "role": "owner",
+      "phase": "producer",
+      "native_exit": 0,
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "test_harness_seconds": 5.08
+    },
+    {
+      "role": "owner",
+      "phase": "consumer",
+      "native_exit": 0,
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "test_harness_seconds": 2.11
+    },
+    {
+      "role": "runtime",
+      "phase": "producer",
+      "native_exit": 0,
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "test_harness_seconds": 4.92
+    },
+    {
+      "role": "runtime",
+      "phase": "consumer",
+      "native_exit": 0,
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "test_harness_seconds": 2.17
+    }
+  ],
+  "observed_revision_pairs": {
+    "owner": [
+      105,
+      107
+    ],
+    "runtime": [
+      105,
+      107
+    ]
+  },
+  "first_real_CAS_runtime_passed": true,
+  "private_receipts_removed": true,
+  "extracted_old_source_removed": true,
+  "later_source_change": "Clippy collapsible-if syntax only, final matrix will use exact final source",
+  "emergency_cleanup_paths": "source reviewed; no injected runtime emergency-path acceptance claimed"
+}
